@@ -20,11 +20,14 @@ import type { HttpClient } from '@shogo-ai/sdk'
 import {
   useNativePhoneWindow,
   nativeContentWidth,
-  nativeSettingsPaneRootStyle,
   nativeTwoColumnCardWidth,
   NATIVE_PHONE_CONTROL_SIZE,
   NATIVE_PHONE_ROW_GAP,
-} from '../../../lib/native-phone-layout'
+} from '../../../lib/native-phone-layout';
+import {
+  NativePhonePane,
+  phonePaneScrollProps,
+} from "../../phone/NativePhonePane"
 
 type Period = '7d' | '30d' | '90d'
 type DailyCount = { date: string; count: number }
@@ -215,10 +218,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
   if (!visible) return null
 
   return (
-    <View
-      collapsable={false}
-      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    <NativePhonePane pageWidth={pageWidth}comfortable={ comfortable}
     >
       {/* Header */}
       <View
@@ -292,11 +292,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
       )}
 
       <ScrollView
-        className={comfortable ? undefined : 'flex-1'}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        alwaysBounceVertical={comfortable}
-        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+        className={comfortable ? undefined : 'flex-1'}{...phonePaneScrollProps( comfortable)}
         contentContainerStyle={{
           padding: 16,
           flexGrow: 1,
@@ -430,7 +426,7 @@ export function AnalyticsPanel({ projectId, agentUrl, visible }: AnalyticsPanelP
           )}
         </View>
       </ScrollView>
-    </View>
+    </NativePhonePane>
   )
 }
 

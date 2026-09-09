@@ -102,7 +102,7 @@ mock.module('expo-image-picker', () => ({
   requestMediaLibraryPermissionsAsync: async () => ({ granted: false }),
 }))
 
-mock.module('../lib/native-attachment-picker', () => ({
+mock.module(require.resolve('../lib/native-attachment-picker'), () => ({
   executeNativeAttachAction: () => {},
 }))
 

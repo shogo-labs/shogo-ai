@@ -45,6 +45,11 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { Switch } from '@/components/ui/switch'
 import {
+  NativePhonePane,
+  phonePaneScrollProps,
+} from "../../phone/NativePhonePane";
+import { densityFor } from "../../../lib/phone-density";
+import {
   Popover,
   PopoverBackdrop,
   PopoverBody,
@@ -289,6 +294,7 @@ export function CapabilitiesConfigPane({
   onModelChange: controlledOnModelChange,
 }: CapabilitiesConfigPaneProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const density = densityFor(comfortable);
   const stackWidth = comfortable ? nativeContentWidth(pageWidth) : 0
   const typeTextWidth = Math.max(0, stackWidth - NATIVE_PHONE_SECTION_INSET - AGENT_TYPE_ICON - ROW_GAP)
   const stackTextWidth = Math.max(0, stackWidth - NATIVE_PHONE_SECTION_INSET - STACK_ICON_BOX - ROW_GAP)
@@ -303,7 +309,7 @@ export function CapabilitiesConfigPane({
   const pickerGroups = useModelPickerGroups()
   const modelGroups = useMemo(
     () =>
-      pickerGroups.map(g => ({
+      pickerGroups.map((g) => ({
         label: g.label,
         models: g.models.map((m): ModelOption => ({
           provider: m.provider ?? 'custom',
@@ -314,15 +320,15 @@ export function CapabilitiesConfigPane({
       })),
     [pickerGroups],
   )
-  const availableModels = useMemo(() => modelGroups.flatMap(g => g.models), [modelGroups])
+  const availableModels = useMemo(() => modelGroups.flatMap((g) => g.models), [modelGroups])
 
   const isModelControlled = controlledModelId !== undefined
   const controlledModelEntry = isModelControlled
-    ? availableModels.find(m => m.name === controlledModelId)
+    ? availableModels.find((m) => m.name === controlledModelId)
     : null
   const [internalModel, setInternalModel] = useState<{ provider: string; name: string } | null>(null)
   const currentModel = isModelControlled
-    ? (controlledModelEntry ? { provider: controlledModelEntry.provider, name: controlledModelEntry.name } : null)
+    ?controlledModelEntry ? { provider: controlledModelEntry.provider, name: controlledModelEntry.name } : null
     : internalModel
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelUpdating, setModelUpdating] = useState(false)
@@ -348,8 +354,8 @@ export function CapabilitiesConfigPane({
     if (isModelControlled || !visible || !agentUrl || fetchedRef.current) return
     fetchedRef.current = true
     agentFetch(`${agentUrl}/agent/status`)
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
+      .then((res) => ( res.ok ? res.json() : null))
+      .then((data) => {
         if (data?.model) setInternalModel(data.model)
       })
       .catch((e) => console.error('[CapabilitiesPanel] Failed to fetch model:', e))
@@ -360,7 +366,7 @@ export function CapabilitiesConfigPane({
     techStacksFetchedRef.current = true
     const http = createHttpClient()
     api.getTechStacks(http)
-      .then(stacks => setTechStacks(stacks))
+      .then((stacks) => setTechStacks(stacks))
       .catch((e) => console.error('[CapabilitiesPanel] Failed to fetch tech stacks:', e))
   }, [visible])
 
@@ -368,8 +374,8 @@ export function CapabilitiesConfigPane({
     if (!visible || !agentUrl || tokenFetchedRef.current) return
     tokenFetchedRef.current = true
     agentFetch(`${agentUrl}/agent/config`)
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
+      .then((res) => ( res.ok ? res.json() : null))
+      .then((data) => {
         if (data?.browserExtensionToken) {
           setExtensionToken(data.browserExtensionToken)
           setTokenSaved(true)
@@ -445,15 +451,17 @@ export function CapabilitiesConfigPane({
   const resolvedModel = isAutoSelected
     ? AUTO_MODEL_OPTION
     : availableModels.find(
-        m => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
+        (
+        m) => m.name === currentModel?.name || (currentModel?.name && m.name === currentModel.name.replace(/-\d{8}$/, ''))
       )
 
-  const enabledCount = CAPABILITIES.filter(c => capabilities[c.key]).length
+  const enabledCount = CAPABILITIES.filter((c) => capabilities[c.key]).length
 
   return (
-    <ScrollView
-      style={comfortable ? { width: pageWidth, flex: 1, minHeight: 0 } : undefined}
+    <NativePhonePane pageWidth={pageWidth}comfortable= {comfortable }>
+      <ScrollView
       className={comfortable ? undefined : 'flex-1'}
+        {...phonePaneScrollProps(comfortable)}
       contentContainerStyle={{
         paddingBottom: comfortable ? 40 : 24,
         flexGrow: 1,
@@ -462,7 +470,8 @@ export function CapabilitiesConfigPane({
     >
       {/* Agent type selector */}
       <View style={{ width: comfortable ? pageWidth : '100%', paddingHorizontal: 16, paddingBottom: 4, paddingTop: comfortable ? 16 : 12 }}>
-        <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground mb-2', comfortable ? 'text-xs' : 'text-[10px]')}>Agent Type</Text>
+        <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground mb-2',
+              density.text.caption)}>Agent Type</Text>
         <View style={comfortable ? { width: stackWidth, gap: 8 } : undefined} className={comfortable ? undefined : 'flex-row gap-2'}>
           {AGENT_TYPES.map(({ mode, label, description, icon: Icon }) => {
             const isActive = activeMode === mode
@@ -490,18 +499,19 @@ export function CapabilitiesConfigPane({
                     : { flex: 1, paddingHorizontal: 12, paddingVertical: 10, alignItems: 'center', gap: 6 }
                 }
               >
-                <Icon size={comfortable ? 22 : 18} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
+                <Icon size={density.icon.lg + 2} className={isActive ? 'text-primary' : 'text-muted-foreground'} />
                 <View style={comfortable ? { width: typeTextWidth } : undefined}>
                   <Text className={cn(
                     'font-semibold',
-                    comfortable ? 'text-base' : 'text-xs',
+                        density.text.body,
                     isActive ? 'text-primary' : 'text-foreground',
                     !comfortable && 'text-center',
                   )}>
                     {label}
                   </Text>
                   <Text
-                    className={cn('text-muted-foreground', comfortable ? 'text-sm mt-0.5' : 'text-[10px] text-center')}
+                    className={cn('text-muted-foreground',
+                        `${density.text.body} mt-0.5`)}
                     style={comfortable ? { width: typeTextWidth } : undefined}
                   >
                     {description}
@@ -516,7 +526,8 @@ export function CapabilitiesConfigPane({
       {/* Tech Stack selector */}
       {techStacks.length > 0 && (
         <View style={{ width: comfortable ? pageWidth : '100%', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
-          <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground mb-2', comfortable ? 'text-xs' : 'text-[10px]')}>Tech Stack</Text>
+          <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground mb-2',
+                density.text.caption)}>Tech Stack</Text>
           <View
             className="border border-border rounded-lg bg-background"
             style={{
@@ -529,7 +540,7 @@ export function CapabilitiesConfigPane({
             }}
           >
             <View className={cn('rounded-md items-center justify-center bg-primary/10', comfortable ? 'h-11 w-11' : 'w-8 h-8')}>
-              <Layers size={comfortable ? 18 : 15} className="text-primary" />
+              <Layers size={density.icon.md} className="text-primary" />
             </View>
             <View style={comfortable ? { width: stackTextWidth } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
               <Text className="text-xs text-muted-foreground">Stack</Text>
@@ -541,7 +552,7 @@ export function CapabilitiesConfigPane({
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
-                    onPress={() => setStackPickerOpen(prev => !prev)}
+                    onPress={() => setStackPickerOpen((prev) => !prev)}
                     className={comfortable ? undefined : 'flex-row items-center gap-1.5 mt-0.5 min-w-0'}
                     style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, width: stackTextWidth } : undefined}
                   >
@@ -550,9 +561,9 @@ export function CapabilitiesConfigPane({
                       numberOfLines={1}
                       style={comfortable ? { width: Math.max(0, stackTextWidth - 22) } : undefined}
                     >
-                      {techStacks.find(s => s.id === techStackId)?.name ?? 'None'}
+                      {techStacks.find((s) => s.id === techStackId)?.name ?? 'None'}
                     </Text>
-                    <ChevronDown size={comfortable ? 18 : 14} className="text-muted-foreground" />
+                    <ChevronDown size={density.icon.md} className="text-muted-foreground" />
                   </Pressable>
                 )}
               >
@@ -585,7 +596,10 @@ export function CapabilitiesConfigPane({
                             )}>
                               {stack.name}
                             </Text>
-                            <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                            <Text className={cn(
+                                  density.text.caption,
+                                  "text-muted-foreground",
+                                )} numberOfLines={1}>
                               {stack.description}
                             </Text>
                           </View>
@@ -613,7 +627,7 @@ export function CapabilitiesConfigPane({
                   </Text>
                   <Text className="text-xs text-muted-foreground mb-3">
                     This will replace your project files (src/, package.json, prisma/, configs)
-                    with the {pendingStackChange.name} starter. Your chat history, skills, and
+                    with the {pendingStackChange.name}{" "} starter. Your chat history, skills, and
                     memory are preserved. This cannot be undone.
                   </Text>
                   <View className="flex-row gap-2">
@@ -655,7 +669,7 @@ export function CapabilitiesConfigPane({
           }}
         >
           <View className={cn('rounded-md items-center justify-center bg-primary/10', comfortable ? 'h-11 w-11' : 'w-8 h-8')}>
-            <Cpu size={comfortable ? 18 : 15} className="text-primary" />
+            <Cpu size={density.icon.md} className="text-primary" />
           </View>
           <View style={comfortable ? { width: stackTextWidth } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
             <Text className="text-xs text-muted-foreground">Model</Text>
@@ -667,7 +681,7 @@ export function CapabilitiesConfigPane({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
-                  onPress={() => setModelPickerOpen(prev => !prev)}
+                  onPress={() => setModelPickerOpen((prev) => !prev)}
                   className={comfortable ? undefined : 'flex-row items-center gap-1.5 mt-0.5 min-w-0'}
                   style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, width: stackTextWidth } : undefined}
                   disabled={modelUpdating}
@@ -683,7 +697,7 @@ export function CapabilitiesConfigPane({
                       >
                         {resolvedModel?.displayName ?? currentModel?.name ?? 'Loading...'}
                       </Text>
-                      <ChevronDown size={comfortable ? 18 : 14} className="text-muted-foreground" />
+                      <ChevronDown size={density.icon.md} className="text-muted-foreground" />
                     </>
                   )}
                 </Pressable>
@@ -767,22 +781,24 @@ export function CapabilitiesConfigPane({
       {/* Advanced capabilities (collapsible) */}
       <View style={{ width: comfortable ? pageWidth : undefined }} className={comfortable ? 'px-4 pt-4' : 'w-full px-4 pt-4'}>
         <Pressable
-          onPress={() => setAdvancedOpen(prev => !prev)}
+          onPress={() => setAdvancedOpen((prev) => !prev)}
           className={comfortable ? undefined : 'flex-row items-center gap-2 py-2'}
           style={comfortable ? { width: stackWidth, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 } : undefined}
         >
-          <Settings size={comfortable ? 18 : 14} className="text-muted-foreground" />
-          <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px] flex-1 min-w-0')}>
+          <Settings size={density.icon.md} className="text-muted-foreground" />
+          <Text className={cn('font-semibold uppercase tracking-wider text-muted-foreground',
+                density.text.caption,
+                ! comfortable && "flex-1 min-w-0")}>
             Advanced
           </Text>
           <View style={comfortable ? { flexGrow: 1 } : undefined} />
-          <Text className={cn('text-muted-foreground mr-1', comfortable ? 'text-sm' : 'text-[10px]')}>
+          <Text className={cn('text-muted-foreground mr-1', density.text.label)}>
             {enabledCount}/{CAPABILITIES.length} enabled
           </Text>
           {advancedOpen ? (
-            <ChevronDown size={comfortable ? 18 : 14} className="text-muted-foreground" />
+            <ChevronDown size={density.icon.md} className="text-muted-foreground" />
           ) : (
-            <ChevronRight size={comfortable ? 18 : 14} className="text-muted-foreground" />
+            <ChevronRight size={density.icon.md} className="text-muted-foreground" />
           )}
         </Pressable>
 
@@ -858,7 +874,10 @@ export function CapabilitiesConfigPane({
                           </Text>
                           <View className="gap-1.5">
                             {cap.examples.map((ex, i) => (
-                              <Text key={i} className="text-[11px] text-foreground/70 italic">
+                              <Text key={i} className={cn(
+                                    density.text.caption,
+                                    "text-foreground/70 italic",
+                                  )}>
                                 {ex}
                               </Text>
                             ))}
@@ -903,7 +922,8 @@ export function CapabilitiesConfigPane({
                               <Pressable onPress={() => setTokenVisible(!tokenVisible)} className="px-2">
                                 {tokenVisible
                                   ? <EyeOff size={12} className="text-muted-foreground" />
-                                  : <Eye size={12} className="text-muted-foreground" />}
+                                  : ( <Eye size={12} className="text-muted-foreground" />
+                                  )}
                               </Pressable>
                             </View>
                             <Pressable
@@ -950,10 +970,11 @@ export function CapabilitiesConfigPane({
                   <AlertTriangle size={14} className="text-orange-500 mt-0.5" />
                   <View className="flex-1">
                     <Text className="text-sm font-medium text-foreground mb-1">
-                      Disable {CAPABILITIES.find(c => c.key === pendingToggle.key)?.label}?
+                      Disable {" "}
+                        {CAPABILITIES.find((c) => c.key === pendingToggle.key)?.label}?
                     </Text>
                     <Text className="text-xs text-muted-foreground mb-3">
-                      {CAPABILITIES.find(c => c.key === pendingToggle.key)?.warning}
+                      {CAPABILITIES.find((c) => c.key === pendingToggle.key)?.warning}
                     </Text>
                     <View className="flex-row gap-2">
                       <Pressable
@@ -977,6 +998,7 @@ export function CapabilitiesConfigPane({
         )}
       </View>
     </ScrollView>
+    </NativePhonePane>
   )
 }
 

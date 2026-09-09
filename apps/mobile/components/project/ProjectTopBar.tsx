@@ -8,17 +8,13 @@
  * + chat toolbar + EditToolbar) into one.
  */
 
-import React, { useCallback, useRef, useEffect, useState } from 'react'
+import React, { useCallback, useState } from 'react'
 import {
-  View,
   Text,
-  Pressable,
+  View,
   useWindowDimensions,
-  ScrollView,
-  TextInput,
   Platform,
-  Modal,
-  StyleSheet,
+  Pressable,
   type StyleProp,
   type ViewStyle,
 } from 'react-native'
@@ -27,502 +23,59 @@ import {
   PopoverBackdrop,
   PopoverBody,
   PopoverContent,
-} from '@/components/ui/popover'
+} from "../ui/popover"
 import { useRouter } from 'expo-router'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
-  PanelLeftClose,
-  PanelLeft,
-  Zap,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Check,
-  Search,
-  Bot,
-  AppWindow,
-  Settings,
-  Pencil,
-  Star,
-  FolderInput,
-  Info,
-  SunMoon,
-  MoreHorizontal,
-  X,
-  MessageSquare,
-  LayoutDashboard,
-  Code2,
-  Sliders,
-  Radio,
-  Activity,
-  Eye,
-  ListTree,
-  Plus,
-  Trash2,
-  Terminal,
-  ClipboardList,
-  RefreshCw,
   ExternalLink,
-  GitCommit,
-  Upload,
-  Download,
-  FolderTree,
-  Globe,
   History,
-  ShieldAlert,
-  ShieldCheck,
-  Share2,
+  MessageSquare,
+  MoreHorizontal,
+  PanelLeft,
+  PanelLeftClose,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  Zap,
 } from 'lucide-react-native'
-import { cn, Badge } from '@shogo/shared-ui/primitives'
-import type { UsageWindows } from '@shogo/shared-app/hooks'
-import type { UsageOverageContext } from '../../lib/billing-config'
-import { useTheme, type ThemePreference } from '../../contexts/theme'
-import { CompactUsageWindows } from '../billing/UsageWindows'
-import { PublishDropdown } from './PublishDropdown'
-import { CloudSyncStatusPill } from './CloudSyncStatusPill'
-import { usePlatformConfig } from '../../lib/platform-config'
-import { isPhoneLayout, NATIVE_PHONE_CONTROL_SIZE, useNativePhoneIconChrome, useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
-import { api } from '../../lib/api'
-import { requestIdeActivity } from '../../lib/ide-activity-bus'
-import { ProjectExportModal } from './ProjectExportModal'
+import { cn } from '@shogo/shared-ui/primitives'
+import { PublishDropdown } from "./PublishDropdown"
+import { CloudSyncStatusPill } from "./CloudSyncStatusPill"
+import {
+  isPhoneLayout,
+  NATIVE_PHONE_CONTROL_SIZE,
+  WEB_WIDE_MIN_WIDTH,
+} from '../../lib/native-phone-layout'
+import { requestIdeActivity } from "../../lib/ide-activity-bus"
+import { nextIdeAlignment } from '../../lib/project-topbar-layout'
+import { BarIconButton } from "./topbar/BarIconButton"
+import { IdeAlignmentToggle } from "./topbar/IdeAlignmentToggle"
+import { RenameChatModal } from "./topbar/RenameChatModal"
+import { TrustBadge } from "./topbar/TrustBadge"
+import { AGENT_TABS } from "./topbar/agent-tabs"
+import { NativePhoneHeader } from "./topbar/native/NativePhoneHeader"
+import { ProjectDropdownContent } from './topbar/dropdown/ProjectDropdownContent'
 
-/** Native narrow bar: Popover trigger often ignores Tailwind `max-w`; cap width in dp (slightly above 120). */
+import type {
+  IdePrimarySideBarPosition,
+  ProjectTopBarProps,
+  TopBarOverlayState,
+} from './topbar/types'
+
+export type {
+  IdePrimarySideBarPosition,
+  ProjectSwitcherItem,
+  ProjectTopBarProps,
+  TopBarOverlayState,
+} from './topbar/types'
+
 const nativeNarrowTitleMaxWidth = 132
 
-/** Native narrow top bar only (not web): keep the project menu wide enough for the account row and usage card. */
 function narrowProjectDropdownWidth(screenWidth: number): number {
   return Math.max(300, Math.min(320, screenWidth - 96))
-}
-
-type IdePrimarySideBarPosition = 'left' | 'right'
-
-const AGENT_TABS: { id: string; label: string; icon: React.ElementType }[] = [
-  { id: 'chat-fullscreen', label: 'Chat', icon: MessageSquare },
-  { id: 'canvas', label: 'Canvas', icon: LayoutDashboard },
-  // `external-preview` is gated on workingMode=external at the layout
-  // level (via `hiddenTabs`) so managed projects never see it. It lives
-  // next to Canvas because that's where the user expects "view of my
-  // running app" to be.
-  { id: 'external-preview', label: 'Preview', icon: Globe },
-  // APP_MODE_DISABLED: { id: 'app-preview', label: 'App', icon: AppWindow },
-  ...(Platform.OS === 'web'
-    ? [{ id: 'ide', label: 'IDE', icon: Code2 }]
-    : [{ id: 'files', label: 'Files', icon: Code2 }]),
-  { id: 'plans', label: 'Plans', icon: ClipboardList },
-  // Folders, Capabilities, Channels, Agents, Monitor, Checkpoints all
-  // live behind this Settings tab now (rendered by SettingsPanel with a
-  // grouped left sidebar). Checkpoints on web is also accessible from
-  // the IDE Source Control activity-bar entry.
-  { id: 'settings', label: 'Settings', icon: Settings },
-]
-
-export interface ProjectSwitcherItem {
-  id: string
-  name: string
-}
-
-export interface ProjectTopBarProps {
-  projectName: string
-  projectId: string
-  projects?: ProjectSwitcherItem[]
-  activeTab?: string
-  onTabChange?: (tabId: string) => void
-  onProjectSwitch?: (projectId: string) => void
-  hasActiveSubscription?: boolean
-  workspaceName?: string
-  planLabel?: string
-  usageWindows?: UsageWindows
-  usageOverage?: UsageOverageContext
-  ownerName?: string
-  projectCreatedAt?: string | number
-  projectModifiedAt?: string | number
-  isStarred?: boolean
-  onRenameProject?: (newName: string) => void
-  onToggleStar?: () => void
-  onMoveToFolder?: (folderId: string | null) => void
-  folders?: { id: string; name: string }[]
-  hiddenTabs?: string[]
-  canvasEnabled?: boolean
-  activeMode?: 'none' | 'canvas' | 'app'
-  /**
-   * Workspace Trust controls (external / folder-linked projects only).
-   * When `workingMode === 'external'` a persistent shield badge is shown
-   * that flips `trustLevel` via `onToggleTrust`, so users can move
-   * between restricted and trusted after first startup without opening
-   * the Folders panel. Omitted/undefined on managed projects → no badge.
-   */
-  workingMode?: 'managed' | 'external'
-  trustLevel?: 'restricted' | 'trusted'
-  onToggleTrust?: () => void
-  trustBusy?: boolean
-  narrowActiveTab?: 'chat' | 'canvas'
-  onNarrowTabChange?: (tab: 'chat' | 'canvas') => void
-  narrowPreviewTab?: string
-  // Canvas edit controls
-  isEditMode?: boolean
-  onToggleEditMode?: () => void
-  showTreePanel?: boolean
-  onToggleTreePanel?: () => void
-  selectedComponentId?: string | null
-  onDeleteComponent?: () => void
-  onAddComponent?: () => void
-  // Chat controls
-  showChatSessions?: boolean
-  isChatCollapsed?: boolean
-  onChatSessionsToggle?: () => void
-  onChatCollapseToggle?: () => void
-  onCreateNewSession?: () => void
-  /**
-   * Narrow (mobile) only: toggle the in-place chat-session picker that
-   * temporarily replaces the chat panel with the session list. The wide
-   * layout uses `onChatSessionsToggle` for the inline sidebar instead.
-   */
-  onOpenChatSessions?: () => void
-  /** Narrow (mobile) only: whether the in-place picker is currently shown. */
-  chatSessionsOpen?: boolean
-  chatPanelWidth?: number
-  chatFullscreenSidebarWidth?: number
-  /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */
-  onSearchChats?: () => void
-  // Fullscreen chat actions (rendered in the topbar chat zone in fullscreen mode)
-  onNewChat?: () => void
-  onRenameChat?: (sessionId: string, newName: string) => void | Promise<void>
-  onDeleteChat?: (sessionId: string) => void | Promise<void>
-  activeChatSessionId?: string | null
-  activeChatSessionName?: string | null
-  // Slot for canvas theme picker
-  canvasThemePicker?: React.ReactNode
-  canvasThemeSupported?: boolean | null
-  onCanvasRefresh?: () => void
-  onCanvasOpenInNewTab?: () => void
-  /**
-   * Fired when the user reaches for "open in new tab" (hover / press-in) so the
-   * preview backend can start waking before the click lands.
-   */
-  onCanvasPrewarm?: () => void
-  onOpenCodeWorkbench?: () => void
-  idePrimarySideBarPosition?: IdePrimarySideBarPosition
-  onIdePrimarySideBarPositionChange?: (position: IdePrimarySideBarPosition) => void
-  ideEmbed?: boolean
-}
-
-/** Set the native HTML `title` tooltip on the DOM element via ref. */
-function useWebTitle(title?: string) {
-  const ref = useRef<View>(null)
-  useEffect(() => {
-    if (Platform.OS === 'web' && ref.current) {
-      (ref.current as unknown as HTMLElement).title = title ?? ''
-    }
-  }, [title])
-  return ref
-}
-
-const NATIVE_CIRCLE_ICON_SIZE = 22
-const NATIVE_HEADER_PAD_X = 12
-const NATIVE_HEADER_PAD_TOP = 4
-/** Keep header icons off the hairline under the bar. */
-const NATIVE_HEADER_PAD_BOTTOM = 12
-const NATIVE_CLUSTER_SLOT = 36
-const NATIVE_CLUSTER_PAD_X = 6
-const NATIVE_CLUSTER_WIDTH = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * 2
-
-function NativeCircleButton({
-  icon: Icon,
-  onPress,
-  accessibilityLabel,
-  testID,
-  active,
-}: {
-  icon: React.ElementType
-  onPress: () => void
-  accessibilityLabel: string
-  testID?: string
-  active?: boolean
-}) {
-  const icon = useNativePhoneIconChrome()
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={4}
-      testID={testID}
-      accessibilityLabel={accessibilityLabel}
-      accessibilityRole="button"
-      className={cn(
-        'items-center justify-center rounded-full',
-        active ? 'bg-primary' : 'bg-muted',
-      )}
-      style={{ width: NATIVE_PHONE_CONTROL_SIZE, height: NATIVE_PHONE_CONTROL_SIZE }}
-    >
-      <Icon
-        size={NATIVE_CIRCLE_ICON_SIZE}
-        color={active ? undefined : icon.color}
-        strokeWidth={icon.strokeWidth}
-        className={active ? 'text-primary-foreground' : undefined}
-      />
-    </Pressable>
-  )
-}
-
-function NativeClusterIcon({
-  icon: Icon,
-  onPress,
-  accessibilityLabel,
-  testID,
-}: {
-  icon: React.ElementType
-  onPress: () => void
-  accessibilityLabel: string
-  testID?: string
-}) {
-  const iconChrome = useNativePhoneIconChrome()
-  return (
-    <Pressable
-      onPress={onPress}
-      testID={testID}
-      accessibilityLabel={accessibilityLabel}
-      accessibilityRole="button"
-      className="items-center justify-center"
-      style={{ width: NATIVE_CLUSTER_SLOT, height: NATIVE_PHONE_CONTROL_SIZE }}
-    >
-      <Icon size={20} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
-    </Pressable>
-  )
-}
-
-function NativeBottomSheet({
-  visible,
-  onClose,
-  children,
-  maxHeightFraction = 0.78,
-}: {
-  visible: boolean
-  onClose: () => void
-  children: React.ReactNode
-  maxHeightFraction?: number
-}) {
-  const { height } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
-  const sheet = useNativePhoneSheetChrome()
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      statusBarTranslucent
-      onRequestClose={onClose}
-    >
-      <View style={styles.sheetRoot}>
-        <Pressable
-          style={[styles.sheetBackdrop, sheet.backdrop]}
-          onPress={onClose}
-          accessibilityLabel="Dismiss"
-          accessibilityRole="button"
-        />
-        <View
-          className="w-full rounded-t-3xl border border-border border-b-0 bg-card"
-          style={{
-            maxHeight: Math.round(height * maxHeightFraction),
-            paddingBottom: Math.max(insets.bottom, 16),
-            ...sheet.panel,
-          }}
-        >
-          <View className="items-center pt-2 pb-1">
-            <View className="h-1 w-11 rounded-full bg-muted-foreground/35" />
-          </View>
-          {children}
-        </View>
-      </View>
-    </Modal>
-  )
-}
-
-const styles = StyleSheet.create({
-  sheetRoot: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  sheetBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-  },
-})
-
-function NativeSheetCircleAction({
-  icon: Icon,
-  label,
-  onPress,
-  active,
-}: {
-  icon: React.ElementType
-  label: string
-  onPress: () => void
-  active?: boolean
-}) {
-  const iconChrome = useNativePhoneIconChrome()
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={8}
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      className="min-w-[64px] items-center gap-1.5 py-1"
-    >
-      <View className="h-12 w-12 items-center justify-center rounded-full bg-muted">
-        <Icon
-          size={20}
-          color={active ? undefined : iconChrome.color}
-          strokeWidth={iconChrome.strokeWidth}
-          className={active ? 'text-primary' : undefined}
-        />
-      </View>
-      <Text className="text-[11px] text-muted-foreground">{label}</Text>
-    </Pressable>
-  )
-}
-
-function BarIconButton({
-  icon: Icon,
-  onPress,
-  onHoverIn,
-  active,
-  title,
-  size = 12,
-  testID,
-}: {
-  icon: React.ElementType
-  onPress: () => void
-  /** Intent signal — fires on hover (web) and on press-in (touch). */
-  onHoverIn?: () => void
-  active?: boolean
-  title?: string
-  size?: number
-  testID?: string
-}) {
-  const tipRef = useWebTitle(title)
-  const isNative = Platform.OS !== 'web'
-  const iconChrome = useNativePhoneIconChrome()
-
-  return (
-    <Pressable
-      ref={tipRef}
-      onPress={onPress}
-      onHoverIn={onHoverIn}
-      onPressIn={onHoverIn}
-      hitSlop={isNative ? 4 : undefined}
-      testID={testID}
-      className={cn(
-        'items-center justify-center rounded-md',
-        isNative ? 'h-9 w-9' : 'h-6 w-6',
-        active ? 'bg-primary' : 'active:bg-muted',
-      )}
-      accessibilityLabel={title}
-    >
-      <Icon
-        size={isNative ? Math.max(size, 18) : size}
-        color={isNative && !active ? iconChrome.color : undefined}
-        strokeWidth={isNative ? iconChrome.strokeWidth : undefined}
-        className={cn(active ? 'text-primary-foreground' : !isNative && 'text-muted-foreground')}
-      />
-    </Pressable>
-  )
-}
-
-function IdeAlignmentToggle({
-  position,
-  nextPosition,
-  onPress,
-}: {
-  position: IdePrimarySideBarPosition
-  nextPosition: IdePrimarySideBarPosition
-  onPress: () => void
-}) {
-  const title = `Switch IDE files and tabs to ${nextPosition} alignment`
-  const tipRef = useWebTitle(title)
-  const leftActive = position === 'left'
-
-  return (
-    <Pressable
-      ref={tipRef}
-      onPress={onPress}
-      className="h-7 w-7 items-center justify-center rounded-md active:bg-muted web:hover:bg-muted/70"
-      accessibilityRole="button"
-      accessibilityLabel={title}
-      testID="ide-sidebar-alignment-toggle"
-    >
-      <View className="h-[17px] w-[17px] flex-row overflow-hidden rounded-[4px] border border-muted-foreground/80 bg-background">
-        {leftActive && <View className="w-[6px] bg-muted-foreground" />}
-        <View className="flex-1 bg-transparent" />
-        {!leftActive && <View className="w-[6px] bg-muted-foreground" />}
-      </View>
-    </Pressable>
-  )
-}
-
-/**
- * Persistent Workspace Trust badge for external (folder-linked) projects.
- * Restricted → amber shield + "Restricted"; trusted → emerald shield +
- * "Trusted". Tapping flips the trust level via `onToggle`.
- */
-function TrustBadge({
-  trustLevel,
-  onToggle,
-  busy,
-  compact,
-}: {
-  trustLevel: 'restricted' | 'trusted'
-  onToggle: () => void
-  busy?: boolean
-  compact?: boolean
-}) {
-  const restricted = trustLevel === 'restricted'
-  const Icon = restricted ? ShieldAlert : ShieldCheck
-  const label = restricted ? 'Restricted' : 'Trusted'
-  const tip = restricted
-    ? 'Workspace is restricted — tap to trust this folder (enables edits and shell)'
-    : 'Workspace is trusted — tap to restrict (blocks edits and shell)'
-  const tipRef = useWebTitle(tip)
-
-  if (compact) {
-    return (
-      <Pressable
-        ref={tipRef}
-        onPress={onToggle}
-        disabled={busy}
-        className={cn(
-          'h-6 w-6 items-center justify-center rounded-md',
-          busy ? 'opacity-60' : 'active:bg-muted',
-        )}
-        accessibilityLabel={tip}
-      >
-        <Icon size={13} className={restricted ? 'text-amber-500' : 'text-emerald-500'} />
-      </Pressable>
-    )
-  }
-
-  return (
-    <Pressable
-      ref={tipRef}
-      onPress={onToggle}
-      disabled={busy}
-      className={cn(
-        'h-7 flex-row items-center gap-1 px-2 rounded-md border',
-        restricted ? 'border-amber-400/50' : 'border-emerald-400/40',
-        busy ? 'opacity-60' : 'active:bg-muted',
-      )}
-      accessibilityLabel={tip}
-    >
-      <Icon size={12} className={restricted ? 'text-amber-500' : 'text-emerald-500'} />
-      <Text
-        className={cn(
-          'text-[10px] font-medium',
-          restricted ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400',
-        )}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  )
 }
 
 export function ProjectTopBar({
@@ -589,7 +142,7 @@ export function ProjectTopBar({
 }: ProjectTopBarProps) {
   const router = useRouter()
   const { width, height } = useWindowDimensions()
-  const isWide = width >= 768
+  const isWide = width >= WEB_WIDE_MIN_WIDTH
   const isNativePhone = isPhoneLayout(width, height)
   const [showDropdown, setShowDropdown] = useState(false)
   const [dropdownKey, setDropdownKey] = useState(0)
@@ -599,6 +152,25 @@ export function ProjectTopBar({
   const [chatMoreOpen, setChatMoreOpen] = useState(false)
   const [chatRenameOpen, setChatRenameOpen] = useState(false)
   const [chatRenameValue, setChatRenameValue] = useState('')
+
+  const overlayState: TopBarOverlayState = {
+    showDropdown,
+    setShowDropdown,
+    dropdownKey,
+    setDropdownKey,
+    showProjectSheet,
+    setShowProjectSheet,
+    showTabsSheet,
+    setShowTabsSheet,
+    showNarrowMore,
+    setShowNarrowMore,
+    chatMoreOpen,
+    setChatMoreOpen,
+    chatRenameOpen,
+    setChatRenameOpen,
+    chatRenameValue,
+    setChatRenameValue,
+  };
 
   const handleBack = useCallback(() => {
     router.push('/(app)' as any)
@@ -641,7 +213,7 @@ export function ProjectTopBar({
   const showTrustBadge =
     workingMode === 'external' && !!trustLevel && typeof onToggleTrust === 'function'
 
-  const visibleTabs = AGENT_TABS.filter(tab =>
+  const visibleTabs = AGENT_TABS.filter((tab) =>
     ideEmbed ? tab.id === 'chat-fullscreen' : !hiddenTabs.includes(tab.id),
   )
   // Every remaining tab is primary now that secondary controls live behind
@@ -657,10 +229,11 @@ export function ProjectTopBar({
     'plans',
     'settings',
   ])
-  const narrowPrimaryTabs = visibleTabs.filter(t => narrowPrimaryIds.has(t.id))
-  const narrowOverflowTabs = visibleTabs.filter(t => !narrowPrimaryIds.has(t.id))
+  const narrowPrimaryTabs = visibleTabs.filter((t) => narrowPrimaryIds.has(t.id))
+  const narrowOverflowTabs = visibleTabs.filter(
+    (t) => !narrowPrimaryIds.has(t.id))
   const narrowMoreItems = [
-    ...narrowOverflowTabs.map(t => ({ id: t.id, label: t.label })),
+    ...narrowOverflowTabs.map((t) => ({ id: t.id, label: t.label })),
     ...(!hasActiveSubscription && !isNativePhone ? [{ id: '_upgrade', label: 'Upgrade' }] : []),
   ]
 
@@ -686,7 +259,8 @@ export function ProjectTopBar({
   }, [onNarrowTabChange, narrowActiveTab, narrowPreviewTab, activeTab])
 
   const showIdeAlignmentControl = Platform.OS === 'web' && getTabActive('ide') && !!onIdePrimarySideBarPositionChange
-  const nextIdePrimarySideBarPosition: IdePrimarySideBarPosition = idePrimarySideBarPosition === 'left' ? 'right' : 'left'
+  const nextIdePrimarySideBarPosition: IdePrimarySideBarPosition =
+    nextIdeAlignment(idePrimarySideBarPosition)
   const renderIdeAlignmentControl = () => {
     if (!showIdeAlignmentControl) return null
     return (
@@ -699,7 +273,35 @@ export function ProjectTopBar({
   }
 
   const chatPanelWidth = chatPanelWidthProp ?? 480
-  const narrowNativeMenuW = Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
+  const narrowNativeMenuW =
+    Platform.OS !== 'web' ? narrowProjectDropdownWidth(width) : null
+
+  const projectMenu = (
+    <ProjectDropdownContent
+      key={overlayState.dropdownKey}
+      variant="sheet"
+      projects={projects}
+      currentProjectId={projectId}
+      projectName={projectName}
+      onSelect={handleProjectSelect}
+      onGoToDashboard={handleBack}
+      onClose={() => overlayState.setShowProjectSheet(false)}
+      workspaceName={workspaceName}
+      planLabel={planLabel}
+      usageWindows={usageWindows}
+      usageOverage={usageOverage}
+      ownerName={ownerName}
+      projectCreatedAt={projectCreatedAt}
+      projectModifiedAt={projectModifiedAt}
+      isStarred={isStarred}
+      onRenameProject={onRenameProject}
+      onToggleStar={onToggleStar}
+      onMoveToFolder={onMoveToFolder}
+      folders={folders}
+      canvasThemeSupported={canvasThemeSupported}
+      overlayState={overlayState}
+    />
+  )
 
   if (ideEmbed) {
     return (
@@ -712,7 +314,11 @@ export function ProjectTopBar({
         }
       >
         <View className="px-1.5 py-0.5 max-w-[180px]">
-          <Text className="text-xs font-semibold text-foreground" numberOfLines={1} ellipsizeMode="tail">
+          <Text
+            className="text-xs font-semibold text-foreground"
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
             {projectName}
           </Text>
         </View>
@@ -731,211 +337,23 @@ export function ProjectTopBar({
 
   if (!isWide) {
     if (isNativePhone) {
-      const onChat = narrowActiveTab === 'chat'
-      const showChatMoreCluster = !onChat
-      const leftChrome = NATIVE_HEADER_PAD_X + NATIVE_PHONE_CONTROL_SIZE
-      const rightChrome =
-        NATIVE_HEADER_PAD_X +
-        (showChatMoreCluster ? NATIVE_CLUSTER_WIDTH : NATIVE_PHONE_CONTROL_SIZE) +
-        (showTrustBadge ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0)
-      const titleInset = Math.max(leftChrome, rightChrome)
-      const projectMenu = (
-        <ProjectDropdownContent
-          key={dropdownKey}
-          variant="sheet"
-          sheetVisible={showProjectSheet}
-          projects={projects}
-          currentProjectId={projectId}
-          projectName={projectName}
-          onSelect={handleProjectSelect}
-          onGoToDashboard={handleBack}
-          onClose={() => setShowProjectSheet(false)}
-          workspaceName={workspaceName}
-          planLabel={planLabel}
-          usageWindows={usageWindows}
-          usageOverage={usageOverage}
-          ownerName={ownerName}
-          projectCreatedAt={projectCreatedAt}
-          projectModifiedAt={projectModifiedAt}
-          isStarred={isStarred}
-          onRenameProject={onRenameProject}
-          onToggleStar={onToggleStar}
-          onMoveToFolder={onMoveToFolder}
-          folders={folders}
-          canvasThemeSupported={canvasThemeSupported}
-        />
-      )
       return (
-        <>
-          <View
-            className="bg-background"
-            testID="project-native-header"
-            style={{
-              paddingTop: NATIVE_HEADER_PAD_TOP,
-              paddingBottom: NATIVE_HEADER_PAD_BOTTOM,
-            }}
-          >
-            <Pressable
-              onPress={() => {
-                setDropdownKey((k) => k + 1)
-                setShowProjectSheet(true)
-              }}
-              className="absolute items-center justify-center"
-              style={{
-                top: NATIVE_HEADER_PAD_TOP,
-                height: NATIVE_PHONE_CONTROL_SIZE,
-                left: 0,
-                right: 0,
-                paddingHorizontal: titleInset,
-              }}
-              accessibilityLabel={`${projectName}. Project options`}
-              accessibilityRole="button"
-              testID="project-switcher-trigger"
-            >
-              <Text
-                className="text-[17px] font-semibold text-foreground text-center"
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {projectName}
-              </Text>
-            </Pressable>
-            <View
-              className="flex-row items-center justify-between"
-              pointerEvents="box-none"
-              style={{
-                height: NATIVE_PHONE_CONTROL_SIZE,
-                paddingHorizontal: NATIVE_HEADER_PAD_X,
-                zIndex: 2,
-              }}
-            >
-              <NativeCircleButton
-                icon={ChevronLeft}
-                onPress={handleBack}
-                accessibilityLabel="Back to home"
-                testID="project-native-back"
-              />
-              <View className="flex-row items-center gap-2">
-                {showTrustBadge && (
-                  <TrustBadge
-                    trustLevel={trustLevel!}
-                    onToggle={onToggleTrust!}
-                    busy={trustBusy}
-                    compact
-                  />
-                )}
-                {showChatMoreCluster ? (
-                  <View
-                    className="flex-row items-center rounded-full bg-muted"
-                    testID="project-native-chat-more-cluster"
-                    style={{
-                      height: NATIVE_PHONE_CONTROL_SIZE,
-                      paddingHorizontal: NATIVE_CLUSTER_PAD_X,
-                    }}
-                  >
-                    <NativeClusterIcon
-                      icon={MessageSquare}
-                      onPress={() => handleTabPress('chat-fullscreen')}
-                      accessibilityLabel="Chat"
-                      testID="project-native-chat"
-                    />
-                    <NativeClusterIcon
-                      icon={MoreHorizontal}
-                      onPress={() => setShowTabsSheet(true)}
-                      accessibilityLabel="Project tabs"
-                      testID="project-native-more"
-                    />
-                  </View>
-                ) : (
-                  <NativeCircleButton
-                    icon={MoreHorizontal}
-                    onPress={() => setShowTabsSheet(true)}
-                    accessibilityLabel="Project tabs"
-                    testID="project-native-more"
-                  />
-                )}
-              </View>
-            </View>
-          </View>
-
-          <NativeBottomSheet
-            visible={showTabsSheet}
-            onClose={() => setShowTabsSheet(false)}
-            maxHeightFraction={0.62}
-          >
-            <View className="flex-row items-center px-4 pb-2">
-              <NativeCircleButton
-                icon={X}
-                onPress={() => setShowTabsSheet(false)}
-                accessibilityLabel="Close"
-              />
-            </View>
-            <ScrollView
-              bounces={false}
-              keyboardShouldPersistTaps="handled"
-              className="px-2"
-            >
-              {narrowPrimaryTabs.filter((tab) => tab.id !== 'chat-fullscreen').map((tab) => {
-                const Icon = tab.icon
-                const active = getTabActive(tab.id)
-                return (
-                  <Pressable
-                    key={tab.id}
-                    onPress={() => {
-                      handleTabPress(tab.id)
-                      setShowTabsSheet(false)
-                    }}
-                    className={cn(
-                      'flex-row items-center gap-3 rounded-2xl px-3 py-3.5 min-h-14',
-                      active ? 'bg-muted' : 'active:bg-muted/60',
-                    )}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active }}
-                    accessibilityLabel={tab.label}
-                  >
-                    <View className={cn(
-                      'h-10 w-10 items-center justify-center rounded-full',
-                      active ? 'bg-primary' : 'bg-background',
-                    )}>
-                      <Icon
-                        size={20}
-                        className={active ? 'text-primary-foreground' : 'text-foreground'}
-                      />
-                    </View>
-                    <Text className={cn(
-                      'flex-1 text-base',
-                      active ? 'font-semibold text-foreground' : 'text-foreground',
-                    )}>
-                      {tab.label}
-                    </Text>
-                    {active ? <Check size={18} className="text-primary" /> : null}
-                  </Pressable>
-                )
-              })}
-              {onOpenChatSessions ? (
-                <Pressable
-                  onPress={() => {
-                    setShowTabsSheet(false)
-                    if (!onChat) handleTabPress('chat-fullscreen')
-                    onOpenChatSessions()
-                  }}
-                  className={cn(
-                    'flex-row items-center gap-3 rounded-2xl px-3 py-3.5 min-h-14',
-                    chatSessionsOpen ? 'bg-muted' : 'active:bg-muted/60',
-                  )}
-                  accessibilityLabel={chatSessionsOpen ? 'Hide chat history' : 'Chat history'}
-                >
-                  <View className="h-10 w-10 items-center justify-center rounded-full bg-background">
-                    <History size={20} className="text-foreground" />
-                  </View>
-                  <Text className="flex-1 text-base text-foreground">Chat history</Text>
-                </Pressable>
-              ) : null}
-            </ScrollView>
-          </NativeBottomSheet>
-
-          {projectMenu}
-        </>
+        <NativePhoneHeader
+          projectName={projectName}
+          projectMenu={projectMenu}
+          onBack={handleBack}
+          showTrustBadge={showTrustBadge}
+          trustLevel={trustLevel}
+          onToggleTrust={onToggleTrust}
+          trustBusy={trustBusy}
+          narrowActiveTab={narrowActiveTab}
+          narrowPrimaryTabs={narrowPrimaryTabs}
+          getTabActive={getTabActive}
+          handleTabPress={handleTabPress}
+          onOpenChatSessions={onOpenChatSessions}
+          chatSessionsOpen={chatSessionsOpen}
+          overlayState={overlayState}
+        />
       )
     }
 
@@ -960,9 +378,12 @@ export function ProjectTopBar({
             <Popover
               placement="bottom"
               size="md"
-              isOpen={showDropdown}
-              onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
-              onClose={() => setShowDropdown(false)}
+              isOpen={overlayState.showDropdown}
+              onOpen={() => {
+                overlayState.setShowDropdown(true)
+                overlayState.setDropdownKey((k) => k + 1)
+              }}
+              onClose={() => overlayState.setShowDropdown(false)}
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
@@ -1013,13 +434,13 @@ export function ProjectTopBar({
                   contentContainerStyle={Platform.OS !== 'web' ? { paddingBottom: 8 } : undefined}
                 >
                   <ProjectDropdownContent
-                    key={dropdownKey}
+                    key={overlayState.dropdownKey}
                     projects={projects}
                     currentProjectId={projectId}
                     projectName={projectName}
                     onSelect={handleProjectSelect}
                     onGoToDashboard={handleBack}
-                    onClose={() => setShowDropdown(false)}
+                    onClose={() => overlayState.setShowDropdown(false)}
                     workspaceName={workspaceName}
                     planLabel={planLabel}
                     usageWindows={usageWindows}
@@ -1033,6 +454,7 @@ export function ProjectTopBar({
                     onMoveToFolder={onMoveToFolder}
                     folders={folders}
                     canvasThemeSupported={canvasThemeSupported}
+                    overlayState={overlayState}
                   />
                 </PopoverBody>
               </PopoverContent>
@@ -1079,16 +501,16 @@ export function ProjectTopBar({
         {narrowMoreItems.length > 0 && (
           <Popover
             placement="bottom right"
-            isOpen={showNarrowMore}
-            onOpen={() => setShowNarrowMore(true)}
-            onClose={() => setShowNarrowMore(false)}
+            isOpen={overlayState.showNarrowMore}
+            onOpen={() => overlayState.setShowNarrowMore(true)}
+            onClose={() => overlayState.setShowNarrowMore(false)}
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
                 className={cn(
                   'items-center justify-center rounded-md',
                   Platform.OS !== 'web' ? 'h-9 w-9' : 'h-7 w-7',
-                  showNarrowMore ? 'bg-muted' : 'active:bg-muted',
+                  overlayState.showNarrowMore ? 'bg-muted' : 'active:bg-muted',
                 )}
                 accessibilityLabel="More options"
               >
@@ -1109,7 +531,7 @@ export function ProjectTopBar({
                         onNarrowTabChange?.('canvas')
                         onTabChange?.(item.id)
                       }
-                      setShowNarrowMore(false)
+                      overlayState.setShowNarrowMore(false)
                     }}
                     className={cn(
                       'px-4 py-3 active:bg-muted',
@@ -1168,9 +590,12 @@ export function ProjectTopBar({
               <Popover
                 placement="bottom"
                 size="md"
-                isOpen={showDropdown}
-                onOpen={() => { setShowDropdown(true); setDropdownKey((k) => k + 1) }}
-                onClose={() => setShowDropdown(false)}
+                isOpen={overlayState.showDropdown}
+                onOpen={() => {
+                  overlayState.setShowDropdown(true)
+                  overlayState.setDropdownKey((k) => k + 1)
+                }}
+                onClose={() => overlayState.setShowDropdown(false)}
                 trigger={(triggerProps) => (
                   <Pressable
                     {...triggerProps}
@@ -1201,13 +626,13 @@ export function ProjectTopBar({
                 <PopoverContent className="max-w-[340px] w-[320px] p-0">
                   <PopoverBody>
                     <ProjectDropdownContent
-                      key={dropdownKey}
+                      key={overlayState.dropdownKey}
                       projects={projects}
                       currentProjectId={projectId}
                       projectName={projectName}
                       onSelect={handleProjectSelect}
                       onGoToDashboard={handleBack}
-                      onClose={() => setShowDropdown(false)}
+                      onClose={() => overlayState.setShowDropdown(false)}
                       workspaceName={workspaceName}
                       planLabel={planLabel}
                       usageWindows={usageWindows}
@@ -1221,6 +646,7 @@ export function ProjectTopBar({
                       onMoveToFolder={onMoveToFolder}
                       folders={folders}
                       canvasThemeSupported={canvasThemeSupported}
+                      overlayState={overlayState}
                     />
                   </PopoverBody>
                 </PopoverContent>
@@ -1244,16 +670,16 @@ export function ProjectTopBar({
           <Popover
             placement="bottom right"
             size="sm"
-            isOpen={chatMoreOpen}
-            onOpen={() => setChatMoreOpen(true)}
-            onClose={() => setChatMoreOpen(false)}
+            isOpen={overlayState.chatMoreOpen}
+            onOpen={() => overlayState.setChatMoreOpen(true)}
+            onClose={() => overlayState.setChatMoreOpen(false)}
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
-                onPress={() => setChatMoreOpen((o) => !o)}
+                onPress={() => overlayState.setChatMoreOpen((o) => !o)}
                 className="h-7 w-7 items-center justify-center rounded-md active:bg-muted"
                 accessibilityLabel="More options"
-                accessibilityState={{ expanded: chatMoreOpen }}
+                accessibilityState={{ expanded: overlayState.chatMoreOpen }}
               >
                 <MoreHorizontal size={14} className="text-muted-foreground" />
               </Pressable>
@@ -1265,9 +691,9 @@ export function ProjectTopBar({
                 {onRenameChat && (
                   <Pressable
                     onPress={() => {
-                      setChatMoreOpen(false)
-                      setChatRenameValue(activeChatSessionName ?? '')
-                      setChatRenameOpen(true)
+                      overlayState.setChatMoreOpen(false)
+                      overlayState.setChatRenameValue(activeChatSessionName ?? '')
+                      overlayState.setChatRenameOpen(true)
                     }}
                     disabled={!activeChatSessionId}
                     className="flex-row items-center gap-2 px-3 py-2 active:bg-muted"
@@ -1279,7 +705,7 @@ export function ProjectTopBar({
                 {onDeleteChat && (
                   <Pressable
                     onPress={() => {
-                      setChatMoreOpen(false)
+                      overlayState.setChatMoreOpen(false)
                       if (activeChatSessionId) {
                         void onDeleteChat(activeChatSessionId)
                       }
@@ -1436,962 +862,12 @@ export function ProjectTopBar({
 
       {/* Rename chat modal (fullscreen chat mode) */}
       <RenameChatModal
-        visible={chatRenameOpen}
-        currentName={chatRenameValue}
-        onChangeName={setChatRenameValue}
-        onClose={() => setChatRenameOpen(false)}
+        visible={overlayState.chatRenameOpen}
+        currentName={overlayState.chatRenameValue}
+        onChangeName={overlayState.setChatRenameValue}
+        onClose={() => overlayState.setChatRenameOpen(false)}
         onSave={() => void handleSaveChatRename()}
       />
     </View>
-  )
-}
-
-function RenameChatModal({
-  visible,
-  currentName,
-  onChangeName,
-  onClose,
-  onSave,
-}: {
-  visible: boolean
-  currentName: string
-  onChangeName: (v: string) => void
-  onClose: () => void
-  onSave: () => void
-}) {
-  return (
-    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={onClose}>
-      <Pressable onPress={onClose} className="flex-1 bg-black/50 items-center justify-center px-6">
-        <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
-          <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Rename chat</Text>
-            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
-              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-          <View className="px-5 pb-4">
-            <TextInput
-              value={currentName}
-              onChangeText={onChangeName}
-              placeholder="Chat name"
-              placeholderTextColor="#9ca3af"
-              className={Platform.OS === 'web' ? "border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none" : "min-h-12 border border-border rounded-lg px-3 py-3 text-base text-foreground"}
-              autoFocus
-              selectTextOnFocus
-            />
-          </View>
-          <View className="px-5 pb-5 flex-row justify-end gap-2">
-            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "px-4 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-4 py-2 rounded-lg border border-border active:bg-muted justify-center"}>
-              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={onSave}
-              className={cn('px-4 py-2 rounded-lg justify-center', Platform.OS !== 'web' && 'min-h-11', currentName.trim() ? 'bg-primary active:opacity-80' : 'bg-muted')}
-            >
-              <Text className={cn(Platform.OS === 'web' ? 'text-sm font-medium' : 'text-base font-medium', currentName.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                Save
-              </Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Lovable-style two-panel dropdown (Menu + Project Switcher)
-// ---------------------------------------------------------------------------
-
-type DropdownView = 'menu' | 'switcher'
-
-function ProjectDropdownContent({
-  projects,
-  currentProjectId,
-  projectName,
-  onSelect,
-  onGoToDashboard,
-  onClose,
-  workspaceName,
-  planLabel,
-  usageWindows,
-  usageOverage,
-  ownerName,
-  projectCreatedAt,
-  projectModifiedAt,
-  isStarred,
-  onRenameProject,
-  onToggleStar,
-  onMoveToFolder,
-  folders,
-  canvasThemeSupported,
-  variant = 'popover',
-  sheetVisible = false,
-}: {
-  projects: ProjectSwitcherItem[]
-  currentProjectId: string
-  projectName: string
-  onSelect: (projectId: string) => void
-  onGoToDashboard: () => void
-  onClose: () => void
-  workspaceName: string
-  planLabel: string
-  usageWindows?: UsageWindows
-  usageOverage?: UsageOverageContext
-  ownerName: string
-  projectCreatedAt?: string | number
-  projectModifiedAt?: string | number
-  isStarred: boolean
-  onRenameProject?: (newName: string) => void
-  onToggleStar?: () => void
-  onMoveToFolder?: (folderId: string | null) => void
-  folders: { id: string; name: string }[]
-  canvasThemeSupported?: boolean | null
-  variant?: 'popover' | 'sheet'
-  sheetVisible?: boolean
-}) {
-  const [view, setView] = useState<DropdownView>('menu')
-  const router = useRouter()
-  const [showDetailsModal, setShowDetailsModal] = useState(false)
-  const [showRenameModal, setShowRenameModal] = useState(false)
-  const [showMoveModal, setShowMoveModal] = useState(false)
-  const [showExportModal, setShowExportModal] = useState(false)
-  const [isExporting, setIsExporting] = useState(false)
-  const isSheet = variant === 'sheet'
-
-  const presentOverlay = useCallback((open: () => void) => {
-    if (!isSheet) {
-      open()
-      return
-    }
-    onClose()
-    setTimeout(open, 320)
-  }, [isSheet, onClose])
-
-  const runExport = useCallback(async (options: {
-    includeChats: boolean
-    password?: string
-  }) => {
-    if (isExporting) return
-    setIsExporting(true)
-    try {
-      const { blob, filename } = await api.exportProjectBlob(currentProjectId, {
-        includeChats: options.includeChats,
-        password: options.password,
-      })
-
-      if (Platform.OS === 'web' && typeof document !== 'undefined') {
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = filename
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-      } else if (Platform.OS !== 'web') {
-        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
-        const Sharing = await import('expo-sharing')
-        const dir = documentDirectory
-        if (!dir) throw new Error('Could not access app storage')
-        const fileUri = `${dir}${filename}`
-        const arrayBuf = await blob.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuf)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
-        await Sharing.shareAsync(fileUri, {
-          mimeType: 'application/zip',
-          UTI: 'public.zip-archive' as any,
-          dialogTitle: 'Export Project',
-        })
-      }
-      setShowExportModal(false)
-      onClose()
-    } catch (err: any) {
-      console.error('[ProjectTopBar] Export failed:', err)
-      setShowExportModal(false)
-      if (Platform.OS !== 'web') {
-        const { Alert } = await import('react-native')
-        Alert.alert('Export Failed', err.message || 'Failed to export project')
-      } else if (typeof window !== 'undefined') {
-        window.alert(`Export Failed: ${err?.message || 'Failed to export project'}`)
-      }
-    } finally {
-      setIsExporting(false)
-    }
-  }, [currentProjectId, isExporting, onClose])
-
-  const menu = (
-    <ProjectMenuView
-      projectId={currentProjectId}
-      projectName={projectName}
-      workspaceName={workspaceName}
-      planLabel={planLabel}
-      usageWindows={usageWindows}
-      usageOverage={usageOverage}
-      onGoToDashboard={onGoToDashboard}
-      onSwitchProject={() => setView('switcher')}
-      onClose={onClose}
-      router={router}
-      ownerName={ownerName}
-      projectCreatedAt={projectCreatedAt}
-      projectModifiedAt={projectModifiedAt}
-      isStarred={isStarred}
-      onRenameProject={onRenameProject}
-      onToggleStar={onToggleStar}
-      onMoveToFolder={onMoveToFolder}
-      folders={folders}
-      canvasThemeSupported={canvasThemeSupported}
-      variant={variant}
-      isExporting={isExporting}
-      onRequestRename={() => presentOverlay(() => setShowRenameModal(true))}
-      onRequestExport={() => presentOverlay(() => setShowExportModal(true))}
-      onRequestDetails={() => presentOverlay(() => setShowDetailsModal(true))}
-      onRequestMove={() => presentOverlay(() => setShowMoveModal(true))}
-    />
-  )
-
-  const body = view === 'switcher' ? (
-    <ProjectSwitcherView
-      projects={projects}
-      currentProjectId={currentProjectId}
-      onSelect={onSelect}
-      onGoToDashboard={onGoToDashboard}
-      onBack={() => setView('menu')}
-    />
-  ) : menu
-
-  const overlays = (
-    <>
-      <ProjectDetailsModal
-        visible={showDetailsModal}
-        onClose={() => setShowDetailsModal(false)}
-        projectName={projectName}
-        workspaceName={workspaceName}
-        ownerName={ownerName}
-        createdAt={projectCreatedAt}
-        modifiedAt={projectModifiedAt}
-      />
-      <RenameProjectModal
-        visible={showRenameModal}
-        currentName={projectName}
-        onClose={() => setShowRenameModal(false)}
-        onRename={(newName) => {
-          onRenameProject?.(newName)
-          setShowRenameModal(false)
-          onClose()
-        }}
-      />
-      <MoveToFolderModal
-        visible={showMoveModal}
-        folders={folders}
-        onClose={() => setShowMoveModal(false)}
-        onMove={(folderId) => {
-          onMoveToFolder?.(folderId)
-          setShowMoveModal(false)
-          onClose()
-        }}
-      />
-      <ProjectExportModal
-        open={showExportModal}
-        onOpenChange={(o) => { if (!isExporting) setShowExportModal(o) }}
-        isExporting={isExporting}
-        onExport={runExport}
-      />
-    </>
-  )
-
-  if (isSheet) {
-    return (
-      <>
-        <NativeBottomSheet visible={sheetVisible} onClose={onClose}>
-          <View className="flex-row items-center px-4 pb-1">
-            <NativeCircleButton
-              icon={X}
-              onPress={onClose}
-              accessibilityLabel="Close"
-            />
-          </View>
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-          >
-            {body}
-          </ScrollView>
-        </NativeBottomSheet>
-        {overlays}
-      </>
-    )
-  }
-
-  return (
-    <>
-      {body}
-      {overlays}
-    </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Panel 1: Main Menu (Lovable Screenshot 1)
-// ---------------------------------------------------------------------------
-
-function ProjectMenuView({
-  projectId,
-  projectName,
-  workspaceName,
-  planLabel,
-  usageWindows,
-  usageOverage,
-  onGoToDashboard,
-  onSwitchProject,
-  onClose,
-  router,
-  ownerName,
-  projectCreatedAt,
-  projectModifiedAt,
-  isStarred,
-  onRenameProject,
-  onToggleStar,
-  onMoveToFolder,
-  folders,
-  canvasThemeSupported,
-  variant = 'popover',
-  isExporting = false,
-  onRequestRename,
-  onRequestExport,
-  onRequestDetails,
-  onRequestMove,
-}: {
-  projectId: string
-  projectName: string
-  workspaceName: string
-  planLabel: string
-  usageWindows?: UsageWindows
-  usageOverage?: UsageOverageContext
-  onGoToDashboard: () => void
-  onSwitchProject: () => void
-  onClose: () => void
-  router: any
-  ownerName: string
-  projectCreatedAt?: string | number
-  projectModifiedAt?: string | number
-  isStarred: boolean
-  onRenameProject?: (newName: string) => void
-  onToggleStar?: () => void
-  onMoveToFolder?: (folderId: string | null) => void
-  folders: { id: string; name: string }[]
-  canvasThemeSupported?: boolean | null
-  variant?: 'popover' | 'sheet'
-  isExporting?: boolean
-  onRequestRename: () => void
-  onRequestExport: () => void
-  onRequestDetails: () => void
-  onRequestMove: () => void
-}) {
-  const isNative = Platform.OS !== 'web'
-  const { features } = usePlatformConfig()
-  const showBilling = features.billing
-
-  const menuItems: {
-    id: string
-    icon: React.ElementType
-    label: string
-    onPress: () => void
-    trailing?: React.ReactNode
-  }[] = [
-    {
-      id: 'settings',
-      icon: Settings,
-      label: 'Settings',
-      onPress: () => { onClose(); router.push('/(app)/settings' as any) },
-      trailing: (
-        <Text className="text-[11px] text-muted-foreground font-mono">
-          {Platform.OS === 'web' ? '\u2318.' : ''}
-        </Text>
-      ),
-    },
-    {
-      id: 'rename',
-      icon: Pencil,
-      label: 'Rename project',
-      onPress: onRequestRename,
-    },
-    {
-      id: 'star',
-      icon: Star,
-      label: isStarred ? 'Unstar project' : 'Star project',
-      onPress: () => { onToggleStar?.(); onClose() },
-    },
-    {
-      id: 'move',
-      icon: FolderInput,
-      label: 'Move to folder',
-      onPress: onRequestMove,
-    },
-    {
-      id: 'details',
-      icon: Info,
-      label: 'Details',
-      onPress: onRequestDetails,
-    },
-    {
-      id: 'export',
-      icon: Upload,
-      label: isExporting ? 'Exporting...' : 'Export project',
-      onPress: onRequestExport,
-    },
-  ]
-
-  const isSheet = variant === 'sheet'
-  const visibleMenuItems = isSheet
-    ? menuItems.filter((item) => item.id !== 'rename' && item.id !== 'star' && item.id !== 'export')
-    : menuItems
-
-  return (
-    <>
-      <View>
-        {isSheet ? (
-          <>
-            <Text className="px-5 pt-1 pb-3 text-xl font-semibold text-foreground" numberOfLines={2}>
-              {projectName}
-            </Text>
-            <View className="flex-row items-center gap-4 px-5 pb-4">
-              <NativeSheetCircleAction
-                icon={Pencil}
-                label="Rename"
-                onPress={onRequestRename}
-              />
-              <NativeSheetCircleAction
-                icon={Star}
-                label={isStarred ? 'Unstar' : 'Star'}
-                onPress={() => { onToggleStar?.() }}
-                active={isStarred}
-              />
-              <NativeSheetCircleAction
-                icon={Share2}
-                label="Export"
-                onPress={onRequestExport}
-              />
-            </View>
-          </>
-        ) : (
-          <Pressable
-            onPress={onGoToDashboard}
-            className={cn('flex-row items-center gap-2 px-4 active:bg-muted border-b border-border', isNative ? 'min-h-12 py-3' : 'py-3')}
-          >
-            <ChevronLeft size={isNative ? 20 : 16} className="text-muted-foreground" />
-            <Text className={isNative ? "text-base font-medium text-foreground" : "text-sm font-medium text-foreground"}>Go to Dashboard</Text>
-          </Pressable>
-        )}
-
-        {/* Workspace info + plan badge */}
-        <Pressable
-          onPress={onSwitchProject}
-          className={cn('px-4 active:bg-muted', isNative ? 'py-4' : 'py-3')}
-          testID="project-switcher-open"
-        >
-          <View className="flex-row items-center gap-2.5">
-            <View className={cn('rounded-lg bg-primary items-center justify-center', isNative ? 'h-10 w-10' : 'h-8 w-8')}>
-              <Text className={isNative ? "text-sm font-bold text-primary-foreground" : "text-xs font-bold text-primary-foreground"}>
-                {(workspaceName || 'W')[0]?.toUpperCase()}
-              </Text>
-            </View>
-            <View className="flex-1 min-w-0">
-              <View className="flex-row items-center gap-2">
-                <Text className={isNative ? "text-base font-semibold text-foreground" : "text-sm font-semibold text-foreground"} numberOfLines={1}>
-                  {workspaceName || 'Workspace'}
-                </Text>
-                {showBilling && (
-                  <Badge variant="secondary" className="px-1.5 py-0">
-                    <Text className="text-[10px] font-semibold text-secondary-foreground uppercase">
-                      {planLabel}
-                    </Text>
-                  </Badge>
-                )}
-              </View>
-            </View>
-            {isSheet ? <ChevronRight size={18} className="text-muted-foreground" /> : null}
-          </View>
-        </Pressable>
-
-        {showBilling && (
-          <View className="px-4 pb-3">
-            <View className={cn('border border-border rounded-lg p-3 gap-2.5', isSheet ? 'bg-muted' : 'bg-card')}>
-              <Pressable
-                onPress={() => { onClose(); router.push('/(app)/billing' as any) }}
-                className="flex-row items-center justify-between"
-              >
-                <Text className="text-sm font-medium text-foreground">Usage</Text>
-                <ChevronRight size={14} className="text-muted-foreground" />
-              </Pressable>
-              <CompactUsageWindows windows={usageWindows} overage={usageOverage} />
-            </View>
-          </View>
-        )}
-
-        {/* Divider */}
-        <View className="h-px bg-border mx-3 my-1" />
-
-        {/* Menu items */}
-        {visibleMenuItems.map((item) => {
-          const Icon = item.icon
-          return (
-            <Pressable
-              key={item.id}
-              onPress={item.onPress}
-              className={cn('flex-row items-center gap-3 px-4 active:bg-muted', isNative ? 'min-h-12 py-3' : 'py-2.5')}
-            >
-              <Icon size={isNative ? 20 : 16} className="text-muted-foreground" />
-              <Text className={isNative ? "text-base text-foreground flex-1" : "text-sm text-foreground flex-1"}>{item.label}</Text>
-              {item.trailing}
-            </Pressable>
-          )
-        })}
-
-        {canvasThemeSupported !== false && (
-          <>
-            <View className="h-px bg-border mx-3 my-1" />
-            <AppearanceMenu inline={isSheet} />
-          </>
-        )}
-      </View>
-    </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Rename Project Modal
-// ---------------------------------------------------------------------------
-
-function RenameProjectModal({
-  visible,
-  currentName,
-  onClose,
-  onRename,
-}: {
-  visible: boolean
-  currentName: string
-  onClose: () => void
-  onRename: (newName: string) => void
-}) {
-  const [name, setName] = useState(currentName)
-
-  const handleClose = () => {
-    setName(currentName)
-    onClose()
-  }
-
-  const canSubmit = name.trim().length > 0 && name.trim() !== currentName
-
-  return (
-    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={handleClose}>
-      <Pressable onPress={handleClose} className="flex-1 bg-black/50 items-center justify-center px-6">
-        <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
-          <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Rename project</Text>
-            <Pressable onPress={handleClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
-              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-          <View className="px-5 pb-4">
-            <TextInput
-              value={name}
-              onChangeText={setName}
-              placeholder="Project name"
-              placeholderTextColor="#9ca3af"
-              className={Platform.OS === 'web' ? "border border-border rounded-lg px-3 py-2.5 text-sm text-foreground web:outline-none" : "min-h-12 border border-border rounded-lg px-3 py-3 text-base text-foreground"}
-              autoFocus
-              selectTextOnFocus
-            />
-          </View>
-          <View className="px-5 pb-5 flex-row justify-end gap-2">
-            <Pressable onPress={handleClose} className={Platform.OS === 'web' ? "px-4 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-4 py-2 rounded-lg border border-border active:bg-muted justify-center"}>
-              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => canSubmit && onRename(name.trim())}
-              className={cn('px-4 py-2 rounded-lg justify-center', Platform.OS !== 'web' && 'min-h-11', canSubmit ? 'bg-primary active:opacity-80' : 'bg-muted')}
-            >
-              <Text className={cn(Platform.OS === 'web' ? 'text-sm font-medium' : 'text-base font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                Rename
-              </Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Move to Folder Modal
-// ---------------------------------------------------------------------------
-
-function MoveToFolderModal({
-  visible,
-  folders,
-  onClose,
-  onMove,
-}: {
-  visible: boolean
-  folders: { id: string; name: string }[]
-  onClose: () => void
-  onMove: (folderId: string | null) => void
-}) {
-  return (
-    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={onClose}>
-      <Pressable onPress={onClose} className="flex-1 bg-black/50 items-center justify-center px-6">
-        <Pressable onPress={(e) => e.stopPropagation()} className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden">
-          <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Move to folder</Text>
-            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
-              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-          <ScrollView className={Platform.OS === 'web' ? "max-h-[240px] px-5 pb-2" : "max-h-[360px] px-5 pb-2"} showsVerticalScrollIndicator={Platform.OS !== 'web'} nestedScrollEnabled={Platform.OS !== 'web'}>
-            <Pressable
-              onPress={() => onMove(null)}
-              className={cn('flex-row items-center gap-3 px-3 py-3 rounded-lg active:bg-muted border border-border mb-2', Platform.OS !== 'web' && 'min-h-12')}
-            >
-              <FolderInput size={Platform.OS === 'web' ? 16 : 20} className="text-muted-foreground" />
-              <Text className={Platform.OS === 'web' ? "text-sm text-foreground" : "text-base text-foreground"}>Root (no folder)</Text>
-            </Pressable>
-            {folders.map((folder) => (
-              <Pressable
-                key={folder.id}
-                onPress={() => onMove(folder.id)}
-                className={cn('flex-row items-center gap-3 px-3 py-3 rounded-lg active:bg-muted border border-border mb-2', Platform.OS !== 'web' && 'min-h-12')}
-              >
-                <FolderInput size={Platform.OS === 'web' ? 16 : 20} className="text-muted-foreground" />
-                <Text className={Platform.OS === 'web' ? "text-sm text-foreground" : "text-base text-foreground"}>{folder.name}</Text>
-              </Pressable>
-            ))}
-            {folders.length === 0 && (
-              <View className="py-6 items-center">
-                <Text className="text-sm text-muted-foreground">No folders yet</Text>
-              </View>
-            )}
-          </ScrollView>
-          <View className="px-5 pt-2 pb-5 flex-row justify-end">
-            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "px-4 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-4 py-2 rounded-lg border border-border active:bg-muted justify-center"}>
-              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Cancel</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Appearance submenu — Popover adjacent to the Appearance row
-// ---------------------------------------------------------------------------
-
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-  { value: 'system', label: 'System' },
-]
-
-function AppearanceMenu({ inline = false }: { inline?: boolean }) {
-  const { theme, setTheme } = useTheme()
-  const [popoverOpen, setPopoverOpen] = useState(false)
-
-  if (inline) {
-    return (
-      <View>
-        <View className="flex-row items-center gap-3 px-4 py-3">
-          <SunMoon size={20} className="text-muted-foreground" />
-          <Text className="text-base text-foreground flex-1">Appearance</Text>
-        </View>
-        {THEME_OPTIONS.map(({ value, label }) => (
-          <Pressable
-            key={value}
-            onPress={() => setTheme(value)}
-            className="flex-row items-center min-h-12 gap-2 px-4 py-2.5 pl-14 active:bg-muted"
-          >
-            <Text
-              className={cn(
-                'text-base flex-1',
-                theme === value ? 'text-foreground font-medium' : 'text-muted-foreground',
-              )}
-            >
-              {label}
-            </Text>
-            {theme === value ? <Check size={18} className="text-primary flex-shrink-0" /> : null}
-          </Pressable>
-        ))}
-      </View>
-    )
-  }
-
-  return (
-    <Popover
-      placement={Platform.OS === 'web' ? 'right' : 'top'}
-      isOpen={popoverOpen}
-      onOpen={() => setPopoverOpen(true)}
-      onClose={() => setPopoverOpen(false)}
-      trigger={(triggerProps) => (
-        <Pressable
-          {...triggerProps}
-          className={cn('flex-row items-center gap-3 px-4 active:bg-muted', Platform.OS === 'web' ? 'py-2.5' : 'min-h-12 py-3')}
-        >
-          <SunMoon size={Platform.OS === 'web' ? 16 : 20} className="text-muted-foreground" />
-          <Text className={Platform.OS === 'web' ? "text-sm text-foreground flex-1" : "text-base text-foreground flex-1"}>Appearance</Text>
-          <ChevronRight size={Platform.OS === 'web' ? 14 : 18} className="text-muted-foreground" />
-        </Pressable>
-      )}
-    >
-      <PopoverBackdrop />
-      <PopoverContent
-        className={cn(
-          'p-0',
-          Platform.OS === 'web'
-            ? 'min-w-[160px]'
-            : 'min-w-0 w-[180px] max-w-[220px] shrink-0',
-        )}
-      >
-        <PopoverBody>
-          {THEME_OPTIONS.map(({ value, label }) => (
-            <Pressable
-              key={value}
-              onPress={() => { setTheme(value); setPopoverOpen(false) }}
-              className={cn(
-                'flex-row items-center active:bg-muted',
-                Platform.OS === 'web' ? 'gap-3 px-4 py-3' : 'min-h-12 gap-2 px-4 py-3',
-              )}
-            >
-              <Text
-                className={cn(
-                  Platform.OS === 'web' ? 'text-sm flex-1' : 'text-base flex-1',
-                  theme === value ? 'text-foreground font-medium' : 'text-foreground',
-                )}
-                numberOfLines={1}
-              >
-                {label}
-              </Text>
-              {theme === value && (
-                <Check size={Platform.OS === 'web' ? 16 : 18} className="text-foreground flex-shrink-0" />
-              )}
-            </Pressable>
-          ))}
-        </PopoverBody>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Project Details Modal (Lovable-style)
-// ---------------------------------------------------------------------------
-
-function ProjectDetailsModal({
-  visible,
-  onClose,
-  projectName,
-  workspaceName,
-  ownerName,
-  createdAt,
-  modifiedAt,
-}: {
-  visible: boolean
-  onClose: () => void
-  projectName: string
-  workspaceName: string
-  ownerName: string
-  createdAt?: string | number
-  modifiedAt?: string | number
-}) {
-  const formatDate = (d?: string | number) => {
-    if (!d) return '—'
-    const date = new Date(d)
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    })
-  }
-
-  const rows: { label: string; value: string }[] = [
-    { label: 'Location', value: projectName },
-    { label: 'Owner', value: ownerName || workspaceName || '—' },
-    { label: 'Modified', value: formatDate(modifiedAt) },
-    { label: 'Created', value: formatDate(createdAt) },
-  ]
-
-  return (
-    <Modal visible={visible} transparent animationType={Platform.OS === 'web' ? 'fade' : 'slide'} onRequestClose={onClose}>
-      <Pressable
-        onPress={onClose}
-        className="flex-1 bg-black/50 items-center justify-center px-6"
-      >
-        <Pressable
-          onPress={(e) => e.stopPropagation()}
-          className="bg-background rounded-xl w-full max-w-sm shadow-xl overflow-hidden"
-        >
-          {/* Header */}
-          <View className="flex-row items-center justify-between px-5 pt-5 pb-3">
-            <Text className={Platform.OS === 'web' ? "text-base font-semibold text-foreground" : "text-lg font-semibold text-foreground"}>Project details</Text>
-            <Pressable onPress={onClose} className={Platform.OS === 'web' ? "p-1 -mr-1 rounded-md active:bg-muted" : "h-10 w-10 -mr-2 items-center justify-center rounded-lg active:bg-muted"}>
-              <X size={Platform.OS === 'web' ? 18 : 20} className="text-muted-foreground" />
-            </Pressable>
-          </View>
-
-          {/* Detail rows */}
-          <ScrollView
-            className="px-5 pb-2"
-            style={{ maxHeight: 420 }}
-            showsVerticalScrollIndicator={Platform.OS !== 'web'}
-            nestedScrollEnabled={Platform.OS !== 'web'}
-          >
-            <View className="border border-border rounded-lg overflow-hidden">
-              {rows.map((row, idx) => (
-                <View
-                  key={row.label}
-                  className={cn(
-                    'flex-row items-center px-4 py-3',
-                    Platform.OS !== 'web' && 'min-h-12',
-                    idx < rows.length - 1 && 'border-b border-border',
-                  )}
-                >
-                  <Text className={Platform.OS === 'web' ? "text-sm text-muted-foreground w-24" : "text-base text-muted-foreground w-24"}>{row.label}</Text>
-                  <Text className={Platform.OS === 'web' ? "text-sm text-foreground flex-1" : "text-base text-foreground flex-1"} numberOfLines={1}>
-                    {row.value}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </ScrollView>
-
-          {/* Footer */}
-          <View className="px-5 pt-2 pb-5 flex-row justify-end">
-            <Pressable
-              onPress={onClose}
-              className={Platform.OS === 'web' ? "px-5 py-2 rounded-lg border border-border active:bg-muted" : "min-h-11 px-5 py-2 rounded-lg border border-border active:bg-muted justify-center"}
-            >
-              <Text className={Platform.OS === 'web' ? "text-sm font-medium text-foreground" : "text-base font-medium text-foreground"}>Close</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Panel 2: Project Switcher (Lovable Screenshot 2)
-// ---------------------------------------------------------------------------
-
-function ProjectSwitcherView({
-  projects,
-  currentProjectId,
-  onSelect,
-  onGoToDashboard,
-  onBack,
-}: {
-  projects: ProjectSwitcherItem[]
-  currentProjectId: string
-  onSelect: (projectId: string) => void
-  onGoToDashboard: () => void
-  onBack: () => void
-}) {
-  const [search, setSearch] = useState('')
-
-  const filtered = search.trim()
-    ? projects.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
-    : projects
-
-  return (
-    <>
-      {/* Back to menu + Go to Dashboard */}
-      <View className="flex-row items-center justify-between px-3 py-2.5 border-b border-border">
-        <Pressable
-          onPress={onBack}
-          className="flex-row items-center gap-1 active:bg-muted rounded-md px-1 py-0.5"
-        >
-          <ChevronLeft size={16} className="text-muted-foreground" />
-          <Text className="text-sm font-medium text-foreground">Back</Text>
-        </Pressable>
-        <Pressable
-          onPress={onGoToDashboard}
-          className="flex-row items-center gap-1 active:bg-muted rounded-md px-1 py-0.5"
-        >
-          <Text className="text-sm text-muted-foreground">Dashboard</Text>
-        </Pressable>
-      </View>
-
-      {/* Search */}
-      <View className="flex-row items-center gap-2 px-3 py-2 border-b border-border">
-        <Search size={14} className="text-muted-foreground" />
-        <TextInput
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search projects..."
-          placeholderTextColor="#9ca3af"
-          className="flex-1 text-sm text-foreground py-1 web:outline-none"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </View>
-
-      {/* Switch project heading */}
-      <View className="px-3 pt-3 pb-1.5">
-        <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Switch project
-        </Text>
-      </View>
-
-      {/* Project list */}
-      <View>
-        {filtered.length === 0 ? (
-          <View className="px-4 py-6 items-center">
-            <Text className="text-sm text-muted-foreground">
-              {search.trim() ? 'No projects match your search' : 'No projects available'}
-            </Text>
-          </View>
-        ) : (
-          <View className="py-1">
-            {filtered.map((project) => {
-              const isCurrent = project.id === currentProjectId
-              return (
-                <Pressable
-                  key={project.id}
-                  onPress={() => onSelect(project.id)}
-                  testID={`project-switcher-item-${project.id}`}
-                  className={cn(
-                    'flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted',
-                    isCurrent && 'bg-accent/50',
-                  )}
-                >
-                  <View className={cn(
-                    'h-8 w-8 rounded-md items-center justify-center',
-                    'bg-primary/10',
-                  )}
-                  >
-                    <Bot
-                      size={15}
-                      className="text-primary"
-                    />
-                  </View>
-                  <View className="flex-1 min-w-0">
-                    <Text className="text-sm text-foreground" numberOfLines={1}>
-                      {project.name}
-                    </Text>
-                  </View>
-                  {isCurrent && (
-                    <Check size={16} className="text-primary" />
-                  )}
-                </Pressable>
-              )
-            })}
-          </View>
-        )}
-      </View>
-    </>
   )
 }

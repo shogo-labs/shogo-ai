@@ -42,7 +42,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
-import { nativeActivePill } from '../../lib/native-active-shadow'
+import { SegmentedFilter } from "../../components/phone/SegmentedFilter"
 
 const API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -397,7 +397,8 @@ function SchedulerCard({
           Total ticks: {stats.totalTicks}
         </Text>
         <Text className="text-[11px] text-muted-foreground">
-          Poll: {Math.round(stats.pollIntervalMs / 1000)}s · batch {stats.batchSize}
+          Poll: {Math.round(stats.pollIntervalMs / 1000)}s · batch {" "}
+          {stats.batchSize}
         </Text>
       </View>
 
@@ -481,31 +482,7 @@ function FilterRow({
       </Text>
     </Pressable>
   )
-
-  const SortBtn = ({ label, value }: { label: string; value: SortKey }) => {
-    const pill = nativeActivePill(sort === value)
     return (
-    <Pressable
-      onPress={() => onSortChange(value)}
-      className={cn(
-        'px-2.5 py-1 rounded-md',
-        pill.className,
-      )}
-      style={pill.style}
-    >
-      <Text
-        className={cn(
-          'text-xs font-medium',
-          sort === value ? 'text-foreground' : 'text-muted-foreground'
-        )}
-      >
-        {label}
-      </Text>
-    </Pressable>
-    )
-  }
-
-  return (
     <View className="bg-card border border-border rounded-xl p-3 mb-4 gap-2">
       <View className="flex-row items-center gap-2">
         <View className="flex-1 flex-row items-center bg-muted rounded-lg px-2.5">
@@ -538,13 +515,17 @@ function FilterRow({
         <Toggle label="Enabled only" value={enabledOnly} onChange={onEnabledOnlyChange} />
         <Toggle label="Due within 5m" value={dueSoon} onChange={onDueSoonChange} />
         <Toggle label="In backoff" value={inBackoff} onChange={onInBackoffChange} />
-        <View className="ml-auto flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-          <SortBtn label="Next due" value="nextHeartbeatAt" />
-          <SortBtn label="Last tick" value="lastHeartbeatAt" />
-          <SortBtn label="Project" value="projectName" />
+        <SegmentedFilter
+          options={[
+            { value: "nextHeartbeatAt", label:"Next due" },
+            { value: "lastHeartbeatAt", label:"Last tick" },
+            { value: "projectName", label:"Project" },
+          ]} value={sort}
+          onChange={onSortChange}
+          equalWidth
+          className="ml-auto" />
         </View>
       </View>
-    </View>
   )
 }
 
@@ -578,7 +559,8 @@ function HeartbeatRowItem({
               <View className="flex-row items-center gap-1 px-1.5 py-0.5 rounded-full bg-red-500/15">
                 <AlertTriangle size={10} className="text-red-400" />
                 <Text className="text-[10px] font-medium text-red-400">
-                  {row.breaker.count}× · retry {relativeTimeFromMs(row.breaker.backoffUntil, { future: true })}
+                  {row.breaker.count}× · retry {" "}
+                  {relativeTimeFromMs(row.breaker.backoffUntil, { future: true })}
                 </Text>
               </View>
             )}
@@ -1036,7 +1018,8 @@ export default function HeartbeatsPage() {
 
       <View className="flex-row items-center justify-between mb-2">
         <Text className="text-xs text-muted-foreground">
-          {total} {total === 1 ? 'config' : 'configs'} · page {page} of {pageCount}
+          {total} {total === 1 ? 'config' : 'configs'} · page {page} of {" "}
+          {pageCount}
         </Text>
         <View className="flex-row items-center gap-1">
           <Pressable

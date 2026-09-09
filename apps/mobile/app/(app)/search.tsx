@@ -15,7 +15,6 @@ import {
   ScrollView,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -36,10 +35,13 @@ import {
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { LinearGradient } from 'expo-linear-gradient'
-import { CHATGPT_COMPOSER } from '../../components/chat/ComposerPlusMenu'
+import { CHATGPT_COMPOSER } from "../../lib/composer-phone"
+import {
+  PhoneListEmpty,
+  PhoneListRow,
+} from "../../components/phone/PhoneListRow";
 import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
 import {
-  isPhoneLayout,
   nativePhoneCanvas,
   nativePhoneDockFadeColors,
   nativePhoneDockGlassStyle,
@@ -47,7 +49,8 @@ import {
   NATIVE_PHONE_DOCK_FADE_LOCATIONS,
   NATIVE_PHONE_GUTTER,
   useNativePhoneIconChrome,
-} from '../../lib/native-phone-layout'
+} from '../../lib/native-phone-layout';
+import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route"
 
 const SEARCH_MIN_KEYBOARD_PAD = 8
 const SEARCH_TAB_ROW_HEIGHT = 52
@@ -92,9 +95,7 @@ export default observer(function SearchPage() {
   const isDark = useResolvedTheme() === 'dark'
   const iconChrome = useNativePhoneIconChrome()
   const pageBg = nativePhoneCanvas(isDark)
-  const { width, height } = useWindowDimensions()
-  const isPhone = isPhoneLayout(width, height)
-  const isSupportedPlatform = Platform.OS !== 'web' || isPhone
+  const isSupportedPlatform = usePhoneOnlyRoute()
   const { localMode } = usePlatformConfig()
   const projects = useProjectCollection()
   const workspaces = useWorkspaceCollection()
@@ -233,14 +234,12 @@ export default observer(function SearchPage() {
 
   const tabs = useMemo(
     () =>
-      (
         [
           { id: 'all' as const, label: 'All projects', count: counts.all },
           { id: 'starred' as const, label: 'Starred', count: counts.starred },
           ...(!localMode ? [{ id: 'shared' as const, label: 'Shared with me', count: counts.shared }] : []),
           { id: 'keys' as const, label: 'API keys', count: counts.keys },
-        ]
-      ),
+        ],
     [counts.all, counts.keys, counts.shared, counts.starred, localMode],
   )
 
@@ -277,24 +276,18 @@ export default observer(function SearchPage() {
   const renderRow = ({ item }: { item: SearchRow }) => {
     const Icon = item.kind === 'keys' ? Key : item.kind === 'starred' ? Star : item.kind === 'shared' ? Users : Folder
     return (
-      <Pressable
+      <PhoneListRow
         onPress={() => openRow(item)}
-        accessibilityRole="button"
-        accessibilityLabel={item.title}
-        className="flex-row items-center gap-3 px-4 py-3.5 active:bg-muted/60"
-      >
-        <View className="h-11 w-11 items-center justify-center rounded-2xl bg-muted">
-          <Icon size={18} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
-        </View>
-        <View className="min-w-0 flex-1">
-          <Text className="text-[16px] font-medium text-foreground" numberOfLines={1}>
-            {item.title}
-          </Text>
-          <Text className="mt-0.5 text-[13px] text-muted-foreground" numberOfLines={1}>
-            {item.subtitle}
-          </Text>
-        </View>
-      </Pressable>
+        title={item.title}
+        subtitle={item.subtitle}
+        icon={
+          <Icon
+            size={18}
+            color={iconChrome.color}
+            strokeWidth={iconChrome.strokeWidth}
+          />
+        }
+      />
     )
   }
 
@@ -328,8 +321,8 @@ export default observer(function SearchPage() {
                   flexDirection: 'row',
                   alignItems: 'center',
                   backgroundColor: active
-                    ? (isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text)
-                    : (isDark ? SEARCH_PILL_IDLE.dark : SEARCH_PILL_IDLE.light),
+                    ?isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text
+                    :isDark ? SEARCH_PILL_IDLE.dark : SEARCH_PILL_IDLE.light,
                 }}
               >
                 <Text
@@ -338,8 +331,8 @@ export default observer(function SearchPage() {
                     lineHeight: 18,
                     fontWeight: '500',
                     color: active
-                      ? (isDark ? CHATGPT_COMPOSER.dark.sendIcon : CHATGPT_COMPOSER.light.sendIcon)
-                      : (isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text),
+                      ?isDark ? CHATGPT_COMPOSER.dark.sendIcon : CHATGPT_COMPOSER.light.sendIcon
+                      :isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text,
                     ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
                   }}
                 >
@@ -351,7 +344,7 @@ export default observer(function SearchPage() {
                     fontSize: 13,
                     lineHeight: 18,
                     color: active
-                      ? (isDark ? SEARCH_PILL_COUNT_ACTIVE.dark : SEARCH_PILL_COUNT_ACTIVE.light)
+                      ?isDark ? SEARCH_PILL_COUNT_ACTIVE.dark : SEARCH_PILL_COUNT_ACTIVE.light
                       : SEARCH_PILL_COUNT_IDLE,
                     ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
                   }}
@@ -369,9 +362,13 @@ export default observer(function SearchPage() {
             <ActivityIndicator />
           </View>
         ) : rows.length === 0 ? (
-          <View className="flex-1 items-center justify-center px-8" style={{ paddingBottom: restDockBleed }}>
-            <Search size={44} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
-            <Text className="mt-4 text-center text-base text-muted-foreground">{emptyCopy}</Text>
+          <View className="flex-1" style={{ paddingBottom: restDockBleed }}>
+            <PhoneListEmpty
+                icon={
+                  <Search size={44} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+                }
+                message={emptyCopy}
+              />
           </View>
         ) : (
           <FlatList

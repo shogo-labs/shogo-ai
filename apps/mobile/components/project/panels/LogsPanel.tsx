@@ -26,8 +26,9 @@ import { useRuntimeLogStream } from '../../../lib/runtime-logs/useRuntimeLogStre
 import {
   useNativePhoneWindow,
   nativeContentWidth,
-  nativeSettingsPaneRootStyle,
-} from '../../../lib/native-phone-layout'
+} from '../../../lib/native-phone-layout';
+import { NativePhonePane } from "../../phone/NativePhonePane";
+import { densityFor } from "../../../lib/phone-density"
 
 const ROW_HEIGHT = 24
 
@@ -45,6 +46,7 @@ interface LogsPanelProps {
  */
 export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const density = densityFor(comfortable);
   const innerWidth = comfortable ? nativeContentWidth(pageWidth) : 0
   const rowHeight = comfortable ? 36 : ROW_HEIGHT
   const [searchQuery, setSearchQuery] = useState('')
@@ -189,10 +191,7 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
   })
 
   return (
-    <View
-      collapsable={false}
-      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    <NativePhonePane pageWidth={pageWidth}comfortable={ comfortable}
     >
       {/* ---- Header toolbar ---- */}
       <View
@@ -203,23 +202,23 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
           className="flex-row items-center gap-2"
           style={comfortable ? { width: nativeContentWidth(pageWidth) } : undefined}
         >
-          <ScrollText size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <ScrollText size={density.icon.lg} className="text-muted-foreground" />
           <View className="flex-1 min-w-0">
-            <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Agent Logs</Text>
-            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+            <Text className={cn('font-medium text-foreground', density.text.title)} numberOfLines={1}>Agent Logs</Text>
+            <Text className={cn('text-muted-foreground', density.text.body)} numberOfLines={1}>
               {parsedLogs.length} entries{levelCounts.error > 0 ? ` · ${levelCounts.error} errors` : ''}
             </Text>
           </View>
 
           <View className="flex-row items-center gap-1">
             <Pressable onPress={toggleSearch} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
-              <Search size={comfortable ? 18 : 14} className={searchVisible ? 'text-indigo-400' : 'text-muted-foreground'} />
+              <Search size={density.icon.md} className={searchVisible ? 'text-indigo-400' : 'text-muted-foreground'} />
             </Pressable>
             <Pressable onPress={handleExport} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
-              <Download size={comfortable ? 18 : 14} className="text-muted-foreground" />
+              <Download size={density.icon.md} className="text-muted-foreground" />
             </Pressable>
             <Pressable onPress={handleClear} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
-              <Trash2 size={comfortable ? 18 : 14} className="text-muted-foreground" />
+              <Trash2 size={density.icon.md} className="text-muted-foreground" />
             </Pressable>
           </View>
         </View>
@@ -288,8 +287,9 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
       {/* ---- Log list ---- */}
       <View
         className="flex-1 bg-zinc-950"
-        collapsable={false}
-        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+        style={
+          comfortable ? { width:pageWidth, flex: 1, minHeight: 0} : undefined
+        }
       >
         {!agentUrl ? (
           <View className="items-center py-8 px-4">
@@ -316,7 +316,11 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
             alwaysBounceVertical={comfortable}
             onScroll={handleScroll}
             scrollEventThrottle={100}
-            style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+            style={
+              comfortable
+                ? { width:pageWidth, flex: 1, minHeight: 0}
+                : undefined
+            }
             contentContainerStyle={{
               paddingVertical: 8,
               width: comfortable ? pageWidth : undefined,
@@ -327,6 +331,6 @@ export function LogsPanel({ projectId, agentUrl, visible }: LogsPanelProps) {
           />
         )}
       </View>
-    </View>
+    </NativePhonePane>
   )
 }

@@ -32,14 +32,12 @@ import {
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
-import { nativeActivePill } from '../../lib/native-active-shadow'
 import {
-  nativeEqualChipWidths,
   nativeTwoColumnCardWidth,
   nativeContentWidth,
   isNativePlatform,
-  NATIVE_WIND_SPACE_0_5,
 } from '../../lib/native-phone-layout'
+import { SegmentedFilter } from "../../components/phone/SegmentedFilter";
 import {
   PlatformGrowthChart,
   ActiveUsersTrendChart,
@@ -186,54 +184,21 @@ function PeriodSelector({
   rowWidth?: number
 }) {
   const periods = Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]
-  const periodChipGap = NATIVE_WIND_SPACE_0_5 * 2
-  const chips = rowWidth
-    ? nativeEqualChipWidths(
-        Math.max(0, rowWidth - NATIVE_WIND_SPACE_0_5 * 2),
-        periods.length,
-        periodChipGap,
-        0,
-      )
-    : null
   return (
-    <View
-      className={cn('flex-row items-center bg-muted rounded-lg p-0.5', !rowWidth && 'gap-0.5')}
-      style={rowWidth ? { width: rowWidth, maxWidth: rowWidth, overflow: 'hidden' } : undefined}
-    >
-      {periods.map((period, index) => {
-        const pill = nativeActivePill(value === period)
-        const chipWidth = chips
-          ? (index === periods.length - 1 ? chips.lastChip : chips.chip)
-          : undefined
-        return (
-          <Pressable
-            key={period}
-            onPress={() => onChange(period)}
-            className={cn(
-              'items-center justify-center rounded-md py-1.5',
-              !rowWidth && 'px-3',
-              pill.className,
-            )}
-            style={[
-              pill.style,
-              chipWidth ? { width: chipWidth, maxWidth: chipWidth } : undefined,
-            ]}
-          >
-            <Text
-              className={cn(
-                'text-xs font-medium',
-                value === period ? 'text-foreground' : 'text-muted-foreground'
-              )}
-              numberOfLines={1}
-            >
-              {rowWidth ? period : PERIOD_LABELS[period]}
-            </Text>
-          </Pressable>
+    <SegmentedFilter
+      options={periods.map((period) =>({value: period,
+        label: rowWidth
+          ? period : PERIOD_LABELS[period],
+      }))}
+      value={value}
+      onChange={ onChange}
+      equalWidth={Boolean(rowWidth)}
+            className={rowWidth ? "w-full" : undefined}
+            style={
+        rowWidth ? { width: rowWidth, maxWidth: rowWidth, overflow : "hidden"} : undefined}
+    />
         )
-      })}
-    </View>
-  )
-}
+      }
 
 function StatCard({
   label,
@@ -264,7 +229,7 @@ function StatCard({
         </View>
       </View>
       <Text className="text-3xl font-bold text-foreground tracking-tight">
-        {value !== undefined ? (typeof value === 'number' ? value.toLocaleString() : value) : '—'}
+        {value !== undefined ?typeof value === 'number' ? value.toLocaleString() : value : '—'}
       </Text>
       {subtitle && (
         <Text className="text-xs text-muted-foreground mt-1">{subtitle}</Text>

@@ -43,7 +43,7 @@ import {
   ArrowUpRight,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { nativeActivePill } from '../../../lib/native-active-shadow'
+import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 
 import { fetchAdminJson, postAdmin, formatCents, formatRelative } from './_helpers'
 
@@ -656,41 +656,21 @@ export default function MarketplacePayoutsPage() {
     <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-3')}>
       <View className="gap-3 mb-3">
         <Text className="text-xl font-semibold text-foreground">Payouts</Text>
-        <View className="flex-row items-center bg-muted rounded-lg p-0.5 self-start">
-          {([
-            { id: 'pending', label: 'Pending', icon: Banknote },
-            { id: 'history', label: 'History', icon: History },
-          ] as const).map((opt) => {
-            const Icon = opt.icon
-            const active = tab === opt.id
-            const pill = nativeActivePill(active)
-            return (
-              <Pressable
-                key={opt.id}
-                onPress={() => setTab(opt.id)}
-                className={cn(
-                  'flex-row items-center gap-1.5 px-3 py-1.5 rounded-md',
-                  pill.className,
-                )}
-                style={pill.style}
-              >
-                <Icon size={13} className={active ? 'text-foreground' : 'text-muted-foreground'} />
-                <Text
-                  className={cn(
-                    'text-xs font-medium',
-                    active ? 'text-foreground' : 'text-muted-foreground',
-                  )}
-                >
-                  {opt.label}
-                </Text>
-              </Pressable>
-            )
-          })}
-        </View>
-      </View>
+        <SegmentedFilter
+          options=
+          {[
+            { value: 'pending', label: 'Pending' },
+            { value: 'history', label: 'History' },
+          ]}
+          value ={tab}
+          onChange={ setTab}
+          equalWidth
+                className="self-start" />
+                </View>
 
       <View className="flex-1">
-        {tab === 'pending' ? <PendingTab isWide={isWide} /> : <HistoryTab isWide={isWide} />}
+        {tab === 'pending' ? <PendingTab isWide={isWide} /> : ( <HistoryTab isWide={isWide} />
+        )}
       </View>
     </View>
   )

@@ -25,13 +25,16 @@ import {
 } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { nativePhoneCanvas, WEB_PHONE_MAX_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
+import {
+  ADMIN_WEB_WIDE_MIN_WIDTH,
+  NATIVE_PHONE_HEADER_ICON_SIZE, nativePhoneCanvas, WEB_PHONE_MAX_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 import {
   useNativeSheetDrawer,
   nativeDrawerTopInset,
   nativeDrawerSideInset,
   nativeDrawerFooterInset,
 } from '../../lib/use-native-drawer-swipe'
+import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell";
 import {
   LayoutDashboard,
   Users,
@@ -62,7 +65,8 @@ import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
 import { api, API_URL } from '../../lib/api'
-import { usePlatformConfig } from '../../lib/platform-config'
+import { usePlatformConfig } from '../../lib/platform-config';
+import { densityFor } from "../../lib/phone-density"
 
 type UserRole = 'user' | 'super_admin'
 
@@ -253,7 +257,8 @@ function useInfraHealth(enabled: boolean): HealthStatus {
 
 function isNavActive(pathname: string, href: string): boolean {
   if (href === '/(admin)') {
-    return pathname === '/' || pathname === '' || pathname === '/(admin)' || pathname === '/index'
+    return ( pathname === '/' || pathname === '' || pathname === '/(admin)' || pathname === '/index'
+    )
   }
   const clean = href.replace('/(admin)', '')
   return pathname.startsWith(clean)
@@ -290,6 +295,7 @@ function AdminSidebar({
   const insets = useSafeAreaInsets()
   const isDark = useResolvedTheme() === 'dark'
   const { localMode } = usePlatformConfig()
+  const density = densityFor(Boolean(isNativeDrawer));
   const visibleSections = NAV_SECTIONS
     .map((section) => ({
       title: section.title,
@@ -318,10 +324,11 @@ function AdminSidebar({
         )}
       >
         <Icon
-          size={isNativeDrawer ? 18 : 12}
+          size={density.icon.nav}
           className={active ? 'text-foreground' : 'text-muted-foreground'}
         />
-        <Text className={cn(isNativeDrawer ? 'text-base flex-1' : 'text-xs flex-1', active ? 'text-foreground' : 'text-muted-foreground')}>
+        <Text className={cn(
+            `${density.text.body} flex-1`, active ? 'text-foreground' : 'text-muted-foreground')}>
           {item.label}
         </Text>
         {item.label === 'Infrastructure' && infraHealth !== 'unknown' && (
@@ -333,7 +340,7 @@ function AdminSidebar({
 
   const sectionLabelClass = cn(
     'px-1 pb-1 font-semibold uppercase tracking-wider text-muted-foreground',
-    isNativeDrawer ? 'text-sm' : 'text-[11px]',
+    density.text.label,
   )
 
   const sidebar = (
@@ -355,10 +362,11 @@ function AdminSidebar({
         isNativeDrawer ? 'h-16' : 'py-2',
       )}>
         <View className={cn('flex-row items-center', isNativeDrawer ? 'gap-3' : 'gap-2')}>
-          <Shield size={isNativeDrawer ? 18 : 12} className="text-primary" />
+          <Shield size={density.icon.nav} className="text-primary" />
           <View>
-            <Text className={cn('font-semibold text-foreground', isNativeDrawer ? 'text-lg' : 'text-sm')}>Admin</Text>
-            <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-xs')}>
+            <Text className={cn('font-semibold text-foreground',
+                density.text.title)}>Admin</Text>
+            <Text className={cn('text-muted-foreground', density.text.label)}>
               {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
             </Text>
           </View>
@@ -401,21 +409,21 @@ function AdminSidebar({
             isNativeDrawer ? 'min-h-11 gap-2.5 py-2' : 'gap-2 py-1',
           )}
         >
-          <ArrowLeft size={isNativeDrawer ? 18 : 12} className="text-muted-foreground" />
-          <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-base' : 'text-xs')}>Back to App</Text>
+          <ArrowLeft size={density.icon.nav} className="text-muted-foreground" />
+          <Text className={cn('text-muted-foreground', density.text.body)}>Back to App</Text>
         </Pressable>
 
         <View className={cn('flex-row items-center px-2', isNativeDrawer ? 'min-h-14 gap-3 py-2' : 'gap-2 py-1.5')}>
           <View className={cn('rounded bg-primary/20 items-center justify-center', isNativeDrawer ? 'h-11 w-11' : 'h-7 w-7')}>
-            <Text className={cn('font-bold text-primary', isNativeDrawer ? 'text-base' : 'text-[11px]')}>
+            <Text className={cn('font-bold text-primary', density.text.body)}>
               {userName?.charAt(0)?.toUpperCase() || 'A'}
             </Text>
           </View>
           <View className="flex-1 min-w-0">
-            <Text className={cn('text-foreground', isNativeDrawer ? 'text-base' : 'text-sm')} numberOfLines={1}>
+            <Text className={cn('text-foreground', density.text.body)} numberOfLines={1}>
               {userName || 'Admin'}
             </Text>
-            <Text className={cn('text-muted-foreground', isNativeDrawer ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+            <Text className={cn('text-muted-foreground', density.text.label)} numberOfLines={1}>
               {userEmail}
             </Text>
           </View>
@@ -473,7 +481,7 @@ function MobileHeader({
           hitSlop={4}
           className="h-10 w-10 items-center justify-center rounded-full bg-muted"
         >
-          <Menu size={22} color={icon.color} strokeWidth={icon.strokeWidth} />
+          <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
         </Pressable>
         <Text className="flex-1 px-3 text-center text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
@@ -541,27 +549,20 @@ function AdminLayoutInner() {
   const isNativeApp = Platform.OS !== 'web'
   const isDark = useResolvedTheme() === 'dark'
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
-  const isWide = !isNativeApp && width >= 900
+  const isWide = !isNativeApp && width >= ADMIN_WEB_WIDE_MIN_WIDTH
   const nativeSheetDrawer =
     isNativeApp || (Platform.OS === 'web' && width <= WEB_PHONE_MAX_WIDTH)
   const { isSuperAdmin, scopes, hasAdminAccess, isPending, isAuthenticated, userEmail, userName } = useAdminCheck()
   const { localMode } = usePlatformConfig()
   const infraHealth = useInfraHealth(isSuperAdmin)
-  const {
-    drawerOpen,
-    sheetSwipeHandlers,
-    sheetStyle,
-    sheetClipStyle,
-    underlayStyle: nativeDrawerUnderlay,
-    closeDrawer,
-    toggleDrawer,
-    resetDrawer,
-  } = useNativeSheetDrawer({
+  const drawer = useNativeSheetDrawer({
     windowWidth: width,
     isDark,
     swipeEnabled: nativeSheetDrawer,
     overlayOpenWithoutSnap: !nativeSheetDrawer,
   })
+
+  const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer;
 
   const sidebarProps = {
     userName,
@@ -621,53 +622,38 @@ function AdminLayoutInner() {
   if (!isAuthenticated || !hasAdminAccess) return null
 
   return (
-    <SafeAreaView
-      className="flex-1 bg-background"
-      style={nativeSheetDrawer ? { backgroundColor: nativeDrawerCanvas } : undefined}
-      edges={nativeSheetDrawer ? ['left', 'right'] : undefined}
+    <NativeSheetDrawerShell
+      isWide={isWide}
+      nativeSheetDrawer={nativeSheetDrawer}
+      canvas={nativeDrawerCanvas}
+      safeAreaEdges={nativeSheetDrawer ? ['left', 'right'] : undefined}
+      sidebarWide={<AdminSidebar {...sidebarProps} />}
+      sidebarSheet={
+        <AdminSidebar
+          {...sidebarProps}
+          isNativeDrawer
+          onClose={closeDrawer}
+        />
+      }
+      sidebarOverlay={
+        drawerOpen ? (
+          <AdminSidebar {...sidebarProps} isDrawer onClose={closeDrawer} />
+        ) : null
+      }
+      header={
+        !isWide ? (
+          <MobileHeader
+            onMenuPress={toggleDrawer}
+            title={getPageTitle(pathname)}
+            menuOpen={drawerOpen}
+            isNative={nativeSheetDrawer}
+          />
+        ) : null
+      }
+      drawer={drawer}
     >
-      <View className="flex-1 flex-row">
-        {isWide && <AdminSidebar {...sidebarProps} />}
-
-        <View style={{ flex: 1, overflow: 'hidden' }} collapsable={false}>
-          {nativeSheetDrawer ? (
-            <View
-              pointerEvents={drawerOpen ? 'auto' : 'none'}
-              accessibilityElementsHidden={!drawerOpen}
-              importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-              style={nativeDrawerUnderlay}
-            >
-              <AdminSidebar {...sidebarProps} isNativeDrawer onClose={closeDrawer} />
-            </View>
-          ) : null}
-          <Animated.View
-            collapsable={false}
-            {...sheetSwipeHandlers}
-            style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
-          >
-            <Animated.View style={nativeSheetDrawer ? sheetClipStyle : { flex: 1, overflow: 'hidden' }}>
-              <View className="flex-1">
-                {!isWide && (
-                  <MobileHeader
-                    onMenuPress={toggleDrawer}
-                    title={getPageTitle(pathname)}
-                    menuOpen={drawerOpen}
-                    isNative={nativeSheetDrawer}
-                  />
-                )}
-                <View className="flex-1">
-                  <Slot />
-                </View>
-              </View>
-            </Animated.View>
-          </Animated.View>
-        </View>
-      </View>
-
-      {!isWide && !nativeSheetDrawer && drawerOpen && (
-        <AdminSidebar {...sidebarProps} isDrawer onClose={resetDrawer} />
-      )}
-    </SafeAreaView>
+      <Slot />
+    </NativeSheetDrawerShell>
   )
 }
 

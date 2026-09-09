@@ -15,7 +15,6 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
-  useWindowDimensions,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
@@ -49,7 +48,7 @@ import {
   Badge,
   cn,
 } from '@shogo/shared-ui/primitives'
-import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
+import { useNativePhoneWindow } from '../../lib/native-phone-layout'
 
 function formatLastSeen(ts: string | null | undefined): string {
   if (!ts) return 'Never'
@@ -81,8 +80,8 @@ function PlatformIcon({ platform, size = 16 }: { platform?: string | null; size?
 export default observer(function ApiKeysPage() {
   const router = useRouter()
   const { user } = useAuth()
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
-  const isNativePhone = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+  const { width: windowWidth, height: windowHeight,
+    isPhone: isNativePhone } = useNativePhoneWindow()
   const workspaces = useWorkspaceCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()
@@ -221,7 +220,8 @@ export default observer(function ApiKeysPage() {
                 <Text className={cn("text-muted-foreground mt-1", isNativePhone ? "text-sm leading-5" : "text-xs leading-5")}>
                   Each desktop install gets its own device credential. Signing out here
                   immediately revokes it. Use a manual API key only for headless / CI
-                  environments that can't run the desktop login flow.
+                  environments that can't run the desktop login
+                  flow.
                 </Text>
               </View>
             </View>
@@ -251,7 +251,7 @@ export default observer(function ApiKeysPage() {
         ) : (
           <Card className="mb-6">
             <CardContent className="p-0">
-              {deviceKeys.map((key) => (
+              {deviceKeys.map((key) =>
                 isNativePhone ? (
                   <View
                     key={key.id}
@@ -314,7 +314,8 @@ export default observer(function ApiKeysPage() {
                       )}
                     </View>
                     <Text className="text-xs text-muted-foreground mt-0.5">
-                      {key.user?.email} · {formatLastSeen(key.lastSeenAt || key.lastUsedAt)}
+                      {key.user?.email} · {" "}
+                        {formatLastSeen(key.lastSeenAt || key.lastUsedAt)}
                     </Text>
                   </View>
                   <Pressable
@@ -328,7 +329,7 @@ export default observer(function ApiKeysPage() {
                   </Pressable>
                 </View>
                 )
-              ))}
+              )}
               <View className="px-4 py-2.5">
                 <Text className="text-xs text-muted-foreground">
                   {deviceKeys.length} signed-in device{deviceKeys.length !== 1 ? 's' : ''}
@@ -636,8 +637,8 @@ export default observer(function ApiKeysPage() {
                 className="flex-1"
               >
                 {isRevoking
-                  ? (revokeTarget?.kind === 'device' ? 'Signing out...' : 'Revoking...')
-                  : (revokeTarget?.kind === 'device' ? 'Sign out' : 'Revoke')}
+                  ?revokeTarget?.kind === 'device' ? 'Signing out...' : 'Revoking...'
+                  :revokeTarget?.kind === 'device' ? 'Sign out' : 'Revoke'}
               </Button>
             </View>
           </Pressable>

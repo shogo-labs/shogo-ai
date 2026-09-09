@@ -39,7 +39,12 @@ import {
 } from 'lucide-react-native'
 import { useDomainHttp, useProjectCollection } from '../../../contexts/domain'
 import { api, API_URL } from '../../../lib/api'
-import { useNativePhoneWindow, nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_SECTION_INSET, NATIVE_PHONE_ROW_GAP } from '../../../lib/native-phone-layout'
+import { useNativePhoneWindow, nativeContentWidth, NATIVE_PHONE_SECTION_INSET, NATIVE_PHONE_ROW_GAP } from '../../../lib/native-phone-layout';
+import {
+  NativePhonePane,
+  phonePaneScrollProps,
+} from "../../phone/NativePhonePane";
+import { densityFor } from "../../../lib/phone-density"
 
 interface ProjectFolder {
   id: string
@@ -79,6 +84,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
   const http = useDomainHttp()
   const projectCollection = useProjectCollection()
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const density = densityFor(comfortable);
   const contentWidth = comfortable ? nativeContentWidth(pageWidth) : 0
   const [project, setProject] = useState<ProjectShape | null>(null)
   const [attachments, setAttachments] = useState<AttachmentShape[]>([])
@@ -95,8 +101,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
   // Native picker handle. Only present in Electron desktop.
   const desktop = useMemo(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return null
-    return (window as any).shogoDesktop as
-      | { pickFolders?: (opts?: { multi?: boolean }) => Promise<any> }
+    return (window as any).shogoDesktop as { pickFolders?: (opts?: { multi?: boolean }) => Promise<any> }
       | null
   }, [])
 
@@ -199,7 +204,9 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
     async (url: string) => {
       const trimmed = url.trim()
       if (!trimmed) return
-      const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+      const withProto = /^https?:\/\//i.test(trimmed)
+        ? trimmed
+        : `http://${trimmed}`//i.test(trimmed) ? trimmed : `http://${trimmed}`
       setBusy('preview-url')
       try {
         const res = await fetch(
@@ -360,13 +367,13 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
   if (!visible) return null
 
   return (
-    <View
+    <NativePhonePane
       testID="folders-panel"
-      collapsable={false}
-      className={comfortable ? 'flex-col bg-background' : 'absolute inset-0 flex-col bg-background'}
+      pageWidth={pageWidth}
+      comfortable={comfortable}
+      className="flex-col bg-background"
       style={{
         display: visible ? 'flex' : 'none',
-        ...(comfortable ? nativeSettingsPaneStyle(pageWidth) : null),
       }}
     >
       <View
@@ -374,9 +381,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
         style={comfortable ? { width: pageWidth } : undefined}
       >
         <View className={comfortable ? undefined : 'flex-1 min-w-0 flex-row items-center gap-2'} style={comfortable ? { flexDirection: 'row', alignItems: 'center', gap: NATIVE_PHONE_ROW_GAP, width: contentWidth } : undefined}>
-          <FolderTree size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <FolderTree size={density.icon.lg} className="text-muted-foreground" />
           <Text
-            className={cn('font-semibold text-foreground', comfortable ? 'text-lg' : 'text-sm flex-1')}
+            className={cn('font-semibold text-foreground',
+              `${density.text.title} flex-1`)}
             numberOfLines={1}
             style={comfortable ? { width: Math.max(0, contentWidth - 20 - NATIVE_PHONE_ROW_GAP) } : undefined}
           >
@@ -386,7 +394,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
         {restarting ? (
           <View testID="runtime-restarting" className="flex-row items-center gap-1.5">
             <ActivityIndicator size="small" />
-            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-[11px]')}>Restarting context…</Text>
+            <Text className={cn('text-muted-foreground', density.text.body)}>Restarting context…</Text>
           </View>
         ) : null}
       </View>
@@ -397,11 +405,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
         </View>
       ) : (
         <ScrollView
-          className="flex-1"
-          nestedScrollEnabled
-          keyboardShouldPersistTaps="handled"
-          alwaysBounceVertical={comfortable}
-          style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+          className="flex-1"{...phonePaneScrollProps(comfortable)}
           contentContainerStyle={{
             paddingBottom: comfortable ? 40 : 24,
             flexGrow: 1,
@@ -417,7 +421,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   <Text className="text-xs font-medium text-amber-800 dark:text-amber-200">
                     Workspace is restricted
                   </Text>
-                  <Text className="text-[11px] text-amber-700 dark:text-amber-300 mt-0.5">
+                  <Text className={cn(
+                      density.text.caption,
+                      "text-amber-700 dark:text-amber-300 mt-0.5",
+                    )}>
                     Edits and shell commands are blocked until you trust this folder.
                   </Text>
                 </View>
@@ -430,17 +437,26 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     busy === 'trust' ? 'opacity-60' : 'active:opacity-80',
                   )}
                 >
-                  <Text className="text-[11px] font-medium text-white">Trust folder</Text>
+                  <Text className={cn(
+                      density.text.caption,
+                      "font-medium text-white",
+                    )}>Trust folder</Text>
                 </Pressable>
               </View>
             ) : (
               <View className="mx-4 mt-3 rounded-lg border border-emerald-200/60 bg-emerald-50/50 dark:bg-emerald-900/10 px-3 py-2 flex-row items-center gap-2">
                 <ShieldCheck size={14} className="text-emerald-600" />
-                <Text className="text-[11px] text-emerald-700 dark:text-emerald-300 flex-1">
+                <Text className={cn(
+                    density.text.caption,
+                    "text-emerald-700 dark:text-emerald-300 flex-1",
+                  )}>
                   Workspace trusted — edits and shell allowed.
                 </Text>
                 <Pressable onPress={handleToggleTrust} disabled={busy === 'trust'} className="active:opacity-60">
-                  <Text className="text-[11px] text-muted-foreground underline">Restrict</Text>
+                  <Text className={cn(
+                      density.text.caption,
+                      "text-muted-foreground underline",
+                    )}>Restrict</Text>
                 </Pressable>
               </View>
             )
@@ -456,11 +472,13 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           <View className={cn('w-full px-4', comfortable ? 'mt-5' : 'mt-4')}>
             <View className={cn(comfortable ? 'mb-3 gap-2' : 'flex-row items-center justify-between mb-2')}>
               <View className="flex-row items-center gap-1.5">
-                <Folder size={comfortable ? 18 : 13} className="text-muted-foreground" />
-                <Text className={cn('font-semibold text-foreground', comfortable ? 'text-base' : 'text-xs')}>Linked folders</Text>
+                <Folder size={density.icon.md} className="text-muted-foreground" />
+                <Text className={cn('font-semibold text-foreground',
+                    density.text.body)}>Linked folders</Text>
                 {folders.length > 0 ? (
                   <View className="bg-muted rounded-full px-1.5 py-0.5">
-                    <Text className={cn('font-medium text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px]')}>{folders.length}</Text>
+                    <Text className={cn('font-medium text-muted-foreground',
+                        density.text.caption)}>{folders.length}</Text>
                   </View>
                 ) : null}
               </View>
@@ -476,13 +494,13 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   )}
                 >
                   <FolderPlus
-                    size={comfortable ? 18 : 13}
+                    size={density.icon.md}
                     className={busy === 'add-folder' ? 'text-muted-foreground' : 'text-primary-foreground'}
                   />
                   <Text
                     className={cn(
                       'font-medium',
-                      comfortable ? 'text-base' : 'text-[11px]',
+                      density.text.body,
                       busy === 'add-folder' ? 'text-muted-foreground' : 'text-primary-foreground',
                     )}
                   >
@@ -502,7 +520,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 }}
               >
                 <Text
-                  className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-[11px]')}
+                  className={cn('text-muted-foreground', density.text.body)}
                   style={comfortable ? { width: Math.max(0, contentWidth - NATIVE_PHONE_SECTION_INSET), flexShrink: 1 } : { flexShrink: 1 }}
                 >
                   {desktop?.pickFolders
@@ -518,7 +536,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     testID={`linked-folder-${folder.id}`}
                     className={cn(
                       'rounded-lg border border-border bg-card flex-row items-start gap-2',
-                      comfortable ? 'px-4 py-3.5' : 'px-3 py-2.5',
+                      density.rowPad,
                     )}
                   >
                     <View className="mt-0.5">
@@ -530,7 +548,8 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     </View>
                     <View className="flex-1 min-w-0">
                       <View className="flex-row items-center gap-2">
-                        <Text className={cn('flex-1 font-medium text-foreground', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
+                        <Text className={cn('flex-1 font-medium text-foreground',
+                            density.text.body)} numberOfLines={1}>
                           {basename(folder.path)}
                         </Text>
                         {folder.isPrimary ? (
@@ -541,7 +560,8 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           </View>
                         ) : null}
                       </View>
-                      <Text className={cn('text-muted-foreground font-mono mt-0.5', comfortable ? 'text-sm' : 'text-[11px]')} numberOfLines={1}>
+                      <Text className={cn('text-muted-foreground font-mono mt-0.5',
+                          density.text.body)} numberOfLines={1}>
                         {folder.path}
                       </Text>
                     </View>
@@ -573,7 +593,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           {busy === `remove-folder-${folder.id}` ? (
                             <ActivityIndicator size="small" />
                           ) : (
-                            <Trash2 size={comfortable ? 18 : 13} className="text-destructive" />
+                            <Trash2 size={density.icon.md} className="text-destructive" />
                           )}
                         </Pressable>
                       ) : null}
@@ -588,11 +608,13 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           <View className={cn('w-full px-4', comfortable ? 'mt-6' : 'mt-5')}>
             <View className={cn(comfortable ? 'mb-3 gap-2' : 'flex-row items-center justify-between mb-2')}>
               <View className="flex-row items-center gap-1.5">
-                <Boxes size={comfortable ? 18 : 13} className="text-muted-foreground" />
-                <Text className={cn('font-semibold text-foreground', comfortable ? 'text-base' : 'text-xs')}>Attached projects</Text>
+                <Boxes size={density.icon.md} className="text-muted-foreground" />
+                <Text className={cn('font-semibold text-foreground',
+                    density.text.body)}>Attached projects</Text>
                 {attachments.length > 0 ? (
                   <View className="bg-muted rounded-full px-1.5 py-0.5">
-                    <Text className={cn('font-medium text-muted-foreground', comfortable ? 'text-xs' : 'text-[10px]')}>{attachments.length}</Text>
+                    <Text className={cn('font-medium text-muted-foreground',
+                        density.text.caption)}>{attachments.length}</Text>
                   </View>
                 ) : null}
               </View>
@@ -605,8 +627,9 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                   comfortable ? 'h-12 w-full justify-center px-4' : 'px-2.5 py-1',
                 )}
               >
-                <Plus size={comfortable ? 18 : 13} className="text-primary-foreground" />
-                <Text className={cn('font-medium text-primary-foreground', comfortable ? 'text-base' : 'text-[11px]')}>Add project</Text>
+                <Plus size={density.icon.md} className="text-primary-foreground" />
+                <Text className={cn('font-medium text-primary-foreground',
+                    density.text.body)}>Add project</Text>
               </Pressable>
             </View>
 
@@ -618,7 +641,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 {attachCandidates.length === 0 ? (
                   <View className={cn(comfortable ? 'px-4 py-5' : 'px-3 py-4')}>
                     <Text
-                      className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-[11px]')}
+                      className={cn('text-muted-foreground', density.text.body)}
                       style={comfortable ? { width: Math.max(0, contentWidth - NATIVE_PHONE_SECTION_INSET), flexShrink: 1 } : { flexShrink: 1 }}
                     >
                       No other projects in this workspace to attach.
@@ -636,8 +659,9 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                         comfortable ? 'min-h-12 px-4 py-3' : 'px-3 py-2.5',
                       )}
                     >
-                      <Boxes size={comfortable ? 18 : 14} className="text-muted-foreground" />
-                      <Text className={cn('text-foreground flex-1', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
+                      <Boxes size={density.icon.md} className="text-muted-foreground" />
+                      <Text className={cn('text-foreground flex-1',
+                          density.text.body)} numberOfLines={1}>
                         {p.name || p.id}
                       </Text>
                       {busy === `attach-${p.id}` ? <ActivityIndicator size="small" /> : null}
@@ -657,7 +681,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 }}
               >
                 <Text
-                  className={cn('text-muted-foreground', comfortable ? 'text-base' : 'text-[11px]')}
+                  className={cn('text-muted-foreground', density.text.body)}
                   style={comfortable ? { width: Math.max(0, contentWidth - NATIVE_PHONE_SECTION_INSET), flexShrink: 1 } : { flexShrink: 1 }}
                 >
                   Attach another project to read and edit across both in the same chat.
@@ -671,15 +695,17 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     testID={`attached-project-${att.attachedProjectId}`}
                     className={cn(
                       'rounded-lg border border-border bg-card flex-row items-center gap-2',
-                      comfortable ? 'px-4 py-3.5' : 'px-3 py-2.5',
+                      density.rowPad,
                     )}
                   >
                     <Boxes size={16} className="text-muted-foreground" />
                     <View className="flex-1 min-w-0">
-                      <Text className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-xs')} numberOfLines={1}>
+                      <Text className={cn('font-medium text-foreground',
+                          density.text.body)} numberOfLines={1}>
                         {att.attachedProjectName || att.attachedProjectId}
                       </Text>
-                      <Text className={cn('text-muted-foreground mt-0.5', comfortable ? 'text-sm' : 'text-[10px]')}>
+                      <Text className={cn('text-muted-foreground mt-0.5',
+                          density.text.label)}>
                         {att.attachMode === 'readonly' ? 'Read-only' : 'Read / write'}
                       </Text>
                     </View>
@@ -694,7 +720,8 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                       disabled={busy !== null}
                       className="rounded-md px-2 py-1 active:bg-muted"
                     >
-                      <Text className={cn('text-muted-foreground underline', comfortable ? 'text-sm' : 'text-[10px]')}>
+                      <Text className={cn('text-muted-foreground underline',
+                          density.text.label)}>
                         {att.attachMode === 'readonly' ? 'Allow edits' : 'Make read-only'}
                       </Text>
                     </Pressable>
@@ -707,7 +734,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                       {busy === `detach-${att.attachedProjectId}` ? (
                         <ActivityIndicator size="small" />
                       ) : (
-                        <Trash2 size={comfortable ? 18 : 13} className="text-destructive" />
+                        <Trash2 size={density.icon.md} className="text-destructive" />
                       )}
                     </Pressable>
                   </View>
@@ -723,7 +750,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                 <Globe size={16} className="text-muted-foreground mt-0.5" />
                 <View className="flex-1">
                   <Text className="text-xs font-medium text-foreground">External preview URL</Text>
-                  <Text className="text-[11px] text-muted-foreground mt-0.5">
+                  <Text className={cn(
+                      density.text.caption,
+                      "text-muted-foreground mt-0.5",
+                    )}>
                     Tell Shogo where your dev server is running. Only local hosts (localhost, 127.0.0.1) are allowed.
                   </Text>
                 </View>
@@ -739,7 +769,11 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     autoCorrect={false}
                     keyboardType="url"
                     spellCheck={false}
-                    className="flex-1 text-[11px] text-foreground"
+                    className={cn(
+                      "flex-1",
+                      density.text.caption,
+                      "text-foreground",
+                    )}
                     style={{ paddingVertical: 0 } as any}
                     onSubmitEditing={() => handleSavePreviewUrl(previewDraft)}
                   />
@@ -752,7 +786,10 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     busy === 'preview-url' || !previewDraft.trim() ? 'opacity-60' : 'active:opacity-80',
                   )}
                 >
-                  <Text className="text-[11px] font-medium text-primary-foreground">Save</Text>
+                  <Text className={cn(
+                      density.text.caption,
+                      "font-medium text-primary-foreground",
+                    )}>Save</Text>
                 </Pressable>
                 {previewSavedUrl ? (
                   <Pressable
@@ -760,14 +797,17 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                     disabled={busy === 'preview-url'}
                     className="rounded-md px-2 py-1 active:bg-muted"
                   >
-                    <Text className="text-[11px] text-muted-foreground underline">Clear</Text>
+                    <Text className={cn(
+                        density.text.caption,
+                        "text-muted-foreground underline",
+                      )}>Clear</Text>
                   </Pressable>
                 ) : null}
               </View>
               {previewDetectedUrl && previewDetectedUrl !== previewSavedUrl ? (
                 <View className="flex-row items-center gap-2">
                   <Text className="text-[10px] text-muted-foreground flex-1" numberOfLines={1}>
-                    Detected from terminal: <Text className="font-mono text-foreground">{previewDetectedUrl}</Text>
+                    Detected from terminal:{" "} <Text className="font-mono text-foreground">{previewDetectedUrl}</Text>
                   </Text>
                   <Pressable
                     onPress={() => handleSavePreviewUrl(previewDetectedUrl)}
@@ -784,7 +824,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
           ) : null}
         </ScrollView>
       )}
-    </View>
+    </NativePhonePane>
   )
 }
 

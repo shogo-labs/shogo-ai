@@ -37,7 +37,9 @@ import {
 } from '@shogo/model-catalog'
 import { resolveShortName, resolveFamily } from '../../lib/visible-models'
 import { nativeActivePill } from '../../lib/native-active-shadow'
-import { nativeContentWidth, nativeGridChipWidth, NATIVE_WIND_SPACE_4, isNativePhoneIntegrationsLayout, isNativePlatform } from '../../lib/native-phone-layout'
+import { nativeContentWidth, nativeGridChipWidth, NATIVE_WIND_SPACE_4, isNativePlatform,
+  useIsNativePhoneLayout } from '../../lib/native-phone-layout'
+import { densityFor } from "../../lib/phone-density";
 import {
   StackedAreaChart,
   STACKED_PALETTE,
@@ -57,8 +59,8 @@ export const PERIOD_LABELS: Record<AnalyticsPeriod, string> = {
   '30d': '30 days',
   '90d': '90 days',
   '1y': '1 year',
-  'mtd': 'MTD',
-  'last_month': 'Last month',
+  mtd: 'MTD',
+  last_month: 'Last month',
 }
 
 export interface UsageSummaryEntry {
@@ -183,23 +185,16 @@ const FAMILY_TEXT_COLOR: Record<ModelFamily, string> = {
 }
 
 export function getModelColor(model: string): string {
-  return FAMILY_BG_COLOR[resolveFamily(model) as ModelFamily] ?? 'bg-muted border-border'
+  return ( FAMILY_BG_COLOR[resolveFamily(model) as ModelFamily] ?? 'bg-muted border-border'
+  )
 }
 
 export function getModelTextColor(model: string): string {
-  return FAMILY_TEXT_COLOR[resolveFamily(model) as ModelFamily] ?? 'text-muted-foreground'
+  return ( FAMILY_TEXT_COLOR[resolveFamily(model) as ModelFamily] ?? 'text-muted-foreground'
+  )
 }
 
 export const getModelDisplayName = resolveShortName
-
-// =============================================================================
-// Components
-// =============================================================================
-
-function useNativeComfortable() {
-  const { width, height } = useWindowDimensions()
-  return isNativePhoneIntegrationsLayout(width, height)
-}
 
 export function PeriodSelector({
   value,
@@ -212,6 +207,7 @@ export function PeriodSelector({
 }) {
   // Legacy selector — keep the four rolling-window pills only. The new
   // dashboard uses `DateRangePills` which adds 1d / MTD / Last month.
+  const density = densityFor(comfortable);
   const legacyPeriods: AnalyticsPeriod[] = ['7d', '30d', '90d', '1y']
   return (
     <View className={cn("flex-row items-center bg-muted rounded-lg gap-0.5", comfortable ? "p-1" : "p-0.5")}>
@@ -232,7 +228,7 @@ export function PeriodSelector({
             <Text
               className={cn(
                 'font-medium',
-                comfortable ? 'text-sm' : 'text-xs',
+                density.text.label,
                 isActive ? 'text-foreground' : 'text-muted-foreground'
               )}
             >
@@ -258,19 +254,21 @@ export function StatCard({
   subtitle?: string
   comfortable?: boolean
 }) {
+  const density = densityFor(comfortable)
   return (
     <View className={cn("flex-1 rounded-xl border border-border bg-card min-w-[140px]", comfortable ? "p-4" : "p-3")}>
       <View className="flex-row items-center justify-between mb-1">
-        <Text className={cn("font-medium text-muted-foreground", comfortable ? "text-sm" : "text-[10px]")}>{label}</Text>
+        <Text className={cn("font-medium text-muted-foreground",
+            density.text.label)}>{label}</Text>
         <View className={cn("rounded bg-primary/10 items-center justify-center", comfortable ? "h-8 w-8" : "h-6 w-6")}>
-          <Icon size={comfortable ? 16 : 12} className="text-primary" />
+          <Icon size={density.icon.sm} className="text-primary" />
         </View>
       </View>
       <Text className={cn("font-bold text-foreground", comfortable ? "text-2xl" : "text-xl")}>
         {value === undefined ? '—' : typeof value === 'number' ? value.toLocaleString() : value}
       </Text>
       {subtitle && (
-        <Text className={cn("text-muted-foreground mt-0.5", comfortable ? "text-xs" : "text-[10px]")}>{subtitle}</Text>
+        <Text className={cn("text-muted-foreground mt-0.5", density.text.caption)}>{subtitle}</Text>
       )}
     </View>
   )
@@ -335,7 +333,7 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
       <View className="rounded-xl border border-border bg-card p-4">
         <View className="h-4 w-28 bg-muted rounded mb-3" />
         <View className="flex-row flex-wrap gap-2">
-          {[1, 2, 3, 4].map((i) => <View key={i} className="flex-1 min-w-[120px] h-14 bg-muted/50 rounded-lg" />)}
+          {[1, 2, 3, 4].map((i) => ( <View key={i} className="flex-1 min-w-[120px] h-14 bg-muted/50 rounded-lg" />))}
         </View>
       </View>
     )
@@ -376,7 +374,8 @@ export function ChatAnalyticsSection({ data, loading }: { data: ChatAnalyticsDat
 // Usage Table - Summary + Event Log views
 // =============================================================================
 
-type SortKey = 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalBilledUsd' | 'totalRawUsd'
+type SortKey =
+  | 'userEmail' | 'model' | 'requestCount' | 'totalTokens' | 'totalBilledUsd' | 'totalRawUsd'
 
 export function UsageSummaryView({
   data,
@@ -389,7 +388,8 @@ export function UsageSummaryView({
   onPageChange?: (p: number) => void
   currentPage?: number
 }) {
-  const comfortable = useNativeComfortable()
+  const comfortable = useIsNativePhoneLayout()
+  const density = densityFor(comfortable);
   const [sortKey, setSortKey] = useState<SortKey>('totalTokens')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -415,7 +415,7 @@ export function UsageSummaryView({
     const totalPages = Math.max(1, Math.ceil(data.total / data.limit))
     return (
       <View className="flex-row items-center justify-between mt-3">
-        <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')}>
+        <Text className={cn('text-muted-foreground', density.text.label)}>
           Page {page} of {totalPages} · {data.total.toLocaleString()} rows
         </Text>
         <View className="flex-row items-center gap-1">
@@ -494,7 +494,8 @@ export function UsageSummaryView({
                 {active ? (
                   sortDir === 'asc'
                     ? <ChevronUp size={14} className="text-foreground" />
-                    : <ChevronDown size={14} className="text-foreground" />
+                    : ( <ChevronDown size={14} className="text-foreground" />
+                )
                 ) : null}
               </Pressable>
             )
@@ -590,7 +591,8 @@ export function UsageSummaryView({
         <Pressable onPress={() => toggleSort('userEmail')} className="flex-1 flex-row items-center gap-1">
           <Text className="text-[10px] font-medium text-muted-foreground">User</Text>
           {sortKey === 'userEmail' ? (
-            sortDir === 'asc' ? <ChevronUp size={10} className="text-foreground" /> : <ChevronDown size={10} className="text-foreground" />
+            sortDir === 'asc' ? <ChevronUp size={10} className="text-foreground" /> : ( <ChevronDown size={10} className="text-foreground" />
+          )
           ) : (
             <ArrowUpDown size={10} className="text-muted-foreground opacity-40" />
           )}
@@ -675,13 +677,14 @@ export function UsageEventLogView({
   currentPage: number
   isLocalMode?: boolean
 }) {
-  const comfortable = useNativeComfortable()
+  const comfortable = useIsNativePhoneLayout()
+  const density = densityFor(comfortable);
   const totalPages = Math.ceil(data.total / data.limit)
   const entries = data.entries ?? []
 
   const pagination = totalPages > 1 ? (
     <View className="flex-row items-center justify-between mt-3">
-      <Text className={cn("text-muted-foreground", comfortable ? "text-sm" : "text-xs")}>
+      <Text className={cn("text-muted-foreground", density.text.label)}>
         Page {currentPage} of {totalPages}
       </Text>
       <View className="flex-row items-center gap-1">
@@ -876,7 +879,8 @@ export function UsageTableSection({
   title?: string
   isLocalMode?: boolean
 }) {
-  const comfortable = useNativeComfortable()
+  const comfortable = useIsNativePhoneLayout()
+  const density = densityFor(comfortable);
   const [view, setView] = useState<'summary' | 'detail'>('summary')
 
   const viewToggle = (
@@ -890,7 +894,7 @@ export function UsageTableSection({
       >
         <Text
           className={cn(
-            comfortable ? 'text-base' : 'text-xs',
+            density.text.body,
             view === 'summary' ? 'text-primary-foreground' : 'text-muted-foreground'
           )}
         >
@@ -906,7 +910,7 @@ export function UsageTableSection({
       >
         <Text
           className={cn(
-            comfortable ? 'text-base' : 'text-xs',
+            density.text.body,
             view === 'detail' ? 'text-primary-foreground' : 'text-muted-foreground'
           )}
         >
@@ -920,12 +924,12 @@ export function UsageTableSection({
     <View className={cn('rounded-xl border border-border bg-card', comfortable ? 'p-3' : 'p-4')}>
       {comfortable ? (
         <View className="mb-4 gap-3">
-          <Text className="text-lg font-semibold text-foreground">{title || 'AI Usage by User'}</Text>
+          <Text className={cn(density.text.title, "font-semibold text-foreground")}>{title || 'AI Usage by User'}</Text>
           {viewToggle}
         </View>
       ) : (
         <View className="mb-4 flex-row items-center justify-between">
-          <Text className="text-sm font-semibold text-foreground">{title || 'AI Usage by User'}</Text>
+          <Text className={cn(density.text.label, "font-semibold text-foreground")}>{title || 'AI Usage by User'}</Text>
           {viewToggle}
         </View>
       )}
@@ -978,7 +982,7 @@ export function FunnelSection({ data, loading }: { data: FunnelData | null; load
       <View className="rounded-xl border border-border bg-card p-4">
         <View className="h-4 w-28 bg-muted rounded mb-3" />
         <View className="flex-row gap-2">
-          {[1, 2, 3, 4, 5].map(i => <View key={i} className="flex-1 h-16 bg-muted/50 rounded-lg" />)}
+          {[1, 2, 3, 4, 5].map((i) => ( <View key={i} className="flex-1 h-16 bg-muted/50 rounded-lg" />))}
         </View>
       </View>
     )
@@ -1064,10 +1068,10 @@ const SOURCE_COLORS: Record<string, string> = {
   'google-ads': 'bg-blue-500/20 text-blue-600',
   'facebook-ads': 'bg-indigo-500/20 text-indigo-600',
   'organic:google': 'bg-green-500/20 text-green-600',
-  'direct': 'bg-gray-500/20 text-gray-500',
+  direct: 'bg-gray-500/20 text-gray-500',
   'google-oauth': 'bg-orange-500/20 text-orange-600',
-  'referral': 'bg-purple-500/20 text-purple-600',
-  'unknown': 'bg-gray-400/20 text-gray-400',
+  referral: 'bg-purple-500/20 text-purple-600',
+  unknown: 'bg-gray-400/20 text-gray-400',
 }
 
 function SourceBadge({ tag }: { tag: string | null }) {
@@ -1131,7 +1135,7 @@ export function UserActivityTable({
       </View>
 
       {/* Rows */}
-      {(data.users ?? []).map(u => (
+      {(data.users ?? []).map((u) => (
         <View key={u.id} className="flex-row items-center py-2 border-b border-border/50">
           <View className="flex-[2]">
             <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{u.name || '—'}</Text>
@@ -1195,7 +1199,7 @@ export function SourceBreakdownPanel({
       <View className="rounded-xl border border-border bg-card p-4">
         <View className="h-4 w-36 bg-muted rounded mb-3" />
         <View className="gap-2">
-          {[1, 2, 3].map(i => <View key={i} className="h-12 bg-muted/50 rounded-lg" />)}
+          {[1, 2, 3].map((i) => ( <View key={i} className="h-12 bg-muted/50 rounded-lg" />))}
         </View>
       </View>
     )
@@ -1222,7 +1226,7 @@ export function SourceBreakdownPanel({
         <Text className="text-[10px] text-muted-foreground ml-auto">{total} total</Text>
       </View>
       <View className="gap-2">
-        {(data.sources ?? []).map(s => {
+        {(data.sources ?? []).map((s) => {
           const pct = total > 0 ? Math.round((s.count / total) * 100) : 0
           return (
             <View key={s.tag} className="flex-row items-center p-2 rounded-lg bg-muted/50 gap-3">
@@ -1317,7 +1321,8 @@ export function AIInsightsPanel({
           <Text className="text-sm font-semibold text-foreground">AI Insights</Text>
           {data && (
             <Text className="text-[10px] text-muted-foreground">
-              {new Date(data.date).toLocaleDateString()} · {data.messagesAnalyzed} msgs analyzed
+              {new Date(data.date).toLocaleDateString()} · {" "}
+              {data.messagesAnalyzed} msgs analyzed
             </Text>
           )}
         </View>
@@ -1345,7 +1350,7 @@ export function AIInsightsPanel({
 
       {showHistory && digestList && (
         <View className="mb-3 gap-1">
-          {digestList.map(d => (
+          {digestList.map((d) => (
             <Pressable
               key={d.id}
               onPress={() => onDateSelect?.(d.date)}
@@ -1353,7 +1358,8 @@ export function AIInsightsPanel({
             >
               <Text className="text-[10px] text-foreground">{new Date(d.date).toLocaleDateString()}</Text>
               <Text className="text-[10px] text-muted-foreground">
-                {d.funnelSignups} signups · {d.activeUsers} active · {d.messagesAnalyzed} msgs
+                {d.funnelSignups} signups · {d.activeUsers} active · {" "}
+                {d.messagesAnalyzed} msgs
               </Text>
             </Pressable>
           ))}
@@ -1751,7 +1757,7 @@ export function UsageTimeseriesChart({
               ? chartUsd(n)
               : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(Math.round(n))
           }
-          formatTooltip={(n) => (metric === 'spend' ? chartUsd(n) : n.toLocaleString())}
+          formatTooltip={(n) =>metric === 'spend' ? chartUsd(n) : n.toLocaleString()}
         />
       )}
     </View>

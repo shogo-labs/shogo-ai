@@ -42,7 +42,6 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   Animated,
-  useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native"
@@ -92,7 +91,8 @@ import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
-import { isNativePhoneIntegrationsLayout, isPhoneLayout } from "../../lib/native-phone-layout"
+import { isPhoneLayout,
+  useNativePhoneWindow } from "../../lib/native-phone-layout"
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
@@ -471,7 +471,7 @@ function extractToolCalls(message: UIMessage): ExtractedToolCall[] {
       } else {
         const errorContent =
           part.state === "output-error"
-            ? (part as { errorText?: string }).errorText ?? part.error
+            ? ((part as { errorText?: string }).errorText ?? part.error)
             : part.error
         return {
           toolName: part.toolName || "unknown",
@@ -618,7 +618,8 @@ function requiresSchemaRefresh(toolCall: ExtractedToolCall): boolean {
     ? toolName.split("__").pop() || toolName
     : toolName
 
-  return normalizedToolName === "schema_set" || normalizedToolName === "schema_load"
+  return ( normalizedToolName === "schema_set" || normalizedToolName === "schema_load"
+  )
 }
 
 async function refreshCollections(
@@ -779,9 +780,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   enrichMessage,
 }: ChatPanelProps) {
   const chatDockStore = useChatDockStore()
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const { width: windowWidth, height: windowHeight,
+    isPhone: isNativePhoneLayout } = useNativePhoneWindow()
   const insets = useSafeAreaInsets()
-  const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
   const isPhoneViewport = isPhoneLayout(windowWidth, windowHeight)
   const ideBridge = useIdeBridge(ideMode)
 
@@ -1187,7 +1188,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // before the registrar runs can reach the latest implementations
   // without a closure dance.
   const emitTurnStartRef = useRef<(() => void) | null>(null)
-  const emitToolActivityRef = useRef<((args: {
+  const emitToolActivityRef = useRef<
+    |((args: {
     toolName: string
     phase: 'start' | 'end'
     label: string
@@ -1314,7 +1316,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // of briefly showing a loader while the stale-while-revalidate fetch runs.
   if (prevSessionIdRef.current !== currentSessionId) {
     const cachedForSession =
-      currentSessionId ? sessionMessageCache.get(currentSessionId) ?? null : null
+      currentSessionId ? ( sessionMessageCache.get(currentSessionId) ?? null) : null
     prevSessionIdRef.current = currentSessionId
     cachedMessagesRef.current = cachedForSession
     lastNonEmptyMessagesRef.current = cachedForSession ?? []
@@ -1330,7 +1332,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }
 
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>(() =>
-    currentSessionId ? sessionQueueCache.get(currentSessionId) ?? [] : []
+    currentSessionId ? ( sessionQueueCache.get(currentSessionId) ?? []) : []
   )
   const isProcessingQueueRef = useRef(false)
 
@@ -1505,7 +1507,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     getClientTurnId: () => pendingClientTurnIdRef.current,
   })
   const chatTransport = useMemo(
-    () => (transportConfig ? new DefaultChatTransport(transportConfig) : undefined),
+    () =>transportConfig ? new DefaultChatTransport(transportConfig) : undefined,
     [transportConfig]
   )
 
@@ -2743,7 +2745,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (isTunnelError && tunnelReconnecting) return 'Connection to desktop instance lost. Reconnecting\u2026'
       if (isTunnelError) return 'Connection to desktop instance lost. Tap Reconnect to retry.'
       if (streamAutoRecovering) return 'Connection interrupted. Reconnecting\u2026'
-      return (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ''
+      return (
+      (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ''
+    )
     },
     [error?.message, emptyResponseError, isTunnelError, tunnelReconnecting, streamAutoRecovering]
   )
@@ -3617,7 +3621,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const args =
       planTool.type === "tool-invocation"
         ? planTool.toolInvocation?.args
-        : planTool.input ?? planTool.args
+        : ( planTool.input ?? planTool.args)
     if (!args) return
     const restoredPlan = normalizePlanData({
       name: args.name ?? "Plan",
@@ -3699,7 +3703,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const args =
         planPart.type === "tool-invocation"
           ? planPart.toolInvocation?.args
-          : planPart.input ?? planPart.args
+          : ( planPart.input ?? planPart.args)
       if (!args?.name) return null
       return normalizePlanData({
         name: args.name,
@@ -3995,6 +3999,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setOptimisticUserInput({ sessionId: currentSessionId, content: trimmedContent, files: fileArray })
 
       const parts: Array<
+        |
         { type: "text"; text: string } | { type: "file"; mediaType: string; url: string; name?: string }
       > = []
 
@@ -4038,8 +4043,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // update; this MST mutation just keeps the local view in sync.
       try {
         const sessionInstance =
-          studioChat.chatSessionCollection.get(currentSessionId) as
-            | { update?: (changes: Record<string, unknown>) => void }
+          studioChat.chatSessionCollection.get(currentSessionId) as { update?: (changes: Record<string, unknown>) => void }
             | undefined
         sessionInstance?.update?.({ lastActiveAt: Date.now() })
       } catch (err) {
@@ -4437,7 +4441,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // back to a session restores its pending queue.
   useEffect(() => {
     const cached = currentSessionId
-      ? sessionQueueCache.get(currentSessionId) ?? []
+      ? ( sessionQueueCache.get(currentSessionId) ?? [])
       : []
     setMessageQueue(cached)
     isProcessingQueueRef.current = false
@@ -5603,7 +5607,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
             <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">Reconnect</Text>
           </Pressable>
         ) : undefined,
-      render: () => <Text className="text-xs text-muted-foreground">{toolErrorBanner.error}</Text>,
+      render: () => ( <Text className="text-xs text-muted-foreground">{toolErrorBanner.error}</Text>
+      ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toolErrorBanner, projectId, reconnecting])

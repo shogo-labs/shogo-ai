@@ -21,7 +21,6 @@ import {
   Text,
   Pressable,
   ActivityIndicator,
-  useWindowDimensions,
   ScrollView,
   Platform,
   BackHandler,
@@ -56,7 +55,8 @@ import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
-import { isPhoneLayout, nativePhoneFillStyle } from '../../../../lib/native-phone-layout'
+import { isPhoneLayout, nativePhoneFillStyle,
+  useNativePhoneWindow } from '../../../../lib/native-phone-layout'
 import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed, previewStatusPollBase, nativeCanvasBaseReady, projectIdFromAgentProxyUrl, previewWakeUrl } from '../../../../lib/preview-gate'
 import { ChatPanel } from '../../../../components/chat/ChatPanel'
 import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
@@ -216,7 +216,7 @@ function buildCanvasErrorDebugPrompt(args: {
   )
   lines.push('')
   lines.push('**Error**')
-  lines.push('```')
+  lines.push("```");
   lines.push(truncate(error, CANVAS_ERROR_MAX_LINE))
   lines.push('```')
 
@@ -301,7 +301,7 @@ export default observer(function ProjectLayout() {
     || (Platform.OS === 'web'
       && typeof window !== 'undefined'
       && new URLSearchParams(window.location.search).get('embed') === 'ide')
-  const { width, height } = useWindowDimensions()
+  const { width, height, isPhone: nativePhone } = useNativePhoneWindow()
   const isWide = width >= WIDE_BREAKPOINT
   const insets = useSafeAreaInsets()
   const phoneLayout = isPhoneLayout(width, height)
@@ -433,9 +433,10 @@ export default observer(function ProjectLayout() {
 
   const isStarred = useMemo(() => {
     try {
-      return store?.starredProjectCollection?.all?.some(
+      return ( store?.starredProjectCollection?.all?.some(
         (s: any) => s.projectId === projectId && s.userId === user?.id,
       ) ?? false
+      )
     } catch {
       return false
     }
@@ -456,7 +457,7 @@ export default observer(function ProjectLayout() {
   const handleRenameProject = useCallback(async (newName: string) => {
     if (!projectId) return
     await actions.updateProject(projectId, { name: newName })
-    setProject((prev: any) => prev ? { ...prev, name: newName } : prev)
+    setProject((prev: any) => ( prev ? { ...prev, name: newName } : prev))
   }, [projectId, actions])
 
   const handleToggleStar = useCallback(async () => {
@@ -1011,7 +1012,7 @@ export default observer(function ProjectLayout() {
   // Bumping `iframeRefreshKey` reloads the iframe; v1's SSE reconnect path
   // is gone.
   const reconnect = useCallback(() => {
-    setIframeRefreshKey(k => k + 1)
+    setIframeRefreshKey((k) => k + 1)
   }, [])
 
   // Load project data
@@ -1043,7 +1044,8 @@ export default observer(function ProjectLayout() {
     const isAccessDenied = (err: any) => {
       const status = err?.status
       const code = err?.code
-      return status === 403 || status === 404 || code === 'FORBIDDEN' || code === 'NOT_FOUND'
+      return ( status === 403 || status === 404 || code === 'FORBIDDEN' || code === 'NOT_FOUND'
+      )
     }
 
     const loadProject = async (attempt = 1): Promise<void> => {
@@ -1168,7 +1170,7 @@ export default observer(function ProjectLayout() {
             return
           }
           openTabsRestoredRef.current = true
-          setTabsHydration(Platform.OS !== 'web' && phoneLayout ? 'fresh' : 'restored-empty')
+          setTabsHydration(nativePhone ? 'fresh' : 'restored-empty')
           return
         }
       } catch { /* ignore malformed data */ }
@@ -1179,7 +1181,7 @@ export default observer(function ProjectLayout() {
       openTabsRestoredRef.current = true
       setTabsHydration('fresh')
     })
-  }, [projectId, phoneLayout])
+  }, [projectId, phoneLayout, nativePhone])
 
   // Persist open tabs to AsyncStorage on every change, including `[]`.
   // Storing the explicit empty array is what lets the next mount distinguish
@@ -1213,7 +1215,7 @@ export default observer(function ProjectLayout() {
       : params.chatSessionId
     if (incoming && incoming !== chatSessionId) {
       setChatSessionId(incoming)
-      setOpenChatTabIds((prev) => (prev.includes(incoming) ? prev : [...prev, incoming]))
+      setOpenChatTabIds((prev) =>prev.includes(incoming) ? prev : [...prev, incoming])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.chatSessionId])
@@ -1433,7 +1435,7 @@ export default observer(function ProjectLayout() {
   // panel with the session list. Auto-closes when the user leaves the chat tab.
   const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
   const [previewTab, setPreviewTab] = useState(
-    Platform.OS !== 'web' && phoneLayout && !isWide ? 'chat-fullscreen' : 'canvas',
+    nativePhone ? 'chat-fullscreen' : 'canvas',
   )
   // Ephemeral "the app needs your attention" override (e.g. the agent called
   // ask_user). Layered ON TOP of previewTab via effectiveTab below, and never
@@ -1567,8 +1569,7 @@ export default observer(function ProjectLayout() {
     }
     appliedTabIntentRef.current = token
     previewTabInitForRef.current = projectId
-    const nativePhoneChat =
-      Platform.OS !== 'web' && phoneLayout && !isWide
+    const nativePhoneChat = nativePhone
     const landingTab =
       requested === 'canvas' ||
       requested === 'chat-fullscreen' ||
@@ -1586,13 +1587,14 @@ export default observer(function ProjectLayout() {
     if (nativePhoneChat) {
       setActiveTab(requested === 'chat-fullscreen' ? 'chat' : 'canvas')
     }
-  }, [projectId, params.tab, params.tabNonce, phoneLayout, isWide])
+  }, [projectId, params.tab, params.tabNonce, phoneLayout,
+    nativePhone, isWide])
 
   useEffect(() => {
     if (!projectId || !project) return
     if (previewTabInitForRef.current === projectId) return
     previewTabInitForRef.current = projectId
-    if (Platform.OS !== 'web' && phoneLayout && !isWide) {
+    if (nativePhone) {
       setPreviewTab('chat-fullscreen')
       AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
       return
@@ -1616,7 +1618,7 @@ export default observer(function ProjectLayout() {
     }).catch(() => {})
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId, project, isExternalProject, phoneLayout, isWide])
+  }, [projectId, project, isExternalProject, phoneLayout, nativePhone, isWide])
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -1965,7 +1967,7 @@ export default observer(function ProjectLayout() {
               .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
             const preview = msgs[0]?.content?.trim()
             names[s.id] = preview
-              ? (preview.length > 40 ? preview.slice(0, 40) + '…' : preview)
+              ?preview.length > 40 ? preview.slice(0, 40) + '…' : preview
               : `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
           } catch {
             names[s.id] = `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
@@ -2011,8 +2013,7 @@ export default observer(function ProjectLayout() {
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
-          name:
-            (typeof s.name === 'string' && s.name.trim())
+          name:typeof s.name === 'string' && s.name.trim()
               ? s.name.trim()
               : sessionNames[s.id] ||
                 s.inferredName ||
@@ -2057,7 +2058,7 @@ export default observer(function ProjectLayout() {
         })
         const id = res.session?.id
         if (id) {
-          setOpenChatTabIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+          setOpenChatTabIds((prev) =>prev.includes(id) ? prev : [...prev, id])
           setChatSessionId(id)
           chatSessionEvents.emit({ projectId, activeSessionId: id, refresh: true })
         } else if (res.error) {
@@ -2106,7 +2107,7 @@ export default observer(function ProjectLayout() {
       if (!newId) return
 
       setDebugInitMessages((prev) => ({ ...prev, [newId]: initialMessage }))
-      setOpenChatTabIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]))
+      setOpenChatTabIds((prev) =>prev.includes(newId) ? prev : [...prev, newId])
       setChatSessionId(newId)
       setChatCollapsed(false)
       setActiveTab('chat')
@@ -2135,7 +2136,7 @@ export default observer(function ProjectLayout() {
     if (!projectId) return
     return chatSessionEvents.subscribeSelect(({ projectId: pid, sessionId }) => {
       if (pid !== projectId) return
-      setOpenChatTabIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]))
+      setOpenChatTabIds((prev) =>prev.includes(sessionId) ? prev : [...prev, sessionId])
       setChatSessionId(sessionId)
     })
   }, [projectId])
@@ -2160,7 +2161,7 @@ export default observer(function ProjectLayout() {
         void refreshProjectChatSessions()
       }
       if (isIdeChatEmbed && activeSessionId) {
-        setOpenChatTabIds((prev) => (prev.includes(activeSessionId) ? prev : [...prev, activeSessionId]))
+        setOpenChatTabIds((prev) =>prev.includes(activeSessionId) ? prev : [...prev, activeSessionId])
         setChatSessionId(activeSessionId)
       }
     })
@@ -2715,8 +2716,7 @@ export default observer(function ProjectLayout() {
     />
   )
 
-  const nativePhoneChatViewportHeight =
-    Platform.OS !== 'web' && phoneLayout && !isWide
+  const nativePhoneChatViewportHeight = nativePhone
       ? Math.max(0, height - insets.top - insets.bottom - 24)
       : undefined
 
@@ -2800,13 +2800,13 @@ export default observer(function ProjectLayout() {
   // without mutating the persisted previewTab.
   const isChatFullscreen = isWide && effectiveTab === 'chat-fullscreen'
 
-  const chatHidden = isWide ? (isChatFullscreen || chatCollapsed) : activeTab !== 'chat'
+  const chatHidden = isWide ?isChatFullscreen || chatCollapsed : activeTab !== 'chat'
   const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
-  const nativePhoneCanvasFrame = Platform.OS !== 'web' && phoneLayout && !isWide && activeTab === 'canvas'
+  const nativePhoneCanvasFrame = nativePhone && activeTab === 'canvas'
   const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
   const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
   const nativePhoneFill = nativePhoneCanvasFrame ? nativePhoneFillStyle(width) : undefined
-  const enableNativePhoneChatPicker = Platform.OS !== 'web' && phoneLayout && !isWide
+  const enableNativePhoneChatPicker = nativePhone
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
   // prop — see comment on `fullBleed` for why the iframe's left margin
@@ -2853,7 +2853,7 @@ export default observer(function ProjectLayout() {
     canvasEnabled,
     activeMode,
     // Workspace Trust badge (external/folder-linked projects only).
-    workingMode: isExternalProject ? 'external' as const : 'managed' as const,
+    workingMode: isExternalProject ? ( 'external' as const) : ( 'managed' as const),
     trustLevel: projectTrustLevel,
     onToggleTrust: handleToggleTrust,
     trustBusy: trustSubmitting,
@@ -2886,10 +2886,10 @@ export default observer(function ProjectLayout() {
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
-    activeChatSessionName: isChatFullscreen ? (chatSessions.find(s => s.id === chatSessionId)?.name ?? null) : undefined,
+    activeChatSessionName: isChatFullscreen ? (chatSessions.find((s) => s.id === chatSessionId)?.name ?? null) : undefined,
     canvasActive: canvasEnabled && effectiveTab === 'canvas',
     canvasThemeSupported,
-    onCanvasRefresh: () => setIframeRefreshKey(k => k + 1),
+    onCanvasRefresh: () => setIframeRefreshKey((k) => k + 1),
     onCanvasOpenInNewTab:
       Platform.OS === 'web' && (previewLoaderUrl || canvasBaseUrl || agentUrl)
         ? () => {
@@ -2944,7 +2944,7 @@ export default observer(function ProjectLayout() {
                   <Text className="text-foreground text-sm font-medium">Try again</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
+                  onPress={() =>router.canGoBack() ? router.back() : router.replace('/(app)')}
                   className="px-4 py-2 rounded-md border border-border active:bg-muted"
                   accessibilityLabel="Go back to projects list"
                 >
@@ -3215,7 +3215,7 @@ export default observer(function ProjectLayout() {
                   )}
                   style={
                     !isChatFullscreen && isWide
-                      ? {
+                      ? ( {
                           // Width stays at the full panel size even when
                           // collapsed, so the inner chat content doesn't
                           // reflow during the slide — the negative
@@ -3232,7 +3232,7 @@ export default observer(function ProjectLayout() {
                           transitionProperty: 'width, margin-left',
                           transitionDuration: '220ms',
                           transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-                        } as any
+                        } as any)
                       : !isChatFullscreen && !isWide && chatHidden
                         ? { display: 'none' }
                         : undefined
@@ -4061,7 +4061,7 @@ function usePreviewReadiness(
   // agent-proxy). `true` once the preview is serveable.
   running: boolean,
 ): string | null {
-  const [ready, setReady] = useState(() => (baseUrl ? warmPreviewReadyCache.has(baseUrl) : false))
+  const [ready, setReady] = useState(() =>baseUrl ? warmPreviewReadyCache.has(baseUrl) : false)
 
   // Seed from the warm cache on base-URL change so a switch-back shows the
   // preview immediately; the `running` effect below latches it fresh otherwise.
@@ -4222,7 +4222,7 @@ function CanvasPanel({
     // → app is built and served but we're waiting on the API sidecar.
     const phaseLabel = !baseReady
       ? previewPhase && previewPhase !== 'idle'
-        ? PHASE_LABELS[previewPhase] ?? 'Preparing preview...'
+        ? ( PHASE_LABELS[previewPhase] ?? 'Preparing preview...')
         : !agentUrl
           ? 'Connecting to agent runtime...'
           : 'Loading preview...'
@@ -4237,7 +4237,8 @@ function CanvasPanel({
               Preview build failed
             </Text>
             <Text className="text-muted-foreground text-center text-sm">
-              The project couldn't finish building. Check the build logs, or ask the agent to diagnose and fix the error.
+              The project couldn't finish building. Check the build logs, or ask
+              the agent to diagnose and fix the error.
             </Text>
             {onRefresh && (
               <Pressable
@@ -4441,7 +4442,7 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
   useEffect(() => {
     if (running && !previewReady) {
       setPreviewReady(true)
-      setIframeKey(k => k + 1)
+      setIframeKey((k) => k + 1)
     }
   }, [running, previewReady])
 
@@ -4494,7 +4495,7 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
           src={previewReady ? previewUrl : 'about:blank'}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
           className="block h-full w-full border-0"
-          {...{ 'data-thumbnail-target': '' } as any}
+          {...({ 'data-thumbnail-target': '' } as any)}
         />
       </View>
     )

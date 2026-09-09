@@ -32,7 +32,6 @@ import {
   TextInput,
   Image,
   Modal,
-  useWindowDimensions,
   Alert,
   Platform,
 } from 'react-native'
@@ -79,7 +78,8 @@ import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
 import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
-import { isNativePhoneIntegrationsLayout, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
+import {
+  useNativePhoneWindow, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 
 // Types
@@ -269,9 +269,8 @@ export default observer(function AllProjectsPage() {
   const actions = useDomainActions()
   const isRemoteSource = useIsRemoteSource()
   const toast = useToast()
-  const { width, height } = useWindowDimensions()
+  const { width, height, isPhone: comfortable } = useNativePhoneWindow()
   const isNativeMobile = Platform.OS === 'ios' || Platform.OS === 'android'
-  const comfortable = isNativePhoneIntegrationsLayout(width, height)
 
   type VisibilityFilter = 'any' | 'public' | 'private'
   type StatusFilter = 'any' | 'draft' | 'active' | 'archived'
@@ -396,7 +395,7 @@ export default observer(function AllProjectsPage() {
 
   // Current folder object
   const currentFolder = currentFolderId
-    ? allFolders.find((f) => f.id === currentFolderId) ?? null
+    ? ( allFolders.find((f) => f.id === currentFolderId) ?? null)
     : null
 
   // Filtered & sorted projects
@@ -814,7 +813,7 @@ export default observer(function AllProjectsPage() {
 
       if (item.type === 'create') {
         return (
-          <View style={{ flex: 1, margin: comfortable ? 6 : 6 }}>
+          <View style={{ flex: 1, margin: 6 }}>
             <Pressable
               onPress={handleCreateProject}
               className="items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-border"
@@ -871,7 +870,7 @@ export default observer(function AllProjectsPage() {
                         {...triggerProps}
                         onPress={(e) => {
                           e.stopPropagation()
-                          setActionMenuFolderId((prev) => (prev === folder.id ? null : folder.id))
+                          setActionMenuFolderId((prev) =>prev === folder.id ? null : folder.id)
                         }}
                         className="w-8 h-8 items-center justify-center rounded-md active:bg-muted"
                       >
@@ -975,7 +974,7 @@ export default observer(function AllProjectsPage() {
                     }
                     onPress={(e) => {
                       e.stopPropagation()
-                      setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
+                      setActionMenuProjectId((prev) =>prev === project.id ? null : project.id)
                     }}
                     className={cn(
                       'items-center justify-center rounded-lg active:bg-muted/80',
@@ -1100,7 +1099,7 @@ export default observer(function AllProjectsPage() {
                       {...triggerProps}
                       onPress={(e) => {
                         e.stopPropagation()
-                        setActionMenuFolderId((prev) => (prev === folder.id ? null : folder.id))
+                        setActionMenuFolderId((prev) =>prev === folder.id ? null : folder.id)
                       }}
                       className="w-8 h-8 items-center justify-center"
                     >
@@ -1241,7 +1240,7 @@ export default observer(function AllProjectsPage() {
                     {...triggerProps}
                     onPress={(e) => {
                       e.stopPropagation()
-                      setActionMenuProjectId((prev) => (prev === project.id ? null : project.id))
+                      setActionMenuProjectId((prev) =>prev === project.id ? null : project.id)
                     }}
                     className="p-2"
                   >
@@ -2047,7 +2046,7 @@ export default observer(function AllProjectsPage() {
               </Pressable>
             </View>
             <Text className="text-sm text-muted-foreground mb-4">
-              Move {selectedIds.size} project{selectedIds.size !== 1 ? 's' : ''} to another workspace
+              Move {selectedIds.size} project{selectedIds.size !== 1 ? 's' : ''}{" "} to another workspace
             </Text>
 
             {workspaces.filter((w: any) => w.id !== currentWorkspace?.id).length === 0 ? (

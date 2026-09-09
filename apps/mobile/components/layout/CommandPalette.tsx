@@ -18,7 +18,6 @@ import {
   ScrollView,
   Platform,
   Modal,
-  useWindowDimensions,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
@@ -39,7 +38,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
+import { useIsNativePhoneLayout } from '../../lib/native-phone-layout'
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -71,8 +70,7 @@ export const CommandPalette = observer(function CommandPalette({
   onClose,
 }: CommandPaletteProps) {
   const router = useRouter()
-  const { width, height } = useWindowDimensions()
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const isNativePhone = useIsNativePhoneLayout()
   const projects = useProjectCollection()
   const { localMode, features } = usePlatformConfig()
   const [query, setQuery] = useState('')
@@ -257,9 +255,9 @@ export const CommandPalette = observer(function CommandPalette({
   // so events work inside the Modal portal on web.
   useEffect(() => {
     if (Platform.OS !== 'web' || !visible) return
-    const el = (inputRef.current as any)
+    const el =inputRef.current as any
     const node: HTMLElement | null =
-      el && typeof el.addEventListener === 'function' ? el : el?._node ?? null
+      el && typeof el.addEventListener === 'function' ? el : ( el?._node ?? null)
     if (!node) return
 
     const handler = (e: KeyboardEvent) => {

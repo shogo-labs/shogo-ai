@@ -13,17 +13,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   FlatList,
-  Platform,
   Pressable,
   Text,
-  useWindowDimensions,
   View,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { ArrowLeft, ChevronRight, Folder, MessageSquare, Plus } from 'lucide-react-native'
 import { useProjectCollection, useDomainHttp } from '../../contexts/domain'
-import { isPhoneLayout } from '../../lib/native-phone-layout'
+import {
+  PhoneListEmpty,
+  PhoneListRow } from "../../components/phone/PhoneListRow"
+import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route";
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
@@ -38,10 +39,7 @@ export default observer(function ProjectChatsPage() {
   const projectId = Array.isArray(params.id) ? params.id[0] : params.id
   const projects = useProjectCollection()
   const http = useDomainHttp()
-  const { width, height } = useWindowDimensions()
-  const isPhone = isPhoneLayout(width, height)
-  const isSupportedPlatform = Platform.OS !== 'web' || isPhone
-
+  const isSupportedPlatform = usePhoneOnlyRoute()
   const [sessions, setSessions] = useState<ProjectChatListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [hasMore, setHasMore] = useState(false)
@@ -78,12 +76,6 @@ export default observer(function ProjectChatsPage() {
     },
     [http, projectId],
   )
-
-  useEffect(() => {
-    if (!isSupportedPlatform) {
-      router.replace('/(app)' as any)
-    }
-  }, [isSupportedPlatform, router])
 
   useEffect(() => {
     if (!isSupportedPlatform) return
@@ -127,20 +119,15 @@ export default observer(function ProjectChatsPage() {
     ({ item }: { item: ProjectChatListItem }) => {
       const label = projectChatLabel(item)
       return (
-        <Pressable
+        <PhoneListRow
           onPress={() => openChat(item.id)}
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          className="flex-row items-center gap-3 px-4 py-3.5 active:bg-muted/60"
-        >
-          <View className="h-11 w-11 items-center justify-center rounded-2xl bg-muted">
-            <MessageSquare size={18} className="text-foreground" />
-          </View>
-          <Text className="min-w-0 flex-1 text-[16px] font-medium text-foreground" numberOfLines={1}>
-            {label}
-          </Text>
-          <ChevronRight size={18} className="text-muted-foreground shrink-0" />
-        </Pressable>
+          title={label}
+          icon={
+          <MessageSquare size={18} className="text-foreground" />}
+          trailing={
+          <ChevronRight size={18} className="text-muted-foreground" />
+          }
+        />
       )
     },
     [openChat],
@@ -185,19 +172,20 @@ export default observer(function ProjectChatsPage() {
           <ActivityIndicator />
         </View>
       ) : activeSessions.length === 0 ? (
-        <View className="flex-1 items-center justify-center gap-3 px-8">
-          <MessageSquare size={44} className="text-muted-foreground" />
-          <Text className="text-center text-lg font-semibold text-foreground">No chats yet</Text>
-          <Text className="max-w-[280px] text-center text-base text-muted-foreground">
-            Start a chat in this project to see it here.
-          </Text>
+        <PhoneListEmpty
+          icon={
+          <MessageSquare size={44} className="text-muted-foreground" />}
+          title="No chats yet"
+          message="Start a chat in this project to see it here."
+          action={
           <Pressable
             onPress={openNewChat}
-            className="mt-2 rounded-full bg-muted px-5 py-2.5 active:opacity-80"
+            className="rounded-full bg-muted px-5 py-2.5 active:opacity-80"
           >
             <Text className="text-base font-medium text-foreground">New chat</Text>
           </Pressable>
-        </View>
+          }
+        />
       ) : (
         <FlatList
           data={activeSessions}

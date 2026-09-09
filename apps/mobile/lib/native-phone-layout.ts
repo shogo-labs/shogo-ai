@@ -36,6 +36,14 @@ export const WEB_PHONE_MAX_WIDTH = 767
  * Phone chrome: native handset, or a narrow web viewport.
  * Does not enable Yoga pixel-width workarounds on web.
  */
+export const WEB_WIDE_MIN_WIDTH = WEB_PHONE_MAX_WIDTH + 1;
+/** Admin shell intentionally uses a wider desktop breakpoint than the app shell. */
+export const ADMIN_WEB_WIDE_MIN_WIDTH = 900;
+
+/**
+ * Phone chrome: native handset, or a narrow web viewport.
+ * Does not enable Yoga pixel-width workarounds on web.
+ */
 export function isPhoneLayout(width: number, height: number): boolean {
   if (isNativePlatform()) return isNativePhoneIntegrationsLayout(width, height)
   return width <= WEB_PHONE_MAX_WIDTH
@@ -118,6 +126,17 @@ export const NATIVE_PHONE_SHEET_BACKDROP = {
   dark: 'rgba(0,0,0,0.40)',
   light: 'rgba(0,0,0,0.50)',
 } as const
+
+export const NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO = 0.78;
+export const NATIVE_PHONE_SHEET_COMPACT_RATIO = 0.72;
+export const NATIVE_PHONE_SHEET_BODY_RATIO = 0.62;
+export const NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO = 0.56;
+export const NATIVE_PHONE_SHEET_FADE_MS = 320;
+export const NATIVE_PHONE_SYSTEM_GRAY = {
+  16: "rgba(120,120,128,0.16)",
+  24: "rgba(120,120,128,0.24)",
+  32: "rgba(120,120,128,0.32)",
+} as const;
 
 export function nativePhoneCanvas(isDark: boolean): string {
   return isDark ? NATIVE_PHONE_CANVAS.dark : NATIVE_PHONE_CANVAS.light
@@ -359,4 +378,10 @@ export function useNativePhoneWindow(): {
 export function useIsNativePhoneLayout(): boolean {
   const { width, height } = useWindowDimensions()
   return isNativePhoneIntegrationsLayout(width, height)
+}
+
+/** Phone chrome predicate including narrow web, for composer and dock layouts. */
+export function usePhoneLayout(): boolean {
+  const { width, height } = useWindowDimensions();
+  return isPhoneLayout(width, height);
 }

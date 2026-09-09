@@ -30,7 +30,12 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
-import { useNativePhoneWindow, nativeContentWidth, nativeSettingsPaneFill, nativeSettingsPaneStyle, NATIVE_PHONE_CONTROL_SIZE, NATIVE_PHONE_ROW_GAP } from '../../../lib/native-phone-layout'
+import { useNativePhoneWindow, nativeContentWidth, NATIVE_PHONE_CONTROL_SIZE, NATIVE_PHONE_ROW_GAP } from '../../../lib/native-phone-layout'
+import {
+  NativePhonePane,
+  phonePaneScrollProps,
+} from "../../phone/NativePhonePane";
+import { densityFor } from "../../../lib/phone-density";
 import { useDomainHttp } from '../../../contexts/domain'
 import { agentFetch } from '../../../lib/agent-fetch'
 
@@ -75,6 +80,7 @@ interface ToolsPanelProps {
 
 export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const density = densityFor(comfortable);
   const contentWidth = comfortable ? nativeContentWidth(pageWidth) : 0
   const http = useDomainHttp()
   const [installedTools, setInstalledTools] = useState<InstalledTool[]>([])
@@ -186,7 +192,8 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         }
         setShowEnvForm(null)
         await loadInstalledTools()
-        setSearchResults((prev) => prev.map((r) => r.id === result.id ? { ...r, installed: true } : r))
+        setSearchResults((prev) => prev.map((r) => ( r.id === result.id ? { ...r, installed: true } : r)),
+        )
       } catch (err: any) {
         setError(err.message)
       } finally {
@@ -210,7 +217,8 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
           throw new Error(data.error || 'Failed to uninstall tool')
         }
         await loadInstalledTools()
-        setSearchResults((prev) => prev.map((r) => r.id === toolId ? { ...r, installed: false } : r))
+        setSearchResults((prev) => prev.map((r) => ( r.id === toolId ? { ...r, installed: false } : r)),
+        )
       } catch (err: any) {
         setError(err.message)
       } finally {
@@ -343,10 +351,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
 
   if (!agentUrl) {
     return (
-      <View
-        collapsable={false}
-        className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-        style={comfortable ? nativeSettingsPaneFill : undefined}
+      <NativePhonePane pageWidth={pageWidth}comfortable={comfortable}
       >
         <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
           <Wrench size={16} className="text-muted-foreground" />
@@ -361,29 +366,26 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
             The agent runtime is starting up. Integrations will be available once the agent is ready.
           </Text>
         </View>
-      </View>
+      </NativePhonePane>
     )
   }
 
   return (
-    <View
-      collapsable={false}
-      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+    <NativePhonePane pageWidth={pageWidth}comfortable={comfortable}
     >
       <View
         className={cn('border-b border-border flex-row items-center gap-2', comfortable ? 'px-4 py-3.5' : 'px-4 py-3')}
         style={comfortable ? { width: pageWidth } : undefined}
       >
-        <Wrench size={comfortable ? 20 : 16} className="text-muted-foreground" />
+        <Wrench size={density.icon.lg} className="text-muted-foreground" />
         <View style={comfortable ? { width: Math.max(0, contentWidth - 20 - NATIVE_PHONE_CONTROL_SIZE - NATIVE_PHONE_ROW_GAP * 2) } : undefined} className={comfortable ? undefined : 'flex-1 min-w-0'}>
-          <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Integrations</Text>
-          <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+          <Text className={cn('font-medium text-foreground', density.text.title)} numberOfLines={1}>Integrations</Text>
+          <Text className={cn('text-muted-foreground', density.text.body)} numberOfLines={1}>
             {installedTools.length} installed
           </Text>
         </View>
         <Pressable onPress={loadInstalledTools} className={cn('rounded-md active:bg-muted', comfortable ? 'h-11 w-11 items-center justify-center' : 'p-1')}>
-          <RefreshCw size={comfortable ? 18 : 14} className="text-muted-foreground" />
+          <RefreshCw size={density.icon.md} className="text-muted-foreground" />
         </Pressable>
       </View>
 
@@ -397,11 +399,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       )}
 
       <ScrollView
-        className={comfortable ? undefined : 'flex-1'}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        alwaysBounceVertical={comfortable}
-        style={comfortable ? nativeSettingsPaneStyle(pageWidth) : undefined}
+        className={comfortable ? undefined : 'flex-1'}{...phonePaneScrollProps(comfortable)}
         contentContainerStyle={{
           padding: 16,
           flexGrow: 1,
@@ -417,7 +415,8 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
           <View className="gap-4" style={comfortable ? { width: contentWidth } : undefined}>
             {/* Search & Discover Section */}
             <View className="gap-2">
-              <Text className={cn('font-semibold text-muted-foreground uppercase tracking-wide', comfortable ? 'text-sm' : 'text-xs')}>
+              <Text className={cn('font-semibold text-muted-foreground uppercase tracking-wide',
+                  density.text.label)}>
                 Search & Discover
               </Text>
               <View className={cn('gap-2', comfortable ? 'flex-col' : 'flex-row items-center')}>
@@ -425,20 +424,22 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                   className={cn('flex-row items-center border border-border rounded-lg bg-background px-3', comfortable ? 'min-h-12' : 'flex-1 w-full')}
                   style={comfortable ? { width: contentWidth } : undefined}
                 >
-                  <Search size={comfortable ? 18 : 14} className="text-muted-foreground" />
+                  <Search size={density.icon.md} className="text-muted-foreground" />
                   <TextInput
                     placeholder={comfortable ? 'Search Slack, Calendar, Postgres' : 'Search tools (e.g. "google calendar", "slack", "postgres")...'}
                     placeholderTextColor="#999"
                     value={searchQuery}
                     onChangeText={setSearchQuery}
                     onSubmitEditing={handleSearch}
-                    className={cn('py-2 px-2 text-foreground', comfortable ? 'text-base' : 'flex-1 text-sm')}
+                    className={cn('py-2 px-2 text-foreground',
+                      density.text.body,
+                      ! comfortable && "flex-1")}
                     style={comfortable ? { width: Math.max(0, contentWidth - 24 - 18 - 16) } : undefined}
                     returnKeyType="search"
                   />
                   {searchQuery.length > 0 && (
                     <Pressable onPress={() => { setSearchQuery(''); setSearchResults([]) }} className={comfortable ? 'h-10 w-10 items-center justify-center' : 'p-1'}>
-                      <X size={comfortable ? 18 : 12} className="text-muted-foreground" />
+                      <X size={density.icon.md} className="text-muted-foreground" />
                     </Pressable>
                   )}
                 </View>
@@ -514,7 +515,8 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                               <View className="flex-row items-center gap-1 mt-1">
                                 <Key size={10} className="text-muted-foreground" />
                                 <Text className="text-[10px] text-muted-foreground">
-                                  Requires: {Object.keys(result.requiredEnv).join(', ')}
+                                  Requires: {" "}
+                                    {Object.keys(result.requiredEnv).join(', ')}
                                 </Text>
                               </View>
                             )}
@@ -582,7 +584,8 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
                                       className="px-2 py-1 text-xs border border-border rounded bg-background text-foreground"
                                     />
                                     <Text className="text-[9px] text-muted-foreground">
-                                      Leave blank if your extension doesn't use a token.
+                                      Leave blank if your extension doesn't
+                                        use a token.
                                     </Text>
                                   </View>
                                 )}
@@ -849,6 +852,6 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
           </View>
         )}
       </ScrollView>
-    </View>
+    </NativePhonePane>
   )
 }

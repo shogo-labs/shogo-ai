@@ -27,8 +27,8 @@ import {
   useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { useResolvedTheme } from "../../contexts/theme"
-import { isPhoneLayout, NATIVE_PHONE_ICON_STROKE } from "../../lib/native-phone-layout"
+import { NATIVE_PHONE_ICON_STROKE,
+  NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
 import {
   Popover,
   PopoverBackdrop,
@@ -39,23 +39,20 @@ import { AttachSourceSheet } from "./AttachSourceSheet"
 import { ContextTracker } from "./ContextTracker"
 import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ComposerModelPicker, getNativeModelMenuWidth } from "./ModelPickerMenu"
+import { ComposerModelPicker } from "./ModelPickerMenu"
 import { WebTooltip } from "./WebTooltip"
 import { DockChip } from "./dock/DockChip"
 import { DockChipRail } from "./dock/DockChipRail"
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
 import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel"
 import {
-  ArrowUp,
   Plus,
   Square,
   X,
   Zap,
   Lock,
-  File,
   FileText,
   FolderGit2,
-  Image as ImageIcon,
   Bot,
   ClipboardList,
   MessageCircleQuestion,
@@ -69,12 +66,8 @@ import {
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
 import {
-  analyzeContent,
   kindLabel,
-  LONG_PASTE_MIN_CHARS,
-  MAX_PASTED_TEXTS,
   buildPastedAttachments,
-  type PastedTextEntry,
 } from "./long-text-utils"
 import { resolveChatInputTextChange, type ChatInputTextChange } from "./chat-input-text-change"
 import { FileViewerModal } from "./FileViewerModal"
@@ -83,12 +76,8 @@ import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
 import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
-  PROMINENT_COMPOSER_FONT_SIZE,
-  PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
   PROMINENT_COMPOSER_HEIGHT_EASING,
   PROMINENT_COMPOSER_LINE_HEIGHT,
-  PROMINENT_COMPOSER_MAX_HEIGHT,
-  PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
   PROMINENT_COMPOSER_MIN_HEIGHT,
   PROMINENT_COMPOSER_PADDING_BOTTOM,
   PROMINENT_COMPOSER_PADDING_HORIZONTAL,
@@ -96,10 +85,7 @@ import {
   PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
-  ProminentAnimatedTextInput,
   nextProminentComposerHeight,
-  prominentModelTriggerMaxWidth,
-  useProminentComposerExpansion,
 } from "./useProminentComposerExpansion"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
@@ -113,15 +99,29 @@ export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 import { EnvironmentPicker } from "./EnvironmentPicker"
 import {
   executeNativeAttachAction,
-  type NativePickedAttachment,
 } from "../../lib/native-attachment-picker"
 import {
-  CHATGPT_COMPOSER,
   ComposerPlusModeList,
   ComposerPlusSection,
   ComposerPlusSheet,
   compactNativeModelLabel,
-} from "./ComposerPlusMenu"
+} from "./ComposerPlusMenu";
+import {
+  estimateDataUrlSize,
+  formatFileSize,
+  getFileIcon,
+  MAX_FILE_SIZE,
+  MAX_FILES,
+  useComposerAttachments,
+} from "../../lib/composer-attachments";
+import {
+  ComposerPlusTrigger,
+  ComposerSendButton,
+  ProminentComposerField,
+  composerModelPickerProps,
+  useComposerLayoutMode,
+  useProminentComposerHeight,
+} from "./composer"
 
 export type InteractionMode = "agent" | "plan" | "ask"
 
@@ -153,8 +153,6 @@ export const INTERACTION_MODES: InteractionModeConfig[] = [
   },
 ]
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024
-const MAX_FILES = 10
 const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
 
 /**
@@ -170,14 +168,6 @@ const CHAT_INPUT_MIN_HEIGHT = 60
 const CHAT_INPUT_MAX_HEIGHT = 200
 const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
 const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
-
-interface AttachedFile {
-  id: string
-  dataUrl: string
-  name: string
-  type: string
-  size: number
-}
 
 export interface FileAttachment {
   dataUrl: string
@@ -321,11 +311,6 @@ export type RestoreDraftRequest = {
   files?: FileAttachment[]
 }
 
-function estimateDataUrlSize(dataUrl: string): number {
-  const base64 = dataUrl.includes(",") ? dataUrl.split(",").pop() || "" : dataUrl
-  return Math.max(0, Math.floor((base64.length * 3) / 4))
-}
-
 interface SkillOption {
   name: string
   description: string
@@ -464,38 +449,57 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
-  const resolvedTheme = useResolvedTheme()
+  const { height: windowHeight } = useWindowDimensions()
   const effectiveIsPro = features.billing ? isPro : true
-  const isNative = Platform.OS !== "web"
-  const isNativePhone = isPhoneLayout(windowWidth, windowHeight)
-  const useProminentComposer = isNativePhone && !flush
-  const chatgptComposer = resolvedTheme === "light" ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark
+  const { isNative,
+    isPhoneChrome, useProminentComposer, chatgptComposer,
+    sizes,
+    modelTriggerMaxWidth,
+    nativeModelMenuWidth,
+  } = useComposerLayoutMode({
+    prominent : true,
+    flush,
+  })
   const inputMinHeight = useProminentComposer
-    ? PROMINENT_COMPOSER_MIN_HEIGHT
+    ? sizes.inputMinHeight
     : isNative
       ? CHAT_INPUT_NATIVE_MIN_HEIGHT
       : CHAT_INPUT_MIN_HEIGHT
   const inputMaxHeight = useProminentComposer
-    ? PROMINENT_COMPOSER_MAX_HEIGHT
+    ? sizes.inputMaxHeight
     : isNative
       ? CHAT_INPUT_NATIVE_MAX_HEIGHT
       : CHAT_INPUT_MAX_HEIGHT
-  const modelTriggerMaxWidth = useProminentComposer
-    ? prominentModelTriggerMaxWidth(windowWidth)
-    : Math.max(64, Math.min(96, Math.floor(windowWidth * 0.22)))
-  const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
   const ezActive = bridge?.ezModeActive ?? false
 
   const textInputRef = useRef<TextInput>(null)
-  const dropZoneRef = useRef<View>(null)
-  const dragCounterRef = useRef(0)
   const inputValueRef = useRef("")
   // Guards against the DOM paste listener AND onChangeText both firing for
   // the same clipboard event, which would create duplicate chips.
-  const pasteHandledRef = useRef(false)
+  const {
+    pendingFiles,
+    setPendingFiles,
+    fileError,
+    setFileError,
+    isProcessingFiles,
+    isDragOver,
+    pastedTexts,
+    setPastedTexts,
+    viewingPastedId,
+    setViewingPastedId,
+    viewingPasted,
+    fileInputRef,
+    dropZoneRef, pasteHandledRef,
+    handleRemoveFile,
+    applyPickedFiles,
+    handleWebFileChange,
+    addPastedText,
+    handleRemovePastedText,
+    handleUpdatePastedText,
+    resetAttachments,
+  } = useComposerAttachments()
   // Coalesced-flush scaffolding for `handleChangeText` (declared here, ahead
   // of `composerDisplayValue` below, so the rendered TextInput can always
   // show the freshest typed text even on a render that fires BEFORE the
@@ -528,16 +532,10 @@ function ChatInputImpl({
   const inputHeightRef = useRef(inputMinHeight)
   const inputHeightAnimation = useRef(new Animated.Value(inputMinHeight)).current
   const placeholderOpacity = useRef(new Animated.Value(1)).current
-  const previousProminentComposerRef = useRef(useProminentComposer)
-  const skipNextHeightAnimationRef = useRef(false)
   const setInputHeightTarget = useCallback((nextHeight: number) => {
     inputHeightRef.current = nextHeight
     setInputHeight(nextHeight)
   }, [])
-  const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
-  const [fileError, setFileError] = useState<string | null>(null)
-  const [isProcessingFiles, setIsProcessingFiles] = useState(false)
-  const [isDragOver, setIsDragOver] = useState(false)
   const [interactionModeOpen, setInteractionModeOpen] = useState(false)
   const [attachSheetOpen, setAttachSheetOpen] = useState(false)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
@@ -601,8 +599,6 @@ function ChatInputImpl({
   // compact ChatGPT-style file chips. The input stays editable so the user
   // can keep typing and paste additional long blocks (each becomes its own
   // chip).
-  const [pastedTexts, setPastedTexts] = useState<PastedTextEntry[]>([])
-  const [viewingPastedId, setViewingPastedId] = useState<string | null>(null)
   const [previewVideoFile, setPreviewVideoFile] = useState<{ url: string; name: string } | null>(null)
   const [previewImageFile, setPreviewImageFile] = useState<{ url: string; name: string } | null>(null)
   const lastRestoredDraftNonceRef = useRef<number | null>(null)
@@ -630,42 +626,6 @@ function ChatInputImpl({
     setTimeout(() => textInputRef.current?.focus(), 0)
   }, [restoreDraftRequest, cancelPendingTextChangeFlush])
 
-  const addPastedText = useCallback((content: string) => {
-    const info = analyzeContent(content)
-    if (!info.isLong) return false
-    setPastedTexts((prev) => {
-      if (prev.length >= MAX_PASTED_TEXTS) return prev
-      return [
-        ...prev,
-        {
-          id: `paste-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          content,
-          info,
-        },
-      ]
-    })
-    return true
-  }, [])
-
-  const handleRemovePastedText = useCallback((id: string) => {
-    setPastedTexts((prev) => prev.filter((p) => p.id !== id))
-    setViewingPastedId((curr) => (curr === id ? null : curr))
-  }, [])
-
-  const handleUpdatePastedText = useCallback((id: string, content: string) => {
-    setPastedTexts((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, content, info: analyzeContent(content) } : p
-      )
-    )
-  }, [])
-
-  const viewingPasted = useMemo(
-    () => pastedTexts.find((p) => p.id === viewingPastedId) ?? null,
-    [pastedTexts, viewingPastedId]
-  )
-
-  // Skill picker state
   const [showSkillPicker, setShowSkillPicker] = useState(false)
   const [filterText, setFilterText] = useState("")
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -783,7 +743,8 @@ function ChatInputImpl({
       return items.filter((item) => {
         if (!item?.path || !item?.name || seen.has(item.path)) return false
         seen.add(item.path)
-        return !q || item.path.toLowerCase().includes(q) || item.name.toLowerCase().includes(q)
+        return ( !q || item.path.toLowerCase().includes(q) || item.name.toLowerCase().includes(q)
+          )
       }).slice(0, MAX_IDE_MENTION_FILE_RESULTS)
     }
     const contextItems = ideMode && Array.isArray(ideContext?.workspaceItems)
@@ -955,45 +916,12 @@ function ChatInputImpl({
     })
   }, [inputValue])
 
-  const formatFileSize = useCallback((bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  }, [])
-
-  const handleRemoveFile = useCallback((fileId: string) => {
-    setPendingFiles((prev) => prev.filter((f) => f.id !== fileId))
-    setFileError(null)
-  }, [])
-
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-
   const handleAttachClick = useCallback(() => {
     if (Platform.OS === "web") {
       fileInputRef.current?.click()
       return
     }
     setAttachSheetOpen(true)
-  }, [])
-
-  const applyPickedFiles = useCallback((picked: NativePickedAttachment[]) => {
-    setPendingFiles((prev) => {
-      const room = MAX_FILES - prev.length
-      if (room <= 0) return prev
-      const added = picked.slice(0, room).map((f) => ({
-        id: f.id,
-        dataUrl: f.dataUrl,
-        name: f.name,
-        type: f.type,
-        size: f.size,
-      }))
-      if (picked.length > room) {
-        setFileError(`Maximum ${MAX_FILES} files allowed`)
-      } else {
-        setFileError(null)
-      }
-      return [...prev, ...added]
-    })
   }, [])
 
   const closePlusMenu = useCallback(() => {
@@ -1015,147 +943,6 @@ function ChatInputImpl({
       onError: (message) => setFileError(message),
     })
   }, [applyPickedFiles, closePlusMenu, pendingFiles.length])
-
-  const processFiles = useCallback((files: FileList | File[]) => {
-    Array.from(files).forEach((file: File) => {
-      const lowerName = file.name.toLowerCase()
-      const isExempt =
-        lowerName.endsWith(".zip") ||
-        lowerName.endsWith(".shogo") ||
-        lowerName.endsWith(".shogo-project") ||
-        file.type === "application/zip" ||
-        file.type === "application/x-zip-compressed"
-      if (!isExempt && file.size > MAX_FILE_SIZE) {
-        setFileError(`File "${file.name}" exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`)
-        return
-      }
-
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        setPendingFiles((prev) => {
-          if (prev.length >= MAX_FILES) {
-            setFileError(`Maximum ${MAX_FILES} files allowed`)
-            return prev
-          }
-          setFileError(null)
-          return [
-            ...prev,
-            {
-              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-              dataUrl,
-              name: file.name,
-              type: file.type,
-              size: file.size,
-            },
-          ]
-        })
-      }
-      reader.readAsDataURL(file)
-    })
-  }, [])
-
-  const handleWebFileChange = useCallback(
-    (e: any) => {
-      const files = e.target?.files
-      if (!files || files.length === 0) return
-      processFiles(files)
-      if (e.target) e.target.value = ""
-    },
-    [processFiles]
-  )
-
-  // Drag-and-drop support (web only)
-  // Uses dragenter/dragleave counter to avoid flicker when cursor crosses child elements
-  useEffect(() => {
-    if (Platform.OS !== "web") return
-    const node = dropZoneRef.current as unknown as HTMLElement | null
-    if (!node) return
-
-    const handleDragOver = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-    const handleDragEnter = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dragCounterRef.current++
-      if (dragCounterRef.current === 1) {
-        setIsDragOver(true)
-      }
-    }
-    const handleDragLeave = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dragCounterRef.current--
-      if (dragCounterRef.current === 0) {
-        setIsDragOver(false)
-      }
-    }
-    const handleDrop = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dragCounterRef.current = 0
-      setIsDragOver(false)
-      if (e.dataTransfer?.files?.length) {
-        processFiles(Array.from(e.dataTransfer.files))
-      }
-    }
-
-    node.addEventListener("dragover", handleDragOver)
-    node.addEventListener("dragenter", handleDragEnter)
-    node.addEventListener("dragleave", handleDragLeave)
-    node.addEventListener("drop", handleDrop)
-    return () => {
-      node.removeEventListener("dragover", handleDragOver)
-      node.removeEventListener("dragenter", handleDragEnter)
-      node.removeEventListener("dragleave", handleDragLeave)
-      node.removeEventListener("drop", handleDrop)
-    }
-  }, [processFiles])
-
-  // Paste image support (web only)
-  useEffect(() => {
-    if (Platform.OS !== "web") return
-    const node = dropZoneRef.current as unknown as HTMLElement | null
-    if (!node) return
-
-    const handlePaste = (e: ClipboardEvent) => {
-      const cd = e.clipboardData
-      if (!cd) return
-      const items = cd.items
-      const imageFiles: File[] = []
-      if (items) {
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].type.startsWith("image/")) {
-            const file = items[i].getAsFile()
-            if (file) imageFiles.push(file)
-          }
-        }
-      }
-      if (imageFiles.length > 0) {
-        e.preventDefault()
-        processFiles(imageFiles)
-        return
-      }
-
-      const text = cd.getData("text")
-      if (text && text.length >= LONG_PASTE_MIN_CHARS) {
-        const info = analyzeContent(text)
-        if (info.isLong) {
-          e.preventDefault()
-          pasteHandledRef.current = true
-          addPastedText(text)
-          setTimeout(() => { pasteHandledRef.current = false }, 0)
-        }
-      }
-    }
-
-    node.addEventListener("paste", handlePaste as EventListener)
-    return () => {
-      node.removeEventListener("paste", handlePaste as EventListener)
-    }
-  }, [processFiles, addPastedText])
 
   const appendTranscriptToInput = useCallback((transcript: string) => {
     const normalized = transcript.trim()
@@ -1187,33 +974,8 @@ function ChatInputImpl({
   const composerDisplayValue =
     voiceInput.isRecording && voiceInput.liveTranscript
       ? voiceInput.liveTranscript
-      : pendingTextChangeRef.current?.text ?? inputValue
+      : ( pendingTextChangeRef.current?.text ?? inputValue)
   const composerEmpty = !composerDisplayValue.trim()
-  useEffect(() => {
-    const modeChanged = previousProminentComposerRef.current !== useProminentComposer
-    previousProminentComposerRef.current = useProminentComposer
-    if (!modeChanged || !useProminentComposer) return
-
-    skipNextHeightAnimationRef.current = true
-    inputHeightAnimation.setValue(inputMinHeight)
-    setInputHeightTarget(inputMinHeight)
-  }, [inputHeightAnimation, inputMinHeight, setInputHeightTarget, useProminentComposer])
-
-  useEffect(() => {
-    if (!useProminentComposer) return
-    if (skipNextHeightAnimationRef.current) {
-      skipNextHeightAnimationRef.current = false
-      return
-    }
-
-    Animated.timing(inputHeightAnimation, {
-      toValue: inputHeight,
-      duration: PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
-      easing: PROMINENT_COMPOSER_HEIGHT_EASING,
-      useNativeDriver: false,
-    }).start()
-  }, [inputHeight, inputHeightAnimation, useProminentComposer])
-
   useEffect(() => {
     if (!useProminentComposer) return
 
@@ -1223,9 +985,23 @@ function ChatInputImpl({
       easing: PROMINENT_COMPOSER_HEIGHT_EASING,
       useNativeDriver: true,
     }).start()
-  }, [composerEmpty, placeholderOpacity, useProminentComposer])
+  }, [composerEmpty, placeholderOpacity, useProminentComposer]);
 
-  const prominentExpansion = useProminentComposerExpansion({
+  const animateProminentHeight = useCallback((
+      value: Animated.Value,
+      toValue: number,
+      duration: number,
+      easing: (value: number) => number) => {
+
+    Animated.timing(value, {
+      toValue,
+      duration,
+      easing,
+      useNativeDriver: false,
+    }).start()
+  }, [])
+
+  const prominentExpansion = useProminentComposerHeight({
     enabled: useProminentComposer,
     empty: composerEmpty,
     text: composerDisplayValue,
@@ -1235,21 +1011,11 @@ function ChatInputImpl({
     paddingTop: PROMINENT_COMPOSER_PADDING_TOP,
     paddingHorizontal: PROMINENT_COMPOSER_PADDING_HORIZONTAL,
     paddingBottom: PROMINENT_COMPOSER_PADDING_BOTTOM,
-    duration: PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
     easing: PROMINENT_COMPOSER_HEIGHT_EASING,
+    inputHeightAnimation,
+    setInputHeight: setInputHeightTarget,
+    animate: animateProminentHeight,
   })
-
-  const wasProminentStackedRef = useRef(false)
-  useEffect(() => {
-    if (!useProminentComposer) {
-      wasProminentStackedRef.current = false
-      return
-    }
-    if (wasProminentStackedRef.current && !prominentExpansion.stacked) {
-      setInputHeightTarget(PROMINENT_COMPOSER_MIN_HEIGHT)
-    }
-    wasProminentStackedRef.current = prominentExpansion.stacked
-  }, [prominentExpansion.stacked, setInputHeightTarget, useProminentComposer])
 
   const mentionLabels = useMemo(
     () => references.map((r) => r.label).filter((l): l is string => !!l),
@@ -1317,16 +1083,14 @@ function ChatInputImpl({
     cancelPendingTextChangeFlush()
     inputValueRef.current = ""
     setInputValue("")
-    setInputHeightTarget(inputMinHeight)
-    setPendingFiles([])
-    setPastedTexts([])
-    setViewingPastedId(null)
+    setInputHeightTarget(inputMinHeight);
+    resetAttachments()
     setReferences([])
-    setFileError(null)
     closeMentionMenu()
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush, inputMinHeight, setInputHeightTarget])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush, inputMinHeight, setInputHeightTarget,
+    resetAttachments])
 
   const handleSubmitEditing = useCallback(() => {
     if (Platform.OS === "web") {
@@ -1459,29 +1223,8 @@ function ChatInputImpl({
   const removeReference = useCallback((key: string) => {
     setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key))
   }, [])
-
-  const getFileIcon = useCallback((fileType: string) => {
-    if (fileType.startsWith("image/")) {
-      return <ImageIcon className="h-4 w-4 text-muted-foreground" size={16} />
-    }
-    if (
-      fileType.includes("pdf") ||
-      fileType.includes("document") ||
-      fileType.includes("text")
-    ) {
-      return <FileText className="h-4 w-4 text-muted-foreground" size={16} />
-    }
-    return <File className="h-4 w-4 text-muted-foreground" size={16} />
-  }, [])
-
-  return (
-    // `flush` callers (EditableUserMessage's inline edit) want the
-    // bordered input box to extend to the parent's left/right
-    // edges so it aligns with the surrounding display-mode bubble.
-    // We keep the bottom padding either way — it separates the
-    // composer from whatever sits beneath it (file previews,
-    // toolbar dropdowns, etc.).
-    <View className={cn(
+      return (
+        <View className={cn(
       flush
         ? "pb-3"
         : useProminentComposer
@@ -1489,7 +1232,7 @@ function ChatInputImpl({
           : isNative
             ? "px-2 pb-4 pt-0"
             : "p-3 pt-0",
-    )}>
+        )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
           {ideContext?.activeFile && (
@@ -1919,7 +1662,7 @@ function ChatInputImpl({
             }
           }}
           placeholder={placeholder}
-          placeholderTextColor="#9ca3af"
+          placeholderTextColor={chatgptComposer.placeholder}
           testID="project-composer-input"
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
@@ -1963,7 +1706,7 @@ function ChatInputImpl({
               : isNative
                 ? "min-h-12 px-2 py-1"
                 : "p-1.5",
-            !useProminentComposer && isNativePhone && "items-end gap-y-1"
+            !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
           )}
           style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
           pointerEvents={useProminentComposer ? "box-none" : undefined}
@@ -1977,37 +1720,26 @@ function ChatInputImpl({
                 : isNative
                   ? "gap-1.5"
                   : "gap-1",
-              !useProminentComposer && isNativePhone && "min-w-0 flex-1 flex-wrap"
+              !useProminentComposer &&
+                  isPhoneChrome && "min-w-0 flex-1 flex-wrap"
             )}
             style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}
           >
             {useProminentComposer ? (
               <>
                 {/* Capsule plus-menu: attach, mode, environment */}
-                <Pressable
+                <ComposerPlusTrigger
                   onPress={() => setPlusMenuOpen(true)}
-                  hitSlop={6}
                   disabled={disabled || isProcessingFiles}
-                  role="button"
-                  accessibilityLabel="Add"
-                  className={cn(
-                    "h-8 w-8 items-center justify-center active:opacity-70",
-                    (disabled || isProcessingFiles) && "opacity-40",
-                  )}
                   testID="project-composer-plus"
-                >
-                  <Plus
                     color={chatgptComposer.icon}
-                    size={22}
-                    strokeWidth={NATIVE_PHONE_ICON_STROKE}
                   />
-                </Pressable>
                 <ComposerPlusSheet
                   visible={plusMenuOpen}
                   onClose={closePlusMenu}
                   expandedId={plusExpandedId}
                   onToggleSection={togglePlusSection}
-                  maxHeight={Math.round(windowHeight * 0.72)}
+                  maxHeight={Math.round(windowHeight * NATIVE_PHONE_SHEET_COMPACT_RATIO)}
                   onAttach={handlePlusAttach}
                   attachDisabled={pendingFiles.length >= MAX_FILES}
                 >
@@ -2321,34 +2053,32 @@ function ChatInputImpl({
             )}
 
             {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-            <ComposerModelPicker
-              currentModelId={currentModelId}
-              effectiveIsPro={effectiveIsPro}
-              disabled={disabled}
-              nativeSheet={isNativePhone}
-              triggerClassName={cn(
+            <ComposerModelPicker{...composerModelPickerProps({currentModelId,
+              effectiveIsPro,
+              disabled,
+              nativeSheet: isPhoneChrome,
+              triggerClassName:cn(
                 useProminentComposer
                   ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
                   : isNative
                     ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
                     : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                isNativePhone && !useProminentComposer && "min-w-0"
-              )}
-              triggerStyle={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
-              labelClassName={
+                    isPhoneChrome && !useProminentComposer && "min-w-0"
+              ),
+              triggerStyle: isPhoneChrome ? { maxWidth: modelTriggerMaxWidth } : undefined,
+              labelClassName:
                 useProminentComposer
                   ? "text-[12px] text-foreground"
                   : isNative
                     ? "text-sm text-foreground"
-                    : "text-xs text-muted-foreground"
-              }
-              chevronSize={isNative ? 12 : 8}
-              chevronColor={useProminentComposer ? chatgptComposer.icon : undefined}
-              chevronStrokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
-              hitSlop={isNative ? 6 : undefined}
-              label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
-              menuWidth={nativeModelMenuWidth}
-              onSelect={handleModelChange}
+                    : "text-xs text-muted-foreground",
+              chevronSize:isNative ? 12 : 8,
+              chevronColor:useProminentComposer ? chatgptComposer.icon : undefined,
+              chevronStrokeWidth:useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined,
+              hitSlop:isNative ? 6 : undefined,
+              label: isPhoneChrome ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId),
+              menuWidth:nativeModelMenuWidth,
+              onSelect:handleModelChange})}
             />
 
           </View>
@@ -2440,49 +2170,34 @@ function ChatInputImpl({
                     size={isNative ? 14 : 10}
                   />
                 </Pressable>
-                {(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0) && (
-                  <Pressable
+                    <ComposerSendButton
+                      canSend=
+                {Boolean(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0)}
                     onPress={handleSubmit}
-                    hitSlop={isNative ? 4 : undefined}
                     disabled={disabled || isProcessingFiles}
-                    role="button"
-                    accessibilityLabel="Queue message"
-                    className={cn(
-                      "rounded-full items-center justify-center",
-                      !useProminentComposer && "bg-primary",
-                      useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
-                    )}
-                    style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
-                  >
-                    <ArrowUp
-                      className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
-                      color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
-                      size={useProminentComposer ? 14 : isNative ? 18 : 12}
+                      prominent={useProminentComposer}
+                      sizeClassName={isNative ? "h-9 w-9" : "h-5 w-5"}
+                      iconSize={useProminentComposer ? 14 : isNative ? 18 : 12}
+                      fillClassName={useProminentComposer ? "": "bg-primary" }
+                      iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
+                      fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}
+                      iconColor={useProminentComposer ? chatgptComposer.sendIcon : undefined}
+                      accessibilityLabel="Queue message"
                     />
-                  </Pressable>
-                )}
-              </>
-            ) : (inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0) ? (
-              <Pressable
+                  </>
+            ) :inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0 ? (
+              <ComposerSendButton
+                    canSend
                 onPress={handleSubmit}
-                hitSlop={isNative ? 4 : undefined}
                 disabled={disabled || isProcessingFiles}
-                role="button"
-                accessibilityLabel="Send message"
-                className={cn(
-                  "rounded-full items-center justify-center",
-                  !useProminentComposer && "bg-primary",
-                  useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
-                  (disabled || isProcessingFiles) && "opacity-50"
-                )}
-                style={useProminentComposer ? { backgroundColor: chatgptComposer.sendFill } : undefined}
-              >
-                <ArrowUp
-                  className={cn("h-3 w-3", !useProminentComposer && "text-primary-foreground")}
-                  color={useProminentComposer ? chatgptComposer.sendIcon : undefined}
-                  size={useProminentComposer ? 14 : isNative ? 18 : 12}
+                    prominent={useProminentComposer}
+                    sizeClassName={isNative ? "h-9 w-9" : "h-5 w-5"}
+                    iconSize={useProminentComposer ? 14 : isNative ? 18 : 12}
+                    fillClassName={useProminentComposer ? "": "bg-primary" }
+                    iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
+                    fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}
+                    iconColor={useProminentComposer ? chatgptComposer.sendIcon : undefined}
                 />
-              </Pressable>
             ) : voiceInput.canRecord ? (
               <Pressable
                 onPress={() => {
@@ -2509,7 +2224,7 @@ function ChatInputImpl({
                       ? "text-muted-foreground/40"
                       : "text-muted-foreground")
                   )}
-                  color={useProminentComposer ? (disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
+                  color={useProminentComposer ?disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon : undefined}
                   strokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
                   size={useProminentComposer ? 20 : isNative ? 18 : 14}
                 />
@@ -2520,108 +2235,53 @@ function ChatInputImpl({
         </View>
 
         {useProminentComposer ? (
-          <>
-            <Text
-              pointerEvents="none"
-              style={{
-                position: "absolute",
-                opacity: 0,
-                width: PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
-                height: 0,
-                overflow: "hidden",
-                fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+          <ProminentComposerField
+            ref={textInputRef}
+            value={composerDisplayValue}
+            placeholder={placeholder}
+            empty={composerEmpty}
+            stacked={prominentExpansion.stacked}
+            disabled={disabled || voiceInput.isRecording}
+            dimWhenDisabled={dimWhenDisabled}
+            inputHeight={inputHeight}
+            inputHeightAnimation={inputHeightAnimation}
+            slotStyle={prominentExpansion.slotStyle}
+            inputComponent={TextInput}
+            textColor={chatgptComposer.text}
+            placeholderColor={chatgptComposer.placeholder}
+            onMeasureTextLayout={prominentExpansion.onMeasureTextLayout}
+            placeholderOpacity={placeholderOpacity}
+            testID="project-composer-input"
+            accessibilityLabel="Chat message input"
+            selection={selectionOverride}
+            onChangeText={handleChangeText}
+            onSelectionChange={(e) => {
+              updateMentionState(
+                inputValueRef.current,
+                e.nativeEvent.selection.start,
+              )
+            }}
+            onSubmitEditing={handleSubmitEditing}
+            scrollEnabled={
+              prominentExpansion.stacked &&
+              inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT
+            }
+            onContentSizeChange={(e) => {
+              const currentText =
+                pendingTextChangeRef.current?.text ?? inputValueRef.current
+              const h = e.nativeEvent.contentSize.height
+              prominentExpansion.reportContentHeight(h)
+              const next = nextProminentComposerHeight(h, {
+                empty: !currentText.trim(),
+                minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+                maxHeight: inputMaxHeight,
                 lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-              }}
-              onTextLayout={prominentExpansion.onMeasureTextLayout}
-            >
-              {composerDisplayValue.length === 0 ? " " : composerDisplayValue}
-            </Text>
-            <Animated.View
-              pointerEvents="auto"
-              style={[
-                prominentExpansion.slotStyle,
-                {
-                  height: inputHeightAnimation,
-                },
-              ]}
-            >
-              <Animated.Text
-                pointerEvents="none"
-                numberOfLines={1}
-                ellipsizeMode="tail"
-                {...(Platform.OS !== "web"
-                  ? {
-                      accessibilityElementsHidden: !composerEmpty,
-                      importantForAccessibility: composerEmpty ? "auto" : "no-hide-descendants",
-                    }
-                  : {})}
-                style={{
-                  position: "absolute",
-                  left: 4,
-                  right: 4,
-                  top: prominentExpansion.stacked ? 0 : 1,
-                  height: PROMINENT_COMPOSER_MIN_HEIGHT,
-                  fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-                  color: chatgptComposer.placeholder,
-                  opacity: placeholderOpacity,
-                }}
-              >
-                {placeholder}
-              </Animated.Text>
-              <ProminentAnimatedTextInput
-                ref={textInputRef}
-                testID="project-composer-input"
-                placeholder=""
-                accessibilityLabel="Chat message input"
-                value={composerDisplayValue}
-                selection={selectionOverride}
-                onChangeText={handleChangeText}
-                onSelectionChange={(e) => {
-                  updateMentionState(inputValueRef.current, e.nativeEvent.selection.start)
-                }}
-                onSubmitEditing={handleSubmitEditing}
-                editable={!disabled && !voiceInput.isRecording}
-                multiline
-                scrollEnabled={prominentExpansion.stacked && inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT}
-                blurOnSubmit
-                returnKeyType="done"
-                onContentSizeChange={(e) => {
-                  const currentText =
-                    pendingTextChangeRef.current?.text ?? inputValueRef.current
-                  const h = e.nativeEvent.contentSize.height
-                  prominentExpansion.reportContentHeight(h)
-                  const next = nextProminentComposerHeight(h, {
-                    empty: !currentText.trim(),
-                    minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                    maxHeight: inputMaxHeight,
-                    lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-                  })
-                  if (next !== inputHeightRef.current) {
-                    setInputHeightTarget(next)
-                  }
-                }}
-                style={{
-                  width: "100%",
-                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                  height: inputHeightAnimation,
-                  color: chatgptComposer.text,
-                  fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-                  paddingHorizontal: prominentExpansion.stacked ? 0 : 4,
-                  paddingTop: prominentExpansion.stacked ? 0 : 1,
-                  paddingBottom: prominentExpansion.stacked ? 0 : 1,
-                  margin: 0,
-                  backgroundColor: "transparent",
-                  textAlignVertical: prominentExpansion.stacked ? "top" : Platform.OS === "android" ? "center" : undefined,
-                  ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
-                }}
-                className={cn(
-                  disabled && dimWhenDisabled && "opacity-50",
-                )}
-              />
-            </Animated.View>
-          </>
+              })
+              if (next !== inputHeightRef.current) {
+                setInputHeightTarget(next)
+              }
+            }}
+          />
         ) : null}
         </View>
       </View>

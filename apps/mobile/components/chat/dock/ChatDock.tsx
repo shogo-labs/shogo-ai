@@ -36,7 +36,8 @@ import { View, StyleSheet, ScrollView, Platform, useColorScheme, type LayoutChan
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useChatDockStore } from "../../../lib/chat-dock-store"
-import { isNativePlatform, NATIVE_PHONE_DOCK_COMPOSER_GAP } from "../../../lib/native-phone-layout"
+import { isNativePlatform,
+  nativePhoneDockFadeColors, NATIVE_PHONE_DOCK_COMPOSER_GAP } from "../../../lib/native-phone-layout"
 import { DockPanel } from "./DockPanel"
 
 const MAX_STATUS_HEIGHT = 420
@@ -67,10 +68,12 @@ const ZONE_CARD_CLASS = "overflow-hidden rounded-xl border border-border/60 bg-p
 export interface ChatDockProps {
   /** Available height above the composer, used to cap the status zone at ~45%. */
   availableHeight?: number
-  className?: string
+  className?: string;
+  testID?: string
 }
 
-export function ChatDock({ availableHeight, className }: ChatDockProps) {
+export function ChatDock({ availableHeight, className,
+  testID }: ChatDockProps) {
   const store = useChatDockStore()
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion)
   const colorScheme = useColorScheme()
@@ -100,13 +103,13 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
     availableHeight ? Math.round(availableHeight * MAX_STATUS_HEIGHT_RATIO) : MAX_STATUS_HEIGHT,
   )
 
-  const fadeColor = colorScheme === "dark" ? "rgba(9,9,11,1)" : "rgba(255,255,255,1)"
-  const fadeColorTransparent = colorScheme === "dark" ? "rgba(9,9,11,0)" : "rgba(255,255,255,0)"
+  const fadeColors = nativePhoneDockFadeColors( colorScheme === "dark")
 
   return (
     <View
       style={styles.container}
       className={cn("w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
+      testID={testID}
       pointerEvents="box-none"
       onLayout={handleLayout}
     >
@@ -140,7 +143,7 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
             })}
           </ScrollView>
           {Platform.OS !== "web" && statusPanels.length > 1 && (
-            <LinearGradient colors={[fadeColor, fadeColorTransparent]} style={styles.topFade} />
+            <LinearGradient colors={[fadeColors[2], fadeColors[0]]} style={styles.topFade} />
           )}
         </View>
       )}
