@@ -32,6 +32,14 @@ import {
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { nativeActivePill } from '../../lib/native-active-shadow'
+import {
+  nativeEqualChipWidths,
+  nativeTwoColumnCardWidth,
+  nativeContentWidth,
+  isNativePlatform,
+  NATIVE_WIND_SPACE_0_5,
+} from '../../lib/native-phone-layout'
 import {
   PlatformGrowthChart,
   ActiveUsersTrendChart,
@@ -52,6 +60,8 @@ const PERIOD_LABELS: Record<AnalyticsPeriod, string> = {
   '90d': '90 days',
   '1y': '1 year',
 }
+
+const NATIVE_STACK_METRICS_MAX_WIDTH = 600
 
 interface OverviewData {
   totalUsers: number
@@ -168,31 +178,59 @@ async function fetchAdminJson<T>(path: string, params?: Record<string, string>):
 function PeriodSelector({
   value,
   onChange,
+  rowWidth,
 }: {
   value: AnalyticsPeriod
   onChange: (p: AnalyticsPeriod) => void
+  /** When set, chips fill this width instead of hugging content (native phone). */
+  rowWidth?: number
 }) {
+  const periods = Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]
+  const periodChipGap = NATIVE_WIND_SPACE_0_5 * 2
+  const chips = rowWidth
+    ? nativeEqualChipWidths(
+        Math.max(0, rowWidth - NATIVE_WIND_SPACE_0_5 * 2),
+        periods.length,
+        periodChipGap,
+        0,
+      )
+    : null
   return (
-    <View className="flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5">
-      {(Object.keys(PERIOD_LABELS) as AnalyticsPeriod[]).map((period) => (
-        <Pressable
-          key={period}
-          onPress={() => onChange(period)}
-          className={cn(
-            'px-3 py-1.5 rounded-md',
-            value === period ? 'bg-background shadow-sm' : ''
-          )}
-        >
-          <Text
+    <View
+      className={cn('flex-row items-center bg-muted rounded-lg p-0.5', !rowWidth && 'gap-0.5')}
+      style={rowWidth ? { width: rowWidth, maxWidth: rowWidth, overflow: 'hidden' } : undefined}
+    >
+      {periods.map((period, index) => {
+        const pill = nativeActivePill(value === period)
+        const chipWidth = chips
+          ? (index === periods.length - 1 ? chips.lastChip : chips.chip)
+          : undefined
+        return (
+          <Pressable
+            key={period}
+            onPress={() => onChange(period)}
             className={cn(
-              'text-xs font-medium',
-              value === period ? 'text-foreground' : 'text-muted-foreground'
+              'items-center justify-center rounded-md py-1.5',
+              !rowWidth && 'px-3',
+              pill.className,
             )}
+            style={[
+              pill.style,
+              chipWidth ? { width: chipWidth, maxWidth: chipWidth } : undefined,
+            ]}
           >
-            {PERIOD_LABELS[period]}
-          </Text>
-        </Pressable>
-      ))}
+            <Text
+              className={cn(
+                'text-xs font-medium',
+                value === period ? 'text-foreground' : 'text-muted-foreground'
+              )}
+              numberOfLines={1}
+            >
+              {rowWidth ? period : PERIOD_LABELS[period]}
+            </Text>
+          </Pressable>
+        )
+      })}
     </View>
   )
 }
@@ -204,6 +242,7 @@ function StatCard({
   subtitle,
   accent = 'bg-primary/10',
   iconColor = 'text-primary',
+  width,
 }: {
   label: string
   value: number | string | undefined
@@ -211,9 +250,13 @@ function StatCard({
   subtitle?: string
   accent?: string
   iconColor?: string
+  width?: number
 }) {
   return (
-    <View className="flex-1 min-w-[160px] rounded-xl border border-border bg-card p-4">
+    <View
+      className="flex-1 min-w-[160px] rounded-xl border border-border bg-card p-4"
+      style={width ? { width, minWidth: width, maxWidth: width, flexGrow: 0 } : undefined}
+    >
       <View className="flex-row items-center justify-between mb-3">
         <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</Text>
         <View className={cn('h-8 w-8 rounded-lg items-center justify-center', accent)}>
@@ -231,11 +274,13 @@ function StatCard({
 }
 
 function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; loading: boolean }) {
+  const { width } = useWindowDimensions()
+  const stackMetrics = isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH
   if (loading) {
     return (
       <View className="rounded-xl border border-border bg-card p-5">
         <View className="h-4 w-32 bg-muted rounded mb-4" />
-        <View className="flex-row gap-3">
+        <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
           {[1, 2, 3].map((i) => (
             <View key={i} className="flex-1 h-20 bg-muted/50 rounded-lg" />
           ))}
@@ -253,7 +298,7 @@ function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; load
   return (
     <View className="rounded-xl border border-border bg-card p-5">
       <Text className="text-sm font-semibold text-foreground mb-4">Active Users</Text>
-      <View className="flex-row gap-3">
+      <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
         {metrics.map((m) => {
           const Icon = m.icon
           return (
@@ -598,7 +643,12 @@ function StatCardSkeleton() {
 
 export default function AdminDashboard() {
   const { width } = useWindowDimensions()
+  const isNativeNarrow = isNativePlatform()
   const isWide = width >= 900
+  const cardWidth = isNativeNarrow ? nativeTwoColumnCardWidth(width) : undefined
+  const periodRowWidth = isNativeNarrow
+    ? nativeContentWidth(width)
+    : undefined
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -728,9 +778,11 @@ export default function AdminDashboard() {
   return (
     <ScrollView
       className="flex-1 bg-background"
+      style={isNativeNarrow ? { width, maxWidth: width } : undefined}
       contentContainerStyle={{
         padding: isWide ? 32 : 16,
         paddingBottom: 40,
+        ...(isNativeNarrow ? { width, maxWidth: width } : null),
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={
@@ -738,17 +790,29 @@ export default function AdminDashboard() {
       }
     >
       {/* Header */}
-      <View className="flex-row items-center justify-between mb-6">
-        <View>
-          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
-            Dashboard
-          </Text>
-          <Text className="text-sm text-muted-foreground mt-0.5">
-            Platform overview and key metrics
-          </Text>
+      {isNativeNarrow ? (
+        <View className="mb-6 gap-3" style={{ width: periodRowWidth }}>
+          <View>
+            <Text className="text-xl font-bold text-foreground">Dashboard</Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Platform overview and key metrics
+            </Text>
+          </View>
+          <PeriodSelector value={period} onChange={setPeriod} rowWidth={periodRowWidth} />
         </View>
-        <PeriodSelector value={period} onChange={setPeriod} />
-      </View>
+      ) : (
+        <View className="flex-row items-center justify-between mb-6">
+          <View>
+            <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+              Dashboard
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              Platform overview and key metrics
+            </Text>
+          </View>
+          <PeriodSelector value={period} onChange={setPeriod} />
+        </View>
+      )}
 
       {/* Row 1: Stat cards — business + infra */}
       {overview.loading && infra.loading ? (
@@ -766,6 +830,7 @@ export default function AdminDashboard() {
             subtitle={overview.data?.newUsersLast30d ? `+${overview.data.newUsersLast30d} last 30d` : undefined}
             accent="bg-blue-500/10"
             iconColor="text-blue-500"
+            width={cardWidth}
           />
           <StatCard
             label="Workspaces"
@@ -773,6 +838,7 @@ export default function AdminDashboard() {
             icon={Building2}
             accent="bg-purple-500/10"
             iconColor="text-purple-500"
+            width={cardWidth}
           />
           <StatCard
             label="Projects"
@@ -780,6 +846,7 @@ export default function AdminDashboard() {
             icon={FolderKanban}
             accent="bg-emerald-500/10"
             iconColor="text-emerald-500"
+            width={cardWidth}
           />
           <StatCard
             label="Chat Sessions"
@@ -788,6 +855,7 @@ export default function AdminDashboard() {
             subtitle={overview.data?.activeUsersLast30d ? `${overview.data.activeUsersLast30d} active users` : undefined}
             accent="bg-orange-500/10"
             iconColor="text-orange-500"
+            width={cardWidth}
           />
           {isSuperAdmin && (
             <>
@@ -798,6 +866,7 @@ export default function AdminDashboard() {
                 subtitle={infraSource ? `${infraSource.asgDesired} / ${infraSource.asgMax} ASG` : undefined}
                 accent="bg-cyan-500/10"
                 iconColor="text-cyan-500"
+                width={cardWidth}
               />
               <StatCard
                 label="Warm Pool"
@@ -806,6 +875,7 @@ export default function AdminDashboard() {
                 subtitle={warmTgt > 0 ? `${Math.round((warmAvail / warmTgt) * 100)}% available` : undefined}
                 accent="bg-amber-500/10"
                 iconColor="text-amber-500"
+                width={cardWidth}
               />
             </>
           )}

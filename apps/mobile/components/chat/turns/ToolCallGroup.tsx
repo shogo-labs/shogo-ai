@@ -24,6 +24,8 @@ import {
 } from "../tools/types"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { TransportBadge } from "../TransportBadge"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NativeWorkTrigger } from "../NativeActivitySheet"
 
 export interface ToolCallGroupProps {
   toolName: string
@@ -48,6 +50,26 @@ export function ToolCallGroup({
   const allSuccess =
     !hasErrors && tools.every((t) => t.tool.state === "success")
   const hasStreaming = tools.some((t) => t.tool.state === "streaming")
+  const nativePhone = useIsNativePhoneLayout()
+
+  const body = (
+    <View className="gap-y-1">
+      {tools.map((t) => (
+        <InlineToolWidget key={t.id} tool={t.tool} />
+      ))}
+    </View>
+  )
+
+  if (nativePhone) {
+    return (
+      <NativeWorkTrigger
+        label={hasStreaming ? "Working…" : "Worked"}
+        title={`${displayName} ×${tools.length}`}
+      >
+        {body}
+      </NativeWorkTrigger>
+    )
+  }
 
   return (
     <View

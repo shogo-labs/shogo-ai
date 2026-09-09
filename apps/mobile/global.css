@@ -238,24 +238,32 @@ body {
   height: 100%;
 }
 
-/* Thin minimal scrollbar — macOS-style, appears on hover, fades when idle */
+/* Thin overlay scrollbar — thumb only, no track/gutter. */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(150, 150, 150, 0.3) transparent;
+  scrollbar-gutter: auto;
 }
 
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
+  background: transparent;
 }
 
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece,
+::-webkit-scrollbar-corner {
   background: transparent;
+  box-shadow: none;
+  border: none;
 }
 
 ::-webkit-scrollbar-thumb {
   background: rgba(150, 150, 150, 0);
   border-radius: 3px;
+  border: none;
+  box-shadow: none;
   transition: background 0.2s;
 }
 

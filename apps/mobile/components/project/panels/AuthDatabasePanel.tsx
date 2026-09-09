@@ -213,7 +213,7 @@ function AllowlistCard({ projectId }: { projectId: string }) {
                 <Pressable
                   key={id}
                   onPress={() => setConfig((c) => ({ ...c, mode: id }))}
-                  className={`flex-row items-start gap-3 rounded-lg border px-3 ${isNative ? 'py-3' : 'py-2.5'} ${
+                  className={`w-full flex-row items-start gap-3 rounded-lg border px-3 ${isNative ? 'py-3' : 'py-2.5'} ${
                     active
                       ? 'border-primary bg-primary/5'
                       : 'border-border active:bg-muted'
@@ -226,7 +226,7 @@ function AllowlistCard({ projectId }: { projectId: string }) {
                   >
                     <Icon size={isNative ? 18 : 15} className={active ? 'text-primary' : 'text-muted-foreground'} />
                   </View>
-                  <View className="flex-1">
+                  <View className="flex-1 min-w-0">
                     <Text
                       className={`${isNative ? 'text-sm' : 'text-xs'} font-semibold ${
                         active ? 'text-primary' : 'text-foreground'
@@ -536,8 +536,8 @@ function UserRow({
         isLast ? '' : 'border-b border-border'
       }`}
     >
-      <View className="flex-1">
-        <View className="flex-row items-center gap-2">
+      <View className="flex-1 min-w-0">
+        <View className="flex-row flex-wrap items-center gap-2">
           <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
             {row.name || row.email}
           </Text>

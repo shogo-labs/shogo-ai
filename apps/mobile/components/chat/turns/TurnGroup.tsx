@@ -7,9 +7,11 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { memo } from "react"
-import { View, Platform, type ViewStyle } from "react-native"
+import { memo, useCallback } from "react"
+import { View, Platform, Pressable, type ViewStyle } from "react-native"
 import { Motion } from "@legendapp/motion"
+import * as Clipboard from "expo-clipboard"
+import * as Haptics from "expo-haptics"
 import { cn } from "@shogo/shared-ui/primitives"
 import { usePhaseColor } from "@/hooks/usePhaseColor"
 import type { ConversationTurn } from "./types"
@@ -20,6 +22,7 @@ import { EditableUserMessage } from "./EditableUserMessage"
 import { TurnFooter } from "./TurnFooter"
 import { extractTurnTiming } from "./turnShaping"
 import { ToolTimeline } from "../tools"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 
 export interface TurnGroupProps {
   turn: ConversationTurn
@@ -94,6 +97,19 @@ export const TurnGroup = memo(
     className,
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "")
+    const nativePhone = useIsNativePhoneLayout()
+
+    const handleCopyAssistant = useCallback(async () => {
+      if (!turn.assistantMessage) return
+      const text = extractTextContent(turn.assistantMessage)
+      if (!text) return
+      try {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+        await Clipboard.setStringAsync(text)
+      } catch {
+        // Clipboard / haptics can fail in simulators.
+      }
+    }, [turn.assistantMessage])
 
   return (
     <Motion.View
@@ -129,8 +145,27 @@ export const TurnGroup = memo(
       {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
       {turn.assistantMessage && (
         <View className="gap-0.5">
-          <TurnHeader role="assistant" phase={phase} />
-          {showToolTimeline ? (
+          {nativePhone ? null : <TurnHeader role="assistant" phase={phase} />}
+          {nativePhone ? (
+            <Pressable
+              onLongPress={handleCopyAssistant}
+              delayLongPress={400}
+              accessibilityRole="button"
+              accessibilityLabel="Assistant message. Long press to copy."
+            >
+              {showToolTimeline ? (
+                <MessageContent
+                  message={turn.assistantMessage}
+                  isStreaming={turn.isStreaming}
+                />
+              ) : (
+                <AssistantContent
+                  message={turn.assistantMessage}
+                  isStreaming={turn.isStreaming}
+                />
+              )}
+            </Pressable>
+          ) : showToolTimeline ? (
             <MessageContent
               message={turn.assistantMessage}
               isStreaming={turn.isStreaming}
@@ -141,7 +176,7 @@ export const TurnGroup = memo(
               isStreaming={turn.isStreaming}
             />
           )}
-          {!turn.isStreaming && (
+          {!turn.isStreaming && !nativePhone && (
             <TurnFooter
               messageId={turn.assistantMessage.id}
               text={extractTextContent(turn.assistantMessage)}

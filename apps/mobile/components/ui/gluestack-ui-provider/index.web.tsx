@@ -2,11 +2,15 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 'use client';
 import React, { useEffect, useLayoutEffect } from 'react';
+import { View, useWindowDimensions } from 'react-native';
 import { config } from './config';
 import { OverlayProvider } from '@gluestack-ui/core/overlay/creator';
 import { ToastProvider } from '@gluestack-ui/core/toast/creator';
 import { setFlushStyles } from '@gluestack-ui/utils/nativewind-utils';
 import { script } from './script';
+import { useResolvedTheme } from '../../../contexts/theme';
+import { CHATGPT_PHONE_SURFACE_VARS } from '../../../lib/chatgpt-phone-surfaces';
+import { WEB_PHONE_MAX_WIDTH } from '../../../lib/native-phone-layout';
 
 export type ModeType = 'light' | 'dark' | 'system';
 
@@ -28,6 +32,10 @@ export function GluestackUIProvider({
   mode?: ModeType;
   children?: React.ReactNode;
 }) {
+  const { width } = useWindowDimensions()
+  const resolvedTheme = useResolvedTheme()
+  const isPhoneWeb = width <= WEB_PHONE_MAX_WIDTH
+
   let cssVariablesWithMode = ``;
   Object.keys(config).forEach((configKey) => {
     cssVariablesWithMode +=
@@ -82,7 +90,7 @@ export function GluestackUIProvider({
     }
   }, []);
 
-  return (
+  const providerContent = (
     <>
       <script
         suppressHydrationWarning
@@ -94,5 +102,18 @@ export function GluestackUIProvider({
         <ToastProvider>{props.children}</ToastProvider>
       </OverlayProvider>
     </>
+  );
+
+  if (!isPhoneWeb) return providerContent
+
+  return (
+    <View
+      style={[
+        CHATGPT_PHONE_SURFACE_VARS[resolvedTheme],
+        { flex: 1, height: '100%', width: '100%' },
+      ]}
+    >
+      {providerContent}
+    </View>
   );
 }

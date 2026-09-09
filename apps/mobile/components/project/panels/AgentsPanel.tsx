@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useMemo, useSyncExternalStore, useState, useCallback, useEffect, useRef } from "react"
-import { View, Text, ScrollView, Pressable } from "react-native"
+import { View, Text, ScrollView, Pressable, StyleSheet } from "react-native"
 import {
   Bot,
   CheckCircle2,
@@ -23,6 +23,17 @@ import {
 } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
+import {
+  useIsNativePhoneLayout,
+  useNativePhoneWindow,
+  nativeSettingsPaneRootStyle,
+  nativeEqualChipWidths,
+  NATIVE_PHONE_PICKER_GUTTER,
+  NATIVE_PHONE_GUTTER,
+  NATIVE_PHONE_ROW_GAP,
+  NATIVE_PHONE_CONTROL_SIZE,
+  NATIVE_PHONE_HAIRLINE_COLOR,
+} from "../../../lib/native-phone-layout"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
 import { resolveShortName } from "../../../lib/visible-models"
@@ -727,6 +738,7 @@ function AgentDetailView({ agent, onBack }: { agent: AgentTypeInfo; onBack: () =
 }
 
 function RegistrySubTab() {
+  const comfortable = useIsNativePhoneLayout()
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
 
   const teamVersion = useSyncExternalStore(
@@ -759,11 +771,14 @@ function RegistrySubTab() {
         <Pressable
           key={t.name}
           onPress={() => setSelectedAgent(t.name)}
-          className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5 gap-1 active:bg-muted/40"
+          className={cn(
+            "rounded-lg border border-border/40 bg-muted/20 gap-1 active:bg-muted/40",
+            comfortable ? "px-4 py-3.5" : "px-3 py-2.5",
+          )}
         >
           <View className="flex-row items-center gap-2">
-            <Bot className="text-muted-foreground" size={14} />
-            <Text className="flex-1 text-xs font-semibold text-foreground">{t.name}</Text>
+            <Bot className="text-muted-foreground" size={comfortable ? 18 : 14} />
+            <Text className={cn("flex-1 font-semibold text-foreground", comfortable ? "text-base" : "text-xs")}>{t.name}</Text>
             {t.builtin && (
               <Text className="text-[9px] text-muted-foreground font-mono px-1 py-0.5 rounded bg-muted/40">
                 built-in
@@ -772,7 +787,7 @@ function RegistrySubTab() {
             <ChevronRight className="text-muted-foreground/40" size={14} />
           </View>
           {t.description && (
-            <Text className="text-[10px] text-muted-foreground" numberOfLines={2}>
+            <Text className={cn("text-muted-foreground", comfortable ? "text-sm" : "text-[10px]")} numberOfLines={2}>
               {t.description}
             </Text>
           )}
@@ -788,9 +803,9 @@ function RegistrySubTab() {
       ))}
 
       {!hasCustom && (
-        <View className="rounded-lg border border-dashed border-border/40 px-3 py-4 items-center gap-2 mt-2">
-          <Zap className="text-muted-foreground/30" size={20} />
-          <Text className="text-xs text-muted-foreground/60 text-center">
+        <View className="rounded-lg border border-dashed border-border/40 px-3 py-4 mt-2">
+          <Zap className="text-muted-foreground/30 mb-2 self-center" size={20} />
+          <Text className="text-xs text-muted-foreground/60 text-center w-full">
             Ask Shogo to create a custom agent for specialized tasks
           </Text>
         </View>
@@ -811,6 +826,9 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
 ]
 
 export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelProps) {
+  const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  const gutter = comfortable ? NATIVE_PHONE_PICKER_GUTTER : NATIVE_PHONE_GUTTER
+  const chips = comfortable ? nativeEqualChipWidths(pageWidth, SUB_TABS.length, NATIVE_PHONE_ROW_GAP) : { row: 0, chip: 0, lastChip: 0 }
   const [subTab, setSubTab] = useState<SubTab>("activity")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   const [expandedMemberIds, setExpandedMemberIds] = useState<Set<string>>(new Set())
@@ -842,27 +860,59 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
   if (!visible) return null
 
   return (
-    <View className="absolute inset-0 flex-col" style={{ display: visible ? "flex" : "none" }}>
+    <View
+      collapsable={false}
+      className={comfortable ? undefined : "absolute inset-0 flex-col"}
+      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    >
       {/* Sub-tab toggle */}
-      <View className="px-4 py-2 border-b border-border flex-row items-center gap-2">
-        <View className="flex-row rounded-md border border-border" role="tablist">
-          {SUB_TABS.map((tab) => (
+      <View
+        collapsable={false}
+        className={comfortable ? undefined : "border-b border-border px-4 py-2 flex-row items-center gap-2"}
+        style={
+          comfortable
+            ? [nativeChrome.tabBar, { width: pageWidth, paddingHorizontal: gutter }]
+            : undefined
+        }
+      >
+        <View
+          className={comfortable ? undefined : "flex-row rounded-md border border-border"}
+          role="tablist"
+          style={comfortable ? [nativeChrome.tabRow, { width: chips.row }] : undefined}
+        >
+          {SUB_TABS.map((tab, index) => (
             <Pressable
               key={tab.id}
               onPress={() => setSubTab(tab.id)}
               role="tab"
               accessibilityLabel={tab.label}
               accessibilityState={{ selected: subTab === tab.id }}
-              className={cn(
-                "px-3 py-1.5 rounded-md",
-                subTab === tab.id ? "bg-primary" : "active:bg-muted",
-              )}
+              className={
+                comfortable
+                  ? undefined
+                  : cn(
+                      "px-3 py-1.5 rounded-md",
+                      subTab === tab.id ? "bg-primary" : "active:bg-muted",
+                    )
+              }
+              style={
+                comfortable
+                  ? [
+                      nativeChrome.tab,
+                      { width: index === SUB_TABS.length - 1 ? chips.lastChip : chips.chip },
+                      subTab === tab.id ? nativeChrome.tabActive : nativeChrome.tabIdle,
+                    ]
+                  : undefined
+              }
             >
               <Text
                 className={cn(
-                  "text-xs font-medium",
-                  subTab === tab.id ? "text-primary-foreground" : "text-muted-foreground",
+                  comfortable ? "text-[13px]" : "text-xs font-medium",
+                  subTab === tab.id
+                    ? comfortable ? "font-semibold text-foreground" : "text-primary-foreground"
+                    : "text-muted-foreground",
                 )}
+                numberOfLines={1}
               >
                 {tab.label}
               </Text>
@@ -872,7 +922,10 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
       </View>
 
       {/* Sub-tab content */}
-      <View className="flex-1 relative">
+      <View
+        className={comfortable ? undefined : "flex-1 relative"}
+        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+      >
         {subTab === "activity" && (
           <ActivitySubTab expandedIds={expandedIds} toggleExpanded={toggleExpanded} agentUrl={agentUrl} />
         )}
@@ -888,3 +941,29 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
     </View>
   )
 }
+
+const nativeChrome = StyleSheet.create({
+  tabBar: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: NATIVE_PHONE_HAIRLINE_COLOR,
+  },
+  tabRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: NATIVE_PHONE_ROW_GAP,
+  },
+  tab: {
+    height: NATIVE_PHONE_CONTROL_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    paddingHorizontal: 4,
+  },
+  tabActive: {
+    backgroundColor: "rgba(120,120,128,0.32)",
+  },
+  tabIdle: {
+    backgroundColor: "rgba(120,120,128,0.16)",
+  },
+})

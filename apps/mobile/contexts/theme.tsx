@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
-import { Platform } from 'react-native'
+import { Platform, useColorScheme } from 'react-native'
 import * as SecureStore from 'expo-secure-store'
 import { safeGetItem, safeSetItem, safeRemoveItem } from '../lib/safe-storage'
+import { resolveThemeMode, type ThemePreference } from '../lib/resolve-theme-mode'
 
-export type ThemePreference = 'light' | 'dark' | 'system'
+export type { ThemePreference }
+export { resolveThemeMode }
 
 interface ThemeContextValue {
   theme: ThemePreference
@@ -95,32 +97,26 @@ export function useTheme() {
 }
 
 /**
- * Returns the currently resolved theme (`'light'` or `'dark'`) as applied
- * to the DOM. On web this mirrors the `dark` class on <html>, which is the
- * same source of truth Tailwind's `dark:` variants read. Kept in sync with
- * MutationObserver + media-query listener so callers re-render when the
- * user toggles the theme or the OS preference flips under `system` mode.
- *
- * Prefer this over nativewind's `useColorScheme()` when you need to pick
- * assets (e.g. Shiki theme) that must match the actual rendered theme —
- * `useColorScheme()` returns the OS preference, which can disagree with
- * the app's chosen theme.
+ * Returns the currently resolved theme (`'light'` or `'dark'`).
+ * On web this mirrors the `dark` class on <html>, which is the same source
+ * of truth Tailwind's `dark:` variants read. On native it follows the app
+ * theme preference (including `system` → OS scheme). Prefer this over
+ * nativewind's `useColorScheme()` when the user has pinned light or dark.
  */
 export function useResolvedTheme(): 'light' | 'dark' {
-  const getResolved = (): 'light' | 'dark' => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') {
-      // Native: fall back to OS preference via matchMedia-equivalent (not
-      // reliable off-web). Callers on native typically don't need Shiki.
-      return 'light'
-    }
+  const { theme } = useTheme()
+  const systemColorScheme = useColorScheme()
+
+  const getWebResolved = (): 'light' | 'dark' => {
+    if (typeof document === 'undefined') return 'light'
     return document.documentElement.classList.contains('dark') ? 'dark' : 'light'
   }
 
-  const [resolved, setResolved] = useState<'light' | 'dark'>(getResolved)
+  const [webResolved, setWebResolved] = useState<'light' | 'dark'>(getWebResolved)
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return
-    const update = () => setResolved(getResolved())
+    const update = () => setWebResolved(getWebResolved())
     update()
     const observer = new MutationObserver(update)
     observer.observe(document.documentElement, {
@@ -135,5 +131,6 @@ export function useResolvedTheme(): 'light' | 'dark' {
     }
   }, [])
 
-  return resolved
+  if (Platform.OS === 'web') return webResolved
+  return resolveThemeMode(theme, systemColorScheme)
 }

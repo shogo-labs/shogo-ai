@@ -9,17 +9,19 @@ import { Check } from "lucide-react-native"
 interface AutoModelOptionProps {
   currentModelId: string
   onSelect: () => void
+  presentation?: "menu" | "sheet"
 }
 
-export function AutoModelOption({ currentModelId, onSelect }: AutoModelOptionProps) {
+export function AutoModelOption({ currentModelId, onSelect, presentation = "menu" }: AutoModelOptionProps) {
   const isNative = Platform.OS !== "web"
+  const isSheet = presentation === "sheet"
   const isSelected = currentModelId === AUTO_MODEL_ID
   return (
     <Pressable
       onPress={onSelect}
       className={cn(
         "flex-row items-center gap-2.5 px-3",
-        isNative ? "min-h-12 py-2.5" : "py-2",
+        isSheet ? "min-h-14 py-3" : isNative ? "min-h-12 py-2.5" : "py-2",
         isSelected && "bg-accent",
       )}
     >

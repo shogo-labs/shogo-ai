@@ -28,6 +28,7 @@ import {
   Settings,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
 import { useAuth } from '../../contexts/auth'
 import {
   useWorkspaceCollection,
@@ -113,6 +114,7 @@ export default observer(function SharedWithMePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [sortModalVisible, setSortModalVisible] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const sheet = useNativePhoneSheetChrome()
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) return
@@ -531,8 +533,8 @@ export default observer(function SharedWithMePage() {
 
       {/* Sort Modal */}
       <Modal visible={sortModalVisible} transparent animationType="fade" onRequestClose={() => setSortModalVisible(false)}>
-        <Pressable onPress={() => setSortModalVisible(false)} className="flex-1 bg-black/50 justify-end">
-          <View className="bg-background rounded-t-2xl p-4 pb-8">
+        <Pressable onPress={() => setSortModalVisible(false)} className="flex-1 justify-end" style={sheet.backdrop}>
+          <View className="bg-background rounded-t-2xl p-4 pb-8" style={sheet.panel}>
             <Text className="text-foreground text-lg font-semibold mb-3">Sort by</Text>
             {SORT_OPTIONS.map((option) => (
               <Pressable

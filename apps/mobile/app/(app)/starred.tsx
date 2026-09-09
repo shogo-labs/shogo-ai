@@ -30,6 +30,7 @@ import {
   Trash2,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
 import {
   Popover,
   PopoverBackdrop,
@@ -89,6 +90,7 @@ export default observer(function StarredProjectsPage() {
   const [renameProject, setRenameProject] = useState<any>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleteProject, setDeleteProject] = useState<any>(null)
+  const sheet = useNativePhoneSheetChrome()
 
   const actions = useDomainActions()
 
@@ -505,8 +507,8 @@ export default observer(function StarredProjectsPage() {
 
       {/* Sort Modal */}
       <Modal visible={sortModalVisible} transparent animationType="fade" onRequestClose={() => setSortModalVisible(false)}>
-        <Pressable onPress={() => setSortModalVisible(false)} className="flex-1 bg-black/50 justify-end">
-          <View className="bg-background rounded-t-2xl p-4 pb-8">
+        <Pressable onPress={() => setSortModalVisible(false)} className="flex-1 justify-end" style={sheet.backdrop}>
+          <View className="bg-background rounded-t-2xl p-4 pb-8" style={sheet.panel}>
             <View className="flex-row items-center justify-between mb-3">
               <Text className="text-foreground text-lg font-semibold">Sort by</Text>
               <Pressable onPress={() => setSortModalVisible(false)} className="p-1">

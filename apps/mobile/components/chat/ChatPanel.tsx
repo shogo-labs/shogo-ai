@@ -41,6 +41,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
+  Animated,
   useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -48,6 +49,7 @@ import {
 import { observer } from "mobx-react-lite"
 import { useChat, type UIMessage } from "@ai-sdk/react"
 import { useRouter } from "expo-router"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { DefaultChatTransport } from "ai"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
@@ -90,7 +92,9 @@ import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
-import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
+import { isNativePhoneIntegrationsLayout, isPhoneLayout } from "../../lib/native-phone-layout"
+import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
+import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
@@ -123,7 +127,12 @@ import {
 } from "../../lib/chat-stall-watchdog"
 import { createTodoStateStore, TodoStateStoreContext } from "../../lib/todo-state-store"
 import { createFileChangeStore, FileChangeStoreContext } from "../../lib/file-change-store"
-import { createChatDockStore, ChatDockStoreContext, useChatDockStore, type DockPanelDescriptor } from "../../lib/chat-dock-store"
+import {
+  createChatDockStore,
+  ChatDockStoreContext,
+  useChatDockStore,
+  type DockPanelDescriptor,
+} from "../../lib/chat-dock-store"
 import { useDockPanel } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
@@ -156,6 +165,7 @@ const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
 import {
   MessageEditProvider,
+  dispatchNativeInlineEditTap,
   type MessageEditOptions,
 } from "./turns/MessageEditContext"
 import { TurnFooterProvider } from "./turns/TurnFooterContext"
@@ -720,7 +730,7 @@ function normalizePlanData(plan: PlanData): PlanData {
 // Component
 // ============================================================
 
-export const ChatPanel = observer(function ChatPanel({
+const ChatPanelContent = observer(function ChatPanelContent({
   mode = "full",
   featureId,
   featureName,
@@ -768,8 +778,11 @@ export const ChatPanel = observer(function ChatPanel({
   ideMode = false,
   enrichMessage,
 }: ChatPanelProps) {
+  const chatDockStore = useChatDockStore()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isNativePhoneLayout = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+  const isPhoneViewport = isPhoneLayout(windowWidth, windowHeight)
   const ideBridge = useIdeBridge(ideMode)
 
   const { studioChat } = useSDKDomains()
@@ -912,6 +925,7 @@ export const ChatPanel = observer(function ChatPanel({
   const programmaticScrollUntilRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 50
   const isNative = Platform.OS !== "web"
+  const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null)
   /** Native re-engage threshold: distance from bottom (px) on drag/momentum end
    * within which we treat the user as having returned to the bottom and resume
    * follow. 40px is forgiving enough that a soft release after a peek-up does
@@ -942,6 +956,19 @@ export const ChatPanel = observer(function ChatPanel({
   /** Mirrors stick/at-bottom into React so we can show the "Jump to latest"
    * pill. Source of truth for streaming follow remains the refs above. */
   const [isFollowing, setIsFollowing] = useState(true)
+  const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
+  const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
+  const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
+  // Native phone chat uses the measured keyboard overlap below. Keeping the
+  // KAV lift enabled here makes the composer depend on two independent layout
+  // adjustments, which can leave it behind the keyboard in project chat.
+  const iosComposerAvoiding = Platform.OS === "ios" && !isNativePhoneLayout
+  const composerKeyboardPad = useNativeComposerDockPad({
+    enabled: Platform.OS !== "web" && isNativePhoneLayout,
+    restPad: restComposerPad,
+    iosKeyboardAvoiding: iosComposerAvoiding,
+    onOpenChange: setNativeKeyboardOpen,
+  })
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -1195,8 +1222,6 @@ export const ChatPanel = observer(function ChatPanel({
   // changed files, live browser, running tasks, queue, worktree, plus the
   // blocking permission/question/connectivity panels). One per ChatPanel —
   // see chat-dock-store.ts.
-  const chatDockStore = useMemo(() => createChatDockStore(), [])
-
   useEffect(() => {
     pendingPlanRef.current = null
     setPendingPlan(null)
@@ -5334,8 +5359,8 @@ export const ChatPanel = observer(function ChatPanel({
   )
 
   const errorMessage = error?.message ?? null
-  const nativePhonePanelWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
-  const nativePhoneComposerWidth = isNativePhoneLayout ? Math.max(0, windowWidth) : undefined
+  const nativePhonePanelWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
+  const nativePhoneComposerWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
@@ -5709,7 +5734,6 @@ export const ChatPanel = observer(function ChatPanel({
   return (
     <TodoStateStoreContext.Provider value={todoStateStore}>
     <FileChangeStoreContext.Provider value={fileChangeStore}>
-    <ChatDockStoreContext.Provider value={chatDockStore}>
     <ChatContextProvider value={contextValue}>
       {/* Hosts the destructive-confirmation modal for in-place message
           edit and "retry from here". Rendered once per ChatPanel and
@@ -5751,9 +5775,17 @@ export const ChatPanel = observer(function ChatPanel({
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior={
+            isNativePhoneLayout
+              ? undefined
+              : Platform.OS === "ios"
+                ? "padding"
+                : "height"
+          }
           className="flex-1 flex-col bg-background"
-          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
+          keyboardVerticalOffset={
+            isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50
+          }
         >
           {/* Messages with Turn Grouping */}
           <View className="flex-1" onLayout={(e) => setMessagesAreaHeight(e.nativeEvent.layout.height)}>
@@ -5762,14 +5794,34 @@ export const ChatPanel = observer(function ChatPanel({
             className="flex-1"
             style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
-              isNativePhoneLayout ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
+              isPhoneViewport ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
             contentContainerStyle={nativePhonePanelWidth ? { width: nativePhonePanelWidth } : undefined}
-            keyboardShouldPersistTaps="handled"
+            keyboardShouldPersistTaps={
+              isNative && nativeInlineEditing ? "always" : "handled"
+            }
+            onTouchStart={(e) => {
+              if (Platform.OS === "web") return
+              const { pageX, pageY } = e.nativeEvent
+              nativeEditTapStartRef.current = { x: pageX, y: pageY }
+            }}
+            onTouchEnd={(e) => {
+              if (Platform.OS === "web") return
+              const start = nativeEditTapStartRef.current
+              nativeEditTapStartRef.current = null
+              if (!start) return
+              const { pageX, pageY } = e.nativeEvent
+              if (Math.hypot(pageX - start.x, pageY - start.y) > 12) return
+              dispatchNativeInlineEditTap(pageX, pageY)
+            }}
+            onTouchCancel={() => {
+              nativeEditTapStartRef.current = null
+            }}
             onScroll={isNative ? undefined : handleMessagesScrollWeb}
             onScrollBeginDrag={() => {
               if (isNative) {
+                nativeEditTapStartRef.current = null
                 stickToBottomRef.current = false
                 setIsFollowing(false)
               }
@@ -5833,7 +5885,12 @@ export const ChatPanel = observer(function ChatPanel({
               </Pressable>
             )}
             {displayMessages.length > 0 ? (
-              <MessageEditProvider {...messageEditValue}>
+              <MessageEditProvider
+                {...messageEditValue}
+                onInlineEditingChange={
+                  Platform.OS === "web" ? undefined : setNativeInlineEditing
+                }
+              >
                 <TurnFooterProvider {...turnFooterValue}>
                   <TurnList
                     messages={displayMessages}
@@ -5894,10 +5951,18 @@ export const ChatPanel = observer(function ChatPanel({
           </View>
 
 
-          {/* Input */}
-          <View
+          {/* Input — hidden on native while a historical bubble is being
+              edited so taps go to the transcript (cancel) instead of a
+              second composer, matching ChatGPT. Web keeps both. */}
+          {!(isNative && nativeInlineEditing) ? (
+          <Animated.View
             className="relative bg-transparent max-w-3xl w-full self-center mt-1"
-            style={nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined}
+            style={[
+              nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
+              isPhoneViewport
+                ? { paddingBottom: composerKeyboardPad, overflow: "visible" as const }
+                : undefined,
+            ]}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
             <ExecutionBadge />
@@ -5941,13 +6006,34 @@ export const ChatPanel = observer(function ChatPanel({
               ideContext={ideBridge.context}
               ideFileSearch={ideBridge.listFiles}
               onOpenIdeFile={ideBridge.openFile}
+              keyboardOpen={nativeKeyboardOpen}
             />
-          </View>
+          </Animated.View>
+          ) : (
+            <Pressable
+              onPress={() => dispatchNativeInlineEditTap(-1, -1)}
+              accessibilityLabel="Cancel editing"
+              style={
+                isPhoneViewport
+                  ? { paddingBottom: Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP), minHeight: 28 }
+                  : { minHeight: 28 }
+              }
+            />
+          )}
         </KeyboardAvoidingView>
       </View>
     </ChatContextProvider>
-    </ChatDockStoreContext.Provider>
     </FileChangeStoreContext.Provider>
     </TodoStateStoreContext.Provider>
   )
 })
+
+export function ChatPanel(props: ChatPanelProps) {
+  const chatDockStore = useMemo(() => createChatDockStore(), [])
+
+  return (
+    <ChatDockStoreContext.Provider value={chatDockStore}>
+      <ChatPanelContent {...props} />
+    </ChatDockStoreContext.Provider>
+  )
+}

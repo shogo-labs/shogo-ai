@@ -42,6 +42,7 @@ import { purchaseSubscription, finishPurchase, restorePurchases, initIapListener
 import type { IapPurchaseResult } from '../../lib/iap'
 import type { RegionalPricingResponse } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
+import { nativeActivePill } from '../../lib/native-active-shadow'
 import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
@@ -603,6 +604,9 @@ export default observer(function BillingPage() {
     )
   }
 
+  const monthlyPill = nativeActivePill(billingInterval === 'monthly', { backgroundClass: 'bg-primary' })
+  const annualPill = nativeActivePill(billingInterval === 'annual', { backgroundClass: 'bg-primary' })
+
   return (
     <ScrollView
       className="flex-1 bg-background"
@@ -812,8 +816,9 @@ export default observer(function BillingPage() {
             onPress={() => setBillingInterval('monthly')}
             className={cn(
               'px-5 py-2 rounded-full',
-              billingInterval === 'monthly' && 'bg-primary shadow-sm'
+              monthlyPill.className,
             )}
+            style={monthlyPill.style}
           >
             <Text className={cn(
               'text-sm font-medium',
@@ -826,8 +831,9 @@ export default observer(function BillingPage() {
             onPress={() => setBillingInterval('annual')}
             className={cn(
               'flex-row items-center gap-1.5 px-5 py-2 rounded-full',
-              billingInterval === 'annual' && 'bg-primary shadow-sm'
+              annualPill.className,
             )}
+            style={annualPill.style}
           >
             <Text className={cn(
               'text-sm font-medium',

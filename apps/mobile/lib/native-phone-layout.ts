@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Handset vs tablet detection for native-only UI (Expo / React Native).
+ * Handset vs tablet detection for phone chrome and native Yoga workarounds.
  *
- * - Web: always treated as non-handset (existing web layout unchanged).
- * - iOS: iPad via `Platform.isPad` (runtime API; not always in TS types).
- * - Android: smallest window edge vs sw600dp-style threshold. Uses the same
- *   logical units as `useWindowDimensions()` (dp on Android, points on iOS).
+ * - Native iOS: iPad via `Platform.isPad`.
+ * - Native Android: smallest window edge vs sw600dp-style threshold.
+ * - Web: phone chrome at `WEB_PHONE_MAX_WIDTH` (iPhone Safari / Expo web).
+ *   Desktop studio and Electron stay on the existing wide layout.
+ * Yoga pixel-width helpers stay native-only (`isNativePhoneIntegrationsLayout`).
  */
-import { Platform } from 'react-native'
+import { Platform, StyleSheet, useWindowDimensions, type ViewStyle } from 'react-native'
+import { useResolvedTheme } from '../contexts/theme'
 
 /** Matches Android `sw600dp` smallest-width bucket for “tablet” layouts. */
 const ANDROID_TABLET_MIN_SHORTEST_EDGE = 600
@@ -22,6 +24,184 @@ function isAndroidHandsetByWindowSize(width: number, height: number): boolean {
   return Math.min(width, height) < ANDROID_TABLET_MIN_SHORTEST_EDGE
 }
 
+/** True on iOS/Android. */
+export function isNativePlatform(): boolean {
+  return Platform.OS !== 'web'
+}
+
+/** Matches app `isWide` (`width >= 768`). Phone chrome applies at or below this. */
+export const WEB_PHONE_MAX_WIDTH = 767
+
+/**
+ * Phone chrome: native handset, or a narrow web viewport.
+ * Does not enable Yoga pixel-width workarounds on web.
+ */
+export function isPhoneLayout(width: number, height: number): boolean {
+  if (isNativePlatform()) return isNativePhoneIntegrationsLayout(width, height)
+  return width <= WEB_PHONE_MAX_WIDTH
+}
+
+/** Horizontal padding for native-phone Settings chrome (`px-4`). */
+export const NATIVE_PHONE_GUTTER = 16
+/** NativeWind `p-4` / `px-4` (chart cards, section padding). */
+export const NATIVE_WIND_SPACE_4 = NATIVE_PHONE_GUTTER
+/** NativeWind `p-0.5`. */
+export const NATIVE_WIND_SPACE_0_5 = 2
+/** Left+right gutter. */
+export const NATIVE_PHONE_SECTION_INSET = NATIVE_PHONE_GUTTER * 2
+/** Section picker inset (`paddingHorizontal: 12` on each side). */
+export const NATIVE_PHONE_PICKER_INSET = 24
+/** One side of `NATIVE_PHONE_PICKER_INSET`. */
+export const NATIVE_PHONE_PICKER_GUTTER = NATIVE_PHONE_PICKER_INSET / 2
+/** Hairline used on native Settings / Skills / Agents chrome. */
+export const NATIVE_PHONE_HAIRLINE_COLOR = 'rgba(127,127,127,0.35)'
+/** Tap target for native phone icon buttons (Library refresh, period refresh). */
+export const NATIVE_PHONE_CONTROL_SIZE = 44
+/** Row gap between native phone chrome controls (`gap-2`). */
+export const NATIVE_PHONE_ROW_GAP = 8
+/** Wrap-row gap between two-column stat cards (`gap-3`). */
+export const NATIVE_PHONE_CARD_GAP = 12
+/**
+ * Native ChatGPT canvas (`nativeChatGptSurfaces` in the Gluestack provider).
+ * Use for style props where NativeWind `bg-background` is not applied.
+ */
+export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
+/**
+ * Dark home only: the old charcoal wash, not OLED black. Search, files, and
+ * other screens keep `NATIVE_PHONE_CANVAS.dark`. The drawer still lifts this
+ * to `NATIVE_DRAWER_SHEET_OPEN_CANVAS` when the sidebar opens.
+ */
+export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
+
+/**
+ * ChatGPT iOS icon ink, sampled from App Store screenshots.
+ * Dark: ~#F4F4F4 (header/composer glyphs). Light: ~#0D0D0D (plus/menu).
+ * Lucide default stroke 2 reads heavier than ChatGPT's SF-Symbol weight.
+ */
+export const NATIVE_PHONE_ICON = { dark: '#F4F4F4', light: '#0D0D0D' } as const
+export const NATIVE_PHONE_ICON_STROKE = 1.75
+/** Header menu / bell on native phone and narrow web (`AppHeader`). */
+export const NATIVE_PHONE_HEADER_ICON_SIZE = 26
+
+export function nativePhoneIconColor(isDark: boolean): string {
+  return isDark ? NATIVE_PHONE_ICON.dark : NATIVE_PHONE_ICON.light
+}
+
+/**
+ * Phone icon/sheet chrome: native (iPhone, iPad, Android) or a narrow web
+ * viewport. Desktop studio, Electron, and wide web keep className theme colors.
+ */
+export function phoneChromeEnabled(width: number, height: number): boolean {
+  return isNativePlatform() || isPhoneLayout(width, height)
+}
+
+export function useNativePhoneIconChrome(): { color: string; strokeWidth: number } {
+  const isDark = useResolvedTheme() === 'dark'
+  return {
+    color: nativePhoneIconColor(isDark),
+    strokeWidth: NATIVE_PHONE_ICON_STROKE,
+  }
+}
+
+/**
+ * Dark bottom sheets on OLED black. Apple's elevated
+ * `secondarySystemBackground` / systemGray6 (`#1C1C1E`) — one step above
+ * `#000`, cooler than `bg-card` (`#212121`), so the sheet sits in the same
+ * black family instead of a muddy mid-grey. Light sheets keep `bg-card`.
+ */
+export const NATIVE_PHONE_SHEET_CANVAS = { dark: '#1C1C1E', light: '#ffffff' } as const
+export const NATIVE_PHONE_SHEET_BORDER = {
+  dark: 'rgba(255,255,255,0.10)',
+  light: 'rgba(0,0,0,0.08)',
+} as const
+export const NATIVE_PHONE_SHEET_BACKDROP = {
+  dark: 'rgba(0,0,0,0.40)',
+  light: 'rgba(0,0,0,0.50)',
+} as const
+
+export function nativePhoneCanvas(isDark: boolean): string {
+  return isDark ? NATIVE_PHONE_CANVAS.dark : NATIVE_PHONE_CANVAS.light
+}
+
+export function nativePhoneSheetPanelStyle(isDark: boolean): ViewStyle | undefined {
+  if (!isDark) return undefined
+  return {
+    backgroundColor: NATIVE_PHONE_SHEET_CANVAS.dark,
+    borderColor: NATIVE_PHONE_SHEET_BORDER.dark,
+  }
+}
+
+export function nativePhoneSheetBackdropStyle(isDark: boolean): ViewStyle {
+  return { backgroundColor: isDark ? NATIVE_PHONE_SHEET_BACKDROP.dark : NATIVE_PHONE_SHEET_BACKDROP.light }
+}
+
+/**
+ * ChatGPT search dock: a dissolve zone above the pills, then near-opaque
+ * charcoal at the bar so list rows “come up” and fade out instead of
+ * printing through the Search field.
+ */
+export const NATIVE_PHONE_DOCK_FADE = 80
+export const NATIVE_PHONE_DOCK_FADE_LOCATIONS = [0, 0.42, 1] as const
+/** Gap between ChatDock banners (errors, plans, approvals) and the composer pill. */
+export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
+
+export const NATIVE_PHONE_DOCK_GLASS = {
+  dark: {
+    fill: 'rgba(44,44,46,0.94)',
+    border: 'rgba(255,255,255,0.14)',
+  },
+  light: {
+    fill: 'rgba(255,255,255,0.94)',
+    border: 'rgba(0,0,0,0.08)',
+  },
+} as const
+
+export function nativePhoneDockGlassStyle(isDark: boolean): ViewStyle {
+  const glass = isDark ? NATIVE_PHONE_DOCK_GLASS.dark : NATIVE_PHONE_DOCK_GLASS.light
+  return {
+    backgroundColor: glass.fill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: glass.border,
+  }
+}
+
+/** `#RRGGBB` → 0–255 channels. Shared by dock fades and the drawer canvas lerp. */
+export function hexToRgbChannels(hex: string): [number, number, number] {
+  const n = hex.replace('#', '')
+  return [
+    parseInt(n.slice(0, 2), 16),
+    parseInt(n.slice(2, 4), 16),
+    parseInt(n.slice(4, 6), 16),
+  ]
+}
+
+export function nativePhoneDockFadeColors(
+  isDark: boolean,
+  canvasHex?: string,
+): readonly [string, string, string] {
+  const [r, g, b] = hexToRgbChannels(canvasHex ?? nativePhoneCanvas(isDark))
+  return [`rgba(${r},${g},${b},0)`, `rgba(${r},${g},${b},0.42)`, `rgba(${r},${g},${b},0.94)`]
+}
+
+/** Dark-only chrome for sheets that rise from the bottom of the screen. */
+export function useNativePhoneSheetChrome(): {
+  panel: ViewStyle | undefined
+  backdrop: ViewStyle
+} {
+  const isDark = useResolvedTheme() === 'dark'
+  const { width, height } = useWindowDimensions()
+  if (!phoneChromeEnabled(width, height)) {
+    return {
+      panel: undefined,
+      backdrop: { backgroundColor: NATIVE_PHONE_SHEET_BACKDROP.light },
+    }
+  }
+  return {
+    panel: nativePhoneSheetPanelStyle(isDark),
+    backdrop: nativePhoneSheetBackdropStyle(isDark),
+  }
+}
+
 /**
  * True only on iPhone / Android phones — not web, not iPad, not Android tablets.
  * Pure function: reuse window size from an existing `useWindowDimensions()` call
@@ -31,8 +211,152 @@ export function isNativePhoneIntegrationsLayout(
   width: number,
   height: number,
 ): boolean {
-  if (Platform.OS === 'web') return false
+  if (!isNativePlatform()) return false
   if (Platform.OS === 'ios') return !isIOSPadDevice()
   if (Platform.OS === 'android') return isAndroidHandsetByWindowSize(width, height)
   return false
+}
+
+/**
+ * Absolute fill that uses a pixel width. Percentage `width: '100%'` collapses
+ * in this tree when a parent has no definite width (Yoga treats it as 0).
+ */
+export function nativePhoneFillStyle(width: number): {
+  position: 'absolute'
+  top: 0
+  left: 0
+  bottom: 0
+  width: number
+  maxWidth: number
+} {
+  return {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    width,
+    maxWidth: width,
+  }
+}
+
+/** Inner content width for a full-bleed native phone pane. */
+export function nativeContentWidth(
+  windowWidth: number,
+  horizontalPadding = NATIVE_PHONE_SECTION_INSET,
+): number {
+  return Math.max(0, windowWidth - horizontalPadding)
+}
+
+/**
+ * Library + refresh row that matches the Settings section picker
+ * (`windowWidth - NATIVE_PHONE_PICKER_INSET`). Yoga will not honor `flex: 1`
+ * on the Library button unless the row itself has this pixel width.
+ */
+export function nativeSkillsActionWidths(
+  paneWidth: number,
+  refreshSize = NATIVE_PHONE_CONTROL_SIZE,
+  gap = NATIVE_PHONE_ROW_GAP,
+): { row: number; library: number; refresh: number } {
+  const row = nativeContentWidth(paneWidth, NATIVE_PHONE_PICKER_INSET)
+  return {
+    row,
+    library: Math.max(0, row - refreshSize - gap),
+    refresh: refreshSize,
+  }
+}
+
+/**
+ * Equal-width chips for a native phone tab row (e.g. Agents Activity/Tasks/…).
+ * `flex: 1` + `min-w-0` + `numberOfLines={1}` ellipsizes labels when the
+ * parent has no definite width (Yoga treats `%` / flex as 0).
+ */
+export function nativeEqualChipWidths(
+  paneWidth: number,
+  count: number,
+  gap = NATIVE_PHONE_ROW_GAP,
+  inset = NATIVE_PHONE_PICKER_INSET,
+): { row: number; chip: number; lastChip: number } {
+  const row = nativeContentWidth(paneWidth, inset)
+  if (count <= 0) return { row, chip: 0, lastChip: 0 }
+  const inner = Math.max(0, row - gap * (count - 1))
+  const chip = Math.floor(inner / count)
+  return {
+    row,
+    chip,
+    lastChip: inner - chip * (count - 1),
+  }
+}
+
+/** Chip width for a wrapping native grid (Growth metric toggles). */
+export function nativeGridChipWidth(
+  rowWidth: number,
+  columns: number,
+  gap = 0,
+): number {
+  const cols = Math.max(1, columns)
+  return Math.max(0, Math.floor((rowWidth - gap * (cols - 1)) / cols))
+}
+
+/**
+ * Flex fill for a settings section. Yoga's default minHeight is the content
+ * size, so a `flex: 1` ScrollView grows with its children and never scrolls.
+ */
+export const nativeSettingsPaneFill: ViewStyle = {
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+}
+
+/** Pixel-sized settings section root so nested ScrollViews can actually scroll. */
+export function nativeSettingsPaneStyle(width: number): ViewStyle {
+  return {
+    ...nativeSettingsPaneFill,
+    width,
+    maxWidth: width,
+    alignSelf: 'stretch',
+  }
+}
+
+/** Phone pane uses a pinned width; web/tablet overlay panes keep className layout. */
+export function nativeSettingsPaneRootStyle(
+  width: number,
+  comfortable: boolean,
+): ViewStyle | undefined {
+  return comfortable ? nativeSettingsPaneStyle(width) : undefined
+}
+
+/**
+ * Two equal cards in a wrap row (`gap-3` = 12). NativeWind `w-[48%]` collapses
+ * when the parent has no definite width.
+ */
+export function nativeTwoColumnCardWidth(
+  paneWidth: number,
+  gap = NATIVE_PHONE_CARD_GAP,
+  inset = NATIVE_PHONE_SECTION_INSET,
+): number {
+  const inner = nativeContentWidth(paneWidth, inset)
+  return Math.max(0, Math.floor((inner - gap) / 2))
+}
+
+/**
+ * One `useWindowDimensions` subscription for phone detection and pixel widths.
+ * Prefer this over calling the hook plus `Dimensions.get` in the same component.
+ */
+export function useNativePhoneWindow(): {
+  isPhone: boolean
+  width: number
+  height: number
+} {
+  const { width, height } = useWindowDimensions()
+  return {
+    isPhone: isNativePhoneIntegrationsLayout(width, height),
+    width,
+    height,
+  }
+}
+
+/** True on iPhone / Android phones. Web and tablets stay on the existing layout. */
+export function useIsNativePhoneLayout(): boolean {
+  const { width, height } = useWindowDimensions()
+  return isNativePhoneIntegrationsLayout(width, height)
 }

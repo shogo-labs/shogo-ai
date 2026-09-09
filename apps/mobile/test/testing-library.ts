@@ -53,6 +53,13 @@ mock.module('react-native-svg', () => svgStub)
 // `expo-secure-store` and the better-auth Expo plugin trigger native
 // module resolution at module-load time. Tests don't exercise auth, so
 // stub them out to avoid pulling in `expo-modules-core` etc.
+mock.module('expo-haptics', () => ({
+  impactAsync: () => Promise.resolve(),
+  notificationAsync: () => Promise.resolve(),
+  selectionAsync: () => Promise.resolve(),
+  ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
+  NotificationFeedbackType: { Success: 'success', Warning: 'warning', Error: 'error' },
+}))
 mock.module('expo-secure-store', () => ({
   getItemAsync: () => Promise.resolve(null),
   setItemAsync: () => Promise.resolve(),
@@ -84,6 +91,19 @@ mock.module('expo-modules-core', () => ({
     removeListeners() {}
   },
   uuid: { v4: () => 'test-uuid' },
+  PermissionStatus: { GRANTED: 'granted', DENIED: 'denied', UNDETERMINED: 'undetermined' },
+}))
+
+mock.module('expo-image-picker', () => ({
+  PermissionStatus: { GRANTED: 'granted', DENIED: 'denied', UNDETERMINED: 'undetermined' },
+  launchImageLibraryAsync: async () => ({ canceled: true, assets: [] }),
+  launchCameraAsync: async () => ({ canceled: true, assets: [] }),
+  requestCameraPermissionsAsync: async () => ({ granted: false }),
+  requestMediaLibraryPermissionsAsync: async () => ({ granted: false }),
+}))
+
+mock.module('../lib/native-attachment-picker', () => ({
+  executeNativeAttachAction: () => {},
 }))
 
 // Replace `agent-fetch` with a global handler ref. Tests assign a

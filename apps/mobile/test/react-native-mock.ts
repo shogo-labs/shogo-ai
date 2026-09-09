@@ -76,6 +76,7 @@ export const reactNativeMockBase = {
     linear: (t: number) => t,
     ease: (t: number) => t,
     circle: (t: number) => t,
+    cubic: (t: number) => t * t * t,
     back:
       (_s = 1.5) =>
       (t: number) =>
@@ -195,6 +196,7 @@ export const reactNativeMockBase = {
     }),
   },
   StatusBar: passthroughHost('div'),
+  useWindowDimensions: () => ({ width: 1024, height: 768, scale: 1, fontScale: 1 }),
   // Misc named exports referenced by Expo / RN-svg / lucide transitively at
   // module-load time.
   TurboModuleRegistry: {
@@ -237,6 +239,10 @@ export const reactNativeMockBase = {
     RESULTS: {},
     request: () => Promise.resolve('granted'),
     check: () => Promise.resolve(true),
+  },
+  ActionSheetIOS: {
+    showActionSheetWithOptions: () => {},
+    showShareActionSheetWithOptions: () => {},
   },
   Alert: { alert: () => {} },
   Share: { share: () => Promise.resolve({ action: 'dismissed' }) },

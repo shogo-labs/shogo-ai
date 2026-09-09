@@ -77,3 +77,72 @@ export function shouldShowCanvas(input: {
 }): boolean {
   return input.baseReady && (input.apiLatched || input.timedOut)
 }
+
+/**
+ * Where to poll `/preview/status`.
+ *
+ * Always prefer the authenticated agent-proxy (`agentUrl`). Native `fetch`
+ * cannot send cookies, so polling the public preview host (or the proxy
+ * without a Cookie header) 401s forever and the canvas gate times out.
+ *
+ * Workspace runtimes expose per-project status under `/p/<id>/`; when
+ * `canvasBaseUrl` ends with that suffix we poll the matching proxy path
+ * instead of the shared runtime's idle global manager.
+ */
+export function previewStatusPollBase(
+  agentUrl: string | null | undefined,
+  canvasBaseUrl?: string | null,
+): string | null {
+  if (!agentUrl) return null
+  const trimmed = agentUrl.replace(/\/+$/, '')
+  const match = canvasBaseUrl?.match(/\/p\/([^/]+)\/?$/)
+  if (match) return `${trimmed}/p/${match[1]}`
+  return trimmed
+}
+
+/**
+ * Native WebView has no Studio cookies. Load the tokenized preview URL
+ * (`?__preview_token=`) when we have one; otherwise fall back to the
+ * canvas/agent origin.
+ */
+export function canvasDocumentUrl(input: {
+  canvasBaseUrl?: string | null
+  agentUrl?: string | null
+  previewUrl?: string | null
+  native: boolean
+}): string | null {
+  if (input.native && input.previewUrl && input.previewUrl.includes('__preview_token=')) {
+    return input.previewUrl
+  }
+  const iframeBase = input.canvasBaseUrl || input.agentUrl
+  return iframeBase ? `${iframeBase.replace(/\/+$/, '')}/` : null
+}
+
+/**
+ * Native can load the preview document as soon as `/sandbox/url` is ready.
+ *
+ * Waiting on `/preview/status` `running` deadlocks on iPhone: the WebView
+ * never mounts, the preview-router never sees a document navigation (the
+ * same signal that wakes a sleeping preview in a browser), and the 60s
+ * gate shows "Connection timed out — The agent runtime could not be
+ * reached" even though `useAgentUrl` already succeeded.
+ */
+export function nativeCanvasBaseReady(input: {
+  native: boolean
+  agentUrl?: string | null
+  previewUrl?: string | null
+  canvasBaseUrl?: string | null
+}): boolean {
+  if (!input.native || !input.agentUrl) return false
+  return Boolean(input.previewUrl || input.canvasBaseUrl)
+}
+
+export function projectIdFromAgentProxyUrl(agentUrl: string | null | undefined): string | null {
+  if (!agentUrl) return null
+  const match = agentUrl.match(/\/api\/projects\/([^/]+)\/agent-proxy/)
+  return match?.[1] ?? null
+}
+
+export function previewWakeUrl(apiBaseUrl: string, projectId: string): string {
+  return `${apiBaseUrl.replace(/\/+$/, '')}/api/preview/${encodeURIComponent(projectId)}/wake`
+}

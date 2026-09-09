@@ -34,6 +34,9 @@ import { Motion, AnimatePresence } from "@legendapp/motion"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
+import { NativeWorkedSessionExtras } from "../NativeWorkedSessionExtras"
 
 const ANIM_DURATION = 500
 const STREAM_MAX_HEIGHT = 200
@@ -173,6 +176,9 @@ function CollapsibleToolGroupImpl({
   const colorScheme = useColorScheme()
   const innerScrollRef = useRef<ScrollView>(null)
   const userScrolledRef = useRef(false)
+  const nativePhone = useIsNativePhoneLayout()
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const insideSheet = useInsideActivitySheet()
 
   const isControlled = controlledExpanded !== undefined
   const isOpen = isControlled
@@ -283,11 +289,38 @@ function CollapsibleToolGroupImpl({
     [measuredHeight],
   )
 
-  if (disabled) {
+  const isTurnWorkedGroup = contentKey === "worked-for-content"
+
+  if (disabled && !(nativePhone && isTurnWorkedGroup)) {
     return (
       <View className={cn("flex-row items-center gap-1.5", className)}>
         <Text className="text-[11px] text-muted-foreground">{label}</Text>
         {badge}
+      </View>
+    )
+  }
+
+  if (nativePhone && !insideSheet) {
+    const chatLabel = isStreaming ? "Working…" : "Worked"
+    return (
+      <View className={cn("py-0.5", className)}>
+        <Pressable
+          onPress={() => setSheetOpen(true)}
+          className="flex-row items-center gap-1.5 self-start py-1"
+          role="button"
+          accessibilityLabel={label}
+        >
+          <Text className="text-[15px] text-muted-foreground">{chatLabel}</Text>
+          {badge}
+        </Pressable>
+        <NativeActivitySheet
+          visible={sheetOpen}
+          title={label}
+          onClose={() => setSheetOpen(false)}
+        >
+          {isTurnWorkedGroup ? <NativeWorkedSessionExtras /> : null}
+          {children}
+        </NativeActivitySheet>
       </View>
     )
   }

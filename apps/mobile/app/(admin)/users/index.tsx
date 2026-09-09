@@ -31,6 +31,7 @@ import {
   ShieldOff,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { nativeActivePill } from '../../../lib/native-active-shadow'
 import {
   AlertDialog,
   AlertDialogBackdrop,
@@ -258,7 +259,9 @@ function UsersListHeader({
             { value: '', label: 'All' },
             { value: 'user', label: 'Users' },
             { value: 'super_admin', label: 'Admins' },
-          ].map((role) => (
+          ].map((role) => {
+            const pill = nativeActivePill(roleFilter === role.value)
+            return (
             <Pressable
               key={role.value}
               onPress={() => {
@@ -267,8 +270,9 @@ function UsersListHeader({
               }}
               className={cn(
                 'flex-1 items-center py-1.5 rounded-md',
-                roleFilter === role.value ? 'bg-background shadow-sm' : '',
+                pill.className,
               )}
+              style={pill.style}
             >
               <Text
                 className={cn(
@@ -279,7 +283,8 @@ function UsersListHeader({
                 {role.label}
               </Text>
             </Pressable>
-          ))}
+            )
+          })}
         </View>
       </View>
 
