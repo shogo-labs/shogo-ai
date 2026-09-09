@@ -235,7 +235,7 @@ function renderChatInput() {
       placeholder="Ask Shogo..."
     />,
   )
-  return screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+  return screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 }
 
 /** Stands in for `ChatPanel`'s frequent `onData`-driven state updates
@@ -297,7 +297,7 @@ describe("ChatInput — Maximum update depth exceeded regression guard", () => {
         />
       </Profiler>,
     )
-    const input = screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
     const sentence = "Please refactor the billing service to use the new usage wallet"
 
     const commitsBeforeBurst = commits
@@ -335,7 +335,7 @@ describe("ChatInput — Maximum update depth exceeded regression guard", () => {
         />
       </>,
     )
-    const input = screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
     const sentence = "Please refactor the billing service to use the new usage wallet"
 
     let acc = ""

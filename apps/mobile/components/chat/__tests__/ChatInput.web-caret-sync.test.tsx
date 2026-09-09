@@ -124,7 +124,7 @@ function renderChatInput() {
       placeholder="Ask Shogo..."
     />,
   )
-  return screen.getByPlaceholderText("Ask Shogo...") as HTMLTextAreaElement
+  return screen.getByTestId("project-composer-input") as HTMLTextAreaElement
 }
 
 describe("ChatInput — web caret regression guard", () => {

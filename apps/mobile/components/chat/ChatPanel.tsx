@@ -41,6 +41,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
+  Animated,
   useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -92,6 +93,19 @@ import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
 
 import { isNativePhoneIntegrationsLayout, isPhoneLayout } from "../../lib/native-phone-layout"
+import {
+  NATIVE_COMPOSER_KEYBOARD_GAP,
+  nativeComposerDockBottomPad,
+  nativeComposerKeyboardDuration,
+  nativeComposerKeyboardOpenFromSource,
+  type NativeComposerKeyboardEvent,
+  type NativeComposerKeyboardSource,
+} from "../../lib/native-composer-keyboard"
+import {
+  nativeComposerKeyboardEasing,
+  nativeComposerKeyboardOverlapFromEvent,
+  useNativeComposerKeyboard,
+} from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { useActiveInstance } from "../../contexts/active-instance"
@@ -928,7 +942,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * follow. 40px is forgiving enough that a soft release after a peek-up does
    * not snap follow back on against the user's intent. */
   const STICK_BOTTOM_PX = 40
-  const NATIVE_KEYBOARD_COMPOSER_GAP = 8
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
@@ -956,6 +969,44 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [isFollowing, setIsFollowing] = useState(true)
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
+  const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
+  const composerKeyboardPad = useRef(new Animated.Value(restComposerPad)).current
+  const nativeKeyboardOpenRef = useRef(false)
+  const iosComposerAvoiding = Platform.OS === "ios"
+  const handleNativeKeyboardFrame = useCallback(
+    (event: NativeComposerKeyboardEvent, source: NativeComposerKeyboardSource) => {
+      const overlap = nativeComposerKeyboardOverlapFromEvent(event)
+      const keyboardOpen = nativeComposerKeyboardOpenFromSource(
+        source,
+        overlap,
+        restComposerPad,
+      )
+      if (keyboardOpen == null) return
+      nativeKeyboardOpenRef.current = keyboardOpen
+      setNativeKeyboardOpen(keyboardOpen)
+      Animated.timing(composerKeyboardPad, {
+        toValue: nativeComposerDockBottomPad({
+          keyboardOpen,
+          overlap,
+          restPad: restComposerPad,
+          iosKeyboardAvoiding: iosComposerAvoiding,
+        }),
+        duration: nativeComposerKeyboardDuration(event.duration),
+        easing: nativeComposerKeyboardEasing(),
+        useNativeDriver: false,
+      }).start()
+    },
+    [composerKeyboardPad, iosComposerAvoiding, restComposerPad],
+  )
+  useNativeComposerKeyboard(
+    Platform.OS !== "web" && isNativePhoneLayout,
+    handleNativeKeyboardFrame,
+  )
+  useEffect(() => {
+    if (!nativeKeyboardOpenRef.current) {
+      composerKeyboardPad.setValue(restComposerPad)
+    }
+  }, [composerKeyboardPad, restComposerPad])
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
@@ -1018,18 +1069,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     })
     return () => sub.remove()
   }, [scrollToBottomIfFollowing])
-
-  useEffect(() => {
-    if (!isNativePhoneLayout) return
-    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow"
-    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide"
-    const showSub = Keyboard.addListener(showEvent, () => setNativeKeyboardOpen(true))
-    const hideSub = Keyboard.addListener(hideEvent, () => setNativeKeyboardOpen(false))
-    return () => {
-      showSub.remove()
-      hideSub.remove()
-    }
-  }, [isNativePhoneLayout])
 
   useEffect(() => {
     return () => {
@@ -5768,7 +5807,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
           className="flex-1 flex-col bg-background"
-          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 50}
+          keyboardVerticalOffset={
+            isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50
+          }
         >
           {/* Messages with Turn Grouping */}
           <View className="flex-1" onLayout={(e) => setMessagesAreaHeight(e.nativeEvent.layout.height)}>
@@ -5938,16 +5979,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
               edited so taps go to the transcript (cancel) instead of a
               second composer, matching ChatGPT. Web keeps both. */}
           {!(isNative && nativeInlineEditing) ? (
-          <View
+          <Animated.View
             className="relative bg-transparent max-w-3xl w-full self-center mt-1"
             style={[
               nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
               isPhoneViewport
-                ? {
-                    paddingBottom: nativeKeyboardOpen
-                      ? NATIVE_KEYBOARD_COMPOSER_GAP
-                      : Math.max(insets.bottom, 12),
-                  }
+                ? { paddingBottom: composerKeyboardPad }
                 : undefined,
             ]}
           >
@@ -5995,7 +6032,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               onOpenIdeFile={ideBridge.openFile}
               keyboardOpen={nativeKeyboardOpen}
             />
-          </View>
+          </Animated.View>
           ) : (
             <Pressable
               onPress={() => dispatchNativeInlineEditTap(-1, -1)}

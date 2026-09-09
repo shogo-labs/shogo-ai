@@ -23,6 +23,8 @@ import {
   Image,
   ScrollView,
   Platform,
+  Animated,
+  Easing,
   useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -79,6 +81,23 @@ import { FileViewerModal } from "./FileViewerModal"
 import { ImagePreviewModal } from "./ImagePreviewModal"
 import { VideoPreviewModal } from "./VideoPreviewModal"
 import { PastedTextChip } from "./PastedTextChip"
+import {
+  PROMINENT_COMPOSER_CHROME_Z_INDEX,
+  PROMINENT_COMPOSER_FONT_SIZE,
+  PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+  PROMINENT_COMPOSER_LINE_HEIGHT,
+  PROMINENT_COMPOSER_MAX_HEIGHT,
+  PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
+  PROMINENT_COMPOSER_MIN_HEIGHT,
+  PROMINENT_COMPOSER_PADDING_BOTTOM,
+  PROMINENT_COMPOSER_PADDING_HORIZONTAL,
+  PROMINENT_COMPOSER_PADDING_TOP,
+  PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
+  PROMINENT_COMPOSER_RADIUS,
+  PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+  nextProminentComposerHeight,
+  useProminentComposerExpansion,
+} from "./useProminentComposerExpansion"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
@@ -151,16 +170,22 @@ function WebTooltip({ label, children }: { label: string; children: React.ReactN
   )
 }
 
-// Prefixed (rather than the generic MIN/MAX_INPUT_HEIGHT names used by
-// CompactChatInput) so the two composers' independently-tuned bounds
-// can't be mistaken for a shared source of truth that has drifted.
+// Non-prominent bounds stay file-local. Phone prominent metrics are shared
+// via `useProminentComposerExpansion` so home and project composers cannot drift.
 const CHAT_INPUT_MIN_HEIGHT = 60
 const CHAT_INPUT_MAX_HEIGHT = 200
 const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
 const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
-const CHAT_INPUT_PROMINENT_MIN_HEIGHT = 24
-const CHAT_INPUT_PROMINENT_MAX_HEIGHT = 100
-const CHAT_INPUT_PROMINENT_LINE_HEIGHT = 22
+const CHAT_INPUT_PROMINENT_MIN_HEIGHT = PROMINENT_COMPOSER_MIN_HEIGHT
+const CHAT_INPUT_PROMINENT_MAX_HEIGHT = PROMINENT_COMPOSER_MAX_HEIGHT
+const CHAT_INPUT_PROMINENT_LINE_HEIGHT = PROMINENT_COMPOSER_LINE_HEIGHT
+const CHAT_INPUT_PROMINENT_PADDING_TOP = PROMINENT_COMPOSER_PADDING_TOP
+const CHAT_INPUT_PROMINENT_PADDING_HORIZONTAL = PROMINENT_COMPOSER_PADDING_HORIZONTAL
+const CHAT_INPUT_PROMINENT_PADDING_BOTTOM = PROMINENT_COMPOSER_PADDING_BOTTOM
+const CHAT_INPUT_HEIGHT_ANIMATION_DURATION = PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION
+const CHAT_INPUT_PLACEHOLDER_FADE_DURATION = PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION
+const CHAT_INPUT_HEIGHT_EASING = Easing.out(Easing.cubic)
+const AnimatedTextInput = Animated.createAnimatedComponent(TextInput)
 
 interface AttachedFile {
   id: string
@@ -516,6 +541,15 @@ function ChatInputImpl({
     }
   }, [])
   const [inputHeight, setInputHeight] = useState(inputMinHeight)
+  const inputHeightRef = useRef(inputMinHeight)
+  const inputHeightAnimation = useRef(new Animated.Value(inputMinHeight)).current
+  const placeholderOpacity = useRef(new Animated.Value(1)).current
+  const previousProminentComposerRef = useRef(useProminentComposer)
+  const skipNextHeightAnimationRef = useRef(false)
+  const setInputHeightTarget = useCallback((nextHeight: number) => {
+    inputHeightRef.current = nextHeight
+    setInputHeight(nextHeight)
+  }, [])
   const [pendingFiles, setPendingFiles] = useState<AttachedFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
@@ -1171,6 +1205,68 @@ function ChatInputImpl({
       ? voiceInput.liveTranscript
       : pendingTextChangeRef.current?.text ?? inputValue
   const composerEmpty = !composerDisplayValue.trim()
+  useEffect(() => {
+    const modeChanged = previousProminentComposerRef.current !== useProminentComposer
+    previousProminentComposerRef.current = useProminentComposer
+    if (!modeChanged || !useProminentComposer) return
+
+    skipNextHeightAnimationRef.current = true
+    inputHeightAnimation.setValue(inputMinHeight)
+    setInputHeightTarget(inputMinHeight)
+  }, [inputHeightAnimation, inputMinHeight, setInputHeightTarget, useProminentComposer])
+
+  useEffect(() => {
+    if (!useProminentComposer) return
+    if (skipNextHeightAnimationRef.current) {
+      skipNextHeightAnimationRef.current = false
+      return
+    }
+
+    Animated.timing(inputHeightAnimation, {
+      toValue: inputHeight,
+      duration: CHAT_INPUT_HEIGHT_ANIMATION_DURATION,
+      easing: CHAT_INPUT_HEIGHT_EASING,
+      useNativeDriver: false,
+    }).start()
+  }, [inputHeight, inputHeightAnimation, useProminentComposer])
+
+  useEffect(() => {
+    if (!useProminentComposer) return
+
+    Animated.timing(placeholderOpacity, {
+      toValue: composerEmpty ? 1 : 0,
+      duration: CHAT_INPUT_PLACEHOLDER_FADE_DURATION,
+      easing: CHAT_INPUT_HEIGHT_EASING,
+      useNativeDriver: true,
+    }).start()
+  }, [composerEmpty, placeholderOpacity, useProminentComposer])
+
+  const prominentExpansion = useProminentComposerExpansion({
+    enabled: useProminentComposer,
+    empty: composerEmpty,
+    text: composerDisplayValue,
+    inputHeight,
+    minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+    lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+    paddingTop: CHAT_INPUT_PROMINENT_PADDING_TOP,
+    paddingHorizontal: CHAT_INPUT_PROMINENT_PADDING_HORIZONTAL,
+    paddingBottom: CHAT_INPUT_PROMINENT_PADDING_BOTTOM,
+    duration: CHAT_INPUT_HEIGHT_ANIMATION_DURATION,
+    easing: CHAT_INPUT_HEIGHT_EASING,
+  })
+
+  const wasProminentStackedRef = useRef(false)
+  useEffect(() => {
+    if (!useProminentComposer) {
+      wasProminentStackedRef.current = false
+      return
+    }
+    if (wasProminentStackedRef.current && !prominentExpansion.stacked) {
+      setInputHeightTarget(CHAT_INPUT_PROMINENT_MIN_HEIGHT)
+    }
+    wasProminentStackedRef.current = prominentExpansion.stacked
+  }, [prominentExpansion.stacked, setInputHeightTarget, useProminentComposer])
+
   const mentionLabels = useMemo(
     () => references.map((r) => r.label).filter((l): l is string => !!l),
     [references]
@@ -1237,7 +1333,7 @@ function ChatInputImpl({
     cancelPendingTextChangeFlush()
     inputValueRef.current = ""
     setInputValue("")
-    setInputHeight(inputMinHeight)
+    setInputHeightTarget(inputMinHeight)
     setPendingFiles([])
     setPastedTexts([])
     setViewingPastedId(null)
@@ -1246,7 +1342,7 @@ function ChatInputImpl({
     closeMentionMenu()
 
     textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush, inputMinHeight])
+  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush, inputMinHeight, setInputHeightTarget])
 
   const handleSubmitEditing = useCallback(() => {
     if (Platform.OS === "web") {
@@ -1262,7 +1358,7 @@ function ChatInputImpl({
     (change: Extract<ChatInputTextChange, { type: "text" }>) => {
       setInputValue(change.text)
       if (change.resetHeight) {
-        setInputHeight(inputMinHeight)
+        setInputHeightTarget(inputMinHeight)
       }
 
       if (change.skillPicker.open) {
@@ -1275,7 +1371,7 @@ function ChatInputImpl({
 
       updateMentionState(change.text, change.mentionCaret)
     },
-    [updateMentionState, inputMinHeight]
+    [updateMentionState, inputMinHeight, setInputHeightTarget]
   )
 
   // Settles the current animation frame for `handleChangeText`'s burst
@@ -1605,6 +1701,7 @@ function ChatInputImpl({
         {/* Main input container */}
         <View
           ref={dropZoneRef as any}
+          onLayout={useProminentComposer ? prominentExpansion.onPillLayout : undefined}
           className={cn(
             "relative overflow-hidden",
             !useProminentComposer && "border bg-muted/30 rounded-xl",
@@ -1614,7 +1711,7 @@ function ChatInputImpl({
           style={
             useProminentComposer
               ? {
-                  borderRadius: 28,
+                  borderRadius: PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
                   borderColor: chatgptComposer.border,
                   backgroundColor: chatgptComposer.fill,
@@ -1636,6 +1733,7 @@ function ChatInputImpl({
           />
         )}
 
+        <View onLayout={useProminentComposer ? prominentExpansion.onChromeLayout : undefined}>
         {/* Pasted long-text chips (ChatGPT-style). Multiple allowed. */}
         {pastedTexts.length > 0 && (
           <View className="flex-row flex-wrap gap-2 px-3 pt-3">
@@ -1723,6 +1821,7 @@ function ChatInputImpl({
             )}
           </ScrollView>
         )}
+        </View>
 
         {/* Tagged files / projects now render INLINE as "@mention" pills via
             the highlight overlay below, so the old chip row above the box is
@@ -1846,8 +1945,8 @@ function ChatInputImpl({
           onContentSizeChange={(e) => {
             const h = e.nativeEvent.contentSize.height
             const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
-            if (clamped !== inputHeight) {
-              setInputHeight(clamped)
+            if (clamped !== inputHeightRef.current) {
+              setInputHeightTarget(clamped)
             }
           }}
           style={{
@@ -1867,7 +1966,9 @@ function ChatInputImpl({
           textAlignVertical="top"
         />
         </View>
-        ) : null}
+        ) : (
+          <Animated.View pointerEvents="none" style={prominentExpansion.spacerStyle} />
+        )}
 
         {/* Bottom toolbar */}
         <View
@@ -1880,18 +1981,21 @@ function ChatInputImpl({
                 : "p-1.5",
             !useProminentComposer && isNativePhone && "items-end gap-y-1"
           )}
+          style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
+          pointerEvents={useProminentComposer ? "box-none" : undefined}
         >
           {/* Left side buttons */}
           <View
             className={cn(
               "flex-row items-center",
               useProminentComposer
-                ? "min-w-0 flex-1 gap-1"
+                ? "flex-shrink-0 gap-1"
                 : isNative
                   ? "gap-1.5"
                   : "gap-1",
               !useProminentComposer && isNativePhone && "min-w-0 flex-1 flex-wrap"
             )}
+            style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}
           >
             {useProminentComposer ? (
               <>
@@ -2261,96 +2365,25 @@ function ChatInputImpl({
               onSelect={handleModelChange}
             />
 
-            {useProminentComposer ? (
-              <View
-                className="min-w-0 flex-1 justify-center"
-                style={{
-                  minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                  overflow: "hidden",
-                  marginLeft: 4,
-                  marginRight: 4,
-                }}
-              >
-                {composerEmpty ? (
-                  <Text
-                    pointerEvents="none"
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                    style={{
-                      position: "absolute",
-                      left: 4,
-                      right: 4,
-                      top: 0,
-                      height: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                      fontSize: 16,
-                      lineHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                      color: chatgptComposer.placeholder,
-                    }}
-                  >
-                    {placeholder}
-                  </Text>
-                ) : null}
-                <TextInput
-                  ref={textInputRef}
-                  testID="project-composer-input"
-                  placeholder=""
-                  accessibilityLabel="Chat message input"
-                  value={composerDisplayValue}
-                  selection={selectionOverride}
-                  onChangeText={handleChangeText}
-                  onSelectionChange={(e) => {
-                    updateMentionState(inputValueRef.current, e.nativeEvent.selection.start)
-                  }}
-                  onSubmitEditing={handleSubmitEditing}
-                  editable={!disabled && !voiceInput.isRecording}
-                  multiline
-                  scrollEnabled={inputHeight > CHAT_INPUT_PROMINENT_MIN_HEIGHT}
-                  blurOnSubmit
-                  returnKeyType="done"
-                  onContentSizeChange={(e) => {
-                    if (composerEmpty) {
-                      if (inputHeight !== CHAT_INPUT_PROMINENT_MIN_HEIGHT) {
-                        setInputHeight(CHAT_INPUT_PROMINENT_MIN_HEIGHT)
-                      }
-                      return
-                    }
-                    const h = e.nativeEvent.contentSize.height
-                    const next = h <= CHAT_INPUT_PROMINENT_LINE_HEIGHT + 8
-                      ? CHAT_INPUT_PROMINENT_MIN_HEIGHT
-                      : Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
-                    if (next !== inputHeight) {
-                      setInputHeight(next)
-                    }
-                  }}
-                  style={{
-                    width: "100%",
-                    minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                    height: Math.max(
-                      composerEmpty ? CHAT_INPUT_PROMINENT_MIN_HEIGHT : inputHeight,
-                      CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                    ),
-                    color: chatgptComposer.text,
-                    fontSize: 16,
-                    lineHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
-                    paddingHorizontal: 4,
-                    paddingTop: 0,
-                    paddingBottom: 0,
-                    margin: 0,
-                    backgroundColor: "transparent",
-                    ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : null),
-                  }}
-                  className={cn(
-                    disabled && dimWhenDisabled && "opacity-50",
-                  )}
-                />
-              </View>
-            ) : null}
-
           </View>
+
+          {useProminentComposer ? (
+            <View
+              pointerEvents="none"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                marginLeft: 4,
+                marginRight: 4,
+              }}
+              onLayout={prominentExpansion.onCompactSlotLayout}
+            />
+          ) : null}
 
           {/* Right side buttons */}
           {voiceInput.isRecording ? (
-            <View className="flex-row flex-shrink-0 items-center gap-2">
+            <View className="flex-row flex-shrink-0 items-center gap-2" style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}>
               <VoiceWaveform />
               <Pressable
                 onPress={() => voiceInput.toggleRecording().catch(() => {})}
@@ -2366,7 +2399,7 @@ function ChatInputImpl({
               </Pressable>
             </View>
           ) : (
-          <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : "gap-1")}>
+          <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : "gap-1")} style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}>
             {useProminentComposer ? null : (
               <>
             <DockChipRail isNative={isNative} />
@@ -2498,6 +2531,111 @@ function ChatInputImpl({
           </View>
           )}
         </View>
+
+        {useProminentComposer ? (
+          <>
+            <Text
+              pointerEvents="none"
+              style={{
+                position: "absolute",
+                opacity: 0,
+                width: PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
+                height: 0,
+                overflow: "hidden",
+                fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+                lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+              }}
+              onTextLayout={prominentExpansion.onMeasureTextLayout}
+            >
+              {composerDisplayValue.length === 0 ? " " : composerDisplayValue}
+            </Text>
+            <Animated.View
+              pointerEvents="auto"
+              style={[
+                prominentExpansion.slotStyle,
+                {
+                  height: inputHeightAnimation,
+                },
+              ]}
+            >
+              <Animated.Text
+                pointerEvents="none"
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                {...(Platform.OS !== "web"
+                  ? {
+                      accessibilityElementsHidden: !composerEmpty,
+                      importantForAccessibility: composerEmpty ? "auto" : "no-hide-descendants",
+                    }
+                  : {})}
+                style={{
+                  position: "absolute",
+                  left: 4,
+                  right: 4,
+                  top: prominentExpansion.stacked ? 0 : 1,
+                  height: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+                  lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                  color: chatgptComposer.placeholder,
+                  opacity: placeholderOpacity,
+                }}
+              >
+                {placeholder}
+              </Animated.Text>
+              <AnimatedTextInput
+                ref={textInputRef}
+                testID="project-composer-input"
+                placeholder=""
+                accessibilityLabel="Chat message input"
+                value={composerDisplayValue}
+                selection={selectionOverride}
+                onChangeText={handleChangeText}
+                onSelectionChange={(e) => {
+                  updateMentionState(inputValueRef.current, e.nativeEvent.selection.start)
+                }}
+                onSubmitEditing={handleSubmitEditing}
+                editable={!disabled && !voiceInput.isRecording}
+                multiline
+                scrollEnabled={prominentExpansion.stacked && inputHeight > CHAT_INPUT_PROMINENT_MIN_HEIGHT}
+                blurOnSubmit
+                returnKeyType="done"
+                onContentSizeChange={(e) => {
+                  const currentText =
+                    pendingTextChangeRef.current?.text ?? inputValueRef.current
+                  const h = e.nativeEvent.contentSize.height
+                  prominentExpansion.reportContentHeight(h)
+                  const next = nextProminentComposerHeight(h, {
+                    empty: !currentText.trim(),
+                    minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                    maxHeight: inputMaxHeight,
+                    lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                  })
+                  if (next !== inputHeightRef.current) {
+                    setInputHeightTarget(next)
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  minHeight: CHAT_INPUT_PROMINENT_MIN_HEIGHT,
+                  height: inputHeightAnimation,
+                  color: chatgptComposer.text,
+                  fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+                  lineHeight: CHAT_INPUT_PROMINENT_LINE_HEIGHT,
+                  paddingHorizontal: prominentExpansion.stacked ? 0 : 4,
+                  paddingTop: prominentExpansion.stacked ? 0 : 1,
+                  paddingBottom: prominentExpansion.stacked ? 0 : 1,
+                  margin: 0,
+                  backgroundColor: "transparent",
+                  textAlignVertical: prominentExpansion.stacked ? "top" : Platform.OS === "android" ? "center" : undefined,
+                  ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+                }}
+                className={cn(
+                  disabled && dimWhenDisabled && "opacity-50",
+                )}
+              />
+            </Animated.View>
+          </>
+        ) : null}
         </View>
       </View>
 

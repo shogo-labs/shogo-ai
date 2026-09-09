@@ -63,6 +63,22 @@ import {
 } from "./long-text-utils"
 import { FileViewerModal } from "./FileViewerModal"
 import { PastedTextChip } from "./PastedTextChip"
+import {
+  PROMINENT_COMPOSER_CHROME_Z_INDEX,
+  PROMINENT_COMPOSER_FONT_SIZE,
+  PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
+  PROMINENT_COMPOSER_LINE_HEIGHT,
+  PROMINENT_COMPOSER_MAX_HEIGHT,
+  PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
+  PROMINENT_COMPOSER_MIN_HEIGHT,
+  PROMINENT_COMPOSER_PADDING_BOTTOM,
+  PROMINENT_COMPOSER_PADDING_HORIZONTAL,
+  PROMINENT_COMPOSER_PADDING_TOP,
+  PROMINENT_COMPOSER_RADIUS,
+  PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+  nextProminentComposerHeight,
+  useProminentComposerExpansion,
+} from "./useProminentComposerExpansion"
 import { EnvironmentPicker } from "./EnvironmentPicker"
 import {
   useTypingPlaceholder,
@@ -83,15 +99,20 @@ export { ComposerPlusSection } from "./ComposerPlusMenu"
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_FILES = 10
 
-// Prefixed (rather than the generic MIN/MAX_INPUT_HEIGHT names used by
-// ChatInput) so the two composers' independently-tuned bounds can't be
-// mistaken for a shared source of truth that has drifted.
+// Non-prominent bounds stay file-local. Phone prominent metrics are shared
+// via `useProminentComposerExpansion` so home and project composers cannot drift.
 const COMPACT_INPUT_MIN_HEIGHT = 80
 const COMPACT_INPUT_MAX_HEIGHT = 200
-const COMPACT_INPUT_PROMINENT_MIN_HEIGHT = 24
-const COMPACT_INPUT_PROMINENT_MAX_HEIGHT = 100
-const COMPACT_INPUT_PROMINENT_LINE_HEIGHT = 22
-const COMPACT_INPUT_PROMINENT_RADIUS = 28
+const COMPACT_INPUT_PROMINENT_MIN_HEIGHT = PROMINENT_COMPOSER_MIN_HEIGHT
+const COMPACT_INPUT_PROMINENT_MAX_HEIGHT = PROMINENT_COMPOSER_MAX_HEIGHT
+const COMPACT_INPUT_PROMINENT_LINE_HEIGHT = PROMINENT_COMPOSER_LINE_HEIGHT
+const COMPACT_INPUT_PROMINENT_PADDING_TOP = PROMINENT_COMPOSER_PADDING_TOP
+const COMPACT_INPUT_PROMINENT_PADDING_HORIZONTAL = PROMINENT_COMPOSER_PADDING_HORIZONTAL
+const COMPACT_INPUT_PROMINENT_PADDING_BOTTOM = PROMINENT_COMPOSER_PADDING_BOTTOM
+const COMPACT_INPUT_PROMINENT_RADIUS = PROMINENT_COMPOSER_RADIUS
+const COMPACT_INPUT_HEIGHT_ANIMATION_DURATION = PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION
+const COMPACT_INPUT_HEIGHT_EASING = Easing.out(Easing.cubic)
+const AnimatedTextInput = Animated.createAnimatedComponent(TextInput)
 const COMPACT_INPUT_NATIVE_MIN_HEIGHT = 48
 const COMPACT_INPUT_NATIVE_MAX_HEIGHT = 144
 
@@ -226,6 +247,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     const nativeModelMenuWidth = getNativeModelMenuWidth(windowWidth)
     const [internalValue, setInternalValue] = useState("")
     const [inputHeight, setInputHeight] = useState(inputMinHeight)
+    const inputHeightAnimation = useRef(new Animated.Value(inputMinHeight)).current
     const [isFocused, setIsFocused] = useState(false)
     const handleComposerFocus = useCallback(() => {
       setIsFocused(true)
@@ -563,6 +585,42 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       : value
     const composerEmpty = composerDisplayValue.length === 0
 
+    const prominentExpansion = useProminentComposerExpansion({
+      enabled: useProminentComposer,
+      empty: composerEmpty,
+      text: composerDisplayValue,
+      inputHeight,
+      minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+      lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+      paddingTop: COMPACT_INPUT_PROMINENT_PADDING_TOP,
+      paddingHorizontal: COMPACT_INPUT_PROMINENT_PADDING_HORIZONTAL,
+      paddingBottom: COMPACT_INPUT_PROMINENT_PADDING_BOTTOM,
+      duration: COMPACT_INPUT_HEIGHT_ANIMATION_DURATION,
+      easing: COMPACT_INPUT_HEIGHT_EASING,
+    })
+
+    useEffect(() => {
+      if (!useProminentComposer) return
+      Animated.timing(inputHeightAnimation, {
+        toValue: inputHeight,
+        duration: COMPACT_INPUT_HEIGHT_ANIMATION_DURATION,
+        easing: COMPACT_INPUT_HEIGHT_EASING,
+        useNativeDriver: false,
+      }).start()
+    }, [inputHeight, inputHeightAnimation, useProminentComposer])
+
+    const wasProminentStackedRef = useRef(false)
+    useEffect(() => {
+      if (!useProminentComposer) {
+        wasProminentStackedRef.current = false
+        return
+      }
+      if (wasProminentStackedRef.current && !prominentExpansion.stacked) {
+        setInputHeight(COMPACT_INPUT_PROMINENT_MIN_HEIGHT)
+      }
+      wasProminentStackedRef.current = prominentExpansion.stacked
+    }, [prominentExpansion.stacked, useProminentComposer])
+
     const handleSubmit = useCallback(() => {
       const trimmedContent = value.trim()
       if (
@@ -652,6 +710,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       <View ref={ref} className={cn("w-full", className)}>
         <Animated.View
           ref={dropZoneRef as any}
+          onLayout={useProminentComposer ? prominentExpansion.onPillLayout : undefined}
           className={cn(
             "relative",
             !useProminentComposer && "overflow-hidden rounded-xl border bg-card border-border/60",
@@ -685,6 +744,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             />
           )}
 
+          <View onLayout={useProminentComposer ? prominentExpansion.onChromeLayout : undefined}>
           {/* File previews */}
           {pendingFiles.length > 0 && (
             <ScrollView
@@ -758,8 +818,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               ))}
             </View>
           )}
+          </View>
 
-          {useProminentComposer ? null : (
+          {useProminentComposer ? (
+            <Animated.View pointerEvents="none" style={prominentExpansion.spacerStyle} />
+          ) : (
           <TextInput
             ref={textInputRef}
             testID="home-composer-input"
@@ -816,6 +879,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   : "p-1.5",
               !useProminentComposer && isNativePhone && "items-end gap-y-1"
             )}
+            style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
+            pointerEvents={useProminentComposer ? "box-none" : undefined}
           >
             {/* Left side buttons */}
             <View
@@ -828,6 +893,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     : "gap-1",
                 !useProminentComposer && isNativePhone && "min-w-0 flex-1 flex-wrap"
               )}
+              style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}
             >
               {useProminentComposer ? (
                 <>
@@ -1063,91 +1129,21 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
 
             {useProminentComposer ? (
               <View
-                className="min-w-0 flex-1 justify-center"
+                pointerEvents="none"
                 style={{
+                  flex: 1,
+                  minWidth: 0,
                   minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-                  overflow: "hidden",
                   marginLeft: 4,
                   marginRight: 4,
                 }}
-              >
-                {composerEmpty ? (
-                  <Text
-                    pointerEvents="none"
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                    style={{
-                      position: "absolute",
-                      left: 4,
-                      right: 4,
-                      top: 0,
-                      height: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-                      fontSize: 16,
-                      lineHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-                      color: chatgptComposer.placeholder,
-                    }}
-                  >
-                    {placeholderText}
-                  </Text>
-                ) : null}
-                <TextInput
-                  ref={textInputRef}
-                  testID="home-composer-input"
-                  placeholder=""
-                  accessibilityLabel="Describe the agent you want to build"
-                  value={composerDisplayValue}
-                  onChangeText={handleChangeText}
-                  onFocus={handleComposerFocus}
-                  onBlur={handleComposerBlur}
-                  onSubmitEditing={handleSubmitEditing}
-                  editable={!disabled && !isLoading && !voiceInput.isRecording}
-                  multiline
-                  scrollEnabled={inputHeight > COMPACT_INPUT_PROMINENT_MIN_HEIGHT}
-                  blurOnSubmit
-                  returnKeyType="done"
-                  automaticallyAdjustKeyboardInsets={false}
-                  onContentSizeChange={(e) => {
-                    if (composerEmpty) {
-                      if (inputHeight !== COMPACT_INPUT_PROMINENT_MIN_HEIGHT) {
-                        setInputHeight(COMPACT_INPUT_PROMINENT_MIN_HEIGHT)
-                      }
-                      return
-                    }
-                    const h = e.nativeEvent.contentSize.height
-                    const next = h <= COMPACT_INPUT_PROMINENT_LINE_HEIGHT + 8
-                      ? COMPACT_INPUT_PROMINENT_MIN_HEIGHT
-                      : Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
-                    if (next !== inputHeight) {
-                      setInputHeight(next)
-                    }
-                  }}
-                  style={{
-                    width: "100%",
-                    minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-                    height: Math.max(
-                      composerEmpty ? COMPACT_INPUT_PROMINENT_MIN_HEIGHT : inputHeight,
-                      COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-                    ),
-                    color: chatgptComposer.text,
-                    fontSize: 16,
-                    lineHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
-                    paddingHorizontal: 4,
-                    paddingTop: 0,
-                    paddingBottom: 0,
-                    margin: 0,
-                    backgroundColor: "transparent",
-                    ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : null),
-                  }}
-                  className={cn(
-                    disabled && dimWhenDisabled && "opacity-50",
-                  )}
-                />
-              </View>
+                onLayout={prominentExpansion.onCompactSlotLayout}
+              />
             ) : null}
 
             {/* Right side buttons */}
             {voiceInput.isRecording ? (
-              <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "gap-1.5" : useCurrentNativeSizing ? "gap-1.5" : "gap-2")}>
+              <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "gap-1.5" : useCurrentNativeSizing ? "gap-1.5" : "gap-2")} style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}>
                 <VoiceWaveform />
                 <Pressable
                   onPress={() => voiceInput.toggleRecording().catch(() => {})}
@@ -1163,7 +1159,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </Pressable>
               </View>
             ) : (
-              <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : useCurrentNativeSizing ? "ml-1 gap-1" : "gap-1")}>
+              <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : useCurrentNativeSizing ? "ml-1 gap-1" : "gap-1")} style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}>
                 {useProminentComposer ? null : (
                 <Pressable
                   onPress={handleAttachClick}
@@ -1287,6 +1283,109 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               </View>
             )}
           </View>
+
+          {useProminentComposer ? (
+            <>
+              <Text
+                pointerEvents="none"
+                style={{
+                  position: "absolute",
+                  opacity: 0,
+                  width: PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
+                  height: 0,
+                  overflow: "hidden",
+                  fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+                  lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                }}
+                onTextLayout={prominentExpansion.onMeasureTextLayout}
+              >
+                {composerDisplayValue.length === 0 ? " " : composerDisplayValue}
+              </Text>
+              <Animated.View
+                pointerEvents="auto"
+                style={[
+                  prominentExpansion.slotStyle,
+                  {
+                    height: inputHeightAnimation,
+                  },
+                ]}
+              >
+                {composerEmpty ? (
+                  <Text
+                    pointerEvents="none"
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                    style={{
+                      position: "absolute",
+                      left: 4,
+                      right: 4,
+                      top: prominentExpansion.stacked ? 0 : 1,
+                      height: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                      fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+                      lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                      color: chatgptComposer.placeholder,
+                    }}
+                  >
+                    {placeholderText}
+                  </Text>
+                ) : null}
+                <AnimatedTextInput
+                  ref={textInputRef}
+                  testID="home-composer-input"
+                  placeholder=""
+                  accessibilityLabel="Describe the agent you want to build"
+                  value={composerDisplayValue}
+                  onChangeText={handleChangeText}
+                  onFocus={handleComposerFocus}
+                  onBlur={handleComposerBlur}
+                  onSubmitEditing={handleSubmitEditing}
+                  onKeyPress={(e: any) => {
+                    if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                      e.preventDefault()
+                      handleSubmit()
+                    }
+                  }}
+                  editable={!disabled && !isLoading && !voiceInput.isRecording}
+                  multiline
+                  scrollEnabled={prominentExpansion.stacked && inputHeight > COMPACT_INPUT_PROMINENT_MIN_HEIGHT}
+                  blurOnSubmit={Platform.OS !== "web"}
+                  returnKeyType={Platform.OS === "web" ? undefined : "done"}
+                  onContentSizeChange={(e) => {
+                    const h = e.nativeEvent.contentSize.height
+                    prominentExpansion.reportContentHeight(h)
+                    const next = nextProminentComposerHeight(h, {
+                      empty: composerEmpty,
+                      minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                      maxHeight: inputMaxHeight,
+                      lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                    })
+                    if (next !== inputHeight) {
+                      setInputHeight(next)
+                    }
+                  }}
+                  style={{
+                    width: "100%",
+                    minHeight: COMPACT_INPUT_PROMINENT_MIN_HEIGHT,
+                    height: inputHeightAnimation,
+                    color: chatgptComposer.text,
+                    fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+                    lineHeight: COMPACT_INPUT_PROMINENT_LINE_HEIGHT,
+                    paddingHorizontal: prominentExpansion.stacked ? 0 : 4,
+                    paddingTop: prominentExpansion.stacked ? 0 : 1,
+                    paddingBottom: prominentExpansion.stacked ? 0 : 1,
+                    margin: 0,
+                    backgroundColor: "transparent",
+                    textAlignVertical: prominentExpansion.stacked ? "top" : Platform.OS === "android" ? "center" : undefined,
+                    ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+                  }}
+                  className={cn(
+                    disabled && dimWhenDisabled && "opacity-50",
+                    Platform.OS === "web" && "outline-none no-focus-ring",
+                  )}
+                />
+              </Animated.View>
+            </>
+          ) : null}
         </Animated.View>
 
         {viewingPasted && (

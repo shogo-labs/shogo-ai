@@ -10,13 +10,15 @@ import {
   type NativeComposerKeyboardSource,
 } from './native-composer-keyboard'
 
+const nativeComposerKeyboardEasingFn = Easing.bezier(
+  NATIVE_COMPOSER_KEYBOARD_EASING[0],
+  NATIVE_COMPOSER_KEYBOARD_EASING[1],
+  NATIVE_COMPOSER_KEYBOARD_EASING[2],
+  NATIVE_COMPOSER_KEYBOARD_EASING[3],
+)
+
 export function nativeComposerKeyboardEasing() {
-  return Easing.bezier(
-    NATIVE_COMPOSER_KEYBOARD_EASING[0],
-    NATIVE_COMPOSER_KEYBOARD_EASING[1],
-    NATIVE_COMPOSER_KEYBOARD_EASING[2],
-    NATIVE_COMPOSER_KEYBOARD_EASING[3],
-  )
+  return nativeComposerKeyboardEasingFn
 }
 
 export function nativeComposerKeyboardOverlapFromEvent(
