@@ -16,13 +16,29 @@
  * Callers don't need to memoize the descriptor for correctness, only for
  * render performance (an unmemoized descriptor just means every render
  * re-upserts the same fields).
+ *
+ * `storeOverride`: pass the store instance directly when the calling
+ * component is the SAME component that renders
+ * `<ChatDockStoreContext.Provider value={store}>` (e.g. `ChatPanel` itself,
+ * for its handful of inline blocking/status descriptors — see the comment
+ * above `permissionDockDescriptor` there). A component can't `useContext`
+ * its own Provider: the context value a component reads is whatever its
+ * *ancestors* provided, not whatever it renders further down in its own
+ * returned JSX. Without this override, those calls silently fell back to
+ * the module-level `getFallbackStore()` singleton instead of the real
+ * per-`ChatPanel` store `<ChatDock>` actually reads from, so the panel
+ * registered but never appeared above the composer. Components rendered AS
+ * CHILDREN inside the Provider (every extracted `*DockPanel.tsx`) don't
+ * need this — their own `useContext` call correctly sees the ancestor
+ * Provider.
  */
 
 import { useEffect, useRef } from "react"
-import { useChatDockStore, type DockPanelDescriptor } from "../../../lib/chat-dock-store"
+import { useChatDockStore, type ChatDockStore, type DockPanelDescriptor } from "../../../lib/chat-dock-store"
 
-export function useDockPanel(descriptor: DockPanelDescriptor | null): void {
-  const store = useChatDockStore()
+export function useDockPanel(descriptor: DockPanelDescriptor | null, storeOverride?: ChatDockStore): void {
+  const contextStore = useChatDockStore()
+  const store = storeOverride ?? contextStore
   const registeredIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {

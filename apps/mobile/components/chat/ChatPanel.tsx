@@ -5416,6 +5416,14 @@ export const ChatPanel = observer(function ChatPanel({
   // dismiss state. The countdown/auto-deny inside `PermissionApprovalDialog`
   // and the auto-hide timers below are untouched; only *where* they render
   // (a dock panel instead of a fixed slot above the composer) changed.
+  //
+  // Every `useDockPanel` call below passes `chatDockStore` explicitly (see
+  // `useDockPanel`'s doc comment): this component can't see its own
+  // `<ChatDockStoreContext.Provider value={chatDockStore}>` further down in
+  // its own returned JSX via `useContext` — only descendants can. Omitting
+  // the override silently registers against the shared fallback store
+  // instead, which `<ChatDock>` never reads from, so the panel never
+  // actually appears above the composer.
   // ---------------------------------------------------------------------
 
   const permissionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -5444,7 +5452,7 @@ export const ChatPanel = observer(function ChatPanel({
       ),
     }
   }, [pendingPermissionRequest, projectId])
-  useDockPanel(permissionDockDescriptor)
+  useDockPanel(permissionDockDescriptor, chatDockStore)
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!pendingQuestion) return null
@@ -5462,7 +5470,7 @@ export const ChatPanel = observer(function ChatPanel({
       ),
     }
   }, [pendingQuestion, handleSubmitQuestionResponse])
-  useDockPanel(questionDockDescriptor)
+  useDockPanel(questionDockDescriptor, chatDockStore)
 
   const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!((connectivityWait || justReconnected) && !errorDismissed)) return null
@@ -5499,7 +5507,7 @@ export const ChatPanel = observer(function ChatPanel({
       ),
     }
   }, [connectivityWait, justReconnected, errorDismissed, connectivityWaitElapsedLabel, handleStop])
-  useDockPanel(connectivityDockDescriptor)
+  useDockPanel(connectivityDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!toolErrorBanner) return null
@@ -5574,7 +5582,7 @@ export const ChatPanel = observer(function ChatPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toolErrorBanner, projectId, reconnecting])
-  useDockPanel(toolErrorDockDescriptor)
+  useDockPanel(toolErrorDockDescriptor, chatDockStore)
 
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!(((error || emptyResponseError) && !errorDismissed) || streamAutoRecovering)) return null
@@ -5666,7 +5674,7 @@ export const ChatPanel = observer(function ChatPanel({
     handleRetry,
     clearActiveInstance,
   ])
-  useDockPanel(errorDockDescriptor)
+  useDockPanel(errorDockDescriptor, chatDockStore)
 
   // Render compact mode (homepage)
   if (mode === "compact") {
