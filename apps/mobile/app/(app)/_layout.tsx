@@ -34,7 +34,7 @@ import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
-import { nativePhoneCanvas } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS } from '../../lib/native-phone-layout'
 import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 
 csMark('app:layout:module-load')
@@ -161,6 +161,7 @@ export default function AppLayout() {
     windowWidth: width,
     isDark,
     swipeEnabled: nativeDrawerSwipe,
+    closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
   })
 
   useEffect(() => {
@@ -267,7 +268,7 @@ export default function AppLayout() {
               style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
             >
               <Animated.View style={sheetClipStyle}>
-                <View className="flex-1 bg-background">
+                <View className="flex-1">
                   {!isWide && !isIdeEmbed && !suppressNarrowAppHeader && (
                     <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
                   )}

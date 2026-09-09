@@ -11,13 +11,14 @@
  * full list.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Pressable, View, Text } from 'react-native'
+import { Pressable, View, Text, useWindowDimensions } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
 import { Bell } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
 import { notificationEvents } from '../../lib/notification-events'
+import { phoneChromeEnabled, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -32,6 +33,9 @@ export function NotificationBell({
 }) {
   const router = useRouter()
   const http = useDomainHttp()
+  const { width, height } = useWindowDimensions()
+  const icon = useNativePhoneIconChrome()
+  const phoneChrome = phoneChromeEnabled(width, height)
   const [count, setCount] = useState(0)
   const mounted = useRef(true)
 
@@ -78,7 +82,12 @@ export function NotificationBell({
       accessibilityLabel={count > 0 ? `Notifications, ${count} unread` : 'Notifications'}
       className={cn('relative p-1.5 rounded-md active:bg-muted', className)}
     >
-      <Bell size={size} className="text-foreground" />
+      <Bell
+        size={size}
+        color={phoneChrome ? icon.color : undefined}
+        strokeWidth={phoneChrome ? icon.strokeWidth : undefined}
+        className={phoneChrome ? undefined : 'text-foreground'}
+      />
       {count > 0 && (
         <View className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-destructive items-center justify-center">
           <Text className="text-[9px] font-bold text-white">{badge}</Text>

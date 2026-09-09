@@ -79,7 +79,7 @@ import { api } from '../../../lib/api'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { ProjectImportModal } from '../../../components/projects/ProjectImportModal'
 import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu'
-import { isNativePhoneIntegrationsLayout } from '../../../lib/native-phone-layout'
+import { isNativePhoneIntegrationsLayout, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 
 // Types
@@ -125,11 +125,12 @@ function NativeChoiceSheet<T extends string>({
   onSelect: (value: T) => void
   onClose: () => void
 }) {
+  const sheet = useNativePhoneSheetChrome()
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View className="flex-1 justify-end">
-        <Pressable className="flex-1 bg-black/50" onPress={onClose} accessibilityLabel="Dismiss" />
-        <View className="rounded-t-3xl border-t border-border bg-card px-5 pt-2 pb-8">
+        <Pressable className="flex-1" style={sheet.backdrop} onPress={onClose} accessibilityLabel="Dismiss" />
+        <View className="rounded-t-3xl border-t border-border bg-card px-5 pt-2 pb-8" style={sheet.panel}>
           <View className="mb-3 mt-1 h-1 w-10 self-center rounded-full bg-muted-foreground/40" />
           <Text className="mb-2 text-xl font-semibold text-foreground">{title}</Text>
           {options.map((opt) => (

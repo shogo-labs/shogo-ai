@@ -9,7 +9,8 @@
  *   Desktop studio and Electron stay on the existing wide layout.
  * Yoga pixel-width helpers stay native-only (`isNativePhoneIntegrationsLayout`).
  */
-import { Platform, useWindowDimensions, type ViewStyle } from 'react-native'
+import { Platform, StyleSheet, useWindowDimensions, type ViewStyle } from 'react-native'
+import { useResolvedTheme } from '../contexts/theme'
 
 /** Matches Android `sw600dp` smallest-width bucket for “tablet” layouts. */
 const ANDROID_TABLET_MIN_SHORTEST_EDGE = 600
@@ -65,9 +66,140 @@ export const NATIVE_PHONE_CARD_GAP = 12
  * Use for style props where NativeWind `bg-background` is not applied.
  */
 export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
+/**
+ * Dark home only: the old charcoal wash, not OLED black. Search, files, and
+ * other screens keep `NATIVE_PHONE_CANVAS.dark`. The drawer still lifts this
+ * to `NATIVE_DRAWER_SHEET_OPEN_CANVAS` when the sidebar opens.
+ */
+export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
+
+/**
+ * ChatGPT iOS icon ink, sampled from App Store screenshots.
+ * Dark: ~#F4F4F4 (header/composer glyphs). Light: ~#0D0D0D (plus/menu).
+ * Lucide default stroke 2 reads heavier than ChatGPT's SF-Symbol weight.
+ */
+export const NATIVE_PHONE_ICON = { dark: '#F4F4F4', light: '#0D0D0D' } as const
+export const NATIVE_PHONE_ICON_STROKE = 1.75
+/** Header menu / bell on native phone and narrow web (`AppHeader`). */
+export const NATIVE_PHONE_HEADER_ICON_SIZE = 26
+
+export function nativePhoneIconColor(isDark: boolean): string {
+  return isDark ? NATIVE_PHONE_ICON.dark : NATIVE_PHONE_ICON.light
+}
+
+/**
+ * Phone icon/sheet chrome: native (iPhone, iPad, Android) or a narrow web
+ * viewport. Desktop studio, Electron, and wide web keep className theme colors.
+ */
+export function phoneChromeEnabled(width: number, height: number): boolean {
+  return isNativePlatform() || isPhoneLayout(width, height)
+}
+
+export function useNativePhoneIconChrome(): { color: string; strokeWidth: number } {
+  const isDark = useResolvedTheme() === 'dark'
+  return {
+    color: nativePhoneIconColor(isDark),
+    strokeWidth: NATIVE_PHONE_ICON_STROKE,
+  }
+}
+
+/**
+ * Dark bottom sheets on OLED black. Apple's elevated
+ * `secondarySystemBackground` / systemGray6 (`#1C1C1E`) — one step above
+ * `#000`, cooler than `bg-card` (`#212121`), so the sheet sits in the same
+ * black family instead of a muddy mid-grey. Light sheets keep `bg-card`.
+ */
+export const NATIVE_PHONE_SHEET_CANVAS = { dark: '#1C1C1E', light: '#ffffff' } as const
+export const NATIVE_PHONE_SHEET_BORDER = {
+  dark: 'rgba(255,255,255,0.10)',
+  light: 'rgba(0,0,0,0.08)',
+} as const
+export const NATIVE_PHONE_SHEET_BACKDROP = {
+  dark: 'rgba(0,0,0,0.40)',
+  light: 'rgba(0,0,0,0.50)',
+} as const
 
 export function nativePhoneCanvas(isDark: boolean): string {
   return isDark ? NATIVE_PHONE_CANVAS.dark : NATIVE_PHONE_CANVAS.light
+}
+
+export function nativePhoneSheetPanelStyle(isDark: boolean): ViewStyle | undefined {
+  if (!isDark) return undefined
+  return {
+    backgroundColor: NATIVE_PHONE_SHEET_CANVAS.dark,
+    borderColor: NATIVE_PHONE_SHEET_BORDER.dark,
+  }
+}
+
+export function nativePhoneSheetBackdropStyle(isDark: boolean): ViewStyle {
+  return { backgroundColor: isDark ? NATIVE_PHONE_SHEET_BACKDROP.dark : NATIVE_PHONE_SHEET_BACKDROP.light }
+}
+
+/**
+ * ChatGPT search dock: a dissolve zone above the pills, then near-opaque
+ * charcoal at the bar so list rows “come up” and fade out instead of
+ * printing through the Search field.
+ */
+export const NATIVE_PHONE_DOCK_FADE = 80
+export const NATIVE_PHONE_DOCK_FADE_LOCATIONS = [0, 0.42, 1] as const
+/** Gap between ChatDock banners (errors, plans, approvals) and the composer pill. */
+export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
+
+export const NATIVE_PHONE_DOCK_GLASS = {
+  dark: {
+    fill: 'rgba(44,44,46,0.94)',
+    border: 'rgba(255,255,255,0.14)',
+  },
+  light: {
+    fill: 'rgba(255,255,255,0.94)',
+    border: 'rgba(0,0,0,0.08)',
+  },
+} as const
+
+export function nativePhoneDockGlassStyle(isDark: boolean): ViewStyle {
+  const glass = isDark ? NATIVE_PHONE_DOCK_GLASS.dark : NATIVE_PHONE_DOCK_GLASS.light
+  return {
+    backgroundColor: glass.fill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: glass.border,
+  }
+}
+
+/** `#RRGGBB` → 0–255 channels. Shared by dock fades and the drawer canvas lerp. */
+export function hexToRgbChannels(hex: string): [number, number, number] {
+  const n = hex.replace('#', '')
+  return [
+    parseInt(n.slice(0, 2), 16),
+    parseInt(n.slice(2, 4), 16),
+    parseInt(n.slice(4, 6), 16),
+  ]
+}
+
+export function nativePhoneDockFadeColors(
+  isDark: boolean,
+  canvasHex?: string,
+): readonly [string, string, string] {
+  const [r, g, b] = hexToRgbChannels(canvasHex ?? nativePhoneCanvas(isDark))
+  return [`rgba(${r},${g},${b},0)`, `rgba(${r},${g},${b},0.42)`, `rgba(${r},${g},${b},0.94)`]
+}
+
+/** Dark-only chrome for sheets that rise from the bottom of the screen. */
+export function useNativePhoneSheetChrome(): {
+  panel: ViewStyle | undefined
+  backdrop: ViewStyle
+} {
+  const isDark = useResolvedTheme() === 'dark'
+  const { width, height } = useWindowDimensions()
+  if (!phoneChromeEnabled(width, height)) {
+    return {
+      panel: undefined,
+      backdrop: { backgroundColor: NATIVE_PHONE_SHEET_BACKDROP.light },
+    }
+  }
+  return {
+    panel: nativePhoneSheetPanelStyle(isDark),
+    backdrop: nativePhoneSheetBackdropStyle(isDark),
+  }
 }
 
 /**

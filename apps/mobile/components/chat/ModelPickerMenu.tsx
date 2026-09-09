@@ -271,6 +271,8 @@ function ModelPickerTrigger({
   labelClassName,
   label,
   chevronSize,
+  chevronColor,
+  chevronStrokeWidth,
   onPress,
   pressableProps,
 }: {
@@ -281,6 +283,8 @@ function ModelPickerTrigger({
   labelClassName: string
   label: string
   chevronSize: number
+  chevronColor?: string
+  chevronStrokeWidth?: number
   onPress?: () => void
   pressableProps?: Record<string, unknown>
 }) {
@@ -298,7 +302,12 @@ function ModelPickerTrigger({
       <Text className={labelClassName} numberOfLines={1}>
         {label}
       </Text>
-      <ChevronDown className="flex-shrink-0 text-muted-foreground/70" size={chevronSize} />
+      <ChevronDown
+        className={chevronColor ? "flex-shrink-0" : "flex-shrink-0 text-muted-foreground/70"}
+        color={chevronColor}
+        strokeWidth={chevronStrokeWidth}
+        size={chevronSize}
+      />
     </Pressable>
   )
 }
@@ -312,6 +321,8 @@ export function ComposerModelPicker({
   labelClassName,
   triggerStyle,
   chevronSize,
+  chevronColor,
+  chevronStrokeWidth,
   hitSlop,
   label,
   menuWidth,
@@ -325,6 +336,8 @@ export function ComposerModelPicker({
   labelClassName: string
   triggerStyle?: StyleProp<ViewStyle>
   chevronSize: number
+  chevronColor?: string
+  chevronStrokeWidth?: number
   hitSlop?: number
   label: string
   menuWidth?: number
@@ -357,6 +370,8 @@ export function ComposerModelPicker({
     labelClassName,
     label,
     chevronSize,
+    chevronColor,
+    chevronStrokeWidth,
   }
 
   if (nativeSheet) {

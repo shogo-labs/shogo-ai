@@ -9,15 +9,17 @@ import {
   nativeDrawerSideInset,
   nativeDrawerFooterInset,
   nativeDrawerUnderlayStyle,
+  nativeDrawerSheetCanvas,
   NATIVE_DRAWER_SHEET_RADIUS,
   NATIVE_DRAWER_SHEET_SHADOW_OPACITY,
   NATIVE_DRAWER_SHEET_ELEVATION,
+  NATIVE_DRAWER_SHEET_OPEN_CANVAS,
   NATIVE_DRAWER_WIDTH_RATIO,
   NATIVE_DRAWER_MIN_TOP_INSET,
   NATIVE_DRAWER_MIN_SIDE_INSET,
   NATIVE_DRAWER_MIN_FOOTER_INSET,
 } from '../use-native-drawer-swipe'
-import { NATIVE_PHONE_CANVAS } from '../native-phone-layout'
+import { NATIVE_PHONE_CANVAS, NATIVE_PHONE_HOME_CANVAS } from '../native-phone-layout'
 
 describe('native drawer progress', () => {
   const width = 280
@@ -41,7 +43,7 @@ describe('native drawer progress', () => {
     expect(NATIVE_DRAWER_SHEET_RADIUS).toBeLessThanOrEqual(60)
   })
 
-  test('sheet translation and corner radius share the same progress', () => {
+  test('sheet translation, corner radius, and canvas share the same progress', () => {
     const drawerWidth = nativeDrawerPanelWidth(402)
     const at = (progress: number) => ({
       sheetX: progress * drawerWidth,
@@ -54,6 +56,10 @@ describe('native drawer progress', () => {
     })
     expect(at(0.25).sheetX).toBeCloseTo(0.25 * drawerWidth)
     expect(at(0.25).radius).toBeCloseTo(0.25 * NATIVE_DRAWER_SHEET_RADIUS)
+    expect(nativeDrawerSheetCanvas(0, true)).toBe(NATIVE_PHONE_CANVAS.dark)
+    expect(nativeDrawerSheetCanvas(1, true)).toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    expect(nativeDrawerSheetCanvas(0.5, true)).not.toBe(NATIVE_PHONE_CANVAS.dark)
+    expect(nativeDrawerSheetCanvas(0.5, true)).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
   })
 
   test('release snaps using distance or velocity', () => {
@@ -79,6 +85,33 @@ describe('native drawer insets', () => {
     expect(nativeDrawerSideInset(0)).toBe(NATIVE_DRAWER_MIN_SIDE_INSET)
     expect(nativeDrawerFooterInset(8)).toBe(NATIVE_DRAWER_MIN_FOOTER_INSET)
     expect(nativeDrawerFooterInset(34)).toBe(34)
+  })
+})
+
+describe('nativeDrawerSheetCanvas', () => {
+  test('dark sheet lifts from OLED black to medium grey with drawer progress', () => {
+    expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(1, true)).toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    const mid = nativeDrawerSheetCanvas(0.5, true)
+    expect(mid.startsWith('#')).toBe(true)
+    expect(mid).not.toBe('#000000')
+    expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    expect(nativeDrawerSheetCanvas(0.25, true) < nativeDrawerSheetCanvas(0.75, true)).toBe(true)
+  })
+
+  test('dark home lifts from charcoal to the same open grey', () => {
+    expect(nativeDrawerSheetCanvas(0, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
+    expect(nativeDrawerSheetCanvas(1, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    const mid = nativeDrawerSheetCanvas(0.5, true, NATIVE_PHONE_HOME_CANVAS)
+    expect(mid).not.toBe(NATIVE_PHONE_HOME_CANVAS)
+    expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
+  })
+
+  test('light sheet stays white', () => {
+    expect(nativeDrawerSheetCanvas(0, false)).toBe(NATIVE_PHONE_CANVAS.light)
+    expect(nativeDrawerSheetCanvas(1, false)).toBe(NATIVE_PHONE_CANVAS.light)
+    expect(nativeDrawerSheetCanvas(0.4, false)).toBe(NATIVE_PHONE_CANVAS.light)
   })
 })
 

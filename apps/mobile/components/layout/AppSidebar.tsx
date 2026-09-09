@@ -108,7 +108,7 @@ import { trackPurchase } from '../../lib/tracking'
 import { getActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { nativePhoneCanvas } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, nativePhoneSheetBackdropStyle, nativePhoneSheetPanelStyle, useNativePhoneIconChrome, useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
 import { nativeDrawerFooterInset, nativeDrawerSideInset, nativeDrawerTopInset } from '../../lib/use-native-drawer-swipe'
 import {
   fetchProjectChatSessions,
@@ -165,6 +165,7 @@ function NavItem({
 }: NavItemProps) {
   const router = useRouter()
   const isNative = Platform.OS !== 'web'
+  const iconChrome = useNativePhoneIconChrome()
 
   const handlePress = useCallback(() => {
     if (onPress) {
@@ -197,8 +198,10 @@ function NavItem({
     >
       <Icon
         size={isNative ? 20 : 12}
+        color={isNative ? iconChrome.color : undefined}
+        strokeWidth={isNative ? iconChrome.strokeWidth : undefined}
         className={cn(
-          active ? 'text-foreground' : 'text-muted-foreground'
+          !isNative && (active ? 'text-foreground' : 'text-muted-foreground')
         )}
       />
       {!collapsed && (
@@ -497,13 +500,15 @@ function ProjectFilterSheet({
   onClose: () => void
   bottomInset: number
 }) {
+  const sheet = useNativePhoneSheetChrome()
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View className="flex-1 justify-end">
         <Pressable
           accessibilityLabel="Dismiss filter menu"
           onPress={onClose}
-          className="flex-1 bg-black/50"
+          className="flex-1"
+          style={sheet.backdrop}
         />
         <View
           className="bg-card border-t border-border px-5 pt-2"
@@ -511,6 +516,7 @@ function ProjectFilterSheet({
             borderTopLeftRadius: 24,
             borderTopRightRadius: 24,
             paddingBottom: Math.max(bottomInset, 16),
+            ...sheet.panel,
           }}
         >
           <View className="w-10 h-1 rounded-full bg-muted-foreground/40 self-center mb-4 mt-1" />
@@ -1574,6 +1580,7 @@ function AccountMenu({
   const [isOpen, setIsOpen] = useState(false)
   const close = useCallback(() => setIsOpen(false), [])
   const isNative = Platform.OS !== 'web'
+  const sheet = useNativePhoneSheetChrome()
 
   const triggerInner = (
     <>
@@ -1698,11 +1705,11 @@ function AccountMenu({
         statusBarTranslucent
         onRequestClose={close}
       >
-        <Pressable className="flex-1 bg-black/50 justify-end" onPress={close}>
+        <Pressable className="flex-1 justify-end" style={sheet.backdrop} onPress={close}>
           <Pressable
             onPress={(e) => e.stopPropagation()}
             className="bg-card border-t border-border rounded-t-2xl shadow-2xl"
-            style={{ paddingBottom: bottomInset }}
+            style={[{ paddingBottom: bottomInset }, sheet.panel]}
           >
             <View className="items-center pt-2 pb-1">
               <View className="w-10 h-1 rounded-full bg-muted-foreground/30" />
@@ -1820,6 +1827,7 @@ export const AppSidebar = observer(function AppSidebar({
   const isWide = Platform.OS === 'web' && width >= 768
   const isNativeDrawer = nativeDrawerOverride ?? !isWide
   const isDark = useResolvedTheme() === 'dark'
+  const iconChrome = useNativePhoneIconChrome()
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const drawerTopInset = isNativeDrawer ? nativeDrawerTopInset(insets.top) : insets.top
   const drawerBottomInset = isNativeDrawer ? Math.max(insets.bottom, 18) : insets.bottom
@@ -2180,7 +2188,7 @@ export const AppSidebar = observer(function AppSidebar({
                 accessibilityLabel="Search"
                 className="h-11 w-11 items-center justify-center rounded-md active:bg-muted"
               >
-                <Search size={22} className="text-muted-foreground" />
+                <Search size={22} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
               </Pressable>
             ) : (
               <Pressable onPress={toggleCollapse} className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
@@ -2342,7 +2350,7 @@ export const AppSidebar = observer(function AppSidebar({
                   hitSlop={8}
                   className={cn('items-center justify-center rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11' : 'h-8 w-8')}
                 >
-                  <SlidersHorizontal size={isNativeDrawer ? 20 : 16} className="text-muted-foreground" />
+                  <SlidersHorizontal size={isNativeDrawer ? 20 : 16} color={isNativeDrawer ? iconChrome.color : undefined} strokeWidth={isNativeDrawer ? iconChrome.strokeWidth : undefined} className={isNativeDrawer ? undefined : 'text-muted-foreground'} />
                 </Pressable>
               )}
             </View>
@@ -2448,7 +2456,7 @@ export const AppSidebar = observer(function AppSidebar({
               onPress={() => setInboxOpen(true)}
               className={cn('relative shrink-0 rounded-md active:bg-muted', isNativeDrawer ? 'h-11 w-11 items-center justify-center' : 'p-1.5')}
             >
-              <Inbox size={isNativeDrawer ? 22 : 18} className="text-muted-foreground" />
+              <Inbox size={isNativeDrawer ? 22 : 18} color={isNativeDrawer ? iconChrome.color : undefined} strokeWidth={isNativeDrawer ? iconChrome.strokeWidth : undefined} className={isNativeDrawer ? undefined : 'text-muted-foreground'} />
               {pendingInvites.length > 0 && (
                 <View className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-destructive items-center justify-center">
                   <Text className="text-[9px] font-bold text-white">{pendingInvites.length}</Text>
@@ -2470,8 +2478,9 @@ export const AppSidebar = observer(function AppSidebar({
         <Pressable
           className={cn(
             'flex-1',
-            isWide ? '' : 'bg-black/50 justify-end'
+            isWide ? '' : 'justify-end'
           )}
+          style={!isWide ? nativePhoneSheetBackdropStyle(isDark) : undefined}
           onPress={() => setInboxOpen(false)}
         >
           <Pressable
@@ -2482,7 +2491,11 @@ export const AppSidebar = observer(function AppSidebar({
                 ? 'absolute bottom-16 left-[220px] w-[340px] rounded-xl'
                 : 'w-full rounded-t-2xl border-b-0'
             )}
-            style={!isWide ? { paddingBottom: insets.bottom } : undefined}
+            style={
+              !isWide
+                ? { paddingBottom: insets.bottom, ...nativePhoneSheetPanelStyle(isDark) }
+                : undefined
+            }
           >
             {/* Drag indicator (mobile only) */}
             {!isWide && (

@@ -36,14 +36,22 @@ import { View, StyleSheet, ScrollView, Platform, useColorScheme, type LayoutChan
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useChatDockStore } from "../../../lib/chat-dock-store"
+import { isNativePlatform, NATIVE_PHONE_DOCK_COMPOSER_GAP } from "../../../lib/native-phone-layout"
 import { DockPanel } from "./DockPanel"
 
 const MAX_STATUS_HEIGHT = 420
 const MAX_STATUS_HEIGHT_RATIO = 0.45
 const FADE_HEIGHT = 16
+const DOCK_COMPOSER_GAP = isNativePlatform() ? NATIVE_PHONE_DOCK_COMPOSER_GAP : 6
 
 const styles = StyleSheet.create({
-  container: { position: "absolute", bottom: "100%", left: 0, right: 0 },
+  container: {
+    position: "absolute",
+    bottom: "100%",
+    left: 0,
+    right: 0,
+    paddingBottom: DOCK_COMPOSER_GAP,
+  },
   relative: { position: "relative" },
   topFade: { position: "absolute", top: 0, left: 0, right: 0, height: FADE_HEIGHT, pointerEvents: "none" },
   scrollContent: { paddingTop: 2, paddingBottom: 2 },
@@ -98,7 +106,7 @@ export function ChatDock({ availableHeight, className }: ChatDockProps) {
   return (
     <View
       style={styles.container}
-      className={cn("mb-1.5 w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
+      className={cn("w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
       pointerEvents="box-none"
       onLayout={handleLayout}
     >

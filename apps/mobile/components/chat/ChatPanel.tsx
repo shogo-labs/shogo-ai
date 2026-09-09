@@ -5952,7 +5952,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             style={[
               nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
               isPhoneViewport
-                ? { paddingBottom: composerKeyboardPad }
+                ? { paddingBottom: composerKeyboardPad, overflow: "visible" as const }
                 : undefined,
             ]}
           >

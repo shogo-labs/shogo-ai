@@ -82,7 +82,7 @@ import { CompactUsageWindows } from '../billing/UsageWindows'
 import { PublishDropdown } from './PublishDropdown'
 import { CloudSyncStatusPill } from './CloudSyncStatusPill'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { isPhoneLayout, NATIVE_PHONE_CONTROL_SIZE } from '../../lib/native-phone-layout'
+import { isPhoneLayout, NATIVE_PHONE_CONTROL_SIZE, useNativePhoneIconChrome, useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
 import { api } from '../../lib/api'
 import { requestIdeActivity } from '../../lib/ide-activity-bus'
 import { ProjectExportModal } from './ProjectExportModal'
@@ -219,6 +219,13 @@ function useWebTitle(title?: string) {
 }
 
 const NATIVE_CIRCLE_ICON_SIZE = 22
+const NATIVE_HEADER_PAD_X = 12
+const NATIVE_HEADER_PAD_TOP = 4
+/** Keep header icons off the hairline under the bar. */
+const NATIVE_HEADER_PAD_BOTTOM = 12
+const NATIVE_CLUSTER_SLOT = 36
+const NATIVE_CLUSTER_PAD_X = 6
+const NATIVE_CLUSTER_WIDTH = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * 2
 
 function NativeCircleButton({
   icon: Icon,
@@ -233,6 +240,7 @@ function NativeCircleButton({
   testID?: string
   active?: boolean
 }) {
+  const icon = useNativePhoneIconChrome()
   return (
     <Pressable
       onPress={onPress}
@@ -246,7 +254,38 @@ function NativeCircleButton({
       )}
       style={{ width: NATIVE_PHONE_CONTROL_SIZE, height: NATIVE_PHONE_CONTROL_SIZE }}
     >
-      <Icon size={NATIVE_CIRCLE_ICON_SIZE} className={active ? 'text-primary-foreground' : 'text-foreground'} />
+      <Icon
+        size={NATIVE_CIRCLE_ICON_SIZE}
+        color={active ? undefined : icon.color}
+        strokeWidth={icon.strokeWidth}
+        className={active ? 'text-primary-foreground' : undefined}
+      />
+    </Pressable>
+  )
+}
+
+function NativeClusterIcon({
+  icon: Icon,
+  onPress,
+  accessibilityLabel,
+  testID,
+}: {
+  icon: React.ElementType
+  onPress: () => void
+  accessibilityLabel: string
+  testID?: string
+}) {
+  const iconChrome = useNativePhoneIconChrome()
+  return (
+    <Pressable
+      onPress={onPress}
+      testID={testID}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      className="items-center justify-center"
+      style={{ width: NATIVE_CLUSTER_SLOT, height: NATIVE_PHONE_CONTROL_SIZE }}
+    >
+      <Icon size={20} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
     </Pressable>
   )
 }
@@ -264,6 +303,7 @@ function NativeBottomSheet({
 }) {
   const { height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
+  const sheet = useNativePhoneSheetChrome()
   return (
     <Modal
       visible={visible}
@@ -274,7 +314,7 @@ function NativeBottomSheet({
     >
       <View style={styles.sheetRoot}>
         <Pressable
-          style={styles.sheetBackdrop}
+          style={[styles.sheetBackdrop, sheet.backdrop]}
           onPress={onClose}
           accessibilityLabel="Dismiss"
           accessibilityRole="button"
@@ -284,6 +324,7 @@ function NativeBottomSheet({
           style={{
             maxHeight: Math.round(height * maxHeightFraction),
             paddingBottom: Math.max(insets.bottom, 16),
+            ...sheet.panel,
           }}
         >
           <View className="items-center pt-2 pb-1">
@@ -318,6 +359,7 @@ function NativeSheetCircleAction({
   onPress: () => void
   active?: boolean
 }) {
+  const iconChrome = useNativePhoneIconChrome()
   return (
     <Pressable
       onPress={onPress}
@@ -327,7 +369,12 @@ function NativeSheetCircleAction({
       className="min-w-[64px] items-center gap-1.5 py-1"
     >
       <View className="h-12 w-12 items-center justify-center rounded-full bg-muted">
-        <Icon size={20} className={active ? 'text-primary' : 'text-foreground'} />
+        <Icon
+          size={20}
+          color={active ? undefined : iconChrome.color}
+          strokeWidth={iconChrome.strokeWidth}
+          className={active ? 'text-primary' : undefined}
+        />
       </View>
       <Text className="text-[11px] text-muted-foreground">{label}</Text>
     </Pressable>
@@ -354,6 +401,7 @@ function BarIconButton({
 }) {
   const tipRef = useWebTitle(title)
   const isNative = Platform.OS !== 'web'
+  const iconChrome = useNativePhoneIconChrome()
 
   return (
     <Pressable
@@ -372,7 +420,9 @@ function BarIconButton({
     >
       <Icon
         size={isNative ? Math.max(size, 18) : size}
-        className={cn(active ? 'text-primary-foreground' : 'text-muted-foreground')}
+        color={isNative && !active ? iconChrome.color : undefined}
+        strokeWidth={isNative ? iconChrome.strokeWidth : undefined}
+        className={cn(active ? 'text-primary-foreground' : !isNative && 'text-muted-foreground')}
       />
     </Pressable>
   )
@@ -682,6 +732,13 @@ export function ProjectTopBar({
   if (!isWide) {
     if (isNativePhone) {
       const onChat = narrowActiveTab === 'chat'
+      const showChatMoreCluster = !onChat
+      const leftChrome = NATIVE_HEADER_PAD_X + NATIVE_PHONE_CONTROL_SIZE
+      const rightChrome =
+        NATIVE_HEADER_PAD_X +
+        (showChatMoreCluster ? NATIVE_CLUSTER_WIDTH : NATIVE_PHONE_CONTROL_SIZE) +
+        (showTrustBadge ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0)
+      const titleInset = Math.max(leftChrome, rightChrome)
       const projectMenu = (
         <ProjectDropdownContent
           key={dropdownKey}
@@ -710,14 +767,27 @@ export function ProjectTopBar({
       )
       return (
         <>
-          <View className="h-14 bg-background">
+          <View
+            className="bg-background"
+            testID="project-native-header"
+            style={{
+              paddingTop: NATIVE_HEADER_PAD_TOP,
+              paddingBottom: NATIVE_HEADER_PAD_BOTTOM,
+            }}
+          >
             <Pressable
               onPress={() => {
                 setDropdownKey((k) => k + 1)
                 setShowProjectSheet(true)
               }}
-              className="absolute top-0 bottom-0 items-center justify-center px-2"
-              style={{ left: 52, right: onChat ? 52 : 100 }}
+              className="absolute items-center justify-center"
+              style={{
+                top: NATIVE_HEADER_PAD_TOP,
+                height: NATIVE_PHONE_CONTROL_SIZE,
+                left: 0,
+                right: 0,
+                paddingHorizontal: titleInset,
+              }}
               accessibilityLabel={`${projectName}. Project options`}
               accessibilityRole="button"
               testID="project-switcher-trigger"
@@ -730,7 +800,15 @@ export function ProjectTopBar({
                 {projectName}
               </Text>
             </Pressable>
-            <View className="flex-1 flex-row items-center justify-between px-3" pointerEvents="box-none">
+            <View
+              className="flex-row items-center justify-between"
+              pointerEvents="box-none"
+              style={{
+                height: NATIVE_PHONE_CONTROL_SIZE,
+                paddingHorizontal: NATIVE_HEADER_PAD_X,
+                zIndex: 2,
+              }}
+            >
               <NativeCircleButton
                 icon={ChevronLeft}
                 onPress={handleBack}
@@ -746,20 +824,36 @@ export function ProjectTopBar({
                     compact
                   />
                 )}
-                {!onChat && (
+                {showChatMoreCluster ? (
+                  <View
+                    className="flex-row items-center rounded-full bg-muted"
+                    testID="project-native-chat-more-cluster"
+                    style={{
+                      height: NATIVE_PHONE_CONTROL_SIZE,
+                      paddingHorizontal: NATIVE_CLUSTER_PAD_X,
+                    }}
+                  >
+                    <NativeClusterIcon
+                      icon={MessageSquare}
+                      onPress={() => handleTabPress('chat-fullscreen')}
+                      accessibilityLabel="Chat"
+                      testID="project-native-chat"
+                    />
+                    <NativeClusterIcon
+                      icon={MoreHorizontal}
+                      onPress={() => setShowTabsSheet(true)}
+                      accessibilityLabel="Project tabs"
+                      testID="project-native-more"
+                    />
+                  </View>
+                ) : (
                   <NativeCircleButton
-                    icon={MessageSquare}
-                    onPress={() => handleTabPress('chat-fullscreen')}
-                    accessibilityLabel="Chat"
-                    testID="project-native-chat"
+                    icon={MoreHorizontal}
+                    onPress={() => setShowTabsSheet(true)}
+                    accessibilityLabel="Project tabs"
+                    testID="project-native-more"
                   />
                 )}
-                <NativeCircleButton
-                  icon={MoreHorizontal}
-                  onPress={() => setShowTabsSheet(true)}
-                  accessibilityLabel="Project tabs"
-                  testID="project-native-more"
-                />
               </View>
             </View>
           </View>

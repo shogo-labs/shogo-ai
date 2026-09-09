@@ -3,7 +3,8 @@
 /**
  * Native two-layer drawer: the sidebar sits underneath; the current screen
  * is a foreground sheet the user drags to the right. One progress value
- * (0 closed → 1 open) drives sheet translation and left-corner radius.
+ * (0 closed → 1 open) drives sheet translation, left-corner radius, and
+ * (dark theme) the sheet canvas from closed black/charcoal to the lifted grey.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -11,7 +12,7 @@ import {
   PanResponder,
   type GestureResponderHandlers,
 } from 'react-native'
-import { nativePhoneCanvas } from './native-phone-layout'
+import { hexToRgbChannels, nativePhoneCanvas } from './native-phone-layout'
 
 const EDGE_WIDTH = 28
 const OPEN_RATIO = 0.32
@@ -25,6 +26,12 @@ export const NATIVE_DRAWER_SHEET_SHADOW_OPACITY = 0.12
 export const NATIVE_DRAWER_SHEET_SHADOW_RADIUS = 8
 export const NATIVE_DRAWER_SHEET_ELEVATION = 4
 export const NATIVE_DRAWER_SHEET_SHADOW_OFFSET = { width: -1, height: 0 } as const
+/**
+ * Dark ChatGPT sheet: closed screens are OLED black (home uses charcoal
+ * via `closedCanvas`); as the sidebar opens the moving foreground lifts
+ * to this medium grey at the same progress. Light theme does not change.
+ */
+export const NATIVE_DRAWER_SHEET_OPEN_CANVAS = '#3A3A3C'
 export const NATIVE_DRAWER_MIN_TOP_INSET = 56
 export const NATIVE_DRAWER_MIN_SIDE_INSET = 4
 export const NATIVE_DRAWER_MIN_FOOTER_INSET = 12
@@ -68,11 +75,45 @@ export function nativeDrawerUnderlayStyle(drawerWidth: number, isDark: boolean) 
   }
 }
 
+function rgbToHex(r: number, g: number, b: number): string {
+  const to = (c: number) => Math.round(c).toString(16).padStart(2, '0')
+  return `#${to(r)}${to(g)}${to(b)}`
+}
+
+/** Canvas of the moving foreground sheet at a given 0–1 drawer progress. */
+export function nativeDrawerSheetCanvas(
+  progress: number,
+  isDark: boolean,
+  closedCanvas?: string,
+): string {
+  if (!isDark) return nativePhoneCanvas(false)
+  const closed = closedCanvas ?? nativePhoneCanvas(true)
+  const t = Math.min(1, Math.max(0, progress))
+  if (t === 0) return closed
+  if (t === 1) return NATIVE_DRAWER_SHEET_OPEN_CANVAS
+  const [r0, g0, b0] = hexToRgbChannels(closed)
+  const [r1, g1, b1] = hexToRgbChannels(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+  return rgbToHex(r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t)
+}
+
 /** Shared foreground-sheet motion used by the app and admin native drawers. */
 export function useNativeDrawerSheetStyle(
   drawerProgress: Animated.Value,
   drawerWidth: number,
+  isDark = true,
+  closedCanvas?: string,
 ) {
+  const closed = closedCanvas ?? (isDark ? nativePhoneCanvas(true) : nativePhoneCanvas(false))
+  const sheetCanvas = useMemo(
+    () =>
+      drawerProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: isDark
+          ? [closed, NATIVE_DRAWER_SHEET_OPEN_CANVAS]
+          : [nativePhoneCanvas(false), nativePhoneCanvas(false)],
+      }),
+    [closed, drawerProgress, isDark],
+  )
   const sheetRadius = useMemo(
     () =>
       drawerProgress.interpolate({
@@ -110,22 +151,24 @@ export function useNativeDrawerSheetStyle(
       transform: [{ translateX: sheetTranslateX }],
       borderTopLeftRadius: sheetRadius,
       borderBottomLeftRadius: sheetRadius,
+      backgroundColor: sheetCanvas,
       shadowColor: NATIVE_DRAWER_SHEET_SHADOW_COLOR,
       shadowOffset: NATIVE_DRAWER_SHEET_SHADOW_OFFSET,
       shadowOpacity: sheetShadow,
       shadowRadius: NATIVE_DRAWER_SHEET_SHADOW_RADIUS,
       elevation: sheetElevation,
     }),
-    [sheetElevation, sheetRadius, sheetShadow, sheetTranslateX],
+    [sheetCanvas, sheetElevation, sheetRadius, sheetShadow, sheetTranslateX],
   )
   const sheetClipStyle = useMemo(
     () => ({
       flex: 1 as const,
       overflow: 'hidden' as const,
+      backgroundColor: sheetCanvas,
       borderTopLeftRadius: sheetRadius,
       borderBottomLeftRadius: sheetRadius,
     }),
-    [sheetRadius],
+    [sheetCanvas, sheetRadius],
   )
   return { sheetStyle, sheetClipStyle }
 }
@@ -173,11 +216,14 @@ export function useNativeSheetDrawer({
   isDark,
   swipeEnabled,
   overlayOpenWithoutSnap = false,
+  closedCanvas,
 }: {
   windowWidth: number
   isDark: boolean
   swipeEnabled: boolean
   overlayOpenWithoutSnap?: boolean
+  /** Dark closed-sheet fill. Home passes charcoal; other screens omit this. */
+  closedCanvas?: string
 }) {
   const drawerProgress = useRef(new Animated.Value(0)).current
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -212,7 +258,12 @@ export function useNativeSheetDrawer({
     isOpen: drawerOpen,
     onOpenChange: setDrawerOpen,
   })
-  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(drawerProgress, drawerWidth)
+  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(
+    drawerProgress,
+    drawerWidth,
+    isDark,
+    closedCanvas,
+  )
 
   return {
     drawerOpen,

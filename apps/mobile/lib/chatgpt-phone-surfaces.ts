@@ -26,7 +26,7 @@ export const CHATGPT_PHONE_SURFACES = {
   },
   dark: {
     '--color-background': '0 0 0',
-    '--color-foreground': '236 236 236',
+    '--color-foreground': '244 244 244',
     '--color-card': '33 33 33',
     '--color-card-foreground': '236 236 236',
     '--color-popover': '33 33 33',
