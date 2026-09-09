@@ -18,6 +18,7 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { X } from 'lucide-react-native'
+import { useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
 
 const InsideActivitySheetContext = createContext(false)
 
@@ -38,6 +39,7 @@ export function NativeActivitySheet({
 }) {
   const { height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
+  const sheet = useNativePhoneSheetChrome()
 
   return (
     <Modal
@@ -49,7 +51,7 @@ export function NativeActivitySheet({
     >
       <View style={styles.root}>
         <Pressable
-          style={styles.backdrop}
+          style={[styles.backdrop, sheet.backdrop]}
           onPress={onClose}
           accessibilityLabel="Dismiss"
           accessibilityRole="button"
@@ -59,6 +61,7 @@ export function NativeActivitySheet({
           style={{
             maxHeight: Math.round(height * 0.72),
             paddingBottom: Math.max(insets.bottom, 16),
+            ...sheet.panel,
           }}
         >
           <View className="items-center pt-2 pb-1">

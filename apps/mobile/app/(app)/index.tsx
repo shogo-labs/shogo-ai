@@ -49,7 +49,7 @@ import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from '../../lib/native-composer-keyboard'
 import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
-import { nativePhoneCanvas, NATIVE_PHONE_GUTTER, isPhoneLayout } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, nativePhoneIconColor, NATIVE_PHONE_GUTTER, isPhoneLayout } from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
@@ -108,8 +108,31 @@ function generateProjectNameFromPrompt(prompt: string): string {
 
 const LovableGradient = memo(function LovableGradient({ isDark, phone = false }: { isDark: boolean; phone?: boolean }) {
   if (Platform.OS !== 'web' || phone) {
-    // ChatGPT iOS empty home is a flat canvas (true black / white) with only
-    // a whisper of cool depth — not the saturated Lovable aurora used on web.
+    const orbs = (
+      <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
+        <Defs>
+          <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
+            <Stop offset="0%" stopColor={isDark ? 'rgb(255,255,255)' : 'rgb(228,228,231)'} stopOpacity={isDark ? 0.06 : 0.35} />
+            <Stop offset="100%" stopColor={isDark ? 'rgb(255,255,255)' : 'rgb(228,228,231)'} stopOpacity={0} />
+          </RadialGradient>
+          <RadialGradient id="orb2" cx="50%" cy="50%" rx="50%" ry="50%">
+            <Stop offset="0%" stopColor={isDark ? 'rgb(47,47,47)' : 'rgb(244,244,244)'} stopOpacity={isDark ? 0.45 : 0.5} />
+            <Stop offset="100%" stopColor={isDark ? 'rgb(47,47,47)' : 'rgb(244,244,244)'} stopOpacity={0} />
+          </RadialGradient>
+        </Defs>
+        <Ellipse cx="18%" cy="12%" rx="58%" ry="38%" fill="url(#orb1)" />
+        <Ellipse cx="82%" cy="88%" rx="62%" ry="42%" fill="url(#orb2)" />
+      </Svg>
+    )
+    // Dark phone home: grey orbs on the charcoal sheet. No opaque fill, so
+    // the drawer can still lift from charcoal to medium grey when it opens.
+    if (phone && isDark) {
+      return (
+        <View style={styles.gradientLayer} pointerEvents="none">
+          {orbs}
+        </View>
+      )
+    }
     const baseColors: [string, string, string, string] = isDark
       ? ['#000000', '#000000', '#0a0a0a', '#000000']
       : ['#ffffff', '#f7f7f8', '#ffffff', '#fafafa']
@@ -122,20 +145,7 @@ const LovableGradient = memo(function LovableGradient({ isDark, phone = false }:
           end={{ x: 0.85, y: 1 }}
           style={StyleSheet.absoluteFill}
         />
-        <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
-          <Defs>
-            <RadialGradient id="orb1" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor={isDark ? 'rgb(255,255,255)' : 'rgb(228,228,231)'} stopOpacity={isDark ? 0.06 : 0.35} />
-              <Stop offset="100%" stopColor={isDark ? 'rgb(255,255,255)' : 'rgb(228,228,231)'} stopOpacity={0} />
-            </RadialGradient>
-            <RadialGradient id="orb2" cx="50%" cy="50%" rx="50%" ry="50%">
-              <Stop offset="0%" stopColor={isDark ? 'rgb(47,47,47)' : 'rgb(244,244,244)'} stopOpacity={isDark ? 0.45 : 0.5} />
-              <Stop offset="100%" stopColor={isDark ? 'rgb(47,47,47)' : 'rgb(244,244,244)'} stopOpacity={0} />
-            </RadialGradient>
-          </Defs>
-          <Ellipse cx="18%" cy="12%" rx="58%" ry="38%" fill="url(#orb1)" />
-          <Ellipse cx="82%" cy="88%" rx="62%" ry="42%" fill="url(#orb2)" />
-        </Svg>
+        {orbs}
       </View>
     )
   }
@@ -801,7 +811,7 @@ const HomeScreen = observer(function HomeScreen() {
       letterSpacing: isNativePhone ? -0.45 : -0.5,
       ...(isNativePhone
         ? {
-            color: isDark ? '#ececec' : '#0d0d0d',
+            color: nativePhoneIconColor(isDark),
             fontWeight: '600' as const,
           }
         : {}),
@@ -934,7 +944,10 @@ const HomeScreen = observer(function HomeScreen() {
 
   const nativeHome = (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: nativePhoneCanvas(isDark) }}
+      style={{
+        flex: 1,
+        backgroundColor: isDark ? 'transparent' : nativePhoneCanvas(false),
+      }}
       behavior={iosComposerAvoiding ? 'padding' : undefined}
       keyboardVerticalOffset={0}
     >
@@ -977,8 +990,8 @@ const HomeScreen = observer(function HomeScreen() {
 
   const screen = (
     <View
-      className="flex-1 bg-background"
-      style={isNativePhone ? { backgroundColor: nativePhoneCanvas(isDark) } : undefined}
+      className={isNativePhone && isDark ? 'flex-1' : 'flex-1 bg-background'}
+      style={isNativePhone ? { backgroundColor: isDark ? 'transparent' : nativePhoneCanvas(false) } : undefined}
     >
       {isNativePhone ? (
         nativeHome

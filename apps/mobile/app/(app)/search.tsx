@@ -35,9 +35,19 @@ import {
 } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { LinearGradient } from 'expo-linear-gradient'
 import { CHATGPT_COMPOSER } from '../../components/chat/ComposerPlusMenu'
 import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
-import { isPhoneLayout, nativePhoneCanvas, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
+import {
+  isPhoneLayout,
+  nativePhoneCanvas,
+  nativePhoneDockFadeColors,
+  nativePhoneDockGlassStyle,
+  NATIVE_PHONE_DOCK_FADE,
+  NATIVE_PHONE_DOCK_FADE_LOCATIONS,
+  NATIVE_PHONE_GUTTER,
+  useNativePhoneIconChrome,
+} from '../../lib/native-phone-layout'
 
 const SEARCH_MIN_KEYBOARD_PAD = 8
 const SEARCH_TAB_ROW_HEIGHT = 52
@@ -45,6 +55,8 @@ const SEARCH_PILL_HEIGHT = 36
 const SEARCH_PILL_RADIUS = 18
 const SEARCH_PILL_GAP = 8
 const SEARCH_PILL_PAD_X = 14
+const SEARCH_DOCK_ROW = 48
+const SEARCH_DOCK_PAD_TOP = 12
 const SEARCH_PILL_IDLE = { dark: '#2a2a2a', light: '#f4f4f5' } as const
 const SEARCH_PILL_COUNT_IDLE = CHATGPT_COMPOSER.dark.placeholder
 const SEARCH_PILL_COUNT_ACTIVE = {
@@ -78,6 +90,7 @@ export default observer(function SearchPage() {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
   const isDark = useResolvedTheme() === 'dark'
+  const iconChrome = useNativePhoneIconChrome()
   const pageBg = nativePhoneCanvas(isDark)
   const { width, height } = useWindowDimensions()
   const isPhone = isPhoneLayout(width, height)
@@ -93,6 +106,7 @@ export default observer(function SearchPage() {
   const inputRef = useRef<TextInput>(null)
   const insets = useSafeAreaInsets()
   const restKeyboardPad = Math.max(insets.bottom, SEARCH_MIN_KEYBOARD_PAD)
+  const restDockBleed = SEARCH_DOCK_PAD_TOP + SEARCH_DOCK_ROW + restKeyboardPad
   const composerKeyboardPad = useNativeComposerDockPad({
     enabled: Platform.OS !== 'web',
     restPad: restKeyboardPad,
@@ -257,6 +271,9 @@ export default observer(function SearchPage() {
 
   if (!isSupportedPlatform) return null
 
+  const dockFadeColors = nativePhoneDockFadeColors(isDark, pageBg)
+  const dockGlass = nativePhoneDockGlassStyle(isDark)
+
   const renderRow = ({ item }: { item: SearchRow }) => {
     const Icon = item.kind === 'keys' ? Key : item.kind === 'starred' ? Star : item.kind === 'shared' ? Users : Folder
     return (
@@ -267,7 +284,7 @@ export default observer(function SearchPage() {
         className="flex-row items-center gap-3 px-4 py-3.5 active:bg-muted/60"
       >
         <View className="h-11 w-11 items-center justify-center rounded-2xl bg-muted">
-          <Icon size={18} className="text-foreground" />
+          <Icon size={18} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
         </View>
         <View className="min-w-0 flex-1">
           <Text className="text-[16px] font-medium text-foreground" numberOfLines={1}>
@@ -346,66 +363,88 @@ export default observer(function SearchPage() {
           })}
         </ScrollView>
 
+        <View className="flex-1">
         {loading ? (
-          <View className="flex-1 items-center justify-center">
+          <View className="flex-1 items-center justify-center" style={{ paddingBottom: restDockBleed }}>
             <ActivityIndicator />
           </View>
         ) : rows.length === 0 ? (
-          <View className="flex-1 items-center justify-center px-8">
-            <Search size={44} className="text-muted-foreground/70" />
+          <View className="flex-1 items-center justify-center px-8" style={{ paddingBottom: restDockBleed }}>
+            <Search size={44} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
             <Text className="mt-4 text-center text-base text-muted-foreground">{emptyCopy}</Text>
           </View>
         ) : (
           <FlatList
+            style={{ flex: 1 }}
             data={rows}
             keyExtractor={(item) => item.id}
             renderItem={renderRow}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
-            contentContainerStyle={{ paddingBottom: 12 }}
+            contentContainerStyle={{ paddingBottom: restDockBleed }}
+            scrollIndicatorInsets={{ bottom: restDockBleed }}
+            testID="search-native-results"
           />
         )}
-      </View>
 
-      <Animated.View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          paddingHorizontal: 12,
-          paddingTop: 8,
-          paddingBottom: composerKeyboardPad,
-          backgroundColor: pageBg,
-        }}
-      >
-        <View className="h-12 min-w-0 flex-1 flex-row items-center rounded-full bg-muted px-4">
-          <Search size={18} className="text-muted-foreground" />
-          <TextInput
-            ref={inputRef}
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search"
-            placeholderTextColor={CHATGPT_COMPOSER.dark.placeholder}
-            autoCorrect={false}
-            autoCapitalize="none"
-            returnKeyType="search"
-            className="ml-2 flex-1 text-[16px] text-foreground"
-            style={{ fontSize: 16, lineHeight: 20, paddingVertical: 0 }}
-            accessibilityLabel="Search"
-          />
-          {query.length > 0 ? (
-            <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
-              <X size={16} className="text-muted-foreground" />
-            </Pressable>
-          ) : null}
-        </View>
-        <Pressable
-          onPress={closeSearch}
-          accessibilityLabel="Close search"
-          className="ml-2 h-12 w-12 items-center justify-center rounded-full bg-muted"
+        <View
+          pointerEvents="box-none"
+          testID="search-native-dock"
+          style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
         >
-          <X size={20} className="text-foreground" />
-        </Pressable>
-      </Animated.View>
+          <LinearGradient
+            pointerEvents="none"
+            colors={[...dockFadeColors]}
+            locations={[...NATIVE_PHONE_DOCK_FADE_LOCATIONS]}
+            style={{ height: NATIVE_PHONE_DOCK_FADE + SEARCH_DOCK_PAD_TOP + SEARCH_DOCK_ROW }}
+          />
+          <View
+            pointerEvents="box-none"
+            style={{
+              marginTop: -(SEARCH_DOCK_PAD_TOP + SEARCH_DOCK_ROW),
+              flexDirection: 'row',
+              alignItems: 'center',
+              paddingHorizontal: 12,
+              paddingTop: SEARCH_DOCK_PAD_TOP,
+            }}
+          >
+            <View
+              className="h-12 min-w-0 flex-1 flex-row items-center rounded-full px-4"
+              style={[{ overflow: 'hidden' }, dockGlass]}
+            >
+              <Search size={18} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+              <TextInput
+                ref={inputRef}
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search"
+                placeholderTextColor={CHATGPT_COMPOSER.dark.placeholder}
+                autoCorrect={false}
+                autoCapitalize="none"
+                returnKeyType="search"
+                className="ml-2 flex-1 text-[16px] text-foreground"
+                style={{ fontSize: 16, lineHeight: 20, paddingVertical: 0 }}
+                accessibilityLabel="Search"
+              />
+              {query.length > 0 ? (
+                <Pressable onPress={() => setQuery('')} hitSlop={8} accessibilityLabel="Clear search">
+                  <X size={16} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+                </Pressable>
+              ) : null}
+            </View>
+            <Pressable
+              onPress={closeSearch}
+              accessibilityLabel="Close search"
+              className="ml-2 h-12 w-12 items-center justify-center rounded-full"
+              style={[{ overflow: 'hidden' }, dockGlass]}
+            >
+              <X size={20} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+            </Pressable>
+          </View>
+          <Animated.View style={{ height: composerKeyboardPad, backgroundColor: pageBg }} />
+        </View>
+        </View>
+      </View>
     </View>
   )
 })

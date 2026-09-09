@@ -13,6 +13,7 @@ import { usePathname } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Menu } from 'lucide-react-native'
 import { NotificationBell } from '../notifications/NotificationBell'
+import { NATIVE_PHONE_HEADER_ICON_SIZE, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 
 function isHomePathname(pathname: string): boolean {
   return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
@@ -47,6 +48,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
+  const icon = useNativePhoneIconChrome()
   const isWide = Platform.OS === 'web' && width >= 768
   const isHome = isHomePathname(pathname)
   const title = getTitleFromPathname(pathname)
@@ -88,7 +90,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
           hitSlop={4}
           className={overlayControlClass}
         >
-          <Menu size={22} className="text-foreground" />
+          <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
         </Pressable>
         {isHome ? (
           <View className="flex-1" pointerEvents="none" />
@@ -97,7 +99,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
             {title}
           </Text>
         )}
-        <NotificationBell className={overlayControlClass} />
+        <NotificationBell size={NATIVE_PHONE_HEADER_ICON_SIZE} className={overlayControlClass} />
       </View>
   )
 }

@@ -10,6 +10,7 @@ import {
   type NativeAttachPickerOptions,
 } from "../../lib/native-attachment-picker"
 import { ComposerPlusCloseContext } from "./ComposerPlusMenu"
+import { useNativePhoneSheetChrome } from "../../lib/native-phone-layout"
 
 export { ComposerPlusCloseContext, useComposerPlusClose } from "./ComposerPlusMenu"
 
@@ -53,6 +54,7 @@ export function AttachSourceSheet({
   ...opts
 }: AttachSourceSheetProps) {
   const { height } = useWindowDimensions()
+  const sheet = useNativePhoneSheetChrome()
   const close = () => onOpenChange(false)
   const handleSelect = (action: NativeAttachAction) => {
     onOpenChange(false)
@@ -72,12 +74,16 @@ export function AttachSourceSheet({
       <ComposerPlusCloseContext.Provider value={close}>
         <View className="flex-1 justify-end">
           <Pressable
-            className="absolute left-0 right-0 top-0 bottom-0 bg-black/60"
+            className="absolute left-0 right-0 top-0 bottom-0"
+            style={sheet.backdrop}
             onPress={close}
             role="button"
             accessibilityLabel="Dismiss attach menu"
           />
-          <View className="z-10 w-full rounded-t-3xl border border-outline-100 border-b-0 bg-background-0 pb-safe shadow-hard-5">
+          <View
+            className="z-10 w-full rounded-t-3xl border border-outline-100 border-b-0 bg-background-0 pb-safe shadow-hard-5"
+            style={sheet.panel}
+          >
             <View className="items-center pt-2 pb-1">
               <View className="h-1 w-12 rounded-full bg-background-400" />
             </View>

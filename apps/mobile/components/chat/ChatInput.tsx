@@ -28,7 +28,7 @@ import {
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useResolvedTheme } from "../../contexts/theme"
-import { isPhoneLayout } from "../../lib/native-phone-layout"
+import { isPhoneLayout, NATIVE_PHONE_ICON_STROKE } from "../../lib/native-phone-layout"
 import {
   Popover,
   PopoverBackdrop,
@@ -1999,7 +1999,7 @@ function ChatInputImpl({
                   <Plus
                     color={chatgptComposer.icon}
                     size={22}
-                    strokeWidth={2}
+                    strokeWidth={NATIVE_PHONE_ICON_STROKE}
                   />
                 </Pressable>
                 <ComposerPlusSheet
@@ -2337,12 +2337,14 @@ function ChatInputImpl({
               triggerStyle={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
               labelClassName={
                 useProminentComposer
-                  ? "text-[12px] text-foreground/90"
+                  ? "text-[12px] text-foreground"
                   : isNative
-                    ? "text-sm text-muted-foreground"
+                    ? "text-sm text-foreground"
                     : "text-xs text-muted-foreground"
               }
               chevronSize={isNative ? 12 : 8}
+              chevronColor={useProminentComposer ? chatgptComposer.icon : undefined}
+              chevronStrokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
               hitSlop={isNative ? 6 : undefined}
               label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
               menuWidth={nativeModelMenuWidth}
@@ -2508,6 +2510,7 @@ function ChatInputImpl({
                       : "text-muted-foreground")
                   )}
                   color={useProminentComposer ? (disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
+                  strokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
                   size={useProminentComposer ? 20 : isNative ? 18 : 14}
                 />
               </Pressable>

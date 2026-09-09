@@ -7,6 +7,7 @@ import { Camera, ChevronDown, ChevronUp, FolderOpen, Image as ImageIcon, Languag
 import type { NativeAttachAction } from "../../lib/native-attachment-picker"
 import { resolveShortName } from "../../lib/visible-models"
 import { cn } from "@shogo/shared-ui/primitives"
+import { useNativePhoneIconChrome, useNativePhoneSheetChrome } from "../../lib/native-phone-layout"
 
 export const ComposerPlusCloseContext = createContext<(() => void) | null>(null)
 
@@ -30,9 +31,9 @@ export const CHATGPT_COMPOSER = {
     fill: "#212121",
     border: "rgba(255,255,255,0.08)",
     borderFocus: "rgba(255,255,255,0.16)",
-    text: "#ececec",
+    text: "#f4f4f4",
     placeholder: "#8e8e8e",
-    icon: "#ececec",
+    icon: "#f4f4f4",
     sendFill: "#ffffff",
     sendIcon: "#0d0d0d",
   },
@@ -69,6 +70,7 @@ export function ComposerPlusSection({
 }) {
   const ctx = useContext(PlusAccordionContext)
   const expanded = ctx?.expandedId === id
+  const iconChrome = useNativePhoneIconChrome()
   return (
     <View className="border-b border-border/40">
       <Pressable
@@ -79,7 +81,7 @@ export function ComposerPlusSection({
         accessibilityState={{ expanded }}
       >
         <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
-          <Icon size={16} className="text-foreground" />
+          <Icon size={16} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
         </View>
         <View className="min-w-0 flex-1">
           <Text className="text-sm font-medium text-foreground">{label}</Text>
@@ -228,6 +230,8 @@ export function ComposerPlusSheet({
   attachDisabled?: boolean
   children: ReactNode
 }) {
+  const sheet = useNativePhoneSheetChrome()
+  const iconChrome = useNativePhoneIconChrome()
   if (!visible) return null
 
   return (
@@ -240,13 +244,14 @@ export function ComposerPlusSheet({
     >
       <View className="flex-1 justify-end">
         <Pressable
-          className="absolute left-0 right-0 top-0 bottom-0 bg-black/50"
+          className="absolute left-0 right-0 top-0 bottom-0"
+          style={sheet.backdrop}
           onPress={onClose}
           accessibilityLabel="Dismiss menu"
         />
         <View
           className="z-10 mx-3 mb-3 overflow-hidden rounded-2xl border border-border bg-card"
-          style={{ maxHeight }}
+          style={[{ maxHeight }, sheet.panel]}
         >
           <ComposerPlusCloseContext.Provider value={onClose}>
             <PlusAccordionContext.Provider
@@ -267,7 +272,7 @@ export function ComposerPlusSheet({
                       className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
                     >
                       <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
-                        <Icon size={16} className="text-foreground" />
+                        <Icon size={16} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
                       </View>
                       <View className="min-w-0 flex-1">
                         <Text className="text-sm font-medium text-foreground">{label}</Text>

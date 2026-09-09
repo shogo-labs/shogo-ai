@@ -16,7 +16,7 @@
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { isPhoneLayout } from "../../lib/native-phone-layout"
+import { isPhoneLayout, NATIVE_PHONE_ICON_STROKE } from "../../lib/native-phone-layout"
 import {
   Popover,
   PopoverBackdrop,
@@ -890,7 +890,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   <Plus
                     color={chatgptComposer.icon}
                     size={22}
-                    strokeWidth={2}
+                    strokeWidth={NATIVE_PHONE_ICON_STROKE}
                   />
                 </Pressable>
                 <ComposerPlusSheet
@@ -1093,11 +1093,13 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 )}
                 triggerStyle={isNativePhone ? { maxWidth: modelTriggerMaxWidth } : undefined}
                 labelClassName={useProminentComposer
-                  ? "text-[12px] text-foreground/90"
+                  ? "text-[12px] text-foreground"
                   : useCurrentNativeSizing
-                    ? "text-[13px] text-foreground/85"
+                    ? "text-[13px] text-foreground"
                     : "text-xs text-muted-foreground"}
                 chevronSize={useCurrentNativeSizing ? 10 : 8}
+                chevronColor={useProminentComposer ? chatgptComposer.icon : undefined}
+                chevronStrokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
                 hitSlop={useCurrentNativeSizing ? 6 : undefined}
                 label={isNativePhone ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId)}
                 menuWidth={nativeModelMenuWidth}
@@ -1226,6 +1228,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                         !useProminentComposer && (disabled ? "text-muted-foreground/40" : "text-foreground")
                       )}
                       color={useProminentComposer ? (disabled ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
+                      strokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
                       size={useProminentComposer ? 20 : useCurrentNativeSizing ? 18 : 14}
                     />
                   </Pressable>
@@ -1254,6 +1257,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                         !useProminentComposer && (disabled ? "text-muted-foreground/40" : "text-muted-foreground")
                       )}
                       color={useProminentComposer ? (disabled ? chatgptComposer.placeholder : chatgptComposer.icon) : undefined}
+                      strokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
                       size={useProminentComposer ? 20 : useCurrentNativeSizing ? 18 : 14}
                     />
                   </Pressable>

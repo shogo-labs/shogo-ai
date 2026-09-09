@@ -25,7 +25,7 @@ import {
 } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { nativePhoneCanvas, WEB_PHONE_MAX_WIDTH } from '../../lib/native-phone-layout'
+import { nativePhoneCanvas, WEB_PHONE_MAX_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 import {
   useNativeSheetDrawer,
   nativeDrawerTopInset,
@@ -453,6 +453,7 @@ function MobileHeader({
   isNative?: boolean
 }) {
   const insets = useSafeAreaInsets()
+  const icon = useNativePhoneIconChrome()
   if (isNative) {
     return (
       <View
@@ -472,7 +473,7 @@ function MobileHeader({
           hitSlop={4}
           className="h-10 w-10 items-center justify-center rounded-full bg-muted"
         >
-          <Menu size={22} className="text-foreground" />
+          <Menu size={22} color={icon.color} strokeWidth={icon.strokeWidth} />
         </Pressable>
         <Text className="flex-1 px-3 text-center text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
@@ -645,7 +646,7 @@ function AdminLayoutInner() {
             style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
           >
             <Animated.View style={nativeSheetDrawer ? sheetClipStyle : { flex: 1, overflow: 'hidden' }}>
-              <View className="flex-1 bg-background">
+              <View className="flex-1">
                 {!isWide && (
                   <MobileHeader
                     onMenuPress={toggleDrawer}

@@ -35,7 +35,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Check, ChevronDown, X } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
-import { isNativePhoneIntegrationsLayout, nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR } from '../../../lib/native-phone-layout'
+import { isNativePhoneIntegrationsLayout, nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
 
 export interface SettingsSectionItem {
   id: string
@@ -297,6 +297,7 @@ function NativePhoneSidebar({
 }) {
   const [open, setOpen] = useState(false)
   const insets = useSafeAreaInsets()
+  const sheet = useNativePhoneSheetChrome()
   const activeItem =
     groups.flatMap((group) => group.items).find((item) => item.id === activeId) ?? null
   const ActiveIcon = activeItem?.icon
@@ -356,7 +357,7 @@ function NativePhoneSidebar({
       >
         <View style={sheetStyles.root}>
           <Pressable
-            style={sheetStyles.backdrop}
+            style={[sheetStyles.backdrop, sheet.backdrop]}
             onPress={() => setOpen(false)}
             accessibilityLabel="Dismiss"
             accessibilityRole="button"
@@ -366,6 +367,7 @@ function NativePhoneSidebar({
             style={{
               maxHeight: Math.round(windowHeight * 0.78),
               paddingBottom: Math.max(insets.bottom, 16),
+              ...sheet.panel,
             }}
           >
             <View className="items-center pt-2 pb-1">

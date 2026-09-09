@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { memo, useMemo } from "react"
-import Markdown from "react-native-marked"
+import React, { memo, useMemo, type ReactNode } from "react"
+import Markdown, { Renderer } from "react-native-marked"
 import type { MarkedStyles } from "react-native-marked"
 import { useColorScheme } from "nativewind"
-import type { ColorValue } from "react-native"
+import { ScrollView, useWindowDimensions, View, type ColorValue, type ViewStyle } from "react-native"
 
 interface ThemeColors {
   text: ColorValue
@@ -98,6 +98,76 @@ const darkThinkingColors: ThemeColors = {
   border: "#444444",
 }
 
+/**
+ * Same per-column width as `react-native-marked`'s `getTableWidthArr`
+ * (`viewport * 1.3 / 3`). Keep this in lockstep so native tables match
+ * the library's layout, with nested scrolling enabled on top.
+ */
+const MARKED_TABLE_COLUMN_WIDTH_RATIO = 1.3 / 3
+
+/**
+ * Tables need their own horizontal gesture recognizer. The default
+ * react-native-marked renderer already puts tables in a horizontal
+ * ScrollView, but it does not enable nested scrolling; on a phone the
+ * parent chat ScrollView can therefore consume the gesture and leave the
+ * right side of a wide table inaccessible.
+ */
+class NativePhoneMarkdownRenderer extends Renderer {
+  constructor(private readonly tableWidth: number) {
+    super()
+  }
+
+  override table(
+    header: ReactNode[][],
+    rows: ReactNode[][][],
+    tableStyle?: ViewStyle,
+    rowStyle?: ViewStyle,
+    cellStyle?: ViewStyle,
+  ): ReactNode {
+    const columnWidth = Math.floor(this.tableWidth * MARKED_TABLE_COLUMN_WIDTH_RATIO)
+    const widthArr = Array(header.length).fill(columnWidth)
+    const borderStyle = {
+      borderColor: tableStyle?.borderColor as string | undefined,
+      borderWidth: tableStyle?.borderWidth,
+    }
+
+    return (
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        directionalLockEnabled
+        showsHorizontalScrollIndicator
+        contentContainerStyle={tableStyle}
+      >
+        <View style={[tableStyle, borderStyle]}>
+          <View style={[{ flexDirection: "row" }, rowStyle]}>
+            {header.map((headerCell, index) => (
+              <View
+                key={`header-${index}`}
+                style={[{ width: widthArr[index] }, cellStyle, borderStyle]}
+              >
+                {headerCell}
+              </View>
+            ))}
+          </View>
+          {rows.map((row, rowIndex) => (
+            <View key={`row-${rowIndex}`} style={[{ flexDirection: "row" }, rowStyle]}>
+              {row.map((cell, cellIndex) => (
+                <View
+                  key={`cell-${rowIndex}-${cellIndex}`}
+                  style={[{ width: widthArr[cellIndex] }, cellStyle, borderStyle]}
+                >
+                  {cell}
+                </View>
+              ))}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    )
+  }
+}
+
 // `react-native-marked` re-parses the entire markdown body on every render, so
 // the streaming hot path on iOS / Android pays a parse cost for every token
 // even when neither the children string nor the variant changed (the parent
@@ -127,6 +197,7 @@ export const MarkdownText = memo(function MarkdownText({
   variant = "default",
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme()
+  const { width } = useWindowDimensions()
 
   const isThinking = variant === "thinking"
   const colors = colorScheme === "dark"
@@ -135,12 +206,17 @@ export const MarkdownText = memo(function MarkdownText({
   const styles = isThinking ? thinkingStyles : baseStyles
 
   const value = useMemo(() => children || "", [children])
+  const renderer = useMemo(
+    () => new NativePhoneMarkdownRenderer(width),
+    [width],
+  )
 
   return (
     <Markdown
       value={value}
       styles={styles}
       theme={{ colors }}
+      renderer={renderer}
       flatListProps={{ scrollEnabled: false, style: { backgroundColor: 'transparent' } }}
     />
   )
