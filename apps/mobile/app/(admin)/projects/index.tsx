@@ -29,7 +29,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
-import { nativeActivePill } from '../../../lib/native-active-shadow'
+import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -233,45 +233,22 @@ export default function AdminProjectsPage() {
           />
         </View>
 
-        <View
-          className={cn(
-            'flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5',
-            isWide ? 'w-[280px]' : '',
-          )}
-        >
-          {[
+        <SegmentedFilter
+          options={[
             { value: '', label: 'All' },
             { value: 'draft', label: 'Draft' },
             { value: 'published', label: 'Published' },
             { value: 'archived', label: 'Archived' },
-          ].map((s) => {
-            const pill = nativeActivePill(statusFilter === s.value)
-            return (
-            <Pressable
-              key={s.value}
-              onPress={() => {
-                setStatusFilter(s.value)
+          ]}value={statusFilter}
+          onChange={(value) => {
+                setStatusFilter(value)
                 setPage(1)
               }}
-              className={cn(
-                'flex-1 items-center py-1.5 rounded-md',
-                pill.className,
-              )}
-              style={pill.style}
-            >
-              <Text
-                className={cn(
-                  'text-xs font-medium',
-                  statusFilter === s.value ? 'text-foreground' : 'text-muted-foreground',
-                )}
+          equalWidth
+              className={isWide ? "w-[280px]" : undefined}
+        /
               >
-                {s.label}
-              </Text>
-            </Pressable>
-            )
-          })}
-        </View>
-      </View>
+              </View>
 
       {isWide && data && (
         <Text className="text-xs text-muted-foreground">

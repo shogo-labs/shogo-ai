@@ -30,9 +30,12 @@ import { resolveShortName } from '../../../lib/visible-models'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import {
   useNativePhoneWindow,
-  nativeSettingsPaneRootStyle,
   nativeTwoColumnCardWidth,
 } from '../../../lib/native-phone-layout'
+import {
+  NativePhonePane,
+  phonePaneScrollProps,
+} from "../../phone/NativePhonePane";
 import { MarkdownText } from '../../chat/MarkdownText'
 
 const CONTEXT_FILES = [
@@ -74,7 +77,7 @@ function estimateDailyCost(
     const [eh, em] = quietHoursEnd.split(':').map(Number)
     const startMin = sh * 60 + sm
     const endMin = eh * 60 + em
-    const quietMinutes = endMin > startMin ? endMin - startMin : (1440 - startMin) + endMin
+    const quietMinutes = endMin > startMin ? endMin - startMin :1440 - startMin + endMin
     activeHours = Math.max(1, (1440 - quietMinutes) / 60)
   }
 
@@ -383,10 +386,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
   const totalTokens = status?.sessions?.reduce((acc, s) => acc + s.estimatedTokens, 0) ?? 0
 
   return (
-    <View
-      collapsable={false}
-      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    <NativePhonePane pageWidth={pageWidth}comfortable={ comfortable}
     >
       {/* Header */}
       <View
@@ -442,11 +442,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
 
       {/* Dashboard Content */}
       <ScrollView
-        className={comfortable ? undefined : 'flex-1'}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        alwaysBounceVertical={comfortable}
-        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+        className={comfortable ? undefined : 'flex-1'}{...phonePaneScrollProps( comfortable)}
         contentContainerStyle={{
           padding: 16,
           flexGrow: 1,
@@ -643,11 +639,13 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                             <View className="flex-row flex-wrap gap-x-4 gap-y-1">
                               <Text className="text-[10px] text-muted-foreground">
                                 Compactions
-                                <Text className="text-foreground"> x{session.compactionCount}</Text>
+                                <Text className="text-foreground">
+                                  {" "} x{session.compactionCount}</Text>
                               </Text>
                               <Text className="text-[10px] text-muted-foreground">
                                 Messages
-                                <Text className="text-foreground"> {session.messageCount}</Text>
+                                <Text className="text-foreground"> {" "}
+                                  {session.messageCount}</Text>
                               </Text>
                               <Text className="text-[10px] text-muted-foreground">
                                 Est. tokens
@@ -693,7 +691,8 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                               <MarkdownText>{detail.data.compactedSummary}</MarkdownText>
                             ) : detail?.data ? (
                               <Text className="text-xs text-muted-foreground italic">
-                                No compacted summary yet — this session hasn't been compacted.
+                                No compacted summary yet — this session hasn't
+                                been compacted.
                               </Text>
                             ) : null}
                           </View>
@@ -850,9 +849,8 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
                     {/* Quiet hours */}
                     {hbConfig?.quietHoursStart && hbConfig?.quietHoursEnd && (
                       <Text className="text-xs text-muted-foreground">
-                        Quiet hours:{' '}
-                        {hbConfig.quietHoursStart} –{' '}
-                        {hbConfig.quietHoursEnd}{' '}
+                        Quiet hours:{hbConfig.quietHoursStart} –{' '}
+                        {hbConfig.quietHoursEnd}
                         ({hbConfig.quietHoursTimezone ?? 'UTC'})
                       </Text>
                     )}
@@ -907,7 +905,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
           </View>
         )}
       </ScrollView>
-    </View>
+    </NativePhonePane>
   )
 }
 

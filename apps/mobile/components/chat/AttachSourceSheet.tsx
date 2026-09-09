@@ -3,16 +3,15 @@
 
 import { type ReactNode } from "react"
 import { Modal, View, Text, Pressable, ScrollView, useWindowDimensions } from "react-native"
-import { Camera, FolderOpen, Image as ImageIcon, X } from "lucide-react-native"
+import { X } from "lucide-react-native"
 import {
   executeNativeAttachAction,
   type NativeAttachAction,
   type NativeAttachPickerOptions,
 } from "../../lib/native-attachment-picker"
 import { ComposerPlusCloseContext } from "./ComposerPlusMenu"
-import { useNativePhoneSheetChrome } from "../../lib/native-phone-layout"
-
-export { ComposerPlusCloseContext, useComposerPlusClose } from "./ComposerPlusMenu"
+import { useNativePhoneSheetChrome } from "../../lib/native-phone-layout";
+import { PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
 
 export interface AttachSourceSheetProps extends NativeAttachPickerOptions {
   open: boolean
@@ -20,32 +19,6 @@ export interface AttachSourceSheetProps extends NativeAttachPickerOptions {
   /** Extra home-composer actions (mode, stack, environment, project source). */
   children?: ReactNode
 }
-
-const ROWS: {
-  action: NativeAttachAction
-  label: string
-  hint: string
-  Icon: typeof Camera
-}[] = [
-  {
-    action: "documents",
-    label: "Browse files",
-    hint: "Any file type",
-    Icon: FolderOpen,
-  },
-  {
-    action: "camera",
-    label: "Take photo",
-    hint: "Use your camera",
-    Icon: Camera,
-  },
-  {
-    action: "library",
-    label: "Photo library",
-    hint: "Pick from your gallery",
-    Icon: ImageIcon,
-  },
-]
 
 export function AttachSourceSheet({
   open,
@@ -114,7 +87,7 @@ export function AttachSourceSheet({
               keyboardShouldPersistTaps="handled"
             >
               <View className="px-2 pb-1">
-                {ROWS.map(({ action, label, hint, Icon }) => (
+                {PLUS_ATTACH_ROWS.map(({ action, label, hint, Icon }) => (
                   <Pressable
                     key={action}
                     onPress={() => handleSelect(action)}

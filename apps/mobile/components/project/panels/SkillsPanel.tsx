@@ -10,7 +10,6 @@ import { GroupedToolTags } from './GroupedToolTags'
 import {
   useNativePhoneWindow,
   nativeContentWidth,
-  nativeSettingsPaneRootStyle,
   nativeSkillsActionWidths,
   NATIVE_PHONE_PICKER_INSET,
   NATIVE_PHONE_PICKER_GUTTER,
@@ -18,7 +17,12 @@ import {
   NATIVE_PHONE_CONTROL_SIZE,
   NATIVE_PHONE_ROW_GAP,
   NATIVE_PHONE_HAIRLINE_COLOR,
-} from '../../../lib/native-phone-layout'
+} from '../../../lib/native-phone-layout';
+import {
+  NativePhonePane,
+  phonePaneScrollProps,
+} from "../../phone/NativePhonePane";
+import { densityFor } from "../../../lib/phone-density"
 
 interface Skill {
   name: string
@@ -57,6 +61,9 @@ interface SkillsPanelProps {
 
 export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
+  // Same math as the Settings section picker (`screenWidth - 24`). Pixel
+  // widths — not `flex: 1` — so Yoga cannot shrink Library / CTA to content.
+  const density = densityFor(comfortable);
   // Same math as the Settings section picker (`screenWidth - 24`). Pixel
   // widths — not `flex: 1` — so Yoga cannot shrink Library / CTA to content.
   const contentWidth = comfortable
@@ -266,10 +273,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
   )
 
   return (
-    <View
-      collapsable={false}
-      className={comfortable ? undefined : 'absolute inset-0 flex-col'}
-      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    <NativePhonePane pageWidth={pageWidth}comfortable={ comfortable}
     >
       <View
         collapsable={false}
@@ -284,10 +288,10 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           className={comfortable ? undefined : 'flex-row items-center gap-2'}
           style={comfortable ? [nativeChrome.titleRow, { width: actionWidths.row }] : undefined}
         >
-          <Zap size={comfortable ? 20 : 16} className="text-muted-foreground" />
+          <Zap size={density.icon.lg} className="text-muted-foreground" />
           <View className={comfortable ? undefined : 'flex-1 min-w-0'} style={comfortable ? nativeChrome.titleText : undefined}>
-            <Text className={cn('font-medium text-foreground', comfortable ? 'text-lg' : 'text-sm')} numberOfLines={1}>Skills</Text>
-            <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+            <Text className={cn('font-medium text-foreground', density.text.title)} numberOfLines={1}>Skills</Text>
+            <Text className={cn('text-muted-foreground', density.text.body)} numberOfLines={1}>
               {skills.length} installed
               {registrySkills.length > 0 ? ` · ${registrySkills.length} available` : ''}
             </Text>
@@ -304,7 +308,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                   showLibrary ? 'bg-primary' : 'active:bg-muted',
                 )}
               >
-                <BookOpen size={12} className={showLibrary ? 'text-primary-foreground' : 'text-muted-foreground'} />
+                <BookOpen size={density.icon.sm} className={showLibrary ? 'text-primary-foreground' : 'text-muted-foreground'} />
                 <Text className={cn('text-xs', showLibrary ? 'text-primary-foreground' : 'text-muted-foreground')}>
                   Library
                 </Text>
@@ -315,7 +319,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 accessibilityLabel="Refresh skills"
                 className="p-1 rounded-md active:bg-muted"
               >
-                <RefreshCw size={14} className="text-muted-foreground" />
+                <RefreshCw size={density.icon.md} className="text-muted-foreground" />
               </Pressable>
             </View>
           )}
@@ -334,7 +338,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 style={[nativeChrome.libraryButton, { width: actionWidths.library }]}
                 className={showLibrary ? 'bg-primary' : 'bg-muted active:opacity-80'}
               >
-                <BookOpen size={18} className={showLibrary ? 'text-primary-foreground' : 'text-foreground'} />
+                <BookOpen size={density.icon.md} className={showLibrary ? 'text-primary-foreground' : 'text-foreground'} />
                 <Text className={cn('text-base font-medium', showLibrary ? 'text-primary-foreground' : 'text-foreground')}>
                   Library
                 </Text>
@@ -347,7 +351,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
               style={nativeChrome.refreshButton}
               className="bg-muted active:opacity-80"
             >
-              <RefreshCw size={18} className="text-foreground" />
+              <RefreshCw size={density.icon.md} className="text-foreground" />
             </Pressable>
           </View>
         ) : null}
@@ -360,11 +364,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       )}
 
       <ScrollView
-        className={comfortable ? undefined : 'flex-1'}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        alwaysBounceVertical={comfortable}
-        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+        className={comfortable ? undefined : 'flex-1'}{...phonePaneScrollProps( comfortable)}
         contentContainerStyle={{
           paddingHorizontal: comfortable ? gutter : 16,
           paddingVertical: 16,
@@ -397,7 +397,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 )}
                 style={comfortable ? [{ flex: 1 }, communityPill.style] : communityPill.style}
               >
-                <Globe size={comfortable ? 16 : 12} className={libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground'} />
+                <Globe size={density.icon.sm} className={libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'community' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
                   Community ({registrySkills.length})
                 </Text>
@@ -414,7 +414,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                 )}
                 style={comfortable ? [{ flex: 1 }, bundledPill.style] : bundledPill.style}
               >
-                <BookOpen size={comfortable ? 16 : 12} className={libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground'} />
+                <BookOpen size={density.icon.sm} className={libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground'} />
                 <Text className={cn(comfortable ? 'text-sm font-medium flex-1 text-center' : 'text-xs font-medium', libraryTab === 'bundled' ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1}>
                   Built-in ({bundledSkills.length})
                 </Text>
@@ -668,7 +668,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                   comfortable ? undefined : 'rounded-md px-3 py-1.5',
                 )}
               >
-                <BookOpen size={comfortable ? 18 : 12} className="text-primary-foreground" />
+                <BookOpen size={density.icon.md} className="text-primary-foreground" />
                 <Text className={cn('text-primary-foreground', comfortable ? 'text-base font-medium' : 'text-xs')}>Browse Skill Library</Text>
               </Pressable>
             </View>
@@ -798,7 +798,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
           </View>
         )}
       </ScrollView>
-    </View>
+    </NativePhonePane>
   )
 }
 

@@ -19,9 +19,8 @@
  */
 
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { ActivityIndicator, Animated, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { API_URL } from '../../lib/api'
@@ -34,8 +33,10 @@ import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
 import { mark as csMark } from '../../lib/cold-start-timing'
-import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS } from '../../lib/native-phone-layout'
-import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
+import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS,
+  WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
+import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe';
+import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell"
 
 csMark('app:layout:module-load')
 
@@ -62,7 +63,7 @@ export default function AppLayout() {
   const isNativeApp = Platform.OS !== 'web'
   const isDark = useResolvedTheme() === 'dark'
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
-  const isWide = !isNativeApp && width >= 768
+  const isWide = !isNativeApp && width >= WEB_WIDE_MIN_WIDTH
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 
   const isProjectDetail = /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, '/'))
@@ -148,21 +149,13 @@ export default function AppLayout() {
     isProjectChatsPage
   const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
   const nativeSheetDrawer = !isWide && !isIdeEmbed
-  const {
-    drawerOpen,
-    sheetSwipeHandlers,
-    sheetStyle,
-    sheetClipStyle,
-    underlayStyle: nativeDrawerUnderlay,
-    closeDrawer,
-    toggleDrawer,
-    resetDrawer,
-  } = useNativeSheetDrawer({
+  const drawer = useNativeSheetDrawer({
     windowWidth: width,
     isDark,
     swipeEnabled: nativeDrawerSwipe,
     closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
-  })
+  });
+  const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
 
   useEffect(() => {
     if (!isWide) return
@@ -233,63 +226,30 @@ export default function AppLayout() {
 
   return (
     <DomainProvider>
-      <SafeAreaView
-        className="flex-1 bg-background"
-        style={nativeSheetDrawer ? { backgroundColor: nativeDrawerCanvas } : undefined}
-        edges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
-      >
-        <View className="flex-1 flex-row">
-          {showSidebar && <AppSidebar />}
-
-          {/*
-            NativeWind's `className` prop is not processed on raw `Animated.View`
-            (only registered host components get cssInterop treatment), so
-            `flex-1` silently no-ops here on web and the column collapses to its
-            content width. Pass `flex: 1` via `style` instead, which works
-            regardless of NativeWind interop registration.
-          */}
-          <View style={{ flex: 1, overflow: 'hidden' }} collapsable={false}>
-            {nativeSheetDrawer ? (
-              <View
-                pointerEvents={drawerOpen ? 'auto' : 'none'}
-                accessibilityElementsHidden={!drawerOpen}
-                importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-                style={nativeDrawerUnderlay}
-              >
-                <AppSidebar
-                  isOpen={drawerOpen}
-                  onClose={closeDrawer}
-                />
-              </View>
-            ) : null}
-            <Animated.View
-              collapsable={false}
-              {...sheetSwipeHandlers}
-              style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
-            >
-              <Animated.View style={sheetClipStyle}>
-                <View className="flex-1">
-                  {!isWide && !isIdeEmbed && !suppressNarrowAppHeader && (
-                    <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
-                  )}
-                  <View className="flex-1">
-                    {localMode && !isIdeEmbed && <RecordingIndicator />}
-                    <Slot />
-                  </View>
-                </View>
-              </Animated.View>
-            </Animated.View>
-          </View>
-        </View>
-
-        {!isWide && !nativeSheetDrawer && (
+      <NativeSheetDrawerShell
+        isWide={isWide}
+        nativeSheetDrawer={nativeSheetDrawer}
+        canvas={nativeDrawerCanvas}
+        safeAreaEdges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
+        sidebarWide={showSidebar ? <AppSidebar /> : null}
+        sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
+        sidebarOverlay={
           <AppSidebar
             isOpen={drawerOpen}
             onClose={closeDrawer}
             isNativeDrawer={false}
           />
-        )}
-      </SafeAreaView>
+        }
+        header={
+          !isWide && !isIdeEmbed && !suppressNarrowAppHeader ? (
+            <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+          ) : null
+        }
+        drawer={drawer}
+      >
+        {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
+        <Slot />
+      </NativeSheetDrawerShell>
     </DomainProvider>
   )
 }

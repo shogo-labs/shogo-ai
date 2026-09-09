@@ -100,10 +100,10 @@ function generateProjectNameFromPrompt(prompt: string): string {
   const words = prompt.toLowerCase()
     .replace(/[^\w\s]/g, "")
     .split(/\s+/)
-    .filter(word => word.length > 2 && !fillerWords.has(word))
+    .filter((word) => word.length > 2 && !fillerWords.has(word))
   const nameWords = words.slice(0, 3)
   if (nameWords.length === 0) return "New Project"
-  return nameWords.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")
+  return nameWords.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ")
 }
 
 const LovableGradient = memo(function LovableGradient({ isDark, phone = false }: { isDark: boolean; phone?: boolean }) {
@@ -133,9 +133,10 @@ const LovableGradient = memo(function LovableGradient({ isDark, phone = false }:
         </View>
       )
     }
+    const canvas = nativePhoneCanvas(isDark);
     const baseColors: [string, string, string, string] = isDark
-      ? ['#000000', '#000000', '#0a0a0a', '#000000']
-      : ['#ffffff', '#f7f7f8', '#ffffff', '#fafafa']
+      ? [canvas, canvas, '#0a0a0a', canvas]
+      : [canvas, '#f7f7f8', canvas, '#fafafa']
     return (
       <View style={styles.gradientLayer} pointerEvents="none">
         <LinearGradient

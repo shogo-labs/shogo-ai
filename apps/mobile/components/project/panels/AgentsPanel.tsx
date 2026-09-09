@@ -26,14 +26,16 @@ import { cn } from "@shogo/shared-ui/primitives"
 import {
   useIsNativePhoneLayout,
   useNativePhoneWindow,
-  nativeSettingsPaneRootStyle,
+  nativeSettingsPaneFill,
   nativeEqualChipWidths,
   NATIVE_PHONE_PICKER_GUTTER,
   NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_ROW_GAP,
   NATIVE_PHONE_CONTROL_SIZE,
   NATIVE_PHONE_HAIRLINE_COLOR,
+  NATIVE_PHONE_SYSTEM_GRAY,
 } from "../../../lib/native-phone-layout"
+import { NativePhonePane } from "../../phone/NativePhonePane";
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
 import { resolveShortName } from "../../../lib/visible-models"
@@ -431,7 +433,7 @@ function TaskGroup({ title, tasks }: { title: string; tasks: TaskData[] }) {
       </Pressable>
       {!collapsed && (
         <View className="gap-1">
-          {tasks.map((t) => <TaskRow key={t.id} task={t} />)}
+          {tasks.map((t) => ( <TaskRow key={t.id} task={t} />))}
         </View>
       )}
     </View>
@@ -860,10 +862,7 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
   if (!visible) return null
 
   return (
-    <View
-      collapsable={false}
-      className={comfortable ? undefined : "absolute inset-0 flex-col"}
-      style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+    <NativePhonePane pageWidth={pageWidth}comfortable={ comfortable}
     >
       {/* Sub-tab toggle */}
       <View
@@ -924,7 +923,7 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
       {/* Sub-tab content */}
       <View
         className={comfortable ? undefined : "flex-1 relative"}
-        style={nativeSettingsPaneRootStyle(pageWidth, comfortable)}
+        style={ comfortable ? nativeSettingsPaneFill : undefined}
       >
         {subTab === "activity" && (
           <ActivitySubTab expandedIds={expandedIds} toggleExpanded={toggleExpanded} agentUrl={agentUrl} />
@@ -938,7 +937,7 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
         )}
         {subTab === "registry" && <RegistrySubTab />}
       </View>
-    </View>
+    </NativePhonePane>
   )
 }
 
@@ -961,9 +960,9 @@ const nativeChrome = StyleSheet.create({
     paddingHorizontal: 4,
   },
   tabActive: {
-    backgroundColor: "rgba(120,120,128,0.32)",
+    backgroundColor: NATIVE_PHONE_SYSTEM_GRAY[32],
   },
   tabIdle: {
-    backgroundColor: "rgba(120,120,128,0.16)",
+    backgroundColor: NATIVE_PHONE_SYSTEM_GRAY[16],
   },
 })

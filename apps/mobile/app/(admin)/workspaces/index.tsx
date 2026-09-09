@@ -30,7 +30,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
-import { nativeActivePill } from '../../../lib/native-active-shadow'
+import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -216,40 +216,17 @@ function WorkspacesListHeader({
           />
         </View>
 
-        <View
-          className={cn(
-            'flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5',
-            isWide ? 'w-[360px]' : '',
-          )}
-        >
-          {SIZE_OPTIONS.map((s) => {
-            const pill = nativeActivePill(sizeFilter === s.value)
-            return (
-            <Pressable
-              key={s.value}
-              onPress={() => {
-                setSizeFilter(s.value)
+        <SegmentedFilter
+          options={SIZE_OPTIONS}value={sizeFilter}
+          onChange={(value) => {
+                setSizeFilter(value)
                 setPage(1)
               }}
-              className={cn(
-                'flex-1 items-center py-1.5 rounded-md',
-                pill.className,
-              )}
-              style={pill.style}
-            >
-              <Text
-                className={cn(
-                  'text-xs font-medium',
-                  sizeFilter === s.value ? 'text-foreground' : 'text-muted-foreground',
-                )}
+          equalWidth
+              className={isWide ? "w-[360px]" : undefined}
+        /
               >
-                {s.label}
-              </Text>
-            </Pressable>
-            )
-          })}
-        </View>
-      </View>
+              </View>
 
       {isWide && data && (
         <Text className="text-xs text-muted-foreground">

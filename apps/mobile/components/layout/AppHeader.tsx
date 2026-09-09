@@ -13,10 +13,12 @@ import { usePathname } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Menu } from 'lucide-react-native'
 import { NotificationBell } from '../notifications/NotificationBell'
-import { NATIVE_PHONE_HEADER_ICON_SIZE, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
+import { NATIVE_PHONE_HEADER_ICON_SIZE,
+  WEB_WIDE_MIN_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 
 function isHomePathname(pathname: string): boolean {
-  return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  return ( pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  )
 }
 
 function getTitleFromPathname(pathname: string): string {
@@ -49,18 +51,16 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
   const icon = useNativePhoneIconChrome()
-  const isWide = Platform.OS === 'web' && width >= 768
+  const isWide = Platform.OS === 'web' && width >= WEB_WIDE_MIN_WIDTH
   const isHome = isHomePathname(pathname)
   const title = getTitleFromPathname(pathname)
 
   if (isWide) return null
-
-  const overlay = isHome
   return (
       <View
         pointerEvents="box-none"
         style={
-          overlay
+        isHome
             ? {
                 position: 'absolute',
                 top: 0,

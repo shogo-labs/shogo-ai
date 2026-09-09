@@ -41,7 +41,7 @@ import {
 } from './types'
 import { avatarColor, initials, isAiAuthor, relativeTime } from './gitAvatar'
 import { CreateCheckpointModal, RollbackConfirmModal } from '../../CheckpointModals'
-import { useNativePhoneWindow } from '../../../../../lib/native-phone-layout'
+import { NATIVE_PHONE_HAIRLINE_COLOR, useNativePhoneWindow } from '../../../../../lib/native-phone-layout'
 
 const CHECKPOINT_RING = '#f59e0b'
 const LIVE_RING = '#10b981'
@@ -147,7 +147,7 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
             paddingHorizontal: 16,
             paddingVertical: 14,
             borderBottomWidth: StyleSheet.hairlineWidth,
-            borderBottomColor: 'rgba(127,127,127,0.35)',
+            borderBottomColor: NATIVE_PHONE_HAIRLINE_COLOR,
             gap: 12,
           }}
         >

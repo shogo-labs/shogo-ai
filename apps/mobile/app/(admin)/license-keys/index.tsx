@@ -34,7 +34,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
-import { nativeActivePill } from '../../../lib/native-active-shadow'
+import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -319,39 +319,16 @@ export default function AdminLicenseKeysPage() {
           />
         </View>
 
-        <View
-          className={cn(
-            'flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5',
-            isWide ? 'w-[280px]' : '',
-          )}
-        >
-          {STATUS_OPTIONS.map((s) => {
-            const pill = nativeActivePill(statusFilter === s.value)
-            return (
-            <Pressable
-              key={s.value}
-              onPress={() => {
-                setStatusFilter(s.value)
+        <SegmentedFilter
+          options={STATUS_OPTIONS}value={statusFilter}
+          onChange={(value) => {
+                setStatusFilter(value)
                 setOffset(0)
               }}
-              className={cn(
-                'flex-1 items-center py-1.5 rounded-md',
-                pill.className,
-              )}
-              style={pill.style}
-            >
-              <Text
-                className={cn(
-                  'text-xs font-medium',
-                  statusFilter === s.value ? 'text-foreground' : 'text-muted-foreground',
-                )}
+          equalWidth
+              className={isWide ? "w-[280px]" : undefined}
+        /
               >
-                {s.label}
-              </Text>
-            </Pressable>
-            )
-          })}
-        </View>
 
         <Pressable
           onPress={() => router.push('/(admin)/license-keys/mint' as any)}

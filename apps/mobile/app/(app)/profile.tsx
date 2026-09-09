@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from 'react-native'
+import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -55,7 +55,8 @@ import {
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
-import { isNativePhoneIntegrationsLayout } from '../../lib/native-phone-layout'
+import { useNativePhoneWindow } from '../../lib/native-phone-layout';
+import { densityFor } from "../../lib/phone-density"
 
 export default observer(function ProfilePage() {
   const router = useRouter()
@@ -63,8 +64,7 @@ export default observer(function ProfilePage() {
   const store = useDomain() as IDomainStore
   const workspaces = useWorkspaceCollection()
   const members = useMemberCollection()
-  const { width, height } = useWindowDimensions()
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const { width, isPhone: isNativePhone } = useNativePhoneWindow()
   const profileMaxWidth = width >= 1280 ? 880 : width >= 768 ? 760 : width
   const profilePadH = width >= 768 ? 24 : 16
 
@@ -254,8 +254,8 @@ interface UserOverviewData {
 function UserUsageSection() {
   const http = useDomainHttp()
   const { features, localMode } = usePlatformConfig()
-  const { width, height } = useWindowDimensions()
-  const comfortable = isNativePhoneIntegrationsLayout(width, height)
+  const { width, isPhone: comfortable } = useNativePhoneWindow()
+  const density = densityFor(comfortable)
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
@@ -267,9 +267,9 @@ function UserUsageSection() {
   const loadAll = useCallback(async () => {
     const p = { period }
 
-    setOverview(s => ({ ...s, loading: true }))
-    setUsageSummary(s => ({ ...s, loading: true }))
-    setUsageLog(s => ({ ...s, loading: true }))
+    setOverview((s) => ({ ...s, loading: true }))
+    setUsageSummary((s) => ({ ...s, loading: true }))
+    setUsageLog((s) => ({ ...s, loading: true }))
 
     const [ov, uSum, uLog] = await Promise.all([
       api.getMyAnalytics<UserOverviewData>(http, 'overview', p).catch(() => null),
@@ -292,10 +292,10 @@ function UserUsageSection() {
     <Card className="mb-6">
       <CardHeader>
         <View className="flex-row items-center gap-2">
-          <BarChart3 size={comfortable ? 22 : 20} className="text-card-foreground" />
-          <CardTitle className={comfortable ? "text-xl" : "text-lg"}>Usage & Spend</CardTitle>
+          <BarChart3 size={density.icon.lg + 2} className="text-card-foreground" />
+          <CardTitle className={density.text.heading}>Usage & Spend</CardTitle>
         </View>
-        <CardDescription className={comfortable ? "text-sm" : undefined}>Your usage across all workspaces</CardDescription>
+        <CardDescription className={density.text.label}>Your usage across all workspaces</CardDescription>
       </CardHeader>
       <CardContent className="gap-4">
         <PeriodSelector value={period} onChange={setPeriod} comfortable={comfortable} />
@@ -339,6 +339,7 @@ const WorkspaceCard = observer(function WorkspaceCard({
   onManage: () => void
   comfortable?: boolean
 }) {
+  const density = densityFor(comfortable);
   const { features } = usePlatformConfig()
   const {
     subscription,
@@ -350,11 +351,13 @@ const WorkspaceCard = observer(function WorkspaceCard({
     <View className="p-4 rounded-lg border border-border bg-card">
       <View className={cn(comfortable ? "gap-3" : "flex-row items-center justify-between mb-3")}>
         <View className={comfortable ? undefined : "flex-1"}>
-          <Text className={cn("font-medium text-foreground", comfortable ? "text-base" : "text-sm")}>
+          <Text className={cn("font-medium text-foreground", density.text.body)}>
             {workspace.name}
           </Text>
           <Text
-            className={cn("text-muted-foreground", comfortable ? "text-sm mt-0.5" : "text-xs")}
+            className={cn("text-muted-foreground",
+              density.text.label,
+              "mt-0.5")}
             numberOfLines={1}
             ellipsizeMode="middle"
           >
@@ -363,12 +366,13 @@ const WorkspaceCard = observer(function WorkspaceCard({
         </View>
         <View className={cn("flex-row items-center gap-2", comfortable && "flex-wrap")}>
           <Badge variant={role === 'owner' ? 'default' : 'secondary'}>
-            <Text className={comfortable ? "text-xs" : undefined}>{role}</Text>
+            <Text className={density.text.caption}>{role}</Text>
           </Badge>
           <Button variant="ghost" size={comfortable ? "lg" : "sm"} onPress={onManage}>
             <View className="flex-row items-center gap-1">
-              <Settings size={comfortable ? 16 : 14} className="text-foreground" />
-              <Text className={cn("font-medium text-foreground", comfortable ? "text-sm" : "text-xs")}>
+              <Settings size={density.icon.sm} className="text-foreground" />
+              <Text className={cn("font-medium text-foreground",
+                  density.text.label)}>
                 Manage
               </Text>
             </View>

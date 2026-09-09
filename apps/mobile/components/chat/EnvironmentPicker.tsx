@@ -20,7 +20,7 @@
  * so the chat + canvas + SSE streams all follow automatically.
  */
 import React, { useState, useMemo, useEffect } from "react"
-import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native"
+import { View, Text, Pressable, ScrollView, Platform } from "react-native"
 import { Cloud, Laptop, Check, RefreshCw } from "lucide-react-native"
 import {
   Popover,
@@ -33,9 +33,9 @@ import { useInstancePicker, type Instance } from "@shogo/shared-app/hooks"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { API_URL } from "../../lib/api"
 import { authClient } from "../../lib/auth-client"
-import { useComposerPlusClose } from "./AttachSourceSheet"
+import { useComposerPlusClose } from "./ComposerPlusMenu"
 import { WebTooltip } from "./WebTooltip"
-import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
+import { useIsNativePhoneLayout } from "../../lib/native-phone-layout"
 
 function getAuthHeaders(): Record<string, string> {
   if (Platform.OS === "web") return {}
@@ -64,8 +64,7 @@ export interface EnvironmentPickerProps {
 }
 
 export function EnvironmentPicker({ disabled, prominentMobile = false, compactMobile = false, presentation = "icon", listActive = false }: EnvironmentPickerProps) {
-  const { width, height } = useWindowDimensions()
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const isNativePhone = useIsNativePhoneLayout()
   const useProminentTrigger = prominentMobile && isNativePhone
   const useCompactTrigger = compactMobile && isNativePhone
   const [open, setOpen] = useState(false)
@@ -93,7 +92,8 @@ export function EnvironmentPicker({ disabled, prominentMobile = false, compactMo
   const displayLabel = activeInstance ? activeInstance.name : "Cloud"
   const triggerIcon = activeInstance
     ? <Laptop className="text-emerald-500" size={useCompactTrigger ? 13 : useProminentTrigger ? 16 : 14} />
-    : <Cloud className="text-muted-foreground" size={useCompactTrigger ? 13 : useProminentTrigger ? 16 : 14} />
+    : ( <Cloud className="text-muted-foreground" size={useCompactTrigger ? 13 : useProminentTrigger ? 16 : 14} />
+  )
 
   useEffect(() => {
     if (presentation === "list" && listActive) refresh()

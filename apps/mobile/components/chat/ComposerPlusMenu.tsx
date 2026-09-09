@@ -3,11 +3,13 @@
 
 import { createContext, useContext, type ComponentType, type ReactNode } from "react"
 import { View, Text, Pressable, Modal, ScrollView } from "react-native"
-import { Camera, ChevronDown, ChevronUp, FolderOpen, Image as ImageIcon, Languages } from "lucide-react-native"
+import { ChevronDown, ChevronUp, Languages } from "lucide-react-native"
 import type { NativeAttachAction } from "../../lib/native-attachment-picker"
 import { resolveShortName } from "../../lib/visible-models"
 import { cn } from "@shogo/shared-ui/primitives"
-import { useNativePhoneIconChrome, useNativePhoneSheetChrome } from "../../lib/native-phone-layout"
+import { useNativePhoneIconChrome, useNativePhoneSheetChrome } from "../../lib/native-phone-layout";
+import { PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
+export { CHATGPT_COMPOSER, PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
 
 export const ComposerPlusCloseContext = createContext<(() => void) | null>(null)
 
@@ -15,42 +17,7 @@ export function useComposerPlusClose() {
   return useContext(ComposerPlusCloseContext)
 }
 
-/** ChatGPT iOS composer tokens (App Store 1.2026 + OpenAI product palette). */
-export const CHATGPT_COMPOSER = {
-  light: {
-    fill: "#ffffff",
-    border: "#e5e5e5",
-    borderFocus: "#cfcfcf",
-    text: "#0d0d0d",
-    placeholder: "#8e8e8e",
-    icon: "#0d0d0d",
-    sendFill: "#0d0d0d",
-    sendIcon: "#ffffff",
-  },
-  dark: {
-    fill: "#212121",
-    border: "rgba(255,255,255,0.08)",
-    borderFocus: "rgba(255,255,255,0.16)",
-    text: "#f4f4f4",
-    placeholder: "#8e8e8e",
-    icon: "#f4f4f4",
-    sendFill: "#ffffff",
-    sendIcon: "#0d0d0d",
-  },
-} as const
-
-export const PLUS_ATTACH_ROWS: {
-  action: NativeAttachAction
-  label: string
-  hint: string
-  Icon: typeof Camera
-}[] = [
-  { action: "documents", label: "Browse files", hint: "Any file type", Icon: FolderOpen },
-  { action: "camera", label: "Take photo", hint: "Use your camera", Icon: Camera },
-  { action: "library", label: "Photo library", hint: "Pick from your gallery", Icon: ImageIcon },
-]
-
-export const PlusAccordionContext = createContext<{
+const PlusAccordionContext = createContext<{
   expandedId: string | null
   toggle: (id: string) => void
 } | null>(null)
@@ -65,7 +32,9 @@ export function ComposerPlusSection({
   id: string
   label: string
   value?: string
-  Icon: ComponentType<{ size?: number; className?: string }>
+  Icon: ComponentType<{ size?: number; className?: string;
+    color?: string;
+    strokeWidth?: number }>
   children: ReactNode
 }) {
   const ctx = useContext(PlusAccordionContext)

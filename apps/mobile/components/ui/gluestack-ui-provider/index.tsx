@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import React, { useEffect, useMemo } from 'react';
 import { config } from './config';
-import { View, ViewProps, Platform, useWindowDimensions } from 'react-native';
+import { View, ViewProps } from 'react-native';
 import { OverlayProvider } from '@gluestack-ui/core/overlay/creator';
 import { ToastProvider } from '@gluestack-ui/core/toast/creator';
 import { useColorScheme, vars } from 'nativewind';
 import { useAccentTheme, getAccentVars } from '../../../contexts/accent-theme';
 import { CHATGPT_PHONE_SURFACE_VARS } from '../../../lib/chatgpt-phone-surfaces';
-import { isNativePhoneIntegrationsLayout } from '../../../lib/native-phone-layout';
+import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout';
 
 export type ModeType = 'light' | 'dark' | 'system';
 
@@ -22,8 +22,7 @@ export function GluestackUIProvider({
 }) {
   const { colorScheme, setColorScheme } = useColorScheme();
   const { accent } = useAccentTheme();
-  const { width, height } = useWindowDimensions();
-  const isNativePhone = Platform.OS !== 'web' && isNativePhoneIntegrationsLayout(width, height);
+  const isNativePhone = useIsNativePhoneLayout();
 
   useEffect(() => {
     setColorScheme(mode);

@@ -13,7 +13,8 @@
 
 import { buildDataUrlFromBase64 } from "@shogo-ai/sdk"
 import { EncodingType, readAsStringAsync } from "expo-file-system/legacy"
-import * as ImagePicker from "expo-image-picker"
+import * as ImagePicker from "expo-image-picker";
+import { isComposerArchive } from "./composer-attachments"
 
 export interface NativePickedAttachment {
   id: string
@@ -181,15 +182,9 @@ export function executeNativeAttachAction(
         onError(`Could not read "${doc.name}".`)
         return
       }
-      const size = doc.size ?? dataUrl.length
-      const lowerName = doc.name.toLowerCase()
-      const isExempt =
-        lowerName.endsWith(".zip") ||
-        lowerName.endsWith(".shogo") ||
-        lowerName.endsWith(".shogo-project") ||
-        mime === "application/zip" ||
-        mime === "application/x-zip-compressed"
-      if (!isExempt && size > maxFileSizeBytes) {
+      const size = doc.size ?? dataUrl.length;
+      if(!isComposerArchive(doc.name,
+        mime) && size > maxFileSizeBytes) {
         onError(`"${doc.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)} MB.`)
         return
       }

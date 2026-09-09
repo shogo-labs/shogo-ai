@@ -11,7 +11,6 @@ import {
   Platform,
   InteractionManager,
   Share,
-  useWindowDimensions,
   Keyboard,
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
@@ -40,9 +39,10 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { api } from '../../../lib/api'
 import { useResolvedTheme } from '../../../contexts/theme'
 import {
-  isNativePhoneIntegrationsLayout,
   nativePhoneCanvas,
-} from '../../../lib/native-phone-layout'
+  useNativePhoneWindow,
+} from '../../../lib/native-phone-layout';
+import { densityFor } from "../../../lib/phone-density"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,7 +81,8 @@ const TREE_INDENT_CLASSES = [
 ] as const
 
 function treeIndentClass(depth: number): string {
-  return TREE_INDENT_CLASSES[Math.min(depth, TREE_INDENT_CLASSES.length - 1)] ?? 'pl-2'
+  return ( TREE_INDENT_CLASSES[Math.min(depth, TREE_INDENT_CLASSES.length - 1)] ?? 'pl-2'
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ function FileTreeItem({
   onUploadToDir: (dirPath: string) => void
 }) {
   const isNative = Platform.OS !== 'web'
+  const density = densityFor(isNative);
   const isDir = entry.type === 'directory'
   const isExpanded = expandedDirs.has(entry.path)
   const isSelected = selectedPath === entry.path
@@ -211,7 +213,7 @@ function FileTreeItem({
       >
         <View className={isNative ? 'w-3.5 shrink-0' : 'w-2.5 shrink-0'} />
         <FileText
-          size={isNative ? 16 : 12}
+          size={density.icon.sm}
           className={cn(
             'shrink-0',
             ext === 'md' ? 'text-blue-500' :
@@ -221,7 +223,7 @@ function FileTreeItem({
         />
         <Text
           className={cn(
-            isNative ? 'text-sm flex-1 min-w-0' : 'text-xs flex-1 min-w-0',
+            `${density.text.label} flex-1 min-w-0`,
             isSelected ? 'text-primary font-medium' : 'text-foreground',
           )}
           numberOfLines={1}
@@ -229,7 +231,10 @@ function FileTreeItem({
           {entry.name}
         </Text>
         {entry.size != null && (
-          <Text className={isNative ? 'text-xs text-muted-foreground shrink-0' : 'text-[10px] text-muted-foreground shrink-0'}>
+          <Text className={cn(
+              density.text.caption,
+              "text-muted-foreground shrink-0",
+            )}>
             {formatSize(entry.size)}
           </Text>
         )}
@@ -265,16 +270,16 @@ function mountWebFileInput(input: HTMLInputElement): () => void {
 const NARROW_BREAKPOINT = 600
 
 export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
-  const { width, height } = useWindowDimensions()
+  const { width, height, isPhone: isNativePhone } = useNativePhoneWindow()
   const isNarrow = width < NARROW_BREAKPOINT
   const isNative = Platform.OS !== 'web'
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
+  const density = densityFor(isNative)
   const isDark = useResolvedTheme() === 'dark'
   const phoneCanvas = isNativePhone ? nativePhoneCanvas(isDark) : undefined
   const [showEditorOnNarrow, setShowEditorOnNarrow] = useState(false)
 
   const client = useMemo(
-    () => (agentUrl ? new AgentClient({ baseUrl: agentUrl, fetch: agentFetch }) : null),
+    () =>agentUrl ? new AgentClient({ baseUrl: agentUrl, fetch: agentFetch }) : null,
     [agentUrl],
   )
 
@@ -734,7 +739,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   }, [client, isWorkspaceFile, selectedPath, loadWorkspaceFile, loadTree])
 
   const toggleDir = (path: string) => {
-    setExpandedDirs(prev => {
+    setExpandedDirs((prev) => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
       else next.add(path)
@@ -778,19 +783,20 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               ? 'min-h-11 px-3 border border-border'
               : cn('bg-background border border-border', isNative ? 'min-h-11 px-3' : 'px-2'),
           )}>
-            <Search size={isNative ? 18 : 12} className="text-muted-foreground" />
+            <Search size={density.icon.sm} className="text-muted-foreground" />
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
               onSubmitEditing={handleSearch}
               placeholder="Search files..."
-              className={cn('flex-1 px-2 text-foreground placeholder:text-muted-foreground', isNative ? 'text-base py-2' : 'text-xs py-1.5')}
+              className={cn('flex-1 px-2 text-foreground placeholder:text-muted-foreground',
+                density.text.body, isNative ? "py-2" : "py-1.5")}
               autoCapitalize="none"
               returnKeyType="search"
             />
             {searchQuery ? (
               <Pressable onPress={() => { setSearchQuery(''); setSearchResults(null) }}>
-                <X size={isNative ? 18 : 12} className="text-muted-foreground" />
+                <X size={density.icon.sm} className="text-muted-foreground" />
               </Pressable>
             ) : null}
           </View>
@@ -840,7 +846,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
           ) : (
             <View className="p-1">
               {/* General file tree */}
-              <Text className={cn('font-medium text-muted-foreground px-2 py-1 mt-2', isNative ? 'text-xs' : 'text-[10px]')}>
+              <Text className={cn('font-medium text-muted-foreground px-2 py-1 mt-2',
+                  density.text.caption)}>
                 PROJECT FILES
               </Text>
               {tree.length === 0 ? (
@@ -888,8 +895,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               }}
               className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <FilePlus size={isNative ? 18 : 12} className="text-muted-foreground" />
-              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-[10px] text-muted-foreground'}>New File</Text>
+              <FilePlus size={density.icon.md} className="text-muted-foreground" />
+              <Text className={cn(density.text.label, "text-muted-foreground")}>New File</Text>
             </Pressable>
             <Pressable
               onPress={() => {
@@ -899,16 +906,16 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               }}
               className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <FolderPlus size={isNative ? 18 : 12} className="text-muted-foreground" />
-              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-[10px] text-muted-foreground'}>New Folder</Text>
+              <FolderPlus size={density.icon.md} className="text-muted-foreground" />
+              <Text className={cn(density.text.label, "text-muted-foreground")}>New Folder</Text>
             </Pressable>
           </View>
           <Pressable
             onPress={() => handleUpload(null)}
             className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
           >
-            <Upload size={isNative ? 18 : 12} className="text-muted-foreground" />
-            <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>Upload Files</Text>
+            <Upload size={density.icon.md} className="text-muted-foreground" />
+            <Text className={cn(density.text.label, "text-muted-foreground")}>Upload Files</Text>
           </Pressable>
           <View className="border-t border-border mt-1 pt-1 gap-1">
             <Pressable
@@ -916,8 +923,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               disabled={isDownloadingZip}
               className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <FolderArchive size={isNative ? 18 : 12} className="text-muted-foreground" />
-              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>
+              <FolderArchive size={density.icon.md} className="text-muted-foreground" />
+              <Text className={cn(density.text.label, "text-muted-foreground")}>
                 {isDownloadingZip ? 'Preparing ZIP...' : 'Download project (ZIP)'}
               </Text>
             </Pressable>
@@ -926,8 +933,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               disabled={isExporting}
               className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <Upload size={isNative ? 18 : 12} className="text-muted-foreground" />
-              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>
+              <Upload size={density.icon.md} className="text-muted-foreground" />
+              <Text className={cn(density.text.label, "text-muted-foreground")}>
                 {isExporting ? 'Exporting...' : 'Export Agent'}
               </Text>
             </Pressable>
@@ -935,8 +942,8 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               onPress={handleImport}
               className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
             >
-              <Download size={isNative ? 18 : 12} className="text-muted-foreground" />
-              <Text className={isNative ? 'text-sm text-muted-foreground' : 'text-xs text-muted-foreground'}>Import Agent</Text>
+              <Download size={density.icon.md} className="text-muted-foreground" />
+              <Text className={cn(density.text.label, "text-muted-foreground")}>Import Agent</Text>
             </Pressable>
           </View>
         </View>
@@ -1002,7 +1009,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               <FileText size={14} className="text-muted-foreground" />
               <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
                 {isWorkspaceFile
-                  ? WORKSPACE_FILES.find((f) => f.id === selectedPath)?.label ?? selectedPath
+                  ? ( WORKSPACE_FILES.find((f) => f.id === selectedPath)?.label ?? selectedPath)
                   : selectedPath}
               </Text>
               {isWorkspaceFile && (

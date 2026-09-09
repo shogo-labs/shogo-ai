@@ -26,16 +26,16 @@ import {
   Text,
   Pressable,
   ScrollView,
-  useWindowDimensions,
   Platform,
-  Modal,
   StyleSheet,
 } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Check, ChevronDown, X } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
-import { isNativePhoneIntegrationsLayout, nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
+import { nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR,
+  NATIVE_PHONE_SYSTEM_GRAY,
+  useNativePhoneWindow } from '../../../lib/native-phone-layout';
+import { NativePhoneSheet } from "../../phone/NativePhoneSheet"
 
 export interface SettingsSectionItem {
   id: string
@@ -79,10 +79,8 @@ const NARROW_BREAKPOINT = 768
 const SIDEBAR_WIDTH = 220
 
 export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelProps) {
-  const { width, height } = useWindowDimensions()
+  const { width, isPhone: isNativePhone } = useNativePhoneWindow()
   const isNarrow = width < NARROW_BREAKPOINT
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
-
   const flatItems = useMemo(
     () => groups.flatMap((g) => g.items),
     [groups],
@@ -163,10 +161,10 @@ export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelP
           activeId={activeId}
           onSelect={handleSelect}
           screenWidth={width}
-          windowHeight={height}
         />
         <View collapsable={false} style={{ ...nativeSettingsPaneStyle(width), overflow: 'hidden' }}>
-          {activeItem ? activeItem.render() : (
+          {activeItem ? ( activeItem.render()
+          ) : (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 }}>
               <Text className="text-sm text-muted-foreground">
                 No settings sections available.
@@ -287,17 +285,13 @@ function NativePhoneSidebar({
   activeId,
   onSelect,
   screenWidth,
-  windowHeight,
 }: {
   groups: SettingsSectionGroup[]
   activeId: string | null
   onSelect: (id: string) => void
   screenWidth: number
-  windowHeight: number
 }) {
   const [open, setOpen] = useState(false)
-  const insets = useSafeAreaInsets()
-  const sheet = useNativePhoneSheetChrome()
   const activeItem =
     groups.flatMap((group) => group.items).find((item) => item.id === activeId) ?? null
   const ActiveIcon = activeItem?.icon
@@ -348,33 +342,12 @@ function NativePhoneSidebar({
         </View>
       </View>
 
-      <Modal
+      <NativePhoneSheet
         visible={open}
-        transparent
-        animationType="fade"
-        statusBarTranslucent
-        onRequestClose={() => setOpen(false)}
-      >
-        <View style={sheetStyles.root}>
+        onClose={() => setOpen(false)}
+        title="Settings"
+        headerLeft={
           <Pressable
-            style={[sheetStyles.backdrop, sheet.backdrop]}
-            onPress={() => setOpen(false)}
-            accessibilityLabel="Dismiss"
-            accessibilityRole="button"
-          />
-          <View
-            className="w-full rounded-t-3xl border border-border border-b-0 bg-card"
-            style={{
-              maxHeight: Math.round(windowHeight * 0.78),
-              paddingBottom: Math.max(insets.bottom, 16),
-              ...sheet.panel,
-            }}
-          >
-            <View className="items-center pt-2 pb-1">
-              <View className="h-1 w-11 rounded-full bg-muted-foreground/35" />
-            </View>
-            <View className="flex-row items-center px-4 pb-3">
-              <Pressable
                 onPress={() => setOpen(false)}
                 hitSlop={8}
                 accessibilityLabel="Close"
@@ -383,15 +356,11 @@ function NativePhoneSidebar({
               >
                 <X size={18} className="text-foreground" />
               </Pressable>
-              <Text className="flex-1 px-3 text-center text-[17px] font-semibold text-foreground">
-                Settings
-              </Text>
-              <View className="h-10 w-10" />
-            </View>
-            <ScrollView
-              style={{ maxHeight: Math.round(windowHeight * 0.62) }}
-              contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12 }}
-              keyboardShouldPersistTaps="handled"
+        }
+        scroll
+        bodyMaxHeightRatio={0.62}>
+              <View
+              style={{ paddingHorizontal: 12, paddingBottom: 12 }}
             >
               {groups.map((group) => (
                 <View key={group.id} className="mb-3">
@@ -445,11 +414,9 @@ function NativePhoneSidebar({
                   </View>
                 </View>
               ))}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-    </>
+            </View>
+        </NativePhoneSheet>
+      </>
   )
 }
 
@@ -527,7 +494,7 @@ const pickerStyles = StyleSheet.create({
   shell: {
     height: 48,
     borderRadius: 12,
-    backgroundColor: 'rgba(120,120,128,0.24)',
+    backgroundColor: NATIVE_PHONE_SYSTEM_GRAY[24],
     overflow: 'hidden',
   },
   pressable: {
@@ -544,16 +511,5 @@ const pickerStyles = StyleSheet.create({
     minWidth: 72,
     fontSize: 16,
     fontWeight: '600',
-  },
-})
-
-const sheetStyles = StyleSheet.create({
-  root: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
   },
 })

@@ -8,17 +8,15 @@
 import type { ReactNode } from 'react'
 import { createContext, useContext, useState } from 'react'
 import {
-  Modal,
   Pressable,
-  ScrollView,
-  StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { X } from 'lucide-react-native'
-import { useNativePhoneSheetChrome } from '../../lib/native-phone-layout'
+import { X } from "lucide-react-native"
+import {
+  NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO,
+  NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
+import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 
 const InsideActivitySheetContext = createContext(false)
 
@@ -37,38 +35,17 @@ export function NativeActivitySheet({
   onClose: () => void
   children: ReactNode
 }) {
-  const { height } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
-  const sheet = useNativePhoneSheetChrome()
 
   return (
-    <Modal
+    <NativePhoneSheet
       visible={visible}
-      transparent
-      animationType="fade"
-      statusBarTranslucent
-      onRequestClose={onClose}
-    >
-      <View style={styles.root}>
-        <Pressable
-          style={[styles.backdrop, sheet.backdrop]}
-          onPress={onClose}
-          accessibilityLabel="Dismiss"
-          accessibilityRole="button"
-        />
-        <View
-          className="w-full rounded-t-3xl border border-border border-b-0 bg-card"
-          style={{
-            maxHeight: Math.round(height * 0.72),
-            paddingBottom: Math.max(insets.bottom, 16),
-            ...sheet.panel,
-          }}
-        >
-          <View className="items-center pt-2 pb-1">
-            <View className="h-1 w-11 rounded-full bg-muted-foreground/35" />
-          </View>
-          <View className="flex-row items-center px-4 pb-3">
-            <Pressable
+      onClose={onClose}
+      title={title}
+      maxHeightRatio={NATIVE_PHONE_SHEET_COMPACT_RATIO}
+      bodyMaxHeightRatio={NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO}
+      scroll
+      headerLeft={
+          <Pressable
               onPress={onClose}
               hitSlop={8}
               accessibilityLabel="Close"
@@ -76,41 +53,14 @@ export function NativeActivitySheet({
               className="h-10 w-10 items-center justify-center rounded-full bg-muted"
             >
               <X size={18} className="text-foreground" />
-            </Pressable>
-            <Text
-              className="flex-1 px-3 text-center text-[17px] font-semibold text-foreground"
-              numberOfLines={2}
+            </Pressable>}
             >
-              {title}
-            </Text>
-            <View className="h-10 w-10" />
-          </View>
-          <ScrollView
-            style={{ maxHeight: Math.round(height * 0.56) }}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 12 }}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-          >
             <InsideActivitySheetContext.Provider value={true}>
               {children}
             </InsideActivitySheetContext.Provider>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
+          </NativePhoneSheet>
   )
 }
-
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-  },
-})
 
 /** Compact chat-row trigger that opens work/thought details in a sheet. */
 export function NativeWorkTrigger({

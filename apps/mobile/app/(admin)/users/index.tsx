@@ -31,7 +31,7 @@ import {
   ShieldOff,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { nativeActivePill } from '../../../lib/native-active-shadow'
+import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 import {
   AlertDialog,
   AlertDialogBackdrop,
@@ -249,44 +249,21 @@ function UsersListHeader({
           />
         </View>
 
-        <View
-          className={cn(
-            'flex-row items-center bg-muted rounded-lg p-0.5 gap-0.5',
-            isWide ? 'w-[240px]' : '',
-          )}
-        >
-          {[
+        <SegmentedFilter
+          options={[
             { value: '', label: 'All' },
             { value: 'user', label: 'Users' },
             { value: 'super_admin', label: 'Admins' },
-          ].map((role) => {
-            const pill = nativeActivePill(roleFilter === role.value)
-            return (
-            <Pressable
-              key={role.value}
-              onPress={() => {
-                setRoleFilter(role.value)
+          ]}value={roleFilter}
+          onChange={(value) => {
+                setRoleFilter(value)
                 setPage(1)
               }}
-              className={cn(
-                'flex-1 items-center py-1.5 rounded-md',
-                pill.className,
-              )}
-              style={pill.style}
-            >
-              <Text
-                className={cn(
-                  'text-xs font-medium',
-                  roleFilter === role.value ? 'text-foreground' : 'text-muted-foreground',
-                )}
+          equalWidth
+              className={isWide ? "w-[240px]" : undefined}
+        /
               >
-                {role.label}
-              </Text>
-            </Pressable>
-            )
-          })}
-        </View>
-      </View>
+              </View>
 
       {isWide && data && (
         <Text className="text-xs text-muted-foreground">

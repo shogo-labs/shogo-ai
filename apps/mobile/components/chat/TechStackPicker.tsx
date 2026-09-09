@@ -16,7 +16,7 @@
  * reflects what the runtime would seed even before the user touches it.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { View, Text, Pressable, ScrollView, useWindowDimensions } from "react-native"
+import { View, Text, Pressable, ScrollView } from "react-native"
 import { Layers, ChevronDown, Check } from "lucide-react-native"
 import {
   Popover,
@@ -26,9 +26,9 @@ import {
 import { cn } from "@shogo/shared-ui/primitives"
 import { api, createHttpClient, type TechStackSummary } from "../../lib/api"
 import { mergeTechStacks, FALLBACK_TECH_STACKS, techStackDisplayName } from "../../lib/tech-stack-catalog"
-import { useComposerPlusClose } from "./AttachSourceSheet"
+import { useComposerPlusClose } from "./ComposerPlusMenu"
 import { WebTooltip } from "./WebTooltip"
-import { isNativePhoneIntegrationsLayout } from "../../lib/native-phone-layout"
+import { useNativePhoneWindow } from "../../lib/native-phone-layout"
 
 export interface TechStackPickerProps {
   /** Currently selected stack id (e.g. "react-app"). */
@@ -42,8 +42,7 @@ export interface TechStackPickerProps {
 }
 
 export function TechStackPicker({ value, onChange, disabled, prominentMobile = false, presentation = "chip" }: TechStackPickerProps) {
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
-  const isNativePhone = isNativePhoneIntegrationsLayout(windowWidth, windowHeight)
+  const { width: windowWidth, isPhone: isNativePhone } = useNativePhoneWindow()
   const useProminentChip = prominentMobile && isNativePhone
   const triggerMaxWidth = Math.max(useProminentChip ? 90 : 84, Math.min(useProminentChip ? 124 : 128, Math.floor(windowWidth * 0.28)))
   const [open, setOpen] = useState(false)
