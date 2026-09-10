@@ -10,8 +10,14 @@ import { ChevronRight } from "lucide-react-native"
 import { ComposerModelPicker } from "./ModelPickerMenu"
 import { PHONE_DENSITY } from "../../lib/phone-density"
 import { resolveShortName } from "../../lib/visible-models"
-
-const COMPACT_MODEL_TRIGGER_MAX_WIDTH = 168
+import {
+  PLAN_READY_CHIP_CHEVRON,
+  PLAN_READY_CHIP_HEIGHT,
+  PLAN_READY_CHIP_TEXT,
+  PLAN_READY_COMPACT_CHEVRON,
+  PLAN_READY_MODEL_TRIGGER_MAX_WIDTH,
+  PLAN_READY_ROW_CHEVRON,
+} from "./plan-ready-chrome"
 
 export function PlanBuildActions({
   buildModelId,
@@ -33,13 +39,14 @@ export function PlanBuildActions({
   onViewPlan?: () => void
 }) {
   const modelName = buildModelId ? resolveShortName(buildModelId) : ""
-  const btnH = stacked ? PHONE_DENSITY.rowMin : "h-8"
+  const chipH = stacked ? PLAN_READY_CHIP_HEIGHT : "h-8"
   const labelClass = stacked
-    ? cn(PHONE_DENSITY.text.body, "font-semibold")
+    ? cn(PLAN_READY_CHIP_TEXT, "font-semibold")
     : "text-xs font-semibold"
   const mutedLabel = stacked
-    ? cn(PHONE_DENSITY.text.body, "font-medium text-foreground")
+    ? cn(PLAN_READY_CHIP_TEXT, "font-medium text-foreground")
     : "text-xs font-medium text-foreground"
+  const chevronSize = stacked ? PLAN_READY_CHIP_CHEVRON : PLAN_READY_COMPACT_CHEVRON
 
   const modelPicker =
     onBuild && buildModelId ? (
@@ -49,13 +56,16 @@ export function PlanBuildActions({
         nativeSheet={nativeSheet}
         hideCostLabels
         triggerClassName={cn(
-          "min-w-0 flex-row items-center gap-1 rounded-full bg-muted px-3",
-          stacked ? "flex-1" : null,
-          btnH,
+          "flex-row items-center gap-1 rounded-full bg-muted px-3",
+          stacked ? "self-start" : "min-w-0",
+          chipH,
         )}
-        triggerStyle={stacked ? { flexShrink: 1 } : { maxWidth: COMPACT_MODEL_TRIGGER_MAX_WIDTH, flexShrink: 1 }}
+        triggerStyle={{
+          maxWidth: PLAN_READY_MODEL_TRIGGER_MAX_WIDTH,
+          flexShrink: stacked ? 0 : 1,
+        }}
         labelClassName={mutedLabel}
-        chevronSize={stacked ? PHONE_DENSITY.icon.sm : 12}
+        chevronSize={chevronSize}
         hitSlop={8}
         label={modelName}
         sheetTitle="Build with"
@@ -71,8 +81,9 @@ export function PlanBuildActions({
         accessibilityRole="button"
         accessibilityLabel="View plan in Plans"
         className={cn(
-          "flex-row items-center gap-1 rounded-full bg-muted px-3",
-          btnH,
+          "flex-row items-center rounded-full bg-muted",
+          stacked ? "gap-0.5 self-start px-2.5" : "gap-1 px-3",
+          chipH,
         )}
       >
         <Text className={mutedLabel} numberOfLines={1}>
@@ -80,7 +91,7 @@ export function PlanBuildActions({
         </Text>
         <ChevronRight
           className="text-muted-foreground"
-          size={stacked ? PHONE_DENSITY.icon.sm : 14}
+          size={stacked ? PLAN_READY_CHIP_CHEVRON : PLAN_READY_ROW_CHEVRON}
         />
       </Pressable>
     ) : null
@@ -93,8 +104,7 @@ export function PlanBuildActions({
         accessibilityLabel="Build plan"
         className={cn(
           "flex-row items-center justify-center rounded-full bg-primary px-4",
-          stacked ? "w-full" : "gap-1.5",
-          btnH,
+          stacked ? cn("w-full", PHONE_DENSITY.rowMin) : "h-8 gap-1.5",
         )}
       >
         <Text className={cn(labelClass, "text-primary-foreground")}>Build</Text>
@@ -104,7 +114,7 @@ export function PlanBuildActions({
   if (stacked) {
     return (
       <View className="gap-3">
-        <View className="flex-row items-center gap-2">
+        <View className="flex-row flex-wrap items-center gap-2">
           {modelPicker}
           {viewPlan}
         </View>

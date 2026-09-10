@@ -136,6 +136,7 @@ import {
 import { useDockPanel } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
+import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
 import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
 import { RunningDockPanel } from "./dock/panels/RunningDockPanel"
 import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
@@ -6008,6 +6009,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             ]}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
+            <PendingPlanComposerBar />
             {questionPresentation === "sheet" && pendingQuestion ? (
               <NativeAskUserQuestionSheet
                 visible={questionSheetOpen}

@@ -11,6 +11,7 @@
 import { useMemo } from "react"
 import { ClipboardList } from "lucide-react-native"
 import { PlanCard, type PlanData } from "../../PlanCard"
+import { useIsNativePhoneLayout } from "../../../../lib/native-phone-layout"
 import { useDockPanel } from "../useDockPanel"
 import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 
@@ -36,11 +37,14 @@ export function PlanDockPanel({
   selectedModel,
   isPro = true,
 }: PlanDockPanelProps) {
+  const nativePhone = useIsNativePhoneLayout()
   const plan = pendingPlan ?? confirmedPlan
   const isConfirmed = !!confirmedPlan && !pendingPlan
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!plan) return null
+    // Native phone uses the Cursor-style Plan Ready oval above the composer,
+    // not this expanded Technical/Summary dock card.
+    if (nativePhone || !plan) return null
     return {
       id: "plan",
       kind: "status",
@@ -69,7 +73,7 @@ export function PlanDockPanel({
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary, selectedModel, isPro])
+  }, [nativePhone, plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary, selectedModel, isPro])
 
   useDockPanel(descriptor)
   return null
