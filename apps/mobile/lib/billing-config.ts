@@ -128,11 +128,19 @@ export interface WindowDisplay {
   countdown: string
   /** True when there is no window data yet. */
   empty: boolean
+  /** Spend in this window so far (shown when the plan is uncapped). */
+  usedUsd: number
 }
 
 function windowPct(window: UsageWindowView | undefined): number {
   if (!window) return 0
   return Math.round(Math.min(1, Math.max(0, window.utilization)) * 100)
+}
+
+/** Pixel fill width. Yoga treats percentage `width` as 0 in overflow-hidden cards. */
+export function usageFillPixelWidth(trackWidth: number, pct: number): number {
+  if (trackWidth <= 0 || pct <= 0) return 0
+  return Math.round((Math.min(100, Math.max(0, pct)) / 100) * trackWidth)
 }
 
 /**
@@ -160,6 +168,7 @@ export function getWindowDisplays(windows: UsageWindows | undefined): {
       atLimit: fivePct >= 100,
       countdown: fiveHour ? formatResetCountdown(fiveHour.resetsAt) : '',
       empty: !fiveHour,
+      usedUsd: fiveHour?.usedUsd ?? 0,
     },
     weekly: {
       pct: weeklyPct,
@@ -167,6 +176,7 @@ export function getWindowDisplays(windows: UsageWindows | undefined): {
       atLimit: weeklyPct >= 100,
       countdown: weekly ? formatResetCountdown(weekly.resetsAt) : '',
       empty: !weekly,
+      usedUsd: weekly?.usedUsd ?? 0,
     },
   }
 }

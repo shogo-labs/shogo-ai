@@ -20,6 +20,7 @@ import {
   getActiveWorkspaceId,
   resolveActiveWorkspaceId,
   setActiveWorkspaceId,
+  subscribeActiveWorkspaceId,
 } from '../workspace-store'
 
 beforeEach(() => {
@@ -87,5 +88,33 @@ describe('resolveActiveWorkspaceId', () => {
 
   test('returns null when the list is empty and nothing is persisted', () => {
     expect(resolveActiveWorkspaceId([])).toBeNull()
+  })
+})
+
+describe('subscribeActiveWorkspaceId', () => {
+  test('notifies after the persist so React is not updated during render', async () => {
+    const seen: Array<string | null> = []
+    const unsub = subscribeActiveWorkspaceId(() => {
+      seen.push(getActiveWorkspaceId())
+    })
+    setActiveWorkspaceId('ws-1')
+    expect(getActiveWorkspaceId()).toBe('ws-1')
+    expect(seen).toEqual([])
+    await Promise.resolve()
+    expect(seen).toEqual(['ws-1'])
+    unsub()
+  })
+
+  test('does not notify when the id is unchanged', async () => {
+    setActiveWorkspaceId('ws-1')
+    await Promise.resolve()
+    const seen: string[] = []
+    const unsub = subscribeActiveWorkspaceId(() => {
+      seen.push('ping')
+    })
+    setActiveWorkspaceId('ws-1')
+    await Promise.resolve()
+    expect(seen).toEqual([])
+    unsub()
   })
 })

@@ -41,6 +41,7 @@ mock.module("lucide-react-native", () => {
     ExternalLink: Icon("ExternalLink"),
     Key: Icon("Key"),
     LogOut: Icon("LogOut"),
+    Mail: Icon("Mail"),
     Monitor: Icon("Monitor"),
     Moon: Icon("Moon"),
     Plus: Icon("Plus"),
@@ -81,20 +82,25 @@ mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({
   EVENTS: { UPGRADE_CLICKED: "u" },
   trackEvent: () => {},
 }))
-mock.module(resolve(import.meta.dir, "../../../../lib/phone-density"), () => ({
-  densityFor: () => ({
+mock.module(resolve(import.meta.dir, "../../../../lib/phone-density"), () => {
+  const PHONE_DENSITY = {
     icon: { xs: 14, sm: 16, md: 18, lg: 20, nav: 18 },
     text: { caption: "text-xs", label: "text-sm", body: "text-base", title: "text-lg", heading: "text-xl" },
     hit: "h-11 w-11",
+    hitSize: "h-12 w-12",
     rowPad: "px-4 py-3.5",
     rowMin: "min-h-11",
-  }),
-}))
+  }
+  return {
+    PHONE_DENSITY,
+    densityFor: () => PHONE_DENSITY,
+  }
+})
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
   CompactUsageWindows: () => null,
 }))
 
-const { AccountMenu, ACCOUNT_SCREEN_HREF } = await import("../AccountMenu")
+const { AccountMenu, AccountMenuBody, ACCOUNT_SCREEN_HREF } = await import("../AccountMenu")
 
 const props = {
   user: { name: "Ashutosh" },
@@ -127,5 +133,49 @@ describe("AccountMenu phone chrome", () => {
     fireEvent.click(screen.getByRole("button", { name: /open account$/ }))
     expect(onNavigate).toHaveBeenCalledWith(ACCOUNT_SCREEN_HREF)
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull()
+  })
+})
+
+const bodyProps = {
+  ...props,
+  onNavigate: () => {},
+  onClose: () => {},
+  localMode: false,
+}
+
+describe("AccountMenuBody native grouping", () => {
+  test("groups native settings into ChatGPT-style sections", () => {
+    render(
+      <AccountMenuBody
+        {...bodyProps}
+        user={{ name: "Ashutosh", email: "ashutosh@getodin.ai" }}
+        isNative
+        isSuperAdmin
+        showBilling
+      />,
+    )
+
+    expect(screen.getByText("Account")).toBeTruthy()
+    expect(screen.getByText("Workspaces")).toBeTruthy()
+    expect(screen.getByText("Theme")).toBeTruthy()
+    expect(screen.getByText("Resources")).toBeTruthy()
+    expect(screen.getByText("More")).toBeTruthy()
+    expect(screen.getByText("Email")).toBeTruthy()
+    expect(screen.getByLabelText("Profile")).toBeTruthy()
+    expect(screen.getByLabelText("API Keys")).toBeTruthy()
+    expect(screen.getByLabelText("Appearance")).toBeTruthy()
+    expect(screen.getByLabelText("Docs")).toBeTruthy()
+    expect(screen.getByLabelText("What's New")).toBeTruthy()
+    expect(screen.getByLabelText("Sign out")).toBeTruthy()
+    expect(screen.queryByText("All workspaces")).toBeNull()
+  })
+
+  test("wide web popover stays a flat ungrouped menu", () => {
+    render(<AccountMenuBody {...bodyProps} isNative={false} />)
+
+    expect(screen.getByText("All workspaces")).toBeTruthy()
+    expect(screen.queryByText("Theme")).toBeNull()
+    expect(screen.queryByText("Resources")).toBeNull()
+    expect(screen.getByLabelText("Profile")).toBeTruthy()
   })
 })

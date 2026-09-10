@@ -5,7 +5,7 @@
  * and sign-out get a full page. Wide web still uses the AccountMenu popover.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Pressable, ScrollView, Text, View } from "react-native"
 import { useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
@@ -25,6 +25,7 @@ import { hasAdminPortalAccess } from "../../lib/admin-portal-access"
 import { nativePhoneCanvas, NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route"
+import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace"
 import { setActiveWorkspaceId } from "../../lib/workspace-store"
 
 export default observer(function AccountPage() {
@@ -41,13 +42,18 @@ export default observer(function AccountPage() {
   const http = useDomainHttp()
   const posthog = usePostHogSafe()
   const currentWorkspace = useActiveWorkspace()
-  const billingData = useBillingData(features.billing ? currentWorkspace?.id : undefined)
   const [hasAdminAccess, setHasAdminAccess] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
+  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
 
   const allWorkspaces = workspaces?.all ?? []
-  const workspacePlan = currentWorkspace?.id ? (allPlans[currentWorkspace.id] ?? null) : null
+  const displayWorkspace = useMemo(() => {
+    if (!pendingWorkspaceId) return currentWorkspace
+    return allWorkspaces.find((w: { id: string }) => w.id === pendingWorkspaceId) ?? currentWorkspace
+  }, [allWorkspaces, currentWorkspace, pendingWorkspaceId])
+  const billingData = useBillingData(features.billing ? displayWorkspace?.id : undefined)
+  const workspacePlan = displayWorkspace?.id ? (allPlans[displayWorkspace.id] ?? null) : null
 
   useEffect(() => {
     workspaces.loadAll().catch(() => undefined)
@@ -82,6 +88,12 @@ export default observer(function AccountPage() {
     }
   }, [allWorkspaces.length, features.billing, http])
 
+  useEffect(() => {
+    if (pendingWorkspaceId && currentWorkspace?.id === pendingWorkspaceId) {
+      setPendingWorkspaceId(null)
+    }
+  }, [currentWorkspace?.id, pendingWorkspaceId])
+
   const go = useCallback(
     (href: string) => {
       router.push(href as never)
@@ -96,12 +108,12 @@ export default observer(function AccountPage() {
 
   const handleSwitchWorkspace = useCallback(
     (workspaceId: string) => {
+      if (workspaceId === (pendingWorkspaceId ?? currentWorkspace?.id)) return
+      setPendingWorkspaceId(workspaceId)
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED)
-      setActiveWorkspaceId(workspaceId)
-      projects.clear()
-      projects.loadAll({ workspaceId }).catch(() => undefined)
+      scheduleWorkspaceSwitch(workspaceId, projects)
     },
-    [posthog, projects],
+    [currentWorkspace?.id, pendingWorkspaceId, posthog, projects],
   )
 
   const handleCreateWorkspace = useCallback(() => {
@@ -155,14 +167,18 @@ export default observer(function AccountPage() {
         </Pressable>
         <Text className="text-[17px] font-semibold text-foreground">Account</Text>
       </View>
-      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+      <ScrollView
+        className="flex-1"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+      >
         <AccountMenuBody
           user={user}
           onSignOut={handleSignOut}
           onNavigate={go}
           isSuperAdmin={hasAdminAccess}
           workspaces={allWorkspaces}
-          currentWorkspace={currentWorkspace}
+          currentWorkspace={displayWorkspace}
           billingData={billingData}
           workspacePlan={workspacePlan}
           allPlans={allPlans}

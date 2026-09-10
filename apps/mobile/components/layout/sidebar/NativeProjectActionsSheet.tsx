@@ -4,7 +4,11 @@
 import { Pin, PinOff, Pencil, Trash2 } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
 import type { ReactNode } from "react";
+import { cn } from "@shogo/shared-ui/primitives";
+import { PHONE_DENSITY } from "../../../lib/phone-density";
 import { NativePhoneSheet } from "../../phone/NativePhoneSheet";
+
+const ACTION_ICON_SIZE = PHONE_DENSITY.icon.lg;
 
 interface NativeProjectActionsSheetProps {
   visible: boolean;
@@ -32,13 +36,17 @@ function ActionRow({
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      className="min-h-12 flex-row items-center gap-3 rounded-xl px-4 active:bg-muted"
+      className={cn(
+        "flex-row items-center gap-3.5 rounded-xl px-4 py-3.5 active:bg-muted",
+        PHONE_DENSITY.rowMin,
+      )}
     >
       {icon}
       <Text
-        className={
-          danger ? "text-base text-destructive" : "text-base text-foreground"
-        }
+        className={cn(
+          PHONE_DENSITY.text.body,
+          danger ? "text-destructive" : "text-foreground",
+        )}
       >
         {label}
       </Text>
@@ -65,23 +73,36 @@ export function NativeProjectActionsSheet({
       visible={visible}
       onClose={onClose}
       title="Project actions"
-      subtitle={projectName}
       animationType="slide"
       testID="native-project-actions-sheet"
     >
-      <View className="gap-1 px-2 pb-2">
+      <View
+        accessibilityLabel={`Project actions for ${projectName}`}
+        className="gap-1 px-2 pb-3"
+      >
         <ActionRow
           label="Rename"
-          icon={<Pencil size={20} className="text-muted-foreground" />}
+          icon={
+            <Pencil
+              size={ACTION_ICON_SIZE}
+              className="text-muted-foreground"
+            />
+          }
           onPress={() => runAction(onRename)}
         />
         <ActionRow
           label={isPinned ? "Unpin project" : "Pin project"}
           icon={
             isPinned ? (
-              <PinOff size={20} className="text-muted-foreground" />
+              <PinOff
+                size={ACTION_ICON_SIZE}
+                className="text-muted-foreground"
+              />
             ) : (
-              <Pin size={20} className="text-muted-foreground" />
+              <Pin
+                size={ACTION_ICON_SIZE}
+                className="text-muted-foreground"
+              />
             )
           }
           onPress={() => runAction(onTogglePin)}
@@ -89,7 +110,9 @@ export function NativeProjectActionsSheet({
         <View className="my-1 h-px bg-border" />
         <ActionRow
           label="Delete project"
-          icon={<Trash2 size={20} className="text-destructive" />}
+          icon={
+            <Trash2 size={ACTION_ICON_SIZE} className="text-destructive" />
+          }
           danger
           onPress={() => runAction(onDelete)}
         />

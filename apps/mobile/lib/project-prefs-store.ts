@@ -27,6 +27,14 @@ export interface ProjectFilter {
 
 export const DEFAULT_PROJECT_FILTER: ProjectFilter = { sort: 'recent', scope: 'all' }
 
+/** Native phone has no filter UI; web keeps the stored sort/scope. */
+export function effectiveSidebarProjectFilter(
+  stored: ProjectFilter,
+  platformOS: string = Platform.OS,
+): ProjectFilter {
+  return platformOS === 'web' ? stored : { ...DEFAULT_PROJECT_FILTER }
+}
+
 const isWeb = Platform.OS === 'web' && typeof window !== 'undefined'
 
 // Native session fallbacks (safe-storage already falls back to memory on web).
