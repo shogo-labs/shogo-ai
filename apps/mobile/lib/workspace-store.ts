@@ -6,6 +6,27 @@ import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 const STORAGE_KEY = 'shogo:active-workspace-id'
 
 let nativeActiveWorkspaceId: string | null = null
+const listeners = new Set<() => void>()
+
+export function subscribeActiveWorkspaceId(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+function emitActiveWorkspaceId(): void {
+  for (const listener of [...listeners]) listener()
+}
+
+function persistActiveWorkspaceId(id: string | null): void {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    nativeActiveWorkspaceId = id
+    return
+  }
+  if (id == null) safeRemoveItem(STORAGE_KEY)
+  else safeSetItem(STORAGE_KEY, id)
+}
 
 export function getActiveWorkspaceId(): string | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') {
@@ -15,11 +36,10 @@ export function getActiveWorkspaceId(): string | null {
 }
 
 export function setActiveWorkspaceId(id: string): void {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    nativeActiveWorkspaceId = id
-    return
-  }
-  safeSetItem(STORAGE_KEY, id)
+  if (getActiveWorkspaceId() === id) return
+  persistActiveWorkspaceId(id)
+  // `resolveActiveWorkspaceId` may persist a fallback during render.
+  queueMicrotask(emitActiveWorkspaceId)
 }
 
 /**
@@ -35,11 +55,9 @@ export function setActiveWorkspaceId(id: string): void {
  * against the same stale-id class of bug.
  */
 export function clearActiveWorkspaceId(): void {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    nativeActiveWorkspaceId = null
-    return
-  }
-  safeRemoveItem(STORAGE_KEY)
+  if (getActiveWorkspaceId() == null) return
+  persistActiveWorkspaceId(null)
+  queueMicrotask(emitActiveWorkspaceId)
 }
 
 /**

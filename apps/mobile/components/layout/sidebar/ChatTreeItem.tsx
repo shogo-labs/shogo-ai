@@ -196,7 +196,7 @@ export function ChatTreeItem({
             className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
             accessibilityLabel="Chat has new activity"
           />
-        ) : session.isPinned ? (
+        ) : session.isPinned && !isNative ? (
           <Pin
             size={isNative ? density.icon.sm : 10}
             className="text-muted-foreground shrink-0"
@@ -214,6 +214,7 @@ export function ChatTreeItem({
         {/* Hover-reveal actions (web). Always mounted; visibility is purely
           CSS-driven via the row's `group` + `group-hover:flex` so moving the
           cursor between icons never tears down the hover target. */}
+        {!isNative && (
         <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
           <Pressable
             onPress={(e) => {
@@ -258,6 +259,7 @@ export function ChatTreeItem({
             <Pencil size={11} className="text-muted-foreground" />
           </Pressable>
         </View>
+        )}
       </Pressable>
       {menu && (
         <SidebarContextMenu

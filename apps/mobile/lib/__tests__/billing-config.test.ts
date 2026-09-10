@@ -28,6 +28,8 @@ import {
   formatCurrencyPrice,
   getPlanDisplayName,
   getUsageLimitNotice,
+  getWindowDisplays,
+  usageFillPixelWidth,
 } from '../billing-config'
 
 describe('getWindowLimitsForPlan', () => {
@@ -321,5 +323,68 @@ describe('getUsageLimitNotice', () => {
     expect(notice?.tone).toBe('expired')
     expect(notice?.text).toMatch(/expired/i)
     expect(notice?.text).not.toMatch(/billed as overage/i)
+  })
+})
+
+describe('getWindowDisplays', () => {
+  test('reports percent fill and spend for a capped window', () => {
+    const { fiveHour, weekly } = getWindowDisplays({
+      fiveHour: {
+        kind: 'five_hour',
+        usedUsd: 0.1,
+        limitUsd: 0.2,
+        utilization: 0.5,
+        resetsAt: null,
+      },
+      weekly: {
+        kind: 'weekly',
+        usedUsd: 0.25,
+        limitUsd: 0.5,
+        utilization: 0.5,
+        resetsAt: null,
+      },
+    })
+    expect(fiveHour.pct).toBe(50)
+    expect(fiveHour.uncapped).toBe(false)
+    expect(fiveHour.usedUsd).toBe(0.1)
+    expect(weekly.pct).toBe(50)
+    expect(weekly.usedUsd).toBe(0.25)
+  })
+
+  test('keeps spend for uncapped enterprise windows', () => {
+    const { fiveHour } = getWindowDisplays({
+      fiveHour: {
+        kind: 'five_hour',
+        usedUsd: 1.25,
+        limitUsd: null,
+        utilization: 0,
+        resetsAt: null,
+      },
+      weekly: {
+        kind: 'weekly',
+        usedUsd: 4,
+        limitUsd: null,
+        utilization: 0,
+        resetsAt: null,
+      },
+    })
+    expect(fiveHour.uncapped).toBe(true)
+    expect(fiveHour.pct).toBe(0)
+    expect(fiveHour.usedUsd).toBe(1.25)
+  })
+})
+
+describe('usageFillPixelWidth', () => {
+  test('maps percent onto the measured track', () => {
+    expect(usageFillPixelWidth(200, 50)).toBe(100)
+    expect(usageFillPixelWidth(200, 100)).toBe(200)
+  })
+
+  test('returns no fill until the track has a pixel width', () => {
+    expect(usageFillPixelWidth(0, 80)).toBe(0)
+  })
+
+  test('returns no fill at zero utilization', () => {
+    expect(usageFillPixelWidth(200, 0)).toBe(0)
   })
 })

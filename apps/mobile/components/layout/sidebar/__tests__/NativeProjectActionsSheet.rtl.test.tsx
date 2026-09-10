@@ -30,6 +30,10 @@ mock.module("react-native", () =>
   }),
 );
 
+mock.module("@shogo/shared-ui/primitives", () => ({
+  cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
+}));
+
 mock.module(
   resolve(import.meta.dir, "../../../phone/NativePhoneSheet"),
   () => ({
@@ -47,7 +51,7 @@ mock.module(
       visible ? (
         <div data-testid="sheet">
           <h1>{title}</h1>
-          <span>{subtitle}</span>
+          {subtitle ? <span>{subtitle}</span> : null}
           {children}
         </div>
       ) : null,
@@ -75,7 +79,7 @@ describe("NativeProjectActionsSheet", () => {
     );
 
     expect(screen.getByText("Project actions")).toBeTruthy();
-    expect(screen.getByText("Website redesign")).toBeTruthy();
+    expect(screen.queryByText("Website redesign")).toBeNull();
     expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
     expect(screen.getByRole("button", { name: "Pin project" })).toBeTruthy();
 

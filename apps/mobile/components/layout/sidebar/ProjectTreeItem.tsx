@@ -609,15 +609,17 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               />
             ) : null}
           </Pressable>
-          {/* Persistent pin glyph when pinned (hidden while hovering so the
-              hover actions can take its place). */}
-          {isPinned && (
+          {/* Persistent pin glyph when pinned (web). Hidden on native — the
+              Pinned section already groups these rows, and hover-reveal
+              actions do not exist on phone. */}
+          {isPinned && !isNative && (
             <View className="group-hover:hidden pr-1 shrink-0">
               <Pin size={10} className="text-muted-foreground" />
             </View>
           )}
           {/* Hover-reveal actions (web). Siblings of the project Pressable, so
               tapping one never triggers the project-open press. */}
+          {!isNative && (
           <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
             <Pressable
               onPress={handleCreateChat}
@@ -642,6 +644,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               )}
             </Pressable>
           </View>
+          )}
         </View>
       )}
       {expanded &&

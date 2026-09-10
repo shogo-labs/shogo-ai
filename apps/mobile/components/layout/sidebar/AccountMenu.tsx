@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useState, type ElementType } from "react";
+import { useCallback, useState, type ElementType, type ReactNode } from "react";
 import {
   Linking,
   Platform,
@@ -17,6 +17,7 @@ import {
   ExternalLink,
   Key,
   LogOut,
+  Mail,
   Monitor,
   Moon,
   Plus,
@@ -43,8 +44,25 @@ import { usePlatformConfig } from "../../../lib/platform-config";
 import { getPlanDisplayName } from "../../../lib/billing-config";
 import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
-import { densityFor } from "../../../lib/phone-density";
+import { densityFor, PHONE_DENSITY } from "../../../lib/phone-density";
 import { isNativePlatform } from "../../../lib/native-phone-layout";
+import {
+  AccountSettingsGroup,
+  AccountSettingsRow,
+} from "./AccountSettingsGroup";
+
+const DOCS_URL = "https://docs.shogo.ai/";
+const CHANGELOG_URL = "https://docs.shogo.ai/changelog";
+
+const THEME_CHOICES = [
+  { value: "light" as const, label: "Light", Icon: Sun },
+  { value: "dark" as const, label: "Dark", Icon: Moon },
+  { value: "system" as const, label: "System", Icon: Monitor },
+];
+
+function themeDisplayName(theme: string): string {
+  return THEME_CHOICES.find((choice) => choice.value === theme)?.label ?? "System";
+}
 
 /** Phone/narrow web Account screen. Wide web keeps the AccountMenu popover. */
 export const ACCOUNT_SCREEN_HREF = "/(app)/account";
@@ -138,13 +156,7 @@ export function UserMenuContent({
             accessibilityLabel="Theme options"
             className={cn("pr-4 py-1", isNative ? "pl-12" : "pl-11")}
           >
-            {(
-              [
-                { value: "light" as const, label: "Light", Icon: Sun },
-                { value: "dark" as const, label: "Dark", Icon: Moon },
-                { value: "system" as const, label: "System", Icon: Monitor },
-              ] as const
-            ).map(({ value, label, Icon }) => (
+            {THEME_CHOICES.map(({ value, label, Icon }) => (
               <Pressable
                 key={value}
                 onPress={() => setTheme(value)}
@@ -250,7 +262,9 @@ export interface WorkspaceMenuSectionProps {
   onCreateWorkspace: () => void;
   localMode?: boolean;
   onClose: () => void;
-  isNative?: boolean;
+  includePlan?: boolean;
+  /** Native Account group rows (Profile, API Keys) rendered with Usage. */
+  accountItems?: ReactNode;
 }
 
 export function WorkspaceMenuSection({
@@ -266,6 +280,8 @@ export function WorkspaceMenuSection({
   localMode,
   onClose,
   isNative = false,
+  includePlan = true,
+  accountItems,
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
@@ -279,57 +295,74 @@ export function WorkspaceMenuSection({
     resolvedPlanId !== "free" ? resolvedPlanId : undefined,
   );
 
-  return (
+  const identity = currentWorkspace ? (
     <>
-      {currentWorkspace && (
-        <View className={cn("px-4", isNative ? "py-4" : "py-3")}>
-          <View className="flex-row items-start gap-3">
-            <View
+      <View className={cn("px-4", isNative ? "py-4" : "py-3")}>
+        <View className="flex-row items-start gap-3">
+          <View
+            className={cn(
+              "rounded-lg bg-primary/10 items-center justify-center",
+              isNative ? density.hitSize : "h-10 w-10",
+            )}
+          >
+            <Text
               className={cn(
-                "rounded-lg bg-primary/10 items-center justify-center",
-                isNative ? density.hitSize : "h-10 w-10",
+                "font-medium text-primary",
+                isNative ? density.text.body : "text-sm",
               )}
             >
-              <Text
-                className={cn(
-                  "font-medium text-primary",
-                  isNative ? density.text.body : "text-sm",
-                )}
-              >
-                {wsInitial}
-              </Text>
-            </View>
-            <View className="flex-1 min-w-0">
-              <Text
-                className={cn(
-                  "font-medium text-foreground",
-                  density.text.title,
-                )}
-                numberOfLines={1}
-              >
-                {currentWorkspace.name}
-              </Text>
-              {showBilling && (
-                <Text
-                  className={cn(
-                    "text-muted-foreground",
-                    density.text.label,
-                    "mt-0.5",
-                  )}
-                >
-                  {planType} Plan {"\u00B7"} 1 member
-                </Text>
+              {wsInitial}
+            </Text>
+          </View>
+          <View className="flex-1 min-w-0">
+            <Text
+              className={cn(
+                "font-medium text-foreground",
+                density.text.title,
               )}
-            </View>
+              numberOfLines={1}
+            >
+              {currentWorkspace.name}
+            </Text>
+            {showBilling && (
+              <Text
+                className={cn(
+                  "text-muted-foreground",
+                  density.text.label,
+                  "mt-0.5",
+                )}
+              >
+                {planType} Plan {"\u00B7"} 1 member
+              </Text>
+            )}
           </View>
         </View>
-      )}
-
-      {currentWorkspace && (
-        <View className="px-3 pb-2 flex-row gap-2">
+      </View>
+      <View className={cn("flex-row gap-2 px-3", isNative ? "pb-4" : "pb-2")}>
+        <Pressable
+          onPress={() => {
+            onNavigate("/(app)/settings");
+            onClose();
+          }}
+          className={cn(
+            "flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted",
+            isNative ? "h-10" : "h-8",
+          )}
+        >
+          <Settings
+            size={isNative ? 16 : 14}
+            className="text-muted-foreground"
+          />
+          <Text
+            className={cn("text-foreground", isNative ? "text-sm" : "text-xs")}
+          >
+            Settings
+          </Text>
+        </Pressable>
+        {!localMode && (
           <Pressable
             onPress={() => {
-              onNavigate("/(app)/settings");
+              onNavigate("/(app)/settings?tab=people");
               onClose();
             }}
             className={cn(
@@ -337,7 +370,7 @@ export function WorkspaceMenuSection({
               isNative ? "h-10" : "h-8",
             )}
           >
-            <Settings
+            <Users
               size={isNative ? 16 : 14}
               className="text-muted-foreground"
             />
@@ -347,63 +380,37 @@ export function WorkspaceMenuSection({
                 isNative ? "text-sm" : "text-xs",
               )}
             >
-              Settings
+              Invite
             </Text>
           </Pressable>
-          {!localMode && (
-            <Pressable
-              onPress={() => {
-                onNavigate("/(app)/settings?tab=people");
-                onClose();
-              }}
-              className={cn(
-                "flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted",
-                isNative ? "h-10" : "h-8",
-              )}
-            >
-              <Users
-                size={isNative ? 16 : 14}
-                className="text-muted-foreground"
-              />
-              <Text
-                className={cn(
-                  "text-foreground",
-                  isNative ? "text-sm" : "text-xs",
-                )}
-              >
-                Invite
-              </Text>
-            </Pressable>
-          )}
-        </View>
-      )}
+        )}
+      </View>
+    </>
+  ) : null;
 
-      {showBilling && currentWorkspace && (
-        <>
-          <View className="h-px bg-border" />
-          <View className={cn("px-4 gap-2", isNative ? "py-3.5" : "py-3")}>
-            <Text className={cn("text-muted-foreground", density.text.body)}>
-              Usage
-            </Text>
-            <CompactUsageWindows
-              windows={billingData.usageWindows}
-              overage={
-                billingData.effectiveBalance
-                  ? {
-                      enabled: billingData.effectiveBalance.overageEnabled,
-                      active: billingData.effectiveBalance.overageActive,
-                      accumulatedUsd:
-                        billingData.effectiveBalance.overageAccumulatedUsd,
-                    }
-                  : undefined
-              }
-              comfortable={isNative}
-            />
-          </View>
-        </>
-      )}
-
-      {showBilling && currentWorkspace && planType === "Free" && (
+  const plan = includePlan && showBilling && currentWorkspace ? (
+    <>
+      {!isNative && <View className="h-px bg-border" />}
+      <View className={cn("px-4 gap-2", isNative ? "py-3.5" : "py-3")}>
+        <Text className={cn("text-muted-foreground", density.text.body)}>
+          Usage
+        </Text>
+        <CompactUsageWindows
+          windows={billingData.usageWindows}
+          overage={
+            billingData.effectiveBalance
+              ? {
+                  enabled: billingData.effectiveBalance.overageEnabled,
+                  active: billingData.effectiveBalance.overageActive,
+                  accumulatedUsd:
+                    billingData.effectiveBalance.overageAccumulatedUsd,
+                }
+              : undefined
+          }
+          comfortable={isNative}
+        />
+      </View>
+      {planType === "Free" && (
         <View className="px-3 py-2">
           <Pressable
             onPress={() => {
@@ -434,9 +441,127 @@ export function WorkspaceMenuSection({
           </Pressable>
         </View>
       )}
+    </>
+  ) : null;
 
+  const workspaceRows = (
+    <>
+      {workspaces.map((ws: any, index: number) => {
+        const isCurrent = ws.id === currentWorkspace?.id;
+        const isLast = index === workspaces.length - 1 && localMode;
+        return (
+          <Pressable
+            key={ws.id}
+            onPress={() => {
+              if (!isCurrent) {
+                onSwitchWorkspace(ws.id);
+              }
+              onClose();
+            }}
+            className={cn(
+              "flex-row items-center gap-2 px-4 active:bg-muted",
+              isNative ? "py-3.5" : "py-2",
+              isNative && !isLast && "border-b border-border",
+            )}
+          >
+            <View
+              className={cn(
+                "rounded bg-primary/10 items-center justify-center",
+                isNative ? "h-7 w-7" : "h-6 w-6",
+              )}
+            >
+              <Text
+                className={cn("font-medium text-primary", density.text.caption)}
+              >
+                {ws.name?.[0]?.toUpperCase() ?? "W"}
+              </Text>
+            </View>
+            <Text
+              className={cn("text-foreground flex-1", density.text.body)}
+              numberOfLines={1}
+            >
+              {ws.name}
+            </Text>
+            {showBilling &&
+              (() => {
+                const wsPlanId =
+                  (allPlans[ws.id]?.planId ??
+                    (ws.id === currentWorkspace?.id &&
+                      billingData.subscription?.planId)) ||
+                  "free";
+                const isPaid = wsPlanId !== "free";
+                const label = isPaid
+                  ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
+                  : "Free";
+                return (
+                  <View
+                    className={cn(
+                      "rounded px-1.5 py-0.5",
+                      isPaid ? "bg-primary/10" : "bg-muted",
+                    )}
+                  >
+                    <Text
+                      className={cn(
+                        density.text.caption,
+                        isPaid
+                          ? "text-primary font-medium"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {label}
+                    </Text>
+                  </View>
+                );
+              })()}
+            {isCurrent && <Check size={16} className="text-primary" />}
+          </Pressable>
+        );
+      })}
+      {!localMode && (
+        <Pressable
+          onPress={() => {
+            onClose();
+            onCreateWorkspace();
+          }}
+          className={cn(
+            "flex-row items-center gap-2 px-4 active:bg-muted",
+            isNative ? "py-3.5" : "py-2",
+            !isNative && "rounded-md",
+          )}
+        >
+          <Plus size={isNative ? 18 : 16} className="text-muted-foreground" />
+          <Text className={cn("text-foreground", density.text.body)}>
+            Create new workspace
+          </Text>
+        </Pressable>
+      )}
+    </>
+  );
+
+  if (isNative) {
+    return (
+      <>
+        {identity ? (
+          <AccountSettingsGroup className="mt-2">{identity}</AccountSettingsGroup>
+        ) : null}
+        {plan || accountItems ? (
+          <AccountSettingsGroup title="Account">
+            {accountItems}
+            {plan}
+          </AccountSettingsGroup>
+        ) : null}
+        <AccountSettingsGroup title="Workspaces">
+          {workspaceRows}
+        </AccountSettingsGroup>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {identity}
+      {plan}
       <View className="h-px bg-border" />
-
       <View className="py-1">
         <Text
           className={cn(
@@ -446,96 +571,7 @@ export function WorkspaceMenuSection({
         >
           All workspaces
         </Text>
-        {workspaces.map((ws: any) => {
-          const isCurrent = ws.id === currentWorkspace?.id;
-          return (
-            <Pressable
-              key={ws.id}
-              onPress={() => {
-                if (!isCurrent) {
-                  onSwitchWorkspace(ws.id);
-                }
-                onClose();
-              }}
-              className={cn(
-                "flex-row items-center gap-2 px-4 active:bg-muted",
-                isNative ? "py-2.5" : "py-2",
-              )}
-            >
-              <View
-                className={cn(
-                  "rounded bg-primary/10 items-center justify-center",
-                  isNative ? "h-7 w-7" : "h-6 w-6",
-                )}
-              >
-                <Text
-                  className={cn(
-                    "font-medium text-primary",
-                    density.text.caption,
-                  )}
-                >
-                  {ws.name?.[0]?.toUpperCase() ?? "W"}
-                </Text>
-              </View>
-              <Text
-                className={cn("text-foreground flex-1", density.text.body)}
-                numberOfLines={1}
-              >
-                {ws.name}
-              </Text>
-              {showBilling &&
-                (() => {
-                  const wsPlanId =
-                    (allPlans[ws.id]?.planId ??
-                      (ws.id === currentWorkspace?.id &&
-                        billingData.subscription?.planId)) ||
-                    "free";
-                  const isPaid = wsPlanId !== "free";
-                  const label = isPaid
-                    ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
-                    : "Free";
-                  return (
-                    <View
-                      className={cn(
-                        "rounded px-1.5 py-0.5",
-                        isPaid ? "bg-primary/10" : "bg-muted",
-                      )}
-                    >
-                      <Text
-                        className={cn(
-                          density.text.caption,
-                          isPaid
-                            ? "text-primary font-medium"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {label}
-                      </Text>
-                    </View>
-                  );
-                })()}
-              {isCurrent && <Check size={16} className="text-primary" />}
-            </Pressable>
-          );
-        })}
-
-        {!localMode && (
-          <Pressable
-            onPress={() => {
-              onClose();
-              onCreateWorkspace();
-            }}
-            className={cn(
-              "flex-row items-center gap-2 px-4 rounded-md active:bg-muted",
-              isNative ? "py-2.5" : "py-2",
-            )}
-          >
-            <Plus size={isNative ? 18 : 16} className="text-muted-foreground" />
-            <Text className={cn("text-foreground", density.text.body)}>
-              Create new workspace
-            </Text>
-          </Pressable>
-        )}
+        {workspaceRows}
       </View>
     </>
   );
@@ -587,7 +623,7 @@ export function AccountNavLinks({
       ))}
       <Pressable
         onPress={() => {
-          Linking.openURL("https://docs.shogo.ai/");
+          Linking.openURL(DOCS_URL);
           onClose();
         }}
         role="menuitem"
@@ -604,7 +640,7 @@ export function AccountNavLinks({
       </Pressable>
       <Pressable
         onPress={() => {
-          Linking.openURL("https://docs.shogo.ai/changelog");
+          Linking.openURL(CHANGELOG_URL);
           onClose();
         }}
         role="menuitem"
@@ -785,6 +821,210 @@ export function AccountMenu({
   );
 }
 
+function NativeAccountPersonalGroups({
+  onSignOut,
+  onNavigate,
+  isSuperAdmin,
+  localMode,
+  onClose,
+}: {
+  onSignOut: () => void;
+  onNavigate: (href: string) => void;
+  isSuperAdmin?: boolean;
+  localMode?: boolean;
+  onClose: () => void;
+}) {
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const { shogoKeyConnected } = usePlatformConfig();
+  const showCreator = !localMode || !!shogoKeyConnected;
+  const density = PHONE_DENSITY;
+  const iconClass = "text-muted-foreground";
+  const iconSize = density.icon.lg;
+
+  return (
+    <>
+      <AccountSettingsGroup title="Theme">
+        <AccountSettingsRow
+          icon={<Monitor size={iconSize} className={iconClass} />}
+          label="Appearance"
+          accessibilityState={{ expanded: appearanceOpen }}
+          trailing={
+            <Text className={cn("text-muted-foreground", density.text.body)}>
+              {themeDisplayName(theme)}
+            </Text>
+          }
+          showChevron={!appearanceOpen}
+          separator={appearanceOpen}
+          onPress={() => setAppearanceOpen((open) => !open)}
+        />
+        {appearanceOpen
+          ? THEME_CHOICES.map(({ value, label, Icon }, index) => (
+              <Pressable
+                key={value}
+                onPress={() => setTheme(value)}
+                accessibilityRole="radio"
+                accessibilityLabel={label}
+                accessibilityState={{ checked: theme === value }}
+                className={cn(
+                  "flex-row items-center gap-3 px-4 py-3.5 active:bg-muted/60",
+                  density.rowMin,
+                  index < THEME_CHOICES.length - 1 && "border-b border-border",
+                )}
+              >
+                <Icon
+                  size={density.icon.md}
+                  className={
+                    theme === value ? "text-primary" : "text-muted-foreground"
+                  }
+                />
+                <Text
+                  className={cn(
+                    "flex-1",
+                    density.text.body,
+                    theme === value
+                      ? "text-primary font-medium"
+                      : "text-foreground",
+                  )}
+                >
+                  {label}
+                </Text>
+                {theme === value && (
+                  <Check size={density.icon.md} className="text-primary" />
+                )}
+              </Pressable>
+            ))
+          : null}
+      </AccountSettingsGroup>
+
+      <AccountSettingsGroup title="Resources">
+        <AccountSettingsRow
+          icon={<ExternalLink size={iconSize} className={iconClass} />}
+          label="Docs"
+          onPress={() => {
+            Linking.openURL(DOCS_URL);
+            onClose();
+          }}
+        />
+        <AccountSettingsRow
+          icon={<Sparkles size={iconSize} className={iconClass} />}
+          label="What's New"
+          separator={false}
+          onPress={() => {
+            Linking.openURL(CHANGELOG_URL);
+            onClose();
+          }}
+        />
+      </AccountSettingsGroup>
+
+      {(showCreator || isSuperAdmin) && (
+        <AccountSettingsGroup title="More">
+          {showCreator && (
+            <AccountSettingsRow
+              icon={<Store size={iconSize} className={iconClass} />}
+              label="Creator"
+              separator={!!isSuperAdmin}
+              onPress={() => {
+                onNavigate("/(app)/creator");
+                onClose();
+              }}
+            />
+          )}
+          {isSuperAdmin && (
+            <AccountSettingsRow
+              icon={<Shield size={iconSize} className="text-primary" />}
+              label="Admin"
+              accessibilityLabel="Admin panel"
+              separator={false}
+              onPress={() => {
+                onNavigate("/(admin)");
+                onClose();
+              }}
+            />
+          )}
+        </AccountSettingsGroup>
+      )}
+
+      {!localMode && (
+        <View className="mb-6">
+          <AccountSettingsGroup>
+            <AccountSettingsRow
+              icon={<LogOut size={iconSize} className={iconClass} />}
+              label="Sign Out"
+              accessibilityLabel="Sign out"
+              showChevron={false}
+              separator={false}
+              onPress={() => {
+                onSignOut();
+                onClose();
+              }}
+            />
+          </AccountSettingsGroup>
+        </View>
+      )}
+    </>
+  );
+}
+
+function NativeAccountItems({
+  user,
+  onNavigate,
+  onClose,
+  localMode,
+  showBilling,
+}: {
+  user: UserMenuProps["user"];
+  onNavigate: (href: string) => void;
+  onClose: () => void;
+  localMode?: boolean;
+  showBilling: boolean;
+}) {
+  const density = PHONE_DENSITY;
+  const iconSize = density.icon.lg;
+  const showKeys = !localMode;
+  const muted = "text-muted-foreground";
+  return (
+    <>
+      {user?.email ? (
+        <AccountSettingsRow
+          icon={<Mail size={iconSize} className={muted} />}
+          label="Email"
+          trailing={
+            <Text
+              className={cn("max-w-[52%] text-right text-muted-foreground", density.text.body)}
+              numberOfLines={1}
+            >
+              {user.email}
+            </Text>
+          }
+          showChevron={false}
+          separator
+        />
+      ) : null}
+      <AccountSettingsRow
+        icon={<User size={iconSize} className={muted} />}
+        label="Profile"
+        separator={showKeys || showBilling}
+        onPress={() => {
+          onNavigate("/(app)/profile");
+          onClose();
+        }}
+      />
+      {showKeys ? (
+        <AccountSettingsRow
+          icon={<Key size={iconSize} className={muted} />}
+          label="API Keys"
+          separator={showBilling}
+          onPress={() => {
+            onNavigate("/(app)/api-keys");
+            onClose();
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
 export function AccountMenuBody({
   user,
   onSignOut,
@@ -802,6 +1042,43 @@ export function AccountMenuBody({
   onClose,
   isNative = false,
 }: AccountMenuProps & { onClose: () => void; isNative?: boolean }) {
+  if (isNative) {
+    return (
+      <>
+        <WorkspaceMenuSection
+          workspaces={workspaces}
+          currentWorkspace={currentWorkspace}
+          billingData={billingData}
+          workspacePlan={workspacePlan}
+          allPlans={allPlans}
+          showBilling={showBilling}
+          onNavigate={onNavigate}
+          onSwitchWorkspace={onSwitchWorkspace}
+          onCreateWorkspace={onCreateWorkspace}
+          localMode={localMode}
+          onClose={onClose}
+          isNative
+          accountItems={
+            <NativeAccountItems
+              user={user}
+              onNavigate={onNavigate}
+              onClose={onClose}
+              localMode={localMode}
+              showBilling={showBilling}
+            />
+          }
+        />
+        <NativeAccountPersonalGroups
+          onSignOut={onSignOut}
+          onNavigate={onNavigate}
+          isSuperAdmin={isSuperAdmin}
+          localMode={localMode}
+          onClose={onClose}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <WorkspaceMenuSection
@@ -816,14 +1093,14 @@ export function AccountMenuBody({
         onCreateWorkspace={onCreateWorkspace}
         localMode={localMode}
         onClose={onClose}
-        isNative={isNative}
+        isNative={false}
       />
       <View className="h-px bg-border" />
       <AccountNavLinks
         localMode={localMode}
         onNavigate={onNavigate}
         onClose={onClose}
-        isNative={isNative}
+        isNative={false}
       />
       <View className="h-px bg-border" />
       <UserMenuContent
@@ -832,7 +1109,7 @@ export function AccountMenuBody({
         onNavigate={onNavigate}
         isSuperAdmin={isSuperAdmin}
         onClose={onClose}
-        isNative={isNative}
+        isNative={false}
       />
     </>
   );

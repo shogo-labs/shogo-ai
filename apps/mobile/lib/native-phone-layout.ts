@@ -76,8 +76,9 @@ export const NATIVE_PHONE_CARD_GAP = 12
 export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
 /**
  * Dark home only: the old charcoal wash, not OLED black. Search, files, and
- * other screens keep `NATIVE_PHONE_CANVAS.dark`. The drawer still lifts this
- * to `NATIVE_DRAWER_SHEET_OPEN_CANVAS` when the sidebar opens.
+ * other screens keep `NATIVE_PHONE_CANVAS.dark`. The drawer lifts *home*
+ * to `NATIVE_DRAWER_SHEET_OPEN_CANVAS` when the sidebar opens; Settings and
+ * other pages stay on the closed canvas.
  */
 export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
 

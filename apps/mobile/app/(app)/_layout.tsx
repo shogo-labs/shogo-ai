@@ -156,6 +156,8 @@ export default function AppLayout() {
     isDark,
     swipeEnabled: nativeDrawerSwipe,
     closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
+    // Home lifts to grey; Settings and other pages keep the closed canvas.
+    openCanvas: isHomePage ? undefined : nativeDrawerCanvas,
   });
   const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
 

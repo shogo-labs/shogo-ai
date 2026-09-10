@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   nativeDrawerPanelWidth,
   nativeDrawerProgressFromDelta,
+  nativeDrawerShouldCaptureSwipe,
   nativeDrawerShouldSettleOpen,
   nativeDrawerTopInset,
   nativeDrawerSideInset,
@@ -20,6 +21,30 @@ import {
   NATIVE_DRAWER_MIN_FOOTER_INSET,
 } from '../use-native-drawer-swipe'
 import { NATIVE_PHONE_CANVAS, NATIVE_PHONE_HOME_CANVAS } from '../native-phone-layout'
+
+describe('nativeDrawerShouldCaptureSwipe', () => {
+  test('opens from a right-swipe anywhere on the closed sheet', () => {
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: false, dx: 8, dy: 1 })).toBe(true)
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: false, dx: 24, dy: 4 })).toBe(true)
+  })
+
+  test('ignores vertical-dominant or leftward moves while closed', () => {
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: false, dx: 4, dy: 12 })).toBe(false)
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: false, dx: 5, dy: 0 })).toBe(false)
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: false, dx: -12, dy: 0 })).toBe(false)
+  })
+
+  test('closes from a left-swipe while open', () => {
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: true, dx: -10, dy: 1 })).toBe(true)
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: true, dx: 12, dy: 0 })).toBe(false)
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: true, isOpen: true, dx: -4, dy: 0 })).toBe(false)
+  })
+
+  test('never captures when swipe is disabled', () => {
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: false, isOpen: false, dx: 20, dy: 0 })).toBe(false)
+    expect(nativeDrawerShouldCaptureSwipe({ enabled: false, isOpen: true, dx: -20, dy: 0 })).toBe(false)
+  })
+})
 
 describe('native drawer progress', () => {
   const width = 280
@@ -106,6 +131,12 @@ describe('nativeDrawerSheetCanvas', () => {
     expect(mid).not.toBe(NATIVE_PHONE_HOME_CANVAS)
     expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
     expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
+  })
+
+  test('settings and other pages stay on the closed canvas when the drawer opens', () => {
+    expect(nativeDrawerSheetCanvas(0, true, undefined, '#000000')).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(0.5, true, undefined, '#000000')).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(1, true, undefined, '#000000')).toBe('#000000')
   })
 
   test('light sheet stays white', () => {

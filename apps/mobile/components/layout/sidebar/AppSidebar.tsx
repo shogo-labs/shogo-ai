@@ -64,7 +64,9 @@ import {
   getActiveWorkspaceId,
   setActiveWorkspaceId,
   resolveActiveWorkspaceId,
+  subscribeActiveWorkspaceId,
 } from "../../../lib/workspace-store";
+import { scheduleWorkspaceSwitch } from "../../../lib/switch-workspace";
 import { workspaceProjectFilter } from "../../../lib/project-load";
 import { usePlatformConfig } from "../../../lib/platform-config";
 import {
@@ -80,6 +82,7 @@ import {
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
 import {
+  effectiveSidebarProjectFilter,
   getPinnedProjectIds,
   setPinnedProjectIds,
   getProjectFilter,
@@ -93,7 +96,6 @@ import {
   MENU_ITEM_RADIO_ROLE,
   PROJECT_SCOPE_OPTIONS,
   PROJECT_SORT_OPTIONS,
-  ProjectFilterSheet,
 } from "./ProjectFilterSheet";
 import { AccountMenu } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
@@ -102,6 +104,17 @@ import { InboxPanel } from "./InboxPanel";
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
 const MAX_VISIBLE_PROJECTS = 5;
+
+function SectionDisclosureChevron({
+  expanded,
+  size,
+}: {
+  expanded: boolean;
+  size: number;
+}) {
+  const Icon = expanded ? ChevronDown : ChevronRight;
+  return <Icon size={size} className="text-muted-foreground shrink-0" />;
+}
 
 // ─── Main AppSidebar ───────────────────────────────────────
 
@@ -126,6 +139,7 @@ export const AppSidebar = observer(function AppSidebar({
   const isDark = useResolvedTheme() === "dark";
   const iconChrome = useNativePhoneIconChrome();
   const drawerDensity = densityFor(isNativeDrawer);
+  const sectionChevronSize = isNativeDrawer ? drawerDensity.icon.sm : 12;
   const nativeDrawerCanvas = nativePhoneCanvas(isDark);
   const drawerTopInset = isNativeDrawer
     ? nativeDrawerTopInset(insets.top)
@@ -316,6 +330,13 @@ export const AppSidebar = observer(function AppSidebar({
     () => getActiveWorkspaceId(),
   );
 
+  useEffect(() => {
+    return subscribeActiveWorkspaceId(() => {
+      const id = getActiveWorkspaceId();
+      if (id) setSelectedWorkspaceId(id);
+    });
+  }, []);
+
   let currentWorkspace: any;
   try {
     const ownWorkspaces = workspaces?.all ?? [];
@@ -352,9 +373,16 @@ export const AppSidebar = observer(function AppSidebar({
   const [projectFilter, setProjectFilterState] = useState(() =>
     getProjectFilter(),
   );
+  // Native phone has no filter/sort control; always show recent + all.
+  const listFilter = effectiveSidebarProjectFilter(projectFilter);
   const [pinnedExpanded, setPinnedExpanded] = useState(true);
+  const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+
+  const toggleProjectsExpanded = useCallback(() => {
+    setProjectsExpanded((expanded) => !expanded);
+  }, []);
 
   const handleToggleProjectPin = useCallback(
     (projectId: string, next: boolean) => {
@@ -387,11 +415,11 @@ export const AppSidebar = observer(function AppSidebar({
       ? all.filter((p: any) => p.workspaceId === activeWorkspaceId)
       : all;
     const scopeFiltered =
-      projectFilter.scope === "mine" && user?.id
+      listFilter.scope === "mine" && user?.id
         ? workspaceScoped.filter((p: any) => p.createdBy === user.id)
         : workspaceScoped;
     const sorted = [...scopeFiltered].sort((a: any, b: any) => {
-      if (projectFilter.sort === "name") {
+      if (listFilter.sort === "name") {
         return String(a.name || "").localeCompare(String(b.name || ""));
       }
       const aTime = a.lastMessageAt || a.updatedAt || 0;
@@ -505,16 +533,7 @@ export const AppSidebar = observer(function AppSidebar({
     (workspaceId: string) => {
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
       setSelectedWorkspaceId(workspaceId);
-      setActiveWorkspaceId(workspaceId);
-      projects.clear();
-      projects
-        .loadAll({ workspaceId })
-        .catch((e) =>
-          console.error(
-            "[AppSidebar] Failed to load projects after workspace switch:",
-            e,
-          ),
-        );
+      scheduleWorkspaceSwitch(workspaceId, projects);
     },
     [projects, posthog],
   );
@@ -760,17 +779,10 @@ export const AppSidebar = observer(function AppSidebar({
                 >
                   Pinned
                 </Text>
-                {pinnedExpanded ? (
-                  <ChevronDown
-                    size={isNativeDrawer ? drawerDensity.icon.sm : 12}
-                    className="text-muted-foreground shrink-0"
-                  />
-                ) : (
-                  <ChevronRight
-                    size={isNativeDrawer ? drawerDensity.icon.sm : 12}
-                    className="text-muted-foreground shrink-0"
-                  />
-                )}
+                <SectionDisclosureChevron
+                  expanded={pinnedExpanded}
+                  size={sectionChevronSize}
+                />
               </Pressable>
               {pinnedExpanded &&
                 pinnedProjects.map((project: any) => (
@@ -788,20 +800,32 @@ export const AppSidebar = observer(function AppSidebar({
           )}
           {!collapsed &&
             (unpinnedProjects.length > 0 || pinnedProjects.length === 0) && (
-            <View
-              className={cn(
-                "flex-row items-center justify-between px-1",
-                isNativeDrawer ? "pb-2" : "pb-1",
-              )}
-            >
-              <Text
+              <View
                 className={cn(
-                  "font-semibold uppercase tracking-wider text-muted-foreground",
-                  drawerDensity.text.label,
+                  "flex-row items-center gap-1 px-1",
+                  isNativeDrawer ? "pb-2" : "pb-1",
                 )}
               >
-                Projects
-              </Text>
+                <Pressable
+                  onPress={toggleProjectsExpanded}
+                  accessibilityLabel={
+                    projectsExpanded ? "Collapse projects" : "Expand projects"
+                  }
+                  accessibilityState={{ expanded: projectsExpanded }}
+                  className={cn(
+                    "min-w-0 flex-1 flex-row items-center rounded-md active:bg-accent/50",
+                    isNativeDrawer ? `${drawerDensity.rowMin} py-2` : "py-1",
+                  )}
+                >
+                  <Text
+                    className={cn(
+                      "flex-1 font-semibold uppercase tracking-wider text-muted-foreground",
+                      drawerDensity.text.label,
+                    )}
+                  >
+                    Projects
+                  </Text>
+                </Pressable>
               {Platform.OS === "web" ? (
                 <Popover
                   placement="bottom right"
@@ -905,108 +929,93 @@ export const AppSidebar = observer(function AppSidebar({
                     </PopoverBody>
                   </PopoverContent>
                 </Popover>
-              ) : (
+              ) : null}
                 <Pressable
-                  onPress={() => setFilterMenuOpen(true)}
-                  role="button"
-                  accessibilityLabel="Filter and sort projects"
-                  accessibilityState={{ expanded: filterMenuOpen }}
+                  onPress={toggleProjectsExpanded}
+                  accessible={false}
                   hitSlop={8}
                   className={cn(
-                    "items-center justify-center rounded-md active:bg-muted",
-                    isNativeDrawer ? drawerDensity.hit : "h-8 w-8",
+                    "shrink-0 items-center justify-center rounded-md active:bg-accent/50",
+                    isNativeDrawer ? "h-8 w-8" : "p-1",
                   )}
                 >
-                  <SlidersHorizontal
-                    size={isNativeDrawer ? drawerDensity.icon.lg : 16}
-                    color={isNativeDrawer ? iconChrome.color : undefined}
-                    strokeWidth={
-                      isNativeDrawer ? iconChrome.strokeWidth : undefined
-                    }
-                    className={
-                      isNativeDrawer ? undefined : "text-muted-foreground"
-                    }
+                  <SectionDisclosureChevron
+                    expanded={projectsExpanded}
+                    size={sectionChevronSize}
                   />
                 </Pressable>
-              )}
-            </View>
-          )}
-          {workspaceProjects.length === 0 ? (
-            !collapsed && (
-              <View className="px-2 py-2">
-                <Text
-                  className={cn(
-                    "text-muted-foreground",
-                    isNativeDrawer ? drawerDensity.text.body : "text-xs",
-                  )}
-                >
-                  {projectFilter.scope === "mine"
-                    ? "No projects you created"
-                    : "No projects yet"}
-                </Text>
               </View>
-            )
-          ) : (
-            <>
-              {visibleUnpinnedProjects.map((project: any) => (
-                <ProjectTreeItem
-                  key={project.id}
-                  project={project}
-                  collapsed={collapsed}
-                  onNavPress={onNavPress}
-                  isPinned={pinnedProjectIds.has(project.id)}
-                  onTogglePin={handleToggleProjectPin}
-                  mobileProjectFirstTapShowsChats={isNativeDrawer}
-                />
-              ))}
-              {!collapsed &&
-                unpinnedProjects.length > MAX_VISIBLE_PROJECTS &&
-                (hiddenProjectCount > 0 || showAllProjects) && (
-                  <Pressable
-                    onPress={() => setShowAllProjects((v) => !v)}
-                    accessibilityLabel={
-                      showAllProjects
-                        ? "Show fewer projects"
-                        : "Show all projects"
-                    }
+            )}
+          {projectsExpanded &&
+            (workspaceProjects.length === 0 ? (
+              !collapsed && (
+                <View className="px-2 py-2">
+                  <Text
                     className={cn(
-                      "flex-row items-center rounded-md px-2 active:bg-accent/50",
-                      isNativeDrawer
-                        ? `${drawerDensity.rowMin} gap-2.5 py-2`
-                        : "gap-1.5 py-1.5",
+                      "text-muted-foreground",
+                      isNativeDrawer ? drawerDensity.text.body : "text-xs",
                     )}
                   >
-                    {showAllProjects ? (
-                      <ChevronDown
-                        size={isNativeDrawer ? drawerDensity.icon.sm : 12}
-                        className="text-muted-foreground shrink-0"
-                      />
-                    ) : (
-                      <ChevronRight
-                        size={isNativeDrawer ? drawerDensity.icon.sm : 12}
-                        className="text-muted-foreground shrink-0"
-                      />
-                    )}
-                    <Text
+                  {listFilter.scope === "mine"
+                    ? "No projects you created"
+                    : "No projects yet"}
+                  </Text>
+                </View>
+              )
+            ) : (
+              <>
+                {visibleUnpinnedProjects.map((project: any) => (
+                  <ProjectTreeItem
+                    key={project.id}
+                    project={project}
+                    collapsed={collapsed}
+                    onNavPress={onNavPress}
+                    isPinned={pinnedProjectIds.has(project.id)}
+                    onTogglePin={handleToggleProjectPin}
+                    mobileProjectFirstTapShowsChats={isNativeDrawer}
+                  />
+                ))}
+                {!collapsed &&
+                  unpinnedProjects.length > MAX_VISIBLE_PROJECTS &&
+                  (hiddenProjectCount > 0 || showAllProjects) && (
+                    <Pressable
+                      onPress={() => setShowAllProjects((v) => !v)}
+                      accessibilityLabel={
+                        showAllProjects
+                          ? "Show fewer projects"
+                          : "Show all projects"
+                      }
                       className={cn(
-                        "text-muted-foreground flex-1",
-                        drawerDensity.text.body,
+                        "flex-row items-center rounded-md px-2 active:bg-accent/50",
+                        isNativeDrawer
+                          ? `${drawerDensity.rowMin} gap-2.5 py-2`
+                          : "gap-1.5 py-1.5",
                       )}
                     >
-                      {showAllProjects
-                        ? "Show less"
-                        : `${hiddenProjectCount} more`}
-                    </Text>
-                  </Pressable>
-                )}
-            </>
-          )}
+                      <SectionDisclosureChevron
+                        expanded={showAllProjects}
+                        size={sectionChevronSize}
+                      />
+                      <Text
+                        className={cn(
+                          "text-muted-foreground flex-1",
+                          drawerDensity.text.body,
+                        )}
+                      >
+                        {showAllProjects
+                          ? "Show less"
+                          : `${hiddenProjectCount} more`}
+                      </Text>
+                    </Pressable>
+                  )}
+              </>
+            ))}
         </View>
       </ScrollView>
 
       {/* ── Bottom Section ── */}
       <View
-        className="border-t border-border"
+        className={isNativeDrawer ? undefined : "border-t border-border"}
         style={{ paddingBottom: drawerFooterInset }}
       >
         {/* Upgrade to Pro CTA */}
@@ -1144,16 +1153,6 @@ export const AppSidebar = observer(function AppSidebar({
         visible={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
       />
-      {Platform.OS !== "web" ? (
-        <ProjectFilterSheet
-          visible={filterMenuOpen}
-          sort={projectFilter.sort}
-          scope={projectFilter.scope}
-          onSort={(sort) => updateProjectFilter({ sort })}
-          onScope={(scope) => updateProjectFilter({ scope })}
-          onClose={() => setFilterMenuOpen(false)}
-        />
-      ) : null}
     </View>
   );
 

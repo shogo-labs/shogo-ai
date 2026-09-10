@@ -14,9 +14,12 @@ import {
 } from 'react-native'
 import { hexToRgbChannels, nativePhoneCanvas } from './native-phone-layout'
 
-const EDGE_WIDTH = 28
 const OPEN_RATIO = 0.32
 const OPEN_VELOCITY = 0.7
+/** Closed sheet: finger must travel this far right before the drawer claims the gesture. */
+const OPEN_CAPTURE_DX = 6
+/** Open sheet: finger must travel this far left before the drawer claims the gesture. */
+const CLOSE_CAPTURE_DX = -8
 /** Left-corner radius of the moving foreground sheet when fully open (pt). */
 export const NATIVE_DRAWER_SHEET_RADIUS = 52
 /** Target sidebar width as a fraction of the viewport. */
@@ -80,19 +83,27 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${to(r)}${to(g)}${to(b)}`
 }
 
+function nativeDrawerOpenCanvas(isDark: boolean, openCanvas?: string): string {
+  if (!isDark) return nativePhoneCanvas(false)
+  return openCanvas ?? NATIVE_DRAWER_SHEET_OPEN_CANVAS
+}
+
 /** Canvas of the moving foreground sheet at a given 0–1 drawer progress. */
 export function nativeDrawerSheetCanvas(
   progress: number,
   isDark: boolean,
   closedCanvas?: string,
+  openCanvas?: string,
 ): string {
   if (!isDark) return nativePhoneCanvas(false)
   const closed = closedCanvas ?? nativePhoneCanvas(true)
+  const open = nativeDrawerOpenCanvas(true, openCanvas)
   const t = Math.min(1, Math.max(0, progress))
   if (t === 0) return closed
-  if (t === 1) return NATIVE_DRAWER_SHEET_OPEN_CANVAS
+  if (t === 1) return open
+  if (closed === open) return closed
   const [r0, g0, b0] = hexToRgbChannels(closed)
-  const [r1, g1, b1] = hexToRgbChannels(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+  const [r1, g1, b1] = hexToRgbChannels(open)
   return rgbToHex(r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t)
 }
 
@@ -102,17 +113,17 @@ export function useNativeDrawerSheetStyle(
   drawerWidth: number,
   isDark = true,
   closedCanvas?: string,
+  openCanvas?: string,
 ) {
   const closed = closedCanvas ?? (isDark ? nativePhoneCanvas(true) : nativePhoneCanvas(false))
+  const open = nativeDrawerOpenCanvas(isDark, openCanvas)
   const sheetCanvas = useMemo(
     () =>
       drawerProgress.interpolate({
         inputRange: [0, 1],
-        outputRange: isDark
-          ? [closed, NATIVE_DRAWER_SHEET_OPEN_CANVAS]
-          : [nativePhoneCanvas(false), nativePhoneCanvas(false)],
+        outputRange: [closed, open],
       }),
-    [closed, drawerProgress, isDark],
+    [closed, drawerProgress, open],
   )
   const sheetRadius = useMemo(
     () =>
@@ -178,6 +189,28 @@ export function nativeDrawerProgressFromDelta(start: number, dx: number, width: 
 }
 
 /**
+ * Whether a move should steal the gesture for the sheet drawer.
+ * Opening is a right-swipe from anywhere on the sheet (not a left-edge hit
+ * target). Closing is a left-swipe. Vertical-dominant moves stay with children.
+ */
+export function nativeDrawerShouldCaptureSwipe({
+  enabled,
+  isOpen,
+  dx,
+  dy,
+}: {
+  enabled: boolean
+  isOpen: boolean
+  dx: number
+  dy: number
+}): boolean {
+  if (!enabled) return false
+  if (Math.abs(dx) <= Math.abs(dy)) return false
+  if (isOpen) return dx < CLOSE_CAPTURE_DX
+  return dx > OPEN_CAPTURE_DX
+}
+
+/**
  * Snap to open or closed. `start` is progress when the finger went down, so a
  * close drag only needs the same ~32% travel as an open drag — not a trip all
  * the way back below 0.32.
@@ -217,6 +250,7 @@ export function useNativeSheetDrawer({
   swipeEnabled,
   overlayOpenWithoutSnap = false,
   closedCanvas,
+  openCanvas,
 }: {
   windowWidth: number
   isDark: boolean
@@ -224,6 +258,11 @@ export function useNativeSheetDrawer({
   overlayOpenWithoutSnap?: boolean
   /** Dark closed-sheet fill. Home passes charcoal; other screens omit this. */
   closedCanvas?: string
+  /**
+   * Dark open-sheet fill. Home omits this so the sheet lifts to grey.
+   * Settings and other pages pass the closed canvas so they stay black.
+   */
+  openCanvas?: string
 }) {
   const drawerProgress = useRef(new Animated.Value(0)).current
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -263,6 +302,7 @@ export function useNativeSheetDrawer({
     drawerWidth,
     isDark,
     closedCanvas,
+    openCanvas,
   )
 
   return {
@@ -314,17 +354,13 @@ export function useNativeDrawerSheetSwipe({
   const pan = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (evt, gesture) => {
-          if (!enabledRef.current) return false
-          const horizontal = Math.abs(gesture.dx) > Math.abs(gesture.dy)
-          if (!horizontal) return false
-          if (isOpenRef.current) {
-            return gesture.dx < -8
-          }
-          const startX = evt.nativeEvent.pageX - gesture.dx
-          if (startX > EDGE_WIDTH) return false
-          return gesture.dx > 6
-        },
+        onMoveShouldSetPanResponderCapture: (_evt, gesture) =>
+          nativeDrawerShouldCaptureSwipe({
+            enabled: enabledRef.current,
+            isOpen: isOpenRef.current,
+            dx: gesture.dx,
+            dy: gesture.dy,
+          }),
         onPanResponderGrant: () => {
           drawerProgress.stopAnimation()
           startProgressRef.current = currentProgressRef.current
