@@ -523,7 +523,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         <View
           className={cn(
             "flex-row items-center rounded-md px-2",
-            isNative ? "min-h-11 gap-2 py-1.5" : "gap-1.5 py-1.5",
+            isNative ? `${density.rowMin} gap-2 py-1.5` : "gap-1.5 py-1.5",
           )}
         >
           <Folder
@@ -539,7 +539,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             selectTextOnFocus
             className={cn(
               "flex-1 px-2 rounded border border-border bg-background text-foreground",
-              isNative ? `h-9 ${density.text.body}` : "h-6 text-xs",
+              isNative ? `h-11 ${density.text.body}` : "h-6 text-xs",
             )}
           />
           <Pressable
@@ -567,7 +567,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         <View
           className={cn(
             "group flex-row items-center rounded-md pr-1",
-            isNative ? "min-h-11 gap-2 py-2" : "gap-1.5 py-1.5",
+            isNative ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
             isActive ? "bg-accent" : "active:bg-accent/50",
           )}
         >
@@ -604,7 +604,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             </Text>
             {mobileProjectFirstTapShowsChats ? (
               <ChevronRight
-                size={16}
+                size={isNative ? density.icon.sm : 16}
                 className="text-muted-foreground shrink-0"
               />
             ) : null}

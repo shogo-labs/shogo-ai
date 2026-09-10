@@ -130,7 +130,7 @@ export function ChatTreeItem({
       <View
         className={cn(
           "flex-row items-center rounded-md",
-          isNative ? "min-h-11 gap-2 px-2 py-1.5" : "gap-1 px-1 py-1",
+          isNative ? `${density.rowMin} gap-2 px-2 py-1.5` : "gap-1 px-1 py-1",
         )}
       >
         <TextInput
@@ -141,7 +141,7 @@ export function ChatTreeItem({
           autoFocus
           className={cn(
             "flex-1 px-2 rounded border border-border bg-background text-foreground",
-            isNative ? `${density.text.body} h-9` : "h-6 text-xs",
+            isNative ? `${density.text.body} h-11` : "h-6 text-xs",
           )}
         />
         <Pressable
@@ -178,7 +178,7 @@ export function ChatTreeItem({
         aria-current={active ? "page" : undefined}
         className={cn(
           "group flex-row items-center rounded-md",
-          isNative ? "min-h-11 gap-2 px-2 py-2" : "gap-1 px-1 py-1.5",
+          isNative ? `${density.rowMin} gap-2 px-2 py-2` : "gap-1 px-1 py-1.5",
           active ? "bg-accent" : "active:bg-accent/50",
         )}
         {...(Platform.OS === "web"

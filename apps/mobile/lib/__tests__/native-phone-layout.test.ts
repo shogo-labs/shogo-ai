@@ -123,7 +123,7 @@ describe('nativePhoneIconColor', () => {
     expect(nativePhoneIconColor(false)).toBe(NATIVE_PHONE_ICON.light)
     expect(NATIVE_PHONE_ICON).toEqual({ dark: '#F4F4F4', light: '#0D0D0D' })
     expect(NATIVE_PHONE_ICON_STROKE).toBe(1.75)
-    expect(NATIVE_PHONE_HEADER_ICON_SIZE).toBe(26)
+    expect(NATIVE_PHONE_HEADER_ICON_SIZE).toBe(28)
   })
 })
 

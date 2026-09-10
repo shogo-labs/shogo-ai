@@ -15,6 +15,7 @@ import { Menu } from 'lucide-react-native'
 import { NotificationBell } from '../notifications/NotificationBell'
 import { NATIVE_PHONE_HEADER_ICON_SIZE,
   WEB_WIDE_MIN_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
+import { PHONE_DENSITY } from '../../lib/phone-density'
 
 function isHomePathname(pathname: string): boolean {
   return ( pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
@@ -39,7 +40,7 @@ function getTitleFromPathname(pathname: string): string {
 }
 
 const overlayControlClass =
-  'h-10 w-10 items-center justify-center rounded-full bg-muted p-0'
+  `${PHONE_DENSITY.hit} rounded-full bg-muted p-0`
 
 interface AppHeaderProps {
   onMenuPress?: () => void
@@ -95,7 +96,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
         {isHome ? (
           <View className="flex-1" pointerEvents="none" />
         ) : (
-          <Text className="flex-1 text-center text-base font-semibold text-foreground" numberOfLines={1}>
+          <Text className={`flex-1 text-center ${PHONE_DENSITY.text.body} font-semibold text-foreground`} numberOfLines={1}>
             {title}
           </Text>
         )}

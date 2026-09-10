@@ -630,7 +630,7 @@ export const AppSidebar = observer(function AppSidebar({
             >
               <ShogoWordmark
                 className={
-                  isNativeDrawer ? "h-7 w-[120px]" : "h-[22px] w-[94px]"
+                  isNativeDrawer ? "h-8 w-[136px]" : "h-[22px] w-[94px]"
                 }
               />
             </Pressable>
@@ -638,10 +638,13 @@ export const AppSidebar = observer(function AppSidebar({
               <Pressable
                 onPress={handleSearchPress}
                 accessibilityLabel="Search"
-                className="h-11 w-11 items-center justify-center rounded-md active:bg-muted"
+                className={cn(
+                  "rounded-md active:bg-muted",
+                  drawerDensity.hit,
+                )}
               >
                 <Search
-                  size={drawerDensity.icon.lg + 2}
+                  size={drawerDensity.icon.lg}
                   color={iconChrome.color}
                   strokeWidth={iconChrome.strokeWidth}
                 />
@@ -670,7 +673,7 @@ export const AppSidebar = observer(function AppSidebar({
       {activeRemoteInstance && !collapsed && (
         <View className="px-3 py-1.5 bg-primary/10 border-b border-primary/20">
           <View className="flex-row items-center gap-2">
-            <Laptop size={12} className="text-primary" />
+            <Laptop size={isNativeDrawer ? drawerDensity.icon.xs : 12} className="text-primary" />
             <Text
               className={cn(
                 drawerDensity.text.caption,
@@ -745,7 +748,7 @@ export const AppSidebar = observer(function AppSidebar({
                 className={cn(
                   "flex-row items-center rounded-md px-1 active:bg-accent/50",
                   isNativeDrawer
-                    ? "min-h-11 gap-2.5 py-2"
+                    ? `${drawerDensity.rowMin} gap-2.5 py-2`
                     : "gap-1.5 py-1",
                 )}
               >
@@ -931,7 +934,12 @@ export const AppSidebar = observer(function AppSidebar({
           {workspaceProjects.length === 0 ? (
             !collapsed && (
               <View className="px-2 py-2">
-                <Text className="text-xs text-muted-foreground">
+                <Text
+                  className={cn(
+                    "text-muted-foreground",
+                    isNativeDrawer ? drawerDensity.text.body : "text-xs",
+                  )}
+                >
                   {projectFilter.scope === "mine"
                     ? "No projects you created"
                     : "No projects yet"}
@@ -964,7 +972,7 @@ export const AppSidebar = observer(function AppSidebar({
                     className={cn(
                       "flex-row items-center rounded-md px-2 active:bg-accent/50",
                       isNativeDrawer
-                        ? "min-h-11 gap-2.5 py-2"
+                        ? `${drawerDensity.rowMin} gap-2.5 py-2`
                         : "gap-1.5 py-1.5",
                     )}
                   >
@@ -1043,7 +1051,7 @@ export const AppSidebar = observer(function AppSidebar({
                 </Text>
               </View>
               <Plus
-                size={isNativeDrawer ? drawerDensity.icon.lg + 2 : 16}
+                size={isNativeDrawer ? drawerDensity.icon.lg : 16}
                 className="text-primary"
               />
             </Pressable>
@@ -1054,7 +1062,7 @@ export const AppSidebar = observer(function AppSidebar({
         <View
           className={cn(
             "flex-row items-center border-t border-border",
-            isNativeDrawer ? "min-h-14 gap-2.5 px-3 pt-2 pb-1" : "gap-2 p-2",
+            isNativeDrawer ? "min-h-16 gap-2.5 px-3 pt-2 pb-1" : "gap-2 p-2",
             collapsed ? "justify-center" : "px-3",
           )}
         >
@@ -1083,7 +1091,7 @@ export const AppSidebar = observer(function AppSidebar({
 
           {!collapsed && (
             <NotificationBell
-              size={isNativeDrawer ? drawerDensity.icon.lg + 2 : 18}
+              size={isNativeDrawer ? drawerDensity.icon.lg : 18}
               onPress={onNavPress}
             />
           )}
@@ -1093,13 +1101,11 @@ export const AppSidebar = observer(function AppSidebar({
               onPress={() => setInboxOpen(true)}
               className={cn(
                 "relative shrink-0 rounded-md active:bg-muted",
-                isNativeDrawer
-                  ? "h-11 w-11 items-center justify-center"
-                  : "p-1.5",
+                isNativeDrawer ? drawerDensity.hit : "p-1.5",
               )}
             >
               <Inbox
-                size={isNativeDrawer ? drawerDensity.icon.lg + 2 : 18}
+                size={isNativeDrawer ? drawerDensity.icon.lg : 18}
                 color={isNativeDrawer ? iconChrome.color : undefined}
                 strokeWidth={
                   isNativeDrawer ? iconChrome.strokeWidth : undefined

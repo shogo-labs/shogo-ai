@@ -89,7 +89,7 @@ export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
 export const NATIVE_PHONE_ICON = { dark: '#F4F4F4', light: '#0D0D0D' } as const
 export const NATIVE_PHONE_ICON_STROKE = 1.75
 /** Header menu / bell on native phone and narrow web (`AppHeader`). */
-export const NATIVE_PHONE_HEADER_ICON_SIZE = 26
+export const NATIVE_PHONE_HEADER_ICON_SIZE = 28
 
 export function nativePhoneIconColor(isDark: boolean): string {
   return isDark ? NATIVE_PHONE_ICON.dark : NATIVE_PHONE_ICON.light
