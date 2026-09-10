@@ -62,6 +62,7 @@ import { trackPurchase } from "../../../lib/tracking";
 import {
   getActiveWorkspaceId,
   setActiveWorkspaceId,
+  resolveActiveWorkspaceId,
 } from "../../../lib/workspace-store";
 import { workspaceProjectFilter } from "../../../lib/project-load";
 import { usePlatformConfig } from "../../../lib/platform-config";
@@ -182,11 +183,16 @@ export const AppSidebar = observer(function AppSidebar({
   useEffect(() => {
     // Chain projects after workspaces so that, on a fresh first load where
     // no active workspace has been persisted yet, we can still scope to
-    // the first workspace the user belongs to.
+    // the first workspace the user belongs to. `resolveActiveWorkspaceId`
+    // also self-heals a persisted id that isn't one of *this* user's
+    // workspaces (e.g. left over from a different account on the same
+    // browser) instead of feeding it straight to the API and getting
+    // "Access denied to this workspace" on every request.
     workspaces
       .loadAll()
       .then(() => {
-        const wsId = getActiveWorkspaceId() ?? (workspaces.all?.[0] as any)?.id;
+        const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
+        const wsId = resolveActiveWorkspaceId(ownIds);
         const filter = workspaceProjectFilter(wsId);
         if (filter) {
           projects
@@ -287,10 +293,17 @@ export const AppSidebar = observer(function AppSidebar({
     } else if (params.get("workspace") && !params.get("checkout")) {
       const targetWs = params.get("workspace")!;
       workspaces.loadAll().then(() => {
-        setSelectedWorkspaceId(targetWs);
-        setActiveWorkspaceId(targetWs);
+        // Only trust `?workspace=` once it's confirmed to be one of *this*
+        // user's own workspaces — an invite/share link pointing at a
+        // workspace this session isn't a member of would otherwise get
+        // persisted as "active" and 403/400 every request from then on.
+        const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
+        const resolvedWs = resolveActiveWorkspaceId(ownIds, targetWs);
+        if (!resolvedWs) return;
+        setSelectedWorkspaceId(resolvedWs);
+        setActiveWorkspaceId(resolvedWs);
         projects
-          .loadAll({ workspaceId: targetWs })
+          .loadAll({ workspaceId: resolvedWs })
           .catch((e) =>
             console.error(
               "[AppSidebar] Failed to load projects for workspace:",
@@ -308,12 +321,18 @@ export const AppSidebar = observer(function AppSidebar({
 
   let currentWorkspace: any;
   try {
-    if (selectedWorkspaceId) {
-      currentWorkspace = workspaces?.all?.find(
-        (w: any) => w.id === selectedWorkspaceId,
-      );
-    } else {
-      currentWorkspace = workspaces?.all?.[0];
+    const ownWorkspaces = workspaces?.all ?? [];
+    currentWorkspace = selectedWorkspaceId
+      ? ownWorkspaces.find((w: any) => w.id === selectedWorkspaceId)
+      : undefined;
+    // `selectedWorkspaceId` may be a stale id (a different account's
+    // workspace persisted on this browser, or an unverified `?workspace=`
+    // link) that never matches this user's own list. Once the user's own
+    // workspaces have actually loaded, fall back to the first one rather
+    // than leaving `currentWorkspace` permanently undefined — otherwise
+    // every workspace-scoped fetch below keeps targeting the invalid id.
+    if (!currentWorkspace && ownWorkspaces.length > 0) {
+      currentWorkspace = ownWorkspaces[0];
     }
   } catch {
     currentWorkspace = undefined;

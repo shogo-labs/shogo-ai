@@ -90,9 +90,17 @@ function getFrontendOrigin(): string {
 export interface AuthProviderProps {
   authClient: AuthClient
   children: ReactNode
+  /**
+   * Called after a successful sign-out, before `user` is cleared. Use this
+   * to clear any app-local, non-user-scoped caches (e.g. a persisted
+   * "active workspace id") that would otherwise leak into the next
+   * account signed in on this browser/device and cause it to request
+   * resources it doesn't have access to.
+   */
+  onSignOut?: () => void
 }
 
-export function AuthProvider({ authClient, children }: AuthProviderProps) {
+export function AuthProvider({ authClient, children, onSignOut }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -225,8 +233,13 @@ export function AuthProvider({ authClient, children }: AuthProviderProps) {
   }, [authClient])
 
   const handleSignOut = useCallback(async () => {
-    try { await authClient.signOut() } finally { setUser(null) }
-  }, [authClient])
+    try {
+      await authClient.signOut()
+    } finally {
+      onSignOut?.()
+      setUser(null)
+    }
+  }, [authClient, onSignOut])
 
   const handleUpdateUser = useCallback(async (fields: { name?: string; image?: string }) => {
     const { data, error: err } = await (authClient as any).updateUser(fields)

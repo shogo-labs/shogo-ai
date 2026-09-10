@@ -52,7 +52,7 @@ import { openWebAppSession } from '../../../../lib/openWebAppSession'
 import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-session-events'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
-import { getActiveWorkspaceId } from '../../../../lib/workspace-store'
+import { resolveActiveWorkspaceId } from '../../../../lib/workspace-store'
 import { usePlatformConfig } from '../../../../lib/platform-config'
 import { consumePendingFiles } from '../../../../lib/pending-image-store'
 import { isPhoneLayout, nativePhoneFillStyle,
@@ -1060,9 +1060,12 @@ export default observer(function ProjectLayout() {
         // Fall back to the first workspace the user belongs to when nothing
         // has been persisted yet — otherwise the project-list preload is
         // silently skipped and the sidebar's Recent stays empty on a fresh
-        // load that lands on a project URL.
-        const wsId =
-          getActiveWorkspaceId() ?? (store.workspaceCollection.all?.[0] as any)?.id
+        // load that lands on a project URL. Also self-heals a persisted id
+        // that isn't one of *this* user's own workspaces (e.g. left over
+        // from a different account on the same browser) instead of feeding
+        // it straight to the API and getting "Access denied" on everything.
+        const ownIds = (store.workspaceCollection.all ?? []).map((w: any) => w.id)
+        const wsId = resolveActiveWorkspaceId(ownIds)
         const projectFilter = workspaceProjectFilter(wsId)
         if (projectFilter) {
           store.projectCollection
