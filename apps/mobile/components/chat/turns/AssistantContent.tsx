@@ -49,6 +49,7 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { useTodoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
 import { useFileChangeStore, classifyFileToolName, extractFilePath } from "../../../lib/file-change-store"
@@ -394,6 +395,7 @@ export const AssistantContent = memo(
     className,
   }: AssistantContentProps) {
   const chatContext = useChatContextSafe()
+  const nativePhone = useIsNativePhoneLayout()
 
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -696,6 +698,9 @@ export const AssistantContent = memo(
               !!matchingConfirmedPlan &&
               ((matchingConfirmedPlan.toolCallId && matchingConfirmedPlan.toolCallId === toolCallId) ||
                 (!!matchingConfirmedPlan.filepath && matchingConfirmedPlan.filepath === planData.filepath))
+            // Native: the live pending plan is the oval above the composer, not a
+            // second card in the transcript.
+            if (nativePhone && matchingPendingPlan) return null
             return (
               <PlanReferenceCard
                 key={part.id}

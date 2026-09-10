@@ -3,18 +3,23 @@
 /**
  * PlanReferenceCard — in-stream footprint of create_plan / update_plan.
  *
- * Native phone: Cursor-style "Plan Ready" card. Build (or the card) opens a
- * bottom sheet with the plan, a model picker, View plan, and Build.
+ * Native phone: Cursor-style "Plan Ready" oval. The composer variant sits
+ * above the chat input. Tapping the card opens a bottom sheet; tapping
+ * Build starts the plan immediately.
  * Web/desktop keep the compact pointer that opens the Plans tab.
  */
 
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { CheckCircle2, ClipboardList, ChevronRight } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NATIVE_PHONE_DOCK_COMPOSER_GAP, useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { PHONE_DENSITY } from "../../../lib/phone-density"
 import { NativePlanPreviewSheet } from "../NativePlanPreviewSheet"
+import {
+  PLAN_READY_CHIP_TEXT,
+  PLAN_READY_OVAL_BUILD_HEIGHT,
+} from "../plan-ready-chrome"
 import type { PlanData } from "../PlanCard"
 
 export interface PlanReferenceCardProps {
@@ -28,6 +33,8 @@ export interface PlanReferenceCardProps {
   onBuild?: ((plan?: PlanData | null, modelId?: string) => void) | null
   selectedModel?: string
   isPro?: boolean
+  /** Composer oval sits above the input. Stream is the in-message pointer. */
+  variant?: "stream" | "composer"
 }
 
 export function PlanReferenceCard({
@@ -38,32 +45,59 @@ export function PlanReferenceCard({
   onBuild,
   selectedModel,
   isPro = true,
+  variant = "stream",
 }: PlanReferenceCardProps) {
   const nativePhone = useIsNativePhoneLayout()
   const [sheetOpen, setSheetOpen] = useState(false)
   const canBuild = !isConfirmed && !!onBuild
   const nativeLabel = isConfirmed ? "Plan" : isUpdate ? "Updated plan" : "Plan Ready"
   const webLabel = isConfirmed ? "Plan" : isUpdate ? "Updated plan" : "Created plan"
+  const composer = nativePhone && variant === "composer"
+  const openSheet = useCallback(() => setSheetOpen(true), [])
+  const closeSheet = useCallback(() => setSheetOpen(false), [])
+  const handleOvalBuild = useCallback(() => {
+    onBuild?.(plan, selectedModel)
+  }, [onBuild, plan, selectedModel])
+  const handleSheetBuild = useCallback(
+    (modelId?: string) => {
+      onBuild?.(plan, modelId)
+      setSheetOpen(false)
+    },
+    [onBuild, plan],
+  )
 
   if (nativePhone) {
     return (
       <>
-        <View className="mx-2 my-1.5 flex-row items-center gap-2.5 rounded-2xl border border-border bg-card px-3 py-3">
+        <View
+          className={cn(
+            "flex-row items-center border border-border bg-card",
+            composer
+              ? "mx-2 rounded-full px-4 py-2.5"
+              : "mx-2 my-1.5 gap-2.5 rounded-2xl px-3 py-3",
+          )}
+          style={composer ? { marginBottom: NATIVE_PHONE_DOCK_COMPOSER_GAP } : undefined}
+        >
           <Pressable
-            onPress={() => setSheetOpen(true)}
+            onPress={openSheet}
             accessibilityRole="button"
             accessibilityLabel={`${nativeLabel}: ${plan.name}`}
             className="min-w-0 flex-1 flex-row items-center gap-2.5 active:opacity-70"
           >
-            <View className="h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
-              <ClipboardList className="text-primary" size={PHONE_DENSITY.icon.sm} />
-            </View>
+            {composer ? null : (
+              <View className="h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+                <ClipboardList className="text-primary" size={PHONE_DENSITY.icon.sm} />
+              </View>
+            )}
             <View className="min-w-0 flex-1">
               <Text className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {nativeLabel}
               </Text>
               <Text
-                className={cn(PHONE_DENSITY.text.body, "font-medium text-foreground")}
+                className={cn(
+                  composer ? PLAN_READY_CHIP_TEXT : PHONE_DENSITY.text.body,
+                  "font-medium text-foreground",
+                )}
                 numberOfLines={1}
               >
                 {plan.name}
@@ -74,15 +108,15 @@ export function PlanReferenceCard({
             <CheckCircle2 className="text-green-500" size={PHONE_DENSITY.icon.md} />
           ) : canBuild ? (
             <Pressable
-              onPress={() => setSheetOpen(true)}
+              onPress={handleOvalBuild}
               accessibilityRole="button"
               accessibilityLabel="Build plan"
               className={cn(
-                PHONE_DENSITY.rowMin,
+                PLAN_READY_OVAL_BUILD_HEIGHT,
                 "items-center justify-center rounded-full bg-primary px-4",
               )}
             >
-              <Text className={cn(PHONE_DENSITY.text.body, "font-semibold text-primary-foreground")}>
+              <Text className={cn(PLAN_READY_CHIP_TEXT, "font-semibold text-primary-foreground")}>
                 Build
               </Text>
             </Pressable>
@@ -95,15 +129,8 @@ export function PlanReferenceCard({
           plan={plan}
           selectedModel={selectedModel}
           isPro={isPro}
-          onClose={() => setSheetOpen(false)}
-          onBuild={
-            canBuild
-              ? (modelId) => {
-                  onBuild?.(plan, modelId)
-                  setSheetOpen(false)
-                }
-              : undefined
-          }
+          onClose={closeSheet}
+          onBuild={canBuild ? handleSheetBuild : undefined}
           onViewPlan={onViewPlan}
         />
       </>

@@ -4,6 +4,7 @@
 import type { ReactNode } from 'react'
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native'
 import { X } from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO,
@@ -118,7 +119,7 @@ export function NativePhoneSheet({
             </View>
           ) : null}
           {hasHeader ? (
-            <View className="flex-row items-center px-4 pb-3">
+            <View className={cn("flex-row items-center px-4 pb-3", grabber ? null : "pt-3")}>
               {headerLeft ?? <View className="h-10 w-10" />}
               <View className="flex-1 px-3">
                 {title ? (
