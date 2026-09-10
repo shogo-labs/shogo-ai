@@ -40,13 +40,13 @@ describe('computeDefaultRuntimeMemoryMB', () => {
 })
 
 describe('computeDefaultWarmPoolSize', () => {
-  test('disabled (0) below the 8GB threshold', () => {
-    expect(computeDefaultWarmPoolSize(4 * 1024)).toBe(0)
-    expect(computeDefaultWarmPoolSize(8 * 1024 - 1)).toBe(0)
+  test('disabled (0) below the 4GB threshold', () => {
+    expect(computeDefaultWarmPoolSize(3 * 1024)).toBe(0)
+    expect(computeDefaultWarmPoolSize(4 * 1024 - 1)).toBe(0)
   })
 
-  test('enables a single pre-booted runtime at/above 8GB total RAM', () => {
-    expect(computeDefaultWarmPoolSize(8 * 1024)).toBe(1)
+  test('enables a single pre-booted runtime at/above 4GB total RAM', () => {
+    expect(computeDefaultWarmPoolSize(4 * 1024)).toBe(1)
     expect(computeDefaultWarmPoolSize(32 * 1024)).toBe(1)
   })
 

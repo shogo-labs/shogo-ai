@@ -46,11 +46,11 @@ export function computeDefaultRuntimeMemoryMB(totalMemMB: number): number {
  * opened.
  *
  * That trade-off only makes sense once the machine has headroom to spare,
- * so this defaults to 0 (disabled — matches the historical behavior) below
- * 8GB total RAM and 1 at/above it. Users who want more can still opt in via
+ * so this defaults to 0 below 4GB total RAM and 1 at/above it. Users who want
+ * more can still opt in via
  * `HOST_WARM_POOL_SIZE`.
  */
 export function computeDefaultWarmPoolSize(totalMemMB: number): number {
   if (!Number.isFinite(totalMemMB) || totalMemMB <= 0) return 0
-  return totalMemMB >= 8192 ? 1 : 0
+  return totalMemMB >= 4096 ? 1 : 0
 }

@@ -75,7 +75,10 @@ export interface IRuntimeManager {
    * such runtimes are kept out of the warm-preview cap and are managed as a
    * separate system. Defaults to a foreground (preview) start.
    */
-  start(projectId: string, opts?: { background?: boolean }): Promise<IProjectRuntime>
+  start(
+    projectId: string,
+    opts?: { background?: boolean; openAttemptId?: string },
+  ): Promise<IProjectRuntime>
 
   /**
    * Seed the on-disk workspace for a project and install dependencies WITHOUT

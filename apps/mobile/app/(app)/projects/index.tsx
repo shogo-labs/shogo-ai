@@ -62,6 +62,7 @@ import {
   useSDKDomain,
   useSDKReady,
   useDomainActions,
+  useDomainHttp,
   useIsRemoteSource,
 } from '@shogo/shared-app/domain'
 import type { IDomainStore } from '@shogo/domain-stores'
@@ -267,6 +268,7 @@ export default observer(function AllProjectsPage() {
   const store = useSDKDomain() as IDomainStore
   const sdkReady = useSDKReady()
   const actions = useDomainActions()
+  const http = useDomainHttp()
   const isRemoteSource = useIsRemoteSource()
   const toast = useToast()
   const { width, height, isPhone: comfortable } = useNativePhoneWindow()
@@ -298,6 +300,7 @@ export default observer(function AllProjectsPage() {
   const [renameFolder, setRenameFolder] = useState<Folder | null>(null)
   const [renameFolderValue, setRenameFolderValue] = useState('')
   const [singleDeleteFolder, setSingleDeleteFolder] = useState<Folder | null>(null)
+  const prewarmedProjectsRef = useRef(new Set<string>())
 
   // Native phones: 2 columns for readable titles and touch targets; web keeps 3-up grid.
   const numColumns = viewMode === 'grid' ? (isNativeMobile ? 2 : 3) : 1
@@ -447,6 +450,12 @@ export default observer(function AllProjectsPage() {
     },
     [router],
   )
+
+  const handleProjectIntent = useCallback((projectId: string) => {
+    if (prewarmedProjectsRef.current.has(projectId)) return
+    prewarmedProjectsRef.current.add(projectId)
+    void api.prewarmProjectRuntime(http, projectId)
+  }, [http])
 
   const handleCreateProject = useCallback(() => {
     router.push('/(app)/' as any)
@@ -937,6 +946,9 @@ export default observer(function AllProjectsPage() {
                 handleProjectPress(project)
               }
             }}
+            onPressIn={() => {
+              if (!selectMode) handleProjectIntent(project.id)
+            }}
             onLongPress={() => handleProjectActions(project)}
             onStarToggle={(e) => {
               e.stopPropagation()
@@ -1025,6 +1037,7 @@ export default observer(function AllProjectsPage() {
       handleFolderPress,
       handleDragToFolder,
       handleProjectPress,
+      handleProjectIntent,
       handleProjectActions,
       handleToggleStar,
       handleRenameProject,
@@ -1156,6 +1169,9 @@ export default observer(function AllProjectsPage() {
               } else {
                 handleProjectPress(project)
               }
+            }}
+            onPressIn={() => {
+              if (!selectMode) handleProjectIntent(project.id)
             }}
             onLongPress={() => handleProjectActions(project)}
             className={cn(

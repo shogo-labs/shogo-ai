@@ -76,6 +76,8 @@ export interface ResolvePodUrlOpts {
    * `getRuntimeManager()`.
    */
   runtimeManager?: IRuntimeManager
+  /** Correlates a UI open attempt with host runtime boot logs. */
+  openAttemptId?: string
 
   /**
    * Test-only override for the K8s resolver. In production this is
@@ -98,7 +100,7 @@ export interface ResolvePodUrlOpts {
    * failure falls through to the direct host path. Test-only overrides.
    */
   _isHostWarmPoolEnabled?: () => boolean
-  _hostPoolResolver?: (projectId: string) => Promise<string>
+  _hostPoolResolver?: (projectId: string, openAttemptId?: string) => Promise<string>
 
   /**
    * Test-only overrides for the `metal` substrate branch. In production these
@@ -185,6 +187,7 @@ async function tryResolveAnchoredWorkspacePodUrl(
       _k8sResolver: opts._workspaceK8sResolver,
       _metalResolver: opts._workspaceMetalResolver,
       _hostStartProject: opts._hostStartProject,
+      openAttemptId: opts.openAttemptId,
       _spawnLease: spawnLease,
     })
     if (resolved.mode === 'host') {
@@ -358,12 +361,22 @@ export async function resolveProjectPodUrl(
   // runtime and assigns the project via /pool/assign, skipping the cold spawn.
   // Any failure falls through to the direct RuntimeManager host path below so a
   // pool hiccup never leaves the project unreachable.
+  const manager: IRuntimeManager = opts.runtimeManager
+    ?? (await import('./runtime/index')).getRuntimeManager()
+
+  // A project already served by a direct RuntimeManager runtime (typically
+  // after a pool fallback) must keep using it: claiming a pool runtime as
+  // well would run two agent-runtimes against one workspace.
+  const direct = manager.status(projectId)
+  const directLive =
+    !!direct && (direct.status === 'running' || direct.status === 'starting') && !!direct.agentPort
+
   const isHostWarmPool = opts._isHostWarmPoolEnabled ?? defaultIsHostWarmPoolEnabled
-  if (isHostWarmPool()) {
+  if (isHostWarmPool() && !directLive) {
     try {
       const resolve = opts._hostPoolResolver
         ?? (await import('./host-warm-pool-controller')).getHostPoolProjectUrl
-      const url = await resolve(projectId)
+      const url = await resolve(projectId, opts.openAttemptId)
       let agentPort = 0
       try { agentPort = parseInt(new URL(url).port, 10) || 0 } catch { /* leave 0 */ }
       const runtime: IProjectRuntime = {
@@ -384,9 +397,7 @@ export async function resolveProjectPodUrl(
   }
 
   // Host mode.
-  const manager: IRuntimeManager = opts.runtimeManager
-    ?? (await import('./runtime/index')).getRuntimeManager()
-
+  //
   // Only short-circuit when the runtime is fully `running` AND has an
   // `agentPort` (the latter guards an interrupted-boot edge case where
   // a stale `running` runtime is missing its agent port).
@@ -405,7 +416,7 @@ export async function resolveProjectPodUrl(
   // inflight prewarm rather than triggering a second spawn.
   let runtime = manager.status(projectId) ?? undefined
   if (!runtime || runtime.status !== 'running' || !runtime.agentPort) {
-    runtime = await manager.start(projectId)
+    runtime = await manager.start(projectId, { openAttemptId: opts.openAttemptId })
   }
 
   // Build the host agent URL the same way every caller used to:

@@ -147,7 +147,13 @@ import {
 import { Heading } from '@/components/ui/heading'
 import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
-import { mark as csMark, markRuntimeReadyAndFlush } from '../../../../lib/cold-start-timing'
+import {
+  clearOpenAttemptId,
+  createOpenAttemptId,
+  mark as csMark,
+  markRuntimeReadyAndFlush,
+  setOpenAttemptId,
+} from '../../../../lib/cold-start-timing'
 
 csMark('project:layout:module-load')
 
@@ -297,6 +303,13 @@ export default observer(function ProjectLayout() {
     embed?: string
   }>()
   const projectId = params.id
+  const openAttemptId = useMemo(() => createOpenAttemptId(), [projectId])
+
+  useEffect(() => {
+    setOpenAttemptId(openAttemptId)
+    csMark('project:open-attempt', { projectId, openAttemptId })
+    return () => clearOpenAttemptId(openAttemptId)
+  }, [openAttemptId, projectId])
   const isIdeChatEmbed = params.embed === 'ide'
     || (Platform.OS === 'web'
       && typeof window !== 'undefined'
@@ -771,6 +784,10 @@ export default observer(function ProjectLayout() {
       return cookie ? { Cookie: cookie } : {}
     }
   }, [])
+  const openRequestHeaders = useCallback(() => ({
+    ...(nativeHeaders?.() ?? {}),
+    'x-shogo-open-id': openAttemptId,
+  }), [nativeHeaders, openAttemptId])
 
   // Resolve agent + preview URLs.
   //
@@ -795,7 +812,7 @@ export default observer(function ProjectLayout() {
     retry: retryAgentUrl,
   } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === 'web' ? 'include' : 'omit',
-    headers: nativeHeaders,
+    headers: openRequestHeaders,
   })
 
   // Pre-warm on intent: reaching for "open preview in new tab" is a strong

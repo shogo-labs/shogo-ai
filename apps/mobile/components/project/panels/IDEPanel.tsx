@@ -110,6 +110,10 @@ export function IDEPanel({
     )
   }
 
+  // Keep the lightweight service setup alive, but do not mount Monaco or the
+  // Workbench until the user actually opens the IDE tab.
+  if (!visible) return null
+
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
       <div style={{ flex: 1, minHeight: 0 }}>

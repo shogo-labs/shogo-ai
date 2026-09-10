@@ -183,6 +183,25 @@ const HEALTH_PROGRESS_LOG_MS = 5_000;
  * above the noise floor without prolonging probe iterations.
  */
 const TCP_CONNECT_TIMEOUT_MS = 500;
+const PERF_LOG_ENABLED = process.env.SHOGO_PERF_LOG === '1';
+
+function perfLog(
+  phase: string,
+  projectId: string,
+  openAttemptId: string | undefined,
+  extra?: Record<string, unknown>,
+): void {
+  if (!PERF_LOG_ENABLED) return;
+  console.log(`[shogo-perf] ${JSON.stringify({
+    perf: 'open',
+    source: 'worker',
+    phase,
+    projectId,
+    openAttemptId,
+    atMs: Date.now(),
+    ...extra,
+  })}`);
+}
 
 export type RuntimeStatus =
   | 'starting'
@@ -1201,6 +1220,13 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.pid = proc.pid ?? null;
     slot.status = 'starting';
     slot.startedAt = Date.now();
+    const openAttemptId = slot.spawnConfig.extraEnv?.SHOGO_OPEN_ID;
+    perfLog('agent-spawned', slot.projectId, openAttemptId, {
+      pid: slot.pid,
+      command,
+      args,
+      source: resolved.source,
+    });
 
     // Enforce the per-project memory/CPU ceiling on the freshly-spawned group
     // (cgroup direct-write / Windows Job Object / RSS watchdog fallback). No-op
@@ -1230,18 +1256,32 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     });
 
     const prefix = `[runtime:${slot.projectId.slice(0, 8)}]`;
+    let firstOutput = true;
     // Each output line bumps `lastStdoutAt` — used by waitForHealth as
     // a forward-progress signal so a long-but-still-booting child
     // (LSP spawn, optimizeDeps, hook registration) doesn't get
     // SIGTERM'd mid-boot just because /health hasn't responded yet.
     proc.stdout?.on('data', (data) => {
       slot.lastStdoutAt = Date.now();
+      if (firstOutput) {
+        firstOutput = false;
+        perfLog('agent-first-output', slot.projectId, openAttemptId, {
+          elapsedMs: Date.now() - (slot.startedAt ?? Date.now()),
+        });
+      }
       for (const line of data.toString().trimEnd().split('\n')) {
         if (line) this.log.log(`${prefix} ${line}`);
       }
     });
     proc.stderr?.on('data', (data) => {
       slot.lastStdoutAt = Date.now();
+      if (firstOutput) {
+        firstOutput = false;
+        perfLog('agent-first-output', slot.projectId, openAttemptId, {
+          elapsedMs: Date.now() - (slot.startedAt ?? Date.now()),
+          stream: 'stderr',
+        });
+      }
       for (const line of data.toString().trimEnd().split('\n')) {
         if (line) this.log.error(`${prefix} ${line}`);
       }
@@ -1249,6 +1289,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
     try {
       await this.waitForHealth(slot, HEALTH_BOOT_TIMEOUT_MS);
+      perfLog('agent-health-ready', slot.projectId, openAttemptId, {
+        elapsedMs: Date.now() - (slot.startedAt ?? Date.now()),
+        agentPort: slot.agentPort,
+      });
       slot.status = 'running';
       slot.lastUsedAt = Date.now();
       this.armIdleTimer(slot);
@@ -1415,6 +1459,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       // multiple projects are kept warm at once.
       WORKSPACE_API_PORT_BASE: String(slot.agentPort + PREVIEW_API_BASE_OFFSET),
       NODE_ENV: 'production',
+      STARTUP_TIME: String(Date.now()),
       SHOGO_CLOUD_URL: cfg.cloudUrl,
       SHOGO_API_URL: cfg.cloudUrl,
       SHOGO_API_KEY: cfg.apiKey,

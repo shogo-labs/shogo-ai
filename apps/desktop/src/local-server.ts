@@ -202,7 +202,10 @@ function ensureRuntimeTemplate(): void {
     console.log(`[Desktop] Copying runtime-template to ${templateDest}`)
     fs.cpSync(bundledTemplate, templateDest, {
       recursive: true,
-      filter: (src: string) => !src.includes('node_modules') && !src.includes('.git'),
+      // Match whole path segments: a substring test on '.git' also dropped
+      // `.gitignore`, so every project seeded from this copy committed its
+      // node_modules on first open.
+      filter: (src: string) => !isTemplateCopyExcluded(src),
     })
     console.log('[Desktop] Runtime template installed')
   } else {
@@ -219,6 +222,24 @@ function ensureRuntimeTemplate(): void {
     fs.copyFileSync(agentsMdSrc, agentsMdDest)
     console.log('[Desktop] Added missing AGENTS.md to runtime template')
   }
+
+  // Self-heal installs whose template copy lost `.gitignore` to the old
+  // substring filter above (every release up to 1.14.x).
+  for (const name of ['.gitignore', '.gitattributes']) {
+    const dest = path.join(templateDest, name)
+    const src = path.join(bundledTemplate, name)
+    if (!fs.existsSync(dest) && fs.existsSync(src)) {
+      fs.copyFileSync(src, dest)
+      console.log(`[Desktop] Added missing ${name} to runtime template`)
+    }
+  }
+}
+
+const TEMPLATE_SKIP_SEGMENTS = new Set(['node_modules', '.git'])
+
+/** True when any path segment is a directory we never copy out of the template. */
+export function isTemplateCopyExcluded(src: string): boolean {
+  return src.split(/[\\/]+/).some((segment) => TEMPLATE_SKIP_SEGMENTS.has(segment))
 }
 
 function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
@@ -254,6 +275,15 @@ export async function startLocalServer(): Promise<void> {
   const serverEntry = IS_DEV
     ? path.join(projectRoot, 'apps', 'api', 'src', 'entry.ts')
     : path.join(bundleDir, 'api.js')
+  const compiledAgentRuntime = path.join(
+    bundleDir,
+    process.platform === 'win32' ? 'agent-runtime.exe' : 'agent-runtime',
+  )
+  const agentRuntimeEntry = !IS_DEV && existsSync(compiledAgentRuntime)
+    ? compiledAgentRuntime
+    : IS_DEV
+      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'server.ts')
+      : path.join(bundleDir, 'agent-runtime.js')
   const serverArgs = IS_DEV ? ['--conditions=development', serverEntry] : [serverEntry]
 
   // Kill leftover processes from a previous session
@@ -315,9 +345,7 @@ export async function startLocalServer(): Promise<void> {
     SHOGO_BUNDLED_SDK_CLI: IS_DEV
       ? path.join(projectRoot, 'packages', 'sdk', 'bin', 'cli.mjs')
       : path.join(projectRoot, 'sdk-cli.mjs'),
-    AGENT_RUNTIME_ENTRY: IS_DEV
-      ? path.join(projectRoot, 'packages', 'agent-runtime', 'src', 'server.ts')
-      : path.join(bundleDir, 'agent-runtime.js'),
+    AGENT_RUNTIME_ENTRY: agentRuntimeEntry,
     CANVAS_RUNTIME_DIST: IS_DEV
       ? path.join(projectRoot, 'packages', 'canvas-runtime', 'dist')
       : path.join(projectRoot, 'canvas-runtime'),

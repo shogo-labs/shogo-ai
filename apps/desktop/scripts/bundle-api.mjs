@@ -184,6 +184,39 @@ function main() {
         }
       }
       fs.rmSync(tempDir, { recursive: true, force: true })
+
+      // A standalone runtime avoids reparsing/JITing the large agent-runtime
+      // graph on every project open. Keep the JS bundle as a fallback for
+      // development and for platforms where standalone compilation is not
+      // available.
+      if (name === 'agent-runtime' && !process.env.SHOGO_SKIP_RUNTIME_COMPILE) {
+        const binaryName = process.platform === 'win32' ? 'agent-runtime.exe' : 'agent-runtime'
+        const compileFlags = process.platform === 'win32' ? ' --windows-hide-console' : ''
+        const compiledInput = path.join(bundleDir, output)
+        const binaryPath = path.join(bundleDir, binaryName)
+        logStep(`Compiling agent-runtime (${binaryName})...`)
+        try {
+          execSync(
+            `bun build "${compiledInput}" --compile --bytecode --target=bun --packages external${compileFlags} --outfile "${binaryPath}"`,
+            { cwd: REPO_ROOT, stdio: 'inherit', timeout: 180_000 },
+          )
+          console.log(`  ✓ Compiled ${binaryName} with bytecode`)
+        } catch (err) {
+          // Bun's bytecode/CJS path currently rejects the runtime's deliberate
+          // top-level await. A standalone executable without bytecode still
+          // removes the dependency graph parse/JIT on process startup.
+          console.warn(`  Bytecode compile unavailable (${err.message}); retrying standalone compile`)
+          try {
+            execSync(
+              `bun build "${compiledInput}" --compile --target=bun --packages external${compileFlags} --outfile "${binaryPath}"`,
+              { cwd: REPO_ROOT, stdio: 'inherit', timeout: 180_000 },
+            )
+            console.log(`  ✓ Compiled ${binaryName} without bytecode (top-level await fallback)`)
+          } catch (fallbackErr) {
+            console.warn(`  Standalone agent-runtime compile failed; JS fallback remains available: ${fallbackErr.message}`)
+          }
+        }
+      }
     } catch (err) {
       console.error(`  Failed to bundle ${name}:`)
       console.error(err.stderr || err.message)

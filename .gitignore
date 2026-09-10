@@ -182,6 +182,7 @@ apps/api/shogo-local.db
 
 *.webm
 test-results/
+bench-results/
 load-tests/results/
 load-tests/reports/
 load-tests/.env

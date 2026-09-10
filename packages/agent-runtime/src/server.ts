@@ -15,6 +15,7 @@
 
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname, basename } from 'path'
+import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import {
@@ -57,6 +58,7 @@ import {
   persistRepoToStore,
   packRepoArchive,
   seedRepoIfAbsent,
+  untrackDependencyDirs,
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
@@ -160,9 +162,12 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // Configuration
 // =============================================================================
 
-const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
+let WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
+const POOL_STATE_ROOT = process.env.SHOGO_POOL_STATE_DIR || join(tmpdir(), 'shogo-local')
+const POOL_SENTINEL_PATH = process.env.SHOGO_POOL_SENTINEL ||
+  join(tmpdir(), 'shogo-current-project')
 
 /**
  * External (VS Code-style) project mode. When set to `'external'`, the
@@ -348,6 +353,8 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 let agentGateway: any = null
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 let gitSyncInstance: GitWorkspaceSync | null = null
+/** Resolves once the deferred local git bootstrap (initializeEssentials) has run; see gitLayerReady users. */
+let gitLayerReady: Promise<void> = Promise.resolve()
 /** Writable-state sync for server-backed published apps (SHOGO_PUBLISHED_MODE). */
 let publishedDataSyncInstance: PublishedDataSync | null = null
 /**
@@ -547,15 +554,16 @@ const { app, state, logTiming } = await createRuntimeApp({
   internalPaths: ['/agent/heartbeat/trigger'],
   authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
   async onAssign(projectId, envVars) {
-    const hostWorkspacesRoot = '/host-workspaces'
-    const sentinelPath = '/tmp/shogo-current-project'
+    const hostWorkspacesRoot = envVars.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
+    const assignedWorkspaceDir = envVars.WORKSPACE_DIR || envVars.PROJECT_DIR
+    const sentinelPath = POOL_SENTINEL_PATH
 
     // --- Re-assignment cleanup: remove orphaned state from previous project ---
     try {
       if (existsSync(sentinelPath)) {
         const oldProjectId = readFileSync(sentinelPath, 'utf-8').trim()
         if (oldProjectId && oldProjectId !== projectId) {
-          const oldLocalState = `/tmp/shogo-local/${oldProjectId}`
+          const oldLocalState = join(POOL_STATE_ROOT, oldProjectId)
           if (existsSync(oldLocalState)) {
             rmSync(oldLocalState, { recursive: true, force: true })
           }
@@ -577,6 +585,15 @@ const { app, state, logTiming } = await createRuntimeApp({
     const perProjectMount = process.env.MOUNT_WORKSPACE
     const ninePAvailable = process.env.VM_WORKSPACE_MOUNTED === 'true'
     let useMount = ninePAvailable && perProjectMount !== 'false'
+    if (!useMount && assignedWorkspaceDir) {
+      // Desktop host-pool assignments run in the same process model as cloud
+      // warm pools, but do not have a 9p mount at /host-workspaces. Point all
+      // subsequent initialization at the assigned host directory instead of
+      // leaving the pool template directory mounted forever. Mounted VM
+      // assignments keep `/workspace` as the symlink anchor.
+      WORKSPACE_DIR = assignedWorkspaceDir
+      process.env.WORKSPACE_DIR = assignedWorkspaceDir
+    }
 
     // Graceful fallback: if mount requested but 9p device is absent, warn and use overlay
     if (useMount && !existsSync(hostWorkspacesRoot)) {
@@ -648,7 +665,7 @@ const { app, state, logTiming } = await createRuntimeApp({
       //   4. Throw with a useful message instead of catching silently
       //      so the caller (and the warm-pool failure counter) sees
       //      the actual cause.
-      const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
+      const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
       mkdirSync(localShogoDir, { recursive: true })
       const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
 
@@ -1892,7 +1909,10 @@ app.post('/agent/chat', async (c) => {
         // `triggerSync(false)` is debounced internally (~1.5s) and
         // returns immediately, so this is a fire-and-forget that
         // doesn't add latency to the turn-complete response.
-        if (gitSyncInstance) {
+        // `gitLayerReady` is already settled except right after a deferred
+        // local bootstrap (desktop), where it lands within ~1s of assign.
+        void gitLayerReady.then(() => {
+          if (!gitSyncInstance) return
           try {
             // Offload large/binary assets first (updates .git/info/exclude
             // synchronously so the debounced push below stays source-only).
@@ -1901,7 +1921,7 @@ app.post('/agent/chat', async (c) => {
           } catch (err: any) {
             console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
           }
-        }
+        })
 
         // BETA: per-chat git worktrees. When this session runs in an isolated
         // worktree, the agent's edits live on its branch (not the main tree),
@@ -5474,7 +5494,7 @@ async function initializeEssentials(): Promise<void> {
   // is handled in onAssign; for cold-start VMs (e.g. evals) we do it here.
   if (process.env.VM_WORKSPACE_MOUNTED === 'true') {
     const projectId = process.env.PROJECT_ID || 'default'
-    const localShogoDir = `/tmp/shogo-local/${projectId}/.shogo`
+    const localShogoDir = join(POOL_STATE_ROOT, projectId, '.shogo')
     mkdirSync(localShogoDir, { recursive: true })
     const workspaceShogoDir = join(WORKSPACE_DIR, '.shogo')
     try {
@@ -5628,6 +5648,7 @@ async function initializeEssentials(): Promise<void> {
   // git commit` into their working tree every turn and `seedRepoIfAbsent`
   // a `.git` into folders we don't own. See shouldRunGitWorkspaceSync.
   if (shouldRunGitWorkspaceSync({ workingMode: WORKING_MODE, workerOwnsSync: skipInternalSync, wantGitSync })) {
+    const initGitLayer = async (): Promise<void> => {
     // Cold-start git lifecycle. The pod owns the repo: before the per-turn
     // committer can run, the working tree must be a git repo with the durable
     // history present.
@@ -5703,6 +5724,17 @@ async function initializeEssentials(): Promise<void> {
       } catch {
         /* HEAD may not exist yet on a brand-new workspace */
       }
+      // Repair repos whose seed commit swept up node_modules / dist (desktop
+      // projects created before the template copy kept `.gitignore`). One
+      // `git ls-files` per dir when healthy; off the readiness path either way.
+      void untrackDependencyDirs(WORKSPACE_DIR, { logger: console })
+        .then(async (untracked) => {
+          if (untracked.length === 0) return
+          logTiming(`Git repo repaired: untracked ${untracked.join(', ')}`)
+          const sha = await getHeadSha(WORKSPACE_DIR).catch(() => null)
+          if (sha) cachedRepoHeadSha = sha
+        })
+        .catch(() => { /* logged by the helper */ })
       const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
       if (lfCfg) {
         try {
@@ -5767,6 +5799,24 @@ async function initializeEssentials(): Promise<void> {
       }
     } catch (error: any) {
       console.error('[agent-runtime] Git sync init failed:', error.message)
+    }
+    }
+
+    // When the repo is restored from object storage the working tree is
+    // rebuilt by `git reset --hard`, so the agent and preview must wait for it.
+    // A pod-owned repo with no store to restore from (desktop / host runtimes)
+    // only runs local `git init` + LFS setup: ~1s of the 1.4s /pool/assign on
+    // Windows that nothing else depends on. Run it off the readiness path and
+    // let the turn-complete committer await `gitLayerReady`.
+    const restoresFromStore =
+      cloudSyncMode === 'git_only' && !!repoStoreConfigFromEnv() && !isHostMediatedDurability()
+    if (cloudSyncMode === 'git_only' && !restoresFromStore) {
+      gitLayerReady = initGitLayer()
+        .then(() => logTiming('Git layer ready (background)'))
+        .catch((error: any) => console.error('[agent-runtime] background git layer init failed:', error?.message ?? error))
+      logTiming('Git layer initializing in background (local repo, nothing to restore)')
+    } else {
+      await initGitLayer()
     }
   }
 
@@ -6291,7 +6341,13 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 // Start Server
 // =============================================================================
 
-if (state.isPoolMode && !state.poolAssigned) {
+if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESEED === '1') {
+  // Host warm pool (desktop): the API seeds the project workspace and installs
+  // its dependencies before /pool/assign hands the directory over, so the
+  // pod-style pre-seed below would only fill a scratch directory that is
+  // discarded at assignment (and on Windows cost a full npm install per boot).
+  logTiming('Pool mode: host pool, workspace prepared by the API at assign (pre-seed skipped)')
+} else if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
   ensureWorkspaceFiles()
   ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
@@ -6358,6 +6414,11 @@ if (state.isPoolMode && !state.poolAssigned) {
 // Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque
 // (no slashes) and is whatever PtySessionManager.create() assigned.
 const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
+let healthPerfReported = false
+
+if (process.env.SHOGO_PERF_LOG === '1') {
+  logTiming('server-export-evaluated')
+}
 
 export default {
   port: PORT,
@@ -6370,6 +6431,18 @@ export default {
     // Bun.serve() had already bound the port. This early return skips
     // that path for the smallest possible response.
     if (url.pathname === '/health' && req.method === 'GET') {
+      if (!healthPerfReported && process.env.SHOGO_PERF_LOG === '1') {
+        healthPerfReported = true
+        console.log(`[shogo-perf] ${JSON.stringify({
+          perf: 'open',
+          source: 'agent-runtime',
+          phase: 'health-first-response',
+          projectId: process.env.PROJECT_ID,
+          openAttemptId: process.env.SHOGO_OPEN_ID,
+          atMs: Date.now(),
+          startupTime: process.env.STARTUP_TIME ? Number(process.env.STARTUP_TIME) : undefined,
+        })}`)
+      }
       // The slow path (createRuntimeApp's /health in shared-runtime) reports
       // `poolMode: IS_POOL_MODE && !state.poolAssigned`. The fast path needs
       // to match that contract or the warm-pool tests + RuntimeManager
