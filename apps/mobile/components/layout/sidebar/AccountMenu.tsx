@@ -50,6 +50,8 @@ import {
   AccountSettingsGroup,
   AccountSettingsRow,
 } from "./AccountSettingsGroup";
+import { NativeAccountSettingsSection } from "./NativeAccountSettingsSection";
+import type { AccountSettingsSheetTab } from "../../settings/account-settings-sheets";
 
 const DOCS_URL = "https://docs.shogo.ai/";
 const CHANGELOG_URL = "https://docs.shogo.ai/changelog";
@@ -63,6 +65,8 @@ const THEME_CHOICES = [
 function themeDisplayName(theme: string): string {
   return THEME_CHOICES.find((choice) => choice.value === theme)?.label ?? "System";
 }
+
+function noopNativeSettingsTab(_tab: AccountSettingsSheetTab) {}
 
 /** Phone/narrow web Account screen. Wide web keeps the AccountMenu popover. */
 export const ACCOUNT_SCREEN_HREF = "/(app)/account";
@@ -265,6 +269,9 @@ export interface WorkspaceMenuSectionProps {
   includePlan?: boolean;
   /** Native Account group rows (Profile, API Keys) rendered with Usage. */
   accountItems?: ReactNode;
+  /** Native Settings rows (Workspace, People, …) between identity and Account. */
+  settingsItems?: ReactNode;
+  isNative?: boolean;
 }
 
 export function WorkspaceMenuSection({
@@ -282,6 +289,7 @@ export function WorkspaceMenuSection({
   isNative = false,
   includePlan = true,
   accountItems,
+  settingsItems,
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
@@ -295,97 +303,78 @@ export function WorkspaceMenuSection({
     resolvedPlanId !== "free" ? resolvedPlanId : undefined,
   );
 
-  const identity = currentWorkspace ? (
-    <>
-      <View className={cn("px-4", isNative ? "py-4" : "py-3")}>
-        <View className="flex-row items-start gap-3">
-          <View
-            className={cn(
-              "rounded-lg bg-primary/10 items-center justify-center",
-              isNative ? density.hitSize : "h-10 w-10",
-            )}
-          >
-            <Text
-              className={cn(
-                "font-medium text-primary",
-                isNative ? density.text.body : "text-sm",
-              )}
-            >
-              {wsInitial}
-            </Text>
-          </View>
-          <View className="flex-1 min-w-0">
-            <Text
-              className={cn(
-                "font-medium text-foreground",
-                density.text.title,
-              )}
-              numberOfLines={1}
-            >
-              {currentWorkspace.name}
-            </Text>
-            {showBilling && (
-              <Text
-                className={cn(
-                  "text-muted-foreground",
-                  density.text.label,
-                  "mt-0.5",
-                )}
-              >
-                {planType} Plan {"\u00B7"} 1 member
-              </Text>
-            )}
-          </View>
-        </View>
-      </View>
-      <View className={cn("flex-row gap-2 px-3", isNative ? "pb-4" : "pb-2")}>
-        <Pressable
-          onPress={() => {
-            onNavigate("/(app)/settings");
-            onClose();
-          }}
+  const openWorkspaceSettings = useCallback(() => {
+    onNavigate("/(app)/settings");
+    onClose();
+  }, [onNavigate, onClose]);
+  const openInvite = useCallback(() => {
+    onNavigate("/(app)/settings?tab=people");
+    onClose();
+  }, [onNavigate, onClose]);
+
+  const identityHeader = currentWorkspace ? (
+    <View className={cn("px-4", isNative ? "py-4" : "py-3")}>
+      <View className="flex-row items-start gap-3">
+        <View
           className={cn(
-            "flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted",
-            isNative ? "h-10" : "h-8",
+            "rounded-lg bg-primary/10 items-center justify-center",
+            isNative ? density.hitSize : "h-10 w-10",
           )}
         >
-          <Settings
-            size={isNative ? 16 : 14}
-            className="text-muted-foreground"
-          />
           <Text
-            className={cn("text-foreground", isNative ? "text-sm" : "text-xs")}
-          >
-            Settings
-          </Text>
-        </Pressable>
-        {!localMode && (
-          <Pressable
-            onPress={() => {
-              onNavigate("/(app)/settings?tab=people");
-              onClose();
-            }}
             className={cn(
-              "flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted",
-              isNative ? "h-10" : "h-8",
+              "font-medium text-primary",
+              isNative ? density.text.body : "text-sm",
             )}
           >
-            <Users
-              size={isNative ? 16 : 14}
-              className="text-muted-foreground"
-            />
+            {wsInitial}
+          </Text>
+        </View>
+        <View className="flex-1 min-w-0">
+          <Text
+            className={cn(
+              "font-medium text-foreground",
+              density.text.title,
+            )}
+            numberOfLines={1}
+          >
+            {currentWorkspace.name}
+          </Text>
+          {showBilling && (
             <Text
               className={cn(
-                "text-foreground",
-                isNative ? "text-sm" : "text-xs",
+                "text-muted-foreground",
+                density.text.label,
+                "mt-0.5",
               )}
             >
-              Invite
+              {planType} Plan {"\u00B7"} 1 member
             </Text>
-          </Pressable>
-        )}
+          )}
+        </View>
       </View>
-    </>
+    </View>
+  ) : null;
+
+  const identityPills = currentWorkspace ? (
+    <View className="flex-row gap-2 px-3 pb-2">
+      <Pressable
+        onPress={openWorkspaceSettings}
+        className="h-8 flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted"
+      >
+        <Settings size={14} className="text-muted-foreground" />
+        <Text className="text-xs text-foreground">Settings</Text>
+      </Pressable>
+      {!localMode && (
+        <Pressable
+          onPress={openInvite}
+          className="h-8 flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted"
+        >
+          <Users size={14} className="text-muted-foreground" />
+          <Text className="text-xs text-foreground">Invite</Text>
+        </Pressable>
+      )}
+    </View>
   ) : null;
 
   const plan = includePlan && showBilling && currentWorkspace ? (
@@ -541,9 +530,10 @@ export function WorkspaceMenuSection({
   if (isNative) {
     return (
       <>
-        {identity ? (
-          <AccountSettingsGroup className="mt-2">{identity}</AccountSettingsGroup>
+        {identityHeader ? (
+          <AccountSettingsGroup className="mt-2">{identityHeader}</AccountSettingsGroup>
         ) : null}
+        {settingsItems}
         {plan || accountItems ? (
           <AccountSettingsGroup title="Account">
             {accountItems}
@@ -559,7 +549,8 @@ export function WorkspaceMenuSection({
 
   return (
     <>
-      {identity}
+      {identityHeader}
+      {identityPills}
       {plan}
       <View className="h-px bg-border" />
       <View className="py-1">
@@ -668,6 +659,8 @@ export interface AccountMenuProps extends UserMenuProps {
   onSwitchWorkspace: (workspaceId: string) => void;
   onCreateWorkspace: () => void;
   localMode?: boolean;
+  /** Native Account: open a settings tab in a sheet instead of pushing Settings. */
+  onOpenNativeSettingsTab?: (tab: AccountSettingsSheetTab) => void;
 }
 
 export function AccountMenu({
@@ -827,12 +820,14 @@ function NativeAccountPersonalGroups({
   isSuperAdmin,
   localMode,
   onClose,
+  onOpenAppearance,
 }: {
   onSignOut: () => void;
   onNavigate: (href: string) => void;
   isSuperAdmin?: boolean;
   localMode?: boolean;
   onClose: () => void;
+  onOpenAppearance?: () => void;
 }) {
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const { theme, setTheme } = useTheme();
@@ -841,6 +836,7 @@ function NativeAccountPersonalGroups({
   const density = PHONE_DENSITY;
   const iconClass = "text-muted-foreground";
   const iconSize = density.icon.lg;
+  const appearanceOpensSheet = !!onOpenAppearance;
 
   return (
     <>
@@ -848,15 +844,18 @@ function NativeAccountPersonalGroups({
         <AccountSettingsRow
           icon={<Monitor size={iconSize} className={iconClass} />}
           label="Appearance"
-          accessibilityState={{ expanded: appearanceOpen }}
+          accessibilityState={appearanceOpensSheet ? undefined : { expanded: appearanceOpen }}
           trailing={
             <Text className={cn("text-muted-foreground", density.text.body)}>
               {themeDisplayName(theme)}
             </Text>
           }
-          showChevron={!appearanceOpen}
-          separator={appearanceOpen}
-          onPress={() => setAppearanceOpen((open) => !open)}
+          showChevron={appearanceOpensSheet || !appearanceOpen}
+          separator={!appearanceOpensSheet && appearanceOpen}
+          onPress={() => {
+            if (onOpenAppearance) onOpenAppearance()
+            else setAppearanceOpen((open) => !open)
+          }}
         />
         {appearanceOpen
           ? THEME_CHOICES.map(({ value, label, Icon }, index) => (
@@ -972,12 +971,14 @@ function NativeAccountItems({
   onClose,
   localMode,
   showBilling,
+  onOpenProfile,
 }: {
   user: UserMenuProps["user"];
   onNavigate: (href: string) => void;
   onClose: () => void;
   localMode?: boolean;
   showBilling: boolean;
+  onOpenProfile?: () => void;
 }) {
   const density = PHONE_DENSITY;
   const iconSize = density.icon.lg;
@@ -1006,8 +1007,11 @@ function NativeAccountItems({
         label="Profile"
         separator={showKeys || showBilling}
         onPress={() => {
-          onNavigate("/(app)/profile");
-          onClose();
+          if (onOpenProfile) onOpenProfile()
+          else {
+            onNavigate("/(app)/profile");
+            onClose();
+          }
         }}
       />
       {showKeys ? (
@@ -1041,7 +1045,16 @@ export function AccountMenuBody({
   localMode,
   onClose,
   isNative = false,
+  onOpenNativeSettingsTab,
 }: AccountMenuProps & { onClose: () => void; isNative?: boolean }) {
+  const openNativeTab = onOpenNativeSettingsTab ?? noopNativeSettingsTab;
+  const openProfileSheet = useCallback(() => {
+    onOpenNativeSettingsTab?.("account");
+  }, [onOpenNativeSettingsTab]);
+  const openAppearanceSheet = useCallback(() => {
+    onOpenNativeSettingsTab?.("appearance");
+  }, [onOpenNativeSettingsTab]);
+
   if (isNative) {
     return (
       <>
@@ -1058,6 +1071,14 @@ export function AccountMenuBody({
           localMode={localMode}
           onClose={onClose}
           isNative
+          settingsItems={
+            <NativeAccountSettingsSection
+              hasWorkspace={!!currentWorkspace}
+              localMode={localMode}
+              showBilling={showBilling}
+              onOpenTab={openNativeTab}
+            />
+          }
           accountItems={
             <NativeAccountItems
               user={user}
@@ -1065,6 +1086,9 @@ export function AccountMenuBody({
               onClose={onClose}
               localMode={localMode}
               showBilling={showBilling}
+              onOpenProfile={
+                onOpenNativeSettingsTab ? openProfileSheet : undefined
+              }
             />
           }
         />
@@ -1074,6 +1098,9 @@ export function AccountMenuBody({
           isSuperAdmin={isSuperAdmin}
           localMode={localMode}
           onClose={onClose}
+          onOpenAppearance={
+            onOpenNativeSettingsTab ? openAppearanceSheet : undefined
+          }
         />
       </>
     );

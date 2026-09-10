@@ -118,7 +118,7 @@ import { useDualPlan } from '../../lib/dual-plan-preference'
 
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support' | 'appearance'
+export type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support' | 'appearance'
 
 const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'remote-control', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support', 'appearance']
 
@@ -3263,7 +3263,7 @@ function WorkspaceCostTab() {
 // ============================================================================
 
 
-const SettingsContent = observer(function SettingsContent({
+export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false
 }: {

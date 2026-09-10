@@ -45,6 +45,13 @@ mock.module("lucide-react-native", () => {
     Monitor: Icon("Monitor"),
     Moon: Icon("Moon"),
     Plus: Icon("Plus"),
+    Plug: Icon("Plug"),
+    Boxes: Icon("Boxes"),
+    Building2: Icon("Building2"),
+    BarChart3: Icon("BarChart3"),
+    Bug: Icon("Bug"),
+    Coins: Icon("Coins"),
+    CreditCard: Icon("CreditCard"),
     Settings: Icon("Settings"),
     Shield: Icon("Shield"),
     Sparkles: Icon("Sparkles"),
@@ -155,12 +162,22 @@ describe("AccountMenuBody native grouping", () => {
       />,
     )
 
+    expect(screen.getByText("Settings")).toBeTruthy()
+    expect(screen.getByText("Plan")).toBeTruthy()
     expect(screen.getByText("Account")).toBeTruthy()
     expect(screen.getByText("Workspaces")).toBeTruthy()
     expect(screen.getByText("Theme")).toBeTruthy()
     expect(screen.getByText("Resources")).toBeTruthy()
     expect(screen.getByText("More")).toBeTruthy()
     expect(screen.getByText("Email")).toBeTruthy()
+    expect(screen.getByLabelText("Workspace")).toBeTruthy()
+    expect(screen.getByLabelText("People")).toBeTruthy()
+    expect(screen.getByLabelText("Models")).toBeTruthy()
+    expect(screen.getByLabelText("Integrations")).toBeTruthy()
+    expect(screen.getByLabelText("Remote Control")).toBeTruthy()
+    expect(screen.getByLabelText("Billing")).toBeTruthy()
+    expect(screen.getByLabelText("Usage")).toBeTruthy()
+    expect(screen.getByLabelText("Costs")).toBeTruthy()
     expect(screen.getByLabelText("Profile")).toBeTruthy()
     expect(screen.getByLabelText("API Keys")).toBeTruthy()
     expect(screen.getByLabelText("Appearance")).toBeTruthy()
@@ -170,12 +187,43 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.queryByText("All workspaces")).toBeNull()
   })
 
+  test("native Settings rows open sheets instead of the Settings page", () => {
+    const onNavigate = mock(() => {})
+    const onOpenNativeSettingsTab = mock(() => {})
+    render(
+      <AccountMenuBody
+        {...bodyProps}
+        showBilling
+        onNavigate={onNavigate}
+        onOpenNativeSettingsTab={onOpenNativeSettingsTab}
+        isNative
+      />,
+    )
+
+    fireEvent.click(screen.getByLabelText("Workspace"))
+    fireEvent.click(screen.getByLabelText("People"))
+    fireEvent.click(screen.getByLabelText("Remote Control"))
+    fireEvent.click(screen.getByLabelText("Billing"))
+    fireEvent.click(screen.getByLabelText("Appearance"))
+    fireEvent.click(screen.getByLabelText("Profile"))
+    expect(onOpenNativeSettingsTab).toHaveBeenCalledWith("workspace")
+    expect(onOpenNativeSettingsTab).toHaveBeenCalledWith("people")
+    expect(onOpenNativeSettingsTab).toHaveBeenCalledWith("remote-control")
+    expect(onOpenNativeSettingsTab).toHaveBeenCalledWith("billing")
+    expect(onOpenNativeSettingsTab).toHaveBeenCalledWith("appearance")
+    expect(onOpenNativeSettingsTab).toHaveBeenCalledWith("account")
+    expect(onNavigate).not.toHaveBeenCalled()
+  })
+
   test("wide web popover stays a flat ungrouped menu", () => {
     render(<AccountMenuBody {...bodyProps} isNative={false} />)
 
     expect(screen.getByText("All workspaces")).toBeTruthy()
+    expect(screen.queryByText("Workspace")).toBeNull()
     expect(screen.queryByText("Theme")).toBeNull()
     expect(screen.queryByText("Resources")).toBeNull()
     expect(screen.getByLabelText("Profile")).toBeTruthy()
+    expect(screen.getByText("Settings")).toBeTruthy()
+    expect(screen.getByText("Invite")).toBeTruthy()
   })
 })

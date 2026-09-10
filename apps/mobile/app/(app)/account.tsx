@@ -18,6 +18,11 @@ import { usePostHogSafe } from "../../contexts/posthog"
 import { useResolvedTheme } from "../../contexts/theme"
 import { AccountMenuBody } from "../../components/layout/sidebar/AccountMenu"
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal"
+import { NativeAccountSettingsSheet } from "../../components/settings/NativeAccountSettingsSheet"
+import {
+  accountSettingsSheetTitle,
+  type AccountSettingsSheetTab,
+} from "../../components/settings/account-settings-sheets"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { EVENTS, trackEvent } from "../../lib/analytics"
 import { api } from "../../lib/api"
@@ -27,6 +32,7 @@ import { usePlatformConfig } from "../../lib/platform-config"
 import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route"
 import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace"
 import { setActiveWorkspaceId } from "../../lib/workspace-store"
+import { SettingsContent } from "./settings"
 
 export default observer(function AccountPage() {
   const router = useRouter()
@@ -44,6 +50,7 @@ export default observer(function AccountPage() {
   const currentWorkspace = useActiveWorkspace()
   const [hasAdminAccess, setHasAdminAccess] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<AccountSettingsSheetTab | null>(null)
   const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
 
@@ -150,6 +157,8 @@ export default observer(function AccountPage() {
     } catch {}
   }, [posthog, signOut])
 
+  const closeSettingsSheet = useCallback(() => setSettingsTab(null), [])
+
   if (!isSupported) return null
 
   return (
@@ -188,8 +197,21 @@ export default observer(function AccountPage() {
           localMode={localMode}
           onClose={() => {}}
           isNative
+          onOpenNativeSettingsTab={setSettingsTab}
         />
       </ScrollView>
+      <NativeAccountSettingsSheet
+        visible={settingsTab != null}
+        title={settingsTab ? accountSettingsSheetTitle(settingsTab) : ""}
+        onClose={closeSettingsSheet}
+      >
+        {settingsTab ? (
+          <SettingsContent
+            activeTab={settingsTab}
+            localMode={localMode || !features.billing}
+          />
+        ) : null}
+      </NativeAccountSettingsSheet>
       <CreateWorkspaceModal
         visible={createWorkspaceOpen}
         onClose={() => setCreateWorkspaceOpen(false)}
