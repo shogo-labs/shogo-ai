@@ -76,6 +76,7 @@ export default function AppLayout() {
   const isNotificationsPage = pathname === '/notifications' || pathname === '/(app)/notifications'
   const isApiKeysPage = pathname === '/api-keys' || pathname === '/(app)/api-keys'
   const isProfilePage = pathname === '/profile' || pathname === '/(app)/profile'
+  const isAccountPage = pathname === '/account' || pathname === '/(app)/account'
   const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
   const isProjectChatsPage = pathname === '/project-chats' || pathname === '/(app)/project-chats'
 
@@ -145,6 +146,7 @@ export default function AppLayout() {
     isNotificationsPage ||
     isApiKeysPage ||
     isProfilePage ||
+    isAccountPage ||
     isSearchPage ||
     isProjectChatsPage
   const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
@@ -158,9 +160,9 @@ export default function AppLayout() {
   const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
 
   useEffect(() => {
-    if (!isWide) return
+    if (!isWide && !isAccountPage) return
     resetDrawer()
-  }, [isWide, resetDrawer])
+  }, [isAccountPage, isWide, resetDrawer])
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return
@@ -222,7 +224,7 @@ export default function AppLayout() {
   }
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
-  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage)
+  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage)
 
   return (
     <DomainProvider>

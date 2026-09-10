@@ -67,7 +67,7 @@ import {
   nextProminentComposerHeight,
 } from "./useProminentComposerExpansion"
 import { EnvironmentPicker } from "./EnvironmentPicker"
-import { COMPOSER_KEYBOARD_PROPS } from "../../lib/composer-phone"
+import { COMPOSER_KEYBOARD_PROPS, composerSendChrome } from "../../lib/composer-phone"
 import {
   useTypingPlaceholder,
   AGENT_PLACEHOLDER_PREFIX,
@@ -195,6 +195,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       colorScheme: prominentColorScheme,
     })
     const useCurrentNativeSizing = isNative && !useProminentComposer
+    const sendChrome = composerSendChrome(isNative || useProminentComposer)
     const inputMinHeight = sizes.inputMinHeight
     const inputMaxHeight = sizes.inputMaxHeight
     const [internalValue, setInternalValue] = useState("")
@@ -895,7 +896,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   accessibilityLabel="Stop voice recording"
                   className={cn(
                     "rounded-full bg-foreground/90 items-center justify-center active:opacity-70",
-                    useProminentComposer ? "h-8 w-8" : useCurrentNativeSizing ? "h-9 w-9" : "h-6 w-6",
+                    useProminentComposer || useCurrentNativeSizing ? sendChrome.sizeClassName : "h-6 w-6",
                   )}
                 >
                   <Square className="text-background" size={useProminentComposer ? 10 : useCurrentNativeSizing ? 14 : 10} fill="currentColor" />
@@ -936,8 +937,8 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     disabled}
                   loading={isLoading}
                   prominent={useProminentComposer}
-                  sizeClassName={useCurrentNativeSizing ? "h-9 w-9" : "h-5 w-5"}
-                  iconSize={useProminentComposer ? 14 : useCurrentNativeSizing ? 18 : 12}
+                  sizeClassName={sendChrome.sizeClassName}
+                  iconSize={sendChrome.iconSize}
                   fillClassName={useProminentComposer ? "": "bg-primary" }
                   iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
                   fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}

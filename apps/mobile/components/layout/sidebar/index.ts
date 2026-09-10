@@ -3,6 +3,7 @@
 
 export { AppSidebar } from "./AppSidebar";
 export {
+  ACCOUNT_SCREEN_HREF,
   AccountMenu,
   AccountNavLinks,
   UserMenuContent,
