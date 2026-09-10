@@ -131,6 +131,9 @@ export const NATIVE_PHONE_SHEET_BACKDROP = {
 export const NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO = 0.78;
 export const NATIVE_PHONE_SHEET_COMPACT_RATIO = 0.72;
 export const NATIVE_PHONE_SHEET_BODY_RATIO = 0.62;
+/** Tall sheet so Account can host a settings tab without a push. */
+export const NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO = 0.92;
+export const NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO = 0.78;
 export const NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO = 0.56;
 export const NATIVE_PHONE_SHEET_FADE_MS = 320;
 export const NATIVE_PHONE_SYSTEM_GRAY = {
