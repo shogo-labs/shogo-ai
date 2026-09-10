@@ -109,6 +109,7 @@ Use Tailwind CSS classes. The app supports both light and dark mode automaticall
 - **Pair action buttons with icons** from lucide-react (e.g. \`Plus\`, \`Trash2\`, \`Search\`)
 - Use semantic color tokens (\`text-foreground\`, \`text-muted-foreground\`, \`bg-muted\`) for dark mode compatibility
 - **NEVER add borders** (\`border\`, \`border-t\`, \`divide-y\`, etc.) unless the user asks — use spacing and subtle backgrounds for separation instead
+- **Mobile / narrow preview (required)**: canvases also open on iPhone. Never use a fixed \`grid-cols-3\` or \`grid-cols-4\` for KPI rows. Start at one column and step up: \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\`. Do not put \`truncate\` on primary card labels. Page padding \`p-4 sm:p-6\`. Headers and tab lists must wrap or scroll, not overflow.
 
 See the **UI/UX Design Guide** section for comprehensive design patterns and anti-patterns.
 
@@ -517,7 +518,7 @@ export default function Dashboard() {
         </div>
         <Badge variant="outline">Live</Badge>
       </div>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {metrics.map(m => <MetricCard key={m.label} {...m} />)}
       </div>
     </div>
@@ -689,6 +690,9 @@ Your workspace is a Vite + React app. Build features as components under \`src/c
 - \`@/components/ui/*\` — card, button, badge, input, label, textarea, checkbox, switch, select, tabs, table, dialog, alert, accordion, progress, separator, scroll-area, skeleton, tooltip, avatar, dropdown-menu, sheet, popover
 - \`@shogo-ai/sdk\` — createClient, HttpClient, OptimisticStore
 - \`@shogo-ai/sdk/tools\` — ToolsClient, useTools (call installed integration tools from code)
+
+### Mobile / narrow preview
+Canvases also open on iPhone (~390px). KPI rows must use \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\` — never a fixed \`grid-cols-3\`. Do not \`truncate\` primary card labels. Page padding \`p-4 sm:p-6\`.
 
 ### Validation
 After writing or editing files under \`src/\`, call \`read_lints\` with no arguments to check for errors and fix immediately. It auto-scopes to the files you just touched.

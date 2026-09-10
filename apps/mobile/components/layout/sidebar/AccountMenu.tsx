@@ -287,13 +287,13 @@ export function WorkspaceMenuSection({
             <View
               className={cn(
                 "rounded-lg bg-primary/10 items-center justify-center",
-                isNative ? "h-11 w-11" : "h-10 w-10",
+                isNative ? density.hitSize : "h-10 w-10",
               )}
             >
               <Text
                 className={cn(
                   "font-medium text-primary",
-                  isNative ? "text-base" : "text-sm",
+                  isNative ? density.text.body : "text-sm",
                 )}
               >
                 {wsInitial}
@@ -554,6 +554,10 @@ export function AccountNavLinks({
   onClose: () => void;
   isNative?: boolean;
 }) {
+  const density = densityFor(isNative);
+  const rowClass = `flex-row items-center gap-3 ${density.rowPad} active:bg-muted`;
+  const rowText = `${density.text.body} text-foreground`;
+  const rowIcon = isNative ? density.icon.lg : 18;
   const items: Array<{ icon: ElementType; label: string; href: string }> = [
     // { icon: Star, label: 'Starred', href: '/(app)/starred' },
     // ...(!localMode ? [{ icon: Users, label: 'Shared with me', href: '/(app)/shared' }] : []),
@@ -573,18 +577,10 @@ export function AccountNavLinks({
           }}
           role="menuitem"
           accessibilityLabel={label}
-          className={cn(
-            "flex-row items-center gap-3 px-4 active:bg-muted",
-            isNative ? "py-3.5" : "py-3",
-          )}
+          className={rowClass}
         >
-          <Icon size={isNative ? 20 : 18} className="text-muted-foreground" />
-          <Text
-            className={cn(
-              "text-foreground",
-              isNative ? "text-base" : "text-sm",
-            )}
-          >
+          <Icon size={rowIcon} className="text-muted-foreground" />
+          <Text className={rowText}>
             {label}
           </Text>
         </Pressable>
@@ -596,18 +592,13 @@ export function AccountNavLinks({
         }}
         role="menuitem"
         accessibilityLabel="Docs"
-        className={cn(
-          "flex-row items-center gap-3 px-4 active:bg-muted",
-          isNative ? "py-3.5" : "py-3",
-        )}
+        className={rowClass}
       >
         <ExternalLink
-          size={isNative ? 20 : 18}
+          size={rowIcon}
           className="text-muted-foreground"
         />
-        <Text
-          className={cn("text-foreground", isNative ? "text-base" : "text-sm")}
-        >
+        <Text className={rowText}>
           Docs
         </Text>
       </Pressable>
@@ -618,15 +609,10 @@ export function AccountNavLinks({
         }}
         role="menuitem"
         accessibilityLabel="What's New"
-        className={cn(
-          "flex-row items-center gap-3 px-4 active:bg-muted",
-          isNative ? "py-3.5" : "py-3",
-        )}
+        className={rowClass}
       >
-        <Sparkles size={isNative ? 20 : 18} className="text-muted-foreground" />
-        <Text
-          className={cn("text-foreground", isNative ? "text-base" : "text-sm")}
-        >
+        <Sparkles size={rowIcon} className="text-muted-foreground" />
+        <Text className={rowText}>
           What's New
         </Text>
       </Pressable>
@@ -671,19 +657,20 @@ export function AccountMenu({
   // Native and narrow web get a pushed page. Wide web keeps the popover.
   // Native never falls back to a sheet, even if `isWide` is omitted.
   const openAsFullScreen = isNative || !isWide;
+  const density = densityFor(isNative);
 
   const triggerInner = (
     <>
       <View
         className={cn(
           "rounded bg-primary/20 items-center justify-center",
-          isNative ? "h-10 w-10" : "h-7 w-7",
+          isNative ? density.hitSize : "h-7 w-7",
         )}
       >
         <Text
           className={cn(
             "font-bold text-primary",
-            isNative ? "text-sm" : "text-[11px]",
+            isNative ? density.text.body : "text-[11px]",
           )}
         >
           {currentWorkspace?.name?.[0]?.toUpperCase() || "W"}
@@ -694,7 +681,7 @@ export function AccountMenu({
           <Text
             className={cn(
               "text-foreground",
-              isNative ? "text-base font-medium" : "text-sm",
+              isNative ? `${density.text.body} font-medium` : "text-sm",
             )}
             numberOfLines={1}
             ellipsizeMode="tail"
@@ -704,7 +691,7 @@ export function AccountMenu({
           <Text
             className={cn(
               "text-muted-foreground",
-              isNative ? "text-sm" : "text-xs",
+              isNative ? density.text.label : "text-xs",
             )}
             numberOfLines={1}
             ellipsizeMode="tail"
@@ -732,7 +719,7 @@ export function AccountMenu({
         accessibilityHint="Opens account, workspace, and billing"
         className={cn(
           "flex-row items-center active:opacity-80 flex-1 min-w-0",
-          isNative ? "min-h-12 gap-3" : "gap-2",
+          isNative ? `${density.rowMin} gap-3` : "gap-2",
           collapsed && "justify-center",
         )}
       >
