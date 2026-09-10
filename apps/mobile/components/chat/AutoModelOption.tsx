@@ -13,9 +13,15 @@ interface AutoModelOptionProps {
   currentModelId: string
   onSelect: () => void
   presentation?: "menu" | "sheet"
+  hideCostLabels?: boolean
 }
 
-export function AutoModelOption({ currentModelId, onSelect, presentation = "menu" }: AutoModelOptionProps) {
+export function AutoModelOption({
+  currentModelId,
+  onSelect,
+  presentation = "menu",
+  hideCostLabels = false,
+}: AutoModelOptionProps) {
   const isNative = isNativePlatform()
   const isSheet = presentation === "sheet"
   const isSelected = currentModelId === AUTO_MODEL_ID
@@ -42,7 +48,7 @@ export function AutoModelOption({ currentModelId, onSelect, presentation = "menu
         <Text className={cn(nameClass, "text-foreground")}>
           Auto
         </Text>
-        {isSheet ? (
+        {isSheet && !hideCostLabels ? (
           <Text className={cn(NATIVE_MODEL_SHEET.metaClass, "text-muted-foreground mt-0.5")}>
             {MODEL_COST_DETAIL.economy}
           </Text>
@@ -50,7 +56,7 @@ export function AutoModelOption({ currentModelId, onSelect, presentation = "menu
       </View>
       {isSelected ? (
         <Check className="text-primary" size={isSheet ? NATIVE_MODEL_SHEET.icon : isNative ? 18 : 14} />
-      ) : (
+      ) : hideCostLabels ? null : (
         <Text className={cn(metaClass, "text-muted-foreground")}>
           {MODEL_COST_LABEL.economy}
         </Text>

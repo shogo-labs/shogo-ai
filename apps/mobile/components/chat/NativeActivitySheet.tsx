@@ -12,12 +12,11 @@ import {
   Text,
   View,
 } from 'react-native'
-import { X } from "lucide-react-native"
 import {
   NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout"
-import { NativePhoneSheet } from "../phone/NativePhoneSheet"
+import { NativePhoneSheet, NativePhoneSheetCloseButton } from "../phone/NativePhoneSheet"
 
 const InsideActivitySheetContext = createContext(false)
 
@@ -48,19 +47,7 @@ export function NativeActivitySheet({
       maxHeightRatio={NATIVE_PHONE_SHEET_COMPACT_RATIO}
       bodyMaxHeightRatio={NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO}
       scroll
-      headerLeft={
-        showClose ? (
-          <Pressable
-            onPress={onClose}
-            hitSlop={8}
-            accessibilityLabel="Close"
-            accessibilityRole="button"
-            className="h-10 w-10 items-center justify-center rounded-full bg-muted"
-          >
-            <X size={18} className="text-foreground" />
-          </Pressable>
-        ) : undefined
-      }
+      headerLeft={showClose ? <NativePhoneSheetCloseButton onPress={onClose} /> : undefined}
     >
       <InsideActivitySheetContext.Provider value={true}>
         {children}

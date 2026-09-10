@@ -7,7 +7,7 @@
  * Renders questions with clickable options inline in the chat flow.
  */
 
-import { useState, useCallback, useMemo, useRef } from "react"
+import { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { View, Text, TextInput, Pressable, Animated, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -24,6 +24,7 @@ import {
   type AskUserQuestionItem,
 } from "../tools/types"
 import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 
 export interface AskUserQuestionWidgetProps {
   tool: ToolCallData
@@ -37,8 +38,11 @@ export interface AskUserQuestionWidgetProps {
    * chrome. Keep the prompt + pagination sticky and only scroll options.
    */
   embedded?: boolean
+  /** Native bottom-sheet chrome: larger Done control, no nested option scroller. */
+  presentation?: "dock" | "sheet"
   /** Scrollable option-list cap. Prompt and Submit stay pinned. */
   bodyMaxHeight?: number
+  onQuestionProgress?: (progress: { index: number; total: number }) => void
 }
 
 function isValidQuestionItem(item: unknown): item is AskUserQuestionItem {
@@ -263,9 +267,12 @@ export function AskUserQuestionWidget({
   onSubmitResponse,
   className,
   embedded = false,
+  presentation = "dock",
   bodyMaxHeight,
+  onQuestionProgress,
 }: AskUserQuestionWidgetProps) {
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
+  const isSheet = presentation === "sheet"
 
   // Treat both `undefined` (live stream: gateway suppresses tool-output-available)
   // and `null` (legacy persisted parts that wrote `output: null`) as "not yet
@@ -458,6 +465,13 @@ export function AskUserQuestionWidget({
     onSubmitResponse(submittedResponse)
   }, [submittedResponse, onSubmitResponse])
 
+  useEffect(() => {
+    onQuestionProgress?.({
+      index: questions.length === 0 ? 0 : Math.min(questions.length, activeTab + 1),
+      total: questions.length,
+    })
+  }, [activeTab, onQuestionProgress, questions.length])
+
   const displayResult = hookDisplayResponse
 
   const summaryText = useMemo(() => {
@@ -615,7 +629,9 @@ export function AskUserQuestionWidget({
 
   const optionRowCount = (currentQuestion.options?.length ?? 0) + 1
   const optionsNeedScroll =
-    bodyMaxHeight != null && optionRowCount > ASK_USER_SCROLL_AFTER_OPTION_ROWS
+    !isSheet &&
+    bodyMaxHeight != null &&
+    optionRowCount > ASK_USER_SCROLL_AFTER_OPTION_ROWS
   const optionsBody = optionsNeedScroll ? (
       <ScrollView
         testID="ask-user-question-options"
@@ -708,24 +724,30 @@ export function AskUserQuestionWidget({
 
           {/* Next/Submit footer (pending state only) */}
           {effectivelyPending && (
-            <View className="flex-row items-center justify-end pt-1">
+            <View className={cn("flex-row items-center justify-end", isSheet ? "pt-3" : "pt-1")}>
               <Pressable
                 onPress={handleNext}
                 disabled={nextDisabled}
+                accessibilityRole="button"
+                accessibilityLabel={isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"}
                 className={cn(
-                  "h-7 rounded-md items-center justify-center px-3 min-w-[68px]",
+                  "items-center justify-center",
+                  isSheet
+                    ? "h-11 rounded-full px-6 min-w-[96px]"
+                    : "h-7 rounded-md px-3 min-w-[68px]",
                   nextDisabled ? "bg-muted" : "bg-primary"
                 )}
               >
                 <Text
                   className={cn(
-                    "text-xs font-medium",
+                    "font-medium",
+                    isSheet ? "text-base" : "text-xs",
                     nextDisabled
                       ? "text-muted-foreground"
                       : "text-primary-foreground"
                   )}
                 >
-                  {isLastQuestion ? "Submit" : "Next"}
+                  {isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"}
                 </Text>
               </Pressable>
             </View>
@@ -790,11 +812,13 @@ export function AskUserQuestionBar({
 }: AskUserQuestionBarProps) {
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
   const count = questions.length
+  const nativePhone = useIsNativePhoneLayout()
+  const actionHint = nativePhone ? "Tap to answer" : "Answer below"
 
   return (
     <Pressable
       onPress={onPress}
-      accessibilityLabel="Pending question — answer below"
+      accessibilityLabel={`Pending question — ${actionHint.toLowerCase()}`}
       className={cn(
         "rounded-md border border-primary/30 bg-primary/5 w-full flex-row items-center gap-1.5 py-1.5 px-2",
         className
@@ -807,7 +831,7 @@ export function AskUserQuestionBar({
       </Text>
 
       <Text className="flex-1 text-[9px] text-muted-foreground text-right">
-        {count > 1 ? `${count} questions • ` : ""}Answer below
+        {count > 1 ? `${count} questions • ` : ""}{actionHint}
       </Text>
 
       <ArrowDown className="w-3 h-3 text-primary" />

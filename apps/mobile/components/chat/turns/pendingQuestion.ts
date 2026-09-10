@@ -3,13 +3,13 @@
 /**
  * Pending `ask_user` derivation.
  *
- * The interactive question UI is attached above the chat input (like the
- * message queue) rather than rendered inline in the message stream. ChatPanel
- * derives the pending question from the live message list with
- * `derivePendingQuestion`; AssistantContent decides whether a given `ask_user`
- * part renders as a collapsed in-stream bar or the answered summary widget with
- * `askUserStreamVariant`. Both are pure so they can be unit-tested without
- * React / React Native.
+ * The interactive question UI is attached above the chat input (web/desktop
+ * dock) or in a native bottom sheet, rather than rendered inline in the
+ * message stream. ChatPanel derives the pending question from the live
+ * message list with `derivePendingQuestion`; AssistantContent decides whether
+ * a given `ask_user` part renders as a collapsed in-stream bar or the
+ * answered summary widget with `askUserStreamVariant`. Both are pure so they
+ * can be unit-tested without React / React Native.
  */
 
 import type { UIMessage } from "@ai-sdk/react"
@@ -61,9 +61,16 @@ export function derivePendingQuestion(
  * How an `ask_user` part should render in the message stream.
  *
  * - `"bar"`: pending — a small collapsed status bar (the interactive widget
- *   lives attached above the composer).
+ *   lives attached above the composer, or in a native bottom sheet).
  * - `"widget"`: answered — the existing collapsed summary widget.
  */
 export function askUserStreamVariant(toolResult: unknown): "bar" | "widget" {
   return toolResult === undefined ? "bar" : "widget"
+}
+
+/** Native phone uses a bottom sheet; web/desktop keep the composer dock card. */
+export function askUserQuestionPresentation(
+  isNativePhone: boolean,
+): "sheet" | "dock" {
+  return isNativePhone ? "sheet" : "dock"
 }

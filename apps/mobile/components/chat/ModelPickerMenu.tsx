@@ -102,6 +102,8 @@ interface ModelPickerMenuProps {
   onDismiss?: () => void
   /** Full-width list for the native bottom sheet (no nested scroll/width cap). */
   presentation?: "menu" | "sheet"
+  /** Plan pickers show names only; the composer menu keeps cheaper / higher-cost. */
+  hideCostLabels?: boolean
 }
 
 export function ModelPickerMenu({
@@ -110,6 +112,7 @@ export function ModelPickerMenu({
   onSelect,
   onDismiss,
   presentation = "menu",
+  hideCostLabels = false,
 }: ModelPickerMenuProps) {
   const router = useRouter()
   const models = useModelPickerList()
@@ -168,7 +171,7 @@ export function ModelPickerMenu({
                 {EFFORT_SHORT[effort]}
               </Text>
             ) : null}
-            {!isSelected ? (
+            {!isSelected && !hideCostLabels ? (
               <Text
                 className={cn(
                   isSheet ? NATIVE_MODEL_SHEET.metaClass : isWeb ? "text-[11px]" : "text-xs",
@@ -213,9 +216,11 @@ export function ModelPickerMenu({
                 {contextLabel}
               </Text>
             ) : null}
-            <Text className={cn(isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
-              {MODEL_COST_LABEL[model.tier]} · {modelCostHint(model.tier, currentTier)}
-            </Text>
+            {hideCostLabels ? null : (
+              <Text className={cn(isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
+                {MODEL_COST_LABEL[model.tier]} · {modelCostHint(model.tier, currentTier)}
+              </Text>
+            )}
             {effort ? (
               <Text className={cn("italic text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]")}>
                 Reasoning: {EFFORT_WORD[effort]} effort
@@ -232,6 +237,7 @@ export function ModelPickerMenu({
       <AutoModelOption
         currentModelId={currentModelId}
         presentation={presentation}
+        hideCostLabels={hideCostLabels}
         onSelect={() => onSelect(AUTO_MODEL_ID)}
       />
       <View className="h-px bg-border/50 mx-2" />
@@ -284,7 +290,7 @@ export function ModelPickerMenu({
     // click-drag text highlighting; `outline-none` kills the focus ring.
     <View className="relative web:outline-none no-focus-ring" style={{ userSelect: "none" } as any}>
       {list}
-      {activeInfoModel ? (
+      {activeInfoModel && !hideCostLabels ? (
         <View
           className="bg-card border border-border rounded-lg shadow-lg"
           style={{
@@ -381,6 +387,7 @@ export function ComposerModelPicker({
   onSelect,
   sheetTitle,
   triggerAccessibilityLabel,
+  hideCostLabels = false,
 }: {
   currentModelId: string
   effectiveIsPro: boolean
@@ -399,6 +406,7 @@ export function ComposerModelPicker({
   menuWidth?: number
   sheetTitle?: string
   triggerAccessibilityLabel?: string
+  hideCostLabels?: boolean
   onSelect: (modelId: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -418,6 +426,7 @@ export function ComposerModelPicker({
       currentModelId={currentModelId}
       effectiveIsPro={effectiveIsPro}
       presentation={nativeSheet ? "sheet" : "menu"}
+      hideCostLabels={hideCostLabels}
       onSelect={handleSelect}
       onDismiss={close}
     />

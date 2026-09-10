@@ -3,11 +3,29 @@
 
 import type { ReactNode } from 'react'
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native'
+import { X } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO,
   useNativePhoneSheetChrome,
 } from '../../lib/native-phone-layout'
+
+/** Matches the existing activity-sheet close control (not PHONE_DENSITY.hitSize). */
+const SHEET_CLOSE_ICON_SIZE = 18
+
+export function NativePhoneSheetCloseButton({ onPress }: { onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={8}
+      accessibilityLabel="Close"
+      accessibilityRole="button"
+      className="h-10 w-10 items-center justify-center rounded-full bg-muted"
+    >
+      <X size={SHEET_CLOSE_ICON_SIZE} className="text-foreground" />
+    </Pressable>
+  )
+}
 
 export interface NativePhoneSheetProps {
   visible: boolean

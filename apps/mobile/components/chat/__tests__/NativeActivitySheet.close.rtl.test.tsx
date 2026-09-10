@@ -25,6 +25,8 @@ mock.module("react-native", () =>
 )
 
 mock.module(resolve(import.meta.dir, "../../phone/NativePhoneSheet"), () => ({
+  NativePhoneSheetCloseButton: ({ onPress }: { onPress: () => void }) =>
+    createElement("button", { "aria-label": "Close", onClick: onPress }, "Close"),
   NativePhoneSheet: ({
     visible,
     title,
