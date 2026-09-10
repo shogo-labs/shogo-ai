@@ -29,6 +29,10 @@ type Mark = {
   meta?: Record<string, unknown>
 }
 
+const PERF_LOG_ENABLED =
+  typeof process !== 'undefined' &&
+  process.env?.EXPO_PUBLIC_SHOGO_PERF_LOG === '1'
+
 const ENABLED =
   typeof process !== 'undefined' &&
   process.env?.EXPO_PUBLIC_SHOGO_COLD_START_TIMING !== '0'
@@ -51,6 +55,26 @@ let autoFlushScheduled = false
  * trigger another auto-flush.
  */
 let flushedOnce = false
+let openAttemptId: string | undefined
+
+export function createOpenAttemptId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    // Fall through to the dependency-free fallback.
+  }
+  return `open-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+export function setOpenAttemptId(id: string | undefined): void {
+  openAttemptId = id
+}
+
+export function clearOpenAttemptId(id: string): void {
+  if (openAttemptId === id) openAttemptId = undefined
+}
 
 function nowMs(): number {
   if (typeof performance === 'undefined') return Date.now() - ORIGIN_MS
@@ -59,7 +83,22 @@ function nowMs(): number {
 
 export function mark(id: string, meta?: Record<string, unknown>): void {
   if (!ENABLED) return
-  marks.push({ id, at: nowMs(), meta })
+  const enrichedMeta = openAttemptId ? { openAttemptId, ...meta } : meta
+  const at = nowMs()
+  marks.push({ id, at, meta: enrichedMeta })
+  if (PERF_LOG_ENABLED) {
+    // Keep this one-line and machine-readable so desktop logs can be joined
+    // with the API/runtime phases without parsing console.table output.
+    console.log(`[shogo-perf] ${JSON.stringify({
+      perf: 'open',
+      source: 'ui',
+      id,
+      openAttemptId,
+      atMs: Math.round(at),
+      wallTimeMs: Date.now(),
+      meta: enrichedMeta,
+    })}`)
+  }
 }
 
 /**
@@ -70,10 +109,34 @@ export function mark(id: string, meta?: Record<string, unknown>): void {
 export function time(id: string, meta?: Record<string, unknown>): () => void {
   if (!ENABLED) return () => {}
   const start = nowMs()
-  marks.push({ id: `${id}:start`, at: start, meta })
+  const enrichedMeta = openAttemptId ? { openAttemptId, ...meta } : meta
+  marks.push({ id: `${id}:start`, at: start, meta: enrichedMeta })
+  if (PERF_LOG_ENABLED) {
+    console.log(`[shogo-perf] ${JSON.stringify({
+      perf: 'open',
+      source: 'ui',
+      id: `${id}:start`,
+      openAttemptId,
+      atMs: Math.round(start),
+      wallTimeMs: Date.now(),
+      meta: enrichedMeta,
+    })}`)
+  }
   return () => {
     const end = nowMs()
-    marks.push({ id: `${id}:end`, at: end, meta: { ...meta, durMs: end - start } })
+    const endMeta = { ...enrichedMeta, durMs: end - start }
+    marks.push({ id: `${id}:end`, at: end, meta: endMeta })
+    if (PERF_LOG_ENABLED) {
+      console.log(`[shogo-perf] ${JSON.stringify({
+        perf: 'open',
+        source: 'ui',
+        id: `${id}:end`,
+        openAttemptId,
+        atMs: Math.round(end),
+        wallTimeMs: Date.now(),
+        meta: endMeta,
+      })}`)
+    }
   }
 }
 
@@ -136,6 +199,7 @@ export function reset(): void {
   marks.length = 0
   autoFlushScheduled = false
   flushedOnce = false
+  openAttemptId = undefined
 }
 
 if (ENABLED && typeof globalThis !== 'undefined') {

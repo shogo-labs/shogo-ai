@@ -8,10 +8,24 @@
  */
 
 import { execSync, type ChildProcess } from 'child_process'
-import { existsSync, cpSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmSync, symlinkSync, lstatSync } from 'fs'
+import {
+  existsSync,
+  cpSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  unlinkSync,
+  rmSync,
+  symlinkSync,
+  lstatSync,
+  renameSync,
+  copyFileSync,
+} from 'fs'
 import { join, dirname, resolve, basename } from 'path'
 import { fileURLToPath } from 'url'
+import { createHash } from 'crypto'
 import { pkg, isMobileTechStack, stackSeedsItself } from '@shogo/shared-runtime'
+import { cloneTree } from './clone-tree'
 import {
   WorkerRuntimeManager,
   type ProjectSpawnConfig,
@@ -60,6 +74,37 @@ const PROJECT_ROOT = resolve(__dirname, '..', '..', '..', '..', '..')
 const BUNDLED_TEMPLATE_DIR = join(PROJECT_ROOT, 'templates', 'runtime-template')
 
 /**
+ * Path *segments* skipped when a workspace is seeded from a template. Matched
+ * per segment, not by substring: the old `src.includes('.git')` test also
+ * dropped `.gitignore` / `.gitattributes`, so every seeded desktop project had
+ * no ignore file and its first `git add -A` committed `node_modules` (36k+
+ * tracked files, 120-160 MB `.git` on Windows 1.14.1). Every per-turn commit,
+ * repo restore, and LFS pass then walked that tree.
+ */
+const TEMPLATE_SKIP_SEGMENTS = new Set(['node_modules', '.git'])
+
+export function isTemplateCopyExcluded(src: string): boolean {
+  return src.split(/[\\/]+/).some((segment) => TEMPLATE_SKIP_SEGMENTS.has(segment))
+}
+
+/** Copy the template's `.gitignore` into a workspace that lacks one (self-heal for existing installs). */
+export function ensureWorkspaceGitignore(projectDir: string, templateDirs: string[]): boolean {
+  const target = join(projectDir, '.gitignore')
+  if (existsSync(target)) return false
+  for (const dir of templateDirs) {
+    const source = join(dir, '.gitignore')
+    if (!existsSync(source)) continue
+    try {
+      copyFileSync(source, target)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+/**
  * Path to the unified runtime server.
  * In desktop mode, AGENT_RUNTIME_ENTRY points to the bun-built bundle.
  * Falls back to source path for cloud/local dev.
@@ -71,6 +116,35 @@ const RUNTIME_SERVER = process.env.AGENT_RUNTIME_ENTRY
 const PORT_RANGE_START = 37100
 const PORT_RANGE_END = 37900
 const AGENT_PORT_OFFSET = 1000
+const PERF_LOG_ENABLED = process.env.SHOGO_PERF_LOG === '1'
+/** Longest a new-project open waits for an in-flight warm workspace before seeding on its own. */
+const WARM_WORKSPACE_WAIT_MS = parseInt(process.env.SHOGO_WARM_WORKSPACE_WAIT_MS || '90000', 10)
+/** Written inside `node_modules` (gitignored) to record which template an install belongs to. */
+const DEPS_KEY_FILE = '.deps-key'
+
+function readDepsKey(dir: string): string | null {
+  try { return readFileSync(join(dir, 'node_modules', DEPS_KEY_FILE), 'utf8').trim() } catch { return null }
+}
+
+function sameFileContents(a: string, b: string): boolean {
+  try { return readFileSync(a, 'utf8') === readFileSync(b, 'utf8') } catch { return false }
+}
+
+function perfLog(
+  phase: string,
+  openAttemptId: string | undefined,
+  extra?: Record<string, unknown>,
+): void {
+  if (!PERF_LOG_ENABLED) return
+  console.log(`[shogo-perf] ${JSON.stringify({
+    perf: 'open',
+    source: 'api',
+    phase,
+    openAttemptId,
+    atMs: Date.now(),
+    ...extra,
+  })}`)
+}
 
 /**
  * Internal runtimes-map key for a workspace runtime. Prefixed so a
@@ -170,6 +244,11 @@ export class RuntimeManager implements IRuntimeManager {
    * process under the hood.
    */
   private agentManagedProjects: Set<string> = new Set()
+  private warmWorkspacePromise: Promise<string | null> | null = null
+  /** True while prepareWarmWorkspace is actually building (not merely caching a ready dir). */
+  private warmWorkspaceBuilding = false
+  /** In-flight `.warm/.deps` build, shared by concurrent callers of ensureDepsStore. */
+  private depsStorePromise: Promise<string | null> | null = null
 
   /**
    * MRU of project-anchored workspace runtime keys (`ws:proj:<id>`),
@@ -226,8 +305,14 @@ export class RuntimeManager implements IRuntimeManager {
       // `"main": "src/index.ts"` with no `exports` map and resolve to
       // source unconditionally, so no build is needed for those.
       spawnCommand: (entry: string) => ({
-        command: pkg.bunBinary,
-        args: ['run', entry],
+        command: entry.endsWith('.exe') ||
+          basename(entry) === 'agent-runtime'
+          ? entry
+          : pkg.bunBinary,
+        args: entry.endsWith('.exe') ||
+          basename(entry) === 'agent-runtime'
+          ? []
+          : ['run', entry],
       }),
       // Bypass the worker's binary-resolution chain (which expects a
       // compiled `agent-runtime` under ~/.shogo/runtime/) and point at
@@ -913,8 +998,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // the template's own pre-built dist on top, so the user never sees the
     // generic page even momentarily. See packages/agent-runtime/templates/<id>/dist.
     const copyFilter = (src: string) =>
-      !src.includes('node_modules') &&
-      !src.includes('.git') &&
+      !isTemplateCopyExcluded(src) &&
       !src.endsWith('bun.lock') &&
       !src.endsWith('bun.lockb')
 
@@ -930,6 +1014,47 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // tech-stack registry so this list stays in sync with stack.json
     // (validated at agent-runtime boot via `validateTechStackRegistry()`).
     const stackHandlesOwnSeed = stackSeedsItself(techStackId)
+
+    // A prepared default-stack workspace turns the first new-project open into
+    // a same-volume rename. Existing/bare projects and stacks that own their
+    // seed keep their normal semantics.
+    if (needsSeed && !cloudLinked && !stackHandlesOwnSeed && !existsSync(projectDir)) {
+      const readyDir = join(workspacesDir, '.warm', '.ready')
+      // A second new project shortly after the first arrives while the
+      // replacement warm workspace is still installing. Waiting for that
+      // install (bounded) beats starting a competing npm install for this
+      // project: same wall clock at best, and two installs contend for the
+      // same disk and scanner.
+      const sourceTemplate = this.resolveSourceTemplate()
+      const warmReady = () =>
+        existsSync(join(readyDir, 'node_modules', '.install-ok')) &&
+        (!sourceTemplate || readDepsKey(readyDir) === this.depsStoreKey(sourceTemplate))
+      if (!warmReady() && this.warmWorkspacePromise) {
+        const tWait = Date.now()
+        await Promise.race([
+          this.warmWorkspacePromise.catch(() => null),
+          new Promise((r) => setTimeout(r, WARM_WORKSPACE_WAIT_MS)),
+        ])
+        log('warm-workspace:waited', { ms: Date.now() - tWait })
+      }
+      if (!warmReady() && !this.warmWorkspaceBuilding) {
+        // The cached promise points at a stale or missing ready dir; let the
+        // re-arm below start a fresh build instead of returning it again.
+        this.warmWorkspacePromise = null
+      }
+      if (warmReady()) {
+        try {
+          mkdirSync(dirname(projectDir), { recursive: true })
+          renameSync(readyDir, projectDir)
+          log('warm-workspace:claimed', { projectDir })
+          this.warmWorkspacePromise = null
+          void this.prepareWarmWorkspace()
+          return projectDir
+        } catch (err: any) {
+          console.warn(`[RuntimeManager] Warm workspace claim failed for ${projectId}: ${err?.message ?? err}`)
+        }
+      }
+    }
 
     if (needsSeed && stackHandlesOwnSeed) {
       // Make the empty directory and bail. The agent-runtime will populate
@@ -1019,6 +1144,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       return projectDir
     }
 
+    // Projects seeded by older builds are missing `.gitignore` (see
+    // isTemplateCopyExcluded). Restore it so the agent-runtime's git layer
+    // stops staging node_modules; the runtime untracks what was already
+    // committed on its next bootstrap.
+    if (!cloudLinked && ensureWorkspaceGitignore(projectDir, [BUNDLED_TEMPLATE_DIR, workspaceTemplateDir])) {
+      log('gitignore:restored', { projectDir })
+    }
+
     // A cloud-linked workspace with no package.json (a non-JS project, or a
     // pull that soft-failed and left the dir empty) has no deps for apps/api
     // to install — the runtime/agent owns its own toolchain and seeds an empty
@@ -1059,6 +1192,29 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // the bundled template still carries `workspace:*`.
       this.materializeWorkspaceDeps(projectDir, projectId)
 
+      // Template-shaped workspace (manifest identical to the template's):
+      // clone the installed store instead of running the package manager.
+      // Only a fresh seed qualifies; a project whose manifest has diverged
+      // needs a real install.
+      const sourceTemplate = needsSeed && !cloudLinked ? this.resolveSourceTemplate() : null
+      const candidateStore = sourceTemplate ? this.readyDepsStore(sourceTemplate) : null
+      const store = candidateStore && sameFileContents(join(projectDir, 'package.json'), join(candidateStore, 'package.json'))
+        ? candidateStore
+        : null
+      if (store) {
+        try {
+          await this.cloneDepsFromStore(store, projectDir, projectId)
+          log('deps:cloned-from-store', { store })
+          // The warm workspace was evidently not available; re-arm it.
+          void this.prepareWarmWorkspace()
+          log('done', { projectDir })
+          return projectDir
+        } catch (err: any) {
+          console.warn(`[RuntimeManager] Store clone failed for ${projectId}, installing instead: ${err?.message ?? err}`)
+          try { rmSync(join(projectDir, 'node_modules'), { recursive: true, force: true }) } catch {}
+        }
+      }
+
       const cmdName = pkg.isWindows ? 'npm.cmd' : pkg.bunBinary
       console.log(`[RuntimeManager] Installing dependencies for ${projectId} (${cmdName})...`)
       const tInstall = Date.now()
@@ -1069,6 +1225,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Write sentinel so we know install completed successfully
         writeFileSync(installSentinel, new Date().toISOString())
         console.log(`[RuntimeManager] Dependencies installed for ${projectId}`)
+        if (sourceTemplate) void this.prepareWarmWorkspace()
       } catch (err: any) {
         const hasPkg = existsSync(join(projectDir, 'package.json'))
         const detail = hasPkg
@@ -1358,7 +1515,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
   async start(
     projectId: string,
-    opts?: { background?: boolean },
+    opts?: { background?: boolean; openAttemptId?: string },
   ): Promise<IProjectRuntime> {
     // Universal workspace-runtime model: when SHOGO_WORKSPACE_RUNTIME is
     // enabled, every project runs on its project-anchored merged-root
@@ -1375,6 +1532,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         return this.startProjectWorkspace(projectId, {
           ...anchorOpts,
           background: opts?.background,
+          openAttemptId: opts?.openAttemptId,
         })
       }
       // No workspaceId — cannot anchor; fall through to the legacy path.
@@ -1417,7 +1575,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       }
     }
 
-    const promise = this.doStart(projectId)
+    const promise = this.doStart(projectId, opts?.openAttemptId)
     this.startingPromises.set(projectId, promise)
     try {
       return await promise
@@ -1438,7 +1596,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    */
   async startWorkspace(
     workspaceId: string,
-    opts: { attachedProjectIds: string[] },
+    opts: { attachedProjectIds: string[]; openAttemptId?: string },
   ): Promise<IProjectRuntime> {
     if (!workspaceId) throw new Error('[RuntimeManager] startWorkspace: workspaceId is required')
     const key = workspaceRuntimeKey(workspaceId)
@@ -1469,6 +1627,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       memberProjectIds: opts.attachedProjectIds ?? [],
       localFolders: [],
       logLabel: workspaceId.slice(0, 8),
+      openAttemptId: opts.openAttemptId,
     })
     this.startingPromises.set(key, promise)
     try {
@@ -1499,6 +1658,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
        * same project promotes it to a preview.
        */
       background?: boolean
+      openAttemptId?: string
     },
   ): Promise<IProjectRuntime> {
     if (!anchorProjectId) {
@@ -1578,6 +1738,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       localFolders: opts.localFolders ?? [],
       readonlyProjectIds: opts.readonlyProjectIds ?? [],
       logLabel: `proj:${anchorProjectId.slice(0, 8)}`,
+      openAttemptId: opts.openAttemptId,
     })
     // Diagnostic (switch-back warmth): a fresh-spawn means the runtime was not
     // running when (re)opened — i.e. a real cold start / restart, not a warm
@@ -1627,6 +1788,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     localFolders: string[]
     anchorProjectId?: string
     readonlyProjectIds?: string[]
+    openAttemptId?: string
     logLabel: string
   }): Promise<IProjectRuntime> {
     const { key, rootName, workspaceId, memberProjectIds, localFolders } = spec
@@ -1636,6 +1798,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         `[RuntimeManager:doStartMergedRuntime:${spec.logLabel}] ${name} ` +
           `(+${Date.now() - startedAtMs}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
       )
+      perfLog(name, spec.openAttemptId, {
+        projectId: spec.anchorProjectId ?? spec.workspaceId,
+        runtimeKey: key,
+        elapsedMs: Date.now() - startedAtMs,
+        ...extra,
+      })
     }
     phase('begin', { members: memberProjectIds.length, folders: localFolders.length, anchor: spec.anchorProjectId })
 
@@ -1743,7 +1911,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         projectDir: mergedRootDir,
         name: runtimeEnv.AGENT_NAME,
         workspaceId,
-        extraEnv: runtimeEnv,
+        extraEnv: {
+          ...runtimeEnv,
+          ...(spec.openAttemptId ? { SHOGO_OPEN_ID: spec.openAttemptId } : {}),
+          ...(PERF_LOG_ENABLED ? { SHOGO_PERF_LOG: '1' } : {}),
+        },
       }
 
       phase('agentManager.ensureRunning:begin')
@@ -1890,6 +2062,178 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * Prepare one platform-local workspace before the first project is opened.
+   * The directory is promoted to `.ready` only after dependency installation,
+   * allowing a new project to claim it with one same-volume rename.
+   */
+  async prepareWarmWorkspace(): Promise<string | null> {
+    if (process.env.SHOGO_WARM_WORKSPACE === '0') return null
+    if (this.warmWorkspacePromise) return this.warmWorkspacePromise
+
+    this.warmWorkspacePromise = (async () => {
+      const workspacesDir = this.resolvedWorkspacesDir()
+      const warmRoot = join(workspacesDir, '.warm')
+      const readyDir = join(warmRoot, '.ready')
+      const buildingDir = join(warmRoot, `.building-${process.pid}-${Date.now()}`)
+      const sourceTemplate = this.resolveSourceTemplate()
+      if (!sourceTemplate) return null
+
+      mkdirSync(warmRoot, { recursive: true })
+      const depsKey = this.depsStoreKey(sourceTemplate)
+      if (existsSync(join(readyDir, 'node_modules', '.install-ok'))) {
+        if (readDepsKey(readyDir) === depsKey) return readyDir
+        // Built against a previous template (app upgrade); do not hand it out.
+        console.log('[RuntimeManager] Warm workspace is stale, rebuilding')
+      }
+
+      this.warmWorkspaceBuilding = true
+      try {
+        if (existsSync(readyDir)) rmSync(readyDir, { recursive: true, force: true })
+        if (existsSync(buildingDir)) rmSync(buildingDir, { recursive: true, force: true })
+        const store = await this.ensureDepsStore(sourceTemplate)
+        this.copyTemplateInto(sourceTemplate, buildingDir)
+        this.materializeWorkspaceDeps(buildingDir, '__warm__')
+        if (store) {
+          await this.cloneDepsFromStore(store, buildingDir, '__warm__')
+        } else {
+          await pkg.installAsync(buildingDir)
+          writeFileSync(join(buildingDir, 'node_modules', '.install-ok'), new Date().toISOString())
+        }
+        writeFileSync(join(buildingDir, 'node_modules', DEPS_KEY_FILE), depsKey)
+        renameSync(buildingDir, readyDir)
+        perfLog('warm-workspace-ready', undefined, { projectDir: readyDir })
+        return readyDir
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] Warm workspace preparation failed: ${err?.message ?? err}`)
+        try { rmSync(buildingDir, { recursive: true, force: true }) } catch {}
+        return null
+      } finally {
+        this.warmWorkspaceBuilding = false
+      }
+    })()
+
+    try {
+      return await this.warmWorkspacePromise
+    } finally {
+      if (!existsSync(join(this.resolvedWorkspacesDir(), '.warm', '.ready'))) {
+        this.warmWorkspacePromise = null
+      }
+    }
+  }
+
+  private resolvedWorkspacesDir(): string {
+    return resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
+  }
+
+  /** Bundled runtime template, else the per-install `_template` copy; null when neither has a manifest. */
+  private resolveSourceTemplate(): string | null {
+    const templateDir = join(this.resolvedWorkspacesDir(), this.config.templateDir || '_template')
+    if (existsSync(join(BUNDLED_TEMPLATE_DIR, 'package.json'))) return BUNDLED_TEMPLATE_DIR
+    if (existsSync(join(templateDir, 'package.json'))) return templateDir
+    return null
+  }
+
+  private copyTemplateInto(sourceTemplate: string, destDir: string): void {
+    cpSync(sourceTemplate, destDir, {
+      recursive: true,
+      filter: (src: string) =>
+        !isTemplateCopyExcluded(src) &&
+        !src.endsWith('bun.lock') &&
+        !src.endsWith('bun.lockb'),
+    })
+  }
+
+  /**
+   * Identity of an installed dependency set: the template manifest plus the
+   * platform it was installed on. A new app version ships a new template and
+   * therefore a new key, which retires the old store and warm workspace.
+   */
+  private depsStoreKey(sourceTemplate: string): string {
+    let manifest = ''
+    try { manifest = readFileSync(join(sourceTemplate, 'package.json'), 'utf8') } catch {}
+    return createHash('sha1').update(`${process.platform}|${process.arch}|${manifest}`).digest('hex')
+  }
+
+  /**
+   * Ready-to-clone dependency store for the runtime template
+   * (`<workspaces>/.warm/.deps`). Returns its path when the install is complete
+   * and matches the current template, null when it does not exist yet.
+   */
+  private readyDepsStore(sourceTemplate: string): string | null {
+    const store = join(this.resolvedWorkspacesDir(), '.warm', '.deps')
+    if (!existsSync(join(store, 'node_modules', '.install-ok'))) return null
+    if (readDepsKey(store) !== this.depsStoreKey(sourceTemplate)) return null
+    return store
+  }
+
+  /**
+   * Install the runtime template's dependencies once into `.warm/.deps`.
+   * Every warm workspace and cold seed afterwards clones `node_modules` from
+   * here in a few seconds (hard links), instead of paying a full package
+   * manager run per project. Concurrent callers share one build.
+   */
+  async ensureDepsStore(sourceTemplate?: string | null): Promise<string | null> {
+    if (process.env.SHOGO_DEPS_STORE === '0') return null
+    const template = sourceTemplate ?? this.resolveSourceTemplate()
+    if (!template) return null
+    const ready = this.readyDepsStore(template)
+    if (ready) return ready
+    if (this.depsStorePromise) return this.depsStorePromise
+
+    this.depsStorePromise = (async () => {
+      const warmRoot = join(this.resolvedWorkspacesDir(), '.warm')
+      const storeDir = join(warmRoot, '.deps')
+      const buildingDir = join(warmRoot, `.deps-building-${process.pid}-${Date.now()}`)
+      const depsKey = this.depsStoreKey(template)
+      const tStart = Date.now()
+      try {
+        mkdirSync(warmRoot, { recursive: true })
+        if (existsSync(buildingDir)) rmSync(buildingDir, { recursive: true, force: true })
+        this.copyTemplateInto(template, buildingDir)
+        this.materializeWorkspaceDeps(buildingDir, '__deps__')
+        await pkg.installAsync(buildingDir)
+        writeFileSync(join(buildingDir, 'node_modules', '.install-ok'), new Date().toISOString())
+        writeFileSync(join(buildingDir, 'node_modules', DEPS_KEY_FILE), depsKey)
+        if (existsSync(storeDir)) rmSync(storeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+        renameSync(buildingDir, storeDir)
+        perfLog('deps-store-ready', undefined, { storeDir, ms: Date.now() - tStart })
+        console.log(`[RuntimeManager] Dependency store ready in ${Date.now() - tStart}ms: ${storeDir}`)
+        return storeDir
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] Dependency store build failed: ${err?.message ?? err}`)
+        try { rmSync(buildingDir, { recursive: true, force: true }) } catch {}
+        return null
+      } finally {
+        this.depsStorePromise = null
+      }
+    })()
+    return this.depsStorePromise
+  }
+
+  /**
+   * Populate `<projectDir>/node_modules` from the store. The store's lockfile
+   * comes along so a later `npm install` in the project is a no-op rather
+   * than a re-resolve.
+   */
+  private async cloneDepsFromStore(store: string, projectDir: string, projectId: string): Promise<void> {
+    const tClone = Date.now()
+    const target = join(projectDir, 'node_modules')
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true })
+    const result = await cloneTree(join(store, 'node_modules'), target, {
+      mode: process.env.SHOGO_DEPS_CLONE_MODE === 'copy' ? 'copy' : 'link',
+    })
+    for (const lock of ['package-lock.json', 'bun.lock']) {
+      const from = join(store, lock)
+      const to = join(projectDir, lock)
+      if (existsSync(from) && !existsSync(to)) copyFileSync(from, to)
+    }
+    console.log(
+      `[RuntimeManager] Cloned ${result.files} dependency files for ${projectId} in ${Date.now() - tClone}ms (${result.mode})`,
+    )
+    perfLog('deps-cloned', undefined, { projectId, ms: Date.now() - tClone, files: result.files, mode: result.mode })
+  }
+
+  /**
    * Seed the on-disk workspace for a project (bundled template copy / tech-stack
    * seed / cloud pull) and install its dependencies, WITHOUT spawning a runtime.
    * Returns the resolved project directory.
@@ -1922,13 +2266,19 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     )
   }
 
-  private async doStart(projectId: string): Promise<IProjectRuntime> {
+  private async doStart(projectId: string, openAttemptId?: string): Promise<IProjectRuntime> {
     const startedAtMs = Date.now()
     const phase = (name: string, extra?: Record<string, unknown>) => {
       console.log(
         `[RuntimeManager:doStart:${projectId.slice(0, 8)}] ${name} ` +
           `(+${Date.now() - startedAtMs}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
       )
+      perfLog(name, openAttemptId, {
+        projectId,
+        runtimeKey: projectId,
+        elapsedMs: Date.now() - startedAtMs,
+        ...extra,
+      })
     }
     phase('begin')
     const t0 = Date.now()
@@ -2353,7 +2703,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
           techStackId: projectInfo.techStackId,
           name: projectInfo.name,
           workspaceId: runtimeEnv.WORKSPACE_ID,
-          extraEnv: runtimeEnv,
+          extraEnv: {
+            ...runtimeEnv,
+            ...(openAttemptId ? { SHOGO_OPEN_ID: openAttemptId } : {}),
+            ...(PERF_LOG_ENABLED ? { SHOGO_PERF_LOG: '1' } : {}),
+          },
         }
 
         const tAgent = Date.now()
@@ -2787,6 +3141,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   async stop(projectId: string, reason: string = 'external'): Promise<void> {
+    // A project served by the host warm pool is not in `this.runtimes` — the
+    // pool controller owns that process. Without this, `POST /runtime/stop`
+    // was a silent no-op for every pool-assigned project (measured on 1.14.1:
+    // the UI's stop returned `status: "stopped"` while `sandbox/url` kept
+    // reporting the same live runtime). Best-effort and dynamic to avoid the
+    // controller ↔ manager import cycle.
+    await this.evictFromHostPool(projectId, reason)
+
     const key = this.resolveRuntimeKey(projectId)
     const runtime = this.runtimes.get(key)
     if (!runtime) {
@@ -2855,6 +3217,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const mi = this.workspacePreviewMru.indexOf(key)
     if (mi >= 0) this.workspacePreviewMru.splice(mi, 1)
     this.dropBackgroundMru(key)
+  }
+
+  private async evictFromHostPool(projectId: string, reason: string): Promise<void> {
+    if (projectId.startsWith('ws:')) return
+    try {
+      const pool = await import('../host-warm-pool-controller')
+      if (!pool.isHostWarmPoolEnabled()) return
+      const controller = pool.getHostWarmPoolController()
+      if (controller.getAssignedPod(projectId)) {
+        console.log(`[RuntimeManager] stop(${projectId}) reason=${reason} — evicting host-pool runtime`)
+        controller.evictProject(projectId)
+      }
+    } catch {
+      // Pool not initialised (or disabled): nothing to evict.
+    }
   }
 
   /**

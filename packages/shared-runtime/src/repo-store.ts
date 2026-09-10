@@ -23,7 +23,7 @@
  */
 
 import { spawn } from 'child_process'
-import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, statSync } from 'fs'
+import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, statSync, writeFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -77,6 +77,101 @@ function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.Pro
 }
 
 /**
+ * Baseline ignore rules written when a workspace reaches the git layer without
+ * any `.gitignore`. Desktop projects seeded by builds up to 1.14.x lost the
+ * template's ignore file to a `src.includes('.git')` copy filter, so their
+ * first `git add -A` committed `node_modules` (36k+ files) and every later
+ * commit / restore / LFS pass walked that tree. Keep this list to the
+ * directories that are never source: dependency installs and build output.
+ */
+export const DEFAULT_WORKSPACE_GITIGNORE = [
+  '# dependencies and build output are never source',
+  'node_modules',
+  'dist',
+  'dist-ssr',
+  'dist.staging',
+  '.shogo/local',
+  '.shogo-pool-assignment',
+  '*.log',
+  '.env',
+  '.env.local',
+  '.env.*.local',
+  '.DS_Store',
+  '',
+].join('\n')
+
+/** Write {@link DEFAULT_WORKSPACE_GITIGNORE} when the workspace has no `.gitignore`. Returns true when written. */
+export function ensureWorkspaceGitignore(workspaceDir: string): boolean {
+  const target = join(workspaceDir, '.gitignore')
+  if (existsSync(target)) return false
+  try {
+    writeFileSync(target, DEFAULT_WORKSPACE_GITIGNORE)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const UNTRACK_DIRS = ['node_modules', 'dist', 'dist.staging']
+
+/**
+ * Repair a repo that already tracks dependency / build directories: drop them
+ * from the index (files stay on disk), make sure they are ignored, and commit.
+ * Cheap when nothing is tracked (one `git ls-files`), so callers can run it on
+ * every bootstrap. Returns the list of directories that were untracked.
+ */
+export async function untrackDependencyDirs(
+  workspaceDir: string,
+  opts: { authorName?: string; authorEmail?: string; logger?: Logger } = {},
+): Promise<string[]> {
+  const logger = opts.logger ?? console
+  if (!existsSync(join(workspaceDir, '.git'))) return []
+  const authorName = opts.authorName ?? 'Shogo Agent'
+  const authorEmail = opts.authorEmail ?? 'agent-runtime@shogo.ai'
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: authorName,
+    GIT_AUTHOR_EMAIL: authorEmail,
+    GIT_COMMITTER_NAME: authorName,
+    GIT_COMMITTER_EMAIL: authorEmail,
+  }
+  const git = (args: string[]) =>
+    new Promise<{ code: number; stdout: string }>((resolve, reject) => {
+      const child = spawn('git', args, { cwd: workspaceDir, env, stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      child.stdout.on('data', (c) => { stdout += String(c) })
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ code: code ?? -1, stdout }))
+    })
+
+  try {
+    const tracked: string[] = []
+    for (const dir of UNTRACK_DIRS) {
+      // `-z` + a single path spec: one entry is enough to know the dir is tracked.
+      const res = await git(['ls-files', '-z', '--', dir])
+      if (res.code === 0 && res.stdout.length > 0) tracked.push(dir)
+    }
+    if (tracked.length === 0) return []
+
+    const started = Date.now()
+    ensureWorkspaceGitignore(workspaceDir)
+    for (const dir of tracked) {
+      await git(['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', dir])
+    }
+    await git(['add', '--', '.gitignore'])
+    const staged = await git(['diff', '--cached', '--quiet'])
+    if (staged.code !== 0) {
+      await git(['commit', '-q', '-m', `chore: stop tracking ${tracked.join(', ')}`, '--no-verify'])
+    }
+    logger.log(`[repo-store] untracked ${tracked.join(', ')} in ${Date.now() - started}ms`)
+    return tracked
+  } catch (err: any) {
+    logger.warn(`[repo-store] untrack dependency dirs failed: ${err?.message ?? err}`)
+    return []
+  }
+}
+
+/**
  * Initialize a fresh git repo in `<workspaceDir>` and commit the current
  * on-disk tree (respecting `.gitignore`). No remote, no push — durability
  * is the caller's job via {@link persistRepoToStore}. No-op when `.git`
@@ -116,6 +211,11 @@ export async function seedRepoIfAbsent(
     })
 
   try {
+    // Never let the seed commit sweep up node_modules / build output. Only
+    // when such a directory exists, so an empty workspace stays empty.
+    if (UNTRACK_DIRS.some((d) => existsSync(join(workspaceDir, d))) && ensureWorkspaceGitignore(workspaceDir)) {
+      logger.log('[repo-store] seed: wrote default .gitignore (workspace had none)')
+    }
     await runEnv(['init', '-b', branch])
     await runEnv(['config', 'core.autocrlf', 'false'])
     await runEnv(['config', 'core.longpaths', 'true'])

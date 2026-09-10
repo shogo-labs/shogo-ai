@@ -31,6 +31,7 @@ import {
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useDomainActions, useDomainHttp } from "../../../contexts/domain";
+import { api } from "../../../lib/api";
 import { defaultTabForProject } from "../../../lib/project-preview-tab";
 import {
   fetchProjectChatSessions,
@@ -281,6 +282,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   }, [isActive, collapsed, loadChats, mobileProjectFirstTapShowsChats]);
 
   const openProject = useCallback(() => {
+    void api.prewarmProjectRuntime(http, project.id);
     // Clicking a project name is an explicit "take me to this project's main
     // surface" intent: Canvas for canvas-capable projects, fullscreen Chat
     // for chat-only agents, the external preview for folder-linked projects.
@@ -302,7 +304,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       router.setParams({ tab, tabNonce: String(Date.now()) } as any);
     }
     onNavPress?.();
-  }, [router, project, onNavPress, isActive, mobileProjectFirstTapShowsChats]);
+  }, [router, project, onNavPress, isActive, mobileProjectFirstTapShowsChats, http]);
 
   const handleProjectPress = useCallback(() => {
     if (mobileProjectFirstTapShowsChats) {

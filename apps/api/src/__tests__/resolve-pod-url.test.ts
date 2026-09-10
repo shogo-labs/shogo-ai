@@ -99,7 +99,9 @@ describe('host branch', () => {
       runtimeManager: manager,
     })
     expect(statusMock).toHaveBeenCalledWith('proj-host')
-    expect(startMock).toHaveBeenCalledWith('proj-host')
+    // start() also receives the open-attempt correlation options.
+    expect(startMock).toHaveBeenCalledTimes(1)
+    expect(startMock.mock.calls[0][0]).toBe('proj-host')
     expect(result.mode).toBe('host')
     expect((result as any).url).toBe('http://127.0.0.1:9000')
     expect((result as any).runtime).toBeDefined()

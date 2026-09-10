@@ -79,6 +79,8 @@ export interface ResolveWorkspaceRuntimeOpts {
 
   /** RuntimeManager instance for host mode (lazy-resolved if omitted). */
   runtimeManager?: IRuntimeManager
+  /** Correlates a UI open attempt with host runtime boot logs. */
+  openAttemptId?: string
 
   /** Test-only override: is the workspace-runtime feature enabled? */
   _isEnabled?: () => boolean
@@ -108,6 +110,7 @@ export interface ResolveWorkspaceRuntimeOpts {
     workspaceId: string,
     attachedProjectIds: string[],
     manager?: IRuntimeManager,
+    opts?: { openAttemptId?: string },
   ) => Promise<IProjectRuntime>
   /** Test-only override for the project-anchored host spawn. */
   _hostStartProject?: (
@@ -117,6 +120,7 @@ export interface ResolveWorkspaceRuntimeOpts {
       attachedProjectIds: string[]
       localFolders: string[]
       readonlyProjectIds: string[]
+      openAttemptId?: string
     },
     manager?: IRuntimeManager,
   ) => Promise<IProjectRuntime>
@@ -149,6 +153,7 @@ async function defaultHostStart(
   workspaceId: string,
   attachedProjectIds: string[],
   manager?: IRuntimeManager,
+  opts?: { openAttemptId?: string },
 ): Promise<IProjectRuntime> {
   const m: any =
     manager ?? (await import('./runtime/index')).getRuntimeManager()
@@ -158,7 +163,10 @@ async function defaultHostStart(
         `Expected on the desktop/local RuntimeManager (apps/api/src/lib/runtime/manager.ts).`,
     )
   }
-  return m.startWorkspace(workspaceId, { attachedProjectIds })
+  return m.startWorkspace(workspaceId, {
+    attachedProjectIds,
+    openAttemptId: opts?.openAttemptId,
+  })
 }
 
 /**
@@ -172,6 +180,7 @@ async function defaultHostStartProject(
     attachedProjectIds: string[]
     localFolders: string[]
     readonlyProjectIds: string[]
+    openAttemptId?: string
   },
   manager?: IRuntimeManager,
 ): Promise<IProjectRuntime> {
@@ -281,12 +290,18 @@ export async function resolveWorkspaceRuntimeUrl(
         attachedProjectIds,
         localFolders: opts.localFolders ?? [],
         readonlyProjectIds: opts.readonlyProjectIds ?? [],
+        openAttemptId: opts.openAttemptId,
       },
       opts.runtimeManager,
     )
   } else {
     const start = opts._hostStart ?? defaultHostStart
-    runtime = await start(workspaceId, attachedProjectIds, opts.runtimeManager)
+    runtime = await start(
+      workspaceId,
+      attachedProjectIds,
+      opts.runtimeManager,
+      { openAttemptId: opts.openAttemptId },
+    )
   }
 
   let host = 'localhost'

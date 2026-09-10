@@ -51,6 +51,7 @@ export interface ProjectCardProps {
 
   // Callbacks
   onPress: () => void
+  onPressIn?: (event: any) => void
   onLongPress?: () => void
   onStarToggle?: (e: any) => void
   onSelectToggle?: (e: any) => void
@@ -80,6 +81,7 @@ export const ProjectCard = memo(function ProjectCard({
   onSelectToggle,
   renderTrailing,
   renderLeading,
+  onPressIn,
 }: ProjectCardProps) {
   const color = getProjectAccentColor(name)
   const initial = name?.charAt(0)?.toUpperCase() || 'P'
@@ -95,6 +97,7 @@ export const ProjectCard = memo(function ProjectCard({
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
       onLongPress={onLongPress}
       android_ripple={
         Platform.OS === 'android'

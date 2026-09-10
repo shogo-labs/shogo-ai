@@ -212,6 +212,17 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     console.log(
       `[${config.name}] [+${fromEntrypoint}ms total, +${fromServer}ms server] ${message}`
     )
+    if (process.env.SHOGO_PERF_LOG === '1') {
+      console.log(`[shogo-perf] ${JSON.stringify({
+        perf: 'open',
+        source: config.name === 'agent-runtime' ? 'agent-runtime' : 'runtime',
+        phase: message,
+        projectId: process.env.PROJECT_ID,
+        openAttemptId: process.env.SHOGO_OPEN_ID,
+        elapsedMs: fromEntrypoint,
+        serverElapsedMs: fromServer,
+      })}`)
+    }
   }
 
   logTiming('Server module loading...')

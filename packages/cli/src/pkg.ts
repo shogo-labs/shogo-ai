@@ -339,7 +339,11 @@ export class PlatformPackageManager {
   installAsync(cwd: string, opts?: PkgInstallOptions): Promise<void> {
     if (IS_WINDOWS) {
       const env = this.spawnEnv(opts?.env)
-      if (isNodeAvailableOnWindows(env.PATH)) {
+      const requestedBackend = env.SHOGO_WINDOWS_INSTALL_BACKEND?.toLowerCase()
+      // `npm` remains the safe default for existing installations. The
+      // benchmark/tuning knob lets desktop builds compare Bun's copyfile
+      // backend without changing the recovery semantics for users.
+      if (requestedBackend !== 'bun' && isNodeAvailableOnWindows(env.PATH)) {
         return this.installAsyncWindowsNpm(cwd, opts).catch((err) => {
           // npm install failed — if it was specifically "npm.cmd missing"
           // (race), retry through the bun fallback path. Any other error
@@ -349,6 +353,9 @@ export class PlatformPackageManager {
           }
           throw err
         })
+      }
+      if (requestedBackend === 'bun') {
+        console.log('[platform-pkg] Windows install backend=bun (copyfile)')
       }
       return this.installAsyncBunCopyfile(cwd, opts)
     }

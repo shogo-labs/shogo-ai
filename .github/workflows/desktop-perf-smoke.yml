@@ -1,0 +1,33 @@
+name: Desktop project-open performance smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/api/src/lib/runtime/**"
+      - "apps/api/src/lib/host-warm-pool-controller.ts"
+      - "apps/api/src/routes/runtime.ts"
+      - "apps/api/src/server.ts"
+      - "apps/desktop/**"
+      - "apps/mobile/lib/cold-start-timing.ts"
+      - "packages/agent-runtime/src/server.ts"
+      - "packages/shogo-worker/src/lib/runtime-manager.ts"
+      - "scripts/bench/**"
+
+jobs:
+  harness-and-memory-smoke:
+    name: ${{ matrix.os }} desktop perf smoke
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun test apps/desktop/src/__tests__/runtime-memory.test.ts
+      - run: bun build scripts/bench/project-open.ts --target bun --format esm --outfile .perf-smoke/project-open.js
+      - run: bun build packages/agent-runtime/src/server.ts --target bun --format esm --packages external --outfile .perf-smoke/agent-runtime.js

@@ -105,6 +105,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       const res = await resolveProjectPodUrl(projectId, {
         logTag: 'Runtime',
         runtimeManager,
+        openAttemptId: c.req.header('x-shogo-open-id')?.slice(0, 128),
       })
 
       if (res.mode === 'host') {
@@ -113,6 +114,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
           projectId,
           status: res.runtime.status,
           url: res.runtime.url,
+          readyUrl: res.runtime.status === 'running' ? res.runtime.url : null,
           port: res.runtime.port,
         })
       }
@@ -200,12 +202,24 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
    */
   router.get("/projects/:projectId/sandbox/url", async (c) => {
     const projectId = c.req.param("projectId")
+    const openAttemptId = c.req.header('x-shogo-open-id')?.slice(0, 128)
     const handlerStart = Date.now()
     const log = (phase: string, extra?: Record<string, unknown>) => {
       console.log(
         `[sandbox/url:${projectId.slice(0, 8)}] ${phase} ` +
-          `(+${Date.now() - handlerStart}ms${extra ? ' ' + JSON.stringify(extra) : ''})`,
+          `(+${Date.now() - handlerStart}ms${extra ? ' ' + JSON.stringify({ ...extra, openAttemptId }) : ''})`,
       )
+      if (process.env.SHOGO_PERF_LOG === '1') {
+        console.log(`[shogo-perf] ${JSON.stringify({
+          perf: 'open',
+          source: 'api',
+          phase: `sandbox-url:${phase}`,
+          projectId,
+          openAttemptId,
+          elapsedMs: Date.now() - handlerStart,
+          ...extra,
+        })}`)
+      }
     }
     log('start')
 
@@ -234,6 +248,7 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
       const res = await resolveProjectPodUrl(projectId, {
         logTag: 'Runtime',
         runtimeManager,
+        openAttemptId,
       })
       log('resolveProjectPodUrl', { ms: Date.now() - t2, mode: res?.mode, status: (res as any)?.runtime?.status })
 

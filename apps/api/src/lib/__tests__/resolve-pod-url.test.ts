@@ -315,6 +315,50 @@ describe('resolveProjectPodUrl', () => {
     })
   })
 
+  describe('host warm pool vs direct runtime', () => {
+    it('claims from the pool when no direct runtime exists', async () => {
+      const mgr = fakeRuntimeManager(undefined)
+      const pool = mock(async () => 'http://localhost:38300')
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isHostWarmPoolEnabled: () => true,
+        _hostPoolResolver: pool,
+        runtimeManager: mgr as any,
+      })
+      expect(pool).toHaveBeenCalledTimes(1)
+      expect(mgr.start).not.toHaveBeenCalled()
+      expect(res.url).toBe('http://localhost:38300')
+    })
+
+    it('keeps a live direct runtime instead of also assigning a pool runtime', async () => {
+      // After a pool fallback the project is served by RuntimeManager; the next
+      // /sandbox/url or agent-proxy call must not claim a second runtime.
+      const mgr = fakeRuntimeManager(fakeRuntime({ status: 'running' }))
+      const pool = mock(async () => 'http://localhost:38300')
+      const res = await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isHostWarmPoolEnabled: () => true,
+        _hostPoolResolver: pool,
+        runtimeManager: mgr as any,
+      })
+      expect(pool).not.toHaveBeenCalled()
+      expect(res.url).toBe('http://localhost:38500')
+    })
+
+    it('joins an in-flight direct start instead of racing it with a pool assign', async () => {
+      const mgr = fakeRuntimeManager(fakeRuntime({ status: 'starting' }))
+      const pool = mock(async () => 'http://localhost:38300')
+      await resolveProjectPodUrl('proj-1', {
+        _isKubernetes: () => false,
+        _isHostWarmPoolEnabled: () => true,
+        _hostPoolResolver: pool,
+        runtimeManager: mgr as any,
+      })
+      expect(pool).not.toHaveBeenCalled()
+      expect(mgr.start).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('host mode runtime reuse', () => {
     it('does NOT call manager.start when runtime is already running', async () => {
       const running = fakeRuntime({ status: 'running' })

@@ -2205,7 +2205,12 @@ app.post('/api/projects/:projectId/runtime/start', async (c) => {
   const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
   const url = new URL(c.req.url)
   url.pathname = `/projects/${projectId}/runtime/start`
-  const newReq = new Request(url.toString(), { method: 'POST' })
+  const newReq = new Request(url.toString(), {
+    method: 'POST',
+    headers: c.req.header('x-shogo-open-id')
+      ? { 'x-shogo-open-id': c.req.header('x-shogo-open-id')! }
+      : undefined,
+  })
   return router.fetch(newReq)
 })
 
@@ -2242,14 +2247,25 @@ app.post('/api/projects/:projectId/runtime/prewarm', async (c) => {
     }
   }
 
-  // Local dev: there is no warm pool to claim — fall back to the
-  // existing start path so callers still see consistent behavior.
+  // Local desktop: start in the background as well. The project page's
+  // sandbox/url request joins RuntimeManager's single-flight promise when it
+  // needs the URL, while the prewarm caller returns immediately.
   const manager = getRuntimeManager()
-  const router = runtimeRoutes({ runtimeManager: manager, workspacesDir: WORKSPACES_DIR })
-  const url = new URL(c.req.url)
-  url.pathname = `/projects/${projectId}/runtime/start`
-  const newReq = new Request(url.toString(), { method: 'POST' })
-  return router.fetch(newReq)
+  const openAttemptId = c.req.header('x-shogo-open-id')?.slice(0, 128)
+  const existing = manager.status(projectId)
+  if (existing?.status === 'running' && existing.agentPort) {
+    return c.json({
+      success: true,
+      projectId,
+      status: 'running',
+      readyUrl: existing.url,
+      url: existing.url,
+    })
+  }
+  void manager.start(projectId, { openAttemptId }).catch((err: any) => {
+    console.warn(`[Runtime Prewarm] Local start failed for ${projectId}:`, err?.message ?? err)
+  })
+  return c.json({ success: true, projectId, status: 'warming' }, 202)
 })
 
 // Stop project runtime
@@ -8905,6 +8921,10 @@ if (isKubernetes()) {
 if (!isKubernetes()) {
   setTimeout(async () => {
     try {
+      // Even low-memory machines benefit from a ready workspace when the
+      // project is created; only the extra resident agent process is gated by
+      // HOST_WARM_POOL_SIZE.
+      await getRuntimeManager().prepareWarmWorkspace()
       const { initHostWarmPool, isHostWarmPoolEnabled } = await import('./lib/host-warm-pool-controller')
       if (!isHostWarmPoolEnabled()) return
       await initHostWarmPool()
@@ -8963,6 +8983,36 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && process.env.SHOGO_WORKSPACE_RUNTI
       console.error('[StartupPrewarm] Failed to start workspace prewarm (non-fatal):', err?.message ?? err)
     }
   }, 4000)
+}
+
+// Keep the most recently used desktop project warm before the user clicks it.
+// This is bounded separately from workspace-runtime prewarm so a desktop with
+// many projects does not boot every runtime on launch.
+if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
+  setTimeout(async () => {
+    try {
+      const count = Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10))
+      if (count === 0) return
+      const projects = await prisma.project.findMany({
+        orderBy: { updatedAt: 'desc' },
+        take: count,
+        select: { id: true },
+      })
+      const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+      for (const project of projects) {
+        void resolveProjectPodUrl(project.id, {
+          logTag: 'DesktopStartupPrewarm',
+          runtimeManager: getRuntimeManager(),
+        })
+          .then(() => console.log(`[DesktopStartupPrewarm] Project ${project.id} runtime warmed`))
+          .catch((err: any) =>
+            console.warn(`[DesktopStartupPrewarm] Failed to warm project ${project.id}:`, err?.message ?? err),
+          )
+      }
+    } catch (err: any) {
+      console.warn('[DesktopStartupPrewarm] Skipped:', err?.message ?? err)
+    }
+  }, 3500)
 }
 
 // Storage usage recalculation (Kubernetes only, every 6 hours)
