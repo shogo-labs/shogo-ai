@@ -43,8 +43,11 @@ import { usePlatformConfig } from "../../../lib/platform-config";
 import { getPlanDisplayName } from "../../../lib/billing-config";
 import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
-import { NativePhoneSheet } from "../../phone/NativePhoneSheet";
 import { densityFor } from "../../../lib/phone-density";
+import { isNativePlatform } from "../../../lib/native-phone-layout";
+
+/** Phone/narrow web Account screen. Wide web keeps the AccountMenu popover. */
+export const ACCOUNT_SCREEN_HREF = "/(app)/account";
 
 function getInitials(name: string | null | undefined): string {
   if (!name) return "?";
@@ -664,7 +667,10 @@ export function AccountMenu({
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
-  const isNative = Platform.OS !== "web";
+  const isNative = isNativePlatform();
+  // Native and narrow web get a pushed page. Wide web keeps the popover.
+  // Native never falls back to a sheet, even if `isWide` is omitted.
+  const openAsFullScreen = isNative || !isWide;
 
   const triggerInner = (
     <>
@@ -717,7 +723,99 @@ export function AccountMenu({
     </>
   );
 
-  const menuSections = (
+  if (openAsFullScreen) {
+    return (
+      <Pressable
+        onPress={() => onNavigate(ACCOUNT_SCREEN_HREF)}
+        role="button"
+        accessibilityLabel={`${currentWorkspace?.name || "Workspace"}, ${user?.name || "User"} — open account`}
+        accessibilityHint="Opens account, workspace, and billing"
+        className={cn(
+          "flex-row items-center active:opacity-80 flex-1 min-w-0",
+          isNative ? "min-h-12 gap-3" : "gap-2",
+          collapsed && "justify-center",
+        )}
+      >
+        {triggerInner}
+      </Pressable>
+    );
+  }
+
+  return (
+    <Popover
+      placement="top"
+      size="sm"
+      className="flex-1 min-w-0 w-auto h-auto items-stretch"
+      isOpen={isOpen}
+      onOpen={() => setIsOpen(true)}
+      onClose={close}
+      trigger={(triggerProps) => (
+        <Pressable
+          {...triggerProps}
+          role="button"
+          accessibilityLabel={`${currentWorkspace?.name || "Workspace"}, ${user?.name || "User"} — open account menu`}
+          accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
+          accessibilityState={{ expanded: isOpen }}
+          className={cn(
+            "flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0",
+            collapsed && "justify-center",
+          )}
+        >
+          {triggerInner}
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className="w-[300px] max-w-[340px] p-0">
+        <PopoverBody>
+          <ScrollView
+            className="max-h-[520px]"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            overScrollMode="never"
+          >
+            <AccountMenuBody
+              user={user}
+              onSignOut={onSignOut}
+              onNavigate={onNavigate}
+              isSuperAdmin={isSuperAdmin}
+              workspaces={workspaces}
+              currentWorkspace={currentWorkspace}
+              billingData={billingData}
+              workspacePlan={workspacePlan}
+              allPlans={allPlans}
+              showBilling={showBilling}
+              onSwitchWorkspace={onSwitchWorkspace}
+              onCreateWorkspace={onCreateWorkspace}
+              localMode={localMode}
+              onClose={close}
+              isNative={false}
+            />
+          </ScrollView>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function AccountMenuBody({
+  user,
+  onSignOut,
+  onNavigate,
+  isSuperAdmin,
+  workspaces,
+  currentWorkspace,
+  billingData,
+  workspacePlan,
+  allPlans,
+  showBilling,
+  onSwitchWorkspace,
+  onCreateWorkspace,
+  localMode,
+  onClose,
+  isNative = false,
+}: AccountMenuProps & { onClose: () => void; isNative?: boolean }) {
+  return (
     <>
       <WorkspaceMenuSection
         workspaces={workspaces}
@@ -730,14 +828,14 @@ export function AccountMenu({
         onSwitchWorkspace={onSwitchWorkspace}
         onCreateWorkspace={onCreateWorkspace}
         localMode={localMode}
-        onClose={close}
+        onClose={onClose}
         isNative={isNative}
       />
       <View className="h-px bg-border" />
       <AccountNavLinks
         localMode={localMode}
         onNavigate={onNavigate}
-        onClose={close}
+        onClose={onClose}
         isNative={isNative}
       />
       <View className="h-px bg-border" />
@@ -746,78 +844,9 @@ export function AccountMenu({
         onSignOut={onSignOut}
         onNavigate={onNavigate}
         isSuperAdmin={isSuperAdmin}
-        onClose={close}
+        onClose={onClose}
         isNative={isNative}
       />
-    </>
-  );
-
-  if (isWide) {
-    return (
-      <Popover
-        placement="top"
-        size="sm"
-        className="flex-1 min-w-0 w-auto h-auto items-stretch"
-        isOpen={isOpen}
-        onOpen={() => setIsOpen(true)}
-        onClose={close}
-        trigger={(triggerProps) => (
-          <Pressable
-            {...triggerProps}
-            role="button"
-            accessibilityLabel={`${currentWorkspace?.name || "Workspace"}, ${user?.name || "User"} — open account menu`}
-            accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
-            accessibilityState={{ expanded: isOpen }}
-            className={cn(
-              "flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0",
-              collapsed && "justify-center",
-            )}
-          >
-            {triggerInner}
-          </Pressable>
-        )}
-      >
-        <PopoverBackdrop />
-        <PopoverContent className="w-[300px] max-w-[340px] p-0">
-          <PopoverBody>
-            <ScrollView
-              className="max-h-[520px]"
-              showsVerticalScrollIndicator={false}
-              bounces={false}
-              overScrollMode="never"
-            >
-              {menuSections}
-            </ScrollView>
-          </PopoverBody>
-        </PopoverContent>
-      </Popover>
-    );
-  }
-
-  return (
-    <>
-      <Pressable
-        onPress={() => setIsOpen(true)}
-        role="button"
-        accessibilityLabel={`${currentWorkspace?.name || "Workspace"}, ${user?.name || "User"} — open account menu`}
-        accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
-        accessibilityState={{ expanded: isOpen }}
-        className={cn(
-          "flex-row items-center active:opacity-80 flex-1 min-w-0",
-          isNative ? "min-h-12 gap-3" : "gap-2",
-          collapsed && "justify-center",
-        )}
-      >
-        {triggerInner}
-      </Pressable>
-      <NativePhoneSheet visible={isOpen} animationType="slide" onClose={close}>
-        <ScrollView
-          className={isNative ? "max-h-[560px]" : "max-h-[480px]"}
-          showsVerticalScrollIndicator={false}
-        >
-          {menuSections}
-        </ScrollView>
-      </NativePhoneSheet>
     </>
   );
 }

@@ -58,6 +58,7 @@ import {
 import { useBillingData } from "@shogo/shared-app/hooks";
 import { NotificationBell } from "../../notifications/NotificationBell";
 import { api } from "../../../lib/api";
+import { hasAdminPortalAccess } from "../../../lib/admin-portal-access";
 import { trackPurchase } from "../../../lib/tracking";
 import {
   getActiveWorkspaceId,
@@ -163,12 +164,8 @@ export const AppSidebar = observer(function AppSidebar({
     api
       .getMe(http)
       .then((data) => {
-        if (cancelled || !data?.ok) return;
-        const role = data.data?.role;
-        const scopes = Array.isArray(data.data?.adminScopes)
-          ? data.data!.adminScopes!
-          : [];
-        if (role === "super_admin" || scopes.length > 0) {
+        if (cancelled) return;
+        if (hasAdminPortalAccess(data)) {
           setHasAdminAccess(true);
         }
       })
@@ -1066,7 +1063,7 @@ export const AppSidebar = observer(function AppSidebar({
               user={user}
               onSignOut={handleSignOut}
               onNavigate={(href) => {
-                router.push(href as Parameters<typeof router.push>[0]);
+                router.push(href as any);
                 onNavPress();
               }}
               isSuperAdmin={hasAdminAccess}

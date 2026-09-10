@@ -34,13 +34,16 @@ export function ComposerSendButton({
   accessibilityLabel?: string;
   testID?: string;
 }) {
+  const size = sizeClassName ?? (prominent ? "h-8 w-8" : "h-9 w-9")
+  const glyph = iconSize ?? 18
+
   if (loading) {
     return (
       <View
         className={cn(
           "rounded-full items-center justify-center",
           fillClassName,
-          prominent ? "h-8 w-8" : (sizeClassName ?? "h-9 w-9"),
+          size,
         )}
         style={
           fillColor
@@ -51,7 +54,7 @@ export function ComposerSendButton({
         <Loader2
           className={cn("animate-spin", iconClassName)}
           color={iconColor}
-          size={iconSize ?? (prominent ? 14 : 18)}
+          size={glyph}
         />
       </View>
     );
@@ -70,7 +73,7 @@ export function ComposerSendButton({
       className={cn(
         "rounded-full items-center justify-center",
         fillClassName,
-        prominent ? "h-8 w-8" : (sizeClassName ?? "h-9 w-9"),
+        size,
         disabled && "opacity-50",
       )}
       style={fillColor ? { backgroundColor: fillColor } : undefined}
@@ -78,7 +81,7 @@ export function ComposerSendButton({
       <ArrowUp
         className={iconClassName}
         color={iconColor}
-        size={iconSize ?? (prominent ? 14 : 18)}
+        size={glyph}
       />
     </Pressable>
   );

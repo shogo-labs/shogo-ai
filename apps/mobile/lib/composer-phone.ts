@@ -18,6 +18,24 @@ export function composerKeyboardProps(
 
 export const COMPOSER_KEYBOARD_PROPS = composerKeyboardProps()
 
+/** Native send control — 44pt tap target, larger than the web 20px chip. */
+export const NATIVE_COMPOSER_SEND_CLASS = "h-11 w-11"
+export const NATIVE_COMPOSER_SEND_ICON = 22
+export const WEB_COMPOSER_SEND_CLASS = "h-5 w-5"
+export const WEB_COMPOSER_SEND_ICON = 12
+/** Native idle mic: same 44pt target, keep the quiet chip chrome. */
+export const NATIVE_COMPOSER_MIC_IDLE_CLASS =
+  `${NATIVE_COMPOSER_SEND_CLASS} border border-border/45 bg-muted/30`
+
+export function composerSendChrome(phone: boolean): {
+  sizeClassName: string
+  iconSize: number
+} {
+  return phone
+    ? { sizeClassName: NATIVE_COMPOSER_SEND_CLASS, iconSize: NATIVE_COMPOSER_SEND_ICON }
+    : { sizeClassName: WEB_COMPOSER_SEND_CLASS, iconSize: WEB_COMPOSER_SEND_ICON }
+}
+
 /** Shared ChatGPT-style composer colors used by both composer variants. */
 export const CHATGPT_COMPOSER = {
   light: {

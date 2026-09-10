@@ -35,6 +35,7 @@ import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
 import { NativeActivitySheet } from "./NativeActivitySheet"
 import { NATIVE_PHONE_SECTION_INSET } from "../../lib/native-phone-layout"
 import { MODEL_COST_BADGE_CLASS, MODEL_COST_LABEL, modelCostHint } from "../../lib/model-build-cost"
+import { NATIVE_MODEL_SHEET } from "./model-picker-sheet-chrome"
 import { Popover, PopoverBackdrop, PopoverContent } from "@/components/ui/popover"
 
 /** Compact label shown on each row (right side). */
@@ -143,32 +144,45 @@ export function ModelPickerMenu({
           onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
           className={cn(
             "flex-row items-center gap-2.5 px-3",
-            isSheet ? "min-h-14 py-3" : isWeb ? "py-2" : "min-h-12 py-2.5",
+            isSheet ? NATIVE_MODEL_SHEET.rowClass : isWeb ? "py-2" : "min-h-12 py-2.5",
             isSelected && "bg-accent",
             isLocked && "opacity-50"
           )}
         >
           <View className="flex-1 flex-row items-baseline gap-1.5">
             <Text
-              className={cn(isWeb ? "text-sm" : "text-base", isLocked ? "text-muted-foreground" : "text-foreground")}
+              className={cn(
+                isSheet ? NATIVE_MODEL_SHEET.nameClass : isWeb ? "text-sm" : "text-base",
+                isLocked ? "text-muted-foreground" : "text-foreground",
+              )}
             >
               {model.shortDisplayName ?? model.displayName}
             </Text>
             {effort ? (
-              <Text className={isWeb ? "text-[11px] text-muted-foreground" : "text-xs text-muted-foreground"}>
+              <Text
+                className={cn(
+                  "text-muted-foreground",
+                  isSheet ? NATIVE_MODEL_SHEET.metaClass : isWeb ? "text-[11px]" : "text-xs",
+                )}
+              >
                 {EFFORT_SHORT[effort]}
               </Text>
             ) : null}
             {!isSelected ? (
-              <Text className={cn(isWeb ? "text-[11px]" : "text-xs", MODEL_COST_BADGE_CLASS[model.tier])}>
+              <Text
+                className={cn(
+                  isSheet ? NATIVE_MODEL_SHEET.metaClass : isWeb ? "text-[11px]" : "text-xs",
+                  MODEL_COST_BADGE_CLASS[model.tier],
+                )}
+              >
                 {MODEL_COST_LABEL[model.tier]}
               </Text>
             ) : null}
           </View>
           {isLocked ? (
-            <Lock className="text-muted-foreground" size={isWeb ? 12 : 17} />
+            <Lock className="text-muted-foreground" size={isSheet ? NATIVE_MODEL_SHEET.icon : isWeb ? 12 : 17} />
           ) : isSelected ? (
-            <Check className="text-primary" size={isWeb ? 14 : 18} />
+            <Check className="text-primary" size={isSheet ? NATIVE_MODEL_SHEET.icon : isWeb ? 14 : 18} />
           ) : null}
           {/* Native-only inline details toggle. */}
           {!isWeb ? (
@@ -181,8 +195,8 @@ export function ModelPickerMenu({
               className="pl-1"
             >
               <ChevronRight
-                className={cn("h-3.5 w-3.5 text-muted-foreground/60", isExpanded && "rotate-90")}
-                size={18}
+                className={cn("flex-shrink-0 text-muted-foreground/60", isExpanded && "rotate-90")}
+                size={isSheet ? NATIVE_MODEL_SHEET.icon : 18}
               />
             </Pressable>
           ) : null}
@@ -190,14 +204,22 @@ export function ModelPickerMenu({
         {!isWeb && isExpanded ? (
           <View className="px-3 pb-2.5 -mt-1 gap-1">
             {model.description ? (
-              <Text className="text-[13px] text-muted-foreground leading-5">{model.description}</Text>
+              <Text className={cn("text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px] leading-5")}>
+                {model.description}
+              </Text>
             ) : null}
-            {contextLabel ? <Text className="text-[13px] text-muted-foreground">{contextLabel}</Text> : null}
-            <Text className={cn("text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
+            {contextLabel ? (
+              <Text className={cn("text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]")}>
+                {contextLabel}
+              </Text>
+            ) : null}
+            <Text className={cn(isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
               {MODEL_COST_LABEL[model.tier]} · {modelCostHint(model.tier, currentTier)}
             </Text>
             {effort ? (
-              <Text className="text-[13px] italic text-muted-foreground">Reasoning: {EFFORT_WORD[effort]} effort</Text>
+              <Text className={cn("italic text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]")}>
+                Reasoning: {EFFORT_WORD[effort]} effort
+              </Text>
             ) : null}
           </View>
         ) : null}
@@ -241,8 +263,13 @@ export function ModelPickerMenu({
           onHoverIn={isWeb ? () => setHoveredId(null) : undefined}
           className="flex-row items-center gap-2 px-3 py-2.5 border-t border-border/50"
         >
-          <Settings2 className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-          <Text className="text-xs text-muted-foreground">Manage models</Text>
+          <Settings2
+            className="flex-shrink-0 text-muted-foreground"
+            size={isSheet ? NATIVE_MODEL_SHEET.manageIcon : 14}
+          />
+          <Text className={cn("text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.metaClass : "text-xs")}>
+            Manage models
+          </Text>
         </Pressable>
       ) : null}
     </View>
@@ -421,7 +448,7 @@ export function ComposerModelPicker({
             setOpen(true)
           }}
         />
-        <NativeActivitySheet visible={open} title={sheetTitle ?? "Model"} onClose={close}>
+        <NativeActivitySheet visible={open} title={sheetTitle ?? "Model"} onClose={close} showClose={false}>
           {menu}
         </NativeActivitySheet>
       </>
