@@ -17,15 +17,25 @@ import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 export interface PlanDockPanelProps {
   pendingPlan: PlanData | null
   confirmedPlan: PlanData | null
-  onBuild: ((plan: PlanData) => void) | null
-  onOpenPlan?: (filepath: string) => void
+  onBuild: ((plan: PlanData, modelId?: string) => void) | null
+  onOpenPlan?: (filepath?: string) => void
   /** Resolved value is intentionally untyped: `ChatPanel`'s generator
    *  resolves with the generated text, but `PlanCard` only awaits
    *  completion to know when to clear its loading state. */
   onGenerateSummary?: (filepath: string) => Promise<unknown> | void
+  selectedModel?: string
+  isPro?: boolean
 }
 
-export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan, onGenerateSummary }: PlanDockPanelProps) {
+export function PlanDockPanel({
+  pendingPlan,
+  confirmedPlan,
+  onBuild,
+  onOpenPlan,
+  onGenerateSummary,
+  selectedModel,
+  isPro = true,
+}: PlanDockPanelProps) {
   const plan = pendingPlan ?? confirmedPlan
   const isConfirmed = !!confirmedPlan && !pendingPlan
 
@@ -43,8 +53,10 @@ export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan,
         <PlanCard
           plan={plan}
           embedded
-          onBuild={!isConfirmed && onBuild ? () => onBuild(plan) : undefined}
-          onOpenPlan={onOpenPlan && plan.filepath ? () => onOpenPlan(plan.filepath!) : undefined}
+          selectedModel={selectedModel}
+          isPro={isPro}
+          onBuild={!isConfirmed && onBuild ? (modelId) => onBuild(plan, modelId) : undefined}
+          onOpenPlan={onOpenPlan ? () => onOpenPlan(plan.filepath) : undefined}
           onGenerateSummary={
             onGenerateSummary && plan.filepath
               ? async () => {
@@ -57,7 +69,7 @@ export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan,
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary])
+  }, [plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary, selectedModel, isPro])
 
   useDockPanel(descriptor)
   return null

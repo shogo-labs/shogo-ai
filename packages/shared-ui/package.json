@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./primitives": "./src/primitives/index.ts",
-    "./screens": "./src/screens/index.ts"
+    "./screens": "./src/screens/index.ts",
+    "./branding": "./src/branding/index.ts"
   },
   "dependencies": {
     "@shogo/shared-app": "workspace:*",
