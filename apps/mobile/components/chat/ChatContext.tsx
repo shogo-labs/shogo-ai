@@ -104,6 +104,12 @@ export interface ChatContextValue {
   /** Open the saved plan artifact in the Plans panel. */
   openPlan?: (filepath?: string | null) => void
 
+  /** Chat's current model — the plan Build picker starts here. */
+  selectedModel?: string
+
+  /** When false, non-economy models in the plan Build picker stay locked. */
+  isPro?: boolean
+
   /** Generate (or regenerate) a stakeholder summary for a plan that doesn't
    *  have one yet. Returns the summary markdown on success. */
   generateSummary?: (filepath: string) => Promise<string>

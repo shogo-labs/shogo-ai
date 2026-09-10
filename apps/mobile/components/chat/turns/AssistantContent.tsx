@@ -702,11 +702,14 @@ export const AssistantContent = memo(
                 plan={planData}
                 isConfirmed={isConfirmed}
                 isUpdate={part.tool.toolName === "update_plan"}
-                onPress={
+                onViewPlan={
                   chatContext?.openPlan && planData.filepath
                     ? () => chatContext.openPlan?.(planData.filepath)
                     : undefined
                 }
+                onBuild={isConfirmed ? null : chatContext?.buildPlan}
+                selectedModel={chatContext?.selectedModel}
+                isPro={chatContext?.isPro}
               />
             )
           }

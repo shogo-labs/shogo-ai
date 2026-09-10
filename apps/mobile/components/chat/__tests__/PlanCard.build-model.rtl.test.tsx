@@ -41,13 +41,18 @@ mock.module("../../../lib/visible-models", () => ({
   },
 }))
 
+mock.module("../../../lib/native-phone-layout", () => ({
+  usePhoneLayout: () => true,
+  useIsNativePhoneLayout: () => true,
+}))
+
 mock.module(resolve(import.meta.dir, "../MarkdownText"), () => ({
   MarkdownText: ({ children }: { children: ReactNode }) => createElement("div", null, children),
 }))
 
 const pickerCalls: Array<{
   nativeSheet: boolean
-  sheetTitle?: string
+  hideCostLabels?: boolean
   label: string
   labelSuffix?: string
   currentModelId: string
@@ -58,7 +63,7 @@ mock.module(resolve(import.meta.dir, "../ModelPickerMenu"), () => ({
     label,
     labelSuffix,
     nativeSheet,
-    sheetTitle,
+    hideCostLabels,
     triggerAccessibilityLabel,
     currentModelId,
     onSelect,
@@ -66,12 +71,12 @@ mock.module(resolve(import.meta.dir, "../ModelPickerMenu"), () => ({
     label: string
     labelSuffix?: string
     nativeSheet: boolean
-    sheetTitle?: string
+    hideCostLabels?: boolean
     triggerAccessibilityLabel?: string
     currentModelId: string
     onSelect: (modelId: string) => void
   }) => {
-    pickerCalls.push({ nativeSheet, sheetTitle, label, labelSuffix, currentModelId })
+    pickerCalls.push({ nativeSheet, hideCostLabels, label, labelSuffix, currentModelId })
     return createElement(
       "button",
       {
@@ -94,7 +99,7 @@ const PLAN = {
 }
 
 describe("PlanCard build model picker", () => {
-  test("shows which model will build and the relative cost, then sends that id", () => {
+  test("shows which model will build without cost labels, then sends that id", () => {
     pickerCalls.length = 0
     const onBuild = mock(() => {})
 
@@ -102,12 +107,12 @@ describe("PlanCard build model picker", () => {
 
     expect(screen.getByRole("button", { name: "Build plan" })).toBeTruthy()
     expect(screen.getByText("Haiku")).toBeTruthy()
-    expect(screen.getByText("Cheaper")).toBeTruthy()
-    expect(screen.queryByText("Uses fewer credits per step")).toBeNull()
+    expect(screen.queryByText("Cheaper")).toBeNull()
+    expect(screen.queryByText("Higher cost")).toBeNull()
     expect(pickerCalls[0]?.nativeSheet).toBe(true)
-    expect(pickerCalls[0]?.sheetTitle).toBe("Build with")
+    expect(pickerCalls[0]?.hideCostLabels).toBe(true)
     expect(pickerCalls[0]?.label).toBe("Haiku")
-    expect(pickerCalls[0]?.labelSuffix).toBe("Cheaper")
+    expect(pickerCalls[0]?.labelSuffix).toBeUndefined()
 
     fireEvent.click(
       screen.getByRole("button", {
@@ -115,8 +120,8 @@ describe("PlanCard build model picker", () => {
       }),
     )
     expect(screen.getByText("Opus")).toBeTruthy()
-    expect(screen.getByText("Higher cost")).toBeTruthy()
-    expect(screen.getByText("Higher cost than your current pick")).toBeTruthy()
+    expect(screen.queryByText("Higher cost")).toBeNull()
+    expect(screen.queryByText("Higher cost than your current pick")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Build plan" }))
     expect(onBuild).toHaveBeenCalledTimes(1)

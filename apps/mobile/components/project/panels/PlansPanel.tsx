@@ -11,9 +11,6 @@ import {
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import {
-  type ModelTier,
-} from "@shogo/model-catalog"
 import { useModelPickerGroups, resolveShortName } from "../../../lib/visible-models"
 import {
   ClipboardList,
@@ -41,12 +38,6 @@ import { planFilenameFromPath, shouldListInMemoryPlan } from "../../../lib/plan-
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
-}
-
-const TIER_LABELS: Record<ModelTier, string> = {
-  premium: "Premium",
-  standard: "Standard",
-  economy: "Economy",
 }
 
 interface PlansPanelProps {
@@ -479,18 +470,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
                           </View>
                           {isSelected ? (
                             <Check className="h-3.5 w-3.5 text-primary" size={14} />
-                          ) : (
-                            <Text
-                              className={cn(
-                                "text-[10px]",
-                                model.tier === "premium" ? "text-amber-500" :
-                                model.tier === "economy" ? "text-emerald-500" :
-                                "text-muted-foreground"
-                              )}
-                            >
-                              {TIER_LABELS[model.tier]}
-                            </Text>
-                          )}
+                          ) : null}
                         </Pressable>
                       )
                     })}

@@ -6,22 +6,14 @@ import { cn } from "@shogo/shared-ui/primitives"
 import {
   CheckCircle2,
   Circle,
-  Play,
   ClipboardList,
   ChevronDown,
   ChevronRight,
   Languages,
 } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
-import { ComposerModelPicker } from "./ModelPickerMenu"
-import {
-  formatBuildModelChip,
-  MODEL_COST_BADGE_CLASS,
-  MODEL_COST_LABEL,
-  modelCostHint,
-} from "../../lib/model-build-cost"
+import { PlanBuildActions } from "./PlanBuildActions"
 import { usePhoneLayout } from "../../lib/native-phone-layout"
-import { resolveShortName, resolveTier } from "../../lib/visible-models"
 
 export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
 
@@ -47,8 +39,6 @@ const PLAN_TRUNCATE_LENGTH = 2000
 /** Pixel caps — NativeWind `max-h-[300px]` does not bound Yoga on native, so
  *  an expanded plan in the dock grew until the composer left the screen. */
 const PLAN_BODY_MAX_HEIGHT = 300
-/** Caps the model half of the Build split so long names don't shove View plan off the row. */
-const PLAN_BUILD_MODEL_TRIGGER_MAX_WIDTH = 168
 
 interface PlanCardProps {
   plan: PlanData
@@ -147,19 +137,10 @@ function PlanCardImpl({
       }
     : undefined
   const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
-  const buildModelTier = resolveTier(buildModelId || selectedModel || "")
-  const chatModelTier = selectedModel ? resolveTier(selectedModel) : undefined
-  const buildModelName = buildModelId ? resolveShortName(buildModelId) : ""
-  const buildCostLabel = MODEL_COST_LABEL[buildModelTier]
-  const buildModelA11y = buildModelId ? formatBuildModelChip(buildModelName, buildModelTier) : ""
-  const comparativeCostHint =
-    chatModelTier && chatModelTier !== buildModelTier
-      ? modelCostHint(buildModelTier, chatModelTier)
-      : null
   const handleBuildPress =
     onBuild || onConfirm
-      ? () => {
-          if (onBuild) onBuild(buildModelId || undefined)
+      ? (modelId?: string) => {
+          if (onBuild) onBuild(modelId || buildModelId || undefined)
           else onConfirm?.()
         }
       : undefined
@@ -290,53 +271,16 @@ function PlanCardImpl({
       {/* Actions */}
       {!isConfirmed && (
         <View className="gap-2 px-4 py-3 border-t border-border bg-muted/20">
-          <View className="flex-row flex-wrap items-center gap-x-3 gap-y-2">
-            {handleBuildPress ? (
-              <View className="flex-row items-center">
-                <Pressable
-                  onPress={handleBuildPress}
-                  accessibilityRole="button"
-                  accessibilityLabel="Build plan"
-                  className="h-8 flex-row items-center gap-1.5 rounded-l-full bg-primary pl-3.5 pr-3"
-                >
-                  <Play className="h-3.5 w-3.5 text-primary-foreground" size={14} />
-                  <Text className="text-xs font-semibold text-primary-foreground">Build</Text>
-                </Pressable>
-                {buildModelId ? (
-                  <ComposerModelPicker
-                    currentModelId={buildModelId}
-                    effectiveIsPro={isPro}
-                    nativeSheet={isPhoneChrome}
-                    triggerClassName="h-8 flex-row items-center gap-1 rounded-r-full bg-muted px-2.5"
-                    triggerStyle={{ maxWidth: PLAN_BUILD_MODEL_TRIGGER_MAX_WIDTH }}
-                    labelClassName="text-xs font-medium text-foreground"
-                    labelSuffix={buildCostLabel}
-                    labelSuffixClassName={cn("text-[10px] font-semibold", MODEL_COST_BADGE_CLASS[buildModelTier])}
-                    chevronSize={12}
-                    hitSlop={8}
-                    label={buildModelName}
-                    sheetTitle="Build with"
-                    triggerAccessibilityLabel={`Choose model to build this plan, currently ${buildModelA11y}`}
-                    onSelect={setBuildModelId}
-                  />
-                ) : null}
-              </View>
-            ) : null}
-            {handleViewFull ? (
-              <Pressable
-                onPress={handleViewFull}
-                accessibilityRole="button"
-                accessibilityLabel="View plan in Plans"
-                className="h-8 flex-row items-center gap-1 rounded-full bg-muted/50 px-3"
-              >
-                <Text className="text-xs font-medium text-foreground">View plan</Text>
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-              </Pressable>
-            ) : null}
-            {/* On-demand summary generation for plans that didn't have one
-              auto-generated (Dual Plan off, or older plan). Requires a saved
-              filepath because the runtime endpoint operates on .plan.md. */}
-            {handleGenerate && !summaryAvailable && !!plan.filepath && (
+          <View className="flex-row flex-wrap items-center gap-x-2 gap-y-2">
+            <PlanBuildActions
+              buildModelId={buildModelId}
+              isPro={isPro}
+              nativeSheet={isPhoneChrome}
+              onSelectModel={setBuildModelId}
+              onBuild={handleBuildPress}
+              onViewPlan={handleViewFull ?? undefined}
+            />
+            {handleGenerate && !summaryAvailable && !!plan.filepath ? (
               <Pressable
                 onPress={handleGenerate}
                 disabled={generating}
@@ -352,11 +296,8 @@ function PlanCardImpl({
                 )}
                 <Text className="text-xs font-semibold text-sky-400">{generating ? "Generating..." : "Summary"}</Text>
               </Pressable>
-            )}
+            ) : null}
           </View>
-          {comparativeCostHint ? (
-            <Text className="text-[10px] text-muted-foreground">{comparativeCostHint}</Text>
-          ) : null}
         </View>
       )}
 

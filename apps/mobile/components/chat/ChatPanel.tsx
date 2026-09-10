@@ -195,8 +195,9 @@ import { planToPublishToStream } from "../../lib/plan-stream-publish"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
-import { derivePendingQuestion } from "./turns/pendingQuestion"
+import { derivePendingQuestion, askUserQuestionPresentation } from "./turns/pendingQuestion"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
+import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
@@ -3873,6 +3874,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const hasPendingQuestion = pendingQuestion != null
+  const questionPresentation = askUserQuestionPresentation(isNativePhoneLayout)
+  const [questionSheetOpen, setQuestionSheetOpen] = useState(false)
+
+  useEffect(() => {
+    if (questionPresentation !== "sheet") return
+    if (!pendingQuestion) {
+      setQuestionSheetOpen(false)
+      return
+    }
+    setQuestionSheetOpen(true)
+  }, [pendingQuestion?.tool.id, questionPresentation])
 
   const extractMediaType = useCallback((dataUrl: string): string => {
     const match = dataUrl.match(/^data:([^;]+);/)
@@ -5379,6 +5391,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // token (because `useChat`'s `messages` array is a new reference every
   // delta), defeating every downstream memo. Components that genuinely
   // need the message list receive it as a prop instead.
+  const openPendingQuestion = useCallback(() => {
+    if (questionPresentation === "sheet") setQuestionSheetOpen(true)
+    jumpToLatest()
+  }, [jumpToLatest, questionPresentation])
+
   const contextValue = useMemo<ChatContextValue>(
     () => ({
       currentSession: sessionSummary,
@@ -5390,13 +5407,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
       agentUrl: resolvedAgentUrl,
       addToolOutput: stableAddToolOutput,
       saveToolOutput: handleSaveToolOutput,
-      focusPendingQuestion: jumpToLatest,
+      focusPendingQuestion: openPendingQuestion,
       buildPlan: pendingPlan ? handleConfirmPlan : null,
       confirmPlan: pendingPlan ? handleConfirmPlan : null,
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
       generateSummary: handleGenerateSummary,
+      selectedModel,
+      isPro: hasAdvancedModelAccess,
     }),
     [
       sessionSummary,
@@ -5407,12 +5426,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
       resolvedAgentUrl,
       stableAddToolOutput,
       handleSaveToolOutput,
-      jumpToLatest,
+      openPendingQuestion,
       pendingPlan,
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
       handleGenerateSummary,
+      selectedModel,
+      hasAdvancedModelAccess,
     ],
   )
 
@@ -5485,6 +5506,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!pendingQuestion) return null
+    if (questionPresentation === "sheet") return null
     return {
       id: "question",
       kind: "blocking",
@@ -5500,7 +5522,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         />
       ),
     }
-  }, [pendingQuestion, handleSubmitQuestionResponse])
+  }, [handleSubmitQuestionResponse, pendingQuestion, questionPresentation])
   useDockPanel(questionDockDescriptor, chatDockStore)
 
   const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -5986,6 +6008,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
             ]}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
+            {questionPresentation === "sheet" && pendingQuestion ? (
+              <NativeAskUserQuestionSheet
+                visible={questionSheetOpen}
+                tool={pendingQuestion.tool}
+                onClose={() => setQuestionSheetOpen(false)}
+                onSubmitResponse={handleSubmitQuestionResponse}
+              />
+            ) : null}
             <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}
@@ -5994,7 +6024,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 !featureId
                   ? "Select a feature to start chatting..."
                   : hasPendingQuestion
-                    ? "Respond to the question below, or type a message..."
+                    ? questionPresentation === "sheet"
+                      ? "Respond to the question, or type a message..."
+                      : "Respond to the question below, or type a message..."
                     : interactionMode === "plan"
                       ? "Describe what you want to plan..."
                       : interactionMode === "ask"
