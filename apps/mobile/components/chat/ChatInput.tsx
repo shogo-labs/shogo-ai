@@ -97,6 +97,7 @@ export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import { COMPOSER_KEYBOARD_PROPS } from "../../lib/composer-phone"
 import {
   executeNativeAttachAction,
 } from "../../lib/native-attachment-picker"
@@ -1667,8 +1668,7 @@ function ChatInputImpl({
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
-          blurOnSubmit={Platform.OS !== "web"}
-          returnKeyType={Platform.OS === "web" ? undefined : "done"}
+          {...COMPOSER_KEYBOARD_PROPS}
           onContentSizeChange={(e) => {
             const h = e.nativeEvent.contentSize.height
             const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))

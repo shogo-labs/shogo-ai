@@ -2,8 +2,21 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Camera, FolderOpen, Image as ImageIcon } from 'lucide-react-native'
+import { Platform, type TextInputProps } from 'react-native'
 import type { NativeAttachAction } from './native-attachment-picker'
 import { NATIVE_PHONE_ICON } from './native-phone-layout'
+
+/** Multiline composer input behavior: Return inserts a newline on native. */
+export function composerKeyboardProps(
+  platform: string = Platform.OS,
+): Pick<TextInputProps, 'blurOnSubmit' | 'returnKeyType'> {
+  return {
+    blurOnSubmit: false,
+    returnKeyType: platform === 'web' ? undefined : 'default',
+  }
+}
+
+export const COMPOSER_KEYBOARD_PROPS = composerKeyboardProps()
 
 /** Shared ChatGPT-style composer colors used by both composer variants. */
 export const CHATGPT_COMPOSER = {

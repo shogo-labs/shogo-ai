@@ -13,6 +13,7 @@ import {
   type TextLayoutEventData,
 } from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
+import { COMPOSER_KEYBOARD_PROPS } from "../../../lib/composer-phone";
 import {
   PROMINENT_COMPOSER_FONT_SIZE,
   PROMINENT_COMPOSER_LINE_HEIGHT,
@@ -146,7 +147,10 @@ export const ProminentComposerField = forwardRef<
             fontSize: PROMINENT_COMPOSER_FONT_SIZE,
             lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
             color: placeholderColor,
-            opacity: placeholderOpacity ?? 1,
+            // Do not let the fading placeholder paint over newly typed native
+            // text. Native can composite both layers for a frame while the
+            // Animated.Value transitions, which produces visible ghost text.
+            opacity: empty ? (placeholderOpacity ?? 1) : 0,
           }}
         >
           {placeholder}
@@ -167,8 +171,7 @@ export const ProminentComposerField = forwardRef<
           editable={!disabled}
           multiline
           scrollEnabled={scrollEnabled}
-          blurOnSubmit={Platform.OS !== "web"}
-          returnKeyType={Platform.OS === "web" ? undefined : "done"}
+          {...COMPOSER_KEYBOARD_PROPS}
           onContentSizeChange={onContentSizeChange}
           style={{
             width: "100%",

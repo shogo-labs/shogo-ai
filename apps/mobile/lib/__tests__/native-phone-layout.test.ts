@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneCanvas, nativePhoneDockFadeColors, nativePhoneDockGlassStyle, nativePhoneFillStyle, nativePhoneIconColor, nativePhoneSheetPanelStyle, nativePhoneSheetBackdropStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, hexToRgbChannels, phoneChromeEnabled, NATIVE_PHONE_CANVAS, NATIVE_PHONE_DOCK_COMPOSER_GAP, NATIVE_PHONE_DOCK_FADE, NATIVE_PHONE_DOCK_GLASS, NATIVE_PHONE_HEADER_ICON_SIZE, NATIVE_PHONE_HOME_CANVAS, NATIVE_PHONE_ICON, NATIVE_PHONE_ICON_STROKE, NATIVE_PHONE_SHEET_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneCanvas, nativePhoneDockBlockingBodyMaxHeight, nativePhoneDockStatusMaxHeight, nativePhoneDockFadeColors, nativePhoneDockGlassStyle, nativePhoneFillStyle, nativePhoneIconColor, nativePhoneSheetPanelStyle, nativePhoneSheetBackdropStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, hexToRgbChannels, phoneChromeEnabled, NATIVE_PHONE_CANVAS, NATIVE_PHONE_DOCK_COMPOSER_GAP, NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT, NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT, NATIVE_PHONE_DOCK_FADE, NATIVE_PHONE_DOCK_GLASS, NATIVE_PHONE_HEADER_ICON_SIZE, NATIVE_PHONE_HOME_CANVAS, NATIVE_PHONE_ICON, NATIVE_PHONE_ICON_STROKE, NATIVE_PHONE_SHEET_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH } from '../native-phone-layout'
 
 describe('isPhoneLayout', () => {
   test('treats a narrow web viewport as phone chrome', () => {
@@ -152,6 +152,24 @@ describe('nativePhoneDockFadeColors', () => {
     expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(255,255,255,0.94)')
     expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(12,12,12,0)')
     expect(NATIVE_PHONE_DOCK_COMPOSER_GAP).toBe(12)
+  })
+})
+
+describe('nativePhoneDockBlockingBodyMaxHeight', () => {
+  test('caps the option list so header and submit stay on screen', () => {
+    expect(nativePhoneDockBlockingBodyMaxHeight()).toBe(NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT)
+    expect(nativePhoneDockBlockingBodyMaxHeight(1000)).toBe(NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT)
+    expect(nativePhoneDockBlockingBodyMaxHeight(500)).toBe(190)
+    expect(nativePhoneDockBlockingBodyMaxHeight(200)).toBe(NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT)
+  })
+})
+
+describe('nativePhoneDockStatusMaxHeight', () => {
+  test('keeps an expanded plan from consuming the composer column', () => {
+    expect(nativePhoneDockStatusMaxHeight()).toBe(NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT)
+    expect(nativePhoneDockStatusMaxHeight(1000)).toBe(NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT)
+    expect(nativePhoneDockStatusMaxHeight(500)).toBe(160)
+    expect(nativePhoneDockStatusMaxHeight(200)).toBe(NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT)
   })
 })
 

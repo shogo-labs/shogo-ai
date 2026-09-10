@@ -14,25 +14,28 @@
  * reasoningEffort) served by `/api/platform/visible-models`.
  */
 import React, { useCallback, useState } from "react"
-import { View, Text, Pressable, ScrollView, Platform, useWindowDimensions, Keyboard, type StyleProp, type ViewStyle } from "react-native"
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  Platform,
+  useWindowDimensions,
+  Keyboard,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native"
 import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
-import { AUTO_MODEL_ID } from "@shogo/model-catalog"
+import { AUTO_MODEL_ID, type ModelTier } from "@shogo/model-catalog"
 import { Check, Lock, Settings2, ChevronRight, ChevronDown } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
-import {
-  useModelPickerList,
-  type PickerModel,
-  type ReasoningEffort,
-} from "../../lib/visible-models"
+import { useModelPickerList, resolveTier, type PickerModel, type ReasoningEffort } from "../../lib/visible-models"
 import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
 import { NativeActivitySheet } from "./NativeActivitySheet"
 import { NATIVE_PHONE_SECTION_INSET } from "../../lib/native-phone-layout"
-import {
-  Popover,
-  PopoverBackdrop,
-  PopoverContent,
-} from "@/components/ui/popover"
+import { MODEL_COST_BADGE_CLASS, MODEL_COST_LABEL, modelCostHint } from "../../lib/model-build-cost"
+import { Popover, PopoverBackdrop, PopoverContent } from "@/components/ui/popover"
 
 /** Compact label shown on each row (right side). */
 const EFFORT_SHORT: Record<ReasoningEffort, string> = {
@@ -68,14 +71,16 @@ export function getNativeModelMenuWidth(windowWidth: number): number {
   return Math.max(240, Math.min(WEB_MENU_WIDTH, Math.floor(windowWidth - NATIVE_PHONE_SECTION_INSET)))
 }
 
-function ModelInfoPanel({ model }: { model: PickerModel }) {
+function ModelInfoPanel({ model, comparedTo }: { model: PickerModel; comparedTo?: ModelTier }) {
   const context = formatContextWindow(model.contextWindow)
   return (
     <View className="p-4 gap-3">
       <Text className="text-sm font-semibold text-foreground">{model.displayName}</Text>
-      {model.description ? (
-        <Text className="text-xs text-muted-foreground leading-5">{model.description}</Text>
-      ) : null}
+      <Text className={cn("text-xs font-medium", MODEL_COST_BADGE_CLASS[model.tier])}>
+        {MODEL_COST_LABEL[model.tier]}
+      </Text>
+      <Text className="text-xs text-muted-foreground leading-5">{modelCostHint(model.tier, comparedTo)}</Text>
+      {model.description ? <Text className="text-xs text-muted-foreground leading-5">{model.description}</Text> : null}
       {context ? <Text className="text-xs text-muted-foreground">{context}</Text> : null}
       {model.reasoningEffort ? (
         <Text className="text-xs italic text-muted-foreground">
@@ -112,6 +117,7 @@ export function ModelPickerMenu({
   const isSheet = presentation === "sheet"
   const { width: windowWidth } = useWindowDimensions()
   const menuWidth = isSheet ? undefined : isWeb ? WEB_MENU_WIDTH : getNativeModelMenuWidth(windowWidth)
+  const currentTier = resolveTier(currentModelId)
 
   // Web: which row is hovered (drives the side info panel). Native: which row
   // is expanded inline (tap the chevron to toggle).
@@ -127,7 +133,7 @@ export function ModelPickerMenu({
     const isLocked = !effectiveIsPro && model.tier !== "economy"
     const effort = model.reasoningEffort
     const isExpanded = expandedId === model.id
-    const hasDetails = !!(model.description || model.contextWindow || model.reasoningEffort)
+    const contextLabel = !isWeb && isExpanded ? formatContextWindow(model.contextWindow) : null
 
     return (
       <View key={model.id}>
@@ -139,15 +145,24 @@ export function ModelPickerMenu({
             "flex-row items-center gap-2.5 px-3",
             isSheet ? "min-h-14 py-3" : isWeb ? "py-2" : "min-h-12 py-2.5",
             isSelected && "bg-accent",
-            isLocked && "opacity-50",
+            isLocked && "opacity-50"
           )}
         >
           <View className="flex-1 flex-row items-baseline gap-1.5">
-            <Text className={cn(isWeb ? "text-sm" : "text-base", isLocked ? "text-muted-foreground" : "text-foreground")}>
+            <Text
+              className={cn(isWeb ? "text-sm" : "text-base", isLocked ? "text-muted-foreground" : "text-foreground")}
+            >
               {model.shortDisplayName ?? model.displayName}
             </Text>
             {effort ? (
-              <Text className={isWeb ? "text-[11px] text-muted-foreground" : "text-xs text-muted-foreground"}>{EFFORT_SHORT[effort]}</Text>
+              <Text className={isWeb ? "text-[11px] text-muted-foreground" : "text-xs text-muted-foreground"}>
+                {EFFORT_SHORT[effort]}
+              </Text>
+            ) : null}
+            {!isSelected ? (
+              <Text className={cn(isWeb ? "text-[11px]" : "text-xs", MODEL_COST_BADGE_CLASS[model.tier])}>
+                {MODEL_COST_LABEL[model.tier]}
+              </Text>
             ) : null}
           </View>
           {isLocked ? (
@@ -156,7 +171,7 @@ export function ModelPickerMenu({
             <Check className="text-primary" size={isWeb ? 14 : 18} />
           ) : null}
           {/* Native-only inline details toggle. */}
-          {!isWeb && hasDetails ? (
+          {!isWeb ? (
             <Pressable
               onPress={(e) => {
                 e.stopPropagation?.()
@@ -166,10 +181,7 @@ export function ModelPickerMenu({
               className="pl-1"
             >
               <ChevronRight
-                className={cn(
-                  "h-3.5 w-3.5 text-muted-foreground/60",
-                  isExpanded && "rotate-90",
-                )}
+                className={cn("h-3.5 w-3.5 text-muted-foreground/60", isExpanded && "rotate-90")}
                 size={18}
               />
             </Pressable>
@@ -180,15 +192,12 @@ export function ModelPickerMenu({
             {model.description ? (
               <Text className="text-[13px] text-muted-foreground leading-5">{model.description}</Text>
             ) : null}
-            {formatContextWindow(model.contextWindow) ? (
-              <Text className="text-[13px] text-muted-foreground">
-                {formatContextWindow(model.contextWindow)}
-              </Text>
-            ) : null}
+            {contextLabel ? <Text className="text-[13px] text-muted-foreground">{contextLabel}</Text> : null}
+            <Text className={cn("text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
+              {MODEL_COST_LABEL[model.tier]} · {modelCostHint(model.tier, currentTier)}
+            </Text>
             {effort ? (
-              <Text className="text-[13px] italic text-muted-foreground">
-                Reasoning: {EFFORT_WORD[effort]} effort
-              </Text>
+              <Text className="text-[13px] italic text-muted-foreground">Reasoning: {EFFORT_WORD[effort]} effort</Text>
             ) : null}
           </View>
         ) : null}
@@ -246,17 +255,20 @@ export function ModelPickerMenu({
     // anchored to the list's right edge, so it isn't clipped by the menu's
     // width and only appears while a row is hovered. `userSelect: none` stops
     // click-drag text highlighting; `outline-none` kills the focus ring.
-    <View
-      className="relative web:outline-none no-focus-ring"
-      style={{ userSelect: "none" } as any}
-    >
+    <View className="relative web:outline-none no-focus-ring" style={{ userSelect: "none" } as any}>
       {list}
       {activeInfoModel ? (
         <View
           className="bg-card border border-border rounded-lg shadow-lg"
-          style={{ position: "absolute", left: "100%", top: 0, marginLeft: 8, width: INFO_PANEL_WIDTH }}
+          style={{
+            position: "absolute",
+            left: "100%",
+            top: 0,
+            marginLeft: 8,
+            width: INFO_PANEL_WIDTH,
+          }}
         >
-          <ModelInfoPanel model={activeInfoModel} />
+          <ModelInfoPanel model={activeInfoModel} comparedTo={currentTier} />
         </View>
       ) : null}
     </View>
@@ -270,11 +282,14 @@ function ModelPickerTrigger({
   triggerStyle,
   labelClassName,
   label,
+  labelSuffix,
+  labelSuffixClassName,
   chevronSize,
   chevronColor,
   chevronStrokeWidth,
   onPress,
   pressableProps,
+  accessibilityLabel = "Choose model",
 }: {
   disabled?: boolean
   hitSlop?: number
@@ -282,11 +297,14 @@ function ModelPickerTrigger({
   triggerStyle?: StyleProp<ViewStyle>
   labelClassName: string
   label: string
+  labelSuffix?: string
+  labelSuffixClassName?: string
   chevronSize: number
   chevronColor?: string
   chevronStrokeWidth?: number
   onPress?: () => void
   pressableProps?: Record<string, unknown>
+  accessibilityLabel?: string
 }) {
   return (
     <Pressable
@@ -294,7 +312,7 @@ function ModelPickerTrigger({
       disabled={disabled}
       hitSlop={hitSlop}
       accessibilityRole="button"
-      accessibilityLabel="Choose model"
+      accessibilityLabel={accessibilityLabel}
       className={triggerClassName}
       style={triggerStyle}
       {...(onPress ? { onPress } : {})}
@@ -302,6 +320,11 @@ function ModelPickerTrigger({
       <Text className={labelClassName} numberOfLines={1}>
         {label}
       </Text>
+      {labelSuffix ? (
+        <Text className={labelSuffixClassName} numberOfLines={1}>
+          {labelSuffix}
+        </Text>
+      ) : null}
       <ChevronDown
         className={chevronColor ? "flex-shrink-0" : "flex-shrink-0 text-muted-foreground/70"}
         color={chevronColor}
@@ -325,8 +348,12 @@ export function ComposerModelPicker({
   chevronStrokeWidth,
   hitSlop,
   label,
+  labelSuffix,
+  labelSuffixClassName,
   menuWidth,
   onSelect,
+  sheetTitle,
+  triggerAccessibilityLabel,
 }: {
   currentModelId: string
   effectiveIsPro: boolean
@@ -340,15 +367,22 @@ export function ComposerModelPicker({
   chevronStrokeWidth?: number
   hitSlop?: number
   label: string
+  labelSuffix?: string
+  labelSuffixClassName?: string
   menuWidth?: number
+  sheetTitle?: string
+  triggerAccessibilityLabel?: string
   onSelect: (modelId: string) => void
 }) {
   const [open, setOpen] = useState(false)
 
-  const handleSelect = useCallback((modelId: string) => {
-    onSelect(modelId)
-    setOpen(false)
-  }, [onSelect])
+  const handleSelect = useCallback(
+    (modelId: string) => {
+      onSelect(modelId)
+      setOpen(false)
+    },
+    [onSelect]
+  )
 
   const close = useCallback(() => setOpen(false), [])
 
@@ -369,9 +403,12 @@ export function ComposerModelPicker({
     triggerStyle,
     labelClassName,
     label,
+    labelSuffix,
+    labelSuffixClassName,
     chevronSize,
     chevronColor,
     chevronStrokeWidth,
+    accessibilityLabel: triggerAccessibilityLabel,
   }
 
   if (nativeSheet) {
@@ -384,7 +421,7 @@ export function ComposerModelPicker({
             setOpen(true)
           }}
         />
-        <NativeActivitySheet visible={open} title="Model" onClose={close}>
+        <NativeActivitySheet visible={open} title={sheetTitle ?? "Model"} onClose={close}>
           {menu}
         </NativeActivitySheet>
       </>
@@ -399,10 +436,7 @@ export function ComposerModelPicker({
       onOpen={() => setOpen(true)}
       onClose={close}
       trigger={(popoverTriggerProps) => (
-        <ModelPickerTrigger
-          {...triggerProps}
-          pressableProps={popoverTriggerProps as Record<string, unknown>}
-        />
+        <ModelPickerTrigger {...triggerProps} pressableProps={popoverTriggerProps as Record<string, unknown>} />
       )}
     >
       <PopoverBackdrop />
@@ -415,4 +449,3 @@ export function ComposerModelPicker({
     </Popover>
   )
 }
-

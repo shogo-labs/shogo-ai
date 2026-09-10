@@ -355,6 +355,7 @@ export const AppSidebar = observer(function AppSidebar({
   const [projectFilter, setProjectFilterState] = useState(() =>
     getProjectFilter(),
   );
+  const [pinnedExpanded, setPinnedExpanded] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
 
@@ -411,23 +412,30 @@ export const AppSidebar = observer(function AppSidebar({
     workspaceProjects = [];
   }
 
-  // Cap the list to MAX_VISIBLE_PROJECTS. Pinned + the currently open project
-  // always show even when they sort past the cap; everything else collapses
-  // behind the "More" toggle.
-  const visibleProjects = (() => {
-    if (showAllProjects || workspaceProjects.length <= MAX_VISIBLE_PROJECTS) {
-      return workspaceProjects;
+  // Keep pinned projects in their own section. Only unpinned projects are
+  // subject to the "More" cap, so pinning a project never duplicates it in
+  // the regular Projects section or hides it behind the cap.
+  const pinnedProjects = workspaceProjects.filter((project: any) =>
+    pinnedProjectIds.has(project.id),
+  );
+  const unpinnedProjects = workspaceProjects.filter(
+    (project: any) => !pinnedProjectIds.has(project.id),
+  );
+  const visibleUnpinnedProjects = (() => {
+    if (showAllProjects || unpinnedProjects.length <= MAX_VISIBLE_PROJECTS) {
+      return unpinnedProjects;
     }
-    const head = workspaceProjects.slice(0, MAX_VISIBLE_PROJECTS);
-    const headIds = new Set(head.map((p: any) => p.id));
-    const forced = workspaceProjects.filter(
-      (p: any) =>
-        !headIds.has(p.id) &&
-        (pinnedProjectIds.has(p.id) || pathname.includes(p.id)),
+    const head = unpinnedProjects.slice(0, MAX_VISIBLE_PROJECTS);
+    const headIds = new Set(head.map((project: any) => project.id));
+    const activeProject = unpinnedProjects.find((project: any) =>
+      pathname.includes(project.id),
     );
-    return [...head, ...forced];
+    return activeProject && !headIds.has(activeProject.id)
+      ? [...head, activeProject]
+      : head;
   })();
-  const hiddenProjectCount = workspaceProjects.length - visibleProjects.length;
+  const hiddenProjectCount =
+    unpinnedProjects.length - visibleUnpinnedProjects.length;
 
   const [collapsed, setCollapsed] = useState(false);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
@@ -727,7 +735,59 @@ export const AppSidebar = observer(function AppSidebar({
 
         {/* PROJECTS tree — each project expands to show its chats */}
         <View className={cn("px-2", isNativeDrawer ? "mt-5" : "mt-4")}>
-          {!collapsed && (
+          {!collapsed && pinnedProjects.length > 0 && (
+            <View className="mb-2">
+              <Pressable
+                onPress={() => setPinnedExpanded((expanded) => !expanded)}
+                accessibilityLabel={
+                  pinnedExpanded
+                    ? "Collapse pinned projects"
+                    : "Expand pinned projects"
+                }
+                accessibilityState={{ expanded: pinnedExpanded }}
+                className={cn(
+                  "flex-row items-center rounded-md px-1 active:bg-accent/50",
+                  isNativeDrawer
+                    ? "min-h-11 gap-2.5 py-2"
+                    : "gap-1.5 py-1",
+                )}
+              >
+                <Text
+                  className={cn(
+                    "flex-1 font-semibold uppercase tracking-wider text-muted-foreground",
+                    drawerDensity.text.label,
+                  )}
+                >
+                  Pinned
+                </Text>
+                {pinnedExpanded ? (
+                  <ChevronDown
+                    size={isNativeDrawer ? drawerDensity.icon.sm : 12}
+                    className="text-muted-foreground shrink-0"
+                  />
+                ) : (
+                  <ChevronRight
+                    size={isNativeDrawer ? drawerDensity.icon.sm : 12}
+                    className="text-muted-foreground shrink-0"
+                  />
+                )}
+              </Pressable>
+              {pinnedExpanded &&
+                pinnedProjects.map((project: any) => (
+                  <ProjectTreeItem
+                    key={project.id}
+                    project={project}
+                    collapsed={collapsed}
+                    onNavPress={onNavPress}
+                    isPinned
+                    onTogglePin={handleToggleProjectPin}
+                    mobileProjectFirstTapShowsChats={isNativeDrawer}
+                  />
+                ))}
+            </View>
+          )}
+          {!collapsed &&
+            (unpinnedProjects.length > 0 || pinnedProjects.length === 0) && (
             <View
               className={cn(
                 "flex-row items-center justify-between px-1",
@@ -883,7 +943,7 @@ export const AppSidebar = observer(function AppSidebar({
             )
           ) : (
             <>
-              {visibleProjects.map((project: any) => (
+              {visibleUnpinnedProjects.map((project: any) => (
                 <ProjectTreeItem
                   key={project.id}
                   project={project}
@@ -895,7 +955,7 @@ export const AppSidebar = observer(function AppSidebar({
                 />
               ))}
               {!collapsed &&
-                workspaceProjects.length > MAX_VISIBLE_PROJECTS &&
+                unpinnedProjects.length > MAX_VISIBLE_PROJECTS &&
                 (hiddenProjectCount > 0 || showAllProjects) && (
                   <Pressable
                     onPress={() => setShowAllProjects((v) => !v)}

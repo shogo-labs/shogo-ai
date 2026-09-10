@@ -191,6 +191,7 @@ import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
+import { planToPublishToStream } from "../../lib/plan-stream-publish"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
@@ -3766,17 +3767,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     }
   }, [])
+  // While tokens stream, pendingPlan identity changes every chunk. Fold it
+  // away so this effect only re-runs when the idle snapshot actually changes.
+  const idlePlan = isStreaming ? null : (pendingPlan ?? confirmedPlan)
   useEffect(() => {
     const ctx = planStreamRef.current
     if (!ctx) return
 
-    const nextFilepath = derivedStreamingPlan
-      ? (derivedStreamingPlan.filepath ?? null)
-      : !isStreaming
-        ? null
-        : ctx.streamingPlanFilepath
+    const planToPublish = planToPublishToStream({
+      derivedStreamingPlan,
+      isStreaming,
+      pendingPlan: idlePlan,
+      confirmedPlan: null,
+    })
+    const nextFilepath = planToPublish?.filepath ?? null
 
-    const planChanged = ctx.streamingPlan !== derivedStreamingPlan
+    const planChanged = ctx.streamingPlan !== planToPublish
     const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath
     if (!planChanged && !filepathChanged) return
 
@@ -3793,14 +3799,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     }
 
-    pendingPlanPublishRef.current = { plan: derivedStreamingPlan, filepath: nextFilepath }
+    pendingPlanPublishRef.current = { plan: planToPublish, filepath: nextFilepath }
 
-    // Edge events (stream start where the plan first appears, and the
-    // null-flip when it ends) bypass the throttle so the UI reacts
-    // immediately to lifecycle transitions.
-    const isEdge =
-      derivedStreamingPlan === null ||
-      ctx.streamingPlan === null
+    // Edge events (plan first appears, or the shared snapshot is cleared)
+    // bypass the throttle so Plans/dock react immediately.
+    const isEdge = planToPublish === null || ctx.streamingPlan === null
     if (isEdge) {
       if (planPublishTimerRef.current) {
         clearTimeout(planPublishTimerRef.current)
@@ -3817,11 +3820,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       planPublishTimerRef.current = null
       publish()
     }, wait)
-    // `planStream` intentionally omitted: we read it via `planStreamRef` so
-    // its identity churn (fixed independently in PlanStreamContext) cannot
-    // cause this effect to re-run and re-publish the same value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedStreamingPlan, isStreaming])
+  }, [derivedStreamingPlan, isStreaming, idlePlan])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
@@ -4590,7 +4590,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Plan confirmation: switch to Agent mode and execute.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleConfirmPlan = useCallback((plan?: PlanData | null) => {
+  const handleConfirmPlan = useCallback((plan?: PlanData | null, modelId?: string) => {
     const selectedPlan = plan ?? pendingPlanRef.current
     if (!selectedPlan) return
     const planToBuild = normalizePlanData(selectedPlan)
@@ -4601,7 +4601,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     console.log("[ChatPanel][confirm-plan] BEFORE mode change — stateMode:", interactionMode, "refMode:", interactionModeRef.current, "selectedModel:", selectedModel)
     handleInteractionModeChange("agent")
     console.log("[ChatPanel][confirm-plan] AFTER mode change — refMode:", interactionModeRef.current, "(state will update on next render)")
-    handleSendMessage("Execute the confirmed plan.")
+    handleSendMessage("Execute the confirmed plan.", undefined, modelId)
     if (confirmDismissTimerRef.current) clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
       setConfirmedPlan(null)
@@ -5491,10 +5491,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       order: 1,
       title: "Question",
       icon: MessageCircleQuestion,
-      render: () => (
+      render: ({ bodyMaxHeight }) => (
         <AskUserQuestionWidget
           tool={pendingQuestion.tool}
           onSubmitResponse={(response) => handleSubmitQuestionResponse(response)}
+          embedded
+          bodyMaxHeight={bodyMaxHeight}
         />
       ),
     }
@@ -5755,6 +5757,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         onBuild={pendingPlan ? handleConfirmPlan : null}
         onOpenPlan={onOpenPlan}
         onGenerateSummary={handleGenerateSummary}
+        selectedModel={selectedModel}
+        isPro={hasAdvancedModelAccess}
       />
       <ChecklistDockPanel />
       <RunningDockPanel
@@ -5793,7 +5797,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           }
         >
           {/* Messages with Turn Grouping */}
-          <View className="flex-1" onLayout={(e) => setMessagesAreaHeight(e.nativeEvent.layout.height)}>
+          <View
+            className="flex-1"
+            onLayout={(e) => {
+              const next = Math.round(e.nativeEvent.layout.height)
+              setMessagesAreaHeight((prev) => (prev === next ? prev : next))
+            }}
+          >
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
@@ -5924,9 +5934,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
               </View>
             )}
 
-            {/* Reserves space for the floating chat dock so it never
-                permanently covers the newest message — ChatDock reports its
-                measured height into `chatDockStore`, read reactively above. */}
+            {/* Web overlay: ChatDock reports measured height so the
+                transcript isn't covered. Native docks sit in the composer
+                column and report 0, so this spacer stays unused. */}
             {dockHeight > 0 && <View style={{ height: dockHeight }} />}
           </ScrollView>
 
@@ -5961,11 +5971,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
               second composer, matching ChatGPT. Web keeps both. */}
           {!(isNative && nativeInlineEditing) ? (
           <Animated.View
-            className="relative bg-transparent max-w-3xl w-full self-center mt-1"
+            className={cn(
+              "bg-transparent max-w-3xl w-full self-center mt-1",
+              !isNative && "relative",
+            )}
             style={[
               nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
               isPhoneViewport
-                ? { paddingBottom: composerKeyboardPad, overflow: "visible" as const }
+                ? {
+                    paddingBottom: composerKeyboardPad,
+                    ...(isNative ? undefined : { overflow: "visible" as const }),
+                  }
                 : undefined,
             ]}
           >

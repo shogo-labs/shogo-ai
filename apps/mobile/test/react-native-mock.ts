@@ -30,13 +30,31 @@ import { createElement, forwardRef } from 'react'
  * transitive dependencies only need to be added once, here.
  */
 
+function flattenStyle(style: unknown): Record<string, unknown> | undefined {
+  if (style == null || style === false) return undefined
+  if (Array.isArray(style)) {
+    const out: Record<string, unknown> = {}
+    for (const item of style) {
+      const flat = flattenStyle(item)
+      if (flat) Object.assign(out, flat)
+    }
+    return Object.keys(out).length ? out : undefined
+  }
+  if (typeof style === 'object') return style as Record<string, unknown>
+  return undefined
+}
+
 const passthroughHost = (tag: string) =>
   forwardRef(function HostShim(props: Record<string, unknown>, ref: React.Ref<HTMLDivElement>) {
     const { children, style, ...rest } = props as {
       children?: React.ReactNode
       style?: unknown
     }
-    return createElement(tag, { ...rest, ref, 'data-rn-shim': props['testID'] ?? undefined }, children)
+    return createElement(
+      tag,
+      { ...rest, ref, style: flattenStyle(style), 'data-rn-shim': props['testID'] ?? undefined },
+      children,
+    )
   })
 
 export const reactNativeMockBase = {

@@ -163,6 +163,46 @@ export const NATIVE_PHONE_DOCK_FADE = 80
 export const NATIVE_PHONE_DOCK_FADE_LOCATIONS = [0, 0.42, 1] as const
 /** Gap between ChatDock banners (errors, plans, approvals) and the composer pill. */
 export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
+/**
+ * Native blocking question/permission cards stay in the composer column, so
+ * they must leave room for messages above and the pill below. Cap the
+ * scrollable option body rather than the whole card — header and submit
+ * stay pinned.
+ */
+export const NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT = 280
+export const NATIVE_PHONE_DOCK_BLOCKING_MAX_RATIO = 0.38
+export const NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT = 140
+
+export function nativePhoneDockBlockingBodyMaxHeight(
+  availableHeight?: number,
+): number {
+  const fromViewport = availableHeight
+    ? Math.round(availableHeight * NATIVE_PHONE_DOCK_BLOCKING_MAX_RATIO)
+    : NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT
+  return Math.max(
+    NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT,
+    Math.min(NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT, fromViewport),
+  )
+}
+
+/**
+ * Cap the status zone (Plan, errors, files) so an expanded plan cannot
+ * consume the composer column. Uses window height, not the messages sibling,
+ * to avoid a layout loop.
+ */
+export const NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT = 280
+export const NATIVE_PHONE_DOCK_STATUS_MAX_RATIO = 0.32
+export const NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT = 120
+
+export function nativePhoneDockStatusMaxHeight(windowHeight?: number): number {
+  const fromViewport = windowHeight
+    ? Math.round(windowHeight * NATIVE_PHONE_DOCK_STATUS_MAX_RATIO)
+    : NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT
+  return Math.max(
+    NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT,
+    Math.min(NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT, fromViewport),
+  )
+}
 
 export const NATIVE_PHONE_DOCK_GLASS = {
   dark: {

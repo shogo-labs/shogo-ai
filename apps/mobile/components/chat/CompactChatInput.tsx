@@ -67,6 +67,7 @@ import {
   nextProminentComposerHeight,
 } from "./useProminentComposerExpansion"
 import { EnvironmentPicker } from "./EnvironmentPicker"
+import { COMPOSER_KEYBOARD_PROPS } from "../../lib/composer-phone"
 import {
   useTypingPlaceholder,
   AGENT_PLACEHOLDER_PREFIX,
@@ -595,8 +596,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             }}
             editable={!disabled && !isLoading && !voiceInput.isRecording}
             multiline
-            blurOnSubmit={Platform.OS !== "web"}
-            returnKeyType={Platform.OS === "web" ? undefined : "done"}
+            {...COMPOSER_KEYBOARD_PROPS}
             onContentSizeChange={(e) => {
               const h = e.nativeEvent.contentSize.height
               const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
@@ -928,7 +928,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     size={useCurrentNativeSizing ? 18 : 12}
                   />
                 </Pressable>
-                )} (
+                )}
                   <ComposerSendButton
                   canSend={Boolean(value.trim() || pendingFiles.length > 0 || pastedTexts.length > 0)}
                     onPress={handleSubmit}

@@ -90,10 +90,10 @@ export interface ChatContextValue {
   focusPendingQuestion?: () => void
 
   /** Build and execute a pending plan. Null when no plan is pending. */
-  buildPlan?: ((plan?: PlanData | null) => void) | null
+  buildPlan?: ((plan?: PlanData | null, modelId?: string) => void) | null
 
   /** Backwards-compatible alias for older plan-card consumers. */
-  confirmPlan?: ((plan?: PlanData | null) => void) | null
+  confirmPlan?: ((plan?: PlanData | null, modelId?: string) => void) | null
 
   /** Current plan waiting for user review/build. */
   pendingPlan?: PlanData | null

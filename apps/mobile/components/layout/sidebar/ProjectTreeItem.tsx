@@ -49,6 +49,7 @@ import {
   type SidebarMenuEntry,
 } from "../SidebarContextMenu";
 import { ChatTreeItem } from "./ChatTreeItem";
+import { NativeProjectActionsSheet } from "./NativeProjectActionsSheet";
 
 // ─── ProjectTreeItem (a project + its nested chats) ─────────
 
@@ -155,6 +156,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const [editValue, setEditValue] = useState("");
   // Web-only right-click menu anchor (viewport coords) for the project row.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [nativeActionsOpen, setNativeActionsOpen] = useState(false);
   // Delete confirmation, shared by this project and its chats.
   const [confirmDelete, setConfirmDelete] = useState<{
     kind: "project" | "chat";
@@ -454,6 +456,18 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     setMenu({ x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 });
   }, []);
 
+  const openNativeActions = useCallback(() => {
+    if (isNative) setNativeActionsOpen(true);
+  }, [isNative]);
+
+  const requestProjectDelete = useCallback(() => {
+    setConfirmDelete({
+      kind: "project",
+      id: project.id,
+      label: project.name || "Untitled",
+    });
+  }, [project.id, project.name]);
+
   // Run the confirmed delete for either the project or one of its chats.
   const performDelete = useCallback(async () => {
     const target = confirmDelete;
@@ -499,12 +513,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       label: "Delete",
       danger: true,
       icon: <Trash2 size={14} className="text-destructive" />,
-      onSelect: () =>
-        setConfirmDelete({
-          kind: "project",
-          id: project.id,
-          label: project.name || "Untitled",
-        }),
+      onSelect: requestProjectDelete,
     },
   ];
 
@@ -564,12 +573,16 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         >
           <Pressable
             onPress={handleProjectPress}
+            onLongPress={isNative ? openNativeActions : undefined}
+            delayLongPress={isNative ? 400 : undefined}
             role="link"
             accessibilityLabel={`Project: ${project.name || "Untitled"}`}
             accessibilityHint={
               mobileProjectFirstTapShowsChats
                 ? "Opens chats for this project"
-                : undefined
+                : isNative
+                  ? "Long press for project actions"
+                  : undefined
             }
             className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
             {...(Platform.OS === "web"
@@ -754,6 +767,17 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           y={menu.y}
           items={projectMenuItems}
           onClose={() => setMenu(null)}
+        />
+      )}
+      {isNative && (
+        <NativeProjectActionsSheet
+          visible={nativeActionsOpen}
+          projectName={project.name || "Untitled"}
+          isPinned={!!isPinned}
+          onClose={() => setNativeActionsOpen(false)}
+          onRename={startEditProject}
+          onTogglePin={() => onTogglePin?.(project.id, !isPinned)}
+          onDelete={requestProjectDelete}
         />
       )}
       <Modal
