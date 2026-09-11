@@ -13,7 +13,7 @@ import { observer } from "mobx-react-lite"
 import { ArrowLeft } from "lucide-react-native"
 import { useBillingData } from "@shogo/shared-app/hooks"
 import { useAuth } from "../../contexts/auth"
-import { useDomainActions, useDomainHttp, useProjectCollection, useWorkspaceCollection } from "../../contexts/domain"
+import { useDomainActions, useProjectCollection, useWorkspaceCollection } from "../../contexts/domain"
 import { usePostHogSafe } from "../../contexts/posthog"
 import { useResolvedTheme } from "../../contexts/theme"
 import { AccountMenuBody } from "../../components/layout/sidebar/AccountMenu"
@@ -24,10 +24,11 @@ import {
   type AccountSettingsSheetTab,
 } from "../../components/settings/account-settings-sheets"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
+import { useHasAdminAccess } from "../../hooks/useHasAdminAccess"
+import { useWorkspacePlans } from "../../hooks/useWorkspacePlans"
 import { EVENTS, trackEvent } from "../../lib/analytics"
-import { api } from "../../lib/api"
-import { hasAdminPortalAccess } from "../../lib/admin-portal-access"
-import { nativePhoneCanvas, NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout"
+import { nativePhoneCanvas, NATIVE_ACCOUNT_SCROLL_EXTRA_PAD, NATIVE_ACCOUNT_TITLE_CLASS, NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout"
+import { PHONE_DENSITY } from "../../lib/phone-density"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route"
 import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace"
@@ -47,55 +48,29 @@ export default observer(function AccountPage() {
   const workspaces = useWorkspaceCollection()
   const projects = useProjectCollection()
   const actions = useDomainActions()
-  const http = useDomainHttp()
   const posthog = usePostHogSafe()
   const currentWorkspace = useActiveWorkspace()
-  const [hasAdminAccess, setHasAdminAccess] = useState(false)
+  const hasAdminAccess = useHasAdminAccess(user?.id)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<AccountSettingsSheetTab | null>(null)
-  const [allPlans, setAllPlans] = useState<Record<string, { planId: string; status: string | null }>>({})
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
 
   const allWorkspaces = workspaces?.all ?? []
+  const workspaceIds = useMemo(
+    () => allWorkspaces.map((w: { id: string }) => w.id),
+    [allWorkspaces],
+  )
   const displayWorkspace = useMemo(() => {
     if (!pendingWorkspaceId) return currentWorkspace
     return allWorkspaces.find((w: { id: string }) => w.id === pendingWorkspaceId) ?? currentWorkspace
   }, [allWorkspaces, currentWorkspace, pendingWorkspaceId])
   const billingData = useBillingData(features.billing ? displayWorkspace?.id : undefined)
+  const allPlans = useWorkspacePlans(workspaceIds, !!features.billing)
   const workspacePlan = displayWorkspace?.id ? (allPlans[displayWorkspace.id] ?? null) : null
 
   useEffect(() => {
     workspaces.loadAll().catch(() => undefined)
   }, [workspaces])
-
-  useEffect(() => {
-    if (!user?.id || !http) return
-    let cancelled = false
-    api
-      .getMe(http)
-      .then((data) => {
-        if (cancelled) return
-        if (hasAdminPortalAccess(data)) setHasAdminAccess(true)
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [http, user?.id])
-
-  useEffect(() => {
-    if (!features.billing || !allWorkspaces.length) return
-    let cancelled = false
-    api
-      .getWorkspacePlans(http, allWorkspaces.map((w: { id: string }) => w.id))
-      .then((plans) => {
-        if (!cancelled) setAllPlans(plans)
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [allWorkspaces.length, features.billing, http])
 
   useEffect(() => {
     if (pendingWorkspaceId && currentWorkspace?.id === pendingWorkspaceId) {
@@ -174,14 +149,14 @@ export default observer(function AccountPage() {
           className="items-center justify-center"
           style={{ width: NATIVE_PHONE_CONTROL_SIZE, height: NATIVE_PHONE_CONTROL_SIZE }}
         >
-          <ArrowLeft size={22} className="text-foreground" />
+          <ArrowLeft size={PHONE_DENSITY.icon.md} className="text-foreground" />
         </Pressable>
-        <Text className="text-[17px] font-semibold text-foreground">Account</Text>
+        <Text className={`${NATIVE_ACCOUNT_TITLE_CLASS} font-semibold text-foreground`}>Account</Text>
       </View>
       <ScrollView
         className="flex-1"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + NATIVE_ACCOUNT_SCROLL_EXTRA_PAD }}
       >
         <AccountMenuBody
           user={user}

@@ -15,6 +15,7 @@ import {
   PLAN_READY_CHIP_HEIGHT,
   PLAN_READY_CHIP_TEXT,
   PLAN_READY_COMPACT_CHEVRON,
+  PLAN_READY_COMPACT_CHIP_HEIGHT,
   PLAN_READY_MODEL_TRIGGER_MAX_WIDTH,
   PLAN_READY_ROW_CHEVRON,
 } from "./plan-ready-chrome"
@@ -39,7 +40,7 @@ export function PlanBuildActions({
   onViewPlan?: () => void
 }) {
   const modelName = buildModelId ? resolveShortName(buildModelId) : ""
-  const chipH = stacked ? PLAN_READY_CHIP_HEIGHT : "h-8"
+  const chipH = stacked ? PLAN_READY_CHIP_HEIGHT : PLAN_READY_COMPACT_CHIP_HEIGHT
   const labelClass = stacked
     ? cn(PLAN_READY_CHIP_TEXT, "font-semibold")
     : "text-xs font-semibold"
@@ -104,7 +105,7 @@ export function PlanBuildActions({
         accessibilityLabel="Build plan"
         className={cn(
           "flex-row items-center justify-center rounded-full bg-primary px-4",
-          stacked ? cn("w-full", PHONE_DENSITY.rowMin) : "h-8 gap-1.5",
+          stacked ? cn("w-full", PHONE_DENSITY.rowMin) : cn(PLAN_READY_COMPACT_CHIP_HEIGHT, "gap-1.5"),
         )}
       >
         <Text className={cn(labelClass, "text-primary-foreground")}>Build</Text>

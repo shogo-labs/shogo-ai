@@ -65,6 +65,10 @@ export const NATIVE_PHONE_PICKER_GUTTER = NATIVE_PHONE_PICKER_INSET / 2
 export const NATIVE_PHONE_HAIRLINE_COLOR = 'rgba(127,127,127,0.35)'
 /** Tap target for native phone icon buttons (Library refresh, period refresh). */
 export const NATIVE_PHONE_CONTROL_SIZE = 44
+/** Extra scroll padding below native Account groups (`insets.bottom + 24`). */
+export const NATIVE_ACCOUNT_SCROLL_EXTRA_PAD = 24
+/** Native Account screen title. Not PHONE_DENSITY.title (`text-xl`). */
+export const NATIVE_ACCOUNT_TITLE_CLASS = 'text-[17px]'
 /** Row gap between native phone chrome controls (`gap-2`). */
 export const NATIVE_PHONE_ROW_GAP = 8
 /** Wrap-row gap between two-column stat cards (`gap-3`). */

@@ -58,7 +58,6 @@ import {
 import { useBillingData } from "@shogo/shared-app/hooks";
 import { NotificationBell } from "../../notifications/NotificationBell";
 import { api } from "../../../lib/api";
-import { hasAdminPortalAccess } from "../../../lib/admin-portal-access";
 import { trackPurchase } from "../../../lib/tracking";
 import {
   getActiveWorkspaceId,
@@ -100,6 +99,8 @@ import {
 import { AccountMenu } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
+import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
+import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -155,6 +156,8 @@ export const AppSidebar = observer(function AppSidebar({
   const { features, localMode } = usePlatformConfig();
 
   const { user, signOut } = useAuth();
+  // Full super admins and users with any assigned admin scope.
+  const hasAdminAccess = useHasAdminAccess(user?.id);
   const posthog = usePostHogSafe();
   const projects = useProjectCollection();
   const workspaces = useWorkspaceCollection();
@@ -167,29 +170,6 @@ export const AppSidebar = observer(function AppSidebar({
     action: "accept" | "decline";
   } | null>(null);
   const [inboxOpen, setInboxOpen] = useState(false);
-
-  // True for full super admins AND partial admins (users granted >=1 scope),
-  // so both see the admin-portal entry. The portal itself filters surfaces.
-  const [hasAdminAccess, setHasAdminAccess] = useState(false);
-
-  useEffect(() => {
-    if (!user?.id || !http) return;
-    let cancelled = false;
-    api
-      .getMe(http)
-      .then((data) => {
-        if (cancelled) return;
-        if (hasAdminPortalAccess(data)) {
-          setHasAdminAccess(true);
-        }
-      })
-      .catch((e) =>
-        console.error("[AppSidebar] Failed to fetch user role:", e),
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id, http]);
 
   useEffect(() => {
     // Chain projects after workspaces so that, on a fresh first load where
@@ -362,10 +342,6 @@ export const AppSidebar = observer(function AppSidebar({
     features.billing ? currentWorkspace?.id : undefined,
   );
 
-  const [allPlans, setAllPlans] = useState<
-    Record<string, { planId: string; status: string | null }>
-  >({});
-
   // Device-local projects-list prefs (pins + filter) seeded from storage.
   const [pinnedProjectIds, setPinnedProjectIdsState] = useState<Set<string>>(
     () => new Set(getPinnedProjectIds()),
@@ -475,27 +451,11 @@ export const AppSidebar = observer(function AppSidebar({
     allWorkspaces = [];
   }
 
-  useEffect(() => {
-    if (!features.billing || !allWorkspaces.length) return;
-    let cancelled = false;
-    const ids = allWorkspaces.map((w: any) => w.id);
-    api
-      .getWorkspacePlans(http, ids)
-      .then((plans) => {
-        if (!cancelled) setAllPlans(plans);
-      })
-      .catch((e) =>
-        console.error("[AppSidebar] Failed to load workspace plans:", e),
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    features.billing,
-    allWorkspaces.length,
-    http,
+  const allPlans = useWorkspacePlans(
+    allWorkspaces.map((w: any) => w.id),
+    !!features.billing,
     billingData.subscription?.planId,
-  ]);
+  );
 
   const workspacePlan = currentWorkspace?.id
     ? (allPlans[currentWorkspace.id] ?? null)

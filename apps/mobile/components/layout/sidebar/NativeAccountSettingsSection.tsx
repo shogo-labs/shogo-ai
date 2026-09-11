@@ -8,7 +8,6 @@ import { AccountSettingsGroup, AccountSettingsRow } from "./AccountSettingsGroup
 import { PHONE_DENSITY } from "../../../lib/phone-density"
 import {
   accountSettingsSheetGroups,
-  accountSettingsSheetTitle,
   type AccountSettingsSheetTab,
 } from "../../settings/account-settings-sheets"
 
@@ -35,7 +34,7 @@ export function NativeAccountSettingsSection({
               <AccountSettingsRow
                 key={tab.id}
                 icon={<Icon size={PHONE_DENSITY.icon.lg} className="text-muted-foreground" />}
-                label={accountSettingsSheetTitle(tab.id)}
+                label={tab.label}
                 separator={index < group.tabs.length - 1}
                 onPress={() => onOpenTab(tab.id)}
               />
