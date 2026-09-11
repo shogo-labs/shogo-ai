@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { cloneTree } from '../clone-tree'
+import { cloneTree, defaultCloneMode } from '../clone-tree'
 
 let root: string
 
@@ -24,8 +24,18 @@ function seed(): string {
   return src
 }
 
+describe('defaultCloneMode', () => {
+  test('prefers ficlone on macOS, hard links elsewhere', () => {
+    // APFS clonefile() (fs.copyFile + COPYFILE_FICLONE) measured ~3x faster
+    // than hard links for a 36,907-file node_modules on darwin (see the macOS
+    // section of docs/perf/project-open.md) and, unlike a hard link, never
+    // shares an inode with the store — so it is the platform default there.
+    expect(defaultCloneMode()).toBe(process.platform === 'darwin' ? 'ficlone' : 'link')
+  })
+})
+
 describe('cloneTree', () => {
-  test('reproduces the tree and links regular files', async () => {
+  test('reproduces the tree using the platform default clone mode', async () => {
     const src = seed()
     const dst = join(root, 'dst')
     const result = await cloneTree(src, dst)
@@ -38,6 +48,29 @@ describe('cloneTree', () => {
     if (result.mode === 'link') {
       expect(statSync(join(dst, 'pkg', 'package.json')).nlink).toBe(2)
     }
+  })
+
+  test('link mode hard-links regular files', async () => {
+    const src = seed()
+    const dst = join(root, 'dst')
+    const result = await cloneTree(src, dst, { mode: 'link' })
+
+    expect(result.mode).toBe('link')
+    expect(statSync(join(dst, 'pkg', 'package.json')).nlink).toBe(2)
+  })
+
+  test('ficlone mode produces independent files (clone-on-write where supported, plain copy elsewhere)', async () => {
+    const src = seed()
+    const dst = join(root, 'dst')
+    // COPYFILE_FICLONE (unlike _FORCE) silently falls back to a plain copy on
+    // a volume that doesn't support cloning, so this passes on every
+    // platform: the resulting files are independent either way.
+    const result = await cloneTree(src, dst, { mode: 'ficlone' })
+
+    expect(['ficlone', 'copy']).toContain(result.mode)
+    expect(statSync(join(dst, 'pkg', 'package.json')).nlink).toBe(1)
+    writeFileSync(join(dst, 'pkg', 'package.json'), 'changed')
+    expect(readFileSync(join(src, 'pkg', 'package.json'), 'utf8')).toBe('{"name":"pkg"}')
   })
 
   test('copy mode produces independent files', async () => {
@@ -65,7 +98,11 @@ describe('cloneTree', () => {
     const src = seed()
     let linked = false
     try {
-      symlinkSync(join('..', 'lib', 'index.js'), join(src, 'pkg', 'bin-link'))
+      // Pre-existing bug fixed in passing: `bin-link` lives in `pkg/`, and
+      // `index.js` lives in `pkg/lib/`, so the relative target is `lib/index.js`
+      // — an extra `..` pointed past `src/` at a path that doesn't exist and
+      // made this assertion fail (ENOENT) on every platform, not just Windows.
+      symlinkSync(join('lib', 'index.js'), join(src, 'pkg', 'bin-link'))
       linked = true
     } catch {
       // Symlink creation needs privileges on some Windows setups.
