@@ -11,6 +11,7 @@ import {
   nativeDrawerFooterInset,
   nativeDrawerUnderlayStyle,
   nativeDrawerSheetCanvas,
+  nativeDrawerShouldDismissKeyboard,
   NATIVE_DRAWER_SHEET_RADIUS,
   NATIVE_DRAWER_SHEET_SHADOW_OPACITY,
   NATIVE_DRAWER_SHEET_ELEVATION,
@@ -143,6 +144,14 @@ describe('nativeDrawerSheetCanvas', () => {
     expect(nativeDrawerSheetCanvas(0, false)).toBe(NATIVE_PHONE_CANVAS.light)
     expect(nativeDrawerSheetCanvas(1, false)).toBe(NATIVE_PHONE_CANVAS.light)
     expect(nativeDrawerSheetCanvas(0.4, false)).toBe(NATIVE_PHONE_CANVAS.light)
+  })
+})
+
+describe('nativeDrawerShouldDismissKeyboard', () => {
+  test('dismisses when the native sidebar starts opening', () => {
+    expect(nativeDrawerShouldDismissKeyboard(true, true)).toBe(true)
+    expect(nativeDrawerShouldDismissKeyboard(false, true)).toBe(false)
+    expect(nativeDrawerShouldDismissKeyboard(true, false)).toBe(false)
   })
 })
 

@@ -34,7 +34,7 @@ import { useModelPickerList, resolveTier, type PickerModel, type ReasoningEffort
 import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
 import { NativeActivitySheet } from "./NativeActivitySheet"
 import { NATIVE_PHONE_SECTION_INSET } from "../../lib/native-phone-layout"
-import { MODEL_COST_BADGE_CLASS, MODEL_COST_LABEL, modelCostHint } from "../../lib/model-build-cost"
+import { MODEL_COST_BADGE_CLASS, MODEL_COST_LABEL, modelCostHint, modelPickerHidesCostLabels } from "../../lib/model-build-cost"
 import { NATIVE_MODEL_SHEET } from "./model-picker-sheet-chrome"
 import { Popover, PopoverBackdrop, PopoverContent } from "@/components/ui/popover"
 
@@ -102,7 +102,7 @@ interface ModelPickerMenuProps {
   onDismiss?: () => void
   /** Full-width list for the native bottom sheet (no nested scroll/width cap). */
   presentation?: "menu" | "sheet"
-  /** Plan pickers show names only; the composer menu keeps cheaper / higher-cost. */
+  /** Plan pickers and the native phone sheet show names only. */
   hideCostLabels?: boolean
 }
 
@@ -119,6 +119,7 @@ export function ModelPickerMenu({
   const isAdmin = useIsSuperAdmin()
   const isWeb = Platform.OS === "web"
   const isSheet = presentation === "sheet"
+  const namesOnly = modelPickerHidesCostLabels(hideCostLabels, presentation)
   const { width: windowWidth } = useWindowDimensions()
   const menuWidth = isSheet ? undefined : isWeb ? WEB_MENU_WIDTH : getNativeModelMenuWidth(windowWidth)
   const currentTier = resolveTier(currentModelId)
@@ -171,7 +172,7 @@ export function ModelPickerMenu({
                 {EFFORT_SHORT[effort]}
               </Text>
             ) : null}
-            {!isSelected && !hideCostLabels ? (
+            {!isSelected && !namesOnly ? (
               <Text
                 className={cn(
                   isSheet ? NATIVE_MODEL_SHEET.metaClass : isWeb ? "text-[11px]" : "text-xs",
@@ -216,7 +217,7 @@ export function ModelPickerMenu({
                 {contextLabel}
               </Text>
             ) : null}
-            {hideCostLabels ? null : (
+            {namesOnly ? null : (
               <Text className={cn(isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
                 {MODEL_COST_LABEL[model.tier]} · {modelCostHint(model.tier, currentTier)}
               </Text>
@@ -237,7 +238,7 @@ export function ModelPickerMenu({
       <AutoModelOption
         currentModelId={currentModelId}
         presentation={presentation}
-        hideCostLabels={hideCostLabels}
+        hideCostLabels={namesOnly}
         onSelect={() => onSelect(AUTO_MODEL_ID)}
       />
       <View className="h-px bg-border/50 mx-2" />
@@ -290,7 +291,7 @@ export function ModelPickerMenu({
     // click-drag text highlighting; `outline-none` kills the focus ring.
     <View className="relative web:outline-none no-focus-ring" style={{ userSelect: "none" } as any}>
       {list}
-      {activeInfoModel && !hideCostLabels ? (
+      {activeInfoModel && !namesOnly ? (
         <View
           className="bg-card border border-border rounded-lg shadow-lg"
           style={{
