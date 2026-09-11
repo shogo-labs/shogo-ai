@@ -13,7 +13,11 @@
  *    an active connectivity wait) — these never collapse.
  *
  * Web: `absolute` + `bottom: "100%"` so the dock floats over the message
- * list without pushing layout.
+ * list without pushing layout. The overlay spans the composer wrapper;
+ * an inner `max-w-3xl` column is centered so Error / Changed files /
+ * Queue cards line up with the transcript (and the intended composer
+ * column). NativeWind stays off the overlay View so css-interop cannot
+ * drop `position` / `bottom`.
  *
  * Native: the dock is a normal column sibling of the composer pill.
  * Yoga cannot resolve percentage `bottom`, so an overlay parks the card
@@ -68,6 +72,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingBottom: WEB_DOCK_COMPOSER_GAP,
+    // `left` + `right` stretch this overlay to the composer wrapper.
+    // Without centering, `max-w-3xl` on the same node pins the card to
+    // the left while the transcript sits in the centered column.
+    alignItems: "center",
   },
   relative: { position: "relative" },
   statusScroll: {
@@ -224,12 +232,13 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
   return (
     <View
       style={styles.webContainer}
-      className={cn("w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
       testID={testID}
       pointerEvents="box-none"
       onLayout={handleLayout}
     >
-      {body}
+      <View className={cn("w-full max-w-3xl gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
+        {body}
+      </View>
     </View>
   )
 }
