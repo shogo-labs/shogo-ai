@@ -34,6 +34,8 @@ import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace"
 import { setActiveWorkspaceId } from "../../lib/workspace-store"
 import { SettingsContent } from "./settings"
 
+function noopAccountClose() {}
+
 export default observer(function AccountPage() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
@@ -195,7 +197,7 @@ export default observer(function AccountPage() {
           onSwitchWorkspace={handleSwitchWorkspace}
           onCreateWorkspace={handleCreateWorkspace}
           localMode={localMode}
-          onClose={() => {}}
+          onClose={noopAccountClose}
           isNative
           onOpenNativeSettingsTab={setSettingsTab}
         />
