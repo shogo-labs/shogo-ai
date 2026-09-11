@@ -411,7 +411,7 @@ export const ChatMessageCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["session"]
+const relationFields = ["session","feedback"]
 
 /**
  * Transform API response for MST compatibility:
