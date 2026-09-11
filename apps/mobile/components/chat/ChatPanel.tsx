@@ -41,7 +41,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
-  Animated,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native"
@@ -5993,9 +5992,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
               edited so taps go to the transcript (cancel) instead of a
               second composer, matching ChatGPT. Web keeps both. */}
           {!(isNative && nativeInlineEditing) ? (
-          <Animated.View
+          <View className="w-full items-center">
+          <View
             className={cn(
-              "bg-transparent max-w-3xl w-full self-center mt-1",
+              "bg-transparent w-full max-w-3xl mt-1",
               !isNative && "relative",
             )}
             style={[
@@ -6063,7 +6063,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               onOpenIdeFile={ideBridge.openFile}
               keyboardOpen={nativeKeyboardOpen}
             />
-          </Animated.View>
+          </View>
+          </View>
           ) : (
             <Pressable
               onPress={() => dispatchNativeInlineEditTap(-1, -1)}
