@@ -94,6 +94,7 @@ import { isPhoneLayout,
   useNativePhoneWindow } from "../../lib/native-phone-layout"
 import { canvasViewerPayload } from "../../lib/canvas-viewer"
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
+import { ProjectComposerDock } from "./composer/ProjectComposerDock"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
@@ -5385,8 +5386,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const errorMessage = error?.message ?? null
-  const nativePhonePanelWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
-  const nativePhoneComposerWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
+  const nativePhoneColumnWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
@@ -5844,7 +5844,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               isPhoneViewport ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
-            contentContainerStyle={nativePhonePanelWidth ? { width: nativePhonePanelWidth } : undefined}
+            contentContainerStyle={nativePhoneColumnWidth ? { width: nativePhoneColumnWidth } : undefined}
             keyboardShouldPersistTaps={
               isNative && nativeInlineEditing ? "always" : "handled"
             }
@@ -6002,21 +6002,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
               edited so taps go to the transcript (cancel) instead of a
               second composer, matching ChatGPT. Web keeps both. */}
           {!(isNative && nativeInlineEditing) ? (
-          <View className="w-full items-center">
-          <View
-            className={cn(
-              "bg-transparent w-full max-w-3xl mt-1",
-              !isNative && "relative",
-            )}
-            style={[
-              nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
-              isPhoneViewport
-                ? {
-                    paddingBottom: composerKeyboardPad,
-                    ...(isNative ? undefined : { overflow: "visible" as const }),
-                  }
-                : undefined,
-            ]}
+          <ProjectComposerDock
+            columnWidth={nativePhoneColumnWidth}
+            keyboardPad={composerKeyboardPad}
+            applyKeyboardPad={isPhoneViewport}
+            native={isNative}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
             <PendingPlanComposerBar />
@@ -6073,8 +6063,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               onOpenIdeFile={ideBridge.openFile}
               keyboardOpen={nativeKeyboardOpen}
             />
-          </View>
-          </View>
+          </ProjectComposerDock>
           ) : (
             <Pressable
               onPress={() => dispatchNativeInlineEditTap(-1, -1)}

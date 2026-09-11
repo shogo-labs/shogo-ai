@@ -14,7 +14,7 @@
  */
 
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
-import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, useWindowDimensions, Animated } from "react-native"
+import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, Animated } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
@@ -181,7 +181,6 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
     ref
   ) {
     const { features } = usePlatformConfig()
-    const { height: windowHeight } = useWindowDimensions()
     const effectiveIsPro = features.billing ? isPro : true
     const { isNative,
       isPhoneChrome, useProminentComposer,
@@ -189,6 +188,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       sizes,
       modelTriggerMaxWidth,
       nativeModelMenuWidth,
+      windowHeight,
     } = useComposerLayoutMode({
       prominent: prominentMobile,
       compact: true,
