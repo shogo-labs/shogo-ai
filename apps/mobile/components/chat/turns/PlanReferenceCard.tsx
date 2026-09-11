@@ -14,11 +14,17 @@ import { View, Text, Pressable, ActivityIndicator } from "react-native"
 import { CheckCircle2, ClipboardList, ChevronRight } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { NATIVE_PHONE_DOCK_COMPOSER_GAP, useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
-import { PHONE_DENSITY } from "../../../lib/phone-density"
+import { COMPACT_DENSITY, PHONE_DENSITY } from "../../../lib/phone-density"
 import { NativePlanPreviewSheet } from "../NativePlanPreviewSheet"
 import {
   PLAN_READY_CHIP_TEXT,
+  PLAN_READY_KICKER_CLASS,
   PLAN_READY_OVAL_BUILD_HEIGHT,
+  PLAN_READY_OVAL_CLASS,
+  PLAN_READY_STREAM_CLASS,
+  PLAN_READY_STREAM_ICON_WELL,
+  PLAN_READY_WEB_ICON_WELL,
+  PLAN_READY_WEB_KICKER_CLASS,
 } from "../plan-ready-chrome"
 import type { PlanData } from "../PlanCard"
 
@@ -72,9 +78,7 @@ export function PlanReferenceCard({
         <View
           className={cn(
             "flex-row items-center border border-border bg-card",
-            composer
-              ? "mx-2 rounded-full px-4 py-2.5"
-              : "mx-2 my-1.5 gap-2.5 rounded-2xl px-3 py-3",
+            composer ? PLAN_READY_OVAL_CLASS : PLAN_READY_STREAM_CLASS,
           )}
           style={composer ? { marginBottom: NATIVE_PHONE_DOCK_COMPOSER_GAP } : undefined}
         >
@@ -85,12 +89,12 @@ export function PlanReferenceCard({
             className="min-w-0 flex-1 flex-row items-center gap-2.5 active:opacity-70"
           >
             {composer ? null : (
-              <View className="h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+              <View className={PLAN_READY_STREAM_ICON_WELL}>
                 <ClipboardList className="text-primary" size={PHONE_DENSITY.icon.sm} />
               </View>
             )}
             <View className="min-w-0 flex-1">
-              <Text className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <Text className={PLAN_READY_KICKER_CLASS}>
                 {nativeLabel}
               </Text>
               <Text
@@ -148,23 +152,23 @@ export function PlanReferenceCard({
         onViewPlan && "active:opacity-70",
       )}
     >
-      <View className="h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
-        <ClipboardList className="h-3.5 w-3.5 text-primary" size={14} />
+      <View className={PLAN_READY_WEB_ICON_WELL}>
+        <ClipboardList className="h-3.5 w-3.5 text-primary" size={COMPACT_DENSITY.icon.md} />
       </View>
       <View className="min-w-0 flex-1">
-        <Text className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        <Text className={PLAN_READY_WEB_KICKER_CLASS}>
           {webLabel}
         </Text>
-        <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+        <Text className={cn(COMPACT_DENSITY.text.body, "font-medium text-foreground")} numberOfLines={1}>
           {plan.name}
         </Text>
       </View>
       {isConfirmed ? (
-        <CheckCircle2 className="h-4 w-4 text-green-500" size={16} />
+        <CheckCircle2 className="h-4 w-4 text-green-500" size={COMPACT_DENSITY.icon.lg} />
       ) : !onViewPlan ? (
         <ActivityIndicator size="small" />
       ) : (
-        <ChevronRight className="h-4 w-4 text-muted-foreground" size={16} />
+        <ChevronRight className="h-4 w-4 text-muted-foreground" size={COMPACT_DENSITY.icon.lg} />
       )}
     </Pressable>
   )

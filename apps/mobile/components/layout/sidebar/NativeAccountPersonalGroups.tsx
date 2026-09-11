@@ -6,9 +6,8 @@
  */
 
 import { useState } from "react";
-import { Linking, Pressable, Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
 import {
-  Check,
   ExternalLink,
   LogOut,
   Monitor,
@@ -21,7 +20,8 @@ import { useTheme } from "../../../contexts/theme";
 import { usePlatformConfig } from "../../../lib/platform-config";
 import { PHONE_DENSITY } from "../../../lib/phone-density";
 import { AccountSettingsGroup, AccountSettingsRow } from "./AccountSettingsGroup";
-import { CHANGELOG_URL, DOCS_URL, THEME_CHOICES, themeDisplayName } from "./account-theme";
+import { CHANGELOG_URL, DOCS_URL, themeDisplayName } from "./account-theme";
+import { ThemeChoiceList } from "./ThemeChoiceList";
 
 export function NativeAccountPersonalGroups({
   onSignOut,
@@ -66,43 +66,13 @@ export function NativeAccountPersonalGroups({
             else setAppearanceOpen((open) => !open);
           }}
         />
-        {appearanceOpen
-          ? THEME_CHOICES.map(({ value, label, Icon }, index) => (
-              <Pressable
-                key={value}
-                onPress={() => setTheme(value)}
-                accessibilityRole="radio"
-                accessibilityLabel={label}
-                accessibilityState={{ checked: theme === value }}
-                className={cn(
-                  "flex-row items-center gap-3 px-4 py-3.5 active:bg-muted/60",
-                  density.rowMin,
-                  index < THEME_CHOICES.length - 1 && "border-b border-border",
-                )}
-              >
-                <Icon
-                  size={density.icon.md}
-                  className={
-                    theme === value ? "text-primary" : "text-muted-foreground"
-                  }
-                />
-                <Text
-                  className={cn(
-                    "flex-1",
-                    density.text.body,
-                    theme === value
-                      ? "text-primary font-medium"
-                      : "text-foreground",
-                  )}
-                >
-                  {label}
-                </Text>
-                {theme === value && (
-                  <Check size={density.icon.md} className="text-primary" />
-                )}
-              </Pressable>
-            ))
-          : null}
+        {appearanceOpen ? (
+          <ThemeChoiceList
+            theme={theme}
+            onSelect={setTheme}
+            variant="grouped"
+          />
+        ) : null}
       </AccountSettingsGroup>
 
       <AccountSettingsGroup title="Resources">

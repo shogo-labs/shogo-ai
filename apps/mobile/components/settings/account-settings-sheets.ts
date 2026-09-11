@@ -95,10 +95,14 @@ export function accountSettingsSheetGroups({
 }: {
   localMode?: boolean
   showBilling?: boolean
-}): Array<{ title: string; tabs: SheetTabDef[] }> {
-  const settings = SETTINGS_GROUP.filter((tab) => tabVisible(tab, localMode, showBilling))
-  const plan = PLAN_GROUP.filter((tab) => tabVisible(tab, localMode, showBilling))
-  const groups: Array<{ title: string; tabs: SheetTabDef[] }> = []
+}): Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> {
+  const withLabel = (tab: SheetTabDef) => ({
+    ...tab,
+    label: SHEET_TITLE_BY_ID[tab.id],
+  })
+  const settings = SETTINGS_GROUP.filter((tab) => tabVisible(tab, localMode, showBilling)).map(withLabel)
+  const plan = PLAN_GROUP.filter((tab) => tabVisible(tab, localMode, showBilling)).map(withLabel)
+  const groups: Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> = []
   if (settings.length) groups.push({ title: "Settings", tabs: settings })
   if (plan.length) groups.push({ title: "Plan", tabs: plan })
   return groups

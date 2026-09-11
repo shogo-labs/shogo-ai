@@ -98,9 +98,18 @@ mock.module(resolve(import.meta.dir, "../../../../lib/phone-density"), () => {
     rowPad: "px-4 py-3.5",
     rowMin: "min-h-11",
   }
+  const COMPACT_DENSITY = {
+    icon: { xs: 10, sm: 12, md: 14, lg: 16, nav: 12 },
+    text: { caption: "text-[10px]", label: "text-xs", body: "text-sm", title: "text-sm", heading: "text-lg" },
+    hit: "p-1",
+    hitSize: "",
+    rowPad: "px-4 py-3",
+    rowMin: "",
+  }
   return {
     PHONE_DENSITY,
-    densityFor: () => PHONE_DENSITY,
+    COMPACT_DENSITY,
+    densityFor: (comfortable: boolean) => (comfortable ? PHONE_DENSITY : COMPACT_DENSITY),
   }
 })
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
