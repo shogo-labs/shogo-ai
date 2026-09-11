@@ -16,9 +16,13 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
+import { View, ScrollView, Pressable, ActivityIndicator } from 'react-native'
 import { observer } from 'mobx-react-lite'
-import { Boxes, Check, Lock } from 'lucide-react-native'
+import {
+  Boxes as BoxesIcon,
+  Check as CheckIcon,
+  Lock as LockIcon,
+} from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi } from '@shogo-ai/sdk'
 import { createHttpClient } from '../../lib/api'
@@ -26,6 +30,16 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useMemberCollection } from '../../contexts/domain'
 import { useAuth } from '../../contexts/auth'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
+import {
+  AccountSheetText as Text,
+  wrapAccountSheetIcons,
+} from './account-sheet-chrome'
+
+const { Boxes, Check, Lock } = wrapAccountSheetIcons({
+  Boxes: BoxesIcon,
+  Check: CheckIcon,
+  Lock: LockIcon,
+})
 
 interface Candidate {
   id: string

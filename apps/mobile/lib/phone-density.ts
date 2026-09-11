@@ -34,6 +34,22 @@ export const PHONE_DENSITY: Density = {
   rowMin: 'min-h-12',
 }
 
+/** Account settings sheet chrome — one step above phone rows. */
+export const ACCOUNT_SHEET_DENSITY: Density = {
+  icon: { xs: 18, sm: 22, md: 24, lg: 28, nav: 24 },
+  text: {
+    caption: 'text-base',
+    label: 'text-lg',
+    body: 'text-xl',
+    title: 'text-2xl',
+    heading: 'text-3xl',
+  },
+  hit: 'h-12 w-12 items-center justify-center',
+  hitSize: 'h-12 w-12',
+  rowPad: 'px-4 py-4',
+  rowMin: 'min-h-12',
+}
+
 export const COMPACT_DENSITY: Density = {
   icon: { xs: 10, sm: 12, md: 14, lg: 16, nav: 12 },
   text: {

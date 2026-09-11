@@ -6,11 +6,16 @@ import {
   Modal,
   Platform,
   Pressable,
-  Text,
-  TextInput,
   View,
 } from "react-native";
-import { X } from "lucide-react-native";
+import { X as XIcon } from "lucide-react-native";
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+  accountSheetIcon,
+} from "../../settings/account-sheet-chrome";
+
+const X = accountSheetIcon(XIcon);
 
 // ─── CreateWorkspaceModal (free — first workspace only) ────
 

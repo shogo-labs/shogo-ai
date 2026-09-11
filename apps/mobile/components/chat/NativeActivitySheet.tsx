@@ -35,7 +35,7 @@ export function NativeActivitySheet({
   title: string
   onClose: () => void
   children: ReactNode
-  /** Model picker uses grabber + backdrop only; thought/work sheets keep the X. */
+  /** Model picker uses grabber + tap-away dismiss; thought/work sheets keep the X. */
   showClose?: boolean
 }) {
 

@@ -9,11 +9,17 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Modal, Platform, Pressable, View, Text } from 'react-native'
-import { X } from 'lucide-react-native'
+import { Modal, Platform, Pressable, View } from 'react-native'
+import { X as XIcon } from 'lucide-react-native'
 import { Button, Input, cn } from '@shogo/shared-ui/primitives'
 import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
+import {
+  AccountSheetText as Text,
+  accountSheetIcon,
+} from '../settings/account-sheet-chrome'
+
+const X = accountSheetIcon(XIcon)
 
 interface SetSpendLimitDialogProps {
   visible: boolean

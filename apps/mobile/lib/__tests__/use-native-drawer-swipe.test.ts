@@ -11,11 +11,15 @@ import {
   nativeDrawerFooterInset,
   nativeDrawerUnderlayStyle,
   nativeDrawerSheetCanvas,
+  nativeDrawerSheetEnds,
+  nativeDrawerOuterSheetStyle,
+  nativeDrawerClipSheetStyle,
   nativeDrawerShouldDismissKeyboard,
   NATIVE_DRAWER_SHEET_RADIUS,
   NATIVE_DRAWER_SHEET_SHADOW_OPACITY,
   NATIVE_DRAWER_SHEET_ELEVATION,
   NATIVE_DRAWER_SHEET_OPEN_CANVAS,
+  NATIVE_DRAWER_COMPOSITING_EPSILON,
   NATIVE_DRAWER_WIDTH_RATIO,
   NATIVE_DRAWER_MIN_TOP_INSET,
   NATIVE_DRAWER_MIN_SIDE_INSET,
@@ -69,7 +73,7 @@ describe('native drawer progress', () => {
     expect(NATIVE_DRAWER_SHEET_RADIUS).toBeLessThanOrEqual(60)
   })
 
-  test('sheet translation, corner radius, and canvas share the same progress', () => {
+  test('sheet translation and corner radius share the same progress', () => {
     const drawerWidth = nativeDrawerPanelWidth(402)
     const at = (progress: number) => ({
       sheetX: progress * drawerWidth,
@@ -83,9 +87,8 @@ describe('native drawer progress', () => {
     expect(at(0.25).sheetX).toBeCloseTo(0.25 * drawerWidth)
     expect(at(0.25).radius).toBeCloseTo(0.25 * NATIVE_DRAWER_SHEET_RADIUS)
     expect(nativeDrawerSheetCanvas(0, true)).toBe(NATIVE_PHONE_CANVAS.dark)
-    expect(nativeDrawerSheetCanvas(1, true)).toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
-    expect(nativeDrawerSheetCanvas(0.5, true)).not.toBe(NATIVE_PHONE_CANVAS.dark)
-    expect(nativeDrawerSheetCanvas(0.5, true)).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    expect(nativeDrawerSheetCanvas(0.5, true)).toBe(NATIVE_PHONE_CANVAS.dark)
+    expect(nativeDrawerSheetCanvas(1, true)).toBe(NATIVE_PHONE_CANVAS.dark)
   })
 
   test('release snaps using distance or velocity', () => {
@@ -106,6 +109,8 @@ describe('native drawer insets', () => {
   test('use shared minimums so app and admin drawers stay aligned', () => {
     expect(NATIVE_DRAWER_SHEET_SHADOW_OPACITY).toBe(0.12)
     expect(NATIVE_DRAWER_SHEET_ELEVATION).toBe(4)
+    expect(NATIVE_DRAWER_COMPOSITING_EPSILON).toBeGreaterThan(0)
+    expect(NATIVE_DRAWER_COMPOSITING_EPSILON).toBeLessThan(0.01)
     expect(nativeDrawerTopInset(20)).toBe(NATIVE_DRAWER_MIN_TOP_INSET)
     expect(nativeDrawerTopInset(80)).toBe(80)
     expect(nativeDrawerSideInset(0)).toBe(NATIVE_DRAWER_MIN_SIDE_INSET)
@@ -115,23 +120,27 @@ describe('native drawer insets', () => {
 })
 
 describe('nativeDrawerSheetCanvas', () => {
-  test('dark sheet lifts from OLED black to medium grey with drawer progress', () => {
+  test('dark sheet stays on the closed canvas for the whole swipe', () => {
     expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
-    expect(nativeDrawerSheetCanvas(1, true)).toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
-    const mid = nativeDrawerSheetCanvas(0.5, true)
-    expect(mid.startsWith('#')).toBe(true)
-    expect(mid).not.toBe('#000000')
-    expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
-    expect(nativeDrawerSheetCanvas(0.25, true) < nativeDrawerSheetCanvas(0.75, true)).toBe(true)
+    expect(nativeDrawerSheetCanvas(0.5, true)).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(1, true)).toBe('#000000')
   })
 
-  test('dark home lifts from charcoal to the same open grey', () => {
+  test('dark home stays charcoal instead of lifting to grey', () => {
     expect(nativeDrawerSheetCanvas(0, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
-    expect(nativeDrawerSheetCanvas(1, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
-    const mid = nativeDrawerSheetCanvas(0.5, true, NATIVE_PHONE_HOME_CANVAS)
-    expect(mid).not.toBe(NATIVE_PHONE_HOME_CANVAS)
-    expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    expect(nativeDrawerSheetCanvas(0.5, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
+    expect(nativeDrawerSheetCanvas(1, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
     expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
+  })
+
+  test('an explicit open canvas still lerps with drawer progress', () => {
+    expect(nativeDrawerSheetCanvas(0, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(1, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)).toBe(
+      NATIVE_DRAWER_SHEET_OPEN_CANVAS,
+    )
+    const mid = nativeDrawerSheetCanvas(0.5, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)
+    expect(mid).not.toBe('#000000')
+    expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
   })
 
   test('settings and other pages stay on the closed canvas when the drawer opens', () => {
@@ -152,6 +161,34 @@ describe('nativeDrawerShouldDismissKeyboard', () => {
     expect(nativeDrawerShouldDismissKeyboard(true, true)).toBe(true)
     expect(nativeDrawerShouldDismissKeyboard(false, true)).toBe(false)
     expect(nativeDrawerShouldDismissKeyboard(true, false)).toBe(false)
+  })
+})
+
+describe('native drawer sheet layers', () => {
+  test('outer motion has no clip radius or fill', () => {
+    const style = nativeDrawerOuterSheetStyle(24, 0.12, 4)
+    expect(style.transform).toEqual([{ translateX: 24 }])
+    expect(style.shadowOpacity).toBe(0.12)
+    expect(style.elevation).toBe(4)
+    expect(style).not.toHaveProperty('borderTopLeftRadius')
+    expect(style).not.toHaveProperty('overflow')
+    expect(style).not.toHaveProperty('backgroundColor')
+  })
+
+  test('inner clip has fill and radius, not transform', () => {
+    const style = nativeDrawerClipSheetStyle(52, NATIVE_PHONE_HOME_CANVAS)
+    expect(style.overflow).toBe('hidden')
+    expect(style.backgroundColor).toBe(NATIVE_PHONE_HOME_CANVAS)
+    expect(style.borderTopLeftRadius).toBe(52)
+    expect(style.borderBottomLeftRadius).toBe(52)
+    expect(style).not.toHaveProperty('transform')
+  })
+
+  test('home charcoal stays a single static canvas', () => {
+    expect(nativeDrawerSheetEnds(true, NATIVE_PHONE_HOME_CANVAS)).toEqual({
+      closed: NATIVE_PHONE_HOME_CANVAS,
+      open: NATIVE_PHONE_HOME_CANVAS,
+    })
   })
 })
 
