@@ -131,7 +131,8 @@ Findings that change the plan:
    workspace and `node_modules` on disk; the harness cleans up after itself.
 
 A packaged macOS run is still required; the source comments' 3–5 s figure for
-macOS is context, not a measurement.
+macOS is context, not a measurement. (Source-level macOS numbers are now
+available — see the macOS section below.)
 
 ## Implemented latency reductions
 
@@ -225,9 +226,10 @@ rest is API-side seed checks and proxying), first `/health` through the proxy
    the whole install. Now the template's dependencies are installed once into
    `<workspaces>/.warm/.deps` (keyed by template manifest + platform, so an
    app upgrade rebuilds it) and every warm workspace or cold seed clones
-   `node_modules` from it with hard links (`apps/api/src/lib/runtime/clone-tree.ts`,
-   40k files in 9–18 s on this host; `SHOGO_DEPS_CLONE_MODE=copy` forces
-   copies, `SHOGO_DEPS_STORE=0` disables the store). A create that arrives
+   `node_modules` from it (`apps/api/src/lib/runtime/clone-tree.ts`, 40k files
+   in 9–18 s on this host) — hard-linked by default here, APFS-clonefile'd on
+   macOS (see the macOS section below); `SHOGO_DEPS_CLONE_MODE=copy` forces
+   copies, `SHOGO_DEPS_STORE=0` disables the store. A create that arrives
    while the clone is in flight waits for it (bounded by
    `SHOGO_WARM_WORKSPACE_WAIT_MS`, default 90 s) instead of starting a
    competing install.
@@ -245,7 +247,70 @@ rest is API-side seed checks and proxying), first `/health` through the proxy
    cold, so remaining perceived slowness on this class of host is in the Studio
    UI or the iframe preview. Capture it with the Playwright spec above against
    a packaged build before optimising further server-side.
-5. macOS: run the same scenarios; the historical 3–5 s figure is unverified.
+5. macOS: source-level numbers are in below. A packaged-build run is still open.
+
+## macOS results on this checkout (2026-09-11)
+
+Host: Apple M5 Max (arm64), 128 GB RAM, macOS (Darwin 25.5), APFS root volume.
+Dev API via `bench:local-api`, agent-runtime run from source (not the
+compiled binary), `HOST_WARM_POOL_SIZE=1`. All numbers below are p50/p95/max
+over 5 runs unless noted.
+
+| Scenario | Runs | totalMs p50 | totalMs p95 | Budget | Dominant phase |
+|---|---:|---:|---:|---:|---|
+| new project, first create of the session (builds `.deps` store + warm clone) | 1 | 3,926 | — | 1,000 | `bun install` into `.warm/.deps` (13.1 s) + `.warm/.ready` clone (2.7 s), overlapped with the claim |
+| new project, warm workspace ready | 5 | 251 | 3,926\* | 1,000 | `sandbox/url` → `resolveProjectPodUrl` (\*p95/max dominated by the one first-of-session run above; steady-state max was 254) |
+| existing-warm (switch back) | 5 | 7 | 11 | 1,000 | none |
+| existing-cold, pool hit (`--cold-mode kill`) | 5 | 175 | 176 | 6,000 | `/pool/assign` + gateway start |
+| existing-cold, pool miss (`--cold-mode kill-pool`) | 5 | 1,178 | 1,179 | 6,000 | bun spawn to `/health` |
+
+Every scenario is comfortably inside budget on this hardware — better than
+the Windows numbers above on every scenario, consistent with the faster CPU,
+NVMe, and (after the fix below) APFS clone-on-write. The "historical 3–5 s"
+figure referenced in the source comments does not reproduce here at the
+source level; a packaged-build run (below) is still needed to rule out
+Gatekeeper/codesigning first-launch overhead on a `.app` bundle.
+
+### Root cause fixed on this checkout
+
+`clone-tree.ts`'s default `link` mode hard-links every file. Hard links work
+correctly on APFS, but two things made them the wrong default for macOS:
+
+1. **Slower.** Cloning the `.deps` store's 36,907-file `node_modules` into a
+   fresh `.warm/.ready` workspace — which happens in the background after
+   *every* `new`-project claim, to re-arm the next one — measured 9.4 s
+   hard-linked vs 3.2 s using APFS's `clonefile(2)` (`fs.copyFile` +
+   `COPYFILE_FICLONE`), confirmed independently with `cp -al` (10.4 s) vs
+   `cp -c` (5.6 s) on the same directory. This showed up directly in the
+   `new` scenario: the first create of a session (which also builds the
+   `.deps` store) dropped from 12,291 ms to 3,926 ms `totalMs` end to end.
+2. **Riskier.** A hard-linked clone shares one inode with the store; a tool
+   that opens-and-truncates-in-place (rather than the unlink+rewrite a package
+   manager uses) would corrupt the store for every other clone. A `clonefile`
+   clone is copy-on-write — same near-zero cost and no extra disk as a hard
+   link, but a fully independent file from the moment it's created.
+
+Fixed: `clone-tree.ts` gained a `ficlone` `CloneMode` and a
+`defaultCloneMode()` helper that returns `'ficlone'` on `darwin` and `'link'`
+everywhere else (Windows/Linux behavior, and the Windows numbers above, are
+unchanged). `SHOGO_DEPS_CLONE_MODE` still accepts `link` / `ficlone` / `copy`
+to override. `COPYFILE_FICLONE` (unlike `_FORCE`) degrades to a plain copy
+instead of throwing when a volume doesn't support cloning, so requesting it
+is safe even off APFS — the platform gate just avoids paying for a request
+that can't help elsewhere. See
+[apps/api/src/lib/runtime/clone-tree.ts](apps/api/src/lib/runtime/clone-tree.ts)
+and its test for the fallback chain (`ficlone` → `link` → `copy`, matching the
+existing Windows/Linux `link` → `copy` chain).
+
+### Remaining work
+
+1. Package a build of this branch (`apps/desktop/BUILD.md`, unsigned since no
+   codesigning identity was available on this run) and re-run the scenarios
+   above against the compiled agent-runtime binary and a real `.app` launch,
+   to check for Gatekeeper/first-launch overhead the source-level numbers
+   cannot see.
+2. Playwright renderer-inclusive capture (`e2e/project-open-perf.spec.ts`)
+   against that packaged build.
 
 ## Next decisions from the benchmark
 

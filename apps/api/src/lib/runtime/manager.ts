@@ -25,7 +25,7 @@ import { join, dirname, resolve, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { pkg, isMobileTechStack, stackSeedsItself } from '@shogo/shared-runtime'
-import { cloneTree } from './clone-tree'
+import { cloneTree, defaultCloneMode, type CloneMode } from './clone-tree'
 import {
   WorkerRuntimeManager,
   type ProjectSpawnConfig,
@@ -2219,9 +2219,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const tClone = Date.now()
     const target = join(projectDir, 'node_modules')
     if (existsSync(target)) rmSync(target, { recursive: true, force: true })
-    const result = await cloneTree(join(store, 'node_modules'), target, {
-      mode: process.env.SHOGO_DEPS_CLONE_MODE === 'copy' ? 'copy' : 'link',
-    })
+    const modeOverride = process.env.SHOGO_DEPS_CLONE_MODE as CloneMode | undefined
+    const mode: CloneMode =
+      modeOverride === 'copy' || modeOverride === 'link' || modeOverride === 'ficlone'
+        ? modeOverride
+        : defaultCloneMode()
+    const result = await cloneTree(join(store, 'node_modules'), target, { mode })
     for (const lock of ['package-lock.json', 'bun.lock']) {
       const from = join(store, lock)
       const to = join(projectDir, lock)
