@@ -18,7 +18,6 @@ import { Input } from '../primitives/Input'
 import { Alert, AlertDescription } from '../primitives/Alert'
 import { Separator } from '../primitives/Separator'
 import { cn } from '../primitives/cn'
-import { BRAND_LANDING_HEX } from '../tokens/brand'
 
 /** ~`text-muted-foreground` — lucide icons need explicit color */
 const PASSWORD_TOGGLE_ICON_COLOR = '#71717a'
@@ -1388,27 +1387,18 @@ export function LoginScreen(props: LoginScreenProps) {
               life
             </Text>
           </Text>
-          <View
+          <Image
+            source={loginHeroWordmarkWhite}
             style={{
-              backgroundColor: BRAND_LANDING_HEX,
-              borderRadius: 10,
-              paddingVertical: 4,
-              paddingHorizontal: 4,
-              alignItems: 'center',
-              justifyContent: 'center',
+              width: 122,
+              height: 36,
               shadowColor: '#000',
-              shadowOffset: { width: 0, height: 6 },
-              shadowOpacity: 0.22,
-              shadowRadius: 12,
-              elevation: 6,
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.35,
+              shadowRadius: 6,
             }}
-          >
-            <Image
-              source={loginHeroWordmarkWhite}
-              style={{ width: 122, height: 36 }}
-              resizeMode="contain"
-            />
-          </View>
+            resizeMode="contain"
+          />
         </View>
       </View>
     </View>

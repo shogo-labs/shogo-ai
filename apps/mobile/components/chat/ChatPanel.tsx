@@ -658,6 +658,14 @@ async function refreshCollections(
 /** Y offset from top below which we treat the viewport as "at the top" for loading older messages. */
 const LOAD_OLDER_SCROLL_EDGE_PX = 80
 
+/**
+ * Pixel value of Tailwind's `max-w-3xl` (48rem @ 16px root). The messages
+ * column and composer are capped at this width on wide viewports via the
+ * `max-w-3xl` className; see the composer's inline-style backup below for
+ * why this is also pinned explicitly instead of trusting the class alone.
+ */
+const CHAT_COMPOSER_MAX_WIDTH = 768
+
 /** Pixels from bottom to consider the user "at bottom" for follow-scroll heuristics (web). */
 const SCROLL_NEAR_BOTTOM_PX = 100
 
@@ -5802,7 +5810,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
               isPhoneViewport ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
-            contentContainerStyle={nativePhonePanelWidth ? { width: nativePhonePanelWidth } : undefined}
+            contentContainerStyle={
+              nativePhonePanelWidth
+                ? { width: nativePhonePanelWidth }
+                : // Same belt-and-suspenders cap as the composer below —
+                  // pins the `max-w-3xl` width even if the className
+                  // doesn't resolve on this content container.
+                  { maxWidth: CHAT_COMPOSER_MAX_WIDTH, width: "100%", alignSelf: "center" as const }
+            }
             keyboardShouldPersistTaps={
               isNative && nativeInlineEditing ? "always" : "handled"
             }
@@ -5963,6 +5978,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
           <Animated.View
             className="relative bg-transparent max-w-3xl w-full self-center mt-1"
             style={[
+              // Belt-and-suspenders width cap: on wide/desktop viewports
+              // `nativePhoneComposerWidth` is undefined and this box is
+              // supposed to be capped by the `max-w-3xl` className alone.
+              // NativeWind's className→style resolution isn't guaranteed
+              // to reach every `Animated.View` the same way it does a
+              // plain `View` (e.g. `ChatDock`, the messages `ScrollView`),
+              // so pin the same 768px (`max-w-3xl`) cap here explicitly —
+              // this is what actually keeps the composer from going
+              // edge-to-edge on a large screen if the class doesn't apply.
+              !isPhoneViewport
+                ? { maxWidth: CHAT_COMPOSER_MAX_WIDTH, width: "100%", alignSelf: "center" as const }
+                : undefined,
               nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
               isPhoneViewport
                 ? { paddingBottom: composerKeyboardPad, overflow: "visible" as const }
