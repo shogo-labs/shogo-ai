@@ -24,7 +24,6 @@ import {
   ScrollView,
   Platform,
   Animated,
-  useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { NATIVE_PHONE_ICON_STROKE,
@@ -167,12 +166,6 @@ const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
  * On native this is a transparent passthrough — the icon click opens the
  * popover menu which already shows the full label.
  */
-// Non-prominent bounds stay file-local. Phone prominent metrics are shared
-// via `useProminentComposerExpansion` so home and project composers cannot drift.
-const CHAT_INPUT_MIN_HEIGHT = 60
-const CHAT_INPUT_MAX_HEIGHT = 200
-const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
-const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
 
 export interface FileAttachment {
   dataUrl: string
@@ -454,28 +447,20 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
-  const { height: windowHeight } = useWindowDimensions()
   const effectiveIsPro = features.billing ? isPro : true
   const { isNative,
     isPhoneChrome, useProminentComposer, chatgptComposer,
     sizes,
     modelTriggerMaxWidth,
     nativeModelMenuWidth,
+    windowHeight,
   } = useComposerLayoutMode({
     prominent : true,
     flush,
   })
   const sendChrome = composerSendChrome(isNative || useProminentComposer)
-  const inputMinHeight = useProminentComposer
-    ? sizes.inputMinHeight
-    : isNative
-      ? CHAT_INPUT_NATIVE_MIN_HEIGHT
-      : CHAT_INPUT_MIN_HEIGHT
-  const inputMaxHeight = useProminentComposer
-    ? sizes.inputMaxHeight
-    : isNative
-      ? CHAT_INPUT_NATIVE_MAX_HEIGHT
-      : CHAT_INPUT_MAX_HEIGHT
+  const inputMinHeight = sizes.inputMinHeight
+  const inputMaxHeight = sizes.inputMaxHeight
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
   const ezActive = bridge?.ezModeActive ?? false
