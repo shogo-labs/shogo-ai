@@ -1,11 +1,27 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { View, Text, Pressable } from 'react-native'
-import { Sun, Moon, Monitor, RotateCcw } from 'lucide-react-native'
+import { View, Pressable } from 'react-native'
+import {
+  Sun as SunIcon,
+  Moon as MoonIcon,
+  Monitor as MonitorIcon,
+  RotateCcw as RotateCcwIcon,
+} from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useTheme } from '../../contexts/theme'
 import { useAppearance } from '../../contexts/appearance'
+import {
+  AccountSheetText as Text,
+  wrapAccountSheetIcons,
+} from './account-sheet-chrome'
+
+const { Sun, Moon, Monitor, RotateCcw } = wrapAccountSheetIcons({
+  Sun: SunIcon,
+  Moon: MoonIcon,
+  Monitor: MonitorIcon,
+  RotateCcw: RotateCcwIcon,
+})
 
 export const FONT_SIZE_MIN = 11
 export const FONT_SIZE_MAX = 24

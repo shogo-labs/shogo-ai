@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import type { ReactNode } from 'react'
-import { Animated, View } from 'react-native'
+import { Animated, Platform, View } from 'react-native'
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context'
 import type { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 
@@ -40,19 +40,31 @@ export function NativeSheetDrawerShell({
     sheetSwipeHandlers,
     sheetStyle,
     sheetClipStyle,
+    sheetFill,
+    sheetCompositing,
     underlayStyle,
   } = drawer
+  const frameFill = nativeSheetDrawer ? (sheetFill ?? canvas) : canvas
+  const flattenSheet = nativeSheetDrawer && (drawerOpen || sheetCompositing)
+  const frameOverflow =
+    nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
 
   return (
     <SafeAreaView
       className="flex-1 bg-background"
-      style={canvas && nativeSheetDrawer ? { backgroundColor: canvas } : undefined}
+      style={frameFill && nativeSheetDrawer ? { backgroundColor: frameFill } : undefined}
       edges={safeAreaEdges}
     >
       <View className="flex-1 flex-row">
         {isWide ? sidebarWide : null}
 
-        <View style={{ flex: 1, overflow: 'hidden' }} collapsable={false}>
+        <View
+          style={[
+            { flex: 1, overflow: frameOverflow },
+            nativeSheetDrawer && frameFill ? { backgroundColor: frameFill } : undefined,
+          ]}
+          collapsable={false}
+        >
           {nativeSheetDrawer ? (
             <View
               pointerEvents={drawerOpen ? 'auto' : 'none'}
@@ -69,9 +81,15 @@ export function NativeSheetDrawerShell({
             style={[{ flex: 1, zIndex: 1 }, nativeSheetDrawer ? sheetStyle : undefined]}
           >
             <Animated.View
+              collapsable={false}
               style={nativeSheetDrawer ? sheetClipStyle : { flex: 1, overflow: 'hidden' }}
             >
-              <View className="flex-1">
+              <View
+                className="flex-1"
+                collapsable={false}
+                shouldRasterizeIOS={flattenSheet}
+                renderToHardwareTextureAndroid={flattenSheet}
+              >
                 {header}
                 <View className="flex-1">{children}</View>
               </View>

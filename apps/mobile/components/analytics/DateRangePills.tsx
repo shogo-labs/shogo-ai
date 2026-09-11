@@ -11,11 +11,17 @@
  * stays in sync with what the server queries.
  */
 
-import { View, Text, Pressable } from 'react-native'
-import { ChevronDown } from 'lucide-react-native'
+import { View, Pressable } from 'react-native'
+import { ChevronDown as ChevronDownIcon } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import type { AnalyticsPeriod } from './SharedAnalytics'
+import {
+  AccountSheetText as Text,
+  accountSheetIcon,
+} from '../settings/account-sheet-chrome'
+
+const ChevronDown = accountSheetIcon(ChevronDownIcon)
 
 const PILLS: { id: AnalyticsPeriod; label: string }[] = [
   { id: '1d', label: '1d' },

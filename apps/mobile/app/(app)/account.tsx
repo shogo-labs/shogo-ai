@@ -19,6 +19,7 @@ import { useResolvedTheme } from "../../contexts/theme"
 import { AccountMenuBody } from "../../components/layout/sidebar/AccountMenu"
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal"
 import { NativeAccountSettingsSheet } from "../../components/settings/NativeAccountSettingsSheet"
+import { AccountSheetChromeProvider } from "../../components/settings/account-sheet-chrome"
 import {
   accountSettingsSheetTitle,
   type AccountSettingsSheetTab,
@@ -189,11 +190,13 @@ export default observer(function AccountPage() {
           />
         ) : null}
       </NativeAccountSettingsSheet>
-      <CreateWorkspaceModal
-        visible={createWorkspaceOpen}
-        onClose={() => setCreateWorkspaceOpen(false)}
-        onSubmit={handleCreateWorkspaceSubmit}
-      />
+      <AccountSheetChromeProvider>
+        <CreateWorkspaceModal
+          visible={createWorkspaceOpen}
+          onClose={() => setCreateWorkspaceOpen(false)}
+          onSubmit={handleCreateWorkspaceSubmit}
+        />
+      </AccountSheetChromeProvider>
     </View>
   )
 })

@@ -80,9 +80,8 @@ export const NATIVE_PHONE_CARD_GAP = 12
 export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
 /**
  * Dark home only: the old charcoal wash, not OLED black. Search, files, and
- * other screens keep `NATIVE_PHONE_CANVAS.dark`. The drawer lifts *home*
- * to `NATIVE_DRAWER_SHEET_OPEN_CANVAS` when the sidebar opens; Settings and
- * other pages stay on the closed canvas.
+ * other screens keep `NATIVE_PHONE_CANVAS.dark`. The moving drawer sheet
+ * stays on this closed canvas so swipe frames do not flash a second fill.
  */
 export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
 
@@ -128,8 +127,9 @@ export const NATIVE_PHONE_SHEET_BORDER = {
   light: 'rgba(0,0,0,0.08)',
 } as const
 export const NATIVE_PHONE_SHEET_BACKDROP = {
-  dark: 'rgba(0,0,0,0.40)',
-  light: 'rgba(0,0,0,0.50)',
+  /** Bottom sheets stay non-blocking visually; the press target remains dismissible. */
+  dark: 'transparent',
+  light: 'transparent',
 } as const
 
 export const NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO = 0.78;

@@ -3,8 +3,13 @@
 /**
  * Native two-layer drawer: the sidebar sits underneath; the current screen
  * is a foreground sheet the user drags to the right. One progress value
- * (0 closed → 1 open) drives sheet translation, left-corner radius, and
- * (dark theme) the sheet canvas from closed black/charcoal to the lifted grey.
+ * (0 closed → 1 open) drives sheet translation and left-corner radius.
+ *
+ * Motion and clip are separate layers. iOS flashes when transform, radius,
+ * overflow, and fill animate on the same view — especially around SVG/home
+ * content. The outer layer only translates and casts a shadow; the inner
+ * layer clips the rounded left corners. Matching closed/open canvases stay
+ * a static fill so swipe frames do not lerp a second color.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -30,15 +35,13 @@ export const NATIVE_DRAWER_SHEET_SHADOW_OPACITY = 0.12
 export const NATIVE_DRAWER_SHEET_SHADOW_RADIUS = 8
 export const NATIVE_DRAWER_SHEET_ELEVATION = 4
 export const NATIVE_DRAWER_SHEET_SHADOW_OFFSET = { width: -1, height: 0 } as const
-/**
- * Dark ChatGPT sheet: closed screens are OLED black (home uses charcoal
- * via `closedCanvas`); as the sidebar opens the moving foreground lifts
- * to this medium grey at the same progress. Light theme does not change.
- */
+/** Opt-in open-sheet fill. Callers that omit `openCanvas` keep the closed canvas. */
 export const NATIVE_DRAWER_SHEET_OPEN_CANVAS = '#3A3A3C'
 export const NATIVE_DRAWER_MIN_TOP_INSET = 56
 export const NATIVE_DRAWER_MIN_SIDE_INSET = 4
 export const NATIVE_DRAWER_MIN_FOOTER_INSET = 12
+/** Rasterize the moving sheet once progress leaves rest, not on every tick. */
+export const NATIVE_DRAWER_COMPOSITING_EPSILON = 0.001
 
 const SETTLE_SPRING = {
   stiffness: 340,
@@ -47,7 +50,7 @@ const SETTLE_SPRING = {
   overshootClamping: true,
   restDisplacementThreshold: 0.002,
   restSpeedThreshold: 0.02,
-  // Radius / shadow must stay on the JS thread with translateX.
+  // Radius still interpolates on the inner clip, so the spring stays on JS.
   useNativeDriver: false,
 } as const
 
@@ -84,9 +87,26 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${to(r)}${to(g)}${to(b)}`
 }
 
-function nativeDrawerOpenCanvas(isDark: boolean, openCanvas?: string): string {
+function nativeDrawerOpenCanvas(
+  isDark: boolean,
+  closed: string,
+  openCanvas?: string,
+): string {
   if (!isDark) return nativePhoneCanvas(false)
-  return openCanvas ?? NATIVE_DRAWER_SHEET_OPEN_CANVAS
+  return openCanvas ?? closed
+}
+
+export function nativeDrawerSheetEnds(
+  isDark: boolean,
+  closedCanvas?: string,
+  openCanvas?: string,
+): { closed: string; open: string } {
+  if (!isDark) {
+    const fill = nativePhoneCanvas(false)
+    return { closed: fill, open: fill }
+  }
+  const closed = closedCanvas ?? nativePhoneCanvas(true)
+  return { closed, open: nativeDrawerOpenCanvas(true, closed, openCanvas) }
 }
 
 /** Canvas of the moving foreground sheet at a given 0–1 drawer progress. */
@@ -96,16 +116,43 @@ export function nativeDrawerSheetCanvas(
   closedCanvas?: string,
   openCanvas?: string,
 ): string {
-  if (!isDark) return nativePhoneCanvas(false)
-  const closed = closedCanvas ?? nativePhoneCanvas(true)
-  const open = nativeDrawerOpenCanvas(true, openCanvas)
+  const { closed, open } = nativeDrawerSheetEnds(isDark, closedCanvas, openCanvas)
   const t = Math.min(1, Math.max(0, progress))
-  if (t === 0) return closed
+  if (t === 0 || closed === open) return closed
   if (t === 1) return open
-  if (closed === open) return closed
   const [r0, g0, b0] = hexToRgbChannels(closed)
   const [r1, g1, b1] = hexToRgbChannels(open)
   return rgbToHex(r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t)
+}
+
+/** Outer sheet: slide + shadow. No radius or overflow — those clip on iOS. */
+export function nativeDrawerOuterSheetStyle(
+  translateX: number | Animated.AnimatedInterpolation<number>,
+  shadowOpacity: number | Animated.AnimatedInterpolation<number>,
+  elevation: number | Animated.AnimatedInterpolation<number>,
+) {
+  return {
+    transform: [{ translateX }],
+    shadowColor: NATIVE_DRAWER_SHEET_SHADOW_COLOR,
+    shadowOffset: NATIVE_DRAWER_SHEET_SHADOW_OFFSET,
+    shadowOpacity,
+    shadowRadius: NATIVE_DRAWER_SHEET_SHADOW_RADIUS,
+    elevation,
+  }
+}
+
+/** Inner sheet: static fill + left-corner clip. No transform. */
+export function nativeDrawerClipSheetStyle(
+  radius: number | Animated.AnimatedInterpolation<number>,
+  fill: string | Animated.AnimatedInterpolation<string | number>,
+) {
+  return {
+    flex: 1 as const,
+    overflow: 'hidden' as const,
+    backgroundColor: fill,
+    borderTopLeftRadius: radius,
+    borderBottomLeftRadius: radius,
+  }
 }
 
 /** Shared foreground-sheet motion used by the app and admin native drawers. */
@@ -116,15 +163,16 @@ export function useNativeDrawerSheetStyle(
   closedCanvas?: string,
   openCanvas?: string,
 ) {
-  const closed = closedCanvas ?? (isDark ? nativePhoneCanvas(true) : nativePhoneCanvas(false))
-  const open = nativeDrawerOpenCanvas(isDark, openCanvas)
+  const { closed, open } = nativeDrawerSheetEnds(isDark, closedCanvas, openCanvas)
+  const staticFill = closed === open ? closed : null
   const sheetCanvas = useMemo(
     () =>
+      staticFill ??
       drawerProgress.interpolate({
         inputRange: [0, 1],
         outputRange: [closed, open],
       }),
-    [closed, drawerProgress, open],
+    [closed, drawerProgress, open, staticFill],
   )
   const sheetRadius = useMemo(
     () =>
@@ -159,30 +207,14 @@ export function useNativeDrawerSheetStyle(
     [drawerProgress],
   )
   const sheetStyle = useMemo(
-    () => ({
-      transform: [{ translateX: sheetTranslateX }],
-      borderTopLeftRadius: sheetRadius,
-      borderBottomLeftRadius: sheetRadius,
-      backgroundColor: sheetCanvas,
-      shadowColor: NATIVE_DRAWER_SHEET_SHADOW_COLOR,
-      shadowOffset: NATIVE_DRAWER_SHEET_SHADOW_OFFSET,
-      shadowOpacity: sheetShadow,
-      shadowRadius: NATIVE_DRAWER_SHEET_SHADOW_RADIUS,
-      elevation: sheetElevation,
-    }),
-    [sheetCanvas, sheetElevation, sheetRadius, sheetShadow, sheetTranslateX],
+    () => nativeDrawerOuterSheetStyle(sheetTranslateX, sheetShadow, sheetElevation),
+    [sheetElevation, sheetShadow, sheetTranslateX],
   )
   const sheetClipStyle = useMemo(
-    () => ({
-      flex: 1 as const,
-      overflow: 'hidden' as const,
-      backgroundColor: sheetCanvas,
-      borderTopLeftRadius: sheetRadius,
-      borderBottomLeftRadius: sheetRadius,
-    }),
+    () => nativeDrawerClipSheetStyle(sheetRadius, sheetCanvas),
     [sheetCanvas, sheetRadius],
   )
-  return { sheetStyle, sheetClipStyle }
+  return { sheetStyle, sheetClipStyle, sheetFill: closed }
 }
 
 export function nativeDrawerProgressFromDelta(start: number, dx: number, width: number): number {
@@ -268,25 +300,34 @@ export function useNativeSheetDrawer({
   overlayOpenWithoutSnap?: boolean
   /** Dark closed-sheet fill. Home passes charcoal; other screens omit this. */
   closedCanvas?: string
-  /**
-   * Dark open-sheet fill. Home omits this so the sheet lifts to grey.
-   * Settings and other pages pass the closed canvas so they stay black.
-   */
+  /** Dark open-sheet fill. Omit to keep the closed canvas for the whole swipe. */
   openCanvas?: string
 }) {
   const drawerProgress = useRef(new Animated.Value(0)).current
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [sheetCompositing, setSheetCompositing] = useState(false)
   const drawerWidth = nativeDrawerPanelWidth(windowWidth)
+  const sheetProgressRef = useRef(0)
+
+  useEffect(() => {
+    const id = drawerProgress.addListener(({ value }) => {
+      sheetProgressRef.current = value
+      const active = value > NATIVE_DRAWER_COMPOSITING_EPSILON
+      setSheetCompositing((prev) => (prev === active ? prev : active))
+    })
+    return () => drawerProgress.removeListener(id)
+  }, [drawerProgress])
 
   const resetDrawer = useCallback(() => {
     drawerProgress.setValue(0)
     setDrawerOpen(false)
+    setSheetCompositing(false)
   }, [drawerProgress])
 
   const openDrawer = useCallback(() => {
     dismissKeyboardForNativeDrawer(true)
-    setDrawerOpen(true)
     snapNativeDrawer(drawerProgress, true)
+    setDrawerOpen(true)
   }, [drawerProgress])
 
   const closeDrawer = useCallback(() => {
@@ -309,13 +350,18 @@ export function useNativeSheetDrawer({
     drawerProgress,
     isOpen: drawerOpen,
     onOpenChange: setDrawerOpen,
+    currentProgressRef: sheetProgressRef,
   })
-  const { sheetStyle, sheetClipStyle } = useNativeDrawerSheetStyle(
+  const { sheetStyle, sheetClipStyle, sheetFill } = useNativeDrawerSheetStyle(
     drawerProgress,
     drawerWidth,
     isDark,
     closedCanvas,
     openCanvas,
+  )
+  const underlayStyle = useMemo(
+    () => nativeDrawerUnderlayStyle(drawerWidth, isDark),
+    [drawerWidth, isDark],
   )
 
   return {
@@ -325,7 +371,9 @@ export function useNativeSheetDrawer({
     sheetSwipeHandlers,
     sheetStyle,
     sheetClipStyle,
-    underlayStyle: nativeDrawerUnderlayStyle(drawerWidth, isDark),
+    sheetFill,
+    sheetCompositing,
+    underlayStyle,
     openDrawer,
     closeDrawer,
     toggleDrawer,
@@ -339,30 +387,27 @@ export function useNativeDrawerSheetSwipe({
   drawerProgress,
   isOpen,
   onOpenChange,
+  currentProgressRef,
 }: {
   enabled: boolean
   drawerWidth: number
   drawerProgress: Animated.Value
   isOpen: boolean
   onOpenChange: (open: boolean) => void
+  /** Shared with the drawer controller so progress is observed once. */
+  currentProgressRef: { current: number }
 }): GestureResponderHandlers | undefined {
   const enabledRef = useRef(enabled)
   const isOpenRef = useRef(isOpen)
   const widthRef = useRef(drawerWidth)
   const onOpenChangeRef = useRef(onOpenChange)
   const startProgressRef = useRef(0)
-  const currentProgressRef = useRef(0)
+  const progressRef = useRef(currentProgressRef)
   enabledRef.current = enabled
   isOpenRef.current = isOpen
   widthRef.current = drawerWidth
   onOpenChangeRef.current = onOpenChange
-
-  useEffect(() => {
-    const id = drawerProgress.addListener(({ value }) => {
-      currentProgressRef.current = value
-    })
-    return () => drawerProgress.removeListener(id)
-  }, [drawerProgress])
+  progressRef.current = currentProgressRef
 
   const pan = useMemo(
     () =>
@@ -377,7 +422,7 @@ export function useNativeDrawerSheetSwipe({
         onPanResponderGrant: () => {
           dismissKeyboardForNativeDrawer(!isOpenRef.current)
           drawerProgress.stopAnimation()
-          startProgressRef.current = currentProgressRef.current
+          startProgressRef.current = progressRef.current.current
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_evt, gesture) => {

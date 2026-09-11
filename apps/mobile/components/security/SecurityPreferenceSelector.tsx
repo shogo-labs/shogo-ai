@@ -1,6 +1,22 @@
-import { View, Text, Pressable } from 'react-native'
-import { Shield, Lock, Zap, Check } from 'lucide-react-native'
+import { View, Pressable } from 'react-native'
+import {
+  Shield as ShieldIcon,
+  Lock as LockIcon,
+  Zap as ZapIcon,
+  Check as CheckIcon,
+} from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  wrapAccountSheetIcons,
+} from '../settings/account-sheet-chrome'
+
+const { Shield, Lock, Zap, Check } = wrapAccountSheetIcons({
+  Shield: ShieldIcon,
+  Lock: LockIcon,
+  Zap: ZapIcon,
+  Check: CheckIcon,
+})
 
 type SecurityMode = 'strict' | 'balanced' | 'full_autonomy'
 

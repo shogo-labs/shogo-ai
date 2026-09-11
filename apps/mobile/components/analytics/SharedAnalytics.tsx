@@ -10,7 +10,6 @@
 import { useState, useMemo, useRef } from 'react'
 import {
   View,
-  Text,
   Pressable,
   ActivityIndicator,
   Image,
@@ -18,8 +17,28 @@ import {
   useWindowDimensions,
 } from 'react-native'
 import {
+  Cpu as CpuIcon,
+  User as UserGlyph,
+  Clock as ClockIcon,
+  ChevronLeft as ChevronLeftIcon,
+  ChevronRight as ChevronRightIcon,
+  ChevronUp as ChevronUpIcon,
+  ChevronDown as ChevronDownIcon,
+  ArrowUpDown as ArrowUpDownIcon,
+  TrendingDown as TrendingDownIcon,
+  Globe as GlobeIcon,
+  Sparkles as SparklesIcon,
+  RefreshCw as RefreshCwIcon,
+} from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  wrapAccountSheetIcons,
+} from '../settings/account-sheet-chrome'
+
+const {
   Cpu,
-  User as UserIcon,
+  UserIcon,
   Clock,
   ChevronLeft,
   ChevronRight,
@@ -30,8 +49,20 @@ import {
   Globe,
   Sparkles,
   RefreshCw,
-} from 'lucide-react-native'
-import { cn } from '@shogo/shared-ui/primitives'
+} = wrapAccountSheetIcons({
+  Cpu: CpuIcon,
+  UserIcon: UserGlyph,
+  Clock: ClockIcon,
+  ChevronLeft: ChevronLeftIcon,
+  ChevronRight: ChevronRightIcon,
+  ChevronUp: ChevronUpIcon,
+  ChevronDown: ChevronDownIcon,
+  ArrowUpDown: ArrowUpDownIcon,
+  TrendingDown: TrendingDownIcon,
+  Globe: GlobeIcon,
+  Sparkles: SparklesIcon,
+  RefreshCw: RefreshCwIcon,
+})
 import {
   type ModelFamily,
 } from '@shogo/model-catalog'

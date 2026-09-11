@@ -7,10 +7,12 @@
 import type { ReactNode } from "react"
 import { View } from "react-native"
 import { NativePhoneSheet, NativePhoneSheetCloseButton } from "../phone/NativePhoneSheet"
+import { ACCOUNT_SHEET_DENSITY } from "../../lib/phone-density"
 import {
   NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO,
   NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO,
 } from "../../lib/native-phone-layout"
+import { AccountSheetChromeProvider } from "./account-sheet-chrome"
 
 export function NativeAccountSettingsSheet({
   visible,
@@ -24,19 +26,24 @@ export function NativeAccountSettingsSheet({
   children: ReactNode
 }) {
   return (
-    <NativePhoneSheet
-      visible={visible}
-      onClose={onClose}
-      title={title}
-      animationType="slide"
-      grabber={false}
-      maxHeightRatio={NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO}
-      bodyMaxHeightRatio={NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO}
-      scroll
-      testID="native-account-settings-sheet"
-      headerLeft={<NativePhoneSheetCloseButton onPress={onClose} />}
-    >
-      <View className="px-4 pb-4">{children}</View>
-    </NativePhoneSheet>
+    <AccountSheetChromeProvider>
+      <NativePhoneSheet
+        visible={visible}
+        onClose={onClose}
+        title={title}
+        animationType="slide"
+        grabber={false}
+        density={ACCOUNT_SHEET_DENSITY}
+        maxHeightRatio={NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO}
+        bodyMaxHeightRatio={NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO}
+        scroll
+        testID="native-account-settings-sheet"
+        headerLeft={
+          <NativePhoneSheetCloseButton onPress={onClose} density={ACCOUNT_SHEET_DENSITY} />
+        }
+      >
+        <View className="px-4 pb-4">{children}</View>
+      </NativePhoneSheet>
+    </AccountSheetChromeProvider>
   )
 }

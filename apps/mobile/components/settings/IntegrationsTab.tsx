@@ -17,25 +17,23 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
-  Text,
   Pressable,
   ScrollView,
   ActivityIndicator,
   Platform,
-  TextInput,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
 import {
-  Globe,
-  RefreshCw,
-  LogOut,
-  ExternalLink,
-  Loader2,
-  X,
-  Plus,
-  Search,
-  CheckCircle2,
-  AlertCircle,
+  Globe as GlobeIcon,
+  RefreshCw as RefreshCwIcon,
+  LogOut as LogOutIcon,
+  ExternalLink as ExternalLinkIcon,
+  Loader2 as Loader2Icon,
+  X as XIcon,
+  Plus as PlusIcon,
+  Search as SearchIcon,
+  CheckCircle2 as CheckCircle2Icon,
+  AlertCircle as AlertCircleIcon,
 } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
@@ -49,6 +47,35 @@ import {
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+  wrapAccountSheetIcons,
+} from './account-sheet-chrome'
+
+const {
+  Globe,
+  RefreshCw,
+  LogOut,
+  ExternalLink,
+  Loader2,
+  X,
+  Plus,
+  Search,
+  CheckCircle2,
+  AlertCircle,
+} = wrapAccountSheetIcons({
+  Globe: GlobeIcon,
+  RefreshCw: RefreshCwIcon,
+  LogOut: LogOutIcon,
+  ExternalLink: ExternalLinkIcon,
+  Loader2: Loader2Icon,
+  X: XIcon,
+  Plus: PlusIcon,
+  Search: SearchIcon,
+  CheckCircle2: CheckCircle2Icon,
+  AlertCircle: AlertCircleIcon,
+})
 
 const LOG_PREFIX = '[IntegrationsTab]'
 

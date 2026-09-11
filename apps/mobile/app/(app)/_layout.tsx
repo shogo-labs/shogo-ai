@@ -156,8 +156,6 @@ export default function AppLayout() {
     isDark,
     swipeEnabled: nativeDrawerSwipe,
     closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
-    // Home lifts to grey; Settings and other pages keep the closed canvas.
-    openCanvas: isHomePage ? undefined : nativeDrawerCanvas,
   });
   const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
 
@@ -233,7 +231,7 @@ export default function AppLayout() {
       <NativeSheetDrawerShell
         isWide={isWide}
         nativeSheetDrawer={nativeSheetDrawer}
-        canvas={nativeDrawerCanvas}
+        canvas={isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas}
         safeAreaEdges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
         sidebarWide={showSidebar ? <AppSidebar /> : null}
         sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}

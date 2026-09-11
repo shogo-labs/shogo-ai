@@ -13,9 +13,27 @@
  */
 
 import { useMemo, useState } from 'react'
-import { View, Text, Pressable, Image, Platform } from 'react-native'
-import { ArrowUpDown, ChevronDown, ChevronUp, Download, Braces } from 'lucide-react-native'
+import { View, Pressable, Image, Platform } from 'react-native'
+import {
+  ArrowUpDown as ArrowUpDownIcon,
+  ChevronDown as ChevronDownIcon,
+  ChevronUp as ChevronUpIcon,
+  Download as DownloadIcon,
+  Braces as BracesIcon,
+} from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  wrapAccountSheetIcons,
+} from '../settings/account-sheet-chrome'
+
+const { ArrowUpDown, ChevronDown, ChevronUp, Download, Braces } = wrapAccountSheetIcons({
+  ArrowUpDown: ArrowUpDownIcon,
+  ChevronDown: ChevronDownIcon,
+  ChevronUp: ChevronUpIcon,
+  Download: DownloadIcon,
+  Braces: BracesIcon,
+})
 import {
   type UsageSummaryData,
   formatNumber,

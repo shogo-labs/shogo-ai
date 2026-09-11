@@ -183,13 +183,13 @@ describe('nativePhoneDockGlassStyle', () => {
 })
 
 describe('nativePhoneSheetPanelStyle', () => {
-  test('dark sheets use Apple elevated gray on OLED black', () => {
+  test('dark sheets use Apple elevated gray without a background dimmer', () => {
     expect(NATIVE_PHONE_SHEET_CANVAS.dark).toBe('#1C1C1E')
     expect(nativePhoneSheetPanelStyle(true)).toEqual({
       backgroundColor: '#1C1C1E',
       borderColor: 'rgba(255,255,255,0.10)',
     })
     expect(nativePhoneSheetPanelStyle(false)).toBeUndefined()
-    expect(nativePhoneSheetBackdropStyle(true).backgroundColor).toBe('rgba(0,0,0,0.40)')
+    expect(nativePhoneSheetBackdropStyle(true).backgroundColor).toBe('transparent')
   })
 })

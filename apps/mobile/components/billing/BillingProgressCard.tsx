@@ -9,9 +9,15 @@
  */
 
 import type { ReactNode } from 'react'
-import { View, Text, Pressable } from 'react-native'
-import { Info } from 'lucide-react-native'
+import { View, Pressable } from 'react-native'
+import { Info as InfoIcon } from 'lucide-react-native'
 import { Card, CardContent, cn } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  accountSheetIcon,
+} from '../settings/account-sheet-chrome'
+
+const Info = accountSheetIcon(InfoIcon)
 
 interface BillingProgressCardProps {
   title: string

@@ -13,10 +13,14 @@
  */
 
 import { useState } from 'react'
-import { View, Text, TextInput, ActivityIndicator, Pressable } from 'react-native'
+import { View, ActivityIndicator, Pressable } from 'react-native'
 import { FlaskConical, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+} from '../settings/account-sheet-chrome'
 import {
   formatDollarCost,
   formatDuration,
