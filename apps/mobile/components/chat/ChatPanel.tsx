@@ -92,6 +92,7 @@ import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } 
 
 import { isPhoneLayout,
   useNativePhoneWindow } from "../../lib/native-phone-layout"
+import { canvasViewerPayload } from "../../lib/canvas-viewer"
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
@@ -4113,6 +4114,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           dualPlan: dualPlanRef.current,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           clientTurnId,
+          // Live canvas preview size (phone vs desktop). The runtime
+          // injects this as a layout hint; canvases stay responsive either way.
+          viewer: canvasViewerPayload({
+            isPhoneViewport,
+            platform: Platform.OS,
+            width: windowWidth,
+          }),
         }
         const planToSend = confirmedPlanRef.current
         if (planToSend) {
@@ -4156,6 +4164,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       enrichMessage,
       ideMode,
       ideBridge.context,
+      isPhoneViewport,
+      windowWidth,
     ]
   )
 

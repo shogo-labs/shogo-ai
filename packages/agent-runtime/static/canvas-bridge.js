@@ -33,6 +33,12 @@
   var RESPONSIVE_STYLE_ID = '__shogo-canvas-responsive'
   // Tailwind max-sm. Studio desktop iframes are wider, so they keep 2–6 col grids.
   var CANVAS_PHONE_MAX_WIDTH_PX = 639
+  var FLEX_VIEWPORT_SHELLS = [
+    '.flex.h-screen',
+    '.flex.min-h-screen',
+    '.flex.h-dvh',
+    '.flex.min-h-dvh',
+  ]
 
   function injectStyleTag(id, css) {
     if (document.getElementById(id)) return
@@ -56,6 +62,16 @@
     '  .grid > * { min-width: 0; }',
     '  .truncate { overflow: visible; text-overflow: unset; white-space: normal; }',
     '  [role="tablist"] { overflow-x: auto; flex-wrap: nowrap; }',
+    '  ' + FLEX_VIEWPORT_SHELLS.join(',\n  ') + ' {',
+    '    flex-direction: column !important;',
+    '    height: auto !important;',
+    '    min-height: 100dvh;',
+    '  }',
+    '  ' + FLEX_VIEWPORT_SHELLS.map(function (sel) { return sel + ' > :first-child' }).join(',\n  ') + ' {',
+    '    width: 100% !important;',
+    '    max-width: 100% !important;',
+    '    flex: none !important;',
+    '  }',
     '}',
   ].join('\n'))
 

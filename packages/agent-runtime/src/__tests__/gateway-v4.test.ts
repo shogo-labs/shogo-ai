@@ -13,7 +13,7 @@
  *     * Non-array channels coerced to empty list.
  *     * Local-mode SECURITY_POLICY env enables PermissionEngine.
  *   - Setter chain: setStreamFn / setLogCallback / setUserTimezone /
- *     setEvalLabel / setToolMocks / setPermissionSseCallback.
+ *     setViewerContext / setEvalLabel / setToolMocks / setPermissionSseCallback.
  *   - Public getter accessors: getHookEmitter, getSessionManager,
  *     getMCPClientManager, getPermissionEngine, getActiveMode,
  *     getAllowedModes (defaults branch + explicit branch).
@@ -163,12 +163,14 @@ describe('AgentGateway constructor + loadConfig', () => {
 // ---------------------------------------------------------------------------
 
 describe('AgentGateway setter API', () => {
-  test('setStreamFn / setLogCallback / setUserTimezone / setEvalLabel do not throw', () => {
+  test('setStreamFn / setLogCallback / setUserTimezone / setViewerContext / setEvalLabel do not throw', () => {
     const ws = makeWorkspace('set-chain')
     const gw = new AgentGateway(ws, 'p-set')
     expect(() => gw.setStreamFn(() => { throw new Error('not called') })).not.toThrow()
     expect(() => gw.setLogCallback(() => {})).not.toThrow()
     expect(() => gw.setUserTimezone('America/Los_Angeles')).not.toThrow()
+    expect(() => gw.setViewerContext({ formFactor: 'phone', platform: 'ios', width: 390 })).not.toThrow()
+    expect(() => gw.setViewerContext(undefined)).not.toThrow()
     expect(() => gw.setEvalLabel('eval-42')).not.toThrow()
     expect(() => gw.setEvalLabel(null)).not.toThrow()
   })

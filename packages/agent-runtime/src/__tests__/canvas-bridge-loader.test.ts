@@ -71,6 +71,8 @@ describe('loadCanvasBridgeSource', () => {
     expect(src).toContain('grid-cols-2')
     expect(src).toContain('grid-cols-3')
     expect(src).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))')
+    expect(src).toContain('.flex.h-screen')
+    expect(src).toContain('flex-direction: column !important')
     expect(src).toContain('.truncate')
     expect(() => new Function(src)).not.toThrow()
   })
