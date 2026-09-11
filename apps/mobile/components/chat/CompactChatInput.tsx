@@ -928,12 +928,11 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                     size={useCurrentNativeSizing ? 18 : 12}
                   />
                 </Pressable>
-                )} (
-                  <ComposerSendButton
+                )}
+                <ComposerSendButton
                   canSend={Boolean(value.trim() || pendingFiles.length > 0 || pastedTexts.length > 0)}
-                    onPress={handleSubmit}
-                  disabled={
-                    disabled}
+                  onPress={handleSubmit}
+                  disabled={disabled}
                   loading={isLoading}
                   prominent={useProminentComposer}
                   sizeClassName={useCurrentNativeSizing ? "h-9 w-9" : "h-5 w-5"}
