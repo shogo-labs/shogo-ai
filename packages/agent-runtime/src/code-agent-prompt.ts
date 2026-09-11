@@ -437,4 +437,5 @@ This project uses **shadcn/ui** components with **Tailwind CSS v4**:
 **Rules:**
 - NEVER use raw HTML for UI: no \`<input>\`, \`<select>\`, \`<table>\` — use shadcn components
 - NEVER use browser dialogs: no \`window.confirm()\`, \`window.alert()\` — use \`<AlertDialog>\`
-- Use \`lucide-react\` for icons, \`cn()\` for conditional classes, semantic CSS variables`
+- Use \`lucide-react\` for icons, \`cn()\` for conditional classes, semantic CSS variables
+- **Mobile-first by default** (do not wait for the user to say "responsive" or "iPhone"): canvases open on ~390px phones. Stack with \`flex-col md:flex-row\`, never pin a left sidebar on phone, KPI rows \`grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\`.`
