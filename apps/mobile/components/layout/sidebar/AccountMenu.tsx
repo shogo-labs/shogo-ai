@@ -17,15 +17,12 @@ import {
   ExternalLink,
   Key,
   LogOut,
-  Mail,
   Monitor,
-  Moon,
   Plus,
   Settings,
   Shield,
   Sparkles,
   Store,
-  Sun,
   User,
   Users,
   Zap,
@@ -44,27 +41,14 @@ import { usePlatformConfig } from "../../../lib/platform-config";
 import { getPlanDisplayName } from "../../../lib/billing-config";
 import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
-import { densityFor, PHONE_DENSITY } from "../../../lib/phone-density";
+import { densityFor } from "../../../lib/phone-density";
 import { isNativePlatform } from "../../../lib/native-phone-layout";
-import {
-  AccountSettingsGroup,
-  AccountSettingsRow,
-} from "./AccountSettingsGroup";
+import { AccountSettingsGroup } from "./AccountSettingsGroup";
+import { NativeAccountItems } from "./NativeAccountItems";
+import { NativeAccountPersonalGroups } from "./NativeAccountPersonalGroups";
 import { NativeAccountSettingsSection } from "./NativeAccountSettingsSection";
+import { CHANGELOG_URL, DOCS_URL, THEME_CHOICES } from "./account-theme";
 import type { AccountSettingsSheetTab } from "../../settings/account-settings-sheets";
-
-const DOCS_URL = "https://docs.shogo.ai/";
-const CHANGELOG_URL = "https://docs.shogo.ai/changelog";
-
-const THEME_CHOICES = [
-  { value: "light" as const, label: "Light", Icon: Sun },
-  { value: "dark" as const, label: "Dark", Icon: Moon },
-  { value: "system" as const, label: "System", Icon: Monitor },
-];
-
-function themeDisplayName(theme: string): string {
-  return THEME_CHOICES.find((choice) => choice.value === theme)?.label ?? "System";
-}
 
 function noopNativeSettingsTab(_tab: AccountSettingsSheetTab) {}
 
@@ -811,221 +795,6 @@ export function AccountMenu({
         </PopoverBody>
       </PopoverContent>
     </Popover>
-  );
-}
-
-function NativeAccountPersonalGroups({
-  onSignOut,
-  onNavigate,
-  isSuperAdmin,
-  localMode,
-  onClose,
-  onOpenAppearance,
-}: {
-  onSignOut: () => void;
-  onNavigate: (href: string) => void;
-  isSuperAdmin?: boolean;
-  localMode?: boolean;
-  onClose: () => void;
-  onOpenAppearance?: () => void;
-}) {
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
-  const { theme, setTheme } = useTheme();
-  const { shogoKeyConnected } = usePlatformConfig();
-  const showCreator = !localMode || !!shogoKeyConnected;
-  const density = PHONE_DENSITY;
-  const iconClass = "text-muted-foreground";
-  const iconSize = density.icon.lg;
-  const appearanceOpensSheet = !!onOpenAppearance;
-
-  return (
-    <>
-      <AccountSettingsGroup title="Theme">
-        <AccountSettingsRow
-          icon={<Monitor size={iconSize} className={iconClass} />}
-          label="Appearance"
-          accessibilityState={appearanceOpensSheet ? undefined : { expanded: appearanceOpen }}
-          trailing={
-            <Text className={cn("text-muted-foreground", density.text.body)}>
-              {themeDisplayName(theme)}
-            </Text>
-          }
-          showChevron={appearanceOpensSheet || !appearanceOpen}
-          separator={!appearanceOpensSheet && appearanceOpen}
-          onPress={() => {
-            if (onOpenAppearance) onOpenAppearance()
-            else setAppearanceOpen((open) => !open)
-          }}
-        />
-        {appearanceOpen
-          ? THEME_CHOICES.map(({ value, label, Icon }, index) => (
-              <Pressable
-                key={value}
-                onPress={() => setTheme(value)}
-                accessibilityRole="radio"
-                accessibilityLabel={label}
-                accessibilityState={{ checked: theme === value }}
-                className={cn(
-                  "flex-row items-center gap-3 px-4 py-3.5 active:bg-muted/60",
-                  density.rowMin,
-                  index < THEME_CHOICES.length - 1 && "border-b border-border",
-                )}
-              >
-                <Icon
-                  size={density.icon.md}
-                  className={
-                    theme === value ? "text-primary" : "text-muted-foreground"
-                  }
-                />
-                <Text
-                  className={cn(
-                    "flex-1",
-                    density.text.body,
-                    theme === value
-                      ? "text-primary font-medium"
-                      : "text-foreground",
-                  )}
-                >
-                  {label}
-                </Text>
-                {theme === value && (
-                  <Check size={density.icon.md} className="text-primary" />
-                )}
-              </Pressable>
-            ))
-          : null}
-      </AccountSettingsGroup>
-
-      <AccountSettingsGroup title="Resources">
-        <AccountSettingsRow
-          icon={<ExternalLink size={iconSize} className={iconClass} />}
-          label="Docs"
-          onPress={() => {
-            Linking.openURL(DOCS_URL);
-            onClose();
-          }}
-        />
-        <AccountSettingsRow
-          icon={<Sparkles size={iconSize} className={iconClass} />}
-          label="What's New"
-          separator={false}
-          onPress={() => {
-            Linking.openURL(CHANGELOG_URL);
-            onClose();
-          }}
-        />
-      </AccountSettingsGroup>
-
-      {(showCreator || isSuperAdmin) && (
-        <AccountSettingsGroup title="More">
-          {showCreator && (
-            <AccountSettingsRow
-              icon={<Store size={iconSize} className={iconClass} />}
-              label="Creator"
-              separator={!!isSuperAdmin}
-              onPress={() => {
-                onNavigate("/(app)/creator");
-                onClose();
-              }}
-            />
-          )}
-          {isSuperAdmin && (
-            <AccountSettingsRow
-              icon={<Shield size={iconSize} className="text-primary" />}
-              label="Admin"
-              accessibilityLabel="Admin panel"
-              separator={false}
-              onPress={() => {
-                onNavigate("/(admin)");
-                onClose();
-              }}
-            />
-          )}
-        </AccountSettingsGroup>
-      )}
-
-      {!localMode && (
-        <View className="mb-6">
-          <AccountSettingsGroup>
-            <AccountSettingsRow
-              icon={<LogOut size={iconSize} className={iconClass} />}
-              label="Sign Out"
-              accessibilityLabel="Sign out"
-              showChevron={false}
-              separator={false}
-              onPress={() => {
-                onSignOut();
-                onClose();
-              }}
-            />
-          </AccountSettingsGroup>
-        </View>
-      )}
-    </>
-  );
-}
-
-function NativeAccountItems({
-  user,
-  onNavigate,
-  onClose,
-  localMode,
-  showBilling,
-  onOpenProfile,
-}: {
-  user: UserMenuProps["user"];
-  onNavigate: (href: string) => void;
-  onClose: () => void;
-  localMode?: boolean;
-  showBilling: boolean;
-  onOpenProfile?: () => void;
-}) {
-  const density = PHONE_DENSITY;
-  const iconSize = density.icon.lg;
-  const showKeys = !localMode;
-  const muted = "text-muted-foreground";
-  return (
-    <>
-      {user?.email ? (
-        <AccountSettingsRow
-          icon={<Mail size={iconSize} className={muted} />}
-          label="Email"
-          trailing={
-            <Text
-              className={cn("max-w-[52%] text-right text-muted-foreground", density.text.body)}
-              numberOfLines={1}
-            >
-              {user.email}
-            </Text>
-          }
-          showChevron={false}
-          separator
-        />
-      ) : null}
-      <AccountSettingsRow
-        icon={<User size={iconSize} className={muted} />}
-        label="Profile"
-        separator={showKeys || showBilling}
-        onPress={() => {
-          if (onOpenProfile) onOpenProfile()
-          else {
-            onNavigate("/(app)/profile");
-            onClose();
-          }
-        }}
-      />
-      {showKeys ? (
-        <AccountSettingsRow
-          icon={<Key size={iconSize} className={muted} />}
-          label="API Keys"
-          separator={showBilling}
-          onPress={() => {
-            onNavigate("/(app)/api-keys");
-            onClose();
-          }}
-        />
-      ) : null}
-    </>
   );
 }
 
