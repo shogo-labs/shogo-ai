@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from "bun:test"
-import { formatBuildModelChip, MODEL_COST_LABEL, modelCostHint } from "../model-build-cost"
+import { formatBuildModelChip, MODEL_COST_LABEL, modelCostHint, modelPickerHidesCostLabels } from "../model-build-cost"
 
 describe("modelCostHint", () => {
   test("describes the chosen tier without inventing a dollar price", () => {
@@ -21,5 +21,17 @@ describe("formatBuildModelChip", () => {
   test("puts the relative cost on the Build control", () => {
     expect(formatBuildModelChip("Sonnet", "standard")).toBe("Sonnet · Standard")
     expect(formatBuildModelChip("Haiku", "economy")).toBe(`Haiku · ${MODEL_COST_LABEL.economy}`)
+  })
+})
+
+describe("modelPickerHidesCostLabels", () => {
+  test("hides cheaper / higher-cost on the native phone sheet", () => {
+    expect(modelPickerHidesCostLabels(false, "sheet")).toBe(true)
+    expect(modelPickerHidesCostLabels(true, "sheet")).toBe(true)
+  })
+
+  test("keeps web menu cost labels unless a picker asks for names only", () => {
+    expect(modelPickerHidesCostLabels(false, "menu")).toBe(false)
+    expect(modelPickerHidesCostLabels(true, "menu")).toBe(true)
   })
 })

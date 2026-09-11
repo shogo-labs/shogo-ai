@@ -9,10 +9,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
+  Keyboard,
   PanResponder,
   type GestureResponderHandlers,
 } from 'react-native'
-import { hexToRgbChannels, nativePhoneCanvas } from './native-phone-layout'
+import { hexToRgbChannels, isNativePlatform, nativePhoneCanvas } from './native-phone-layout'
 
 const OPEN_RATIO = 0.32
 const OPEN_VELOCITY = 0.7
@@ -239,6 +240,15 @@ export function snapNativeDrawer(
   })
 }
 
+/** Native sidebar opening should drop the keyboard so it cannot sit on the drawer. */
+export function nativeDrawerShouldDismissKeyboard(opening: boolean, native = isNativePlatform()): boolean {
+  return native && opening
+}
+
+export function dismissKeyboardForNativeDrawer(opening: boolean): void {
+  if (nativeDrawerShouldDismissKeyboard(opening)) Keyboard.dismiss()
+}
+
 /**
  * Shared sheet-drawer controller for the app and admin shells.
  * `overlayOpenWithoutSnap` is the narrow-web overlay path (admin): toggle
@@ -274,6 +284,7 @@ export function useNativeSheetDrawer({
   }, [drawerProgress])
 
   const openDrawer = useCallback(() => {
+    dismissKeyboardForNativeDrawer(true)
     setDrawerOpen(true)
     snapNativeDrawer(drawerProgress, true)
   }, [drawerProgress])
@@ -286,8 +297,10 @@ export function useNativeSheetDrawer({
 
   const toggleDrawer = useCallback(() => {
     if (drawerOpen) closeDrawer()
-    else if (overlayOpenWithoutSnap) setDrawerOpen(true)
-    else openDrawer()
+    else if (overlayOpenWithoutSnap) {
+      dismissKeyboardForNativeDrawer(true)
+      setDrawerOpen(true)
+    } else openDrawer()
   }, [closeDrawer, drawerOpen, openDrawer, overlayOpenWithoutSnap])
 
   const sheetSwipeHandlers = useNativeDrawerSheetSwipe({
@@ -362,6 +375,7 @@ export function useNativeDrawerSheetSwipe({
             dy: gesture.dy,
           }),
         onPanResponderGrant: () => {
+          dismissKeyboardForNativeDrawer(!isOpenRef.current)
           drawerProgress.stopAnimation()
           startProgressRef.current = currentProgressRef.current
         },
