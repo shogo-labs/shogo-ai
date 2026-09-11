@@ -298,7 +298,7 @@ export function useNativeSheetDrawer({
   isDark: boolean
   swipeEnabled: boolean
   overlayOpenWithoutSnap?: boolean
-  /** Dark closed-sheet fill. Home passes charcoal; other screens omit this. */
+  /** Dark closed-sheet fill. Home passes OLED black; other screens omit this. */
   closedCanvas?: string
   /** Dark open-sheet fill. Omit to keep the closed canvas for the whole swipe. */
   openCanvas?: string

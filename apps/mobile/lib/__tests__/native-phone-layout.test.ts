@@ -111,9 +111,9 @@ describe('nativePhoneCanvas', () => {
     expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#000000', light: '#ffffff' })
   })
 
-  test('dark home uses charcoal instead of OLED black', () => {
-    expect(NATIVE_PHONE_HOME_CANVAS).toBe('#0C0C0C')
-    expect(NATIVE_PHONE_HOME_CANVAS).not.toBe(NATIVE_PHONE_CANVAS.dark)
+  test('dark home uses OLED black', () => {
+    expect(NATIVE_PHONE_HOME_CANVAS).toBe('#000000')
+    expect(NATIVE_PHONE_HOME_CANVAS).toBe(NATIVE_PHONE_CANVAS.dark)
   })
 })
 
@@ -150,7 +150,7 @@ describe('nativePhoneDockFadeColors', () => {
     expect(nativePhoneDockFadeColors(true)[2]).toBe('rgba(0,0,0,0.94)')
     expect(nativePhoneDockFadeColors(false)[0]).toBe('rgba(255,255,255,0)')
     expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(255,255,255,0.94)')
-    expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(12,12,12,0)')
+    expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(0,0,0,0)')
     expect(NATIVE_PHONE_DOCK_COMPOSER_GAP).toBe(12)
   })
 })
