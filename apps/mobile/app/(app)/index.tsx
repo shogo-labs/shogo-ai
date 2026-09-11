@@ -108,6 +108,8 @@ function generateProjectNameFromPrompt(prompt: string): string {
 
 const LovableGradient = memo(function LovableGradient({ isDark, phone = false }: { isDark: boolean; phone?: boolean }) {
   if (Platform.OS !== 'web' || phone) {
+    // Dark phone home: no orbs. The drawer sheet already paints HOME_CANVAS.
+    if (phone && isDark) return null
     const orbs = (
       <Svg width="100%" height="100%" style={StyleSheet.absoluteFill}>
         <Defs>
@@ -124,15 +126,6 @@ const LovableGradient = memo(function LovableGradient({ isDark, phone = false }:
         <Ellipse cx="82%" cy="88%" rx="62%" ry="42%" fill="url(#orb2)" />
       </Svg>
     )
-    // Dark phone home: grey orbs on the charcoal sheet. No opaque fill, so
-    // the drawer can still lift from charcoal to medium grey when it opens.
-    if (phone && isDark) {
-      return (
-        <View style={styles.gradientLayer} pointerEvents="none">
-          {orbs}
-        </View>
-      )
-    }
     const canvas = nativePhoneCanvas(isDark);
     const baseColors: [string, string, string, string] = isDark
       ? [canvas, canvas, '#0a0a0a', canvas]

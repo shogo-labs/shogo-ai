@@ -79,11 +79,11 @@ export const NATIVE_PHONE_CARD_GAP = 12
  */
 export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
 /**
- * Dark home only: the old charcoal wash, not OLED black. Search, files, and
- * other screens keep `NATIVE_PHONE_CANVAS.dark`. The moving drawer sheet
- * stays on this closed canvas so swipe frames do not flash a second fill.
+ * Dark home sheet fill. Same OLED black as the rest of native chrome; kept as
+ * its own token so the home drawer can stay on a static canvas without
+ * duplicating the hex.
  */
-export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
+export const NATIVE_PHONE_HOME_CANVAS = NATIVE_PHONE_CANVAS.dark
 
 /**
  * ChatGPT iOS icon ink, sampled from App Store screenshots.

@@ -126,7 +126,7 @@ describe('nativeDrawerSheetCanvas', () => {
     expect(nativeDrawerSheetCanvas(1, true)).toBe('#000000')
   })
 
-  test('dark home stays charcoal instead of lifting to grey', () => {
+  test('dark home stays OLED black instead of lifting to grey', () => {
     expect(nativeDrawerSheetCanvas(0, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
     expect(nativeDrawerSheetCanvas(0.5, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
     expect(nativeDrawerSheetCanvas(1, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
@@ -184,7 +184,7 @@ describe('native drawer sheet layers', () => {
     expect(style).not.toHaveProperty('transform')
   })
 
-  test('home charcoal stays a single static canvas', () => {
+  test('home black stays a single static canvas', () => {
     expect(nativeDrawerSheetEnds(true, NATIVE_PHONE_HOME_CANVAS)).toEqual({
       closed: NATIVE_PHONE_HOME_CANVAS,
       open: NATIVE_PHONE_HOME_CANVAS,
