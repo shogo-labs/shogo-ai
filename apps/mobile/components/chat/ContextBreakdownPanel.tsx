@@ -61,7 +61,7 @@ export function ContextBreakdownPanel({ breakdown, inputTokens, contextWindowTok
   const visibleSegments = categories.filter((cat) => cat.estTokens > 0)
 
   return (
-    <View className="w-64 gap-3 p-3">
+    <View className="w-full gap-3 p-3">
       <View className="flex-row items-baseline justify-between gap-2">
         <Text className="text-sm font-semibold text-foreground">{percentage.toFixed(0)}% Full</Text>
         <Text className="text-xs text-muted-foreground">
