@@ -3031,6 +3031,17 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     authedWorkspaceId = workspaceId
   }
 
+  // Region-pin: the agent-runtime pod this proxies to is ephemeral,
+  // pod-local state (`.shogo/plans`, worktrees, quick-actions, etc.) — not
+  // durable cross-region data. Chat writes/reads are already pinned to the
+  // project's home region (see `pinChatToHomeRegion` call sites below); this
+  // route was the one gap: an unpinned GET landing in a peer region resolves
+  // (or cold-spawns) a *different* pod there, so a plan/file created via a
+  // home-region chat turn 404s when the Plans panel's poll lands elsewhere.
+  // Reuses the same helper — it only needs `projectId`, nothing chat-specific.
+  const agentProxyPinned = await pinChatToHomeRegion(c, projectId)
+  if (agentProxyPinned) return agentProxyPinned
+
   // Detect chat-stream calls so we can bracket them with a billing session.
   // The runtime accumulates many AI proxy calls per turn; without a session
   // each LLM round-trip would emit its own `ai_proxy_completion` row.
