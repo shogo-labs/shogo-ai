@@ -36,6 +36,9 @@ export interface CanvasErrorContext {
   recentActions?: CanvasErrorAction[]
 }
 
+/** How long to wait for `canvas-ready` before showing the timeout fallback. */
+const CANVAS_READY_TIMEOUT_MS = 15_000
+
 interface CanvasWebViewProps {
   agentUrl: string | null
   /** Direct runtime URL for the canvas iframe. When set, the iframe loads from
@@ -52,6 +55,9 @@ interface CanvasWebViewProps {
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
   /** Incremented externally to force the iframe to reload. */
   refreshKey?: number
+  /** Called when the canvas-ready watchdog fires. The `action` indicates
+   *  which fallback button the user clicked. */
+  onCanvasTimeout?: (action: 'retry' | 'switch-to-chat' | 'disable-canvas') => void
 }
 
 function postCanvasError(
@@ -74,7 +80,7 @@ function postCanvasError(
 // CanvasWebView — public component
 // ---------------------------------------------------------------------------
 
-export function CanvasWebView({ agentUrl, canvasBaseUrl, previewUrl, onCanvasError, onCanvasCapabilities, refreshKey }: CanvasWebViewProps) {
+export function CanvasWebView({ agentUrl, canvasBaseUrl, previewUrl, onCanvasError, onCanvasCapabilities, refreshKey, onCanvasTimeout }: CanvasWebViewProps) {
   const canvasUrl = canvasDocumentUrl({
     canvasBaseUrl,
     agentUrl,
@@ -104,7 +110,7 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, previewUrl, onCanvasErr
   }
 
   if (Platform.OS === 'web') {
-    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
+    return <CanvasIframe key={refreshKey} url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} onCanvasTimeout={onCanvasTimeout} />
   }
 
   return <CanvasNativeWebView key={refreshKey} url={canvasUrl} agentUrl={agentUrl} themeMessage={themeMessage} onCanvasError={onCanvasError} onCanvasCapabilities={onCanvasCapabilities} />
@@ -130,14 +136,17 @@ interface BridgeProps {
     context?: CanvasErrorContext,
   ) => void
   onCanvasCapabilities?: (caps: CanvasCapabilities) => void
+  onCanvasTimeout?: (action: 'retry' | 'switch-to-chat' | 'disable-canvas') => void
 }
 
-function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapabilities }: BridgeProps) {
+function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapabilities, onCanvasTimeout }: BridgeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const readyRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ phase: string; message: string } | null>(null)
+  const [timedOut, setTimedOut] = useState(false)
   const [refreshCount, setRefreshCount] = useState(0)
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const sendToIframe = useCallback((msg: unknown) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*')
@@ -155,7 +164,24 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
   useEffect(() => {
     setLoading(true)
     setError(null)
+    setTimedOut(false)
   }, [refreshCount])
+
+  // Canvas-ready watchdog: if the iframe doesn't post `canvas-ready` within
+  // CANVAS_READY_TIMEOUT_MS, show a timeout fallback so the user isn't stuck
+  // on an eternal "Loading preview…" spinner.
+  useEffect(() => {
+    if (readyRef.current || error || timedOut) return
+    watchdogRef.current = setTimeout(() => {
+      if (!readyRef.current) {
+        setTimedOut(true)
+        setLoading(false)
+      }
+    }, CANVAS_READY_TIMEOUT_MS)
+    return () => {
+      if (watchdogRef.current) clearTimeout(watchdogRef.current)
+    }
+  }, [refreshCount, error, timedOut])
 
   // Listen for messages from the iframe
   useEffect(() => {
@@ -165,6 +191,8 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 
       if (msg.type === 'canvas-ready') {
         readyRef.current = true
+        if (watchdogRef.current) clearTimeout(watchdogRef.current)
+        setTimedOut(false)
         setLoading(false)
         if (themeMessage) sendToIframe(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
@@ -196,8 +224,10 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 
   const handleRetry = useCallback(() => {
     setError(null)
+    setTimedOut(false)
     setLoading(true)
     readyRef.current = false
+    if (watchdogRef.current) clearTimeout(watchdogRef.current)
     setRefreshCount((c) => c + 1)
   }, [])
 
@@ -223,20 +253,58 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
           </TouchableOpacity>
         </View>
       )}
-      <iframe
-        ref={iframeRef}
-        src={`${url}${url.includes('?') ? '&' : '?'}_v=${refreshCount}`}
-        data-testid="canvas-preview-iframe"
-        title="Project preview"
-        style={{
-          width: '100%',
-          height: '100%',
-          border: 'none',
-          backgroundColor: 'transparent',
-          opacity: loading || error ? 0 : 1,
-        } as any}
-        allow="clipboard-write; clipboard-read; microphone; camera; display-capture; autoplay; fullscreen; geolocation; midi; encrypted-media; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
-      />
+      {timedOut && (
+        <View style={styles.errorOverlay}>
+          <Text style={styles.errorIcon}>⏱️</Text>
+          <Text style={styles.errorTitle}>Canvas is not responding</Text>
+          <Text style={styles.errorMessage} numberOfLines={3}>
+            The preview did not load within {CANVAS_READY_TIMEOUT_MS / 1000} seconds.
+          </Text>
+          <View style={styles.timeoutActions}>
+            <TouchableOpacity
+              style={styles.retryButton}
+              onPress={() => {
+                onCanvasTimeout?.('retry')
+                handleRetry()
+              }}
+            >
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </TouchableOpacity>
+            {onCanvasTimeout && (
+              <>
+                <TouchableOpacity
+                  style={styles.timeoutSecondaryButton}
+                  onPress={() => onCanvasTimeout('switch-to-chat')}
+                >
+                  <Text style={styles.timeoutSecondaryButtonText}>Switch to Chat</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.timeoutSecondaryButton}
+                  onPress={() => onCanvasTimeout('disable-canvas')}
+                >
+                  <Text style={styles.timeoutSecondaryButtonText}>Disable Canvas</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      )}
+      {!timedOut && (
+        <iframe
+          ref={iframeRef}
+          src={`${url}${url.includes('?') ? '&' : '?'}_v=${refreshCount}`}
+          data-testid="canvas-preview-iframe"
+          title="Project preview"
+          style={{
+            width: '100%',
+            height: '100%',
+            border: 'none',
+            backgroundColor: 'transparent',
+            opacity: loading || error ? 0 : 1,
+          } as any}
+          allow="clipboard-write; clipboard-read; microphone; camera; display-capture; autoplay; fullscreen; geolocation; midi; encrypted-media; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
+        />
+      )}
     </View>
   )
 }
@@ -475,5 +543,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#fff',
+  },
+  timeoutActions: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  timeoutSecondaryButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 6,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#666',
+  },
+  timeoutSecondaryButtonText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#888',
   },
 })

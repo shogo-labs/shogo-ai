@@ -536,6 +536,16 @@ export default observer(function ProjectLayout() {
     setCanvasThemeSupported(caps.supportsTheme)
   }, [])
 
+  const handleCanvasTimeout = useCallback((action: 'retry' | 'switch-to-chat' | 'disable-canvas') => {
+    if (action === 'switch-to-chat') {
+      setPreviewTab('chat-fullscreen')
+    } else if (action === 'disable-canvas') {
+      void updateProjectSettings({ activeMode: 'none', canvasEnabled: false })
+      setPreviewTab('chat-fullscreen')
+    }
+    // 'retry' is handled internally by CanvasWebView
+  }, [updateProjectSettings])
+
   // ── External preview (folder-linked / `workingMode === 'external'`) ─
   //
   // For Open-Folder projects we expose a desktop-only Electron
@@ -2846,6 +2856,7 @@ export default observer(function ProjectLayout() {
       iframeRefreshKey={iframeRefreshKey}
       onCanvasCapabilities={handleCanvasCapabilities}
       onCanvasError={handleCanvasError}
+      onCanvasTimeout={handleCanvasTimeout}
     />
   ) : null
 
@@ -4111,6 +4122,7 @@ function CanvasPanel({
   iframeRefreshKey = 0,
   onCanvasCapabilities,
   onCanvasError,
+  onCanvasTimeout,
 }: {
   agentUrl: string | null
   canvasBaseUrl?: string | null
@@ -4127,6 +4139,7 @@ function CanvasPanel({
       recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
     },
   ) => void
+  onCanvasTimeout?: (action: 'retry' | 'switch-to-chat' | 'disable-canvas') => void
 }) {
   // Phase-level visibility into what the runtime is doing while we wait
   // (installing deps, building, starting the API server, …).
@@ -4325,6 +4338,7 @@ function CanvasPanel({
         refreshKey={iframeRefreshKey}
         onCanvasCapabilities={onCanvasCapabilities}
         onCanvasError={onCanvasError}
+        onCanvasTimeout={onCanvasTimeout}
       />
     </View>
   )
