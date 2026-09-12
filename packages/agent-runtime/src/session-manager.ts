@@ -42,6 +42,8 @@ export interface SerializedSession {
   modelProvider?: string
   /** Maximum Auto tier permitted after a plan/entitlement rejection. */
   autoTierCeiling?: 'economy' | 'standard' | 'premium'
+  /** Timestamp of the last Auto entitlement downgrade. */
+  autoTierCeilingUpdatedAt?: number
   metadata: Record<string, any>
 }
 
@@ -109,6 +111,8 @@ export interface ManagedSession {
   modelProvider?: string
   /** Maximum Auto tier permitted after a plan/entitlement rejection. */
   autoTierCeiling?: 'economy' | 'standard' | 'premium'
+  /** Timestamp of the last Auto entitlement downgrade. */
+  autoTierCeilingUpdatedAt?: number
   stopRequested: boolean
   metadata: Record<string, any>
 }
@@ -306,8 +310,10 @@ export class SessionManager {
   setAutoTierCeiling(id: string, ceiling: ManagedSession['autoTierCeiling']): void {
     const session = this.sessions.get(id)
     if (!session || !ceiling) return
+    const now = Date.now()
     session.autoTierCeiling = ceiling
-    session.lastActivityAt = Date.now()
+    session.autoTierCeilingUpdatedAt = now
+    session.lastActivityAt = now
     this.persistSession(session)
   }
 

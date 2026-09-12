@@ -16,6 +16,13 @@ mock.module('../services/public-models.service', () => ({
       : null,
 }))
 
+mock.module('../services/model-registry.service', () => ({
+  getMergedModelEntrySync: (id: string) =>
+    id === 'local-premium'
+      ? { id, provider: 'local', tier: 'premium' }
+      : undefined,
+}))
+
 mock.module('../lib/prisma', () => ({
   prisma: {
     platformSetting: {
@@ -28,6 +35,7 @@ mock.module('../lib/prisma', () => ({
 const {
   resolveEffectiveAgentModelDefaults,
   resolveAgentModelEnv,
+  isModelAccessibleForWorkspace,
   serializeAutoTierMapEnv,
 } = await import('../lib/runtime/agent-model-defaults')
 const {
@@ -75,6 +83,10 @@ describe('agent model defaults', () => {
     expect(defaults.basic).toBe('mimo-v2.5')
     expect(defaults.advanced).toBe('mimo-v2.5')
     expect(defaults.autoTiers.premium).toEqual({ id: 'mimo-v2.5', provider: 'custom' })
+  })
+
+  test('keeps DB-defined local models accessible regardless of their tier', async () => {
+    expect(await isModelAccessibleForWorkspace('ws-free', 'local-premium')).toBe(true)
   })
 
   test('serializes all configured Auto tiers for the runtime gateway', () => {

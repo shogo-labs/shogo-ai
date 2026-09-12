@@ -49,4 +49,20 @@ describe('Auto entitlement downgrade', () => {
       'billing',
     )).toBeNull()
   })
+
+  test('skips duplicate lower-tier models when finding a fallback', () => {
+    expect(resolveAutoDowngrade(
+      'premium-model',
+      'premium',
+      {
+        economy: 'economy-model',
+        standard: 'premium-model',
+        premium: 'premium-model',
+      },
+      'billing',
+    )).toEqual({
+      tier: 'economy',
+      model: 'economy-model',
+    })
+  })
 })

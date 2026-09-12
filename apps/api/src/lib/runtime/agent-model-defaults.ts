@@ -59,7 +59,14 @@ function resolveModelEntry(raw: string): AgentModelEntry {
   const trimmed = raw.trim()
   const publicModel = resolvePublicModelSync(trimmed)
   const id = publicModel?.backingModelId?.trim() || trimmed
-  return { id, provider: inferProviderFromModel(id, 'custom') }
+  // DB-defined entries are authoritative for provider routing. In particular,
+  // a custom model can be backed by a local or OpenRouter provider even when
+  // its id does not have a recognizable static-catalog prefix.
+  const mergedEntry = getMergedModelEntrySync(id)
+  return {
+    id,
+    provider: mergedEntry?.provider ?? inferProviderFromModel(id, 'custom'),
+  }
 }
 
 /**
