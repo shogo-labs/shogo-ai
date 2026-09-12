@@ -14,11 +14,11 @@
  */
 import { getAutoTierOverrides, inferProviderFromModel } from '@shogo/model-catalog'
 import { resolvePublicModelSync } from '../../services/public-models.service'
-
-interface AutoTierEntry {
-  id: string
-  provider?: string
-}
+import {
+  serializeAutoTierMapEnv,
+  type AgentModelEntry,
+  type AgentModelTier,
+} from './agent-model-defaults'
 
 /**
  * Build the `AGENT_AUTO_TIER_MAP` JSON string from the in-memory admin
@@ -28,10 +28,10 @@ interface AutoTierEntry {
  */
 export function buildAutoTierMapEnv(): string | undefined {
   const overrides = getAutoTierOverrides()
-  const out: Record<'economy' | 'standard' | 'premium', AutoTierEntry> = {} as any
+  const out: Partial<Record<AgentModelTier, AgentModelEntry>> = {}
   let any = false
 
-  for (const tier of ['economy', 'standard', 'premium'] as const) {
+  for (const tier of ['economy', 'standard', 'premium'] as AgentModelTier[]) {
     const raw = overrides[tier]?.trim()
     if (!raw) continue
     // Resolve a public alias (e.g. `hoshi-1.0`) to its internal backing id so
@@ -42,5 +42,5 @@ export function buildAutoTierMapEnv(): string | undefined {
     any = true
   }
 
-  return any ? JSON.stringify(out) : undefined
+  return any ? serializeAutoTierMapEnv(out) : undefined
 }

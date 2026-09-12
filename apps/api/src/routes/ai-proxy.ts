@@ -2534,6 +2534,25 @@ export function aiProxyRoutes() {
       void wipeCloudKey('AI proxy Anthropic messages got 401 from Shogo Cloud')
     }
 
+    // Hard errors (billing, auth, invalid request, etc.) come back from Shogo
+    // Cloud as a single plain-JSON body, NOT an SSE stream — even when the
+    // client asked for `stream: true`. Must be handled BEFORE the `isStream`
+    // branch below, mirroring the direct-Anthropic path (`forwardAnthropicNative`).
+    // Feeding this body into `wrapSseForErrorVisibility` would never observe a
+    // `data: ...message_stop|error` terminal line, so the wrapper concludes the
+    // stream was truncated mid-flight and injects a *retryable*
+    // `upstream_truncated` marker — masking a permanent error (e.g. a 403
+    // billing_error) as a transient connectivity blip. The agent loop trusts
+    // that marker as authoritative and retries forever, which surfaces to the
+    // user as an endless "Back online — resuming…" loop that never completes.
+    if (!response.ok) {
+      const errorBody = await response.text()
+      return new Response(errorBody, {
+        status: response.status,
+        headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
+      })
+    }
+
     if (isStream) {
       if (!response.body) {
         return c.json({ type: 'error', error: { type: 'api_error', message: 'Cloud proxy returned no stream body' } }, 502)

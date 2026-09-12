@@ -8,8 +8,7 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
-import { getAgentModeOverrides } from '@shogo/model-catalog'
-import { buildAutoTierMapEnv } from './auto-tier-env'
+import { resolveAgentModelEnv } from './agent-model-defaults'
 import { INSTANCE_SIZES } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
@@ -264,15 +263,10 @@ export async function buildProjectEnv(
     env.SHOGO_PUBLIC_API_URL = process.env.SHOGO_PUBLIC_API_URL
   }
 
-  // Inject admin-configured agent model overrides so the gateway resolves correctly
-  const modelOverrides = getAgentModeOverrides()
-  if (modelOverrides.basic) env.AGENT_BASIC_MODEL = modelOverrides.basic
-  if (modelOverrides.advanced) env.AGENT_ADVANCED_MODEL = modelOverrides.advanced
-
-  // Inject admin-configured Auto-mode tier overrides (public aliases resolved
-  // to backing model ids) so the spawn router can route Auto to e.g. Hoshi.
-  const autoTierMapEnv = buildAutoTierMapEnv()
-  if (autoTierMapEnv) env.AGENT_AUTO_TIER_MAP = autoTierMapEnv
+  // Inject cloud-authoritative model defaults when this API is forwarding to
+  // Shogo Cloud; otherwise resolve the local platform settings with the same
+  // entitlement guard.
+  Object.assign(env, await resolveAgentModelEnv(env.WORKSPACE_ID || 'local-dev'))
 
   // Super-admin sandbox-exec override (see sandbox-exec-setting.ts). `null` = no
   // override, leave SANDBOX_EXEC_ENABLED unset so the runtime falls back to its

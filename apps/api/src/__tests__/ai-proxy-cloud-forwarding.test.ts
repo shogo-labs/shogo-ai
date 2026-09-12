@@ -226,6 +226,50 @@ describe('AI proxy Shogo Cloud forwarding', () => {
     expect(res.headers.get('X-Proxy-Provider')).toBe('shogo-cloud')
     expect(await res.text()).toContain('message_start')
   })
+
+  test('surfaces a Shogo Cloud billing error for a streaming request as-is, without the SSE error-visibility wrapper misclassifying it as a retryable truncated stream', async () => {
+    // Regression test: Shogo Cloud returns hard errors (billing, auth, etc.)
+    // as a single plain-JSON body with a non-2xx status, even when the client
+    // requested `stream: true` — it never opens an SSE stream at all. Piping
+    // that body through `wrapSseForErrorVisibility` (which assumes a real SSE
+    // stream) would never see a `data: ...message_stop|error` terminal line,
+    // so it would conclude the "stream" was truncated mid-flight and inject a
+    // synthetic *retryable* `upstream_truncated` marker — masking the real,
+    // permanent billing_error as a transient connectivity blip and sending
+    // the agent-runtime's retry loop into an endless "reconnecting" spin.
+    const billingErrorBody = JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'billing_error',
+        message: "Model 'claude-sonnet-4-6' requires a Pro or higher subscription.",
+      },
+    })
+    nextFetchResponses.push(() => new Response(billingErrorBody, {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': TOKEN,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(403)
+    const text = await res.text()
+    expect(text).toBe(billingErrorBody)
+    expect(text).not.toContain('upstream_truncated')
+    expect(text).not.toContain('shogo:retryable=true')
+  })
 })
 
 afterAll(() => {
