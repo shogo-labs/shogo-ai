@@ -86,7 +86,12 @@ import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes } from './routes/api-keys'
 import { cliAuthRoutes } from './routes/cli-auth'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
-import { fetchCloudVisibleModels } from './lib/federated-upstream'
+import {
+  fetchCloudVisibleModels,
+  _resetAgentModelDefaultsCache,
+  _resetUpstreamCredentialCache,
+} from './lib/federated-upstream'
+import { agentModelDefaultsRoute } from './lib/runtime/agent-model-defaults-route'
 import {
   readVisibleModelsConfig,
   writeVisibleModelsConfig,
@@ -950,6 +955,12 @@ app.get('/api/platform/visible-models', async (c) => {
   }
 })
 
+// GET /api/platform/agent-model-defaults — cloud-authoritative model defaults
+// for local instances connected with a Shogo device key. The response is
+// workspace-scoped and already capped to the key holder's plan, so a local
+// Auto router cannot select a model that this cloud workspace will reject.
+app.get('/api/platform/agent-model-defaults', agentModelDefaultsRoute)
+
 // ── Local mode: folder / cloud-project pickers ──────────────────────────────
 if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // External / IDE-style folder projects (see apps/api/src/routes/local-projects.ts).
@@ -1310,6 +1321,8 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       ])
 
       process.env.SHOGO_API_KEY = body.key
+      _resetUpstreamCredentialCache()
+      _resetAgentModelDefaultsCache()
 
       // (Re)start instance tunnel with the new key
       import('./lib/instance-tunnel').then(({ stopInstanceTunnel, startInstanceTunnel }) => {
@@ -1331,6 +1344,8 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
         localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
       ])
       delete process.env.SHOGO_API_KEY
+      _resetUpstreamCredentialCache()
+      _resetAgentModelDefaultsCache()
 
       import('./lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
         stopInstanceTunnel()

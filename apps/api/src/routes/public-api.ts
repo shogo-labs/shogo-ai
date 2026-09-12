@@ -34,7 +34,6 @@ import {
 } from '../services/public-models.service'
 import {
   resolveModel,
-  resolveModelTier,
   resolveModelApiKey,
   resolveModelSupportsAudioInput,
   recordUsage,
@@ -44,8 +43,8 @@ import {
   proxyAnthropicStream,
   proxyAnthropicNonStream,
   type ChatCompletionRequest,
-  type ModelConfig,
 } from './ai-proxy'
+import { isModelAccessibleForWorkspace } from '../lib/runtime/agent-model-defaults'
 
 const isLocalDev = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -228,17 +227,11 @@ async function checkBalance(
 async function checkTier(
   c: Context,
   payload: ProxyTokenPayload,
-  modelConfig: ModelConfig,
   backingId: string,
   publicId: string,
 ): Promise<Response | null> {
   if (isLocalDev) return null
-  if (modelConfig.provider === 'local' || modelConfig.provider === 'openrouter') {
-    return null
-  }
-  const tier = resolveModelTier(backingId)
-  if (tier === 'economy') return null
-  if (await billingService.hasAdvancedModelAccess(payload.workspaceId)) return null
+  if (await isModelAccessibleForWorkspace(payload.workspaceId, backingId)) return null
   return c.json(
     {
       error: {
@@ -329,7 +322,7 @@ export function publicApiRoutes() {
       )
     }
 
-    const tierError = await checkTier(c, payload, modelConfig, backingId, publicId)
+    const tierError = await checkTier(c, payload, backingId, publicId)
     if (tierError) return tierError
 
     // Mirror the internal `/api/ai/v1/chat/completions` guard: reject
@@ -502,7 +495,7 @@ export function publicApiRoutes() {
       )
     }
 
-    const tierError = await checkTier(c, payload, modelConfig, backingId, publicId)
+    const tierError = await checkTier(c, payload, backingId, publicId)
     if (tierError) return tierError
 
     const apiKey = resolveModelApiKey(modelConfig)

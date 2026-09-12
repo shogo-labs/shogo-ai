@@ -41,6 +41,7 @@ import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
+import { resolveAgentModelEnv } from './agent-model-defaults'
 import {
   isProjectCloudLinked,
   isCloudSyncActive,
@@ -2596,6 +2597,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         }
 
         runtimeEnv.WORKSPACE_ID = workspaceId
+        // The desktop spawn path assembles its env inline, so explicitly add
+        // the same cloud-authoritative model defaults used by the shared
+        // project/workspace env builders.
+        Object.assign(runtimeEnv, await resolveAgentModelEnv(workspaceId))
 
         // Tell the runtime which Composio scope to use for OAuth user IDs.
         // Defaults to 'workspace' (the new default) for any project where

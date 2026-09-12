@@ -174,6 +174,29 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+type AutoTierCeiling = 'economy' | 'standard' | 'premium'
+
+const AUTO_TIER_ORDER: AutoTierCeiling[] = ['economy', 'standard', 'premium']
+
+function lowerAutoTier(tier: AutoTierCeiling): AutoTierCeiling | null {
+  const index = AUTO_TIER_ORDER.indexOf(tier)
+  return index > 0 ? AUTO_TIER_ORDER[index - 1] : null
+}
+
+export function resolveAutoDowngrade(
+  currentModel: string,
+  selectedTier: AutoTierCeiling,
+  autoTiers: Record<AutoTierCeiling, string>,
+  reason: string,
+): { tier: AutoTierCeiling; model: string } | null {
+  if (reason !== 'billing' && reason !== 'auth') return null
+
+  const fallbackTier = lowerAutoTier(selectedTier)
+  const fallbackModel = fallbackTier ? autoTiers[fallbackTier] : undefined
+  if (!fallbackTier || !fallbackModel || fallbackModel === currentModel) return null
+  return { tier: fallbackTier, model: fallbackModel }
+}
+
 /**
  * Resolve UI-facing model aliases (basic/advanced) to concrete model IDs
  * so pi-ai can find them in its model registry and pick the correct API.
@@ -1911,10 +1934,14 @@ export class AgentGateway {
 
     let provider: string
     let modelId: string
+    let routingDecision: ReturnType<typeof selectModelForSpawn> | undefined
+    let autoTiers: ReturnType<typeof buildAutoTierMap> | undefined
+    let autoProviderHints: Record<string, string> = {}
+    let autoSelectedTier: AutoTierCeiling | undefined
 
     if (autoRouting) {
-      const autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
-      const providerHints = autoTierProviderHints(this.autoTierOverride)
+      autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
+      autoProviderHints = autoTierProviderHints(this.autoTierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -1922,15 +1949,22 @@ export class AgentGateway {
         toolNames: [],
         contextTokens: estimatedTokens,
       }
-      const routingDecision = selectModelForSpawn(classInput, {
-        ceilingModel: autoTiers.premium,
+      const ceilingTier = session.autoTierCeiling ?? 'premium'
+      routingDecision = selectModelForSpawn(classInput, {
+        ceilingModel: autoTiers[ceilingTier],
         availableModels: autoTiers,
       })
       modelId = routingDecision.selectedModel
+      autoSelectedTier =
+        routingDecision.selectedModel === autoTiers.premium
+          ? 'premium'
+          : routingDecision.selectedModel === autoTiers.standard
+            ? 'standard'
+            : 'economy'
       // Prefer the admin-supplied provider hint for the routed model (set when
       // the tier resolves to a DB/custom-backed model whose provider can't be
       // inferred from the id, e.g. Hoshi); otherwise infer from the id.
-      provider = providerHints[modelId] ?? inferProviderFromModel(modelId, this.config.model.provider)
+      provider = autoProviderHints[modelId] ?? inferProviderFromModel(modelId, this.config.model.provider)
       console.log(`${this.logPrefix} ${formatRoutingLog(routingDecision, prompt)}`)
       if (uiWriter) {
         uiWriter.write({ type: 'data-routing-decision', data: routingDecision })
@@ -3110,6 +3144,59 @@ export class AgentGateway {
       }
 
       let result = await runAgentLoop(loopOptions)
+
+      // Defense in depth for stale cloud configuration or a plan change that
+      // happens after a runtime was spawned. Auto must not retry the same
+      // forbidden model forever: lower the session ceiling once and re-issue
+      // the turn on the next accessible tier.
+      if (autoRouting && routingDecision && autoTiers && result.error) {
+        const failure = classifyRetryability({ message: result.error.message })
+        if (failure.reason === 'billing' || failure.reason === 'auth') {
+          const configuredCeiling = session.autoTierCeiling ?? 'premium'
+          const fallback = resolveAutoDowngrade(
+            modelId,
+            autoSelectedTier ?? configuredCeiling,
+            autoTiers,
+            failure.reason,
+          )
+
+          if (fallback) {
+            this.sessionManager.setAutoTierCeiling(sessionId, fallback.tier)
+            const fallbackProvider =
+              autoProviderHints[fallback.model] ??
+              inferProviderFromModel(fallback.model, this.config.model.provider)
+            console.warn(
+              `${this.logPrefix} Auto model rejected (${failure.reason}); ` +
+              `downgrading ${modelId} -> ${fallback.model} for session ${sessionId}`,
+            )
+            if (uiWriter) {
+              uiWriter.write({
+                type: 'data-routing-fallback',
+                data: {
+                  fromModel: modelId,
+                  toModel: fallback.model,
+                  reason: failure.reason,
+                },
+              } as any)
+            }
+
+            const failedResult = result
+            result = await runAgentLoop({
+              ...loopOptions,
+              provider: fallbackProvider,
+              model: fallback.model,
+            })
+            // Preserve usage from the rejected call for billing/reporting,
+            // while keeping only the successful retry's messages in history.
+            result.inputTokens += failedResult.inputTokens
+            result.outputTokens += failedResult.outputTokens
+            result.cacheReadTokens += failedResult.cacheReadTokens
+            result.cacheWriteTokens += failedResult.cacheWriteTokens
+            result.iterations += failedResult.iterations
+            result.toolCalls = [...failedResult.toolCalls, ...result.toolCalls]
+          }
+        }
+      }
 
       // Auto-continue across the iteration ceiling (ported from teammate-loop's
       // MAX_TEAMMATE_CONTINUATIONS). A long task that exhausts maxIterations

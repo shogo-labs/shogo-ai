@@ -40,6 +40,8 @@ export interface SerializedSession {
    *  Persisted so a reloaded session keeps native routing; older sessions
    *  simply lack it and fall back to id-based inference. */
   modelProvider?: string
+  /** Maximum Auto tier permitted after a plan/entitlement rejection. */
+  autoTierCeiling?: 'economy' | 'standard' | 'premium'
   metadata: Record<string, any>
 }
 
@@ -105,6 +107,8 @@ export interface ManagedSession {
   modelOverride?: string
   /** Native provider hint paired with `modelOverride` (see SerializedSession). */
   modelProvider?: string
+  /** Maximum Auto tier permitted after a plan/entitlement rejection. */
+  autoTierCeiling?: 'economy' | 'standard' | 'premium'
   stopRequested: boolean
   metadata: Record<string, any>
 }
@@ -295,6 +299,15 @@ export class SessionManager {
     const session = this.sessions.get(id)
     if (!session) return
     session.metadata = { ...session.metadata, ...patch }
+    this.persistSession(session)
+  }
+
+  /** Persist the maximum Auto tier allowed for a session after a rejection. */
+  setAutoTierCeiling(id: string, ceiling: ManagedSession['autoTierCeiling']): void {
+    const session = this.sessions.get(id)
+    if (!session || !ceiling) return
+    session.autoTierCeiling = ceiling
+    session.lastActivityAt = Date.now()
     this.persistSession(session)
   }
 

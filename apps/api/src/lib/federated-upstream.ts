@@ -36,9 +36,14 @@ import { getShogoCloudUrl } from './cloud-urls'
 
 const CREDENTIAL_TTL_MS = 30_000
 const IDENTITY_TTL_MS = 5 * 60_000
+const AGENT_MODEL_DEFAULTS_TTL_MS = 5 * 60_000
 let cachedCredential: { value: string | null; expiresAt: number } | null = null
 let cachedCloudWorkspaceId: { value: string | null; expiresAt: number } | null = null
 let cachedCloudIdentity: { value: { userId: string; workspaceId: string } | null; expiresAt: number } | null = null
+let cachedAgentModelDefaults: {
+  value: CloudAgentModelDefaults
+  expiresAt: number
+} | null = null
 
 /**
  * Resolve the cloud credential local mode uses. Reads `process.env`
@@ -74,6 +79,7 @@ export function _resetUpstreamCredentialCache(): void {
   cachedCredential = null
   cachedCloudWorkspaceId = null
   cachedCloudIdentity = null
+  cachedAgentModelDefaults = null
 }
 
 /** Read + parse `localConfig.SHOGO_KEY_INFO`. Returns null when unset/malformed. */
@@ -451,9 +457,31 @@ export interface CloudVisibleModels {
 
 let cachedVisibleModels: { value: CloudVisibleModels; expiresAt: number } | null = null
 
+export interface CloudAgentModelEntry {
+  id: string
+  provider?: string
+}
+
+export interface CloudAgentModelDefaults {
+  basic: string
+  advanced: string
+  defaultMode: string | null
+  autoTiers: {
+    economy: CloudAgentModelEntry
+    standard: CloudAgentModelEntry
+    premium: CloudAgentModelEntry
+  }
+  hasAdvancedModelAccess: boolean
+}
+
 /** Test-only: drop the visible-models cache. */
 export function _resetVisibleModelsCache(): void {
   cachedVisibleModels = null
+}
+
+/** Test-only: drop the cloud agent-model defaults cache. */
+export function _resetAgentModelDefaultsCache(): void {
+  cachedAgentModelDefaults = null
 }
 
 /**
@@ -513,6 +541,75 @@ export async function fetchCloudVisibleModels(): Promise<CloudVisibleModels | nu
 
   if (value) {
     cachedVisibleModels = { value, expiresAt: now + VISIBLE_MODELS_TTL_MS }
+  }
+  return value
+}
+
+/**
+ * Pull the connected cloud's entitlement-aware agent model defaults.
+ *
+ * This is intentionally separate from visible-models: the visible catalog is
+ * not sufficient to determine whether a model is usable by this workspace's
+ * plan, and Auto needs the cloud's configured tier map rather than the local
+ * package defaults.
+ */
+export async function fetchCloudAgentModelDefaults(): Promise<CloudAgentModelDefaults | null> {
+  if (!isLocalMode()) return null
+  const aiMode = process.env.AI_MODE
+  if (aiMode === 'api-keys' || aiMode === 'local-llm') return null
+  const key = await getUpstreamCredential()
+  if (!key) return null
+
+  const now = Date.now()
+  if (cachedAgentModelDefaults && cachedAgentModelDefaults.expiresAt > now) {
+    return cachedAgentModelDefaults.value
+  }
+
+  let value: CloudAgentModelDefaults | null = null
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 4_000)
+    try {
+      const resp = await fetchUpstream('/api/platform/agent-model-defaults', {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      })
+      if (resp.ok) {
+        const body = await resp.json().catch(() => null) as any
+        const tiers = body?.autoTiers
+        const validEntry = (entry: any): entry is CloudAgentModelEntry =>
+          !!entry && typeof entry.id === 'string' && entry.id.trim().length > 0
+        if (
+          body &&
+          typeof body.basic === 'string' &&
+          typeof body.advanced === 'string' &&
+          validEntry(tiers?.economy) &&
+          validEntry(tiers?.standard) &&
+          validEntry(tiers?.premium)
+        ) {
+          value = {
+            basic: body.basic,
+            advanced: body.advanced,
+            defaultMode: typeof body.defaultMode === 'string' ? body.defaultMode : null,
+            autoTiers: {
+              economy: tiers.economy,
+              standard: tiers.standard,
+              premium: tiers.premium,
+            },
+            hasAdvancedModelAccess: body.hasAdvancedModelAccess === true,
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    value = null
+  }
+
+  if (value) {
+    cachedAgentModelDefaults = { value, expiresAt: now + AGENT_MODEL_DEFAULTS_TTL_MS }
   }
   return value
 }
