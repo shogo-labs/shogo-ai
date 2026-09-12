@@ -194,10 +194,29 @@ function main() {
         const compileFlags = process.platform === 'win32' ? ' --windows-hide-console' : ''
         const compiledInput = path.join(bundleDir, output)
         const binaryPath = path.join(bundleDir, binaryName)
-        logStep(`Compiling agent-runtime (${binaryName})...`)
+        // Bare `--target=bun` compiles for the HOST platform/arch, not the
+        // package's TARGET arch. That's correct for same-arch builds, but
+        // macOS x64 releases are cross-compiled on arm64 CI runners (see
+        // SHOGO_TARGET_ARCH above) — `--target=bun` there silently produced
+        // an arm64 `agent-runtime` binary bundled inside the x64 .app,
+        // caught by desktop's `check-native-arch.mjs` guard (which treats
+        // agent-runtime as a hard failure, unlike the benign/unused
+        // wrong-arch exemptions it allows for other files). Bun supports
+        // cross-compiling standalone executables via an explicit
+        // `bun-<platform>-<arch>` target, so resolve one from the same
+        // SHOGO_TARGET_ARCH env var bundle-api already uses for native
+        // optional-dependency selection above.
+        const compileTargetArch = process.env.SHOGO_TARGET_ARCH || process.arch
+        const compileTargetPlatform = process.platform === 'win32'
+          ? 'windows'
+          : process.platform === 'darwin'
+            ? 'darwin'
+            : 'linux'
+        const compileTarget = `bun-${compileTargetPlatform}-${compileTargetArch}`
+        logStep(`Compiling agent-runtime (${binaryName}, target=${compileTarget})...`)
         try {
           execSync(
-            `bun build "${compiledInput}" --compile --bytecode --target=bun --packages external${compileFlags} --outfile "${binaryPath}"`,
+            `bun build "${compiledInput}" --compile --bytecode --target=${compileTarget} --packages external${compileFlags} --outfile "${binaryPath}"`,
             { cwd: REPO_ROOT, stdio: 'inherit', timeout: 180_000 },
           )
           console.log(`  ✓ Compiled ${binaryName} with bytecode`)
@@ -208,7 +227,7 @@ function main() {
           console.warn(`  Bytecode compile unavailable (${err.message}); retrying standalone compile`)
           try {
             execSync(
-              `bun build "${compiledInput}" --compile --target=bun --packages external${compileFlags} --outfile "${binaryPath}"`,
+              `bun build "${compiledInput}" --compile --target=${compileTarget} --packages external${compileFlags} --outfile "${binaryPath}"`,
               { cwd: REPO_ROOT, stdio: 'inherit', timeout: 180_000 },
             )
             console.log(`  ✓ Compiled ${binaryName} without bytecode (top-level await fallback)`)
