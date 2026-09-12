@@ -177,6 +177,10 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
 type AutoTierCeiling = 'economy' | 'standard' | 'premium'
 
 const AUTO_TIER_ORDER: AutoTierCeiling[] = ['economy', 'standard', 'premium']
+// Re-probe the configured ceiling periodically so a plan upgrade or a
+// transient cloud configuration error can recover without requiring a new
+// chat session.
+const AUTO_TIER_CEILING_TTL_MS = 5 * 60 * 1000
 
 function lowerAutoTier(tier: AutoTierCeiling): AutoTierCeiling | null {
   const index = AUTO_TIER_ORDER.indexOf(tier)
@@ -191,10 +195,18 @@ export function resolveAutoDowngrade(
 ): { tier: AutoTierCeiling; model: string } | null {
   if (reason !== 'billing' && reason !== 'auth') return null
 
-  const fallbackTier = lowerAutoTier(selectedTier)
-  const fallbackModel = fallbackTier ? autoTiers[fallbackTier] : undefined
-  if (!fallbackTier || !fallbackModel || fallbackModel === currentModel) return null
-  return { tier: fallbackTier, model: fallbackModel }
+  let fallbackTier = lowerAutoTier(selectedTier)
+  while (fallbackTier) {
+    const fallbackModel = autoTiers[fallbackTier]
+    // Multiple configured tiers may intentionally point at the same model.
+    // Do not retry that rejected model under a different tier; keep looking
+    // for the next distinct lower-tier model instead.
+    if (fallbackModel && fallbackModel !== currentModel) {
+      return { tier: fallbackTier, model: fallbackModel }
+    }
+    fallbackTier = lowerAutoTier(fallbackTier)
+  }
+  return null
 }
 
 /**
@@ -1949,7 +1961,11 @@ export class AgentGateway {
         toolNames: [],
         contextTokens: estimatedTokens,
       }
-      const ceilingTier = session.autoTierCeiling ?? 'premium'
+      const ceilingIsFresh =
+        session.autoTierCeiling &&
+        typeof session.autoTierCeilingUpdatedAt === 'number' &&
+        Date.now() - session.autoTierCeilingUpdatedAt < AUTO_TIER_CEILING_TTL_MS
+      const ceilingTier = ceilingIsFresh ? session.autoTierCeiling! : 'premium'
       routingDecision = selectModelForSpawn(classInput, {
         ceilingModel: autoTiers[ceilingTier],
         availableModels: autoTiers,
@@ -3186,6 +3202,13 @@ export class AgentGateway {
               provider: fallbackProvider,
               model: fallback.model,
             })
+            // Keep subsequent bounded continuations on the accessible model
+            // instead of accidentally reusing the rejected model from the
+            // original loop options.
+            provider = fallbackProvider
+            modelId = fallback.model
+            loopOptions.provider = fallbackProvider
+            loopOptions.model = fallback.model
             // Preserve usage from the rejected call for billing/reporting,
             // while keeping only the successful retry's messages in history.
             result.inputTokens += failedResult.inputTokens
