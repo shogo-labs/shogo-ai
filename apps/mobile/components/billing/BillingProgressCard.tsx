@@ -13,7 +13,7 @@ import { View, Pressable } from 'react-native'
 import { Info as InfoIcon } from 'lucide-react-native'
 import { Card, CardContent, cn } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
+  Text,
   accountSheetIcon,
 } from '../settings/account-sheet-chrome'
 

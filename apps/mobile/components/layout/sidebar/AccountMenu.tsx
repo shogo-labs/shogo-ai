@@ -25,13 +25,6 @@ import { UserMenuContent, type UserMenuProps } from "./UserMenuContent";
 import { WorkspaceMenuSection } from "./WorkspaceMenuSection";
 import type { AccountSettingsSheetTab } from "../../settings/account-settings-sheets";
 
-export { AccountNavLinks } from "./AccountNavLinks";
-export { UserMenuContent, type UserMenuProps } from "./UserMenuContent";
-export {
-  WorkspaceMenuSection,
-  type WorkspaceMenuSectionProps,
-} from "./WorkspaceMenuSection";
-
 function noopNativeSettingsTab(_tab: AccountSettingsSheetTab) {}
 
 /** Phone/narrow web Account screen. Wide web keeps the AccountMenu popover. */

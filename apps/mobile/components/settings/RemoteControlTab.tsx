@@ -29,32 +29,11 @@ import {
   X as XGlyph,
 } from 'lucide-react-native'
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
-  wrapAccountSheetIcons,
+  Text,
+  TextInput,
+  useAccountSheetIcons,
 } from './account-sheet-chrome'
 
-const {
-  Monitor,
-  Laptop,
-  Check,
-  Plus,
-  RefreshCw,
-  Pencil,
-  Trash2,
-  Copy,
-  XIcon,
-} = wrapAccountSheetIcons({
-  Monitor: MonitorIcon,
-  Laptop: LaptopIcon,
-  Check: CheckIcon,
-  Plus: PlusIcon,
-  RefreshCw: RefreshCwIcon,
-  Pencil: PencilIcon,
-  Trash2: Trash2Icon,
-  Copy: CopyIcon,
-  XIcon: XGlyph,
-})
 import {
   Modal,
   ModalBackdrop,
@@ -116,6 +95,27 @@ shogo worker start --worker-dir ~/code/myrepo`
 
 
 export const RemoteControlTab = observer(function RemoteControlTab() {
+  const {
+    Monitor,
+    Laptop,
+    Check,
+    Plus,
+    RefreshCw,
+    Pencil,
+    Trash2,
+    Copy,
+    XIcon,
+  } = useAccountSheetIcons({
+    Monitor: MonitorIcon,
+    Laptop: LaptopIcon,
+    Check: CheckIcon,
+    Plus: PlusIcon,
+    RefreshCw: RefreshCwIcon,
+    Pencil: PencilIcon,
+    Trash2: Trash2Icon,
+    Copy: CopyIcon,
+    XIcon: XGlyph,
+  })
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const { instance: activeInstance, setInstance, clearInstance } = useActiveInstance()

@@ -31,25 +31,14 @@ import {
   RefreshCw as RefreshCwIcon,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { densityForAccountSheet } from '../../lib/phone-density'
 import {
-  AccountSheetText as Text,
-  wrapAccountSheetIcons,
+  Text,
+  useAccountSheetChrome,
+  useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
 
-const {
-  Cpu,
-  UserIcon,
-  Clock,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  ChevronDown,
-  ArrowUpDown,
-  TrendingDown,
-  Globe,
-  Sparkles,
-  RefreshCw,
-} = wrapAccountSheetIcons({
+const SHARED_ANALYTICS_ICON_MAP = {
   Cpu: CpuIcon,
   UserIcon: UserGlyph,
   Clock: ClockIcon,
@@ -62,7 +51,11 @@ const {
   Globe: GlobeIcon,
   Sparkles: SparklesIcon,
   RefreshCw: RefreshCwIcon,
-})
+} as const
+
+function useSharedAnalyticsIcons() {
+  return useAccountSheetIcons(SHARED_ANALYTICS_ICON_MAP)
+}
 import {
   type ModelFamily,
 } from '@shogo/model-catalog'
@@ -70,7 +63,6 @@ import { resolveShortName, resolveFamily } from '../../lib/visible-models'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import { nativeContentWidth, nativeGridChipWidth, NATIVE_WIND_SPACE_4, isNativePlatform,
   useIsNativePhoneLayout } from '../../lib/native-phone-layout'
-import { densityFor } from "../../lib/phone-density";
 import {
   StackedAreaChart,
   STACKED_PALETTE,
@@ -197,7 +189,9 @@ export function formatDollarCost(cost: number | null | undefined): string {
   return `$${cost.toFixed(2)}`
 }
 
-const FAMILY_BG_COLOR: Record<ModelFamily, string> = {
+type AnalyticsModelFamily = ModelFamily | 'o-series'
+
+const FAMILY_BG_COLOR: Record<AnalyticsModelFamily, string> = {
   opus: 'bg-purple-500/15 border-purple-500/20',
   sonnet: 'bg-blue-500/15 border-blue-500/20',
   haiku: 'bg-emerald-500/15 border-emerald-500/20',
@@ -206,7 +200,7 @@ const FAMILY_BG_COLOR: Record<ModelFamily, string> = {
   other: 'bg-muted border-border',
 }
 
-const FAMILY_TEXT_COLOR: Record<ModelFamily, string> = {
+const FAMILY_TEXT_COLOR: Record<AnalyticsModelFamily, string> = {
   opus: 'text-purple-400',
   sonnet: 'text-blue-400',
   haiku: 'text-emerald-400',
@@ -216,16 +210,28 @@ const FAMILY_TEXT_COLOR: Record<ModelFamily, string> = {
 }
 
 export function getModelColor(model: string): string {
-  return ( FAMILY_BG_COLOR[resolveFamily(model) as ModelFamily] ?? 'bg-muted border-border'
+  return ( FAMILY_BG_COLOR[resolveFamily(model) as AnalyticsModelFamily] ?? 'bg-muted border-border'
   )
 }
 
 export function getModelTextColor(model: string): string {
-  return ( FAMILY_TEXT_COLOR[resolveFamily(model) as ModelFamily] ?? 'text-muted-foreground'
+  return ( FAMILY_TEXT_COLOR[resolveFamily(model) as AnalyticsModelFamily] ?? 'text-muted-foreground'
   )
 }
 
 export const getModelDisplayName = resolveShortName
+
+function useAnalyticsDensity(comfortableOverride?: boolean) {
+  const phoneComfortable = useIsNativePhoneLayout()
+  const inAccountSheet = useAccountSheetChrome()
+  const comfortable = comfortableOverride ?? phoneComfortable
+  return {
+    comfortable,
+    // Account-sheet text is enlarged by AccountSheetText. Start from the
+    // compact source size there so it is enlarged exactly once.
+    density: densityForAccountSheet(comfortable, inAccountSheet),
+  }
+}
 
 export function PeriodSelector({
   value,
@@ -238,7 +244,7 @@ export function PeriodSelector({
 }) {
   // Legacy selector — keep the four rolling-window pills only. The new
   // dashboard uses `DateRangePills` which adds 1d / MTD / Last month.
-  const density = densityFor(comfortable);
+  const { density } = useAnalyticsDensity(comfortable)
   const legacyPeriods: AnalyticsPeriod[] = ['7d', '30d', '90d', '1y']
   return (
     <View className={cn("flex-row items-center bg-muted rounded-lg gap-0.5", comfortable ? "p-1" : "p-0.5")}>
@@ -285,7 +291,7 @@ export function StatCard({
   subtitle?: string
   comfortable?: boolean
 }) {
-  const density = densityFor(comfortable)
+  const { density } = useAnalyticsDensity(comfortable)
   return (
     <View className={cn("flex-1 rounded-xl border border-border bg-card min-w-[140px]", comfortable ? "p-4" : "p-3")}>
       <View className="flex-row items-center justify-between mb-1">
@@ -295,7 +301,7 @@ export function StatCard({
           <Icon size={density.icon.sm} className="text-primary" />
         </View>
       </View>
-      <Text className={cn("font-bold text-foreground", comfortable ? "text-2xl" : "text-xl")}>
+      <Text className={cn("font-bold text-foreground", density.text.heading)}>
         {value === undefined ? '—' : typeof value === 'number' ? value.toLocaleString() : value}
       </Text>
       {subtitle && (
@@ -419,8 +425,16 @@ export function UsageSummaryView({
   onPageChange?: (p: number) => void
   currentPage?: number
 }) {
-  const comfortable = useIsNativePhoneLayout()
-  const density = densityFor(comfortable);
+  const { comfortable, density } = useAnalyticsDensity()
+  const {
+    UserIcon,
+    Cpu,
+    ChevronLeft,
+    ChevronRight,
+    ChevronUp,
+    ChevronDown,
+    ArrowUpDown,
+  } = useSharedAnalyticsIcons()
   const [sortKey, setSortKey] = useState<SortKey>('totalTokens')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -455,14 +469,14 @@ export function UsageSummaryView({
             disabled={page <= 1}
             className={cn('p-1.5 rounded-md border border-border', page <= 1 && 'opacity-30')}
           >
-            <ChevronLeft size={comfortable ? 18 : 14} className="text-foreground" />
+            <ChevronLeft size={density.icon.sm} className="text-foreground" />
           </Pressable>
           <Pressable
             onPress={() => onPageChange(page + 1)}
             disabled={page >= totalPages}
             className={cn('p-1.5 rounded-md border border-border', page >= totalPages && 'opacity-30')}
           >
-            <ChevronRight size={comfortable ? 18 : 14} className="text-foreground" />
+            <ChevronRight size={density.icon.sm} className="text-foreground" />
           </Pressable>
         </View>
       </View>
@@ -708,8 +722,8 @@ export function UsageEventLogView({
   currentPage: number
   isLocalMode?: boolean
 }) {
-  const comfortable = useIsNativePhoneLayout()
-  const density = densityFor(comfortable);
+  const { comfortable, density } = useAnalyticsDensity()
+  const { ChevronLeft, ChevronRight, Clock } = useSharedAnalyticsIcons()
   const totalPages = Math.ceil(data.total / data.limit)
   const entries = data.entries ?? []
 
@@ -724,14 +738,14 @@ export function UsageEventLogView({
           disabled={currentPage <= 1}
           className={cn('p-1.5 rounded-md border border-border', currentPage <= 1 && 'opacity-30')}
         >
-          <ChevronLeft size={comfortable ? 18 : 14} className="text-foreground" />
+          <ChevronLeft size={density.icon.sm} className="text-foreground" />
         </Pressable>
         <Pressable
           onPress={() => onPageChange?.(currentPage + 1)}
           disabled={currentPage >= totalPages}
           className={cn('p-1.5 rounded-md border border-border', currentPage >= totalPages && 'opacity-30')}
         >
-          <ChevronRight size={comfortable ? 18 : 14} className="text-foreground" />
+          <ChevronRight size={density.icon.sm} className="text-foreground" />
         </Pressable>
       </View>
     </View>
@@ -910,8 +924,7 @@ export function UsageTableSection({
   title?: string
   isLocalMode?: boolean
 }) {
-  const comfortable = useIsNativePhoneLayout()
-  const density = densityFor(comfortable);
+  const { comfortable, density } = useAnalyticsDensity()
   const [view, setView] = useState<'summary' | 'detail'>('summary')
 
   const viewToggle = (
@@ -952,7 +965,7 @@ export function UsageTableSection({
   )
 
   return (
-    <View className={cn('rounded-xl border border-border bg-card', comfortable ? 'p-3' : 'p-4')}>
+    <View className={cn('rounded-xl border border-border bg-card', comfortable ? 'p-4' : 'p-3')}>
       {comfortable ? (
         <View className="mb-4 gap-3">
           <Text className={cn(density.text.title, "font-semibold text-foreground")}>{title || 'AI Usage by User'}</Text>
@@ -1129,6 +1142,7 @@ export function UserActivityTable({
   page?: number
   onPageChange?: (page: number) => void
 }) {
+  const { ChevronLeft, ChevronRight } = useSharedAnalyticsIcons()
   if (loading) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">
@@ -1225,6 +1239,7 @@ export function SourceBreakdownPanel({
   data: SourceBreakdownData | null
   loading: boolean
 }) {
+  const { Globe } = useSharedAnalyticsIcons()
   if (loading) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">
@@ -1334,6 +1349,7 @@ export function AIInsightsPanel({
   generating?: boolean
 }) {
   const [showHistory, setShowHistory] = useState(false)
+  const { Sparkles, RefreshCw } = useSharedAnalyticsIcons()
 
   if (loading) {
     return (
@@ -1525,6 +1541,7 @@ function ChartDropdown<T extends string>({
   onChange: (v: T) => void
 }) {
   const [open, setOpen] = useState(false)
+  const { ChevronDown } = useSharedAnalyticsIcons()
   const [layout, setLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
   const triggerRef = useRef<View>(null)
 
@@ -2164,6 +2181,7 @@ export function ToolCallAnalyticsPanel({
   page?: number
   onPageChange?: (page: number) => void
 }) {
+  const { ChevronLeft, ChevronRight } = useSharedAnalyticsIcons()
   if (loading) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">
@@ -2314,6 +2332,7 @@ export function WorkspaceActivityTable({
   page?: number
   onPageChange?: (page: number) => void
 }) {
+  const { ChevronLeft, ChevronRight } = useSharedAnalyticsIcons()
   if (loading) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">

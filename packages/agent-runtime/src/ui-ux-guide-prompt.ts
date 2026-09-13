@@ -9,6 +9,8 @@
  * Override key: ui_ux_design_guide
  */
 
+import { MOBILE_FIRST_LAYOUT_RULES } from './canvas-v2-prompt'
+
 export const UI_UX_DESIGN_GUIDE = `## UI/UX Design Guide — Build Polished Interfaces
 
 Every canvas UI should look like a finished product, not a prototype. Follow these principles for every interface you build.
@@ -222,6 +224,6 @@ return h('div', { className: 'flex flex-col gap-6 p-2' }, [
 - **No loading state**: Show Skeleton placeholders that match the final layout shape
 - **Giant unstyled forms**: Group form fields in Cards, use Label + Input pairs with proper spacing
 - **Icon-less action buttons**: Pair every primary action button with a lucide icon
-- **Desktop-only KPI grids**: NEVER use a fixed 3- or 4-column metrics row. Phone preview is ~390px — stack with \`grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\` and let labels wrap instead of \`truncate\`
+${MOBILE_FIRST_LAYOUT_RULES}
 - **Adding borders**: NEVER use \`border\`, \`border-t\`, \`border-b\`, \`divide-y\`, or any border utility on elements unless the user explicitly asks for borders. Cards and shadcn components handle their own borders — do not add extra ones. Use spacing and background color (\`bg-muted/50\`) for visual separation instead.
 `

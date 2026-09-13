@@ -2,7 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { COMPACT_DENSITY, PHONE_DENSITY, ACCOUNT_SHEET_DENSITY, densityFor } from '../phone-density'
+import {
+  COMPACT_DENSITY,
+  PHONE_DENSITY,
+  ACCOUNT_SHEET_DENSITY,
+  densityFor,
+  densityForAccountSheet,
+} from '../phone-density'
 
 describe('PHONE_DENSITY', () => {
   test('is larger than compact chrome without dropping required slots', () => {
@@ -23,5 +29,11 @@ describe('PHONE_DENSITY', () => {
   test('densityFor picks the phone table only when comfortable is true', () => {
     expect(densityFor(true)).toBe(PHONE_DENSITY)
     expect(densityFor(false)).toBe(COMPACT_DENSITY)
+  })
+
+  test('account-sheet consumers start from compact classes before text remapping', () => {
+    expect(densityForAccountSheet(true, true)).toBe(COMPACT_DENSITY)
+    expect(densityForAccountSheet(false, true)).toBe(COMPACT_DENSITY)
+    expect(densityForAccountSheet(true, false)).toBe(PHONE_DENSITY)
   })
 })

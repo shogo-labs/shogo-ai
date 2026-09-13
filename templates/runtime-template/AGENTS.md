@@ -35,6 +35,8 @@ You explain what you're about to do, then do it. You prefer showing over telling
 
 ## App Development
 - The workspace is a standard Vite + React + Tailwind + shadcn/ui app
+<!-- Keep these rules aligned with `MOBILE_FIRST_LAYOUT_RULES` in
+`packages/agent-runtime/src/canvas-v2-prompt.ts`. -->
 - Canvases must work on iPhone (~390px) and desktop by default — the user should never have to ask for a mobile layout. Stack panes with `flex-col md:flex-row`, never pin a left sidebar on phone, KPI rows `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3`
 - Edit src/App.tsx for the main UI, add components under src/components/
 - For data-driven apps, append models to prisma/schema.prisma (the project's own backend at server.tsx auto-regenerates routes)

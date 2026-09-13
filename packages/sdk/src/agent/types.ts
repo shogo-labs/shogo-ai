@@ -3,6 +3,9 @@
 
 export type VisualMode = 'canvas' | 'app' | 'none'
 
+/** Form factor of the live Studio preview receiving an agent response. */
+export type CanvasViewerFormFactor = 'phone' | 'desktop'
+
 export interface AgentStatus {
   status: string
   uptime?: number

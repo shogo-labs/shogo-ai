@@ -23,6 +23,7 @@ import {
   type WindowDisplay,
 } from '../../lib/billing-config'
 import { isNativePlatform, nativePhoneFillStyle } from '../../lib/native-phone-layout'
+import { densityFor } from '../../lib/phone-density'
 
 /** NativeWind `h-2` / `h-1.5` on the billing and compact meters. */
 const USAGE_TRACK_HEIGHT = 8
@@ -124,11 +125,12 @@ function CompactWindowRow({
   display: WindowDisplay
   comfortable?: boolean
 }) {
+  const density = densityFor(comfortable)
   return (
     <View className={comfortable ? 'gap-1.5' : 'gap-1'}>
       <View className="flex-row items-center justify-between">
-        <Text className={cn(comfortable ? 'text-sm' : 'text-xs', 'text-muted-foreground')}>{label}</Text>
-        <Text className={cn(comfortable ? 'text-sm' : 'text-xs', 'font-medium text-foreground')}>
+        <Text className={cn(density.text.label, 'text-muted-foreground')}>{label}</Text>
+        <Text className={cn(density.text.label, 'font-medium text-foreground')}>
           {usageLabel(display)}
         </Text>
       </View>
@@ -151,6 +153,7 @@ export function CompactUsageWindows({
   comfortable?: boolean
 }) {
   const { fiveHour, weekly } = getWindowDisplays(windows)
+  const density = densityFor(comfortable)
   const atLimit = fiveHour.atLimit || weekly.atLimit
   // Resume time is the binding constraint: when weekly is exhausted you stay
   // blocked until it resets (resetting the 5-hour window won't help).
@@ -164,7 +167,7 @@ export function CompactUsageWindows({
       {notice ? (
         <Text
           className={cn(
-            comfortable ? 'text-sm' : 'text-xs',
+            density.text.label,
             notice.tone === 'overage' || notice.tone === 'expired' ? 'text-foreground' : 'text-muted-foreground',
           )}
         >

@@ -16,6 +16,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { NATIVE_PHONE_DOCK_COMPOSER_GAP, useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { COMPACT_DENSITY, PHONE_DENSITY } from "../../../lib/phone-density"
 import { NativePlanPreviewSheet } from "../NativePlanPreviewSheet"
+import { usePlanBuildModel } from "../usePlanBuildModel"
 import {
   PLAN_READY_CHIP_TEXT,
   PLAN_READY_KICKER_CLASS,
@@ -55,6 +56,8 @@ export function PlanReferenceCard({
 }: PlanReferenceCardProps) {
   const nativePhone = useIsNativePhoneLayout()
   const [sheetOpen, setSheetOpen] = useState(false)
+  const planKey = plan.filepath ?? plan.toolCallId ?? plan.name
+  const [buildModelId, setBuildModelId] = usePlanBuildModel(selectedModel, planKey)
   const canBuild = !isConfirmed && !!onBuild
   const nativeLabel = isConfirmed ? "Plan" : isUpdate ? "Updated plan" : "Plan Ready"
   const webLabel = isConfirmed ? "Plan" : isUpdate ? "Updated plan" : "Created plan"
@@ -62,8 +65,8 @@ export function PlanReferenceCard({
   const openSheet = useCallback(() => setSheetOpen(true), [])
   const closeSheet = useCallback(() => setSheetOpen(false), [])
   const handleOvalBuild = useCallback(() => {
-    onBuild?.(plan, selectedModel)
-  }, [onBuild, plan, selectedModel])
+    onBuild?.(plan, buildModelId || undefined)
+  }, [onBuild, plan, buildModelId])
   const handleSheetBuild = useCallback(
     (modelId?: string) => {
       onBuild?.(plan, modelId)
@@ -131,7 +134,8 @@ export function PlanReferenceCard({
         <NativePlanPreviewSheet
           visible={sheetOpen}
           plan={plan}
-          selectedModel={selectedModel}
+          buildModelId={buildModelId}
+          onSelectModel={setBuildModelId}
           isPro={isPro}
           onClose={closeSheet}
           onBuild={canBuild ? handleSheetBuild : undefined}

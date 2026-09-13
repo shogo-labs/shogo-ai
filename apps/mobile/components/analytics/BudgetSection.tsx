@@ -17,8 +17,8 @@ import { Bell, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
+  Text,
+  TextInput,
 } from '../settings/account-sheet-chrome'
 import { formatDollarCost, getModelDisplayName } from './SharedAnalytics'
 

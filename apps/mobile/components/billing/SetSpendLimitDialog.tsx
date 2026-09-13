@@ -15,7 +15,7 @@ import { Button, Input, cn } from '@shogo/shared-ui/primitives'
 import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
 import {
-  AccountSheetText as Text,
+  Text,
   accountSheetIcon,
 } from '../settings/account-sheet-chrome'
 

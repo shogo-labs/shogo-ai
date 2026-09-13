@@ -18,18 +18,10 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
-  wrapAccountSheetIcons,
+  Text,
+  TextInput,
+  useAccountSheetIcons,
 } from './account-sheet-chrome'
-
-const { Download, CheckCircle, AlertCircle, Paperclip, X } = wrapAccountSheetIcons({
-  Download: DownloadIcon,
-  CheckCircle: CheckCircleIcon,
-  AlertCircle: AlertCircleIcon,
-  Paperclip: PaperclipIcon,
-  X: XIcon,
-})
 
 interface SystemInfo {
   appVersion: string
@@ -65,6 +57,13 @@ function formatFileSize(bytes: number): string {
 }
 
 export function BugReportTab() {
+  const { Download, CheckCircle, AlertCircle, Paperclip, X } = useAccountSheetIcons({
+    Download: DownloadIcon,
+    CheckCircle: CheckCircleIcon,
+    AlertCircle: AlertCircleIcon,
+    Paperclip: PaperclipIcon,
+    X: XIcon,
+  })
   const [description, setDescription] = useState('')
   const [includeLogs, setIncludeLogs] = useState(true)
   const [includeSystemInfo, setIncludeSystemInfo] = useState(true)

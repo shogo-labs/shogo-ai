@@ -9,7 +9,7 @@ import { Pressable, Text, View } from "react-native";
 import { Check } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { COMPACT_DENSITY, PHONE_DENSITY } from "../../../lib/phone-density";
-import { THEME_CHOICES } from "./account-theme";
+import { THEME_CHOICES } from "../../../lib/theme-choices";
 
 export function ThemeChoiceList({
   theme,

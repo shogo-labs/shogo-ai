@@ -11,17 +11,11 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useTheme } from '../../contexts/theme'
 import { useAppearance } from '../../contexts/appearance'
+import { THEME_CHOICES } from '../../lib/theme-choices'
 import {
-  AccountSheetText as Text,
-  wrapAccountSheetIcons,
+  Text,
+  useAccountSheetIcons,
 } from './account-sheet-chrome'
-
-const { Sun, Moon, Monitor, RotateCcw } = wrapAccountSheetIcons({
-  Sun: SunIcon,
-  Moon: MoonIcon,
-  Monitor: MonitorIcon,
-  RotateCcw: RotateCcwIcon,
-})
 
 export const FONT_SIZE_MIN = 11
 export const FONT_SIZE_MAX = 24
@@ -60,6 +54,13 @@ function AppearanceRow({
 export function AppearanceTab() {
   const { theme, setTheme } = useTheme()
   const { settings: ap, update, reset } = useAppearance()
+  const { Sun, Moon, Monitor, RotateCcw } = useAccountSheetIcons({
+    Sun: SunIcon,
+    Moon: MoonIcon,
+    Monitor: MonitorIcon,
+    RotateCcw: RotateCcwIcon,
+  })
+  const themeIconByValue = { light: Sun, dark: Moon, system: Monitor } as const
 
   return (
     <View>
@@ -71,11 +72,9 @@ export function AppearanceTab() {
       {/* ── Theme ── */}
       <AppearanceSection title="Theme" />
       <View className="flex-row gap-2 mb-2">
-        {([
-          { value: 'light' as const, label: 'Light', Icon: Sun },
-          { value: 'dark' as const, label: 'Dark', Icon: Moon },
-          { value: 'system' as const, label: 'System', Icon: Monitor },
-        ] as const).map(({ value, label, Icon }) => (
+        {THEME_CHOICES.map(({ value, label }) => {
+          const Icon = themeIconByValue[value]
+          return (
           <Pressable
             key={value}
             onPress={() => setTheme(value)}
@@ -99,7 +98,8 @@ export function AppearanceTab() {
               {label}
             </Text>
           </Pressable>
-        ))}
+          )
+        })}
       </View>
 
       {/* ── Typography ── */}

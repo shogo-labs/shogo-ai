@@ -18,7 +18,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
-import { AccountSheetText as Text } from '../settings/account-sheet-chrome'
+import { Text } from '../settings/account-sheet-chrome'
 import { formatDollarCost, getModelColor, getModelDisplayName, getModelTextColor } from './SharedAnalytics'
 
 export interface CostRecommendation {

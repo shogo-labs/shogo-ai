@@ -49,6 +49,7 @@ export type {
   AgentImportResult,
   AgentPlanSummary,
   AgentStatus,
+  CanvasViewerFormFactor,
   ChatMessage,
   ChatMessagePart,
   ChatOptions,

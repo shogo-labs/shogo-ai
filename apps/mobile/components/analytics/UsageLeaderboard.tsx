@@ -23,17 +23,17 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
-  wrapAccountSheetIcons,
+  Text,
+  useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
 
-const { ArrowUpDown, ChevronDown, ChevronUp, Download, Braces } = wrapAccountSheetIcons({
+const USAGE_LEADERBOARD_ICON_MAP = {
   ArrowUpDown: ArrowUpDownIcon,
   ChevronDown: ChevronDownIcon,
   ChevronUp: ChevronUpIcon,
   Download: DownloadIcon,
   Braces: BracesIcon,
-})
+} as const
 import {
   type UsageSummaryData,
   formatNumber,
@@ -163,6 +163,8 @@ export function UsageLeaderboard({
   loading: boolean
   topN?: number
 }) {
+  const { ArrowUpDown, ChevronDown, ChevronUp, Download, Braces } =
+    useAccountSheetIcons(USAGE_LEADERBOARD_ICON_MAP)
   const [sortKey, setSortKey] = useState<SortKey>('billed')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 

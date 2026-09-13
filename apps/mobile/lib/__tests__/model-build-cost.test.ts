@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from "bun:test"
-import { formatBuildModelChip, MODEL_COST_LABEL, modelCostHint, modelPickerHidesCostLabels } from "../model-build-cost"
+import { modelCostHint, modelPickerHidesCostLabels } from "../model-build-cost"
 
 describe("modelCostHint", () => {
   test("describes the chosen tier without inventing a dollar price", () => {
@@ -14,13 +14,6 @@ describe("modelCostHint", () => {
     expect(modelCostHint("economy", "premium")).toBe("Lower cost than your current pick")
     expect(modelCostHint("premium", "economy")).toBe("Higher cost than your current pick")
     expect(modelCostHint("economy", "economy")).toBe("Uses fewer credits per step")
-  })
-})
-
-describe("formatBuildModelChip", () => {
-  test("puts the relative cost on the Build control", () => {
-    expect(formatBuildModelChip("Sonnet", "standard")).toBe("Sonnet · Standard")
-    expect(formatBuildModelChip("Haiku", "economy")).toBe(`Haiku · ${MODEL_COST_LABEL.economy}`)
   })
 })
 

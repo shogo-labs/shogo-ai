@@ -7,25 +7,19 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
-  wrapAccountSheetIcons,
+  Text,
+  useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
 
-const { Shield, Lock, Zap, Check } = wrapAccountSheetIcons({
-  Shield: ShieldIcon,
-  Lock: LockIcon,
-  Zap: ZapIcon,
-  Check: CheckIcon,
-})
-
 type SecurityMode = 'strict' | 'balanced' | 'full_autonomy'
+type SecurityIconName = 'Shield' | 'Lock' | 'Zap'
 
 interface SecurityOption {
   mode: SecurityMode
   label: string
   summary: string
   description: string
-  icon: typeof Shield
+  icon: SecurityIconName
   recommended?: boolean
 }
 
@@ -35,7 +29,7 @@ const OPTIONS: SecurityOption[] = [
     label: 'Maximum Security',
     summary: 'Asks before every action',
     description: 'Agent asks before every file change or command. Best for sensitive projects.',
-    icon: Lock,
+    icon: 'Lock',
   },
   {
     mode: 'balanced',
@@ -43,7 +37,7 @@ const OPTIONS: SecurityOption[] = [
     summary: 'Free inside project, asks for system actions',
     description:
       'Agent works freely inside your project but asks before running unknown commands or accessing anything outside.',
-    icon: Shield,
+    icon: 'Shield',
   },
   {
     mode: 'full_autonomy',
@@ -51,7 +45,7 @@ const OPTIONS: SecurityOption[] = [
     summary: 'All actions auto-approved.',
     description:
       'Agent performs all actions automatically.',
-    icon: Zap,
+    icon: 'Zap',
     recommended: true,
   },
 ]
@@ -67,11 +61,18 @@ export function SecurityPreferenceSelector({
   onChange,
   compact = false,
 }: SecurityPreferenceSelectorProps) {
+  const icons = useAccountSheetIcons({
+    Shield: ShieldIcon,
+    Lock: LockIcon,
+    Zap: ZapIcon,
+    Check: CheckIcon,
+  })
+
   return (
     <View className="gap-3">
       {OPTIONS.map((opt) => {
         const isSelected = value === opt.mode
-        const Icon = opt.icon
+        const Icon = icons[opt.icon]
 
         return (
           <Pressable
@@ -117,7 +118,7 @@ export function SecurityPreferenceSelector({
 
               {isSelected && (
                 <View className="w-6 h-6 rounded-full bg-primary items-center justify-center">
-                  <Check size={14} className="text-primary-foreground" />
+                  <icons.Check size={14} className="text-primary-foreground" />
                 </View>
               )}
             </View>

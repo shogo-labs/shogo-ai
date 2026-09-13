@@ -6,7 +6,9 @@
  * `parseCanvasViewer`.
  */
 
-export type CanvasViewerFormFactor = "phone" | "desktop"
+import type { CanvasViewerFormFactor } from "@shogo-ai/sdk/agent"
+
+export type { CanvasViewerFormFactor } from "@shogo-ai/sdk/agent"
 
 export function canvasViewerPayload(input: {
   isPhoneViewport: boolean
