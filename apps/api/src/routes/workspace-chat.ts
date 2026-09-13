@@ -645,7 +645,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // the finally guard closes an orphaned session on early exit.
     let billingSessionHandedOff = false
     if (billingProjectId) {
-      openSession(billingProjectId, workspaceId, billingUserId || 'system', sessionId)
+      await openSession(billingProjectId, workspaceId, billingUserId || 'system', sessionId)
     }
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }

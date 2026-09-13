@@ -29,6 +29,19 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// doStart()'s env-composition path (buildProjectEnv -> agent-model-defaults ->
+// isModelAccessibleForWorkspace) calls billingService.hasAdvancedModelAccess().
+// Without this mock, the real service falls through to a live
+// prisma.workspace.findUnique() lookup that has no reachable Postgres in
+// test/CI, throwing an unhandled ECONNREFUSED that fails most of the
+// branches below (Bun hoists top-level mock.module() calls before all
+// import statements, so this takes effect before the RuntimeManager import
+// below transitively loads billing.service).
+mock.module('../services/billing.service', () => ({
+  hasAdvancedModelAccess: async () => true,
+}))
+
 import { RuntimeManager } from '../lib/runtime/manager'
 
 let workspaces: string[] = []

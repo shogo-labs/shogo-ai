@@ -84,8 +84,8 @@ describe('trackUsageFromStream — inference-retry accumulator reset', () => {
   test('discards the failed step partial text on data-inference-retry', async () => {
     const projectId = 'proj-retry-text'
     const chatSessionId = 'sess-retry-text'
-    openSession(projectId, 'ws', 'user')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+    await openSession(projectId, 'ws', 'user')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
 
     const stream = makeSseStream([
       // Failed step: partial text streamed, then the model call drops and is retried.
@@ -119,8 +119,8 @@ describe('trackUsageFromStream — inference-retry accumulator reset', () => {
   test('preserves completed tool calls from earlier steps across a retry', async () => {
     const projectId = 'proj-retry-tool'
     const chatSessionId = 'sess-retry-tool'
-    openSession(projectId, 'ws', 'user')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+    await openSession(projectId, 'ws', 'user')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
 
     const stream = makeSseStream([
       // Step 1 completes a tool call (executed -> has output).

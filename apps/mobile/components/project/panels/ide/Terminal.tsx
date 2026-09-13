@@ -115,6 +115,12 @@ interface PresetCommandDto {
   command?: string;
 }
 
+interface PresetGroup {
+  category: string;
+  label: string;
+  commands: PresetCommandDto[];
+}
+
 const CATEGORY_LABEL: Record<string, string> = {
   package: "Package",
   database: "Database",
@@ -1125,8 +1131,10 @@ export function Terminal({
         onCloseAll={closeAllSessions}
         onKillActive={() => closeSession(active?.id ?? "")}
         onAdd={addSession}
+        onAddWithProfile={(profile) => addSession(profile)}
         onSplit={() => splitSession("row")}
         onSplitDown={() => splitSession("column")}
+        onSplitWithProfile={(direction, profile) => splitSession(direction, profile)}
         onStop={stop}
         onClear={clear}
         onFind={openFind}
@@ -1436,8 +1444,10 @@ function SessionTabs({
   onCloseAll,
   onKillActive,
   onAdd,
+  onAddWithProfile,
   onSplit,
   onSplitDown,
+  onSplitWithProfile,
   onStop,
   onClear,
   onFind,
@@ -1467,8 +1477,10 @@ function SessionTabs({
   onCloseAll: () => void;
   onKillActive: () => void;
   onAdd: () => void;
+  onAddWithProfile: (profile: string) => void;
   onSplit: () => void;
   onSplitDown?: () => void;
+  onSplitWithProfile: (direction: "row" | "column", profile?: string) => void;
   onStop: () => void;
   onClear: () => void;
   onFind: () => void;
@@ -1761,12 +1773,12 @@ function SessionTabs({
           activeId={activeId}
           onNew={onAdd}
           onNewWithProfile={(profile) => {
-            addSession(profile);
+            onAddWithProfile(profile);
           }}
           onSplit={onSplit}
           onSplitDown={onSplitDown}
           onSplitWithProfile={(profile) => {
-            splitSession("row", profile);
+            onSplitWithProfile("row", profile);
           }}
           onKillActive={onKillActive}
           running={running}

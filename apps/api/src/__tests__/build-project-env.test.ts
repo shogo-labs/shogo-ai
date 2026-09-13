@@ -57,10 +57,28 @@ const inferProviderFromModelMock = mock((id: string, fallback = 'custom') => {
   if (id.startsWith('mimo')) return 'custom'
   return fallback
 })
+// Mirrors the real fallback-only branch of getModelTier() (no catalog lookup —
+// `getMergedModelEntrySync` is mocked separately below to return undefined for
+// everything except `local-premium`), and the real AGENT_MODE_DEFAULTS.
+// agent-model-defaults.ts imports both of these from `@shogo/model-catalog`
+// alongside the three above; omitting them from this mock leaves the named
+// import unbound, which either hard-fails module load or throws the first
+// time either function is called deep inside buildProjectEnv/buildWorkspaceEnv.
+const getModelTierMock = mock((id: string) => {
+  const lower = id.toLowerCase()
+  if (lower.includes('opus')) return 'premium'
+  if (lower.includes('haiku') || lower.includes('nano') || lower.includes('mini')) return 'economy'
+  return 'standard'
+})
+const resolveAgentModeDefaultMock = mock((mode: 'basic' | 'advanced') =>
+  mode === 'basic' ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+)
 mock.module('@shogo/model-catalog', () => ({
   getAgentModeOverrides: getAgentModeOverridesMock,
   getAutoTierOverrides: getAutoTierOverridesMock,
   inferProviderFromModel: inferProviderFromModelMock,
+  getModelTier: getModelTierMock,
+  resolveAgentModeDefault: resolveAgentModeDefaultMock,
 }))
 
 // Public-model alias registry: only `hoshi-1.0` resolves, to its backing id.
@@ -83,6 +101,14 @@ mock.module('@shogo/agent-runtime/src/agent-templates', () => ({
 const getPreviewUrlMock = mock((projectId: string) => `https://${projectId}.preview.staging.shogo.ai`)
 mock.module('../lib/knative-project-manager', () => ({
   getPreviewUrl: getPreviewUrlMock,
+}))
+
+// buildProjectEnv resolves agent model defaults via agent-model-defaults.ts's
+// isModelAccessibleForWorkspace(), which calls billingService.hasAdvancedModelAccess().
+// Without this, the real service falls through to a live prisma.workspace.findUnique()
+// lookup that has no reachable Postgres in test/CI, throwing an unhandled ECONNREFUSED.
+mock.module('../services/billing.service', () => ({
+  hasAdvancedModelAccess: async () => true,
 }))
 
 const { buildProjectEnv } = await import('../lib/runtime/build-project-env')
@@ -556,18 +582,23 @@ describe('buildProjectEnv — project-derived fields', () => {
 // ─── model overrides ──────────────────────────────────────────────────────
 
 describe('buildProjectEnv — agent model overrides', () => {
-  test('omits AGENT_BASIC_MODEL / AGENT_ADVANCED_MODEL when the catalog returns empty', async () => {
+  // agent-model-defaults.ts's resolveEffectiveAgentModelDefaults() always
+  // falls back to AGENT_MODE_DEFAULTS (via resolveAgentModeDefault) when no
+  // override is configured, rather than leaving the slot empty — a safe
+  // default beats an unset AGENT_BASIC_MODEL/AGENT_ADVANCED_MODEL, which
+  // would leave the spawned runtime with no model at all.
+  test('falls back to the safe default basic + advanced models when the catalog returns empty', async () => {
     getAgentModeOverridesMock.mockImplementation(() => ({}))
     const env = await buildProjectEnv('proj-mo-empty')
-    expect(env.AGENT_BASIC_MODEL).toBeUndefined()
-    expect(env.AGENT_ADVANCED_MODEL).toBeUndefined()
+    expect(env.AGENT_BASIC_MODEL).toBe('claude-haiku-4-5-20251001')
+    expect(env.AGENT_ADVANCED_MODEL).toBe('claude-sonnet-4-6')
   })
 
-  test('sets only AGENT_BASIC_MODEL when the catalog has only basic', async () => {
+  test('sets the configured AGENT_BASIC_MODEL and falls back to the safe default advanced model', async () => {
     getAgentModeOverridesMock.mockImplementation(() => ({ basic: 'claude-haiku-4-5' }))
     const env = await buildProjectEnv('proj-mo-basic')
     expect(env.AGENT_BASIC_MODEL).toBe('claude-haiku-4-5')
-    expect(env.AGENT_ADVANCED_MODEL).toBeUndefined()
+    expect(env.AGENT_ADVANCED_MODEL).toBe('claude-sonnet-4-6')
   })
 
   test('sets both when both are configured', async () => {
@@ -584,10 +615,20 @@ describe('buildProjectEnv — agent model overrides', () => {
 // ─── auto-mode tier overrides ─────────────────────────────────────────────
 
 describe('buildProjectEnv — auto tier overrides', () => {
-  test('omits AGENT_AUTO_TIER_MAP when no tiers are configured', async () => {
+  // Unlike the basic/advanced modes, the three Auto tiers always resolve to
+  // AUTO_MODEL_DEFAULTS (economy/standard/premium) when unconfigured — the
+  // full map is emitted so agent-runtime never silently falls back to its
+  // own package-level hardcoded tier map (see the comment on
+  // resolveEffectiveAgentModelDefaults()).
+  test('falls back to the default economy/standard/premium tier map when no tiers are configured', async () => {
     getAutoTierOverridesMock.mockImplementation(() => ({}))
     const env = await buildProjectEnv('proj-auto-empty')
-    expect(env.AGENT_AUTO_TIER_MAP).toBeUndefined()
+    expect(env.AGENT_AUTO_TIER_MAP).toBeDefined()
+    expect(JSON.parse(env.AGENT_AUTO_TIER_MAP!)).toEqual({
+      economy: { id: 'gpt-5.4-nano', provider: 'openai' },
+      standard: { id: 'claude-haiku-4-5-20251001', provider: 'anthropic' },
+      premium: { id: 'claude-sonnet-4-6', provider: 'anthropic' },
+    })
   })
 
   test('resolves a public alias (hoshi-1.0) to its backing id + provider for all tiers', async () => {
@@ -605,10 +646,12 @@ describe('buildProjectEnv — auto tier overrides', () => {
     })
   })
 
-  test('passes a non-alias id through unchanged with an inferred provider', async () => {
+  test('passes a non-alias id through unchanged with an inferred provider, leaving unconfigured tiers on their defaults', async () => {
     getAutoTierOverridesMock.mockImplementation(() => ({ premium: 'claude-opus-4-7' }))
     const env = await buildProjectEnv('proj-auto-passthrough')
     expect(JSON.parse(env.AGENT_AUTO_TIER_MAP!)).toEqual({
+      economy: { id: 'gpt-5.4-nano', provider: 'openai' },
+      standard: { id: 'claude-haiku-4-5-20251001', provider: 'anthropic' },
       premium: { id: 'claude-opus-4-7', provider: 'anthropic' },
     })
   })

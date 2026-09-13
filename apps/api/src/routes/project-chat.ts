@@ -136,7 +136,18 @@ export async function trackUsageFromStream(
   } = {},
 ) {
   const decoder = new TextDecoder()
-  type UsageSnapshot = { promptTokens?: number; completionTokens?: number; totalTokens?: number }
+  type UsageSnapshot = {
+    promptTokens?: number
+    completionTokens?: number
+    totalTokens?: number
+    /** Real model id (e.g. `claude-sonnet-4-5`), when the runtime reported one on its usage frame. */
+    model?: string
+    /** Cache-read tokens, mapped from the runtime's `cacheReadTokens` field — used only for the
+     * `closeSession` stream-usage fallback; the primary accumulator path (`accumulateUsage` via
+     * the AI proxy) already tracks this as `cachedInputTokens`. */
+    cachedInputTokens?: number
+    cacheWriteTokens?: number
+  }
   const usageRef: { value: UsageSnapshot | null } = { value: null }
 
   // Accumulate tool call data incrementally as stream events arrive.
@@ -467,6 +478,14 @@ export async function trackUsageFromStream(
           promptTokens: usageData.promptTokens || usageData.inputTokens || 0,
           completionTokens: usageData.completionTokens || usageData.outputTokens || 0,
           totalTokens: usageData.totalTokens || ((usageData.promptTokens || usageData.inputTokens || 0) + (usageData.completionTokens || usageData.outputTokens || 0)),
+          // Captured for `closeSession`'s stream-usage fallback (see
+          // proxy-billing-session.ts) — used ONLY when the billing session's
+          // own accumulator comes up with zero tokens despite the stream
+          // itself reporting real usage (cross-pod fragmentation / Redis
+          // outage). Never used to override a non-zero accumulated total.
+          model: usageData.model,
+          cachedInputTokens: usageData.cacheReadTokens || usageData.cachedInputTokens || 0,
+          cacheWriteTokens: usageData.cacheWriteTokens || 0,
         }
         qualitySignals = {
           success: usageData.success === undefined ? undefined : usageData.success === true,
@@ -481,6 +500,9 @@ export async function trackUsageFromStream(
           promptTokens: data.promptTokens || data.inputTokens || 0,
           completionTokens: data.completionTokens || data.outputTokens || 0,
           totalTokens: data.totalTokens || ((data.promptTokens || data.inputTokens || 0) + (data.completionTokens || data.outputTokens || 0)),
+          model: data.model,
+          cachedInputTokens: data.cacheReadTokens || data.cachedInputTokens || 0,
+          cacheWriteTokens: data.cacheWriteTokens || 0,
         }
         qualitySignals = {
           success: data.success === undefined ? undefined : data.success === true,
@@ -656,10 +678,17 @@ export async function trackUsageFromStream(
   // Set quality signals BEFORE closing the session so they reach
   // recordAgentCostMetric inside closeSession (closeSession deletes the
   // session before reading quality, so a post-close set would be a no-op).
-  setQualitySignals(project.id, qualitySignals, chatSessionId)
+  await setQualitySignals(project.id, qualitySignals, chatSessionId)
   const { billedUsd } = await closeSession(project.id, {
     discardPartial: false,
     chatSessionId,
+    fallbackUsage: {
+      model: usageRef.value?.model,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens: usageRef.value?.cachedInputTokens,
+      cacheWriteTokens: usageRef.value?.cacheWriteTokens,
+    },
   })
   if (billedUsd > 0) {
     console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
@@ -1196,7 +1225,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Guard: if the handler exits without starting a stream (retry
       // exhaustion, client disconnect, thrown error), the finally block
       // ensures closeSession runs so we don't leak an open session.
-      openSession(projectId, project.workspaceId, billingUserId || 'system', incomingChatSessionId)
+      await openSession(projectId, project.workspaceId, billingUserId || 'system', incomingChatSessionId)
       let billingSessionHandedOff = false
       try {
 

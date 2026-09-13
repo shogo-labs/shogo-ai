@@ -60,8 +60,8 @@ beforeEach(() => {
 describe('teeChatStreamForBilling — client disconnect resilience', () => {
   test('client cancelling its reader does not stop billing tracking', async () => {
     const projectId = 'proj-client-cancel'
-    openSession(projectId, 'ws-cc', 'user-cc')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
+    await openSession(projectId, 'ws-cc', 'user-cc')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
 
     const upstream = makeStream(turnCompleteFrames())
     const logSpy = spyOn(console, 'log').mockImplementation(() => {})
@@ -75,15 +75,15 @@ describe('teeChatStreamForBilling — client disconnect resilience', () => {
     // Billing tracking continues in the background. Give the pump a tick.
     await new Promise((r) => setTimeout(r, 50))
 
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls).toHaveLength(1)
     logSpy.mockRestore()
   })
 
   test('background reader.read() throwing closes the client stream cleanly', async () => {
     const projectId = 'proj-bg-error'
-    openSession(projectId, 'ws-bg', 'user-bg')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
+    await openSession(projectId, 'ws-bg', 'user-bg')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
 
     let firstRead = true
     const upstream = new ReadableStream<Uint8Array>({
@@ -119,7 +119,7 @@ describe('teeChatStreamForBilling — client disconnect resilience', () => {
     expect(received).toContain('data-turn-complete')
     expect(caught).not.toBeNull()
     expect((caught as Error).message).toBe('upstream pod restart')
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     logSpy.mockRestore()
   })
 })
@@ -127,8 +127,8 @@ describe('teeChatStreamForBilling — client disconnect resilience', () => {
 describe('trackChatStreamForBilling — billing log + reader-lock release', () => {
   test('emits the "💰 Billing session closed — charged $..." line when billedUsd > 0', async () => {
     const projectId = 'proj-log-charge'
-    openSession(projectId, 'ws-l', 'user-l')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 500)
+    await openSession(projectId, 'ws-l', 'user-l')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 500)
 
     const logSpy = spyOn(console, 'log').mockImplementation(() => {})
     await trackChatStreamForBilling(makeStream(turnCompleteFrames()), projectId)
@@ -143,8 +143,8 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
 
   test('empty stream (no frames at all) — no charge, no crash, reader released', async () => {
     const projectId = 'proj-empty'
-    openSession(projectId, 'ws-e', 'user-e')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
+    await openSession(projectId, 'ws-e', 'user-e')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) { controller.close() },
@@ -154,13 +154,13 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
 
     // EOF without data-turn-complete -> discardPartial, no charge.
     expect(consumeUsageCalls).toHaveLength(0)
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
   })
 
   test('unparseable frames are skipped without aborting the loop', async () => {
     const projectId = 'proj-garbage'
-    openSession(projectId, 'ws-g', 'user-g')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 50, 25)
+    await openSession(projectId, 'ws-g', 'user-g')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 50, 25)
 
     const stream = makeStream([
       'data: this is not json at all\n',
@@ -176,8 +176,8 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
 
   test('text payload that is not an object is ignored', async () => {
     const projectId = 'proj-non-object'
-    openSession(projectId, 'ws-no', 'user-no')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 50, 25)
+    await openSession(projectId, 'ws-no', 'user-no')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 50, 25)
 
     const stream = makeStream([
       'data: 42\n', // valid JSON, not an object
@@ -192,8 +192,8 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
 
   test('finish without any usage object is fine (quality stays empty)', async () => {
     const projectId = 'proj-finish-noUsage'
-    openSession(projectId, 'ws-fn', 'user-fn')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
+    await openSession(projectId, 'ws-fn', 'user-fn')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
 
     const stream = makeStream([
       `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n`,
@@ -208,8 +208,8 @@ describe('trackChatStreamForBilling — billing log + reader-lock release', () =
 describe('teeChatStreamForBilling — output forwarding', () => {
   test('every chunk pushed by upstream reaches the client reader, in order', async () => {
     const projectId = 'proj-order'
-    openSession(projectId, 'ws-ord', 'user-ord')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
+    await openSession(projectId, 'ws-ord', 'user-ord')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
 
     const frames = [
       `data: ${JSON.stringify({ type: 'text-delta', delta: 'A' })}\n`,

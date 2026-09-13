@@ -212,6 +212,7 @@ describe('POST /projects/:projectId/runtime/start', () => {
       projectId: 'proj-1',
       status: 'running',
       url: 'http://127.0.0.1:8123',
+      readyUrl: 'http://127.0.0.1:8123',
       port: 8123,
     })
   })

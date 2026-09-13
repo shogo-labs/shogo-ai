@@ -94,7 +94,7 @@ export function AppearanceMenu({ inline = false }: { inline?: boolean }) {
         )}
       >
         <PopoverBody>
-          {THEME_OPTIONS.map(({ value, label }) => (
+          {THEME_CHOICES.map(({ value, label }) => (
             <Pressable
               key={value}
               onPress={() => {

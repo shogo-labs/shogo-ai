@@ -1896,7 +1896,7 @@ function resolveInternalUsage(c: any, tokenPayload: ProxyTokenPayload): { action
  * chat billing session), and keys the lookup on the forwarded
  * `x-chat-session-id` header when present.
  */
-function isTurnInFlight(c: any, tokenPayload: ProxyTokenPayload): boolean {
+async function isTurnInFlight(c: any, tokenPayload: ProxyTokenPayload): Promise<boolean> {
   const billingProjectId =
     tokenPayload.projectId === 'api-key' || tokenPayload.projectId === 'system'
       ? null
@@ -1964,7 +1964,7 @@ export async function recordUsage(
   }
 
   // If a billing session is open, accumulate — the session closer will charge
-  if (billingProjectId && accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)) {
+  if (billingProjectId && await accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     // Per-request cache breakdown — same gate as the agent-runtime cache-debug
     // logs so a single env flag turns the whole picture on. This is the
@@ -2201,7 +2201,7 @@ async function recordImageUsage(
     // If a billing session is open for this project, fold this image's USD
     // into the session so the chat turn produces a single `chat_message`
     // wallet debit instead of an extra `ai_image_generation` row.
-    if (billingProjectId && accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)) {
+    if (billingProjectId && await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)) {
       console.log(`[AI Proxy] 🎨 Accumulated image gen for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
       return
     }
@@ -2616,7 +2616,7 @@ export function aiProxyRoutes() {
     // Pre-check: reject if workspace has no included USD left (skip in local dev
     // and for internal, non-billable completions). An already-admitted chat turn
     // that is still in flight is never re-gated mid-message (see isTurnInFlight).
-    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload)) {
+    if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -2859,7 +2859,7 @@ export function aiProxyRoutes() {
     // chat/completions for the credit-ledger FK rationale).
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
-    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload)) {
+    if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -3189,7 +3189,7 @@ export function aiProxyRoutes() {
 
     // Pre-check usage balance (skip in local dev and for internal usage). An
     // already-admitted chat turn still in flight is never re-gated mid-message.
-    if (!isLocalDev && !internalUsage && !isTurnInFlight(c, tokenPayload)) {
+    if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -3618,7 +3618,7 @@ export function aiProxyRoutes() {
 
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — a build that generates images mid-turn isn't interrupted.
-    if (!isTurnInFlight(c, tokenPayload)) {
+    if (!(await isTurnInFlight(c, tokenPayload))) {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -3718,7 +3718,7 @@ export function aiProxyRoutes() {
 
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — a build that edits images mid-turn isn't interrupted.
-    if (!isTurnInFlight(c, tokenPayload)) {
+    if (!(await isTurnInFlight(c, tokenPayload))) {
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -3831,7 +3831,7 @@ export function aiProxyRoutes() {
 
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — e.g. the transcribe_audio tool running inside a turn.
-    if (!isTurnInFlight(c, tokenPayload) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    if (!(await isTurnInFlight(c, tokenPayload)) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
       return c.json(
         { error: { message: 'Usage limit reached. Enable usage-based pricing or upgrade your plan.', type: 'billing_error', code: 'usage_limit_reached', ...usageLimit } },

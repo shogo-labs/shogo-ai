@@ -3090,7 +3090,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // hands it off to a tracker (e.g. retry exhaustion, client disconnect).
   let billingSessionHandedOff = false
   if (isChatStream && authedWorkspaceId && authedUserId) {
-    openSession(projectId, authedWorkspaceId, authedUserId, chatSessionIdHeader)
+    // Awaited: the request is about to be forwarded to the runtime, whose
+    // very first `accumulateUsage` call must find this session already
+    // written (Redis or local) or it will fall through to per-call charging.
+    await openSession(projectId, authedWorkspaceId, authedUserId, chatSessionIdHeader)
   }
 
   // ─── Tunnel branch ─────────────────────────────────────────────────
@@ -3133,7 +3136,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
         onBillingHandoff: () => { billingSessionHandedOff = true },
       })
     } finally {
-      if (isChatStream && !billingSessionHandedOff && hasSession(projectId, chatSessionIdHeader)) {
+      if (isChatStream && !billingSessionHandedOff && (await hasSession(projectId, chatSessionIdHeader))) {
         closeSession(projectId, { discardPartial: true, chatSessionId: chatSessionIdHeader }).catch((err) =>
           console.error(`[AgentProxy] Failed to close orphaned tunnel billing session for ${projectId}:`, err),
         )
@@ -3341,7 +3344,7 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     // handing it off to the tracker (retry exhaustion, client disconnect,
     // non-2xx response, thrown error). We pass `discardPartial: true` so
     // we don't bill for a turn the client never saw.
-    if (isChatStream && !billingSessionHandedOff && hasSession(projectId, chatSessionIdHeader)) {
+    if (isChatStream && !billingSessionHandedOff && (await hasSession(projectId, chatSessionIdHeader))) {
       closeSession(projectId, { discardPartial: true, chatSessionId: chatSessionIdHeader }).catch((err) =>
         console.error(`[AgentProxy] Failed to close orphaned billing session for ${projectId}:`, err),
       )

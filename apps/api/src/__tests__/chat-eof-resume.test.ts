@@ -127,8 +127,8 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
   test('clean stream with data-turn-complete persists and bills as today', async () => {
     const projectId = 'proj-clean'
     const chatSessionId = 'sess-clean'
-    openSession(projectId, 'ws-clean', 'user-clean')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 200, 50)
+    await openSession(projectId, 'ws-clean', 'user-clean')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 200, 50)
 
     const stream = makeSseStream([
       dataFrame({ type: 'text-delta', delta: 'hello ' }),
@@ -151,7 +151,7 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     )
 
     expect(resumeCalls).toBe(0)
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
     expect(persistedMessages.length).toBe(1)
     expect(persistedMessages[0].content).toBe('hello world')
@@ -161,8 +161,8 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
   test('EOF without turn-complete + resume(200) re-drains full turn from buffer', async () => {
     const projectId = 'proj-resume-ok'
     const chatSessionId = 'sess-resume-ok'
-    openSession(projectId, 'ws-r', 'user-r')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+    await openSession(projectId, 'ws-r', 'user-r')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
 
     // Original POST stream EOFs with a truncated text-delta and no
     // terminal `data-turn-complete` marker — exactly the Knative cut shape.
@@ -195,7 +195,7 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
 
     // Simulate the additional AI proxy call(s) that run on the resumed turn:
     // they accumulate into the still-open billing session before close.
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 150, 50)
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 150, 50)
 
     const resumeFromSeqs: number[] = []
     const resumeFn = async (fromSeq: number) => {
@@ -219,7 +219,7 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(persistedToolCalls.length).toBe(1)
     expect(persistedToolCalls[0].toolName).toBe('read_file')
     // Billing closed (not discarded) — full session charged.
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
     expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(2)
   })
@@ -227,8 +227,8 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
   test('EOF without turn-complete + resume(200) drains aborted tail (stop button case)', async () => {
     const projectId = 'proj-stop'
     const chatSessionId = 'sess-stop'
-    openSession(projectId, 'ws-s', 'user-s')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+    await openSession(projectId, 'ws-s', 'user-s')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
 
     // User clicked Stop. The original POST stream EOFs without a
     // `data-turn-complete` because the runtime's response was cut as the
@@ -296,7 +296,7 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(persistedToolCalls.length).toBe(1)
     expect(persistedToolCalls[0].toolName).toBe('exec')
     // Billing closed (NOT discarded) — partial usage is charged.
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
     expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(1)
   })
@@ -304,8 +304,8 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
   test('EOF without turn-complete + resume(204) persists partial (pod crash case)', async () => {
     const projectId = 'proj-crash'
     const chatSessionId = 'sess-crash'
-    openSession(projectId, 'ws-c', 'user-c')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+    await openSession(projectId, 'ws-c', 'user-c')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
 
     // The runtime pod died mid-turn (OOM, crash) — the in-memory buffer
     // is gone with the process, so resume returns 204. We fall back to
@@ -344,7 +344,7 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(persistedMessages[0].content).toBe('partial reply')
     expect(persistedToolCalls.length).toBe(1)
     expect(persistedToolCalls[0].toolName).toBe('exec')
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
     expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(1)
   })
@@ -354,8 +354,8 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     // throws — resume returns null, we keep what we had.
     const projectId = 'proj-noresume'
     const chatSessionId = 'sess-noresume'
-    openSession(projectId, 'ws-n', 'user-n')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 50, 10)
+    await openSession(projectId, 'ws-n', 'user-n')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 50, 10)
 
     const stream = makeSseStream([
       dataFrame({ type: 'text-delta', delta: 'half-finished thought' }),
@@ -375,8 +375,8 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
 
   test('legacy chats without chatSessionId are still billed (no persist, no resume)', async () => {
     const projectId = 'proj-legacy'
-    openSession(projectId, 'ws-l', 'user-l')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 60, 15)
+    await openSession(projectId, 'ws-l', 'user-l')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 60, 15)
 
     const stream = makeSseStream([
       dataFrame({ type: 'text-delta', delta: 'reply' }),

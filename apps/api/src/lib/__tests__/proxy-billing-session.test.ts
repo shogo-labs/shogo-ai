@@ -96,36 +96,36 @@ afterEach(async () => {
 })
 
 describe('openSession + hasSession', () => {
-  it('opens a session keyed by projectId when no chatSessionId is given', () => {
-    expect(hasSession('p1')).toBe(false)
-    openSession('p1', 'w1', 'u1')
-    expect(hasSession('p1')).toBe(true)
-    expect(hasSession('p1', 'c1')).toBe(false)
+  it('opens a session keyed by projectId when no chatSessionId is given', async () => {
+    expect(await hasSession('p1')).toBe(false)
+    await openSession('p1', 'w1', 'u1')
+    expect(await hasSession('p1')).toBe(true)
+    expect(await hasSession('p1', 'c1')).toBe(false)
   })
 
-  it('opens distinct composite-keyed sessions for the same projectId', () => {
-    openSession('p1', 'w1', 'u1', 'cA')
-    openSession('p1', 'w1', 'u1', 'cB')
-    expect(hasSession('p1', 'cA')).toBe(true)
-    expect(hasSession('p1', 'cB')).toBe(true)
+  it('opens distinct composite-keyed sessions for the same projectId', async () => {
+    await openSession('p1', 'w1', 'u1', 'cA')
+    await openSession('p1', 'w1', 'u1', 'cB')
+    expect(await hasSession('p1', 'cA')).toBe(true)
+    expect(await hasSession('p1', 'cB')).toBe(true)
   })
 
   it('overwrites an existing legacy-keyed session and warns', async () => {
-    openSession('p1', 'w1', 'u1')
-    openSession('p1', 'w2', 'u2')
+    await openSession('p1', 'w1', 'u1')
+    await openSession('p1', 'w2', 'u2')
     expect(logs.warn.length).toBeGreaterThanOrEqual(1)
     expect(String(logs.warn[0])).toContain('Overwriting existing session')
   })
 
-  it('elevates to console.error when re-opening with a composite key', () => {
-    openSession('p1', 'w1', 'u1', 'cA')
-    openSession('p1', 'w2', 'u2', 'cA')
+  it('elevates to console.error when re-opening with a composite key', async () => {
+    await openSession('p1', 'w1', 'u1', 'cA')
+    await openSession('p1', 'w2', 'u2', 'cA')
     expect(logs.error.length).toBeGreaterThanOrEqual(1)
   })
 
   it('swallows closeSession failure when overwriting an existing session (closes the inline .catch arrow at L109)', async () => {
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 10, 20)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 10, 20)
     const origCalc = calcImpl
     calcImpl = (() => { throw new Error('calc-explode-overwrite') }) as any
     try {
@@ -141,24 +141,24 @@ describe('openSession + hasSession', () => {
 })
 
 describe('hasActiveSession', () => {
-  it('returns false when no session exists for the project', () => {
-    expect(hasActiveSession('p1')).toBe(false)
-    expect(hasActiveSession('p1', 'cA')).toBe(false)
+  it('returns false when no session exists for the project', async () => {
+    expect(await hasActiveSession('p1')).toBe(false)
+    expect(await hasActiveSession('p1', 'cA')).toBe(false)
   })
 
   it('finds a legacy projectId-only session', async () => {
-    openSession('p1', 'w1', 'u1')
-    expect(hasActiveSession('p1')).toBe(true)
+    await openSession('p1', 'w1', 'u1')
+    expect(await hasActiveSession('p1')).toBe(true)
     // Even a lookup with a chatSessionId resolves via the projectId-scan
     // fallback, so a header-less turn is still detected as in flight.
-    expect(hasActiveSession('p1', 'cMissing')).toBe(true)
+    expect(await hasActiveSession('p1', 'cMissing')).toBe(true)
     await closeSession('p1')
-    expect(hasActiveSession('p1')).toBe(false)
+    expect(await hasActiveSession('p1')).toBe(false)
   })
 
   it('finds a composite-keyed session by its own chatSessionId', async () => {
-    openSession('p1', 'w1', 'u1', 'cA')
-    expect(hasActiveSession('p1', 'cA')).toBe(true)
+    await openSession('p1', 'w1', 'u1', 'cA')
+    expect(await hasActiveSession('p1', 'cA')).toBe(true)
     await closeSession('p1', { chatSessionId: 'cA' })
   })
 
@@ -167,56 +167,56 @@ describe('hasActiveSession', () => {
     // no x-chat-session-id, so the proxy looks up with chatSessionId=null but
     // the session was opened under a composite key. The projectId scan must
     // still detect the in-flight turn.
-    openSession('p1', 'w1', 'u1', 'cA')
-    expect(hasActiveSession('p1', null)).toBe(true)
-    expect(hasActiveSession('p1')).toBe(true)
+    await openSession('p1', 'w1', 'u1', 'cA')
+    expect(await hasActiveSession('p1', null)).toBe(true)
+    expect(await hasActiveSession('p1')).toBe(true)
     await closeSession('p1', { chatSessionId: 'cA' })
   })
 
   it('does not match a different project', async () => {
-    openSession('p1', 'w1', 'u1', 'cA')
-    expect(hasActiveSession('p2')).toBe(false)
+    await openSession('p1', 'w1', 'u1', 'cA')
+    expect(await hasActiveSession('p2')).toBe(false)
     await closeSession('p1', { chatSessionId: 'cA' })
   })
 })
 
 describe('accumulateUsage', () => {
-  it('returns false when no session exists', () => {
-    expect(accumulateUsage('nope', 'sonnet', 10, 20)).toBe(false)
+  it('returns false when no session exists', async () => {
+    expect(await accumulateUsage('nope', 'sonnet', 10, 20)).toBe(false)
   })
 
-  it('accumulates token counts and sets model on legacy-keyed session', () => {
-    openSession('p1', 'w1', 'u1')
-    expect(accumulateUsage('p1', 'sonnet', 10, 20, 3, 4)).toBe(true)
-    expect(accumulateUsage('p1', 'haiku', 5, 6)).toBe(true)
+  it('accumulates token counts and sets model on legacy-keyed session', async () => {
+    await openSession('p1', 'w1', 'u1')
+    expect(await accumulateUsage('p1', 'sonnet', 10, 20, 3, 4)).toBe(true)
+    expect(await accumulateUsage('p1', 'haiku', 5, 6)).toBe(true)
   })
 
   it('prefers composite-keyed session over legacy when chatSessionId is supplied', async () => {
-    openSession('p1', 'w1', 'u1') // legacy
-    openSession('p1', 'w1', 'u1', 'cA') // composite
-    expect(accumulateUsage('p1', 'sonnet', 100, 100, 0, 0, 'cA')).toBe(true)
+    await openSession('p1', 'w1', 'u1') // legacy
+    await openSession('p1', 'w1', 'u1', 'cA') // composite
+    expect(await accumulateUsage('p1', 'sonnet', 100, 100, 0, 0, 'cA')).toBe(true)
     const r = await closeSession('p1', { chatSessionId: 'cA' })
     expect(r.totalTokens).toBe(200)
   })
 
   it('falls back to legacy session when composite lookup misses', async () => {
-    openSession('p1', 'w1', 'u1') // only legacy exists
-    expect(accumulateUsage('p1', 'sonnet', 10, 20, 0, 0, 'cMissing')).toBe(true)
+    await openSession('p1', 'w1', 'u1') // only legacy exists
+    expect(await accumulateUsage('p1', 'sonnet', 10, 20, 0, 0, 'cMissing')).toBe(true)
     const r = await closeSession('p1') // close legacy
     expect(r.totalTokens).toBe(30)
   })
 })
 
 describe('accumulateImageUsage', () => {
-  it('returns false when no session', () => {
-    expect(accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2)).toBe(false)
+  it('returns false when no session', async () => {
+    expect(await accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2)).toBe(false)
   })
 
   it('accumulates image usd + dedupes model list', async () => {
-    openSession('p1', 'w1', 'u1')
-    accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2)
-    accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2) // duplicate model
-    accumulateImageUsage('p1', 'midjourney', 0.05, 0.1)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2)
+    await accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2) // duplicate model
+    await accumulateImageUsage('p1', 'midjourney', 0.05, 0.1)
     const r = await closeSession('p1')
     expect(r.rawUsd).toBeCloseTo(0.25, 5)
     expect(r.billedUsd).toBeCloseTo(0.5, 5)
@@ -227,15 +227,15 @@ describe('accumulateImageUsage', () => {
 })
 
 describe('setQualitySignals', () => {
-  it('returns false when no session', () => {
-    expect(setQualitySignals('p1', { success: true })).toBe(false)
+  it('returns false when no session', async () => {
+    expect(await setQualitySignals('p1', { success: true })).toBe(false)
   })
 
   it('merges signals and forwards them into cost metric', async () => {
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 10, 20)
-    expect(setQualitySignals('p1', { success: true, hitMaxTurns: false })).toBe(true)
-    expect(setQualitySignals('p1', { loopDetected: true })).toBe(true)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 10, 20)
+    expect(await setQualitySignals('p1', { success: true, hitMaxTurns: false })).toBe(true)
+    expect(await setQualitySignals('p1', { loopDetected: true })).toBe(true)
     await closeSession('p1')
     expect(costMetricCalls).toHaveLength(1)
     expect(costMetricCalls[0].success).toBe(true)
@@ -251,7 +251,7 @@ describe('closeSession', () => {
   })
 
   it('returns zeros when session is empty (no tokens, no images) but still records a failed metric', async () => {
-    openSession('p1', 'w1', 'u1', 'chat-empty')
+    await openSession('p1', 'w1', 'u1', 'chat-empty')
     const r = await closeSession('p1', { chatSessionId: 'chat-empty' })
     expect(r).toEqual({ billedUsd: 0, rawUsd: 0, totalTokens: 0 })
     expect(consumeUsageCalls).toHaveLength(0)
@@ -271,7 +271,7 @@ describe('closeSession', () => {
   // windows or get attributed to an active `main-chat` A/B experiment —
   // `maybeRecordExperimentRun` matches on agentType + model.
   it('records the failed turn under a distinct agentType, not main-chat', async () => {
-    openSession('p1', 'w1', 'u1', 'chat-agenttype')
+    await openSession('p1', 'w1', 'u1', 'chat-agenttype')
     await closeSession('p1', { chatSessionId: 'chat-agenttype' })
     expect(costMetricCalls).toHaveLength(1)
     expect(costMetricCalls[0].agentType).toBe('main-chat-failed')
@@ -280,26 +280,26 @@ describe('closeSession', () => {
   })
 
   it('a real main-chat turn still records under main-chat', async () => {
-    openSession('p1', 'w1', 'u1', 'chat-ok')
-    accumulateUsage('p1', 'sonnet', 1000, 500, 0, 0, 'chat-ok')
+    await openSession('p1', 'w1', 'u1', 'chat-ok')
+    await accumulateUsage('p1', 'sonnet', 1000, 500, 0, 0, 'chat-ok')
     await closeSession('p1', { chatSessionId: 'chat-ok' })
     expect(costMetricCalls).toHaveLength(1)
     expect(costMetricCalls[0].agentType).toBe('main-chat')
   })
 
   it('discardPartial:true skips charging but still drains the session', async () => {
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 100, 200)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 100, 200)
     const r = await closeSession('p1', { discardPartial: true })
     expect(r.billedUsd).toBe(0)
     expect(r.totalTokens).toBe(300)
     expect(consumeUsageCalls).toHaveLength(0)
-    expect(hasSession('p1')).toBe(false)
+    expect(await hasSession('p1')).toBe(false)
     expect(String(logs.log[0])).toContain('Discarded partial session')
   })
 
   it('discardPartial on a zero-token session does not record a metric', async () => {
-    openSession('p1', 'w1', 'u1')
+    await openSession('p1', 'w1', 'u1')
     const r = await closeSession('p1', { discardPartial: true })
     expect(r.totalTokens).toBe(0)
     expect(consumeUsageCalls).toHaveLength(0)
@@ -310,17 +310,17 @@ describe('closeSession', () => {
   // a failure row here would inflate the dropped-turn count with our own
   // session-map maintenance.
   it('an openSession overwrite does not record a failed-turn metric', async () => {
-    openSession('p-overwrite', 'w1', 'u1', 'chat-dup')
-    openSession('p-overwrite', 'w1', 'u1', 'chat-dup')
+    await openSession('p-overwrite', 'w1', 'u1', 'chat-dup')
+    await openSession('p-overwrite', 'w1', 'u1', 'chat-dup')
     await Promise.resolve()
     expect(costMetricCalls).toHaveLength(0)
     expect(consumeUsageCalls).toHaveLength(0)
   })
 
   it('charges via billing service and forwards full metadata', async () => {
-    openSession('p1', 'w1', 'u1', 'chat-z')
-    accumulateUsage('p1', 'sonnet', 1000, 500, 100, 50, 'chat-z')
-    accumulateImageUsage('p1', 'sd-xl', 0.05, 0.1, 'chat-z')
+    await openSession('p1', 'w1', 'u1', 'chat-z')
+    await accumulateUsage('p1', 'sonnet', 1000, 500, 100, 50, 'chat-z')
+    await accumulateImageUsage('p1', 'sd-xl', 0.05, 0.1, 'chat-z')
     const r = await closeSession('p1', { chatSessionId: 'chat-z' })
     expect(consumeUsageCalls).toHaveLength(1)
     const arg = consumeUsageCalls[0]
@@ -340,8 +340,8 @@ describe('closeSession', () => {
     // at the `sonnet` bucket because the session collapsed the real id via
     // proxyModelToBillingModel before calling calculateUsageCost, defeating
     // the catalog's DB-pricing lookup.
-    openSession('p1', 'w1', 'u1', 'chat')
-    accumulateUsage('p1', 'hoshi', 1000, 500, 0, 0, 'chat')
+    await openSession('p1', 'w1', 'u1', 'chat')
+    await accumulateUsage('p1', 'hoshi', 1000, 500, 0, 0, 'chat')
     await closeSession('p1', { chatSessionId: 'chat' })
 
     // calculateUsageCost must receive the real model id, not "billing-*".
@@ -357,33 +357,33 @@ describe('closeSession', () => {
   })
 
   it('falls back to legacy key when caller forgets to pass chatSessionId on close', async () => {
-    openSession('p1', 'w1', 'u1') // legacy
-    accumulateUsage('p1', 'sonnet', 100, 100)
+    await openSession('p1', 'w1', 'u1') // legacy
+    await accumulateUsage('p1', 'sonnet', 100, 100)
     const r = await closeSession('p1', { chatSessionId: 'never-opened' })
     expect(r.totalTokens).toBe(200)
-    expect(hasSession('p1')).toBe(false)
+    expect(await hasSession('p1')).toBe(false)
   })
 
   it('warns when billing returns success:false', async () => {
     consumeUsageImpl = async () => ({ success: false, error: 'no credits' })
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 10, 20)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 10, 20)
     await closeSession('p1')
     expect(logs.warn.some((w) => String(w[0]).includes('Could not charge'))).toBe(true)
   })
 
   it('logs error when billing service throws', async () => {
     consumeUsageImpl = async () => { throw new Error('db down') }
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 10, 20)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 10, 20)
     await closeSession('p1')
     expect(logs.error.some((e) => String(e[0]).includes('Failed to charge'))).toBe(true)
   })
 
   it('catches recordAgentCostMetric failures without surfacing them', async () => {
     costMetricImpl = async () => { throw new Error('analytics down') }
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 10, 20)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 10, 20)
     await closeSession('p1')
     // Give the void-promise time to settle
     await new Promise((r) => setTimeout(r, 10))
@@ -391,15 +391,15 @@ describe('closeSession', () => {
   })
 
   it('omits chatSessionId metadata when session was opened without one', async () => {
-    openSession('p1', 'w1', 'u1')
-    accumulateUsage('p1', 'sonnet', 10, 20)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateUsage('p1', 'sonnet', 10, 20)
     await closeSession('p1')
     expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBeUndefined()
   })
 
   it('still charges when only image usage is present (no tokens)', async () => {
-    openSession('p1', 'w1', 'u1')
-    accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2)
+    await openSession('p1', 'w1', 'u1')
+    await accumulateImageUsage('p1', 'sd-xl', 0.1, 0.2)
     const r = await closeSession('p1')
     expect(r.billedUsd).toBeGreaterThan(0)
     expect(r.totalTokens).toBe(0)
@@ -428,7 +428,7 @@ describe('orphan-session GC', () => {
   })
 
   it('no-op when sessions exist but none are past the timeout', async () => {
-    openSession('p_fresh', 'ws_x', 'u_x', 'cs_fresh')
+    await openSession('p_fresh', 'ws_x', 'u_x', 'cs_fresh')
     const before = logs.warn.length
     capturedGcCb!()
     expect(logs.warn.length).toBe(before)
@@ -436,7 +436,7 @@ describe('orphan-session GC', () => {
   })
 
   it('flushes orphaned sessions and logs a warning (closes L72-80 happy path)', async () => {
-    openSession('p_old', 'ws_x', 'u_x', 'cs_old')
+    await openSession('p_old', 'ws_x', 'u_x', 'cs_old')
     Date.now = () => origDateNow() + 11 * 60 * 1000
     capturedGcCb!()
     const orphanLogs = logs.warn.filter((a) =>
@@ -447,8 +447,8 @@ describe('orphan-session GC', () => {
   })
 
   it('inline .catch arrow fires when closeSession rejects (closes L77-79 + the catch-arrow function)', async () => {
-    openSession('p_boom', 'ws_x', 'u_x', 'cs_boom')
-    accumulateUsage('p_boom', 'sonnet', 100, 200, 0, 0, 'cs_boom')
+    await openSession('p_boom', 'ws_x', 'u_x', 'cs_boom')
+    await accumulateUsage('p_boom', 'sonnet', 100, 200, 0, 0, 'cs_boom')
     Date.now = () => origDateNow() + 11 * 60 * 1000
     // closeSession internally catches consumeUsage failures, so reject it
     // upstream by making calculateUsageCost throw synchronously — that

@@ -56,18 +56,18 @@ beforeEach(() => {
 })
 
 describe('setQualitySignals', () => {
-  test('returns false when no session is open', () => {
-    expect(setQualitySignals('proj-no-sess', { success: true })).toBe(false)
+  test('returns false when no session is open', async () => {
+    expect(await setQualitySignals('proj-no-sess', { success: true })).toBe(false)
   })
 
   test('returns true and shallow-merges into the existing session', async () => {
-    openSession('proj-qm', 'ws-qm', 'user-qm')
-    accumulateUsage('proj-qm', 'claude-sonnet-4-5', 100, 50)
+    await openSession('proj-qm', 'ws-qm', 'user-qm')
+    await accumulateUsage('proj-qm', 'claude-sonnet-4-5', 100, 50)
 
-    expect(setQualitySignals('proj-qm', { success: true })).toBe(true)
-    expect(setQualitySignals('proj-qm', { hitMaxTurns: true })).toBe(true)
+    expect(await setQualitySignals('proj-qm', { success: true })).toBe(true)
+    expect(await setQualitySignals('proj-qm', { hitMaxTurns: true })).toBe(true)
     // Later set must NOT clobber earlier fields.
-    expect(setQualitySignals('proj-qm', { loopDetected: false })).toBe(true)
+    expect(await setQualitySignals('proj-qm', { loopDetected: false })).toBe(true)
 
     await closeSession('proj-qm')
     expect(consumeUsageCalls).toHaveLength(1)
@@ -82,9 +82,9 @@ describe('setQualitySignals', () => {
 
 describe('cache-input / cache-write token accumulation', () => {
   test('cachedInputTokens and cacheWriteTokens are summed and reported', async () => {
-    openSession('proj-cache', 'ws-c', 'user-c')
-    accumulateUsage('proj-cache', 'claude-sonnet-4-5', 1000, 200, 800, 600)
-    accumulateUsage('proj-cache', 'claude-sonnet-4-5', 500, 100, 200, 300)
+    await openSession('proj-cache', 'ws-c', 'user-c')
+    await accumulateUsage('proj-cache', 'claude-sonnet-4-5', 1000, 200, 800, 600)
+    await accumulateUsage('proj-cache', 'claude-sonnet-4-5', 500, 100, 200, 300)
 
     await closeSession('proj-cache')
 
@@ -103,15 +103,15 @@ describe('consumeUsage failure surfaces', () => {
     consumeImpl = async () => ({ success: false, error: 'insufficient-credits' })
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
 
-    openSession('proj-fail-soft', 'ws-fs', 'user-fs')
-    accumulateUsage('proj-fail-soft', 'claude-sonnet-4-5', 100, 50)
+    await openSession('proj-fail-soft', 'ws-fs', 'user-fs')
+    await accumulateUsage('proj-fail-soft', 'claude-sonnet-4-5', 100, 50)
 
     const { billedUsd } = await closeSession('proj-fail-soft')
 
     expect(billedUsd).toBeGreaterThan(0)
     expect(consumeUsageCalls).toHaveLength(1)
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Could not charge usage'))).toBe(true)
-    expect(hasSession('proj-fail-soft')).toBe(false)
+    expect(await hasSession('proj-fail-soft')).toBe(false)
     warnSpy.mockRestore()
   })
 
@@ -119,15 +119,15 @@ describe('consumeUsage failure surfaces', () => {
     consumeImpl = async () => { throw new Error('billing-db-down') }
     const errSpy = spyOn(console, 'error').mockImplementation(() => {})
 
-    openSession('proj-fail-hard', 'ws-fh', 'user-fh')
-    accumulateUsage('proj-fail-hard', 'claude-sonnet-4-5', 100, 50)
+    await openSession('proj-fail-hard', 'ws-fh', 'user-fh')
+    await accumulateUsage('proj-fail-hard', 'claude-sonnet-4-5', 100, 50)
 
     const result = await closeSession('proj-fail-hard')
 
     expect(result.billedUsd).toBeGreaterThan(0) // computed even though debit failed
     expect(consumeUsageCalls).toHaveLength(1)
     expect(errSpy.mock.calls.some((c) => String(c[0]).includes('Failed to charge usage'))).toBe(true)
-    expect(hasSession('proj-fail-hard')).toBe(false)
+    expect(await hasSession('proj-fail-hard')).toBe(false)
     errSpy.mockRestore()
   })
 
@@ -135,8 +135,8 @@ describe('consumeUsage failure surfaces', () => {
     recordImpl = async () => { throw new Error('analytics-down') }
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
 
-    openSession('proj-rec-fail', 'ws-rf', 'user-rf')
-    accumulateUsage('proj-rec-fail', 'claude-sonnet-4-5', 100, 50)
+    await openSession('proj-rec-fail', 'ws-rf', 'user-rf')
+    await accumulateUsage('proj-rec-fail', 'claude-sonnet-4-5', 100, 50)
 
     await closeSession('proj-rec-fail')
 
@@ -153,9 +153,9 @@ describe('openSession overwrite + image dedup', () => {
   test('opening over an existing session logs an overwrite warning', async () => {
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
 
-    openSession('proj-overwrite-x', 'ws-1', 'user-1')
-    accumulateUsage('proj-overwrite-x', 'claude-sonnet-4-5', 1000, 500)
-    openSession('proj-overwrite-x', 'ws-2', 'user-2')
+    await openSession('proj-overwrite-x', 'ws-1', 'user-1')
+    await accumulateUsage('proj-overwrite-x', 'claude-sonnet-4-5', 1000, 500)
+    await openSession('proj-overwrite-x', 'ws-2', 'user-2')
 
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Overwriting existing session'))).toBe(true)
     warnSpy.mockRestore()
@@ -168,10 +168,10 @@ describe('openSession overwrite + image dedup', () => {
   })
 
   test('accumulateImageUsage does not duplicate model names in imageModels', async () => {
-    openSession('proj-img-dedup', 'ws-1', 'user-1')
-    accumulateImageUsage('proj-img-dedup', 'gpt-image-1', 0.04, 0.06)
-    accumulateImageUsage('proj-img-dedup', 'gpt-image-1', 0.04, 0.06)
-    accumulateImageUsage('proj-img-dedup', 'gpt-image-1', 0.04, 0.06)
+    await openSession('proj-img-dedup', 'ws-1', 'user-1')
+    await accumulateImageUsage('proj-img-dedup', 'gpt-image-1', 0.04, 0.06)
+    await accumulateImageUsage('proj-img-dedup', 'gpt-image-1', 0.04, 0.06)
+    await accumulateImageUsage('proj-img-dedup', 'gpt-image-1', 0.04, 0.06)
 
     await closeSession('proj-img-dedup')
 
@@ -183,8 +183,8 @@ describe('openSession overwrite + image dedup', () => {
 
 describe('totalTokens === 0 short-circuit also gates by imageBilledUsd', () => {
   test('zero tokens + nonzero image USD still bills', async () => {
-    openSession('proj-img-only-bill', 'ws-i', 'user-i')
-    accumulateImageUsage('proj-img-only-bill', 'gpt-image-1', 0.04, 0.06)
+    await openSession('proj-img-only-bill', 'ws-i', 'user-i')
+    await accumulateImageUsage('proj-img-only-bill', 'gpt-image-1', 0.04, 0.06)
 
     const { billedUsd, totalTokens } = await closeSession('proj-img-only-bill')
 
@@ -196,15 +196,15 @@ describe('totalTokens === 0 short-circuit also gates by imageBilledUsd', () => {
 
 describe('composite (projectId, chatSessionId) keying', () => {
   test('two concurrent sessions on the same project do not collide', async () => {
-    openSession('proj-multi', 'ws-1', 'user-A', 'chat-A')
-    openSession('proj-multi', 'ws-1', 'user-B', 'chat-B')
+    await openSession('proj-multi', 'ws-1', 'user-A', 'chat-A')
+    await openSession('proj-multi', 'ws-1', 'user-B', 'chat-B')
 
-    expect(hasSession('proj-multi', 'chat-A')).toBe(true)
-    expect(hasSession('proj-multi', 'chat-B')).toBe(true)
+    expect(await hasSession('proj-multi', 'chat-A')).toBe(true)
+    expect(await hasSession('proj-multi', 'chat-B')).toBe(true)
 
-    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 100, 50, 0, 0, 'chat-A')
-    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 999, 999, 0, 0, 'chat-B')
-    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 200, 100, 0, 0, 'chat-A')
+    await accumulateUsage('proj-multi', 'claude-sonnet-4-5', 100, 50, 0, 0, 'chat-A')
+    await accumulateUsage('proj-multi', 'claude-sonnet-4-5', 999, 999, 0, 0, 'chat-B')
+    await accumulateUsage('proj-multi', 'claude-sonnet-4-5', 200, 100, 0, 0, 'chat-A')
 
     await closeSession('proj-multi', { chatSessionId: 'chat-A' })
 
@@ -215,8 +215,8 @@ describe('composite (projectId, chatSessionId) keying', () => {
     expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBe('chat-A')
 
     // chat-B's tokens are still buffered, intact.
-    expect(hasSession('proj-multi', 'chat-A')).toBe(false)
-    expect(hasSession('proj-multi', 'chat-B')).toBe(true)
+    expect(await hasSession('proj-multi', 'chat-A')).toBe(false)
+    expect(await hasSession('proj-multi', 'chat-B')).toBe(true)
 
     await closeSession('proj-multi', { chatSessionId: 'chat-B' })
     expect(consumeUsageCalls).toHaveLength(2)
@@ -227,13 +227,13 @@ describe('composite (projectId, chatSessionId) keying', () => {
   })
 
   test('setQualitySignals targets the composite key, not a sibling session', async () => {
-    openSession('proj-quality-x', 'ws-q', 'user-q', 'chat-1')
-    openSession('proj-quality-x', 'ws-q', 'user-q', 'chat-2')
+    await openSession('proj-quality-x', 'ws-q', 'user-q', 'chat-1')
+    await openSession('proj-quality-x', 'ws-q', 'user-q', 'chat-2')
 
-    accumulateUsage('proj-quality-x', 'claude-sonnet-4-5', 50, 25, 0, 0, 'chat-1')
-    accumulateUsage('proj-quality-x', 'claude-sonnet-4-5', 50, 25, 0, 0, 'chat-2')
+    await accumulateUsage('proj-quality-x', 'claude-sonnet-4-5', 50, 25, 0, 0, 'chat-1')
+    await accumulateUsage('proj-quality-x', 'claude-sonnet-4-5', 50, 25, 0, 0, 'chat-2')
 
-    setQualitySignals('proj-quality-x', { hitMaxTurns: true }, 'chat-1')
+    await setQualitySignals('proj-quality-x', { hitMaxTurns: true }, 'chat-1')
 
     await closeSession('proj-quality-x', { chatSessionId: 'chat-1' })
     await closeSession('proj-quality-x', { chatSessionId: 'chat-2' })
@@ -248,10 +248,10 @@ describe('composite (projectId, chatSessionId) keying', () => {
   })
 
   test('legacy projectId-only callers still work (no chatSessionId)', async () => {
-    openSession('proj-legacy', 'ws-l', 'user-l')
-    accumulateUsage('proj-legacy', 'claude-sonnet-4-5', 100, 50)
+    await openSession('proj-legacy', 'ws-l', 'user-l')
+    await accumulateUsage('proj-legacy', 'claude-sonnet-4-5', 100, 50)
 
-    expect(hasSession('proj-legacy')).toBe(true)
+    expect(await hasSession('proj-legacy')).toBe(true)
     await closeSession('proj-legacy')
     expect(consumeUsageCalls).toHaveLength(1)
     expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBeUndefined()
@@ -261,8 +261,8 @@ describe('composite (projectId, chatSessionId) keying', () => {
     // Older runtime hasn't been redeployed yet — caller opens a legacy
     // session, ai-proxy reports usage with a chatSessionId. Without
     // fallback, usage would be silently dropped.
-    openSession('proj-mixed', 'ws-m', 'user-m')
-    const ok = accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 100, 50, 0, 0, 'chat-X')
+    await openSession('proj-mixed', 'ws-m', 'user-m')
+    const ok = await accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 100, 50, 0, 0, 'chat-X')
     expect(ok).toBe(true)
 
     await closeSession('proj-mixed', { chatSessionId: 'chat-X' })

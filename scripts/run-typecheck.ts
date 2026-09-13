@@ -10,7 +10,7 @@
  * Why not `bun run --filter '*' typecheck`?
  *   - The filter form errors out hard if any matched package is missing
  *     the script, and we have a few workspace members that don't ship
- *     one (apps/mobile relies on Expo's runtime check, etc.).
+ *     one.
  *   - We want a clean per-package summary at the end so a single
  *     misconfigured tsconfig is easy to spot in CI logs.
  *
@@ -46,6 +46,7 @@ const PACKAGES: readonly string[] = [
   'packages/ui-kit',
   'packages/voice',
   'apps/api',
+  'apps/mobile',
 ]
 
 // Packages with known pre-existing typecheck failures. Their failures
