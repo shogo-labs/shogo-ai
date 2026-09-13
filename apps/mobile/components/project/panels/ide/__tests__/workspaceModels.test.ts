@@ -114,6 +114,17 @@ describe("workspaceModels — upsertModelFromContent", () => {
     mod.upsertModelFromContent("root2", "a.ts", "// in root2");
     expect(monacoMock.editor.getModels()).toHaveLength(2);
   });
+
+  test("bounds live-agent background models so long edit sessions do not leak Monaco listeners", () => {
+    for (let i = 0; i < 120; i += 1) {
+      mod.upsertModelFromContent("agent", `src/generated/file-${i}.ts`, `export const n = ${i};`);
+    }
+
+    const models = monacoMock.editor.getModels();
+    expect(models.length).toBeLessThanOrEqual(64);
+    expect(models.some((m: any) => m.uri.path === "/src/generated/file-119.ts")).toBe(true);
+    expect(models.some((m: any) => m.uri.path === "/src/generated/file-0.ts")).toBe(false);
+  });
 });
 
 describe("workspaceModels — upsertModelFromService", () => {
