@@ -27,6 +27,7 @@ import {
   Cpu,
   Zap,
   Activity,
+  Monitor,
   Trash2,
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
@@ -74,6 +75,26 @@ interface ActiveUsersData {
   dau: number
   wau: number
   mau: number
+}
+
+interface DesktopInstallsData {
+  totalDevices: number
+  active: {
+    d1: number
+    d7: number
+    d30: number
+  }
+  newLast30d: number
+  byVersion: Array<{
+    version: string
+    count: number
+    activeD7: number
+  }>
+  byPlatform: Array<{
+    platform: string
+    count: number
+  }>
+  distinctUsers: number
 }
 
 interface GrowthDataPoint {
@@ -280,6 +301,100 @@ function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; load
             </View>
           )
         })}
+      </View>
+    </View>
+  )
+}
+
+function DesktopInstallsCard({ data, loading }: { data: DesktopInstallsData | null; loading: boolean }) {
+  const { width } = useWindowDimensions()
+  const stackMetrics = isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH
+
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-5">
+        <View className="h-4 w-40 bg-muted rounded mb-4" />
+        <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
+          {[1, 2, 3, 4].map((i) => (
+            <View key={i} className="flex-1 h-20 bg-muted/50 rounded-lg" />
+          ))}
+        </View>
+      </View>
+    )
+  }
+
+  const metrics = [
+    { label: 'Total Devices', value: data?.totalDevices, icon: Monitor, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    { label: 'Active 1d', value: data?.active.d1, icon: Activity, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    { label: 'Active 7d', value: data?.active.d7, icon: Calendar, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+    { label: 'Active 30d', value: data?.active.d30, icon: CalendarDays, color: 'text-orange-500', bg: 'bg-orange-500/10' },
+  ]
+  const versions = data?.byVersion.slice(0, 6) ?? []
+  const maxVersionCount = Math.max(...versions.map((version) => version.count), 1)
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-5">
+      <View className="flex-row items-center justify-between mb-4">
+        <Text className="text-sm font-semibold text-foreground">Desktop Installs</Text>
+        <Text className="text-xs text-muted-foreground">Signed-in desktops only</Text>
+      </View>
+      <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
+        {metrics.map((m) => {
+          const Icon = m.icon
+          return (
+            <View key={m.label} className="flex-1 flex-row items-center gap-3 p-4 rounded-xl bg-muted/30 border border-border/50">
+              <View className={cn('h-11 w-11 rounded-xl items-center justify-center', m.bg)}>
+                <Icon size={20} className={m.color} />
+              </View>
+              <View>
+                <Text className="text-2xl font-bold text-foreground">
+                  {m.value !== undefined ? m.value.toLocaleString() : '—'}
+                </Text>
+                <Text className="text-xs text-muted-foreground">{m.label}</Text>
+              </View>
+            </View>
+          )
+        })}
+      </View>
+
+      <View className={cn('mt-5 gap-5', isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH ? '' : 'flex-row')}>
+        <View className="flex-1 gap-2">
+          <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Versions</Text>
+          {versions.length > 0 ? versions.map((version) => (
+            <View key={version.version} className="gap-1">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-xs text-foreground">{version.version}</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {version.count.toLocaleString()} ({version.activeD7.toLocaleString()} active 7d)
+                </Text>
+              </View>
+              <View className="h-1.5 bg-muted rounded-full overflow-hidden">
+                <View
+                  className="h-full bg-primary rounded-full"
+                  style={{ width: `${(version.count / maxVersionCount) * 100}%` }}
+                />
+              </View>
+            </View>
+          )) : (
+            <Text className="text-xs text-muted-foreground">No device data</Text>
+          )}
+        </View>
+        <View className="flex-1 gap-2">
+          <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Platforms</Text>
+          {data?.byPlatform.length ? data.byPlatform.map((platform) => (
+            <View key={platform.platform} className="flex-row items-center justify-between">
+              <Text className="text-xs text-foreground">{platform.platform}</Text>
+              <Text className="text-xs font-medium text-foreground">{platform.count.toLocaleString()}</Text>
+            </View>
+          )) : (
+            <Text className="text-xs text-muted-foreground">No device data</Text>
+          )}
+          {data && (
+            <Text className="text-xs text-muted-foreground mt-1">
+              {data.newLast30d.toLocaleString()} new in 30d · {data.distinctUsers.toLocaleString()} users
+            </Text>
+          )}
+        </View>
       </View>
     </View>
   )
@@ -625,6 +740,10 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
+  const [desktopInstalls, setDesktopInstalls] = useState<{ data: DesktopInstallsData | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
   const [growth, setGrowth] = useState<{ data: GrowthDataPoint[] | null; loading: boolean }>({
     data: null,
     loading: true,
@@ -669,6 +788,7 @@ export default function AdminDashboard() {
   const loadData = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
+    setDesktopInstalls((s) => ({ ...s, loading: true }))
     setGrowth((s) => ({ ...s, loading: true }))
     setUsage((s) => ({ ...s, loading: true }))
     setActiveUsersTs((s) => ({ ...s, loading: true }))
@@ -686,6 +806,7 @@ export default function AdminDashboard() {
     const [
       overviewData,
       activeData,
+      desktopInstallsData,
       growthData,
       usageData,
       activeUsersTsData,
@@ -695,6 +816,7 @@ export default function AdminDashboard() {
     ] = await Promise.all([
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
+      fetchAdminJson<DesktopInstallsData>('/analytics/desktop-installs'),
       fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
       fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
       fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period }),
@@ -711,6 +833,7 @@ export default function AdminDashboard() {
 
     setOverview({ data: overviewData, loading: false })
     setActiveUsers({ data: activeData, loading: false })
+    setDesktopInstalls({ data: desktopInstallsData, loading: false })
     setGrowth({ data: growthData, loading: false })
     setUsage({ data: usageData, loading: false })
     setActiveUsersTs({ data: activeUsersTsData, loading: false })
@@ -859,7 +982,12 @@ export default function AdminDashboard() {
         )}
       </View>
 
-      {/* Row 3: Growth over time (Daily / Cumulative) */}
+      {/* Row 3: Signed-in desktop install and activity metrics */}
+      <View className="mb-6">
+        <DesktopInstallsCard data={desktopInstalls.data} loading={desktopInstalls.loading} />
+      </View>
+
+      {/* Row 4: Growth over time (Daily / Cumulative) */}
       <View className="mb-6">
         <PlatformGrowthChart
           data={growth.data}
@@ -868,12 +996,12 @@ export default function AdminDashboard() {
         />
       </View>
 
-      {/* Row 4: Active users trend (DAU / WAU / MAU over time) */}
+      {/* Row 5: Active users trend (DAU / WAU / MAU over time) */}
       <View className="mb-6">
         <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} />
       </View>
 
-      {/* Row 5: AI usage — summary + over time */}
+      {/* Row 6: AI usage — summary + over time */}
       <View className="mb-6">
         <AIUsageSummaryCard data={usage.data} loading={usage.loading} />
       </View>
@@ -891,7 +1019,7 @@ export default function AdminDashboard() {
         />
       </View>
 
-      {/* Row 6 + 7: Infra history + quick actions (super-admin only) */}
+      {/* Row 7 + 8: Infra history + quick actions (super-admin only) */}
       {isSuperAdmin && (
         <>
           <View className="mb-6">

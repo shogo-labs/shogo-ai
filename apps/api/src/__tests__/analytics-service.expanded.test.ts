@@ -35,6 +35,7 @@ type Store = {
   subscriptions: any[]
   toolCallLogs: any[]
   sessions: any[]
+  apiKeys: any[]
 }
 
 const store: Store = {
@@ -48,6 +49,7 @@ const store: Store = {
   subscriptions: [],
   toolCallLogs: [],
   sessions: [],
+  apiKeys: [],
 }
 
 // Stateful $queryRawUnsafe handler so getUserActivityTable / getUserFunnel tests
@@ -153,6 +155,7 @@ const mockPrisma: any = {
   subscription: makeModel(store.subscriptions),
   toolCallLog: makeModel(store.toolCallLogs),
   session: makeModel(store.sessions),
+  apiKey: makeModel(store.apiKeys),
   $queryRawUnsafe: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
   $queryRaw: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
 }
@@ -184,6 +187,7 @@ function rebuildModels() {
   mockPrisma.subscription = makeModel(store.subscriptions)
   mockPrisma.toolCallLog = makeModel(store.toolCallLogs)
   mockPrisma.session = makeModel(store.sessions)
+  mockPrisma.apiKey = makeModel(store.apiKeys)
 }
 
 beforeEach(() => {
@@ -197,6 +201,7 @@ beforeEach(() => {
   store.subscriptions.length = 0
   store.toolCallLogs.length = 0
   store.sessions.length = 0
+  store.apiKeys.length = 0
   queryRawQueue = []
   rebuildModels()
 })
@@ -808,6 +813,96 @@ describe('getActiveUsers', () => {
     rebuildModels()
     const out = await analytics.getActiveUsers()
     expect(out.dau).toBe(2)
+  })
+})
+
+// =========================================================================
+// getDesktopInstalls
+// =========================================================================
+
+describe('getDesktopInstalls', () => {
+  test('deduplicates devices, excludes revoked/non-device keys, and aggregates activity', async () => {
+    const now = Date.now()
+    store.apiKeys.push(
+      {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: 'desktop-1',
+        devicePlatform: 'darwin',
+        deviceAppVersion: '1.2.19',
+        lastSeenAt: new Date(now - 10 * 24 * 60 * 60 * 1000),
+        createdAt: new Date(now - 40 * 24 * 60 * 60 * 1000),
+        userId: 'user-old',
+      },
+      {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: 'desktop-1',
+        devicePlatform: 'darwin',
+        deviceAppVersion: '1.2.20',
+        lastSeenAt: new Date(now - 60 * 60 * 1000),
+        createdAt: new Date(now - 10 * 24 * 60 * 60 * 1000),
+        userId: 'user-current',
+      },
+      {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: 'desktop-2',
+        devicePlatform: 'win32',
+        deviceAppVersion: '1.2.19',
+        lastSeenAt: new Date(now - 8 * 24 * 60 * 60 * 1000),
+        createdAt: new Date(now - 40 * 24 * 60 * 60 * 1000),
+        userId: 'user-two',
+      },
+      {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: 'desktop-3',
+        devicePlatform: null,
+        deviceAppVersion: null,
+        lastSeenAt: new Date(now - 40 * 24 * 60 * 60 * 1000),
+        createdAt: new Date(now - 5 * 24 * 60 * 60 * 1000),
+        userId: 'user-three',
+      },
+      {
+        kind: 'device',
+        revokedAt: new Date(),
+        deviceId: 'revoked',
+        devicePlatform: 'darwin',
+        deviceAppVersion: '1.2.20',
+        lastSeenAt: new Date(),
+        createdAt: new Date(),
+        userId: 'revoked-user',
+      },
+      {
+        kind: 'user',
+        revokedAt: null,
+        deviceId: 'manual-key',
+        devicePlatform: 'darwin',
+        deviceAppVersion: '1.2.20',
+        lastSeenAt: new Date(),
+        createdAt: new Date(),
+        userId: 'manual-user',
+      },
+    )
+    rebuildModels()
+
+    const out = await analytics.getDesktopInstalls()
+
+    expect(out.totalDevices).toBe(3)
+    expect(out.active).toEqual({ d1: 1, d7: 1, d30: 2 })
+    expect(out.newLast30d).toBe(2)
+    expect(out.distinctUsers).toBe(4)
+    expect(out.byVersion).toEqual([
+      { version: '1.2.19', count: 1, activeD7: 0 },
+      { version: '1.2.20', count: 1, activeD7: 1 },
+      { version: 'unknown', count: 1, activeD7: 0 },
+    ])
+    expect(out.byPlatform).toEqual([
+      { platform: 'darwin', count: 1 },
+      { platform: 'unknown', count: 1 },
+      { platform: 'win32', count: 1 },
+    ])
   })
 })
 

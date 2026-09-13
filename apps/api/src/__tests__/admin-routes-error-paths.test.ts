@@ -44,7 +44,7 @@ mock.module('../middleware/super-admin', () => ({
 
 // ─── Throwing analytics service ───────────────────────────────────────────
 // Every analytics method throws — exercises every `catch` branch in the
-// 16 analytics endpoints + the deriveSourceTag downstream code path.
+// 17 analytics endpoints + the deriveSourceTag downstream code path.
 const ERROR_MSG = 'simulated analytics outage'
 function thrower() {
   return mock(async () => {
@@ -56,6 +56,7 @@ mock.module('../services/analytics.service', () => ({
   getGrowthTimeSeries: thrower(),
   getUsageAnalytics: thrower(),
   getActiveUsers: thrower(),
+  getDesktopInstalls: thrower(),
   getChatAnalytics: thrower(),
   getProjectAnalytics: thrower(),
   getBillingAnalytics: thrower(),
@@ -199,6 +200,9 @@ describe('analytics endpoints — catch handlers', () => {
   })
   test('GET /analytics/active-users → 500 analytics_failed', async () => {
     await expect500(adminRoutes(), '/analytics/active-users', 'analytics_failed')
+  })
+  test('GET /analytics/desktop-installs → 500 analytics_failed', async () => {
+    await expect500(adminRoutes(), '/analytics/desktop-installs', 'analytics_failed')
   })
   test('GET /analytics/chat → 500 analytics_failed', async () => {
     await expect500(adminRoutes(), '/analytics/chat', 'analytics_failed')

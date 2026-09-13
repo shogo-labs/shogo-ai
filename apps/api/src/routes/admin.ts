@@ -193,6 +193,19 @@ export function adminRoutes(): Hono {
   })
 
   /**
+   * GET /analytics/desktop-installs - Signed-in desktop install metrics
+   */
+  router.get('/analytics/desktop-installs', async (c) => {
+    try {
+      const data = await analytics.getDesktopInstalls()
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Analytics desktop installs error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
    * GET /analytics/chat - Chat activity analytics
    */
   router.get('/analytics/chat', async (c) => {

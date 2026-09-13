@@ -908,6 +908,108 @@ export async function getActiveUsers(
 }
 
 // ============================================================================
+// Desktop Installs
+// ============================================================================
+
+export interface DesktopInstallsData {
+  totalDevices: number
+  active: {
+    d1: number
+    d7: number
+    d30: number
+  }
+  newLast30d: number
+  byVersion: Array<{
+    version: string
+    count: number
+    activeD7: number
+  }>
+  byPlatform: Array<{
+    platform: string
+    count: number
+  }>
+  distinctUsers: number
+}
+
+/**
+ * Get install and activity metrics for desktops that have signed in to Cloud.
+ *
+ * Device API keys are minted per workspace, so a stable deviceId is used to
+ * count each physical desktop once across workspaces. The latest-seen key is
+ * retained for its current version, platform, and activity state.
+ */
+export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
+  const now = new Date()
+  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+
+  const keys = await prisma.apiKey.findMany({
+    where: {
+      kind: 'device',
+      revokedAt: null,
+      deviceId: { not: null },
+    },
+    select: {
+      deviceId: true,
+      devicePlatform: true,
+      deviceAppVersion: true,
+      lastSeenAt: true,
+      createdAt: true,
+      userId: true,
+    },
+  })
+
+  const latestByDevice = new Map<string, (typeof keys)[number]>()
+  for (const key of keys) {
+    if (!key.deviceId) continue
+    const existing = latestByDevice.get(key.deviceId)
+    if (!existing || (
+      key.lastSeenAt &&
+      (!existing.lastSeenAt || key.lastSeenAt > existing.lastSeenAt)
+    )) {
+      latestByDevice.set(key.deviceId, key)
+    }
+  }
+
+  const devices = [...latestByDevice.values()]
+  const activeSince = (key: typeof devices[number], since: Date) =>
+    key.lastSeenAt !== null && key.lastSeenAt !== undefined && key.lastSeenAt >= since
+  const versionFor = (key: typeof devices[number]) => key.deviceAppVersion || 'unknown'
+  const platformFor = (key: typeof devices[number]) => key.devicePlatform || 'unknown'
+
+  const versionCounts = new Map<string, { count: number; activeD7: number }>()
+  const platformCounts = new Map<string, number>()
+  for (const device of devices) {
+    const version = versionFor(device)
+    const versionCount = versionCounts.get(version) ?? { count: 0, activeD7: 0 }
+    versionCount.count += 1
+    if (activeSince(device, weekAgo)) versionCount.activeD7 += 1
+    versionCounts.set(version, versionCount)
+
+    const platform = platformFor(device)
+    platformCounts.set(platform, (platformCounts.get(platform) ?? 0) + 1)
+  }
+
+  return {
+    totalDevices: devices.length,
+    active: {
+      d1: devices.filter((device) => activeSince(device, dayAgo)).length,
+      d7: devices.filter((device) => activeSince(device, weekAgo)).length,
+      d30: devices.filter((device) => activeSince(device, monthAgo)).length,
+    },
+    newLast30d: devices.filter((device) => device.createdAt >= monthAgo).length,
+    byVersion: [...versionCounts.entries()]
+      .map(([version, counts]) => ({ version, ...counts }))
+      .sort((a, b) => b.count - a.count || a.version.localeCompare(b.version)),
+    byPlatform: [...platformCounts.entries()]
+      .map(([platform, count]) => ({ platform, count }))
+      .sort((a, b) => b.count - a.count || a.platform.localeCompare(b.platform)),
+    distinctUsers: new Set(keys.map((key) => key.userId).filter(Boolean)).size,
+  }
+}
+
+// ============================================================================
 // Active Users Timeseries (rolling DAU / WAU / MAU)
 // ============================================================================
 
