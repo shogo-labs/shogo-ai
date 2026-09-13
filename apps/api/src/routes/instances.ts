@@ -1230,7 +1230,7 @@ export function instanceRoutes() {
     })()
     let trackerController: ReadableStreamDefaultController<Uint8Array> | null = null
     if (isChatTurn && tunnelProjectId) {
-      openSession(tunnelProjectId, instance.workspaceId, auth.userId, envelopeChatSessionId)
+      await openSession(tunnelProjectId, instance.workspaceId, auth.userId, envelopeChatSessionId)
       const trackerStream = new ReadableStream<Uint8Array>({
         start(c) { trackerController = c },
       })
@@ -1478,7 +1478,7 @@ export function instanceRoutes() {
             }).catch(() => null)
           : null
 
-        openSession(tunnelProjectId, instance.workspaceId, auth.userId, transparentChatSessionId)
+        await openSession(tunnelProjectId, instance.workspaceId, auth.userId, transparentChatSessionId)
         trackerStream = new ReadableStream<Uint8Array>({
           start(c) { trackerController = c },
         })
@@ -1564,7 +1564,7 @@ export function instanceRoutes() {
           },
         })
       } catch (err) {
-        if (isChatTurn && tunnelProjectId && billingSessionHandedOff && hasSession(tunnelProjectId, transparentChatSessionId)) {
+        if (isChatTurn && tunnelProjectId && billingSessionHandedOff && (await hasSession(tunnelProjectId, transparentChatSessionId))) {
           closeSession(tunnelProjectId, { discardPartial: true, chatSessionId: transparentChatSessionId }).catch(() => {})
         }
         throw err

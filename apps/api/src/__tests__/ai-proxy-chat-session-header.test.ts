@@ -112,8 +112,8 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
     // round-trip, accumulateUsage on the proxy side would fall through
     // to the legacy projectId-only key and credit BOTH sessions'
     // upstream calls to whichever opened first.
-    openSession(PROJECT_ID, WORKSPACE_ID, 'user-A', 'chat-A')
-    openSession(PROJECT_ID, WORKSPACE_ID, 'user-B', 'chat-B')
+    await openSession(PROJECT_ID, WORKSPACE_ID, 'user-A', 'chat-A')
+    await openSession(PROJECT_ID, WORKSPACE_ID, 'user-B', 'chat-B')
 
     const res = await app.request('/api/ai/anthropic/v1/messages', {
       method: 'POST',
@@ -153,7 +153,7 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
     const token = await generateProxyToken(PROJECT_ID, WORKSPACE_ID, USER_ID)
     hasBalanceResult = false // wallet crossed the limit mid-build
 
-    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-grace')
+    await openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-grace')
 
     const res = await app.request('/api/ai/anthropic/v1/messages', {
       method: 'POST',
@@ -183,7 +183,7 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
     // Session opened under a composite key, but the proxy call omits the
     // header (gateway isRealChatSession=false). The projectId-scan fallback in
     // hasActiveSession must still detect the in-flight turn.
-    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-headerless')
+    await openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-headerless')
 
     const res = await app.request('/api/ai/anthropic/v1/messages', {
       method: 'POST',
@@ -209,7 +209,7 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
 
     // No session opened → this is a brand-new request, so the usage limit is
     // enforced as before.
-    expect(hasSession(PROJECT_ID)).toBe(false)
+    expect(await hasSession(PROJECT_ID)).toBe(false)
 
     const res = await app.request('/api/ai/anthropic/v1/messages', {
       method: 'POST',
@@ -245,7 +245,7 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
 
     // In-flight turn → the pre-flight is skipped so the image call proceeds
     // (downstream status varies under the stub; it just must not be 402).
-    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-img')
+    await openSession(PROJECT_ID, WORKSPACE_ID, USER_ID, 'chat-img')
     const granted = await app.request('/api/ai/v1/images/generations', {
       method: 'POST',
       headers: {
@@ -266,7 +266,7 @@ describe('AI proxy honors X-Chat-Session-Id on outbound runtime calls', () => {
 
     // Single legacy-keyed session (no chatSessionId). The proxy call
     // omits the header, so accumulateUsage must hit this session.
-    openSession(PROJECT_ID, WORKSPACE_ID, USER_ID)
+    await openSession(PROJECT_ID, WORKSPACE_ID, USER_ID)
 
     const res = await app.request('/api/ai/anthropic/v1/messages', {
       method: 'POST',

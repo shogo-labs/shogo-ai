@@ -46,33 +46,33 @@ describe('Proxy Billing Session', () => {
     consumeUsageError = null
   })
 
-  test('openSession creates an active session', () => {
-    openSession('proj-1', 'ws-1', 'user-1')
-    expect(hasSession('proj-1')).toBe(true)
+  test('openSession creates an active session', async () => {
+    await openSession('proj-1', 'ws-1', 'user-1')
+    expect(await hasSession('proj-1')).toBe(true)
   })
 
-  test('hasSession returns false for nonexistent session', () => {
-    expect(hasSession('proj-nonexistent')).toBe(false)
+  test('hasSession returns false for nonexistent session', async () => {
+    expect(await hasSession('proj-nonexistent')).toBe(false)
   })
 
-  test('accumulateUsage returns true when session is open', () => {
-    openSession('proj-acc', 'ws-1', 'user-1')
-    const result = accumulateUsage('proj-acc', 'sonnet', 1000, 500)
+  test('accumulateUsage returns true when session is open', async () => {
+    await openSession('proj-acc', 'ws-1', 'user-1')
+    const result = await accumulateUsage('proj-acc', 'sonnet', 1000, 500)
     expect(result).toBe(true)
   })
 
-  test('accumulateUsage returns false when no session', () => {
-    const result = accumulateUsage('proj-nosession', 'sonnet', 1000, 500)
+  test('accumulateUsage returns false when no session', async () => {
+    const result = await accumulateUsage('proj-nosession', 'sonnet', 1000, 500)
     expect(result).toBe(false)
   })
 
   test('closeSession charges total tokens across multiple accumulations', async () => {
-    openSession('proj-multi', 'ws-multi', 'user-multi')
+    await openSession('proj-multi', 'ws-multi', 'user-multi')
 
     // Simulate 3 API calls in an agentic loop
-    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 1000)
-    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 2000)
-    accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 3000)
+    await accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 1000)
+    await accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 2000)
+    await accumulateUsage('proj-multi', 'claude-sonnet-4-5', 5000, 3000)
 
     const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-multi')
 
@@ -80,7 +80,7 @@ describe('Proxy Billing Session', () => {
     expect(rawUsd).toBeGreaterThan(0)
     expect(billedUsd).toBeGreaterThan(0)
     expect(billedUsd).toBeCloseTo(rawUsd * MARKUP_MULTIPLIER, 10)
-    expect(hasSession('proj-multi')).toBe(false)
+    expect(await hasSession('proj-multi')).toBe(false)
 
     // Should have called consumeUsage exactly once
     expect(consumeUsageCalls.length).toBe(1)
@@ -98,7 +98,7 @@ describe('Proxy Billing Session', () => {
   })
 
   test('closeSession with no accumulated tokens charges nothing', async () => {
-    openSession('proj-empty', 'ws-1', 'user-1')
+    await openSession('proj-empty', 'ws-1', 'user-1')
 
     const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-empty')
 
@@ -118,28 +118,28 @@ describe('Proxy Billing Session', () => {
   })
 
   test('session is removed after close', async () => {
-    openSession('proj-remove', 'ws-1', 'user-1')
-    accumulateUsage('proj-remove', 'sonnet', 100, 100)
+    await openSession('proj-remove', 'ws-1', 'user-1')
+    await accumulateUsage('proj-remove', 'sonnet', 100, 100)
 
     await closeSession('proj-remove')
-    expect(hasSession('proj-remove')).toBe(false)
+    expect(await hasSession('proj-remove')).toBe(false)
 
     // Accumulating after close should return false
-    expect(accumulateUsage('proj-remove', 'sonnet', 100, 100)).toBe(false)
+    expect(await accumulateUsage('proj-remove', 'sonnet', 100, 100)).toBe(false)
   })
 
   test('opening a new session overwrites existing one', async () => {
-    openSession('proj-overwrite', 'ws-1', 'user-1')
-    accumulateUsage('proj-overwrite', 'sonnet', 10000, 5000)
+    await openSession('proj-overwrite', 'ws-1', 'user-1')
+    await accumulateUsage('proj-overwrite', 'sonnet', 10000, 5000)
 
     // Opening again should flush the old session
-    openSession('proj-overwrite', 'ws-2', 'user-2')
+    await openSession('proj-overwrite', 'ws-2', 'user-2')
 
     // The old session's flush may be async, give it a tick
     await new Promise((r) => setTimeout(r, 10))
 
     // New session should be fresh
-    accumulateUsage('proj-overwrite', 'haiku', 100, 50)
+    await accumulateUsage('proj-overwrite', 'haiku', 100, 50)
     const { totalTokens } = await closeSession('proj-overwrite')
 
     // Should only have the new session's tokens
@@ -147,8 +147,8 @@ describe('Proxy Billing Session', () => {
   })
 
   test('single API call charges billedUsd = rawUsd * MARKUP_MULTIPLIER', async () => {
-    openSession('proj-single', 'ws-1', 'user-1')
-    accumulateUsage('proj-single', 'claude-sonnet-4-5', 2000, 1000)
+    await openSession('proj-single', 'ws-1', 'user-1')
+    await accumulateUsage('proj-single', 'claude-sonnet-4-5', 2000, 1000)
 
     const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-single')
 
@@ -159,10 +159,10 @@ describe('Proxy Billing Session', () => {
   })
 
   test('many small API calls charge based on accumulated split tokens', async () => {
-    openSession('proj-many', 'ws-1', 'user-1')
+    await openSession('proj-many', 'ws-1', 'user-1')
 
     for (let i = 0; i < 5; i++) {
-      accumulateUsage('proj-many', 'claude-sonnet-4-5', 400, 200)
+      await accumulateUsage('proj-many', 'claude-sonnet-4-5', 400, 200)
     }
 
     const { billedUsd, rawUsd, totalTokens } = await closeSession('proj-many')
@@ -183,8 +183,8 @@ describe('Proxy Billing Session', () => {
   // -------------------------------------------------------------------------
   describe('closeSession({ discardPartial })', () => {
     test('drops the session without invoking consumeUsage', async () => {
-      openSession('proj-discard', 'ws-d', 'user-d')
-      accumulateUsage('proj-discard', 'claude-sonnet-4-5', 5000, 2500)
+      await openSession('proj-discard', 'ws-d', 'user-d')
+      await accumulateUsage('proj-discard', 'claude-sonnet-4-5', 5000, 2500)
 
       const result = await closeSession('proj-discard', { discardPartial: true })
 
@@ -197,12 +197,12 @@ describe('Proxy Billing Session', () => {
       expect(consumeUsageCalls.length).toBe(0)
 
       // Session is removed so the next openSession on the same project is fresh.
-      expect(hasSession('proj-discard')).toBe(false)
+      expect(await hasSession('proj-discard')).toBe(false)
     })
 
     test('discardPartial=false (default) still charges normally', async () => {
-      openSession('proj-charge', 'ws-c', 'user-c')
-      accumulateUsage('proj-charge', 'claude-sonnet-4-5', 1000, 500)
+      await openSession('proj-charge', 'ws-c', 'user-c')
+      await accumulateUsage('proj-charge', 'claude-sonnet-4-5', 1000, 500)
 
       const result = await closeSession('proj-charge')
 
@@ -212,7 +212,7 @@ describe('Proxy Billing Session', () => {
     })
 
     test('discardPartial on a zero-token session is a no-op (no log spam)', async () => {
-      openSession('proj-empty-discard', 'ws-1', 'user-1')
+      await openSession('proj-empty-discard', 'ws-1', 'user-1')
 
       const result = await closeSession('proj-empty-discard', { discardPartial: true })
 
@@ -236,17 +236,17 @@ describe('Proxy Billing Session', () => {
   // `ai_image_generation` row in addition to the `chat_message` row.
   // -------------------------------------------------------------------------
   describe('accumulateImageUsage', () => {
-    test('returns true when session is open, false when not', () => {
-      openSession('proj-img-on', 'ws-1', 'user-1')
-      expect(accumulateImageUsage('proj-img-on', 'gpt-image-1', 0.04, 0.06)).toBe(true)
+    test('returns true when session is open, false when not', async () => {
+      await openSession('proj-img-on', 'ws-1', 'user-1')
+      expect(await accumulateImageUsage('proj-img-on', 'gpt-image-1', 0.04, 0.06)).toBe(true)
 
-      expect(accumulateImageUsage('proj-img-off', 'gpt-image-1', 0.04, 0.06)).toBe(false)
+      expect(await accumulateImageUsage('proj-img-off', 'gpt-image-1', 0.04, 0.06)).toBe(false)
     })
 
     test('image-only turn still bills via chat_message (single event)', async () => {
-      openSession('proj-img-only', 'ws-img', 'user-img')
-      accumulateImageUsage('proj-img-only', 'gpt-image-1', 0.04, 0.06)
-      accumulateImageUsage('proj-img-only', 'gpt-image-1', 0.04, 0.06)
+      await openSession('proj-img-only', 'ws-img', 'user-img')
+      await accumulateImageUsage('proj-img-only', 'gpt-image-1', 0.04, 0.06)
+      await accumulateImageUsage('proj-img-only', 'gpt-image-1', 0.04, 0.06)
 
       const { rawUsd, billedUsd } = await closeSession('proj-img-only')
 
@@ -266,10 +266,10 @@ describe('Proxy Billing Session', () => {
     })
 
     test('mixed token + image turn rolls both into a single chat_message debit', async () => {
-      openSession('proj-mixed', 'ws-mixed', 'user-mixed')
-      accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 1000, 500)
-      accumulateImageUsage('proj-mixed', 'gpt-image-1', 0.04, 0.06)
-      accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 500, 250)
+      await openSession('proj-mixed', 'ws-mixed', 'user-mixed')
+      await accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 1000, 500)
+      await accumulateImageUsage('proj-mixed', 'gpt-image-1', 0.04, 0.06)
+      await accumulateUsage('proj-mixed', 'claude-sonnet-4-5', 500, 250)
 
       const { rawUsd, billedUsd, totalTokens } = await closeSession('proj-mixed')
 
@@ -292,23 +292,23 @@ describe('Proxy Billing Session', () => {
     })
 
     test('discardPartial drops accumulated image USD too', async () => {
-      openSession('proj-img-discard', 'ws-1', 'user-1')
-      accumulateImageUsage('proj-img-discard', 'gpt-image-1', 0.04, 0.06)
-      accumulateUsage('proj-img-discard', 'claude-sonnet-4-5', 100, 50)
+      await openSession('proj-img-discard', 'ws-1', 'user-1')
+      await accumulateImageUsage('proj-img-discard', 'gpt-image-1', 0.04, 0.06)
+      await accumulateUsage('proj-img-discard', 'claude-sonnet-4-5', 100, 50)
 
       const result = await closeSession('proj-img-discard', { discardPartial: true })
 
       expect(result.billedUsd).toBe(0)
       expect(result.rawUsd).toBe(0)
       expect(consumeUsageCalls.length).toBe(0)
-      expect(hasSession('proj-img-discard')).toBe(false)
+      expect(await hasSession('proj-img-discard')).toBe(false)
     })
 
     test('image accumulation tracks distinct models in metadata', async () => {
-      openSession('proj-img-models', 'ws-1', 'user-1')
-      accumulateImageUsage('proj-img-models', 'gpt-image-1', 0.04, 0.06)
-      accumulateImageUsage('proj-img-models', 'imagen-4', 0.02, 0.03)
-      accumulateImageUsage('proj-img-models', 'gpt-image-1', 0.04, 0.06)
+      await openSession('proj-img-models', 'ws-1', 'user-1')
+      await accumulateImageUsage('proj-img-models', 'gpt-image-1', 0.04, 0.06)
+      await accumulateImageUsage('proj-img-models', 'imagen-4', 0.02, 0.03)
+      await accumulateImageUsage('proj-img-models', 'gpt-image-1', 0.04, 0.06)
 
       await closeSession('proj-img-models')
 
@@ -346,8 +346,8 @@ describe('Proxy Billing Session', () => {
       fkErr.code = 'P2003'
       consumeUsageError = fkErr
 
-      openSession('proj-deleted', 'ws-deleted', 'user-deleted')
-      accumulateUsage('proj-deleted', 'claude-sonnet-4-5', 1000, 500)
+      await openSession('proj-deleted', 'ws-deleted', 'user-deleted')
+      await accumulateUsage('proj-deleted', 'claude-sonnet-4-5', 1000, 500)
 
       const cap = captureConsole()
       try {
@@ -361,14 +361,14 @@ describe('Proxy Billing Session', () => {
 
       expect(cap.warns.join('\n')).toContain('Skipping usage charge')
       expect(cap.errors.join('\n')).not.toContain('Failed to charge usage')
-      expect(hasSession('proj-deleted')).toBe(false)
+      expect(await hasSession('proj-deleted')).toBe(false)
     })
 
     test('any OTHER billing failure is still logged as a real error', async () => {
       consumeUsageError = new Error('billing service exploded')
 
-      openSession('proj-billing-broken', 'ws-b', 'user-b')
-      accumulateUsage('proj-billing-broken', 'claude-sonnet-4-5', 1000, 500)
+      await openSession('proj-billing-broken', 'ws-b', 'user-b')
+      await accumulateUsage('proj-billing-broken', 'claude-sonnet-4-5', 1000, 500)
 
       const cap = captureConsole()
       try {
