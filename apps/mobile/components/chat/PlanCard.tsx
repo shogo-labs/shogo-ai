@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { memo, useEffect, useState } from "react"
+import { memo, useState } from "react"
 import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -13,6 +13,7 @@ import {
 } from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
 import { PlanBuildActions } from "./PlanBuildActions"
+import { usePlanBuildModel } from "./usePlanBuildModel"
 import { usePhoneLayout } from "../../lib/native-phone-layout"
 
 export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
@@ -31,6 +32,8 @@ export interface PlanData {
    *  in for this plan; "pending" shows a spinner; "ready" enables the
    *  Summary tab; "error" surfaces an inline message. */
   summaryStatus?: PlanSummaryStatus
+  /** True when this plan came from an update_plan tool call. */
+  isUpdate?: boolean
 }
 
 type PlanTab = "technical" | "summary"
@@ -114,13 +117,9 @@ function PlanCardImpl({
   const [activeTab, setActiveTab] = useState<PlanTab>("technical")
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
-  const [buildModelId, setBuildModelId] = useState(selectedModel ?? "")
   const isPhoneChrome = usePhoneLayout()
   const planKey = plan.filepath ?? plan.toolCallId ?? plan.name
-
-  useEffect(() => {
-    if (selectedModel) setBuildModelId(selectedModel)
-  }, [planKey, selectedModel])
+  const [buildModelId, setBuildModelId] = usePlanBuildModel(selectedModel, planKey)
 
   const handleGenerate = onGenerateSummary
     ? async () => {

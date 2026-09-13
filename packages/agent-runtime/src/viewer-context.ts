@@ -9,7 +9,9 @@
  * priority — canvases stay responsive either way.
  */
 
-export type CanvasViewerFormFactor = 'phone' | 'desktop'
+import type { CanvasViewerFormFactor } from '@shogo-ai/sdk/agent'
+
+export type { CanvasViewerFormFactor } from '@shogo-ai/sdk/agent'
 
 export interface CanvasViewer {
   formFactor: CanvasViewerFormFactor

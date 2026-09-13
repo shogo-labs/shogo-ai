@@ -17,7 +17,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import type { AnalyticsPeriod } from './SharedAnalytics'
 import {
-  AccountSheetText as Text,
+  Text,
   accountSheetIcon,
 } from '../settings/account-sheet-chrome'
 

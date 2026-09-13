@@ -19,7 +19,7 @@ export function PendingPlanComposerBar() {
       variant="composer"
       plan={plan}
       isConfirmed={false}
-      isUpdate={false}
+      isUpdate={plan.isUpdate === true}
       onBuild={chat.buildPlan}
       onViewPlan={
         chat.openPlan && plan.filepath ? () => chat.openPlan?.(plan.filepath) : undefined

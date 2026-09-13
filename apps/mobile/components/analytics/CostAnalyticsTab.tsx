@@ -33,27 +33,11 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
-  wrapAccountSheetIcons,
+  Text,
+  useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
 
-const {
-  DollarSign,
-  TrendingDown,
-  TrendingUp,
-  Minus,
-  Lightbulb,
-  Bell,
-  FlaskConical,
-  Cpu,
-  Zap,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  ChevronDown,
-  ChevronUp,
-  SettingsIcon,
-} = wrapAccountSheetIcons({
+const COST_ANALYTICS_ICON_MAP = {
   DollarSign: DollarSignIcon,
   TrendingDown: TrendingDownIcon,
   TrendingUp: TrendingUpIcon,
@@ -69,7 +53,16 @@ const {
   ChevronDown: ChevronDownIcon,
   ChevronUp: ChevronUpIcon,
   SettingsIcon: SettingsGlyph,
-})
+} as const
+
+type CostAnalyticsIconName = keyof typeof COST_ANALYTICS_ICON_MAP
+type CostAnalyticsIcons = {
+  [K in CostAnalyticsIconName]: React.ComponentType<{ size?: number; className?: string }>
+}
+
+function useCostAnalyticsIcons(): CostAnalyticsIcons {
+  return useAccountSheetIcons(COST_ANALYTICS_ICON_MAP)
+}
 import {
   type AnalyticsPeriod,
   PeriodSelector,
@@ -185,15 +178,19 @@ interface CostAnalyticsTabProps {
 
 type Section = 'breakdown' | 'recommendations' | 'subagents' | 'inaction' | 'budget' | 'trends' | 'experiments'
 
-const SECTION_CONFIG: Array<{ id: Section; label: string; icon: React.ElementType }> = [
-  { id: 'breakdown', label: 'Agents', icon: Cpu },
-  { id: 'recommendations', label: 'Optimize', icon: Lightbulb },
-  { id: 'subagents', label: 'Sub-Agents', icon: SettingsIcon },
-  { id: 'inaction', label: 'In Action', icon: TrendingUp },
-  { id: 'trends', label: 'Trends', icon: TrendingUp },
-  { id: 'budget', label: 'Budgets', icon: Bell },
-  { id: 'experiments', label: 'A/B Tests', icon: FlaskConical },
+const SECTION_CONFIG: Array<{ id: Section; label: string; icon: CostAnalyticsIconName }> = [
+  { id: 'breakdown', label: 'Agents', icon: 'Cpu' },
+  { id: 'recommendations', label: 'Optimize', icon: 'Lightbulb' },
+  { id: 'subagents', label: 'Sub-Agents', icon: 'SettingsIcon' },
+  { id: 'inaction', label: 'In Action', icon: 'TrendingUp' },
+  { id: 'trends', label: 'Trends', icon: 'TrendingUp' },
+  { id: 'budget', label: 'Budgets', icon: 'Bell' },
+  { id: 'experiments', label: 'A/B Tests', icon: 'FlaskConical' },
 ]
+
+type ResolvedSection = Omit<(typeof SECTION_CONFIG)[number], 'icon'> & {
+  icon: React.ComponentType<{ size?: number; className?: string }>
+}
 
 // =============================================================================
 // Main Component
@@ -207,6 +204,7 @@ export function CostAnalyticsTab({
   putSubagentOverride,
   deleteSubagentOverride,
 }: CostAnalyticsTabProps) {
+  const icons = useCostAnalyticsIcons()
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [activeSection, setActiveSection] = useState<Section>('breakdown')
 
@@ -232,6 +230,10 @@ export function CostAnalyticsTab({
   const visibleSections = overridesAvailable
     ? SECTION_CONFIG
     : SECTION_CONFIG.filter(s => s.id !== 'subagents')
+  const resolvedSections: ResolvedSection[] = visibleSections.map(({ icon, ...section }) => ({
+    ...section,
+    icon: icons[icon],
+  }))
 
   // Phase 4.3 — per-section loaders. Each section only fetches the data it
   // actually renders and only when it becomes active. The summary cards still
@@ -362,14 +364,19 @@ export function CostAnalyticsTab({
       </View>
 
       {/* Summary Cards */}
-      <SummaryCards data={breakdown.data} budgetStatus={budgetStatus.data} trends={trends.data} />
+      <SummaryCards
+        data={breakdown.data}
+        budgetStatus={budgetStatus.data}
+        trends={trends.data}
+        icons={icons}
+      />
 
       {/* Section Tabs */}
-      <SectionTabs active={activeSection} onChange={setActiveSection} sections={visibleSections} />
+      <SectionTabs active={activeSection} onChange={setActiveSection} sections={resolvedSections} />
 
       {/* Active Section */}
       {activeSection === 'breakdown' && (
-        <AgentBreakdownSection data={breakdown.data} loading={breakdown.loading} />
+        <AgentBreakdownSection data={breakdown.data} loading={breakdown.loading} icons={icons} />
       )}
       {activeSection === 'recommendations' && (
         <RecommendationsSection
@@ -398,7 +405,7 @@ export function CostAnalyticsTab({
         />
       )}
       {activeSection === 'trends' && (
-        <TrendsSection data={trends.data} loading={trends.loading} />
+        <TrendsSection data={trends.data} loading={trends.loading} icons={icons} />
       )}
       {activeSection === 'budget' && (
         <BudgetSection
@@ -429,10 +436,12 @@ function SummaryCards({
   data,
   budgetStatus,
   trends,
+  icons,
 }: {
   data: BreakdownData | null
   budgetStatus: BudgetStatus | null
   trends: TrendsData | null
+  icons: CostAnalyticsIcons
 }) {
   const totalCost = data?.totals.totalCreditCost ?? 0
   const totalRuns = data?.totals.totalRuns ?? 0
@@ -444,25 +453,31 @@ function SummaryCards({
       <MiniCard
         label="Total Cost"
         value={formatDollarCost(totalCost)}
-        icon={DollarSign}
+        icon={icons.DollarSign}
         color="text-orange-400"
       />
       <MiniCard
         label="Agent Runs"
         value={formatNumber(totalRuns)}
-        icon={Cpu}
+        icon={icons.Cpu}
         color="text-blue-400"
       />
       <MiniCard
         label="Avg Cost/Run"
         value={formatDollarCost(avgCost)}
-        icon={Zap}
+        icon={icons.Zap}
         color="text-emerald-400"
       />
       <MiniCard
         label="Forecast"
         value={forecast ? `${formatDollarCost(forecast.nextMonth)}/mo` : '—'}
-        icon={forecast?.trend === 'increasing' ? TrendingUp : forecast?.trend === 'decreasing' ? TrendingDown : Minus}
+        icon={
+          forecast?.trend === 'increasing'
+            ? icons.TrendingUp
+            : forecast?.trend === 'decreasing'
+              ? icons.TrendingDown
+              : icons.Minus
+        }
         color={forecast?.trend === 'increasing' ? 'text-red-400' : forecast?.trend === 'decreasing' ? 'text-green-400' : 'text-muted-foreground'}
         subtitle={forecast ? `${forecast.percentChange > 0 ? '+' : ''}${forecast.percentChange}%` : undefined}
       />
@@ -504,11 +519,11 @@ function MiniCard({
 function SectionTabs({
   active,
   onChange,
-  sections = SECTION_CONFIG,
+  sections,
 }: {
   active: Section
   onChange: (s: Section) => void
-  sections?: typeof SECTION_CONFIG
+  sections: ResolvedSection[]
 }) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -537,7 +552,15 @@ function SectionTabs({
 // 1. Agent Breakdown
 // =============================================================================
 
-function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; loading: boolean }) {
+function AgentBreakdownSection({
+  data,
+  loading,
+  icons,
+}: {
+  data: BreakdownData | null
+  loading: boolean
+  icons: CostAnalyticsIcons
+}) {
   const [expanded, setExpanded] = useState<string | null>(null)
 
   if (loading) return <LoadingCard />
@@ -548,7 +571,7 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
     return (
       <Card>
         <CardContent className="p-6 items-center">
-          <Cpu size={24} className="text-muted-foreground mb-2" />
+          <icons.Cpu size={24} className="text-muted-foreground mb-2" />
           <Text className="text-sm text-muted-foreground text-center">
             No agent cost data yet. Costs will appear here as agents run.
           </Text>
@@ -577,7 +600,7 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                 <View className="flex-row items-center justify-between">
                   <View className="flex-row items-center gap-2 flex-1">
                     <View className="h-8 w-8 rounded-lg bg-primary/10 items-center justify-center">
-                      <Cpu size={14} className="text-primary" />
+                      <icons.Cpu size={14} className="text-primary" />
                     </View>
                     <View className="flex-1">
                       <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
@@ -602,9 +625,9 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                     <Text className="text-[10px] text-muted-foreground">{costPercent}% of period cost</Text>
                   </View>
                   {isExpanded ? (
-                    <ChevronUp size={14} className="text-muted-foreground ml-2" />
+                    <icons.ChevronUp size={14} className="text-muted-foreground ml-2" />
                   ) : (
-                    <ChevronDown size={14} className="text-muted-foreground ml-2" />
+                    <icons.ChevronDown size={14} className="text-muted-foreground ml-2" />
                   )}
                 </View>
 
@@ -623,11 +646,11 @@ function AgentBreakdownSection({ data, loading }: { data: BreakdownData | null; 
                 {isExpanded && (
                   <View className="mt-3 pt-3 border-t border-border">
                     <View className="flex-row flex-wrap gap-x-4 gap-y-2">
-                      <MetricPill icon={CheckCircle2} label="Quality" value={`${qualitySuccessRate}%`} color="text-green-400" />
-                      <MetricPill icon={XCircle} label="Failures" value={String(failures)} color="text-red-400" />
-                      <MetricPill icon={Clock} label="Avg Latency" value={formatDuration(entry.avgLatencyMs)} color="text-blue-400" />
-                      <MetricPill icon={DollarSign} label="Avg Cost" value={formatDollarCost(entry.avgCostPerRun)} color="text-orange-400" />
-                      <MetricPill icon={Zap} label="Tool Calls" value={formatNumber(entry.totalToolCalls)} color="text-purple-400" />
+                      <MetricPill icon={icons.CheckCircle2} label="Quality" value={`${qualitySuccessRate}%`} color="text-green-400" />
+                      <MetricPill icon={icons.XCircle} label="Failures" value={String(failures)} color="text-red-400" />
+                      <MetricPill icon={icons.Clock} label="Avg Latency" value={formatDuration(entry.avgLatencyMs)} color="text-blue-400" />
+                      <MetricPill icon={icons.DollarSign} label="Avg Cost" value={formatDollarCost(entry.avgCostPerRun)} color="text-orange-400" />
+                      <MetricPill icon={icons.Zap} label="Tool Calls" value={formatNumber(entry.totalToolCalls)} color="text-purple-400" />
                     </View>
                     {(entry.loopDetected || entry.hitMaxTurns || entry.escalated || entry.responseEmpty) ? (
                       <View className="flex-row flex-wrap gap-x-3 gap-y-1 mt-2">
@@ -688,7 +711,15 @@ function MetricPill({
 // 3. Cost Trends
 // =============================================================================
 
-function TrendsSection({ data, loading }: { data: TrendsData | null; loading: boolean }) {
+function TrendsSection({
+  data,
+  loading,
+  icons,
+}: {
+  data: TrendsData | null
+  loading: boolean
+  icons: CostAnalyticsIcons
+}) {
   if (loading) return <LoadingCard />
   if (!data) return null
 
@@ -698,7 +729,7 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
     return (
       <Card>
         <CardContent className="p-6 items-center">
-          <TrendingUp size={24} className="text-muted-foreground mb-2" />
+          <icons.TrendingUp size={24} className="text-muted-foreground mb-2" />
           <Text className="text-sm text-muted-foreground text-center">
             No cost history yet. Trends will populate as agents run.
           </Text>
@@ -717,11 +748,11 @@ function TrendsSection({ data, loading }: { data: TrendsData | null; loading: bo
         <CardContent className="p-3">
           <View className="flex-row items-center gap-2 mb-2">
             {forecast.trend === 'increasing' ? (
-              <TrendingUp size={16} className="text-red-400" />
+              <icons.TrendingUp size={16} className="text-red-400" />
             ) : forecast.trend === 'decreasing' ? (
-              <TrendingDown size={16} className="text-green-400" />
+              <icons.TrendingDown size={16} className="text-green-400" />
             ) : (
-              <Minus size={16} className="text-muted-foreground" />
+              <icons.Minus size={16} className="text-muted-foreground" />
             )}
             <Text className="text-sm font-semibold text-foreground">Next Month Forecast</Text>
           </View>

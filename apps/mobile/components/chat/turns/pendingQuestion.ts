@@ -65,7 +65,7 @@ export function derivePendingQuestion(
  * - `"widget"`: answered — the existing collapsed summary widget.
  */
 export function askUserStreamVariant(toolResult: unknown): "bar" | "widget" {
-  return toolResult === undefined ? "bar" : "widget"
+  return toolResult == null ? "bar" : "widget"
 }
 
 /** Native phone uses a bottom sheet; web/desktop keep the composer dock card. */

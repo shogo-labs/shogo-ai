@@ -8,6 +8,7 @@
 import {
   createContext,
   createElement,
+  useMemo,
   useContext,
   type ComponentType,
   type ReactNode,
@@ -22,7 +23,7 @@ import {
   ACCOUNT_SHEET_ICON_DEFAULT,
   remapAccountSheetTextClass,
   scaleAccountSheetIcon,
-} from '../../lib/account-sheet-type'
+} from '../../lib/account-sheet-typography'
 
 const AccountSheetChromeContext = createContext(false)
 
@@ -94,4 +95,12 @@ export function wrapAccountSheetIcons<
     wrapped[key] = accountSheetIcon(icons[key]) as T[keyof T]
   }
   return wrapped
+}
+
+export { AccountSheetText as Text, AccountSheetTextInput as TextInput }
+
+export function useAccountSheetIcons<
+  T extends Record<string, ComponentType<IconProps>>,
+>(icons: T): T {
+  return useMemo(() => wrapAccountSheetIcons(icons), [icons])
 }

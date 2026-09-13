@@ -8,85 +8,38 @@
  * tabs already inlined on Account (email, API keys).
  */
 import {
-  BarChart3,
-  Boxes,
-  Bug,
-  Building2,
-  Coins,
-  CreditCard,
-  Monitor,
-  Plug,
-  Shield,
-  Users,
-  type LucideIcon,
-} from "lucide-react-native"
+  settingsTab,
+  visibleSettingsTabs,
+  type SettingsTabId,
+  type SettingsTabDefinition,
+} from "../../lib/settings-tabs"
 
-export type AccountSettingsSheetTab =
-  | "workspace"
-  | "people"
-  | "models"
-  | "integrations"
-  | "remote-control"
-  | "billing"
-  | "analytics"
-  | "costs"
-  | "security"
-  | "support"
-  | "appearance"
-  | "account"
+export type AccountSettingsSheetTab = Exclude<SettingsTabId, "compute">
 
-type SheetTabDef = {
-  id: Exclude<AccountSettingsSheetTab, "appearance" | "account">
-  Icon: LucideIcon
-  /** Hidden in local mode or when billing is off (same as Settings people/models). */
-  cloudOnly?: boolean
-  /** Local-mode Settings tabs (Security, Report Bug). */
-  localOnly?: boolean
+type SheetTabId = Exclude<AccountSettingsSheetTab, "appearance" | "account">
+type SheetTabDef = Pick<SettingsTabDefinition, "id" | "Icon"> & {
+  id: SheetTabId
 }
 
-const SHEET_TITLE_BY_ID: Record<AccountSettingsSheetTab, string> = {
-  workspace: "Workspace",
-  people: "People",
-  models: "Models",
-  integrations: "Integrations",
-  "remote-control": "Remote Control",
-  billing: "Billing",
-  analytics: "Usage",
-  costs: "Costs",
-  security: "Security",
-  support: "Report Bug",
-  appearance: "Appearance",
-  account: "Profile",
-}
+const SHEET_TAB_IDS = new Set<SheetTabId>([
+  "workspace",
+  "people",
+  "models",
+  "integrations",
+  "remote-control",
+  "billing",
+  "analytics",
+  "costs",
+  "security",
+  "support",
+])
 
-const SETTINGS_GROUP: SheetTabDef[] = [
-  { id: "workspace", Icon: Building2 },
-  { id: "people", Icon: Users, cloudOnly: true },
-  { id: "models", Icon: Boxes, cloudOnly: true },
-  { id: "integrations", Icon: Plug },
-  { id: "remote-control", Icon: Monitor },
-  { id: "security", Icon: Shield, localOnly: true },
-  { id: "support", Icon: Bug, localOnly: true },
-]
-
-const PLAN_GROUP: SheetTabDef[] = [
-  { id: "billing", Icon: CreditCard, cloudOnly: true },
-  { id: "analytics", Icon: BarChart3 },
-  { id: "costs", Icon: Coins },
-]
-
-function tabVisible(
-  tab: SheetTabDef,
-  localMode?: boolean,
-  showBilling?: boolean,
-) {
-  if (tab.localOnly) return !!localMode
-  if (tab.cloudOnly) return !localMode && !!showBilling
-  return true
+function isSheetTab(id: SettingsTabId): id is SheetTabId {
+  return SHEET_TAB_IDS.has(id as SheetTabId)
 }
 
 export function accountSettingsSheetTitle(tab: AccountSettingsSheetTab): string {
-  return SHEET_TITLE_BY_ID[tab]
+  return settingsTab(tab).label
 }
 
 export function accountSettingsSheetGroups({
@@ -96,12 +49,15 @@ export function accountSettingsSheetGroups({
   localMode?: boolean
   showBilling?: boolean
 }): Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> {
-  const withLabel = (tab: SheetTabDef) => ({
-    ...tab,
-    label: SHEET_TITLE_BY_ID[tab.id],
-  })
-  const settings = SETTINGS_GROUP.filter((tab) => tabVisible(tab, localMode, showBilling)).map(withLabel)
-  const plan = PLAN_GROUP.filter((tab) => tabVisible(tab, localMode, showBilling)).map(withLabel)
+  const tabs = visibleSettingsTabs({ localMode, showBilling })
+    .filter((tab) => isSheetTab(tab.id))
+    .map((tab) => ({
+      id: tab.id as SheetTabId,
+      Icon: tab.Icon,
+      label: tab.label,
+    }))
+  const settings = tabs.filter((tab) => settingsTab(tab.id).group === "settings")
+  const plan = tabs.filter((tab) => settingsTab(tab.id).group === "plan")
   const groups: Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> = []
   if (settings.length) groups.push({ title: "Settings", tabs: settings })
   if (plan.length) groups.push({ title: "Plan", tabs: plan })

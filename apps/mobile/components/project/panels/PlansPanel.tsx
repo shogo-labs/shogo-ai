@@ -11,7 +11,6 @@ import {
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { useModelPickerGroups, resolveShortName } from "../../../lib/visible-models"
 import {
   ClipboardList,
   ArrowLeft,
@@ -20,9 +19,6 @@ import {
   Trash2,
   Search,
   RefreshCw,
-  Play,
-  ChevronDown,
-  Check,
   Languages,
   AlertTriangle,
 } from "lucide-react-native"
@@ -32,6 +28,7 @@ import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
+import { PlanBuildActions } from "../../chat/PlanBuildActions"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
 import { planFilenameFromPath, shouldListInMemoryPlan } from "../../../lib/plan-stream-publish"
@@ -131,8 +128,6 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const planTabPadClass = isNative ? "py-2.5" : "py-2"
   const planTabLabelClass = isNative ? "text-sm font-semibold" : "text-xs font-semibold"
   const planIconMd = isNative ? 20 : 16
-  const planIconSm = isNative ? 16 : 12
-  const planPlayIcon = isNative ? 18 : 14
   const planStream = usePlanStreamSafe()
   const [plans, setPlans] = useState<AgentPlanSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -142,8 +137,6 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
-  const planModelGroups = useModelPickerGroups()
-  const [showModelPicker, setShowModelPicker] = useState(false)
   const [buildStarted, setBuildStarted] = useState(false)
   const [activeTab, setActiveTab] = useState<"technical" | "summary">("technical")
   // Mirror of the global Dual Plan preference — singleton-backed so any
@@ -311,7 +304,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     setBuildStarted(false)
   }, [selectedPlan, planStream?.streamingPlanFilepath])
 
-  const handleBuild = useCallback(() => {
+  const handleBuild = useCallback((modelId?: string) => {
     if (buildStarted || !planContent || !selectedPlan || !onBuildPlan) return
     const plan = plans.find((p) => p.filename === selectedPlan)
     const todos = extractTodos(planContent)
@@ -324,7 +317,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       filepath: normalizePlanFilepath(selectedPlan),
     }
     setBuildStarted(true)
-    onBuildPlan(planData, buildMode)
+    onBuildPlan(planData, modelId || buildMode)
   }, [buildStarted, planContent, selectedPlan, plans, onBuildPlan, buildMode])
 
   if (!visible) return null
@@ -403,7 +396,6 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             onPress={() => {
               setSelectedPlan(null)
               setPlanContent(null)
-              setShowModelPicker(false)
             }}
             className={cn(
               "items-center justify-center rounded-lg",
@@ -428,58 +420,13 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             ) : null}
           </View>
 
-          {/* Model selector */}
-          <View className="relative">
-            <Pressable
-              onPress={() => setShowModelPicker((p) => !p)}
-              className="flex-row items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 bg-muted/30"
-            >
-              <Text className="text-xs font-medium text-foreground">
-                {resolveShortName(buildMode)}
-              </Text>
-              <ChevronDown className="text-muted-foreground" size={planIconSm} />
-            </Pressable>
-
-            {showModelPicker && (
-              <>
-              <Pressable
-                onPress={() => setShowModelPicker(false)}
-                style={{ position: "fixed" as any, top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 }}
-              />
-              <ScrollView className="absolute right-0 top-9 z-50 w-56 max-h-[280px] rounded-lg border border-border bg-popover shadow-lg">
-                {planModelGroups.map((group) => (
-                  <View key={group.label}>
-                    <View className="px-3 pt-2.5 pb-1">
-                      <Text className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                        {group.label}
-                      </Text>
-                    </View>
-                    {group.models.map((model) => {
-                      const isSelected = buildMode === model.id
-                      return (
-                        <Pressable
-                          key={model.id}
-                          onPress={() => { setBuildMode(model.id); setShowModelPicker(false) }}
-                          className={cn(
-                            "flex-row items-center gap-2.5 px-3 py-2",
-                            isSelected && "bg-accent"
-                          )}
-                        >
-                          <View className="flex-1">
-                            <Text className="text-xs text-foreground">{model.displayName}</Text>
-                          </View>
-                          {isSelected ? (
-                            <Check className="h-3.5 w-3.5 text-primary" size={14} />
-                          ) : null}
-                        </Pressable>
-                      )
-                    })}
-                  </View>
-                ))}
-              </ScrollView>
-              </>
-            )}
-          </View>
+          <PlanBuildActions
+            buildModelId={buildMode}
+            isPro
+            nativeSheet={false}
+            onSelectModel={setBuildMode}
+            onBuild={isBuildDisabled ? undefined : handleBuild}
+          />
 
           {/* Generate summary — sits beside Build so it's the primary
               discovery surface for historic plans without a summary.
@@ -500,19 +447,6 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               <Text className="text-xs font-semibold text-sky-400">Generating...</Text>
             </View>
           )}
-
-          {/* Build button */}
-          <Pressable
-            onPress={handleBuild}
-            disabled={isBuildDisabled}
-            className={cn(
-              "flex-row items-center gap-1.5 rounded-lg px-3.5 py-1.5",
-              !isBuildDisabled ? "bg-amber-400 dark:bg-amber-500 active:bg-amber-500 dark:active:bg-amber-600" : "bg-muted opacity-50"
-            )}
-          >
-            <Play className="text-black" size={planPlayIcon} />
-            <Text className="text-xs font-bold text-black">{buildStarted ? "Building..." : "Build"}</Text>
-          </Pressable>
 
           {!isStreamingDetail && (
             <Pressable
@@ -584,7 +518,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         )}
 
         {/* Detail body */}
-        <ScrollView className="flex-1 px-4 py-3" onScrollBeginDrag={() => setShowModelPicker(false)}>
+        <ScrollView className="flex-1 px-4 py-3">
           {!isStreamingDetail && detailLoading ? (
             <ActivityIndicator className="mt-8" />
           ) : !isStreamingDetail && detailError ? (

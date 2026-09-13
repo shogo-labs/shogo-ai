@@ -11,21 +11,19 @@ import { useDomainHttp } from '../../contexts/domain'
 import { SecurityPreferenceSelector } from './SecurityPreferenceSelector'
 import { api, type SecurityPrefs } from '../../lib/api'
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
-  wrapAccountSheetIcons,
+  Text,
+  TextInput,
+  useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
-
-const { Shield, Plus, X, RotateCcw } = wrapAccountSheetIcons({
-  Shield: ShieldIcon,
-  Plus: PlusIcon,
-  X: XIcon,
-  RotateCcw: RotateCcwIcon,
-})
 
 type SecurityMode = 'strict' | 'balanced' | 'full_autonomy'
 
 export function SecuritySettingsPanel() {
+  const { Shield, Plus, RotateCcw } = useAccountSheetIcons({
+    Shield: ShieldIcon,
+    Plus: PlusIcon,
+    RotateCcw: RotateCcwIcon,
+  })
   const http = useDomainHttp()
   const [prefs, setPrefs] = useState<SecurityPrefs | null>(null)
   const [loading, setLoading] = useState(true)
@@ -261,6 +259,7 @@ function ChipTag({
   variant?: 'default' | 'destructive'
   onRemove: () => void
 }) {
+  const { X } = useAccountSheetIcons({ X: XIcon })
   return (
     <View
       className={cn(

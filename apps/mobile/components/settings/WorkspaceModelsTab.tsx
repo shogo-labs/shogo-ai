@@ -31,15 +31,9 @@ import { useMemberCollection } from '../../contexts/domain'
 import { useAuth } from '../../contexts/auth'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
 import {
-  AccountSheetText as Text,
-  wrapAccountSheetIcons,
+  Text,
+  useAccountSheetIcons,
 } from './account-sheet-chrome'
-
-const { Boxes, Check, Lock } = wrapAccountSheetIcons({
-  Boxes: BoxesIcon,
-  Check: CheckIcon,
-  Lock: LockIcon,
-})
 
 interface Candidate {
   id: string
@@ -61,6 +55,11 @@ function providerLabel(provider: string): string {
 }
 
 export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
+  const { Boxes, Check, Lock } = useAccountSheetIcons({
+    Boxes: BoxesIcon,
+    Check: CheckIcon,
+    Lock: LockIcon,
+  })
   const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id ?? null

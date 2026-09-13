@@ -18,7 +18,7 @@ import { useMemo } from 'react'
 import { View, ActivityIndicator } from 'react-native'
 import { TrendingDown, Beaker, GraduationCap, Wand2 } from 'lucide-react-native'
 import { Card, CardContent } from '@shogo/shared-ui/primitives'
-import { AccountSheetText as Text } from '../settings/account-sheet-chrome'
+import { Text } from '../settings/account-sheet-chrome'
 import { getModelDisplayName, getModelTextColor } from './SharedAnalytics'
 
 // Inline copy of the response type so this file stays decoupled from api.ts.

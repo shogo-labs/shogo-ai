@@ -44,6 +44,7 @@ mock.module("lucide-react-native", () => {
     Mail: Icon("Mail"),
     Monitor: Icon("Monitor"),
     Moon: Icon("Moon"),
+    Paintbrush: Icon("Paintbrush"),
     Plus: Icon("Plus"),
     Plug: Icon("Plug"),
     Boxes: Icon("Boxes"),
@@ -53,6 +54,7 @@ mock.module("lucide-react-native", () => {
     Coins: Icon("Coins"),
     CreditCard: Icon("CreditCard"),
     Settings: Icon("Settings"),
+    Server: Icon("Server"),
     Shield: Icon("Shield"),
     Sparkles: Icon("Sparkles"),
     Store: Icon("Store"),
@@ -81,6 +83,7 @@ mock.module(resolve(import.meta.dir, "../../../../lib/platform-config"), () => (
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/native-phone-layout"), () => ({
   isNativePlatform: () => true,
+  useIsNativePhoneLayout: () => true,
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({
   getPlanDisplayName: () => "Free",
@@ -89,29 +92,6 @@ mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({
   EVENTS: { UPGRADE_CLICKED: "u" },
   trackEvent: () => {},
 }))
-mock.module(resolve(import.meta.dir, "../../../../lib/phone-density"), () => {
-  const PHONE_DENSITY = {
-    icon: { xs: 14, sm: 16, md: 18, lg: 20, nav: 18 },
-    text: { caption: "text-xs", label: "text-sm", body: "text-base", title: "text-lg", heading: "text-xl" },
-    hit: "h-11 w-11",
-    hitSize: "h-12 w-12",
-    rowPad: "px-4 py-3.5",
-    rowMin: "min-h-11",
-  }
-  const COMPACT_DENSITY = {
-    icon: { xs: 10, sm: 12, md: 14, lg: 16, nav: 12 },
-    text: { caption: "text-[10px]", label: "text-xs", body: "text-sm", title: "text-sm", heading: "text-lg" },
-    hit: "p-1",
-    hitSize: "",
-    rowPad: "px-4 py-3",
-    rowMin: "",
-  }
-  return {
-    PHONE_DENSITY,
-    COMPACT_DENSITY,
-    densityFor: (comfortable: boolean) => (comfortable ? PHONE_DENSITY : COMPACT_DENSITY),
-  }
-})
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
   CompactUsageWindows: () => null,
 }))
@@ -186,7 +166,7 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.getByLabelText("Remote Control")).toBeTruthy()
     expect(screen.getByLabelText("Billing")).toBeTruthy()
     expect(screen.getByLabelText("Usage")).toBeTruthy()
-    expect(screen.getByLabelText("Costs")).toBeTruthy()
+    expect(screen.getByLabelText("Cost Optimizer")).toBeTruthy()
     expect(screen.getByLabelText("Profile")).toBeTruthy()
     expect(screen.getByLabelText("API Keys")).toBeTruthy()
     expect(screen.getByLabelText("Appearance")).toBeTruthy()

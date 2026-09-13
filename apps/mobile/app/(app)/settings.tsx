@@ -52,9 +52,9 @@ import {
   Paintbrush as PaintbrushIcon,
 } from 'lucide-react-native'
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
-  wrapAccountSheetIcons,
+  Text,
+  TextInput,
+  useAccountSheetIcons,
 } from '../../components/settings/account-sheet-chrome'
 import { AppearanceTab } from '../../components/settings/AppearanceTab'
 import { useAuth } from '../../contexts/auth'
@@ -102,6 +102,8 @@ import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialo
 import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
 import { useVisibleModels } from '../../lib/visible-models'
 import { isNativePhoneIntegrationsLayout, WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
+import { DOCS_URL } from '../../lib/theme-choices'
+import { SETTINGS_TABS, settingsNavItems, settingsTab, type SettingsTabId } from '../../lib/settings-tabs'
 import { leaveSettings } from '../../lib/settings-back'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
@@ -119,33 +121,7 @@ import {
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../lib/notifications/preferences'
 import { useDualPlan } from '../../lib/dual-plan-preference'
 
-const {
-  ArrowLeft,
-  Building2,
-  Users,
-  Boxes,
-  Shield,
-  User,
-  ExternalLink,
-  Trash2,
-  ChevronDown,
-  X,
-  Search,
-  UserPlus,
-  Mail,
-  BarChart3,
-  MessageSquare,
-  Zap,
-  CreditCard,
-  Cloud,
-  Server,
-  Coins,
-  Plug,
-  Download,
-  Bug,
-  Monitor,
-  Paintbrush,
-} = wrapAccountSheetIcons({
+const SETTINGS_ICON_MAP = {
   ArrowLeft: ArrowLeftIcon,
   Building2: Building2Icon,
   Users: UsersIcon,
@@ -171,13 +147,31 @@ const {
   Bug: BugIcon,
   Monitor: MonitorIcon,
   Paintbrush: PaintbrushIcon,
-})
+} as const
 
-const DOCS_URL = 'https://docs.shogo.ai'
+function useSettingsIcons() {
+  return useAccountSheetIcons(SETTINGS_ICON_MAP)
+}
 
-export type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support' | 'appearance'
+const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
+  workspace: 'Building2',
+  people: 'Users',
+  models: 'Boxes',
+  integrations: 'Plug',
+  'remote-control': 'Monitor',
+  account: 'User',
+  security: 'Shield',
+  billing: 'CreditCard',
+  compute: 'Server',
+  analytics: 'BarChart3',
+  costs: 'Coins',
+  support: 'Bug',
+  appearance: 'Paintbrush',
+}
 
-const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'remote-control', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support', 'appearance']
+export type TabId = SettingsTabId
+
+const ALL_TAB_IDS: TabId[] = SETTINGS_TABS.map(({ id }) => id)
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = WEB_WIDE_MIN_WIDTH
@@ -189,31 +183,31 @@ interface NavItem {
   icon: React.ElementType
 }
 
-const MOBILE_NAV_ITEMS: NavItem[] = [
-  { id: 'workspace', label: 'Workspace', icon: Building2 },
-  { id: 'people', label: 'People', icon: Users },
-  { id: 'models', label: 'Models', icon: Boxes },
-  { id: 'integrations', label: 'Integrations', icon: Plug },
-  { id: 'remote-control', label: 'Remote Control', icon: Monitor },
-  { id: 'account', label: 'Account', icon: User },
-  { id: 'appearance', label: 'Appearance', icon: Paintbrush },
-  ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute', icon: Server }] : []),
-  { id: 'billing', label: 'Billing', icon: CreditCard },
-  { id: 'analytics', label: 'Usage', icon: BarChart3 },
-  { id: 'costs', label: 'Costs', icon: Coins },
-]
+const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
+  'workspace',
+  'people',
+  'models',
+  'integrations',
+  'remote-control',
+  'account',
+  'appearance',
+  ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? ['compute' as TabId] : []),
+  'billing',
+  'analytics',
+  'costs',
+])
 
-const LOCAL_NAV_ITEMS: NavItem[] = [
-  { id: 'workspace', label: 'Workspace', icon: Building2 },
-  { id: 'integrations', label: 'Integrations', icon: Plug },
-  { id: 'remote-control', label: 'Remote Control', icon: Monitor },
-  { id: 'account', label: 'Account', icon: User },
-  { id: 'appearance', label: 'Appearance', icon: Paintbrush },
-  { id: 'security', label: 'Security', icon: Shield },
-  { id: 'analytics', label: 'Usage', icon: BarChart3 },
-  { id: 'costs', label: 'Costs', icon: Coins },
-  { id: 'support', label: 'Report Bug', icon: Bug },
-]
+const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
+  'workspace',
+  'integrations',
+  'remote-control',
+  'account',
+  'appearance',
+  'security',
+  'analytics',
+  'costs',
+  'support',
+])
 
 function TabBar({
   activeTab,
@@ -226,6 +220,7 @@ function TabBar({
   showBilling?: boolean
   localMode?: boolean
 }) {
+  const icons = useSettingsIcons()
   const items = (showBilling && !localMode) ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS
   return (
     <ScrollView
@@ -236,7 +231,7 @@ function TabBar({
       style={{ flexGrow: 0 }}
     >
       {items.map((item) => {
-        const Icon = item.icon
+        const Icon = icons[SETTINGS_TAB_ICON_NAME[item.id]]
         const isActive = activeTab === item.id
         return (
           <Pressable
@@ -293,24 +288,32 @@ function SettingsSidebar({
   showBilling?: boolean
   localMode?: boolean
 }) {
+  const { ArrowLeft } = useSettingsIcons()
   const router = useRouter()
+  const tabItem = (id: TabId): SidebarItem => ({
+    id,
+    label: settingsTab(id).label,
+  })
 
   const workspaceItems: SidebarItem[] = [
-    { id: 'workspace', label: workspaceName || 'Workspace', avatar: (workspaceName?.[0] || 'W').toUpperCase() },
-    ...(!(localMode || !showBilling) ? [{ id: 'people' as TabId, label: 'People' }] : []),
-    ...(!(localMode || !showBilling) ? [{ id: 'models' as TabId, label: 'Models' }] : []),
-    { id: 'integrations' as TabId, label: 'Integrations' },
-    { id: 'remote-control' as TabId, label: 'Remote Control' },
+    {
+      ...tabItem('workspace'),
+      label: workspaceName || settingsTab('workspace').label,
+      avatar: (workspaceName?.[0] || 'W').toUpperCase(),
+    },
+    ...(!(localMode || !showBilling) ? [tabItem('people'), tabItem('models')] : []),
+    tabItem('integrations'),
+    tabItem('remote-control'),
     ...(showBilling
       ? [
-          ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [{ id: 'compute' as TabId, label: 'Compute' }] : []),
-          { id: 'billing' as TabId, label: 'Billing' },
-          { id: 'analytics' as TabId, label: 'Usage' },
-          { id: 'costs' as TabId, label: 'Cost Optimizer' },
+          ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [tabItem('compute')] : []),
+          tabItem('billing'),
+          tabItem('analytics'),
+          tabItem('costs'),
         ]
       : [
-          { id: 'analytics' as TabId, label: 'Usage' },
-          { id: 'costs' as TabId, label: 'Cost Optimizer' },
+          tabItem('analytics'),
+          tabItem('costs'),
         ]),
   ]
 
@@ -322,18 +325,18 @@ function SettingsSidebar({
     },
     {
       id: 'account',
-      label: 'Account',
+      label: settingsTab('account').label,
       items: [
-        { id: 'account', label: userName || 'Account' },
-        { id: 'appearance' as TabId, label: 'Appearance' },
-        ...(!showBilling ? [{ id: 'security' as TabId, label: 'Security' }] : []),
+        { ...tabItem('account'), label: userName || settingsTab('account').label },
+        tabItem('appearance'),
+        ...(!showBilling ? [tabItem('security')] : []),
       ],
     },
     ...(localMode ? [{
       id: 'support',
       label: 'Support',
       items: [
-        { id: 'support' as TabId, label: 'Report Bug' },
+        tabItem('support'),
       ],
     }] : []),
   ]
@@ -398,6 +401,7 @@ function SettingsSidebar({
 // ============================================================================
 
 function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
+  const { Cloud } = useSettingsIcons()
   const [status, setStatus] = useState<{
     connected: boolean
     keyMask?: string
@@ -580,6 +584,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
 // ============================================================================
 
 const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
+  const { X } = useSettingsIcons()
   const { width } = useWindowDimensions()
   const isWideNameSection = width >= SETTINGS_WIDE_BREAKPOINT
   const router = useRouter()
@@ -1327,6 +1332,8 @@ function formatSharePct(value: number, total: number): string {
 }
 
 const PeopleTab = observer(function PeopleTab() {
+  const { X, ChevronDown, Download, Search, UserPlus, Users, Mail } =
+    useSettingsIcons()
   const { width } = useWindowDimensions()
   const isMobilePeopleLayout = width < SETTINGS_WIDE_BREAKPOINT
 
@@ -2298,6 +2305,7 @@ function InviteMembersModal({
   workspaceName: string
   actions: ReturnType<typeof useDomainActions>
 }) {
+  const { X, ChevronDown } = useSettingsIcons()
   const { width, height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const compactInviteModal = width < SETTINGS_WIDE_BREAKPOINT
@@ -2761,6 +2769,7 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
 })
 
 function BillingTab() {
+  const { CreditCard } = useSettingsIcons()
   const router = useRouter()
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
@@ -3027,6 +3036,7 @@ function fmtUsd(n: number): string {
 }
 
 function WorkspaceAnalyticsTab() {
+  const { Coins, CreditCard, Download, Zap } = useSettingsIcons()
   const http = useDomainHttp()
   const router = useRouter()
   const workspace = useActiveWorkspace()
@@ -3348,6 +3358,7 @@ export const SettingsContent = observer(function SettingsContent({
 })
 
 export default observer(function SettingsPage() {
+  const { ExternalLink, ArrowLeft } = useSettingsIcons()
   const router = useRouter()
   const params = useLocalSearchParams<{ tab?: string }>()
   const { width, height } = useWindowDimensions()

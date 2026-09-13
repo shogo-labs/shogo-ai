@@ -48,34 +48,10 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
-  wrapAccountSheetIcons,
+  Text,
+  TextInput,
+  useAccountSheetIcons,
 } from './account-sheet-chrome'
-
-const {
-  Globe,
-  RefreshCw,
-  LogOut,
-  ExternalLink,
-  Loader2,
-  X,
-  Plus,
-  Search,
-  CheckCircle2,
-  AlertCircle,
-} = wrapAccountSheetIcons({
-  Globe: GlobeIcon,
-  RefreshCw: RefreshCwIcon,
-  LogOut: LogOutIcon,
-  ExternalLink: ExternalLinkIcon,
-  Loader2: Loader2Icon,
-  X: XIcon,
-  Plus: PlusIcon,
-  Search: SearchIcon,
-  CheckCircle2: CheckCircle2Icon,
-  AlertCircle: AlertCircleIcon,
-})
 
 const LOG_PREFIX = '[IntegrationsTab]'
 
@@ -136,6 +112,29 @@ function getToolkitDisplay(toolkit: string) {
 }
 
 export function IntegrationsTab() {
+  const {
+    Globe,
+    RefreshCw,
+    LogOut,
+    ExternalLink,
+    Loader2,
+    X,
+    Plus,
+    Search,
+    CheckCircle2,
+    AlertCircle,
+  } = useAccountSheetIcons({
+    Globe: GlobeIcon,
+    RefreshCw: RefreshCwIcon,
+    LogOut: LogOutIcon,
+    ExternalLink: ExternalLinkIcon,
+    Loader2: Loader2Icon,
+    X: XIcon,
+    Plus: PlusIcon,
+    Search: SearchIcon,
+    CheckCircle2: CheckCircle2Icon,
+    AlertCircle: AlertCircleIcon,
+  })
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id

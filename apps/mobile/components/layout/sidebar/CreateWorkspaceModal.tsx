@@ -10,8 +10,8 @@ import {
 } from "react-native";
 import { X as XIcon } from "lucide-react-native";
 import {
-  AccountSheetText as Text,
-  AccountSheetTextInput as TextInput,
+  Text,
+  TextInput,
   accountSheetIcon,
 } from "../../settings/account-sheet-chrome";
 

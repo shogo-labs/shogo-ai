@@ -5,14 +5,9 @@ export { AppSidebar } from "./AppSidebar";
 export {
   ACCOUNT_SCREEN_HREF,
   AccountMenu,
-  AccountNavLinks,
-  UserMenuContent,
-  WorkspaceMenuSection,
 } from "./AccountMenu";
 export type {
   AccountMenuProps,
-  UserMenuProps,
-  WorkspaceMenuSectionProps,
 } from "./AccountMenu";
 export { ChatTreeItem } from "./ChatTreeItem";
 export { CreateWorkspaceModal } from "./CreateWorkspaceModal";

@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { View, Pressable, ActivityIndicator } from 'react-native'
 import { Cpu, RefreshCcw, Check } from 'lucide-react-native'
-import { AccountSheetText as Text } from '../settings/account-sheet-chrome'
+import { Text } from '../settings/account-sheet-chrome'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
 import { getModelColor, getModelDisplayName, getModelTextColor } from './SharedAnalytics'

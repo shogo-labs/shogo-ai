@@ -93,7 +93,10 @@ import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } 
 import { isPhoneLayout,
   useNativePhoneWindow } from "../../lib/native-phone-layout"
 import { canvasViewerPayload } from "../../lib/canvas-viewer"
-import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
+import {
+  CHAT_TRANSCRIPT_MAX_WIDTH,
+  NATIVE_COMPOSER_KEYBOARD_GAP,
+} from "../../lib/native-composer-keyboard"
 import { ProjectComposerDock } from "./composer/ProjectComposerDock"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
@@ -661,14 +664,6 @@ async function refreshCollections(
 
 /** Y offset from top below which we treat the viewport as "at the top" for loading older messages. */
 const LOAD_OLDER_SCROLL_EDGE_PX = 80
-
-/**
- * Pixel value of Tailwind's `max-w-3xl` (48rem @ 16px root). The messages
- * column and composer are capped at this width on wide viewports via the
- * `max-w-3xl` className; see the composer's inline-style backup below for
- * why this is also pinned explicitly instead of trusting the class alone.
- */
-const CHAT_COMPOSER_MAX_WIDTH = 768
 
 /** Pixels from bottom to consider the user "at bottom" for follow-scroll heuristics (web). */
 const SCROLL_NEAR_BOTTOM_PX = 100
@@ -2110,7 +2105,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           // to a previous plan; the runtime will re-emit
           // data-plan-summary-* if Dual Plan is enabled for this turn.
           planStream?.resetSummary()
-          const normalizedPlan = normalizePlanData(planData)
+          const normalizedPlan = normalizePlanData({ ...planData, isUpdate: false })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
           planStream?.setStreamingPlan(normalizedPlan)
@@ -2132,6 +2127,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             todos: planData.todos ?? previousPlan?.todos ?? [],
             filepath: planData.filepath ?? previousPlan?.filepath,
             toolCallId: planData.toolCallId ?? previousPlan?.toolCallId,
+            isUpdate: true,
             summary: previousPlan?.summary,
             summaryStatus: previousPlan?.summaryStatus,
           })
@@ -3642,6 +3638,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       todos: args.todos ?? [],
       filepath: args.filepath,
       toolCallId: planTool.id ?? planTool.toolCallId,
+        isUpdate: false,
     })
     pendingPlanRef.current = restoredPlan
     setPendingPlan(restoredPlan)
@@ -3724,6 +3721,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         todos: args.todos ?? [],
         filepath: args.filepath,
         toolCallId: planPart.id ?? planPart.toolCallId,
+        isUpdate: false,
       })
     }
     const fresh = computeFresh()
@@ -5858,7 +5856,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 : // Same belt-and-suspenders cap as the composer below —
                   // pins the `max-w-3xl` width even if the className
                   // doesn't resolve on this content container.
-                  { maxWidth: CHAT_COMPOSER_MAX_WIDTH, width: "100%", alignSelf: "center" as const }
+                  {
+                    maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+                    width: "100%",
+                    alignSelf: "center" as const,
+                  }
             }
             keyboardShouldPersistTaps={
               isNative && nativeInlineEditing ? "always" : "handled"

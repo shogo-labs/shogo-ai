@@ -18,7 +18,6 @@ import { Input } from '../primitives/Input'
 import { Alert, AlertDescription } from '../primitives/Alert'
 import { Separator } from '../primitives/Separator'
 import { cn } from '../primitives/cn'
-import { BRAND_LANDING_HEX } from '../tokens/brand'
 import { ShogoWordmark } from '../branding/ShogoWordmark'
 
 /** ~`text-muted-foreground` — lucide icons need explicit color */

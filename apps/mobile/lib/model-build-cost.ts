@@ -45,10 +45,6 @@ export function modelCostHint(tier: ModelTier, comparedTo?: ModelTier): string {
   return MODEL_COST_DETAIL[tier]
 }
 
-export function formatBuildModelChip(shortName: string, tier: ModelTier): string {
-  return `${shortName} · ${MODEL_COST_LABEL[tier]}`
-}
-
 /** Native phone sheets and plan pickers show model names only. */
 export function modelPickerHidesCostLabels(
   hideCostLabels: boolean,

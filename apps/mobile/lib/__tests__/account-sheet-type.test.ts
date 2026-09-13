@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   remapAccountSheetTextClass,
   scaleAccountSheetIcon,
-} from '../account-sheet-type'
+} from '../account-sheet-typography'
 
 describe('remapAccountSheetTextClass', () => {
   test('bumps NativeWind type one step without touching other classes', () => {

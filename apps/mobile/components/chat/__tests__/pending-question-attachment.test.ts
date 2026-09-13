@@ -109,6 +109,7 @@ describe("derivePendingQuestion", () => {
 describe("askUserStreamVariant", () => {
   test("pending (no result) renders the collapsed bar in-stream", () => {
     expect(askUserStreamVariant(undefined)).toBe("bar")
+    expect(askUserStreamVariant(null)).toBe("bar")
   })
 
   test("answered (result present) renders the summary widget in-stream", () => {

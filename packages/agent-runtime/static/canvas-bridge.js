@@ -28,11 +28,11 @@
   // -------------------------------------------------------------------------
   // Agent UIs are often authored as desktop dashboards (`grid-cols-2/3/4`).
   // Studio desktop iframes stay wide, so these rules only apply at
-  // CANVAS_PHONE_MAX_WIDTH_PX (Tailwind max-sm / iPhone / narrow preview).
+  // CANVAS_PHONE_MAX_WIDTH_PX (Studio's phone / narrow preview breakpoint).
   // Existing canvases pick this up on reload — no per-project rebuild.
   var RESPONSIVE_STYLE_ID = '__shogo-canvas-responsive'
-  // Tailwind max-sm. Studio desktop iframes are wider, so they keep 2–6 col grids.
-  var CANVAS_PHONE_MAX_WIDTH_PX = 639
+  // Keep this in sync with apps/mobile/lib/native-phone-layout.ts.
+  var CANVAS_PHONE_MAX_WIDTH_PX = 767
   var FLEX_VIEWPORT_SHELLS = [
     '.flex.h-screen',
     '.flex.min-h-screen',

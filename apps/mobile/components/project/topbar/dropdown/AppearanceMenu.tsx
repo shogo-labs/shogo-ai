@@ -5,19 +5,14 @@ import React, { useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { Check, ChevronRight, SunMoon } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
-import { useTheme, type ThemePreference } from "../../../../contexts/theme";
+import { useTheme } from "../../../../contexts/theme";
 import {
   Popover,
   PopoverBackdrop,
   PopoverBody,
   PopoverContent,
 } from "../../../ui/popover";
-
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "System" },
-];
+import { THEME_CHOICES } from "../../../../lib/theme-choices";
 
 export function AppearanceMenu({ inline = false }: { inline?: boolean }) {
   const { theme, setTheme } = useTheme();
@@ -30,7 +25,7 @@ export function AppearanceMenu({ inline = false }: { inline?: boolean }) {
           <SunMoon size={20} className="text-muted-foreground" />
           <Text className="text-base text-foreground flex-1">Appearance</Text>
         </View>
-        {THEME_OPTIONS.map(({ value, label }) => (
+        {THEME_CHOICES.map(({ value, label }) => (
           <Pressable
             key={value}
             onPress={() => setTheme(value)}

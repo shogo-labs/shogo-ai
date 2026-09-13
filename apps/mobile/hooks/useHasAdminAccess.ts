@@ -14,15 +14,18 @@ export function useHasAdminAccess(userId: string | undefined): boolean {
   const [hasAdminAccess, setHasAdminAccess] = useState(false);
 
   useEffect(() => {
+    setHasAdminAccess(false);
     if (!userId || !http) return;
     let cancelled = false;
     api
       .getMe(http)
       .then((data) => {
         if (cancelled) return;
-        if (hasAdminPortalAccess(data)) setHasAdminAccess(true);
+        setHasAdminAccess(hasAdminPortalAccess(data));
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setHasAdminAccess(false);
+      });
     return () => {
       cancelled = true;
     };

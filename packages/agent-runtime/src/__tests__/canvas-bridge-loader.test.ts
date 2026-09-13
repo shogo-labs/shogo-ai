@@ -66,7 +66,7 @@ describe('loadCanvasBridgeSource', () => {
   test('bridge stacks desktop KPI grids under Tailwind max-sm (phone / narrow preview)', () => {
     const src = loadCanvasBridgeSource()
     expect(src).toContain('__shogo-canvas-responsive')
-    expect(src).toContain('var CANVAS_PHONE_MAX_WIDTH_PX = 639')
+    expect(src).toContain('var CANVAS_PHONE_MAX_WIDTH_PX = 767')
     expect(src).toContain("'@media (max-width: ' + CANVAS_PHONE_MAX_WIDTH_PX + 'px)")
     expect(src).toContain('grid-cols-2')
     expect(src).toContain('grid-cols-3')

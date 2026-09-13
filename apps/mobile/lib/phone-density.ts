@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useIsNativePhoneLayout } from './native-phone-layout'
+import { useAccountSheetChrome } from '../components/settings/account-sheet-chrome'
 
 export type Density = {
   icon: { xs: number; sm: number; md: number; lg: number; nav: number }
@@ -68,6 +69,15 @@ export const COMPACT_DENSITY: Density = {
 export const densityFor = (comfortable: boolean): Density =>
   comfortable ? PHONE_DENSITY : COMPACT_DENSITY
 
+/** Account-sheet text is remapped from compact source classes exactly once. */
+export const densityForAccountSheet = (
+  comfortable: boolean,
+  inAccountSheet: boolean,
+): Density => densityFor(inAccountSheet ? false : comfortable)
+
 export function usePhoneDensity(): Density {
-  return densityFor(useIsNativePhoneLayout())
+  return densityForAccountSheet(
+    useIsNativePhoneLayout(),
+    useAccountSheetChrome(),
+  )
 }

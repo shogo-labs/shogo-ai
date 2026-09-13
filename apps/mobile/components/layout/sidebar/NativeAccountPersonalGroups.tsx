@@ -20,7 +20,7 @@ import { useTheme } from "../../../contexts/theme";
 import { usePlatformConfig } from "../../../lib/platform-config";
 import { PHONE_DENSITY } from "../../../lib/phone-density";
 import { AccountSettingsGroup, AccountSettingsRow } from "./AccountSettingsGroup";
-import { CHANGELOG_URL, DOCS_URL, themeDisplayName } from "./account-theme";
+import { CHANGELOG_URL, DOCS_URL, themeDisplayName } from "../../../lib/theme-choices";
 import { ThemeChoiceList } from "./ThemeChoiceList";
 
 export function NativeAccountPersonalGroups({

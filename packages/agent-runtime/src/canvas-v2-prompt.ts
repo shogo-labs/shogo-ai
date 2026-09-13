@@ -16,6 +16,12 @@
 import { PROJECT_API_PORT } from './lint-hardcoded-ports'
 const API_PORT = PROJECT_API_PORT
 
+/** Shared mobile-first layout rules used by every canvas-oriented prompt. */
+export const MOBILE_FIRST_LAYOUT_RULES = `- **Mobile-first by default** (do not wait for the user to say "responsive" or "iPhone"): canvases open on ~390px phones.
+- **KPI / card rows**: \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\` — never a fixed \`grid-cols-3\` or \`grid-cols-4\`.
+- **App chrome**: do not pin a left sidebar at phone widths. Stack panes with \`flex flex-col md:flex-row\`, or put nav in a top bar / \`Sheet\`.
+- **Labels and spacing**: do not \`truncate\` primary labels; use \`p-4 sm:p-6\` page padding and let headers/tab lists wrap or scroll.`
+
 // ---------------------------------------------------------------------------
 // Section 1: Core Guide
 // ---------------------------------------------------------------------------
@@ -109,7 +115,7 @@ Use Tailwind CSS classes. The app supports both light and dark mode automaticall
 - **Pair action buttons with icons** from lucide-react (e.g. \`Plus\`, \`Trash2\`, \`Search\`)
 - Use semantic color tokens (\`text-foreground\`, \`text-muted-foreground\`, \`bg-muted\`) for dark mode compatibility
 - **NEVER add borders** (\`border\`, \`border-t\`, \`divide-y\`, etc.) unless the user asks — use spacing and subtle backgrounds for separation instead
-- **Mobile / narrow preview (required)**: canvases also open on iPhone. Never use a fixed \`grid-cols-3\` or \`grid-cols-4\` for KPI rows. Start at one column and step up: \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\`. Do not put \`truncate\` on primary card labels. Page padding \`p-4 sm:p-6\`. Headers and tab lists must wrap or scroll, not overflow.
+${MOBILE_FIRST_LAYOUT_RULES}
 
 See the **UI/UX Design Guide** section for comprehensive design patterns and anti-patterns.
 
@@ -688,9 +694,7 @@ export const CANVAS_MOBILE_PREVIEW_GUIDE = `## Canvas preview (phone and desktop
 
 **Default. Do not wait to be asked.** Every canvas write under \`src/\` must work on iPhone (~390px) and desktop in the same app. Never ship a desktop-only shell and never ask the user to prompt for a "mobile version".
 
-- **KPI / card rows**: \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\` — never a fixed \`grid-cols-3\` or \`grid-cols-4\`.
-- **App chrome**: do not pin a left sidebar at phone widths. Stack panes with \`flex flex-col md:flex-row\`, or put nav in a top bar / \`Sheet\`. A \`flex h-screen\` + \`w-64\` rail is a desktop pattern.
-- **Page padding** \`p-4 sm:p-6\`. Do not \`truncate\` primary labels. Headers and tab lists wrap or scroll, never overflow.
+${MOBILE_FIRST_LAYOUT_RULES}
 - **Primary actions** stay reachable with the thumb (top or bottom bar), not only in a left rail.
 
 The **Viewer** section is the live preview size (like a device toolbar). Use it to prioritize layout, not as a switch that turns responsive design on.

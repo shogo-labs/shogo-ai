@@ -4,7 +4,7 @@
  * Cursor-style plan preview: a bottom sheet with the plan body and
  * Build / model / View plan in the footer. Web keeps the dock PlanCard.
  */
-import { useCallback, useEffect, useState } from "react"
+import { useCallback } from "react"
 import { Text, View } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { MarkdownText } from "./MarkdownText"
@@ -21,26 +21,22 @@ import type { PlanData } from "./PlanCard"
 export function NativePlanPreviewSheet({
   visible,
   plan,
-  selectedModel,
+  buildModelId,
   isPro = true,
   onClose,
+  onSelectModel,
   onBuild,
   onViewPlan,
 }: {
   visible: boolean
   plan: PlanData
-  selectedModel?: string
+  buildModelId: string
   isPro?: boolean
   onClose: () => void
+  onSelectModel: (modelId: string) => void
   onBuild?: (modelId?: string) => void
   onViewPlan?: () => void
 }) {
-  const [buildModelId, setBuildModelId] = useState(selectedModel ?? "")
-
-  useEffect(() => {
-    if (visible && selectedModel) setBuildModelId(selectedModel)
-  }, [visible, selectedModel, plan.filepath, plan.toolCallId])
-
   const handleViewPlan = useCallback(() => {
     onViewPlan?.()
     onClose()
@@ -65,7 +61,7 @@ export function NativePlanPreviewSheet({
             isPro={isPro}
             nativeSheet
             stacked
-            onSelectModel={setBuildModelId}
+            onSelectModel={onSelectModel}
             onBuild={onBuild}
             onViewPlan={onViewPlan ? handleViewPlan : undefined}
           />
