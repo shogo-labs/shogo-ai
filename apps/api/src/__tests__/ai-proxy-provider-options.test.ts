@@ -120,14 +120,18 @@ function buildApp() {
   return app
 }
 
-/** Posts a chat-completion body and returns the JSON the proxy forwarded to Anthropic. */
-async function postAndCapture(body: unknown): Promise<any> {
+async function postChatCompletion(body: unknown): Promise<Response> {
   const app = buildApp()
-  const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+  return app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
     body: JSON.stringify(body),
   }))
+}
+
+/** Posts a chat-completion body and returns the JSON the proxy forwarded to Anthropic. */
+async function postAndCapture(body: unknown): Promise<any> {
+  const res = await postChatCompletion(body)
   // Non-stream path goes through proxyAnthropicNonStream which makes one fetch.
   expect(res.status).toBeLessThan(500)
   return JSON.parse(String(lastFetchInit?.body))
@@ -380,19 +384,102 @@ describe('AI proxy: developer role (OpenAI reasoning) → Anthropic system', () 
     expect(forwarded.messages.some((m: any) => m.role === 'developer')).toBe(false)
   })
 
-  test('a tool role is coerced to user (defensive: only user/assistant reach Anthropic)', async () => {
+  test('assistant tool_calls and tool results become Anthropic tool_use/tool_result blocks', async () => {
     const forwarded = await postAndCapture({
       model: 'claude-haiku-4-5',
       messages: [
         { role: 'system', content: 'Sys.' },
-        { role: 'assistant', content: 'calling a tool' },
-        { role: 'tool', content: 'tool output', tool_call_id: 'call_1' },
+        { role: 'user', content: 'Use the file reader.' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: {
+              name: 'read_file',
+              arguments: '{"path":"package.json"}',
+            },
+          }],
+        },
+        { role: 'tool', content: '{"ok":true}', tool_call_id: 'call_1' },
       ],
     })
 
-    const roles = forwarded.messages.map((m: any) => m.role)
-    expect(roles).toEqual(['assistant', 'user'])
-    expect(roles.every((r: string) => r === 'user' || r === 'assistant')).toBe(true)
+    expect(forwarded.messages).toEqual([
+      { role: 'user', content: 'Use the file reader.' },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call_1',
+          name: 'read_file',
+          input: { path: 'package.json' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call_1',
+          content: '{"ok":true}',
+        }],
+      },
+    ])
+    expect(forwarded.messages.every((m: any) => m.role === 'user' || m.role === 'assistant')).toBe(true)
+  })
+
+  test('assistant tool_call arguments that are not JSON are preserved as arguments text', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [
+        { role: 'user', content: 'Use the shell.' },
+        {
+          role: 'assistant',
+          content: 'I will run it.',
+          tool_calls: [{
+            id: 'call_bad_json',
+            type: 'function',
+            function: { name: 'shell', arguments: 'not-json' },
+          }],
+        },
+      ],
+    })
+
+    expect(forwarded.messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'I will run it.' },
+        {
+          type: 'tool_use',
+          id: 'call_bad_json',
+          name: 'shell',
+          input: { arguments: 'not-json' },
+        },
+      ],
+    })
+  })
+})
+
+describe('AI proxy: Anthropic upstream errors', () => {
+  test('preserves Anthropic status and reports provider error details', async () => {
+    nextFetchResponses = [() => new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'messages.1.content must be an array' },
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } })]
+
+    const res = await postChatCompletion({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    const body = await res.json() as any
+
+    expect(res.status).toBe(400)
+    expect(body.error.type).toBe('upstream_error')
+    expect(body.error.code).toBe('provider_error')
+    expect(body.error.provider).toBe('anthropic')
+    expect(body.error.upstream_status).toBe(400)
+    expect(body.error.message).toContain('invalid_request_error')
   })
 })
 
