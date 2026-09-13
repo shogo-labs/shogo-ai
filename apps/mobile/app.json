@@ -70,7 +70,8 @@
           "icon": "./assets/adaptive-icon.png",
           "color": "#FB8C00"
         }
-      ]
+      ],
+      "./plugins/withAndroidR8"
     ],
     "extra": {
       "router": {},
