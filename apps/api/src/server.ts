@@ -69,6 +69,10 @@ import {
   setTitleGenerationModelId,
   TITLE_MODEL_SETTING_KEY,
 } from './lib/title-model'
+import {
+  fallbackGenerateProjectName,
+  parseTitleResponse,
+} from './lib/title-parse'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
 import { adminRoutes, userAttributionRoute } from './routes/admin'
@@ -6208,44 +6212,6 @@ app.delete('/api/admin/pods/:projectId', async (c) => {
  * Response:
  * - name: string - A short, descriptive project name (2-4 words)
  */
-/**
- * Fallback function for generating project names when AI is unavailable.
- * Extracts meaningful words from the prompt.
- */
-function fallbackGenerateProjectName(prompt: string): string {
-  const fillerWords = new Set([
-    // articles & pronouns
-    "a", "an", "the", "to", "for", "with", "that", "this", "is", "are",
-    "my", "me", "its", "it", "our", "your", "their",
-    // verbs (action words from prompts)
-    "create", "build", "make", "design", "develop", "implement", "add", "include",
-    "show", "showing", "display", "have", "has", "using", "use",
-    // polite / conversational
-    "please", "can", "you", "i", "want", "need", "would", "like",
-    // generic tech words
-    "simple", "basic", "web", "app", "application", "website", "page",
-    // conjunctions & prepositions that slip through
-    "where", "when", "how", "what", "which", "each", "every", "some",
-    "and", "but", "also", "then", "from", "into", "about", "just",
-    "nice", "good", "new", "should", "could",
-  ])
-
-  const words = prompt.toLowerCase()
-    .replace(/[^\w\s]/g, "")
-    .split(/\s+/)
-    .filter(word => word.length > 2 && !fillerWords.has(word))
-
-  const nameWords = words.slice(0, 3)
-
-  if (nameWords.length === 0) {
-    return "New Project"
-  }
-
-  return nameWords
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ")
-}
-
 app.post('/api/generate-project-name', async (c) => {
   // Captured outside the try so the catch can build a prompt-based heuristic
   // without re-reading the (already-consumed) request body.
@@ -6278,7 +6244,7 @@ app.post('/api/generate-project-name', async (c) => {
     // to the default model and, failing that, throws so the outer catch returns
     // a heuristic name.
     const result = await generateTitleCompletion({
-      maxTokens: 80,
+      maxTokens: 300,
       system: `You generate short titles for chat conversations. The user will provide the first message from a conversation. Your job is to generate a short title summarizing the topic.
 
 CRITICAL: You are a labeling function, NOT a conversational assistant. NEVER explain yourself, NEVER refuse, NEVER ask questions, NEVER describe your capabilities. Just output JSON.
@@ -6307,26 +6273,16 @@ Examples:
       prompt: "Here is the first message from a conversation: " + prompt.trim() + ". Generate a short title and description for this message.",
     })
 
-    let name = 'New Project'
-    let description = ''
-    try {
-      let jsonText = result.text.trim()
-      jsonText = jsonText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
-      const parsed = JSON.parse(jsonText)
-      name = (parsed.title || '').replace(/['"]/g, '').trim() || 'New Project'
-      description = (parsed.description || '').trim()
-    } catch {
-      const raw = result.text.trim().replace(/['"]/g, '').replace(/```(?:json)?/gi, '').trim()
-      if (raw.length > 50) {
-        name = fallbackGenerateProjectName(prompt)
-      } else {
-        name = raw || 'New Project'
-      }
+    const parsedTitle = parseTitleResponse(result.text, prompt)
+    if (parsedTitle.source === 'heuristic') {
+      console.warn('[generate-project-name] Model output was not a valid title', {
+        model: result.billingModelId,
+        finishReason: result.finishReason,
+        outputTokens: result.outputTokens,
+        textLength: result.text.length,
+      })
     }
-
-    if (name.length > 50) {
-      name = fallbackGenerateProjectName(prompt)
-    }
+    const { name, description, source } = parsedTitle
 
     // Usage is metered by the AI proxy: `generateTitleCompletion` now routes
     // through `resolveLanguageModel` (proxy `/ai/v1` or `/ai/anthropic/v1`),
@@ -6346,11 +6302,11 @@ Examples:
       }
     }
 
-    return c.json({ name, description })
+    return c.json({ name, description, source })
   } catch (error: any) {
     console.error('[/api/generate-project-name] Error:', error)
     const name = fallbackGenerateProjectName(promptForFallback)
-    return c.json({ name, description: '' })
+    return c.json({ name, description: '', source: 'heuristic' })
   }
 })
 

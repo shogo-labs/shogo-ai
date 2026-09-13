@@ -2447,9 +2447,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
             hasTriggeredNamingRef.current = true
             const http = createHttpClient()
             api
-              .generateProjectName(http, userText, workspaceId)
-              .then(({ name }) => {
-                if (!name) return
+              .generateProjectName(http, userText, workspaceId, projectId)
+              .then(({ name, description, source }) => {
+                if (source !== 'ai' || !name) return
                 // Guard: the session may have been deleted (or never persisted
                 // server-side) between sending the naming RPC and its
                 // resolution — e.g. the user switched chat tabs and removed
@@ -2463,11 +2463,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 if (!studioChat.chatSessionCollection.get(currentSessionId)) {
                   return
                 }
-                return actions.updateChatSession(currentSessionId, {
-                  inferredName: name,
-                })
+                if (projectId) {
+                  actions.updateProject(projectId, {
+                    name,
+                    ...(description ? { description } : {}),
+                  })
+                }
+                return actions.updateChatSession(currentSessionId, { inferredName: name })
               })
-              .catch(() => {})
+              .catch((err) => {
+                console.warn('[ChatPanel] AI session naming failed:', err)
+              })
           }
         }
       }

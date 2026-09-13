@@ -51,6 +51,9 @@ export const BINARY_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   // Audio / video / docs
   'mp3', 'mp4', 'm4a', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'wav', 'flac',
   'ogg', 'oga', 'ogv', 'aac', 'opus', 'pdf',
+  // Office / document containers
+  'xls', 'xlsx', 'xlsm', 'xlsb', 'doc', 'docx', 'docm', 'ppt', 'pptx', 'pptm',
+  'odt', 'ods', 'odp', 'pages', 'numbers', 'key', 'epub',
   // Fonts
   'woff', 'woff2', 'ttf', 'otf', 'eot',
   // Native / packed
@@ -119,4 +122,33 @@ export function isBinaryFilePath(path: string): boolean {
   }
 
   return false
+}
+
+/**
+ * Conservative content-level binary detection for files whose extension is
+ * missing, misleading, or not yet present in the allow-list. This is a
+ * secondary read-path guard; callers that write a file should still use
+ * isBinaryFilePath because a text-looking binary prefix is not sufficient to
+ * make a string round-trip safe.
+ */
+export function isBinaryBuffer(bytes: Uint8Array, inspectBytes = 8192): boolean {
+  const head = bytes.subarray(0, Math.min(bytes.length, inspectBytes))
+  if (head.includes(0)) return true
+
+  const startsWith = (...signature: number[]) =>
+    signature.every((value, index) => head[index] === value)
+  const ascii = (value: string) => Array.from(value).every(
+    (char, index) => head[index] === char.charCodeAt(0),
+  )
+
+  // ZIP-based Office/OpenDocument/ePub containers, OLE compound documents,
+  // PDF, common images, and RIFF media containers.
+  return startsWith(0x50, 0x4b, 0x03, 0x04)
+    || startsWith(0x50, 0x4b, 0x05, 0x06)
+    || startsWith(0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1)
+    || ascii('%PDF-')
+    || startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+    || startsWith(0xff, 0xd8, 0xff)
+    || startsWith(0x47, 0x49, 0x46, 0x38)
+    || startsWith(0x52, 0x49, 0x46, 0x46)
 }

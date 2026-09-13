@@ -45,6 +45,7 @@ export interface TitleCompletionResult {
   text: string
   inputTokens: number
   outputTokens: number
+  finishReason?: string
   /** Model id to bill against (drives DB per-token pricing in calculateUsageCost). */
   billingModelId: string
 }
@@ -78,15 +79,22 @@ async function runModel(
 
   const result = await generateText({
     model: resolved.model,
-    maxOutputTokens: opts.maxTokens ?? 80,
+    maxOutputTokens: opts.maxTokens ?? 300,
     system: opts.system,
     prompt: opts.prompt,
+    // MiMo enables deep thinking by default. Title generation is a short
+    // labeling task, and its reasoning tokens count against the completion
+    // limit, which previously left us with truncated JSON or no visible text.
+    ...(resolved.provider === 'custom'
+      ? { providerOptions: { shogo: { thinking: { type: 'disabled' } } } }
+      : {}),
   })
   const usage = result.usage as any
   return {
     text: result.text,
     inputTokens: usage?.inputTokens || usage?.promptTokens || 0,
     outputTokens: usage?.outputTokens || usage?.completionTokens || 0,
+    finishReason: result.finishReason,
     billingModelId: resolved.billingModelId,
   }
 }

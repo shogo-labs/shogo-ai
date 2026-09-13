@@ -23,6 +23,7 @@ let resolvable: Record<string, { billingModelId: string } | null | undefined> = 
 // `behavior[id]` → text / usage to return, or { throws: true } to simulate an
 // upstream failure for that model.
 let behavior: Record<string, { text?: string; usage?: any; throws?: boolean }> = {}
+let generateOptions: any[] = []
 
 mock.module('../resolve-language-model', () => ({
   DEFAULT_ASSISTANT_MODEL,
@@ -35,12 +36,14 @@ mock.module('../resolve-language-model', () => ({
 
 mock.module('ai', () => ({
   generateText: async (opts: any) => {
+    generateOptions.push(opts)
     const id = opts.model?.__id
     const b = behavior[id] ?? {}
     if (b.throws) throw new Error(`upstream error for ${id}`)
     return {
       text: b.text ?? '{"title": "Default Title", "description": "d"}',
       usage: b.usage ?? { inputTokens: 11, outputTokens: 7 },
+      finishReason: 'stop',
     }
   },
 }))
@@ -59,6 +62,7 @@ beforeEach(() => {
   // Default model resolves and produces a result.
   resolvable = { [DEFAULT_TITLE_MODEL_ID]: { billingModelId: DEFAULT_TITLE_MODEL_ID } }
   behavior = {}
+  generateOptions = []
   setTitleGenerationModelId(null)
 })
 
@@ -90,6 +94,11 @@ describe('generateTitleCompletion', () => {
     expect(result.inputTokens).toBe(20)
     expect(result.outputTokens).toBe(5)
     expect(result.billingModelId).toBe('hoshi-custom')
+    expect(generateOptions[0].maxOutputTokens).toBe(300)
+    expect(generateOptions[0].providerOptions).toEqual({
+      shogo: { thinking: { type: 'disabled' } },
+    })
+    expect(result.finishReason).toBe('stop')
   })
 
   test('maps OpenAI-style usage keys (prompt/completion tokens)', async () => {

@@ -701,7 +701,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
 
   const selectedLabel = selected
     ? (models.find((m) => m.id === selected)?.displayName || selected)
-    : 'Default (Haiku)'
+    : 'Default (Hoshi 1.0)'
 
   return (
     <View
@@ -717,7 +717,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
           <AutoSaveIndicator status={saveStatus} />
         </View>
         <Text className="text-xs text-muted-foreground">
-          The model used to generate short titles for new chats and projects. Defaults to Haiku.
+          The model used to generate short titles for new chats and projects. Defaults to Hoshi 1.0.
         </Text>
       </View>
       <View className="px-5 py-4" style={{ zIndex: 10 }}>
@@ -744,7 +744,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
                     selected === '' && 'bg-primary/5'
                   )}
                 >
-                  <Text className="text-sm font-medium text-foreground">Default (Haiku)</Text>
+                  <Text className="text-sm font-medium text-foreground">Default (Hoshi 1.0)</Text>
                   <Text className="text-[11px] text-muted-foreground">
                     Use the platform default model
                   </Text>

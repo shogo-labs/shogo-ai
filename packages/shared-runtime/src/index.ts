@@ -218,7 +218,13 @@ export {
 } from './macos-junk'
 
 export {
+  isContentHashedFilename,
+  staticAssetCacheControl,
+} from './static-asset-cache'
+
+export {
   BINARY_FILE_EXTENSIONS,
+  isBinaryBuffer,
   isBinaryFilePath,
 } from './file-types'
 

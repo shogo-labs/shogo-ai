@@ -651,8 +651,8 @@ const HomeScreen = observer(function HomeScreen() {
       const pid = consumed.projectId
       const sid = consumed.chatSessionId
       const sidScope = consumed.chatScope
-      api.generateProjectName(http, text, currentWorkspace.id).then(({ name, description }) => {
-        if (name && name !== projectName) {
+      api.generateProjectName(http, text, currentWorkspace.id, pid).then(({ name, description, source }) => {
+        if (source === 'ai' && name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
           // Only project-scoped sessions live in the local MST collection.
           // Workspace sessions are created server-side (api.createWorkspaceSession)

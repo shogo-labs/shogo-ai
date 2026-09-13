@@ -129,6 +129,8 @@ export interface ListTreeResult {
 export interface ReadFileResult {
   ok: boolean
   content?: string
+  contentBase64?: string
+  encoding?: 'utf-8' | 'base64'
   /** UTF-8 byte length of the file (post-read). */
   size?: number
   /** mtime in milliseconds since epoch. */
@@ -141,6 +143,18 @@ export interface ReadFileResult {
  *  `BUNDLE_MAX_FILE_SIZE` and is far larger than any source file Monaco
  *  would happily host. */
 const MAX_READ_BYTES = 10 * 1024 * 1024
+
+function isBinaryBytes(bytes: Uint8Array): boolean {
+  const startsWith = (...signature: number[]) =>
+    signature.every((value, index) => bytes[index] === value)
+  return bytes.subarray(0, 8192).includes(0)
+    || startsWith(0x50, 0x4b, 0x03, 0x04)
+    || startsWith(0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1)
+    || startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+    || startsWith(0xff, 0xd8, 0xff)
+    || startsWith(0x47, 0x49, 0x46, 0x38)
+    || startsWith(0x52, 0x49, 0x46, 0x46)
+}
 
 /**
  * Register the renderer-facing IPC handlers. Idempotent — safe to call
@@ -274,8 +288,23 @@ export function registerFsIpcHandlers(): void {
         }
       }
       try {
-        const content = fs.readFileSync(abs, 'utf-8')
-        return { ok: true, content, size: stat.size, mtime: stat.mtimeMs }
+        const bytes = fs.readFileSync(abs)
+        if (isBinaryBytes(bytes)) {
+          return {
+            ok: true,
+            contentBase64: bytes.toString('base64'),
+            encoding: 'base64',
+            size: stat.size,
+            mtime: stat.mtimeMs,
+          }
+        }
+        return {
+          ok: true,
+          content: bytes.toString('utf-8'),
+          encoding: 'utf-8',
+          size: stat.size,
+          mtime: stat.mtimeMs,
+        }
       } catch (err) {
         return { ok: false, error: (err as Error).message }
       }

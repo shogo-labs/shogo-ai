@@ -7,6 +7,7 @@
  */
 
 import type { ImageContent } from '@mariozechner/pi-ai'
+import { isBinaryBuffer } from '@shogo/shared-runtime'
 
 const TEXT_MEDIA_TYPES = new Set([
   'application/json',
@@ -19,6 +20,22 @@ const TEXT_MEDIA_TYPES = new Set([
   'application/x-sh',
   'application/xhtml+xml',
   'application/ld+json',
+])
+
+const BINARY_DOCUMENT_MEDIA_TYPES = new Set([
+  'application/msword',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-word.document.macroEnabled.12',
+  'application/vnd.ms-excel.sheet.macroEnabled.12',
+  'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/epub+zip',
 ])
 
 export interface FilePart {
@@ -114,8 +131,12 @@ export function parseFileAttachments(parts: FilePart[]): ParsedAttachments {
       mediaType.startsWith('text/') || TEXT_MEDIA_TYPES.has(mediaType)
 
     try {
+      const bytes = Buffer.from(base64Match[1], 'base64')
+      const binaryByType = BINARY_DOCUMENT_MEDIA_TYPES.has(mediaType)
+      const binaryByMagic = isBinaryBuffer(bytes)
       const decoded = _fileAttachmentSeamForTests.decodeBase64Utf8(base64Match[1])
-      if (isTextBased || (!decoded.includes('\0') && decoded.length > 0)) {
+      if (isTextBased && !binaryByType && !binaryByMagic
+        || !binaryByType && !binaryByMagic && !decoded.includes('\0') && decoded.length > 0) {
         const header = `[Attached File (${label})]:${savedSuffix}`
         sections.push(`${header}\n${decoded}\n[End of Attached File]`)
       } else {

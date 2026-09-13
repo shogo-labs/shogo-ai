@@ -46,6 +46,7 @@ import {
   StreamBufferStore,
   encodeTurnCompleteFrame,
   isMacOSJunkName,
+  isBinaryBuffer,
   isBinaryFilePath,
   GitWorkspaceSync,
   createGitSyncFromEnv,
@@ -3688,8 +3689,8 @@ app.get('/agent/workspace/files/*', (c) => {
     target = fallback
   }
 
-  if (isBinaryFilePath(target)) {
-    const buf = readFileSync(target)
+  const buf = readFileSync(target)
+  if (isBinaryFilePath(target) || isBinaryBuffer(buf)) {
     return c.json({
       path: subPath,
       contentBase64: buf.toString('base64'),
@@ -3698,7 +3699,7 @@ app.get('/agent/workspace/files/*', (c) => {
     })
   }
 
-  const content = readFileSync(target, 'utf-8')
+  const content = buf.toString('utf-8')
   return c.json({ path: subPath, content, encoding: 'utf-8', bytes: content.length })
 })
 
@@ -3748,7 +3749,8 @@ app.put('/agent/workspace/files/*', async (c) => {
     )
   }
 
-  if (isBinaryFilePath(resolved)) {
+  const existingBytes = existsSync(resolved) ? readFileSync(resolved) : null
+  if (isBinaryFilePath(resolved) || (existingBytes && isBinaryBuffer(existingBytes))) {
     return c.json(
       {
         error:

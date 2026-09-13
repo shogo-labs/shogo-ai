@@ -4,6 +4,7 @@ import { ScrollViewStyleReset } from 'expo-router/html'
 import type { PropsWithChildren } from 'react'
 
 export default function Root({ children }: PropsWithChildren) {
+  const buildHash = process.env.EXPO_PUBLIC_BUILD_HASH || 'dev'
   return (
     <html lang="en" translate="no" className="notranslate">
       <head>
@@ -14,6 +15,7 @@ export default function Root({ children }: PropsWithChildren) {
           name="viewport"
           content="width=device-width, initial-scale=1, shrink-to-fit=no"
         />
+        <link rel="icon" href={`/favicon.ico?v=${encodeURIComponent(buildHash)}`} />
 
         {/* Analytics scripts (Rewardful, GA4, FB Pixel) are injected post-export
             by scripts/inject-analytics.js — Expo "single" mode strips <script>

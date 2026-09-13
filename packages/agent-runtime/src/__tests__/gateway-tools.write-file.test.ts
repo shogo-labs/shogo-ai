@@ -61,6 +61,16 @@ describe('createWriteFileTool', () => {
     expect(readFileSync(join(TEST_DIR, 'x.txt'), 'utf8')).toBe('hello')
   })
 
+  test('refuses to write Office files as UTF-8 text', async () => {
+    const ctx = makeCtx()
+    const r = await run(ctx, 'write_file', {
+      path: 'upload.xlsx',
+      content: 'not a real workbook',
+    })
+    expect(String(r.details.error)).toMatch(/binary file/i)
+    expect(existsSync(join(TEST_DIR, 'upload.xlsx'))).toBe(false)
+  })
+
   test('creates parent directories on the fly', async () => {
     const ctx = makeCtx()
     const r = await run(ctx, 'write_file', { path: 'a/b/c/deep.txt', content: 'deep' })
