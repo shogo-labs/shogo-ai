@@ -160,6 +160,16 @@ mock.module('../knative-project-manager', () => ({
   mergePatchKnativeService: mockMergePatch,
 }))
 
+// Mock billing.service — buildProjectEnv resolves agent model defaults via
+// agent-model-defaults.ts's isModelAccessibleForWorkspace(), which calls
+// billingService.hasAdvancedModelAccess(). Without this, the real service
+// falls through to a live prisma.workspace.findUnique() lookup that has no
+// reachable Postgres in test/CI, throwing an unhandled ECONNREFUSED that
+// fails the "should build complete project environment" test.
+mock.module('../../services/billing.service', () => ({
+  hasAdvancedModelAccess: async () => true,
+}))
+
 // Mock database service
 mock.module('../../services/database.service', () => ({
   provisionDatabase: mock(() => Promise.resolve({
