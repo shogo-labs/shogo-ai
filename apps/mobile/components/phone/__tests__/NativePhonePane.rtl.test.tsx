@@ -19,7 +19,7 @@ describe('NativePhonePane', () => {
 
     const root = container.querySelector('[data-rn-shim="phone-pane"]')
     expect(root).toBeTruthy()
-    expect(root).toHaveStyle({ width: 390 })
+    expect((root as HTMLElement).style.width).toBe('390px')
   })
 
   test('leaves the web pane width to its parent layout', () => {

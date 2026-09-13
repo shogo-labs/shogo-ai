@@ -116,7 +116,7 @@ function PendingQuestionHarness() {
       order: 1,
       title: "Question",
       icon: DummyIcon,
-      render: () => (
+      render: ({ bodyMaxHeight }) => (
         <AskUserQuestionWidget
           tool={{
             id: "call-abc",
@@ -139,6 +139,8 @@ function PendingQuestionHarness() {
             timestamp: 0,
           }}
           onSubmitResponse={() => {}}
+          embedded
+          bodyMaxHeight={bodyMaxHeight}
         />
       ),
     }),
@@ -170,6 +172,7 @@ describe("ChatDock renders a pending ask_user as a blocking panel", () => {
     })
 
     expect(screen.getByText("Question")).toBeTruthy()
+    expect(screen.queryByText("Questions")).toBeNull()
     expect(screen.getByText("Which orb should be the nav trigger?")).toBeTruthy()
     // Renders twice (label + description fallback, since our fixture's
     // options have no description) — assert presence, not uniqueness.

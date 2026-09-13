@@ -10,16 +10,31 @@
 import { useMemo, useEffect, useState, useCallback } from 'react'
 import {
   View,
-  Text,
   Pressable,
   ActivityIndicator,
   Platform,
   Alert,
-  TextInput,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
+  Monitor as MonitorIcon,
+  Laptop as LaptopIcon,
+  Check as CheckIcon,
+  Plus as PlusIcon,
+  RefreshCw as RefreshCwIcon,
+  Pencil as PencilIcon,
+  Trash2 as Trash2Icon,
+  Copy as CopyIcon,
+  X as XGlyph,
+} from 'lucide-react-native'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+  wrapAccountSheetIcons,
+} from './account-sheet-chrome'
+
+const {
   Monitor,
   Laptop,
   Check,
@@ -28,8 +43,18 @@ import {
   Pencil,
   Trash2,
   Copy,
-  X as XIcon,
-} from 'lucide-react-native'
+  XIcon,
+} = wrapAccountSheetIcons({
+  Monitor: MonitorIcon,
+  Laptop: LaptopIcon,
+  Check: CheckIcon,
+  Plus: PlusIcon,
+  RefreshCw: RefreshCwIcon,
+  Pencil: PencilIcon,
+  Trash2: Trash2Icon,
+  Copy: CopyIcon,
+  XIcon: XGlyph,
+})
 import {
   Modal,
   ModalBackdrop,

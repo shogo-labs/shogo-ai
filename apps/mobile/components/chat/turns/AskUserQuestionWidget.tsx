@@ -7,8 +7,8 @@
  * Renders questions with clickable options inline in the chat flow.
  */
 
-import { useState, useCallback, useMemo, useRef } from "react"
-import { View, Text, TextInput, Pressable, Animated } from "react-native"
+import { useState, useCallback, useEffect, useMemo, useRef } from "react"
+import { View, Text, TextInput, Pressable, Animated, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   CheckCircle2,
@@ -24,6 +24,7 @@ import {
   type AskUserQuestionItem,
 } from "../tools/types"
 import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 
 export interface AskUserQuestionWidgetProps {
   tool: ToolCallData
@@ -31,6 +32,17 @@ export interface AskUserQuestionWidgetProps {
   onToggle?: () => void
   onSubmitResponse: (response: string) => void
   className?: string
+  /**
+   * When true, the widget already lives inside a ChatDock panel. Drop the
+   * inner card chrome and "Questions" title so the dock header is the only
+   * chrome. Keep the prompt + pagination sticky and only scroll options.
+   */
+  embedded?: boolean
+  /** Native bottom-sheet chrome: larger Done control, no nested option scroller. */
+  presentation?: "dock" | "sheet"
+  /** Scrollable option-list cap. Prompt and Submit stay pinned. */
+  bodyMaxHeight?: number
+  onQuestionProgress?: (progress: { index: number; total: number }) => void
 }
 
 function isValidQuestionItem(item: unknown): item is AskUserQuestionItem {
@@ -126,6 +138,10 @@ function letterForIndex(index: number): string {
   return out
 }
 
+/** Including the built-in Other row. Fewer than this stay a View — a nested
+ *  iOS ScrollView rubber-bands and the dock card looks like it is vibrating. */
+const ASK_USER_SCROLL_AFTER_OPTION_ROWS = 4
+
 function OptionRow({
   letter,
   label,
@@ -196,14 +212,67 @@ function OptionRow({
   )
 }
 
+function QuestionPagination({
+  activeTab,
+  questionCount,
+  isFirstQuestion,
+  isLastQuestion,
+  onPrev,
+  onNext,
+}: {
+  activeTab: number
+  questionCount: number
+  isFirstQuestion: boolean
+  isLastQuestion: boolean
+  onPrev: () => void
+  onNext: () => void
+}) {
+  return (
+    <View className="flex-row items-center gap-1.5">
+      <Pressable
+        onPress={onPrev}
+        disabled={isFirstQuestion}
+        hitSlop={6}
+        accessibilityLabel="Previous question"
+        className={cn(
+          "w-5 h-5 items-center justify-center rounded",
+          isFirstQuestion ? "opacity-30" : "opacity-100"
+        )}
+      >
+        <ChevronLeft className="w-3.5 h-3.5 text-muted-foreground" />
+      </Pressable>
+      <Text className="text-[10px] text-muted-foreground tabular-nums">
+        {activeTab + 1} of {questionCount}
+      </Text>
+      <Pressable
+        onPress={onNext}
+        disabled={isLastQuestion}
+        hitSlop={6}
+        accessibilityLabel="Next question"
+        className={cn(
+          "w-5 h-5 items-center justify-center rounded",
+          isLastQuestion ? "opacity-30" : "opacity-100"
+        )}
+      >
+        <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
+      </Pressable>
+    </View>
+  )
+}
+
 export function AskUserQuestionWidget({
   tool,
   isExpanded: controlledExpanded,
   onToggle,
   onSubmitResponse,
   className,
+  embedded = false,
+  presentation = "dock",
+  bodyMaxHeight,
+  onQuestionProgress,
 }: AskUserQuestionWidgetProps) {
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
+  const isSheet = presentation === "sheet"
 
   // Treat both `undefined` (live stream: gateway suppresses tool-output-available)
   // and `null` (legacy persisted parts that wrote `output: null`) as "not yet
@@ -396,6 +465,13 @@ export function AskUserQuestionWidget({
     onSubmitResponse(submittedResponse)
   }, [submittedResponse, onSubmitResponse])
 
+  useEffect(() => {
+    onQuestionProgress?.({
+      index: questions.length === 0 ? 0 : Math.min(questions.length, activeTab + 1),
+      total: questions.length,
+    })
+  }, [activeTab, onQuestionProgress, questions.length])
+
   const displayResult = hookDisplayResponse
 
   const summaryText = useMemo(() => {
@@ -433,14 +509,18 @@ export function AskUserQuestionWidget({
     return (
       <View
         className={cn(
-          "rounded-md border border-primary/20 bg-primary/5 p-2.5",
+          embedded
+            ? "py-0.5"
+            : "rounded-md border border-primary/20 bg-primary/5 p-2.5",
           className
         )}
       >
         <View className="flex-row items-center gap-1.5">
-          <Text className="text-xs font-medium text-foreground">
-            Questions
-          </Text>
+          {!embedded && (
+            <Text className="text-xs font-medium text-foreground">
+              Questions
+            </Text>
+          )}
           <Text className="text-[10px] text-muted-foreground">Loading…</Text>
         </View>
       </View>
@@ -451,7 +531,7 @@ export function AskUserQuestionWidget({
     return (
       <View
         className={cn(
-          "rounded-md border border-border/50 bg-muted/30 p-2",
+          embedded ? "py-0.5" : "rounded-md border border-border/50 bg-muted/30 p-2",
           className
         )}
       >
@@ -476,193 +556,198 @@ export function AskUserQuestionWidget({
   })()
   const nextDisabled = !currentAnswered
 
+  const pagination = showPagination ? (
+    <QuestionPagination
+      activeTab={activeTab}
+      questionCount={questions.length}
+      isFirstQuestion={isFirstQuestion}
+      isLastQuestion={isLastQuestion}
+      onPrev={() => animateToQuestion(activeTab - 1)}
+      onNext={() => animateToQuestion(activeTab + 1)}
+    />
+  ) : null
+
+  const optionList = (
+    <View className="gap-1.5">
+      {(currentQuestion.options ?? []).map((option, optionIndex) => {
+        const currentSelections = selections.get(activeTab) || []
+        const isSelected = currentSelections.includes(option.label)
+
+        return (
+          <OptionRow
+            key={option.label}
+            letter={letterForIndex(optionIndex)}
+            label={option.label}
+            description={option.description}
+            isSelected={isSelected}
+            isMultiSelect={currentQuestion.multiSelect ?? false}
+            onSelect={() =>
+              handleSelect(
+                activeTab,
+                option.label,
+                currentQuestion.multiSelect ?? false,
+              )
+            }
+            disabled={effectivelyAnswered}
+          />
+        )
+      })}
+
+      <View>
+        <OptionRow
+          letter={letterForIndex(currentQuestion.options?.length ?? 0)}
+          label="Other"
+          description="Provide a custom response"
+          isSelected={(selections.get(activeTab) || []).includes("__other__")}
+          isMultiSelect={currentQuestion.multiSelect ?? false}
+          onSelect={() =>
+            handleSelect(
+              activeTab,
+              "__other__",
+              currentQuestion.multiSelect ?? false,
+            )
+          }
+          disabled={effectivelyAnswered}
+        />
+
+        {(selections.get(activeTab) || []).includes("__other__") && (
+          <View className="mt-1.5 ml-8">
+            <TextInput
+              placeholder="Type your custom response..."
+              placeholderTextColor="#71717a"
+              value={otherTexts.get(activeTab) || ""}
+              onChangeText={(text) => handleOtherTextChange(activeTab, text)}
+              className="text-xs h-7 border border-input rounded-md px-2 bg-background text-foreground"
+              autoFocus
+              editable={!effectivelyAnswered}
+            />
+          </View>
+        )}
+      </View>
+    </View>
+  )
+
+  const optionRowCount = (currentQuestion.options?.length ?? 0) + 1
+  const optionsNeedScroll =
+    !isSheet &&
+    bodyMaxHeight != null &&
+    optionRowCount > ASK_USER_SCROLL_AFTER_OPTION_ROWS
+  const optionsBody = optionsNeedScroll ? (
+      <ScrollView
+        testID="ask-user-question-options"
+        style={{ maxHeight: bodyMaxHeight }}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
+      >
+        {optionList}
+      </ScrollView>
+    ) : (
+      optionList
+    )
+
   return (
     <View
       className={cn(
-        "rounded-md border overflow-hidden",
-        effectivelyPending
-          ? "border-primary/30 bg-primary/5"
-          : "border-border/50 bg-muted/30",
+        embedded
+          ? undefined
+          : "rounded-md border overflow-hidden",
+        !embedded &&
+          (effectivelyPending
+            ? "border-primary/30 bg-primary/5"
+            : "border-border/50 bg-muted/30"),
         className
       )}
     >
-      {/* Header */}
-      <Pressable
-        onPress={handleToggle}
-        disabled={effectivelyPending}
-        className="w-full flex-row items-center gap-2 px-3 py-2"
-      >
-        <Text className="text-xs font-medium text-foreground">
-          Questions
-        </Text>
-
-        {effectivelyAnswered && (
-          <CheckCircle2 className="w-3 h-3 text-green-500" />
-        )}
-
-        {!isExpanded && effectivelyAnswered && summaryText && (
-          <Text
-            className="flex-1 text-[10px] text-muted-foreground"
-            numberOfLines={1}
-          >
-            {summaryText}
+      {/* In-stream chrome. The dock already owns a "Question" header. */}
+      {!embedded && (
+        <Pressable
+          onPress={handleToggle}
+          disabled={effectivelyPending}
+          className="w-full flex-row items-center gap-2 px-3 py-2"
+        >
+          <Text className="text-xs font-medium text-foreground">
+            Questions
           </Text>
-        )}
 
-        {(isExpanded || !effectivelyAnswered) && <View className="flex-1" />}
+          {effectivelyAnswered && (
+            <CheckCircle2 className="w-3 h-3 text-green-500" />
+          )}
 
-        {/* Pagination — only when there is more than one question and the card is open. */}
-        {isExpanded && showPagination && (
-          <View className="flex-row items-center gap-1.5">
-            <Pressable
-              onPress={() => animateToQuestion(activeTab - 1)}
-              disabled={isFirstQuestion}
-              hitSlop={6}
-              className={cn(
-                "w-5 h-5 items-center justify-center rounded",
-                isFirstQuestion ? "opacity-30" : "opacity-100"
-              )}
+          {!isExpanded && effectivelyAnswered && summaryText && (
+            <Text
+              className="flex-1 text-[10px] text-muted-foreground"
+              numberOfLines={1}
             >
-              <ChevronLeft className="w-3.5 h-3.5 text-muted-foreground" />
-            </Pressable>
-            <Text className="text-[10px] text-muted-foreground tabular-nums">
-              {activeTab + 1} of {questions.length}
+              {summaryText}
             </Text>
-            <Pressable
-              onPress={() => animateToQuestion(activeTab + 1)}
-              disabled={isLastQuestion}
-              hitSlop={6}
-              className={cn(
-                "w-5 h-5 items-center justify-center rounded",
-                isLastQuestion ? "opacity-30" : "opacity-100"
+          )}
+
+          {(isExpanded || !effectivelyAnswered) && <View className="flex-1" />}
+
+          {isExpanded && pagination}
+
+          {!effectivelyPending && (
+            <View className="ml-1">
+              {isExpanded ? (
+                <ChevronDown className="w-3 h-3 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="w-3 h-3 text-muted-foreground" />
               )}
-            >
-              <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
-            </Pressable>
-          </View>
-        )}
+            </View>
+          )}
+        </Pressable>
+      )}
 
-        {/* Answered-state collapse caret. */}
-        {!effectivelyPending && (
-          <View className="ml-1">
-            {isExpanded ? (
-              <ChevronDown className="w-3 h-3 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="w-3 h-3 text-muted-foreground" />
-            )}
-          </View>
-        )}
-      </Pressable>
-
-      {/* Expanded content */}
       {isExpanded && (
-        <View className="border-t border-border/40 px-3 pt-2.5 pb-3 gap-2.5">
+        <View
+          className={cn(
+            "gap-2.5",
+            embedded ? undefined : "border-t border-border/40 px-3 pt-2.5 pb-3",
+          )}
+        >
           {currentQuestion && (
             <Animated.View className="gap-2.5" style={{ opacity: bodyOpacity }}>
-              {/* Question text */}
-              <Text className="text-[13px] font-semibold text-foreground leading-[18px]">
-                {currentQuestion.question}
-              </Text>
-
-              {/* Options */}
-              <View className="gap-1.5">
-                {(currentQuestion.options ?? []).map(
-                  (option, optionIndex) => {
-                    const currentSelections =
-                      selections.get(activeTab) || []
-                    const isSelected = currentSelections.includes(
-                      option.label
-                    )
-
-                    return (
-                      <OptionRow
-                        key={option.label}
-                        letter={letterForIndex(optionIndex)}
-                        label={option.label}
-                        description={option.description}
-                        isSelected={isSelected}
-                        isMultiSelect={
-                          currentQuestion.multiSelect ?? false
-                        }
-                        onSelect={() =>
-                          handleSelect(
-                            activeTab,
-                            option.label,
-                            currentQuestion.multiSelect ?? false
-                          )
-                        }
-                        disabled={effectivelyAnswered}
-                      />
-                    )
-                  }
-                )}
-
-                {/* "Other" option */}
-                <View>
-                  <OptionRow
-                    letter={letterForIndex(
-                      currentQuestion.options?.length ?? 0
-                    )}
-                    label="Other"
-                    description="Provide a custom response"
-                    isSelected={(
-                      selections.get(activeTab) || []
-                    ).includes("__other__")}
-                    isMultiSelect={
-                      currentQuestion.multiSelect ?? false
-                    }
-                    onSelect={() =>
-                      handleSelect(
-                        activeTab,
-                        "__other__",
-                        currentQuestion.multiSelect ?? false
-                      )
-                    }
-                    disabled={effectivelyAnswered}
-                  />
-
-                  {(selections.get(activeTab) || []).includes(
-                    "__other__"
-                  ) && (
-                    <View className="mt-1.5 ml-8">
-                      <TextInput
-                        placeholder="Type your custom response..."
-                        placeholderTextColor="#71717a"
-                        value={otherTexts.get(activeTab) || ""}
-                        onChangeText={(text) =>
-                          handleOtherTextChange(activeTab, text)
-                        }
-                        className="text-xs h-7 border border-input rounded-md px-2 bg-background text-foreground"
-                        autoFocus
-                        editable={!effectivelyAnswered}
-                      />
-                    </View>
-                  )}
-                </View>
+              <View className="flex-row items-start gap-2">
+                <Text className="flex-1 text-[13px] font-semibold text-foreground leading-[18px]">
+                  {currentQuestion.question}
+                </Text>
+                {embedded ? pagination : null}
               </View>
+
+              {optionsBody}
             </Animated.View>
           )}
 
           {/* Next/Submit footer (pending state only) */}
           {effectivelyPending && (
-            <View className="flex-row items-center justify-end pt-1">
+            <View className={cn("flex-row items-center justify-end", isSheet ? "pt-3" : "pt-1")}>
               <Pressable
                 onPress={handleNext}
                 disabled={nextDisabled}
+                accessibilityRole="button"
+                accessibilityLabel={isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"}
                 className={cn(
-                  "h-7 rounded-md items-center justify-center px-3 min-w-[68px]",
+                  "items-center justify-center",
+                  isSheet
+                    ? "h-11 rounded-full px-6 min-w-[96px]"
+                    : "h-7 rounded-md px-3 min-w-[68px]",
                   nextDisabled ? "bg-muted" : "bg-primary"
                 )}
               >
                 <Text
                   className={cn(
-                    "text-xs font-medium",
+                    "font-medium",
+                    isSheet ? "text-base" : "text-xs",
                     nextDisabled
                       ? "text-muted-foreground"
                       : "text-primary-foreground"
                   )}
                 >
-                  {isLastQuestion ? "Submit" : "Next"}
+                  {isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"}
                 </Text>
               </Pressable>
             </View>
@@ -727,11 +812,13 @@ export function AskUserQuestionBar({
 }: AskUserQuestionBarProps) {
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
   const count = questions.length
+  const nativePhone = useIsNativePhoneLayout()
+  const actionHint = nativePhone ? "Tap to answer" : "Answer below"
 
   return (
     <Pressable
       onPress={onPress}
-      accessibilityLabel="Pending question — answer below"
+      accessibilityLabel={`Pending question — ${actionHint.toLowerCase()}`}
       className={cn(
         "rounded-md border border-primary/30 bg-primary/5 w-full flex-row items-center gap-1.5 py-1.5 px-2",
         className
@@ -744,7 +831,7 @@ export function AskUserQuestionBar({
       </Text>
 
       <Text className="flex-1 text-[9px] text-muted-foreground text-right">
-        {count > 1 ? `${count} questions • ` : ""}Answer below
+        {count > 1 ? `${count} questions • ` : ""}{actionHint}
       </Text>
 
       <ArrowDown className="w-3 h-3 text-primary" />

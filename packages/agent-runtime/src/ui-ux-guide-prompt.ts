@@ -174,8 +174,8 @@ return h('div', { className: 'flex flex-col gap-6 p-2' }, [
     h(Badge, { key: 'badge', variant: 'outline' }, 'Q1 2026'),
   ]),
 
-  // 2. Metrics row — 3 to 4 KPIs
-  h(Row, { key: 'metrics', gap: 'md' }, [
+  // 2. Metrics row — stack on phone, 2–3 columns from sm up
+  h(Row, { key: 'metrics', gap: 'md', className: 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3' }, [
     h(Metric, { key: 'm1', label: 'Total Revenue', value: '$45.2K', trend: 'up', trendValue: '+12%' }),
     h(Metric, { key: 'm2', label: 'Active Users', value: '1,284', trend: 'up', trendValue: '+8%' }),
     h(Metric, { key: 'm3', label: 'Churn Rate', value: '2.4%', trend: 'down', trendValue: '-0.3%' }),
@@ -222,5 +222,6 @@ return h('div', { className: 'flex flex-col gap-6 p-2' }, [
 - **No loading state**: Show Skeleton placeholders that match the final layout shape
 - **Giant unstyled forms**: Group form fields in Cards, use Label + Input pairs with proper spacing
 - **Icon-less action buttons**: Pair every primary action button with a lucide icon
+- **Desktop-only KPI grids**: NEVER use a fixed 3- or 4-column metrics row. Phone preview is ~390px — stack with \`grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\` and let labels wrap instead of \`truncate\`
 - **Adding borders**: NEVER use \`border\`, \`border-t\`, \`border-b\`, \`divide-y\`, or any border utility on elements unless the user explicitly asks for borders. Cards and shadcn components handle their own borders — do not add extra ones. Use spacing and background color (\`bg-muted/50\`) for visual separation instead.
 `

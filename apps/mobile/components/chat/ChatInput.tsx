@@ -24,7 +24,6 @@ import {
   ScrollView,
   Platform,
   Animated,
-  useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { NATIVE_PHONE_ICON_STROKE,
@@ -98,6 +97,11 @@ export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
 
 import { EnvironmentPicker } from "./EnvironmentPicker"
 import {
+  COMPOSER_KEYBOARD_PROPS,
+  NATIVE_COMPOSER_MIC_IDLE_CLASS,
+  composerSendChrome,
+} from "../../lib/composer-phone"
+import {
   executeNativeAttachAction,
 } from "../../lib/native-attachment-picker"
 import {
@@ -162,12 +166,6 @@ const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
  * On native this is a transparent passthrough — the icon click opens the
  * popover menu which already shows the full label.
  */
-// Non-prominent bounds stay file-local. Phone prominent metrics are shared
-// via `useProminentComposerExpansion` so home and project composers cannot drift.
-const CHAT_INPUT_MIN_HEIGHT = 60
-const CHAT_INPUT_MAX_HEIGHT = 200
-const CHAT_INPUT_NATIVE_MIN_HEIGHT = 52
-const CHAT_INPUT_NATIVE_MAX_HEIGHT = 160
 
 export interface FileAttachment {
   dataUrl: string
@@ -449,27 +447,20 @@ function ChatInputImpl({
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
-  const { height: windowHeight } = useWindowDimensions()
   const effectiveIsPro = features.billing ? isPro : true
   const { isNative,
     isPhoneChrome, useProminentComposer, chatgptComposer,
     sizes,
     modelTriggerMaxWidth,
     nativeModelMenuWidth,
+    windowHeight,
   } = useComposerLayoutMode({
     prominent : true,
     flush,
   })
-  const inputMinHeight = useProminentComposer
-    ? sizes.inputMinHeight
-    : isNative
-      ? CHAT_INPUT_NATIVE_MIN_HEIGHT
-      : CHAT_INPUT_MIN_HEIGHT
-  const inputMaxHeight = useProminentComposer
-    ? sizes.inputMaxHeight
-    : isNative
-      ? CHAT_INPUT_NATIVE_MAX_HEIGHT
-      : CHAT_INPUT_MAX_HEIGHT
+  const sendChrome = composerSendChrome(isNative || useProminentComposer)
+  const inputMinHeight = sizes.inputMinHeight
+  const inputMaxHeight = sizes.inputMaxHeight
   const bridge = useChatBridgeOptional()
   const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
   const ezActive = bridge?.ezModeActive ?? false
@@ -1667,8 +1658,7 @@ function ChatInputImpl({
           accessibilityLabel="Chat message input"
           editable={!disabled && !voiceInput.isRecording}
           multiline
-          blurOnSubmit={Platform.OS !== "web"}
-          returnKeyType={Platform.OS === "web" ? undefined : "done"}
+          {...COMPOSER_KEYBOARD_PROPS}
           onContentSizeChange={(e) => {
             const h = e.nativeEvent.contentSize.height
             const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
@@ -2162,12 +2152,12 @@ function ChatInputImpl({
                   testID="stop-streaming"
                   className={cn(
                     "rounded-full bg-destructive items-center justify-center active:opacity-70",
-                    useProminentComposer ? "h-8 w-8" : isNative ? "h-9 w-9" : "h-5 w-5",
+                    sendChrome.sizeClassName,
                   )}
                 >
                   <Square
                     className="text-destructive-foreground m-auto"
-                    size={isNative ? 14 : 10}
+                    size={isNative || useProminentComposer ? 18 : 10}
                   />
                 </Pressable>
                     <ComposerSendButton
@@ -2176,8 +2166,8 @@ function ChatInputImpl({
                     onPress={handleSubmit}
                     disabled={disabled || isProcessingFiles}
                       prominent={useProminentComposer}
-                      sizeClassName={isNative ? "h-9 w-9" : "h-5 w-5"}
-                      iconSize={useProminentComposer ? 14 : isNative ? 18 : 12}
+                      sizeClassName={sendChrome.sizeClassName}
+                      iconSize={sendChrome.iconSize}
                       fillClassName={useProminentComposer ? "": "bg-primary" }
                       iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
                       fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}
@@ -2191,8 +2181,8 @@ function ChatInputImpl({
                 onPress={handleSubmit}
                 disabled={disabled || isProcessingFiles}
                     prominent={useProminentComposer}
-                    sizeClassName={isNative ? "h-9 w-9" : "h-5 w-5"}
-                    iconSize={useProminentComposer ? 14 : isNative ? 18 : 12}
+                    sizeClassName={sendChrome.sizeClassName}
+                    iconSize={sendChrome.iconSize}
                     fillClassName={useProminentComposer ? "": "bg-primary" }
                     iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
                     fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}
@@ -2210,11 +2200,9 @@ function ChatInputImpl({
                 accessibilityLabel="Start voice recording"
                 className={cn(
                   "rounded-full items-center justify-center active:opacity-70",
-                  useProminentComposer
-                    ? "h-8 w-8"
-                    : isNative
-                      ? "h-9 w-9 border border-border/45 bg-muted/30"
-                      : "h-5 w-5",
+                  isNative && !useProminentComposer
+                    ? NATIVE_COMPOSER_MIC_IDLE_CLASS
+                    : sendChrome.sizeClassName,
                 )}
               >
                 <Mic

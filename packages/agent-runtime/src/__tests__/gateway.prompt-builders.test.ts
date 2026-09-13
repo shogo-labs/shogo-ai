@@ -263,6 +263,15 @@ describe('loadBootstrapContext profile routing', () => {
     expect(out).toContain('## Current Context')
     expect(out.length).toBeGreaterThan(1000)
   })
+
+  test('viewer context is a phone hint until the next request clears it', () => {
+    const ws = makeWs('boot-viewer')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setViewerContext({ formFactor: 'phone', platform: 'ios', width: 390 })
+    expect((gw as any).loadBootstrapContext()).toContain('Live preview is a **phone**')
+    gw.setViewerContext(undefined)
+    expect((gw as any).loadBootstrapContext()).not.toContain('## Viewer')
+  })
 })
 
 // =============================================================================

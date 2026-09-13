@@ -63,6 +63,20 @@ describe('loadCanvasBridgeSource', () => {
     expect(src).toMatch(/canvas/i)
   })
 
+  test('bridge stacks desktop KPI grids under Tailwind max-sm (phone / narrow preview)', () => {
+    const src = loadCanvasBridgeSource()
+    expect(src).toContain('__shogo-canvas-responsive')
+    expect(src).toContain('var CANVAS_PHONE_MAX_WIDTH_PX = 639')
+    expect(src).toContain("'@media (max-width: ' + CANVAS_PHONE_MAX_WIDTH_PX + 'px)")
+    expect(src).toContain('grid-cols-2')
+    expect(src).toContain('grid-cols-3')
+    expect(src).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))')
+    expect(src).toContain('.flex.h-screen')
+    expect(src).toContain('flex-direction: column !important')
+    expect(src).toContain('.truncate')
+    expect(() => new Function(src)).not.toThrow()
+  })
+
   test('CANVAS_BRIDGE_PATH resolves to the real source file in the repo (runtime ↔ source agree)', () => {
     // If this drifts (e.g. the source file is moved without updating the
     // const), every workspace iframe quietly loses its update toast.

@@ -1,10 +1,27 @@
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, Pressable, TextInput, ActivityIndicator } from 'react-native'
-import { Shield, Plus, X, RotateCcw } from 'lucide-react-native'
+import { View, Pressable, ActivityIndicator } from 'react-native'
+import {
+  Shield as ShieldIcon,
+  Plus as PlusIcon,
+  X as XIcon,
+  RotateCcw as RotateCcwIcon,
+} from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { SecurityPreferenceSelector } from './SecurityPreferenceSelector'
 import { api, type SecurityPrefs } from '../../lib/api'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+  wrapAccountSheetIcons,
+} from '../settings/account-sheet-chrome'
+
+const { Shield, Plus, X, RotateCcw } = wrapAccountSheetIcons({
+  Shield: ShieldIcon,
+  Plus: PlusIcon,
+  X: XIcon,
+  RotateCcw: RotateCcwIcon,
+})
 
 type SecurityMode = 'strict' | 'balanced' | 'full_autonomy'
 

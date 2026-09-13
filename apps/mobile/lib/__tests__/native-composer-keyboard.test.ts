@@ -9,10 +9,13 @@ import {
   nativeComposerKeyboardOverlap,
   nativeComposerKeyboardPad,
   nativeComposerShouldIgnoreClosedFrame,
+  chatComposerDockStyle,
+  CHAT_TRANSCRIPT_MAX_WIDTH,
   NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION,
   NATIVE_COMPOSER_KEYBOARD_GAP,
   NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP,
 } from '../native-composer-keyboard'
+import { WEB_WIDE_MIN_WIDTH } from '../native-phone-layout'
 
 describe('nativeComposerKeyboardPad', () => {
   test('uses the larger of keyboard height and screenY overlap, plus a gap', () => {
@@ -62,6 +65,41 @@ describe('nativeComposerKeyboardOpenFromSource', () => {
     expect(nativeComposerKeyboardOpenFromSource('hide', 0, 34)).toBe(false)
     expect(nativeComposerKeyboardOpenFromSource('show', 0, 34)).toBe(true)
     expect(nativeComposerKeyboardOpenFromSource('change', 336, 34)).toBe(true)
+  })
+})
+
+describe('CHAT_TRANSCRIPT_MAX_WIDTH', () => {
+  test('uses the named web-wide breakpoint instead of a second magic 768', () => {
+    expect(CHAT_TRANSCRIPT_MAX_WIDTH).toBe(WEB_WIDE_MIN_WIDTH)
+  })
+})
+
+describe('chatComposerDockStyle', () => {
+  test('puts the keyboard pad on paddingBottom so Animated.View can lift the pill', () => {
+    const pad = { __animated: true }
+    expect(chatComposerDockStyle({
+      measuredWidth: 390,
+      keyboardPad: pad,
+    })).toEqual([
+      { width: 390 },
+      { paddingBottom: pad },
+    ])
+  })
+
+  test('matches the transcript max-w-3xl column when width is not measured', () => {
+    expect(chatComposerDockStyle({})).toEqual([
+      { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
+    ])
+  })
+
+  test('keeps web overflow visible so dock cards can float above the pill', () => {
+    expect(chatComposerDockStyle({
+      keyboardPad: 12,
+      webOverflowVisible: true,
+    })).toEqual([
+      { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
+      { paddingBottom: 12, overflow: 'visible' },
+    ])
   })
 })
 

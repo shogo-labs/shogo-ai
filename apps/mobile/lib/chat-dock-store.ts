@@ -64,7 +64,7 @@ export interface DockPanelDescriptor {
   /** Toolbar pill descriptor; omit for panels that shouldn't get a composer chip. */
   chip?: DockPanelChip
   /** `expanded` lets costly panels (e.g. a live browser screencast) suspend work while collapsed. */
-  render: (ctx: { expanded: boolean }) => ReactNode
+  render: (ctx: { expanded: boolean; bodyMaxHeight?: number }) => ReactNode
 }
 
 /** Max simultaneously-expanded status panels; tightened while a blocking panel is present. */

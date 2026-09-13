@@ -12,10 +12,14 @@
  */
 
 import { useState } from 'react'
-import { View, Text, TextInput } from 'react-native'
+import { View } from 'react-native'
 import { Bell, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+} from '../settings/account-sheet-chrome'
 import { formatDollarCost, getModelDisplayName } from './SharedAnalytics'
 
 export interface BudgetAlertItem {

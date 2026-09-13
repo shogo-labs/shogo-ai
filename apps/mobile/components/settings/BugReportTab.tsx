@@ -2,8 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, TextInput, ScrollView, ActivityIndicator, Pressable, Platform } from 'react-native'
-import { Download, CheckCircle, AlertCircle, Paperclip, X } from 'lucide-react-native'
+import { View, ScrollView, ActivityIndicator, Pressable, Platform } from 'react-native'
+import {
+  Download as DownloadIcon,
+  CheckCircle as CheckCircleIcon,
+  AlertCircle as AlertCircleIcon,
+  Paperclip as PaperclipIcon,
+  X as XIcon,
+} from 'lucide-react-native'
 import {
   Card,
   CardContent,
@@ -11,6 +17,19 @@ import {
   Checkbox,
   cn,
 } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+  wrapAccountSheetIcons,
+} from './account-sheet-chrome'
+
+const { Download, CheckCircle, AlertCircle, Paperclip, X } = wrapAccountSheetIcons({
+  Download: DownloadIcon,
+  CheckCircle: CheckCircleIcon,
+  AlertCircle: AlertCircleIcon,
+  Paperclip: PaperclipIcon,
+  X: XIcon,
+})
 
 interface SystemInfo {
   appVersion: string

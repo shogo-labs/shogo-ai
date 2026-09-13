@@ -28,6 +28,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ADMIN_WEB_WIDE_MIN_WIDTH,
   NATIVE_PHONE_HEADER_ICON_SIZE, nativePhoneCanvas, WEB_PHONE_MAX_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
+import { PHONE_DENSITY } from '../../lib/phone-density'
 import {
   useNativeSheetDrawer,
   nativeDrawerTopInset,
@@ -479,14 +480,14 @@ function MobileHeader({
           accessibilityRole="button"
           accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
           hitSlop={4}
-          className="h-10 w-10 items-center justify-center rounded-full bg-muted"
+          className={`${PHONE_DENSITY.hit} rounded-full bg-muted`}
         >
           <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
         </Pressable>
-        <Text className="flex-1 px-3 text-center text-base font-semibold text-foreground" numberOfLines={1}>
+        <Text className={`flex-1 px-3 text-center ${PHONE_DENSITY.text.body} font-semibold text-foreground`} numberOfLines={1}>
           {title}
         </Text>
-        <View className="h-10 w-10" />
+        <View className={PHONE_DENSITY.hitSize} />
       </View>
     )
   }

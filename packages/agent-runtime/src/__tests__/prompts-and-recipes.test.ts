@@ -7,7 +7,7 @@
  * assignment line. Assertions validate structural integrity + key markers.
  */
 import { describe, test, expect } from 'bun:test'
-import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE } from '../canvas-v2-prompt'
+import { CANVAS_V2_GUIDE, CANVAS_V2_BACKEND_GUIDE, CANVAS_V2_REACT_GUIDE, CANVAS_FILE_REFERENCE, CANVAS_MOBILE_PREVIEW_GUIDE } from '../canvas-v2-prompt'
 import {
   OPTIMIZED_CANVAS_EXAMPLES,
   OPTIMIZED_MEMORY_GUIDE,
@@ -33,6 +33,16 @@ describe('canvas-v2-prompt constants', () => {
     expect(CANVAS_V2_GUIDE.length).toBeGreaterThan(500)
     expect(CANVAS_V2_GUIDE).toContain('Frontend App Reference')
     expect(CANVAS_V2_GUIDE).toContain('@/components/ui/')
+    expect(CANVAS_V2_GUIDE).toContain('grid-cols-1 sm:grid-cols-2')
+  })
+  test('CANVAS_FILE_REFERENCE tells the live agent to stack KPI grids on phone', () => {
+    expect(CANVAS_FILE_REFERENCE).toContain('grid-cols-1 sm:grid-cols-2')
+    expect(CANVAS_FILE_REFERENCE).toContain('iPhone')
+  })
+  test('CANVAS_MOBILE_PREVIEW_GUIDE forbids pinned phone sidebars', () => {
+    expect(CANVAS_MOBILE_PREVIEW_GUIDE).toContain('flex flex-col md:flex-row')
+    expect(CANVAS_MOBILE_PREVIEW_GUIDE).toContain('left sidebar')
+    expect(CANVAS_MOBILE_PREVIEW_GUIDE).toContain('Do not wait to be asked')
   })
   test('CANVAS_V2_BACKEND_GUIDE is a populated backend guide', () => {
     expect(typeof CANVAS_V2_BACKEND_GUIDE).toBe('string')

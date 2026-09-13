@@ -41,7 +41,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
-  Animated,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native"
@@ -93,7 +92,9 @@ import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } 
 
 import { isPhoneLayout,
   useNativePhoneWindow } from "../../lib/native-phone-layout"
+import { canvasViewerPayload } from "../../lib/canvas-viewer"
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
+import { ProjectComposerDock } from "./composer/ProjectComposerDock"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
 import { chatSessionEvents } from "../../lib/chat-session-events"
@@ -136,6 +137,7 @@ import {
 import { useDockPanel } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
+import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
 import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
 import { RunningDockPanel } from "./dock/panels/RunningDockPanel"
 import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
@@ -191,11 +193,13 @@ import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
+import { planToPublishToStream } from "../../lib/plan-stream-publish"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
-import { derivePendingQuestion } from "./turns/pendingQuestion"
+import { derivePendingQuestion, askUserQuestionPresentation } from "./turns/pendingQuestion"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
+import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
@@ -3774,17 +3778,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     }
   }, [])
+  // While tokens stream, pendingPlan identity changes every chunk. Fold it
+  // away so this effect only re-runs when the idle snapshot actually changes.
+  const idlePlan = isStreaming ? null : (pendingPlan ?? confirmedPlan)
   useEffect(() => {
     const ctx = planStreamRef.current
     if (!ctx) return
 
-    const nextFilepath = derivedStreamingPlan
-      ? (derivedStreamingPlan.filepath ?? null)
-      : !isStreaming
-        ? null
-        : ctx.streamingPlanFilepath
+    const planToPublish = planToPublishToStream({
+      derivedStreamingPlan,
+      isStreaming,
+      pendingPlan: idlePlan,
+      confirmedPlan: null,
+    })
+    const nextFilepath = planToPublish?.filepath ?? null
 
-    const planChanged = ctx.streamingPlan !== derivedStreamingPlan
+    const planChanged = ctx.streamingPlan !== planToPublish
     const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath
     if (!planChanged && !filepathChanged) return
 
@@ -3801,14 +3810,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     }
 
-    pendingPlanPublishRef.current = { plan: derivedStreamingPlan, filepath: nextFilepath }
+    pendingPlanPublishRef.current = { plan: planToPublish, filepath: nextFilepath }
 
-    // Edge events (stream start where the plan first appears, and the
-    // null-flip when it ends) bypass the throttle so the UI reacts
-    // immediately to lifecycle transitions.
-    const isEdge =
-      derivedStreamingPlan === null ||
-      ctx.streamingPlan === null
+    // Edge events (plan first appears, or the shared snapshot is cleared)
+    // bypass the throttle so Plans/dock react immediately.
+    const isEdge = planToPublish === null || ctx.streamingPlan === null
     if (isEdge) {
       if (planPublishTimerRef.current) {
         clearTimeout(planPublishTimerRef.current)
@@ -3825,11 +3831,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       planPublishTimerRef.current = null
       publish()
     }, wait)
-    // `planStream` intentionally omitted: we read it via `planStreamRef` so
-    // its identity churn (fixed independently in PlanStreamContext) cannot
-    // cause this effect to re-run and re-publish the same value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedStreamingPlan, isStreaming])
+  }, [derivedStreamingPlan, isStreaming, idlePlan])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
@@ -3881,6 +3884,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const hasPendingQuestion = pendingQuestion != null
+  const questionPresentation = askUserQuestionPresentation(isNativePhoneLayout)
+  const [questionSheetOpen, setQuestionSheetOpen] = useState(false)
+
+  useEffect(() => {
+    if (questionPresentation !== "sheet") return
+    if (!pendingQuestion) {
+      setQuestionSheetOpen(false)
+      return
+    }
+    setQuestionSheetOpen(true)
+  }, [pendingQuestion?.tool.id, questionPresentation])
 
   const extractMediaType = useCallback((dataUrl: string): string => {
     const match = dataUrl.match(/^data:([^;]+);/)
@@ -4109,6 +4123,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           dualPlan: dualPlanRef.current,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           clientTurnId,
+          // Live canvas preview size (phone vs desktop). The runtime
+          // injects this as a layout hint; canvases stay responsive either way.
+          viewer: canvasViewerPayload({
+            isPhoneViewport,
+            platform: Platform.OS,
+            width: windowWidth,
+          }),
         }
         const planToSend = confirmedPlanRef.current
         if (planToSend) {
@@ -4152,6 +4173,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       enrichMessage,
       ideMode,
       ideBridge.context,
+      isPhoneViewport,
+      windowWidth,
     ]
   )
 
@@ -4598,7 +4621,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Plan confirmation: switch to Agent mode and execute.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const handleConfirmPlan = useCallback((plan?: PlanData | null) => {
+  const handleConfirmPlan = useCallback((plan?: PlanData | null, modelId?: string) => {
     const selectedPlan = plan ?? pendingPlanRef.current
     if (!selectedPlan) return
     const planToBuild = normalizePlanData(selectedPlan)
@@ -4609,7 +4632,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     console.log("[ChatPanel][confirm-plan] BEFORE mode change — stateMode:", interactionMode, "refMode:", interactionModeRef.current, "selectedModel:", selectedModel)
     handleInteractionModeChange("agent")
     console.log("[ChatPanel][confirm-plan] AFTER mode change — refMode:", interactionModeRef.current, "(state will update on next render)")
-    handleSendMessage("Execute the confirmed plan.")
+    handleSendMessage("Execute the confirmed plan.", undefined, modelId)
     if (confirmDismissTimerRef.current) clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
       setConfirmedPlan(null)
@@ -5371,8 +5394,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const errorMessage = error?.message ?? null
-  const nativePhonePanelWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
-  const nativePhoneComposerWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
+  const nativePhoneColumnWidth = isPhoneViewport ? Math.max(0, windowWidth) : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
@@ -5387,6 +5409,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // token (because `useChat`'s `messages` array is a new reference every
   // delta), defeating every downstream memo. Components that genuinely
   // need the message list receive it as a prop instead.
+  const openPendingQuestion = useCallback(() => {
+    if (questionPresentation === "sheet") setQuestionSheetOpen(true)
+    jumpToLatest()
+  }, [jumpToLatest, questionPresentation])
+
   const contextValue = useMemo<ChatContextValue>(
     () => ({
       currentSession: sessionSummary,
@@ -5398,13 +5425,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
       agentUrl: resolvedAgentUrl,
       addToolOutput: stableAddToolOutput,
       saveToolOutput: handleSaveToolOutput,
-      focusPendingQuestion: jumpToLatest,
+      focusPendingQuestion: openPendingQuestion,
       buildPlan: pendingPlan ? handleConfirmPlan : null,
       confirmPlan: pendingPlan ? handleConfirmPlan : null,
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
       generateSummary: handleGenerateSummary,
+      selectedModel,
+      isPro: hasAdvancedModelAccess,
     }),
     [
       sessionSummary,
@@ -5415,12 +5444,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
       resolvedAgentUrl,
       stableAddToolOutput,
       handleSaveToolOutput,
-      jumpToLatest,
+      openPendingQuestion,
       pendingPlan,
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
       handleGenerateSummary,
+      selectedModel,
+      hasAdvancedModelAccess,
     ],
   )
 
@@ -5493,20 +5524,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!pendingQuestion) return null
+    if (questionPresentation === "sheet") return null
     return {
       id: "question",
       kind: "blocking",
       order: 1,
       title: "Question",
       icon: MessageCircleQuestion,
-      render: () => (
+      render: ({ bodyMaxHeight }) => (
         <AskUserQuestionWidget
           tool={pendingQuestion.tool}
           onSubmitResponse={(response) => handleSubmitQuestionResponse(response)}
+          embedded
+          bodyMaxHeight={bodyMaxHeight}
         />
       ),
     }
-  }, [pendingQuestion, handleSubmitQuestionResponse])
+  }, [handleSubmitQuestionResponse, pendingQuestion, questionPresentation])
   useDockPanel(questionDockDescriptor, chatDockStore)
 
   const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -5763,6 +5797,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         onBuild={pendingPlan ? handleConfirmPlan : null}
         onOpenPlan={onOpenPlan}
         onGenerateSummary={handleGenerateSummary}
+        selectedModel={selectedModel}
+        isPro={hasAdvancedModelAccess}
       />
       <ChecklistDockPanel />
       <RunningDockPanel
@@ -5801,7 +5837,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           }
         >
           {/* Messages with Turn Grouping */}
-          <View className="flex-1" onLayout={(e) => setMessagesAreaHeight(e.nativeEvent.layout.height)}>
+          <View
+            className="flex-1"
+            onLayout={(e) => {
+              const next = Math.round(e.nativeEvent.layout.height)
+              setMessagesAreaHeight((prev) => (prev === next ? prev : next))
+            }}
+          >
           <ScrollView
             ref={scrollViewRef}
             className="flex-1"
@@ -5939,9 +5981,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
               </View>
             )}
 
-            {/* Reserves space for the floating chat dock so it never
-                permanently covers the newest message — ChatDock reports its
-                measured height into `chatDockStore`, read reactively above. */}
+            {/* Web overlay: ChatDock reports measured height so the
+                transcript isn't covered. Native docks sit in the composer
+                column and report 0, so this spacer stays unused. */}
             {dockHeight > 0 && <View style={{ height: dockHeight }} />}
           </ScrollView>
 
@@ -5975,28 +6017,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
               edited so taps go to the transcript (cancel) instead of a
               second composer, matching ChatGPT. Web keeps both. */}
           {!(isNative && nativeInlineEditing) ? (
-          <Animated.View
-            className="relative bg-transparent max-w-3xl w-full self-center mt-1"
-            style={[
-              // Belt-and-suspenders width cap: on wide/desktop viewports
-              // `nativePhoneComposerWidth` is undefined and this box is
-              // supposed to be capped by the `max-w-3xl` className alone.
-              // NativeWind's className→style resolution isn't guaranteed
-              // to reach every `Animated.View` the same way it does a
-              // plain `View` (e.g. `ChatDock`, the messages `ScrollView`),
-              // so pin the same 768px (`max-w-3xl`) cap here explicitly —
-              // this is what actually keeps the composer from going
-              // edge-to-edge on a large screen if the class doesn't apply.
-              !isPhoneViewport
-                ? { maxWidth: CHAT_COMPOSER_MAX_WIDTH, width: "100%", alignSelf: "center" as const }
-                : undefined,
-              nativePhoneComposerWidth ? { width: nativePhoneComposerWidth } : undefined,
-              isPhoneViewport
-                ? { paddingBottom: composerKeyboardPad, overflow: "visible" as const }
-                : undefined,
-            ]}
+          <ProjectComposerDock
+            columnWidth={nativePhoneColumnWidth}
+            keyboardPad={composerKeyboardPad}
+            applyKeyboardPad={isPhoneViewport}
+            native={isNative}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
+            <PendingPlanComposerBar />
+            {questionPresentation === "sheet" && pendingQuestion ? (
+              <NativeAskUserQuestionSheet
+                visible={questionSheetOpen}
+                tool={pendingQuestion.tool}
+                onClose={() => setQuestionSheetOpen(false)}
+                onSubmitResponse={handleSubmitQuestionResponse}
+              />
+            ) : null}
             <ExecutionBadge />
             <ChatInput
               onSubmit={handleInputSubmit}
@@ -6005,7 +6041,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 !featureId
                   ? "Select a feature to start chatting..."
                   : hasPendingQuestion
-                    ? "Respond to the question below, or type a message..."
+                    ? questionPresentation === "sheet"
+                      ? "Respond to the question, or type a message..."
+                      : "Respond to the question below, or type a message..."
                     : interactionMode === "plan"
                       ? "Describe what you want to plan..."
                       : interactionMode === "ask"
@@ -6040,7 +6078,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               onOpenIdeFile={ideBridge.openFile}
               keyboardOpen={nativeKeyboardOpen}
             />
-          </Animated.View>
+          </ProjectComposerDock>
           ) : (
             <Pressable
               onPress={() => dispatchNativeInlineEditTap(-1, -1)}

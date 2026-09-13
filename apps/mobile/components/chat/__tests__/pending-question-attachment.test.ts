@@ -18,6 +18,7 @@ import type { UIMessage } from "@ai-sdk/react"
 import {
   derivePendingQuestion,
   askUserStreamVariant,
+  askUserQuestionPresentation,
 } from "../turns/pendingQuestion"
 
 function assistantWithAskUser(part: Record<string, unknown>): UIMessage {
@@ -113,5 +114,12 @@ describe("askUserStreamVariant", () => {
   test("answered (result present) renders the summary widget in-stream", () => {
     expect(askUserStreamVariant("Next.js")).toBe("widget")
     expect(askUserStreamVariant("")).toBe("widget")
+  })
+})
+
+describe("askUserQuestionPresentation", () => {
+  test("native phone uses a bottom sheet; web and tablet keep the dock card", () => {
+    expect(askUserQuestionPresentation(true)).toBe("sheet")
+    expect(askUserQuestionPresentation(false)).toBe("dock")
   })
 })

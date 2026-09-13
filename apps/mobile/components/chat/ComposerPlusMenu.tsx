@@ -8,6 +8,7 @@ import type { NativeAttachAction } from "../../lib/native-attachment-picker"
 import { resolveShortName } from "../../lib/visible-models"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useNativePhoneIconChrome, useNativePhoneSheetChrome } from "../../lib/native-phone-layout";
+import { PHONE_DENSITY } from "../../lib/phone-density"
 import { PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
 export { CHATGPT_COMPOSER, PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
 
@@ -44,27 +45,27 @@ export function ComposerPlusSection({
     <View className="border-b border-border/40">
       <Pressable
         onPress={() => ctx?.toggle(id)}
-        className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
+        className="min-h-12 flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
         accessibilityRole="button"
         accessibilityLabel={label}
         accessibilityState={{ expanded }}
       >
-        <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
-          <Icon size={16} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+        <View className="h-10 w-10 items-center justify-center rounded-lg bg-muted/40">
+          <Icon size={PHONE_DENSITY.icon.sm} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
         </View>
         <View className="min-w-0 flex-1">
-          <Text className="text-sm font-medium text-foreground">{label}</Text>
+          <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>{label}</Text>
           {value ? (
-            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            <Text className={PHONE_DENSITY.text.caption} numberOfLines={1}>
               {value}
             </Text>
           ) : null}
         </View>
-        <View className="h-4 w-4 shrink-0 items-center justify-center">
+        <View className="h-5 w-5 shrink-0 items-center justify-center">
           {expanded ? (
-            <ChevronUp size={16} className="text-muted-foreground" />
+            <ChevronUp size={PHONE_DENSITY.icon.sm} className="text-muted-foreground" />
           ) : (
-            <ChevronDown size={16} className="text-muted-foreground" />
+            <ChevronDown size={PHONE_DENSITY.icon.sm} className="text-muted-foreground" />
           )}
         </View>
       </Pressable>
@@ -127,21 +128,22 @@ export function ComposerPlusModeList<T extends string>({
               isSelected && mode.id === "ask" && "border border-emerald-500/35 bg-emerald-500/12",
             )}
           >
-            <View className="w-8 items-center">
+            <View className="w-10 items-center">
               <mode.Icon
                 className={cn(
-                  "h-3.5 w-3.5",
+                  "h-5 w-5",
                   isSelected && mode.id === "plan" && "text-amber-400",
                   isSelected && mode.id === "ask" && "text-emerald-400",
                   (!isSelected || mode.id === "agent") && "text-muted-foreground",
                 )}
-                size={14}
+                size={PHONE_DENSITY.icon.sm}
               />
             </View>
             <View className="flex-1">
               <Text
                 className={cn(
-                  "font-medium text-sm",
+                  PHONE_DENSITY.text.label,
+                  "font-medium",
                   isSelected && mode.id === "plan" && "text-amber-400",
                   isSelected && mode.id === "ask" && "text-emerald-400",
                   (!isSelected || mode.id === "agent") && "text-foreground",
@@ -149,7 +151,7 @@ export function ComposerPlusModeList<T extends string>({
               >
                 {mode.label}
               </Text>
-              <Text className="text-xs text-muted-foreground">{mode.description}</Text>
+              <Text className={PHONE_DENSITY.text.caption}>{mode.description}</Text>
             </View>
           </Pressable>
         )
@@ -165,12 +167,12 @@ export function ComposerPlusModeList<T extends string>({
             dualPlan ? "border border-sky-500/35 bg-sky-500/12" : "bg-muted/40",
           )}
         >
-          <View className="w-8 items-center">
-            <Languages className={dualPlan ? "text-sky-400" : "text-muted-foreground"} size={14} />
+          <View className="w-10 items-center">
+            <Languages className={dualPlan ? "text-sky-400" : "text-muted-foreground"} size={PHONE_DENSITY.icon.sm} />
           </View>
           <View className="flex-1">
-            <Text className="text-sm font-medium text-foreground">Stakeholder summary</Text>
-            <Text className="text-xs text-muted-foreground">
+            <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>Stakeholder summary</Text>
+            <Text className={PHONE_DENSITY.text.caption}>
               Also generate a summary for stakeholders
             </Text>
           </View>
@@ -240,12 +242,12 @@ export function ComposerPlusSheet({
                       disabled={attachDisabled}
                       className="flex-row items-center gap-3 px-3 py-3 active:bg-muted/50"
                     >
-                      <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted/40">
-                        <Icon size={16} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+                      <View className="h-10 w-10 items-center justify-center rounded-lg bg-muted/40">
+                        <Icon size={PHONE_DENSITY.icon.sm} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
                       </View>
                       <View className="min-w-0 flex-1">
-                        <Text className="text-sm font-medium text-foreground">{label}</Text>
-                        <Text className="text-xs text-muted-foreground">{hint}</Text>
+                        <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>{label}</Text>
+                        <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>{hint}</Text>
                       </View>
                     </Pressable>
                   ))}

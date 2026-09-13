@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import { WEB_WIDE_MIN_WIDTH } from './native-phone-layout'
+
 /** Space between the pill/search bar and the keyboard so the oval stays readable. */
 export const NATIVE_COMPOSER_KEYBOARD_GAP = 12
+/** NativeWind `max-w-3xl` — same token as the web wide breakpoint. */
+export const CHAT_TRANSCRIPT_MAX_WIDTH = WEB_WIDE_MIN_WIDTH
 /** Ignore tiny pad deltas so rest safe-area padding is not treated as a keyboard. */
 export const NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP = 8
 /** Fallback when iOS omits duration or reports it as 0. */
@@ -85,4 +89,27 @@ export function nativeComposerDockBottomPad(opts: {
   if (!opts.keyboardOpen) return opts.restPad
   if (opts.iosKeyboardAvoiding) return NATIVE_COMPOSER_KEYBOARD_GAP
   return opts.overlap + NATIVE_COMPOSER_KEYBOARD_GAP
+}
+
+/**
+ * Style for the project composer shell. `keyboardPad` is an Animated.Value
+ * and must be applied on `Animated.View` — a regular View ignores it and
+ * the pill drops under the iOS keyboard / home indicator.
+ */
+export function chatComposerDockStyle(opts: {
+  measuredWidth?: number
+  keyboardPad?: unknown
+  webOverflowVisible?: boolean
+}): Array<Record<string, unknown> | undefined> {
+  const column = opts.measuredWidth
+    ? { width: opts.measuredWidth }
+    : { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH }
+  if (opts.keyboardPad == null) return [column]
+  return [
+    column,
+    {
+      paddingBottom: opts.keyboardPad,
+      ...(opts.webOverflowVisible ? { overflow: 'visible' as const } : {}),
+    },
+  ]
 }

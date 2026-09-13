@@ -1789,6 +1789,9 @@ app.post('/agent/chat', async (c) => {
   if (body.timezone && typeof body.timezone === 'string') {
     agentGateway!.setUserTimezone(body.timezone)
   }
+  // Always replace: the gateway is a process singleton, so a missing
+  // `viewer` must clear the previous request's phone/desktop hint.
+  agentGateway!.setViewerContext(body.viewer)
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
 

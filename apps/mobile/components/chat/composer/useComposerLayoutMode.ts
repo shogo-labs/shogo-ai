@@ -4,7 +4,6 @@
 import { Platform, useWindowDimensions } from "react-native";
 import { useResolvedTheme } from "../../../contexts/theme";
 import {
-  usePhoneLayout,
   isPhoneLayout,
   NATIVE_PHONE_SECTION_INSET,
 } from "../../../lib/native-phone-layout";
@@ -68,7 +67,7 @@ export function useComposerLayoutMode({
   const { width, height } = useWindowDimensions();
   const resolvedTheme = useResolvedTheme();
   const isNative = Platform.OS !== "web";
-  const isPhoneChrome = usePhoneLayout();
+  const isPhoneChrome = isPhoneLayout(width, height);
   const useProminentComposer = isPhoneChrome && prominent && !flush;
   const variant: ComposerVariant = useProminentComposer
     ? "prominent"
@@ -115,7 +114,8 @@ export function useComposerLayoutMode({
     sizes,
     modelTriggerMaxWidth,
     nativeModelMenuWidth: nativeModelMenuWidth(width),
-    /** Kept available to callers that need the raw breakpoint decision. */
-    isPhoneViewport: isPhoneLayout(width, height),
+    windowHeight: height,
+    /** Alias of `isPhoneChrome` for callers that used the old name. */
+    isPhoneViewport: isPhoneChrome,
   };
 }

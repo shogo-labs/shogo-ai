@@ -11,9 +11,6 @@ import {
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import {
-  type ModelTier,
-} from "@shogo/model-catalog"
 import { useModelPickerGroups, resolveShortName } from "../../../lib/visible-models"
 import {
   ClipboardList,
@@ -35,17 +32,12 @@ import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
 import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
-import { useDualPlan } from "../../../lib/dual-plan-preference"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
+import { useDualPlan } from "../../../lib/dual-plan-preference"
+import { planFilenameFromPath, shouldListInMemoryPlan } from "../../../lib/plan-stream-publish"
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
-}
-
-const TIER_LABELS: Record<ModelTier, string> = {
-  premium: "Premium",
-  standard: "Standard",
-  economy: "Economy",
 }
 
 interface PlansPanelProps {
@@ -131,11 +123,6 @@ function normalizePlanFilepath(filepath?: string | null): string | undefined {
   const filename = normalized.split("/").pop()
   if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename)) return undefined
   return `.shogo/plans/${filename}`
-}
-
-function filenameFromPlanPath(filepath?: string | null): string | null {
-  if (!filepath) return null
-  return normalizePlanFilepath(filepath)?.split("/").pop() ?? null
 }
 
 export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan }: PlansPanelProps) {
@@ -272,12 +259,19 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   useEffect(() => {
     if (!visible) return
-    const requestedFilename = filenameFromPlanPath(requestedPlanPath?.filepath)
-    if (!requestedFilename) return
-    setSelectedPlan(requestedFilename)
-    setPlanContent(null)
-    setBuildStarted(false)
-  }, [visible, requestedPlanPath?.nonce])
+    const requestedFilename = planFilenameFromPath(requestedPlanPath?.filepath)
+    if (requestedFilename) {
+      setSelectedPlan(requestedFilename)
+      setPlanContent(null)
+      setBuildStarted(false)
+      return
+    }
+    if (requestedPlanPath && planStream?.streamingPlan) {
+      setSelectedPlan("__streaming__")
+      setPlanContent(null)
+      setBuildStarted(false)
+    }
+  }, [visible, requestedPlanPath?.nonce, planStream?.streamingPlan])
 
   useEffect(() => {
     setBuildStarted(false)
@@ -310,7 +304,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     if (selectedPlan !== "__streaming__") return
     const filepath = planStream?.streamingPlanFilepath
     if (!filepath) return
-    const filename = filepath.split("/").pop()
+    const filename = planFilenameFromPath(filepath)
     if (!filename) return
     setSelectedPlan(filename)
     setPlanContent(null)
@@ -335,13 +329,25 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
   if (!visible) return null
 
-  const filteredPlans = searchQuery
+  const needle = searchQuery.toLowerCase()
+  const filteredPlans = needle
     ? plans.filter(
         (p) =>
-          p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          p.overview.toLowerCase().includes(searchQuery.toLowerCase())
+          p.name.toLowerCase().includes(needle) ||
+          p.overview.toLowerCase().includes(needle)
       )
     : plans
+
+  const listedFilenames = plans.map((p) => p.filename)
+  const showInMemoryPlan = shouldListInMemoryPlan(
+    planStream?.streamingPlan ?? null,
+    listedFilenames,
+  )
+  const inMemoryMatchesSearch =
+    !needle ||
+    !!planStream?.streamingPlan?.name?.toLowerCase().includes(needle) ||
+    !!planStream?.streamingPlan?.overview?.toLowerCase().includes(needle)
+  const showInMemoryRow = showInMemoryPlan && inMemoryMatchesSearch
 
   const isStreamingDetail = selectedPlan === "__streaming__"
   const streamingData = planStream?.streamingPlan
@@ -464,18 +470,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
                           </View>
                           {isSelected ? (
                             <Check className="h-3.5 w-3.5 text-primary" size={14} />
-                          ) : (
-                            <Text
-                              className={cn(
-                                "text-[10px]",
-                                model.tier === "premium" ? "text-amber-500" :
-                                model.tier === "economy" ? "text-emerald-500" :
-                                "text-muted-foreground"
-                              )}
-                            >
-                              {TIER_LABELS[model.tier]}
-                            </Text>
-                          )}
+                          ) : null}
                         </Pressable>
                       )
                     })}
@@ -737,18 +732,25 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         contentContainerStyle={{
           flexGrow: 1,
           justifyContent:
-            filteredPlans.length === 0 && !planStream?.streamingPlan
+            filteredPlans.length === 0 && !showInMemoryRow
               ? "center"
               : "flex-start",
         }}
       >
         {/* Streaming plan — clickable list entry that opens the detail view */}
-        {planStream?.streamingPlan ? (
+        {showInMemoryRow && planStream?.streamingPlan ? (
           <Pressable
             onPress={() => setSelectedPlan("__streaming__")}
-            className="flex-row items-center gap-3 px-4 py-3 border-b border-primary/30 bg-primary/5 active:bg-primary/10"
+            className={cn(
+              "flex-row items-center gap-3 px-4 py-3 border-b active:bg-accent",
+              planStream.isPlanStreaming ? "border-primary/30 bg-primary/5 active:bg-primary/10" : "border-border/40",
+            )}
           >
-            <ActivityIndicator size="small" />
+            {planStream.isPlanStreaming ? (
+              <ActivityIndicator size="small" />
+            ) : (
+              <ClipboardList className="text-muted-foreground" size={isNative ? 20 : 16} />
+            )}
             <View className="flex-1 min-w-0">
               <Text className="font-medium text-sm text-foreground" numberOfLines={1}>
                 {planStream.streamingPlan.name || "Creating plan..."}
@@ -758,7 +760,11 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
                   {planStream.streamingPlan.overview}
                 </Text>
               ) : null}
-              <Text className="text-xs text-primary mt-1">Generating...</Text>
+              {planStream.isPlanStreaming ? (
+                <Text className="text-xs text-primary mt-1">Generating...</Text>
+              ) : (
+                <Text className="text-xs text-muted-foreground/70 mt-1">In this chat</Text>
+              )}
             </View>
           </Pressable>
         ) : planStream?.isPlanStreaming && filteredPlans.length === 0 && !loading ? (
@@ -783,7 +789,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
 
         {loading && !planStream?.isPlanStreaming ? (
           <ActivityIndicator className="mt-8" />
-        ) : plansError && filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
+        ) : plansError && filteredPlans.length === 0 && !planStream?.isPlanStreaming && !showInMemoryRow ? (
           <View className="items-center justify-center px-4">
             <ClipboardList className="text-muted-foreground/40 mb-3" size={isNative ? 40 : 32} />
             <Text className={isNative ? "text-base text-muted-foreground text-center" : "text-sm text-muted-foreground text-center"}>
@@ -796,7 +802,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               <Text className={isNative ? "text-sm font-medium text-foreground" : "text-xs font-medium text-foreground"}>Try again</Text>
             </Pressable>
           </View>
-        ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !planStream?.streamingPlan ? (
+        ) : filteredPlans.length === 0 && !planStream?.isPlanStreaming && !showInMemoryRow ? (
           <View className="items-center justify-center px-4">
             <ClipboardList className="text-muted-foreground/40 mb-3" size={isNative ? 40 : 32} />
             <Text className={isNative ? "text-base text-muted-foreground text-center" : "text-sm text-muted-foreground text-center"}>
