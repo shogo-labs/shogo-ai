@@ -51,7 +51,8 @@ import {
 } from './prefix-fingerprint'
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
-import { CANVAS_FILE_REFERENCE } from './canvas-v2-prompt'
+import { canvasModeStableGuides } from './canvas-v2-prompt'
+import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import { CanvasTypecheckGate } from './canvas-typecheck'
@@ -482,6 +483,8 @@ export class AgentGateway {
   private promotedMockTools: AgentTool[] = []
   /** User's IANA timezone, set from chat requests. Falls back to server timezone. */
   private userTimezone: string | null = null
+  /** Last Studio viewer (phone vs desktop) from the chat body. */
+  private viewerContextPrompt: string | null = null
   /** Permission engine for local-mode security guardrails */
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
@@ -696,6 +699,14 @@ export class AgentGateway {
 
   setUserTimezone(tz: string): void {
     this.userTimezone = tz
+  }
+
+  /** Live canvas preview size from the Studio client (iPhone vs desktop).
+   *  The gateway is a process singleton — call this on every chat request,
+   *  including with `undefined`, so a missing payload clears the last hint. */
+  setViewerContext(raw: unknown): void {
+    const viewer = parseCanvasViewer(raw)
+    this.viewerContextPrompt = viewer ? buildViewerContextPrompt(viewer) : null
   }
 
   /** Set an eval label for log tracing (used by eval runner) */
@@ -3637,8 +3648,8 @@ export class AgentGateway {
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
-    if (activeMode !== 'canvas') {
-      pushStable('canvas-file-reference', CANVAS_FILE_REFERENCE)
+    for (const [id, text] of canvasModeStableGuides(activeMode)) {
+      pushStable(id, text)
     }
 
     // 2. General coding guide (always the same)
@@ -3884,6 +3895,9 @@ export class AgentGateway {
 
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
     pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
+    if (this.viewerContextPrompt) {
+      pushDynamic('viewer-context', this.viewerContextPrompt)
+    }
 
     // 10. Dynamic workspace context (changes as files are added/removed)
     const installedToolsContext = this.buildInstalledToolsContext()

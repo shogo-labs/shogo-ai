@@ -130,7 +130,7 @@ export function ChatTreeItem({
       <View
         className={cn(
           "flex-row items-center rounded-md",
-          isNative ? "min-h-11 gap-2 px-2 py-1.5" : "gap-1 px-1 py-1",
+          isNative ? `${density.rowMin} gap-2 px-2 py-1.5` : "gap-1 px-1 py-1",
         )}
       >
         <TextInput
@@ -141,7 +141,7 @@ export function ChatTreeItem({
           autoFocus
           className={cn(
             "flex-1 px-2 rounded border border-border bg-background text-foreground",
-            isNative ? `${density.text.body} h-9` : "h-6 text-xs",
+            isNative ? `${density.text.body} h-11` : "h-6 text-xs",
           )}
         />
         <Pressable
@@ -178,7 +178,7 @@ export function ChatTreeItem({
         aria-current={active ? "page" : undefined}
         className={cn(
           "group flex-row items-center rounded-md",
-          isNative ? "min-h-11 gap-2 px-2 py-2" : "gap-1 px-1 py-1.5",
+          isNative ? `${density.rowMin} gap-2 px-2 py-2` : "gap-1 px-1 py-1.5",
           active ? "bg-accent" : "active:bg-accent/50",
         )}
         {...(Platform.OS === "web"
@@ -196,7 +196,7 @@ export function ChatTreeItem({
             className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
             accessibilityLabel="Chat has new activity"
           />
-        ) : session.isPinned ? (
+        ) : session.isPinned && !isNative ? (
           <Pin
             size={isNative ? density.icon.sm : 10}
             className="text-muted-foreground shrink-0"
@@ -214,6 +214,7 @@ export function ChatTreeItem({
         {/* Hover-reveal actions (web). Always mounted; visibility is purely
           CSS-driven via the row's `group` + `group-hover:flex` so moving the
           cursor between icons never tears down the hover target. */}
+        {!isNative && (
         <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
           <Pressable
             onPress={(e) => {
@@ -258,6 +259,7 @@ export function ChatTreeItem({
             <Pencil size={11} className="text-muted-foreground" />
           </Pressable>
         </View>
+        )}
       </Pressable>
       {menu && (
         <SidebarContextMenu

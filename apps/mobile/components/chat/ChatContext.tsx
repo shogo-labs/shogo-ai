@@ -90,10 +90,10 @@ export interface ChatContextValue {
   focusPendingQuestion?: () => void
 
   /** Build and execute a pending plan. Null when no plan is pending. */
-  buildPlan?: ((plan?: PlanData | null) => void) | null
+  buildPlan?: ((plan?: PlanData | null, modelId?: string) => void) | null
 
   /** Backwards-compatible alias for older plan-card consumers. */
-  confirmPlan?: ((plan?: PlanData | null) => void) | null
+  confirmPlan?: ((plan?: PlanData | null, modelId?: string) => void) | null
 
   /** Current plan waiting for user review/build. */
   pendingPlan?: PlanData | null
@@ -103,6 +103,12 @@ export interface ChatContextValue {
 
   /** Open the saved plan artifact in the Plans panel. */
   openPlan?: (filepath?: string | null) => void
+
+  /** Chat's current model — the plan Build picker starts here. */
+  selectedModel?: string
+
+  /** When false, non-economy models in the plan Build picker stay locked. */
+  isPro?: boolean
 
   /** Generate (or regenerate) a stakeholder summary for a plan that doesn't
    *  have one yet. Returns the summary markdown on success. */

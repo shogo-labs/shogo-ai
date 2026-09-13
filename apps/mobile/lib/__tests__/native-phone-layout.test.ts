@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneCanvas, nativePhoneDockFadeColors, nativePhoneDockGlassStyle, nativePhoneFillStyle, nativePhoneIconColor, nativePhoneSheetPanelStyle, nativePhoneSheetBackdropStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, hexToRgbChannels, phoneChromeEnabled, NATIVE_PHONE_CANVAS, NATIVE_PHONE_DOCK_COMPOSER_GAP, NATIVE_PHONE_DOCK_FADE, NATIVE_PHONE_DOCK_GLASS, NATIVE_PHONE_HEADER_ICON_SIZE, NATIVE_PHONE_HOME_CANVAS, NATIVE_PHONE_ICON, NATIVE_PHONE_ICON_STROKE, NATIVE_PHONE_SHEET_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneCanvas, nativePhoneDockBlockingBodyMaxHeight, nativePhoneDockStatusMaxHeight, nativePhoneDockFadeColors, nativePhoneDockGlassStyle, nativePhoneFillStyle, nativePhoneIconColor, nativePhoneSheetPanelStyle, nativePhoneSheetBackdropStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, hexToRgbChannels, phoneChromeEnabled, NATIVE_PHONE_CANVAS, NATIVE_PHONE_DOCK_COMPOSER_GAP, NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT, NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT, NATIVE_PHONE_DOCK_FADE, NATIVE_PHONE_DOCK_GLASS, NATIVE_PHONE_HEADER_ICON_SIZE, NATIVE_PHONE_HOME_CANVAS, NATIVE_PHONE_ICON, NATIVE_PHONE_ICON_STROKE, NATIVE_PHONE_SHEET_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH, WEB_WIDE_MIN_WIDTH } from '../native-phone-layout'
 
 describe('isPhoneLayout', () => {
   test('treats a narrow web viewport as phone chrome', () => {
     expect(isPhoneLayout(390, 844)).toBe(true)
     expect(isPhoneLayout(WEB_PHONE_MAX_WIDTH, 800)).toBe(true)
-    expect(isPhoneLayout(768, 800)).toBe(false)
+    expect(isPhoneLayout(WEB_WIDE_MIN_WIDTH, 800)).toBe(false)
   })
 })
 
@@ -111,9 +111,9 @@ describe('nativePhoneCanvas', () => {
     expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#000000', light: '#ffffff' })
   })
 
-  test('dark home uses charcoal instead of OLED black', () => {
-    expect(NATIVE_PHONE_HOME_CANVAS).toBe('#0C0C0C')
-    expect(NATIVE_PHONE_HOME_CANVAS).not.toBe(NATIVE_PHONE_CANVAS.dark)
+  test('dark home uses OLED black', () => {
+    expect(NATIVE_PHONE_HOME_CANVAS).toBe('#000000')
+    expect(NATIVE_PHONE_HOME_CANVAS).toBe(NATIVE_PHONE_CANVAS.dark)
   })
 })
 
@@ -123,7 +123,7 @@ describe('nativePhoneIconColor', () => {
     expect(nativePhoneIconColor(false)).toBe(NATIVE_PHONE_ICON.light)
     expect(NATIVE_PHONE_ICON).toEqual({ dark: '#F4F4F4', light: '#0D0D0D' })
     expect(NATIVE_PHONE_ICON_STROKE).toBe(1.75)
-    expect(NATIVE_PHONE_HEADER_ICON_SIZE).toBe(26)
+    expect(NATIVE_PHONE_HEADER_ICON_SIZE).toBe(28)
   })
 })
 
@@ -150,8 +150,26 @@ describe('nativePhoneDockFadeColors', () => {
     expect(nativePhoneDockFadeColors(true)[2]).toBe('rgba(0,0,0,0.94)')
     expect(nativePhoneDockFadeColors(false)[0]).toBe('rgba(255,255,255,0)')
     expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(255,255,255,0.94)')
-    expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(12,12,12,0)')
+    expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(0,0,0,0)')
     expect(NATIVE_PHONE_DOCK_COMPOSER_GAP).toBe(12)
+  })
+})
+
+describe('nativePhoneDockBlockingBodyMaxHeight', () => {
+  test('caps the option list so header and submit stay on screen', () => {
+    expect(nativePhoneDockBlockingBodyMaxHeight()).toBe(NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT)
+    expect(nativePhoneDockBlockingBodyMaxHeight(1000)).toBe(NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT)
+    expect(nativePhoneDockBlockingBodyMaxHeight(500)).toBe(190)
+    expect(nativePhoneDockBlockingBodyMaxHeight(200)).toBe(NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT)
+  })
+})
+
+describe('nativePhoneDockStatusMaxHeight', () => {
+  test('keeps an expanded plan from consuming the composer column', () => {
+    expect(nativePhoneDockStatusMaxHeight()).toBe(NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT)
+    expect(nativePhoneDockStatusMaxHeight(1000)).toBe(NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT)
+    expect(nativePhoneDockStatusMaxHeight(500)).toBe(160)
+    expect(nativePhoneDockStatusMaxHeight(200)).toBe(NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT)
   })
 })
 
@@ -165,13 +183,13 @@ describe('nativePhoneDockGlassStyle', () => {
 })
 
 describe('nativePhoneSheetPanelStyle', () => {
-  test('dark sheets use Apple elevated gray on OLED black', () => {
+  test('dark sheets use Apple elevated gray without a background dimmer', () => {
     expect(NATIVE_PHONE_SHEET_CANVAS.dark).toBe('#1C1C1E')
     expect(nativePhoneSheetPanelStyle(true)).toEqual({
       backgroundColor: '#1C1C1E',
       borderColor: 'rgba(255,255,255,0.10)',
     })
     expect(nativePhoneSheetPanelStyle(false)).toBeUndefined()
-    expect(nativePhoneSheetBackdropStyle(true).backgroundColor).toBe('rgba(0,0,0,0.40)')
+    expect(nativePhoneSheetBackdropStyle(true).backgroundColor).toBe('transparent')
   })
 })

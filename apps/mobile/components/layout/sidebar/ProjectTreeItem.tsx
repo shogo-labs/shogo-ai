@@ -50,6 +50,7 @@ import {
   type SidebarMenuEntry,
 } from "../SidebarContextMenu";
 import { ChatTreeItem } from "./ChatTreeItem";
+import { NativeProjectActionsSheet } from "./NativeProjectActionsSheet";
 
 // ─── ProjectTreeItem (a project + its nested chats) ─────────
 
@@ -156,6 +157,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const [editValue, setEditValue] = useState("");
   // Web-only right-click menu anchor (viewport coords) for the project row.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [nativeActionsOpen, setNativeActionsOpen] = useState(false);
   // Delete confirmation, shared by this project and its chats.
   const [confirmDelete, setConfirmDelete] = useState<{
     kind: "project" | "chat";
@@ -456,6 +458,18 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     setMenu({ x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 });
   }, []);
 
+  const openNativeActions = useCallback(() => {
+    if (isNative) setNativeActionsOpen(true);
+  }, [isNative]);
+
+  const requestProjectDelete = useCallback(() => {
+    setConfirmDelete({
+      kind: "project",
+      id: project.id,
+      label: project.name || "Untitled",
+    });
+  }, [project.id, project.name]);
+
   // Run the confirmed delete for either the project or one of its chats.
   const performDelete = useCallback(async () => {
     const target = confirmDelete;
@@ -501,12 +515,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       label: "Delete",
       danger: true,
       icon: <Trash2 size={14} className="text-destructive" />,
-      onSelect: () =>
-        setConfirmDelete({
-          kind: "project",
-          id: project.id,
-          label: project.name || "Untitled",
-        }),
+      onSelect: requestProjectDelete,
     },
   ];
 
@@ -516,7 +525,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         <View
           className={cn(
             "flex-row items-center rounded-md px-2",
-            isNative ? "min-h-11 gap-2 py-1.5" : "gap-1.5 py-1.5",
+            isNative ? `${density.rowMin} gap-2 py-1.5` : "gap-1.5 py-1.5",
           )}
         >
           <Folder
@@ -532,7 +541,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             selectTextOnFocus
             className={cn(
               "flex-1 px-2 rounded border border-border bg-background text-foreground",
-              isNative ? `h-9 ${density.text.body}` : "h-6 text-xs",
+              isNative ? `h-11 ${density.text.body}` : "h-6 text-xs",
             )}
           />
           <Pressable
@@ -560,18 +569,22 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         <View
           className={cn(
             "group flex-row items-center rounded-md pr-1",
-            isNative ? "min-h-11 gap-2 py-2" : "gap-1.5 py-1.5",
+            isNative ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
             isActive ? "bg-accent" : "active:bg-accent/50",
           )}
         >
           <Pressable
             onPress={handleProjectPress}
+            onLongPress={isNative ? openNativeActions : undefined}
+            delayLongPress={isNative ? 400 : undefined}
             role="link"
             accessibilityLabel={`Project: ${project.name || "Untitled"}`}
             accessibilityHint={
               mobileProjectFirstTapShowsChats
                 ? "Opens chats for this project"
-                : undefined
+                : isNative
+                  ? "Long press for project actions"
+                  : undefined
             }
             className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
             {...(Platform.OS === "web"
@@ -593,20 +606,22 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             </Text>
             {mobileProjectFirstTapShowsChats ? (
               <ChevronRight
-                size={16}
+                size={isNative ? density.icon.sm : 16}
                 className="text-muted-foreground shrink-0"
               />
             ) : null}
           </Pressable>
-          {/* Persistent pin glyph when pinned (hidden while hovering so the
-              hover actions can take its place). */}
-          {isPinned && (
+          {/* Persistent pin glyph when pinned (web). Hidden on native — the
+              Pinned section already groups these rows, and hover-reveal
+              actions do not exist on phone. */}
+          {isPinned && !isNative && (
             <View className="group-hover:hidden pr-1 shrink-0">
               <Pin size={10} className="text-muted-foreground" />
             </View>
           )}
           {/* Hover-reveal actions (web). Siblings of the project Pressable, so
               tapping one never triggers the project-open press. */}
+          {!isNative && (
           <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
             <Pressable
               onPress={handleCreateChat}
@@ -631,6 +646,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               )}
             </Pressable>
           </View>
+          )}
         </View>
       )}
       {expanded &&
@@ -756,6 +772,17 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           y={menu.y}
           items={projectMenuItems}
           onClose={() => setMenu(null)}
+        />
+      )}
+      {isNative && (
+        <NativeProjectActionsSheet
+          visible={nativeActionsOpen}
+          projectName={project.name || "Untitled"}
+          isPinned={!!isPinned}
+          onClose={() => setNativeActionsOpen(false)}
+          onRename={startEditProject}
+          onTogglePin={() => onTogglePin?.(project.id, !isPinned)}
+          onDelete={requestProjectDelete}
         />
       )}
       <Modal

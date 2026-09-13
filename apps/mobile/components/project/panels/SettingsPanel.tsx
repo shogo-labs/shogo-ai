@@ -29,13 +29,16 @@ import {
   Platform,
   StyleSheet,
 } from 'react-native'
-import { Check, ChevronDown, X } from 'lucide-react-native'
+import { Check, ChevronDown } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cn } from '@shogo/shared-ui/primitives'
 import { nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR,
   NATIVE_PHONE_SYSTEM_GRAY,
   useNativePhoneWindow } from '../../../lib/native-phone-layout';
-import { NativePhoneSheet } from "../../phone/NativePhoneSheet"
+import {
+  NativePhoneSheet,
+  NativePhoneSheetCloseButton,
+} from "../../phone/NativePhoneSheet"
 
 export interface SettingsSectionItem {
   id: string
@@ -346,17 +349,7 @@ function NativePhoneSidebar({
         visible={open}
         onClose={() => setOpen(false)}
         title="Settings"
-        headerLeft={
-          <Pressable
-                onPress={() => setOpen(false)}
-                hitSlop={8}
-                accessibilityLabel="Close"
-                accessibilityRole="button"
-                className="h-10 w-10 items-center justify-center rounded-full bg-muted"
-              >
-                <X size={18} className="text-foreground" />
-              </Pressable>
-        }
+        headerLeft={<NativePhoneSheetCloseButton onPress={() => setOpen(false)} />}
         scroll
         bodyMaxHeightRatio={0.62}>
               <View

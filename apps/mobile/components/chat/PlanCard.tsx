@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { memo, useState } from "react"
+import { memo, useEffect, useState } from "react"
 import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { CheckCircle2, Circle, Play, ClipboardList, ChevronDown, ChevronUp, ChevronRight, Languages } from "lucide-react-native"
+import {
+  CheckCircle2,
+  Circle,
+  ClipboardList,
+  ChevronDown,
+  ChevronRight,
+  Languages,
+} from "lucide-react-native"
 import { MarkdownText } from "./MarkdownText"
+import { PlanBuildActions } from "./PlanBuildActions"
+import { usePhoneLayout } from "../../lib/native-phone-layout"
 
 export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
 
@@ -27,10 +36,13 @@ export interface PlanData {
 type PlanTab = "technical" | "summary"
 
 const PLAN_TRUNCATE_LENGTH = 2000
+/** Pixel caps — NativeWind `max-h-[300px]` does not bound Yoga on native, so
+ *  an expanded plan in the dock grew until the composer left the screen. */
+const PLAN_BODY_MAX_HEIGHT = 300
 
 interface PlanCardProps {
   plan: PlanData
-  onBuild?: () => void
+  onBuild?: (modelId?: string) => void
   onConfirm?: () => void
   onOpenPlan?: () => void
   onViewFull?: () => void
@@ -42,6 +54,10 @@ interface PlanCardProps {
    *  doesn't nest a card inside `DockPanel`'s own zone-level card — see
    *  `ChatDock`'s file header comment. Internal section dividers are kept. */
   embedded?: boolean
+  /** Chat's current model — the Build picker starts here. */
+  selectedModel?: string
+  /** When false, non-economy models in the Build picker stay locked. */
+  isPro?: boolean
 }
 
 // `AssistantContent` rebuilds the `plan` object literal on every commit while
@@ -58,6 +74,8 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   if (prev.onViewFull !== next.onViewFull) return false
   if (prev.onGenerateSummary !== next.onGenerateSummary) return false
   if (prev.embedded !== next.embedded) return false
+  if (prev.selectedModel !== next.selectedModel) return false
+  if (prev.isPro !== next.isPro) return false
   const a = prev.plan
   const b = next.plan
   if (a === b) return true
@@ -80,12 +98,29 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   return true
 }
 
-function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConfirmed, onGenerateSummary, embedded = false }: PlanCardProps) {
-  const [expanded, setExpanded] = useState(false)
+function PlanCardImpl({
+  plan,
+  onBuild,
+  onConfirm,
+  onOpenPlan,
+  onViewFull,
+  isConfirmed,
+  onGenerateSummary,
+  embedded = false,
+  selectedModel,
+  isPro = true,
+}: PlanCardProps) {
   const [tasksExpanded, setTasksExpanded] = useState(false)
   const [activeTab, setActiveTab] = useState<PlanTab>("technical")
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  const [buildModelId, setBuildModelId] = useState(selectedModel ?? "")
+  const isPhoneChrome = usePhoneLayout()
+  const planKey = plan.filepath ?? plan.toolCallId ?? plan.name
+
+  useEffect(() => {
+    if (selectedModel) setBuildModelId(selectedModel)
+  }, [planKey, selectedModel])
 
   const handleGenerate = onGenerateSummary
     ? async () => {
@@ -102,28 +137,28 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
       }
     : undefined
   const isTruncatable = plan.plan.length > PLAN_TRUNCATE_LENGTH
-  const buildAction = onBuild ?? onConfirm
-  const canNavigateToPlan = !!onOpenPlan && !!plan.filepath
-  const technicalDisplayedPlan = expanded || !isTruncatable
-    ? plan.plan
-    : plan.plan.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+  const handleBuildPress =
+    onBuild || onConfirm
+      ? (modelId?: string) => {
+          if (onBuild) onBuild(modelId || buildModelId || undefined)
+          else onConfirm?.()
+        }
+      : undefined
+  const technicalDisplayedPlan = isTruncatable
+    ? plan.plan.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+    : plan.plan
   const summaryStatus: PlanSummaryStatus = plan.summaryStatus ?? "idle"
   const summaryAvailable = summaryStatus !== "idle"
   const isSummaryTab = activeTab === "summary" && summaryAvailable
   const summaryTextRaw = plan.summary ?? ""
   const summaryIsTruncatable = summaryTextRaw.length > PLAN_TRUNCATE_LENGTH
-  const summaryDisplayed = expanded || !summaryIsTruncatable
-    ? summaryTextRaw
-    : summaryTextRaw.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+  const summaryDisplayed = summaryIsTruncatable
+    ? summaryTextRaw.substring(0, PLAN_TRUNCATE_LENGTH) + "\n\n..."
+    : summaryTextRaw
 
-  // "View Full Plan" navigates to the plan page when a filepath is available;
-  // it only falls back to expanding inline if the plan hasn't been saved yet
-  // (e.g. while the tool call is still streaming).
-  const handleViewFull = onViewFull
-    ?? (canNavigateToPlan
-      ? onOpenPlan
-      : (isTruncatable ? () => setExpanded(prev => !prev) : undefined))
-  const viewFullExpands = handleViewFull !== undefined && !onViewFull && !canNavigateToPlan
+  // Opens the Plans tab for the full document. Never expand in the dock —
+  // the card is a preview, and growing it covers the composer.
+  const handleViewFull = onViewFull ?? onOpenPlan
 
   return (
     <View className={cn(!embedded && "mx-2 my-3 rounded-xl border border-border bg-card overflow-hidden")}>
@@ -154,9 +189,7 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
             <Text
               className={cn(
                 "text-xs font-semibold",
-                activeTab === "technical"
-                  ? "text-foreground"
-                  : "text-muted-foreground"
+                activeTab === "technical" ? "text-foreground" : "text-muted-foreground"
               )}
             >
               Technical
@@ -172,29 +205,29 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
             <Text
               className={cn(
                 "text-xs font-semibold",
-                activeTab === "summary"
-                  ? "text-sky-400"
-                  : "text-muted-foreground"
+                activeTab === "summary" ? "text-sky-400" : "text-muted-foreground"
               )}
             >
               Summary
             </Text>
-            {summaryStatus === "pending" && (
-              <ActivityIndicator size="small" />
-            )}
+            {summaryStatus === "pending" && <ActivityIndicator size="small" />}
           </Pressable>
         </View>
       )}
 
       {/* Plan body */}
-      <ScrollView className={cn("px-4 py-3", expanded ? "max-h-[600px]" : "max-h-[300px]")}>
+      <ScrollView
+        className="px-4 py-3"
+        style={{ maxHeight: PLAN_BODY_MAX_HEIGHT }}
+        nestedScrollEnabled
+        bounces={false}
+        alwaysBounceVertical={false}
+      >
         {isSummaryTab ? (
           summaryStatus === "pending" ? (
             <View className="flex-row items-center gap-2 py-3">
               <ActivityIndicator size="small" />
-              <Text className="text-xs text-muted-foreground">
-                Generating summary...
-              </Text>
+              <Text className="text-xs text-muted-foreground">Generating summary...</Text>
             </View>
           ) : summaryStatus === "error" ? (
             <Text className="text-xs text-destructive">
@@ -212,15 +245,15 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
       {plan.todos.length > 0 && (
         <View className="border-t border-border/50">
           <Pressable
-            onPress={() => setTasksExpanded(prev => !prev)}
+            onPress={() => setTasksExpanded((prev) => !prev)}
             className="flex-row items-center gap-1.5 px-4 py-3"
           >
-            {tasksExpanded
-              ? <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
-              : <ChevronRight className="h-3 w-3 text-muted-foreground" size={12} />}
-            <Text className="text-xs font-semibold text-muted-foreground">
-              TASKS ({plan.todos.length})
-            </Text>
+            {tasksExpanded ? (
+              <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />
+            ) : (
+              <ChevronRight className="h-3 w-3 text-muted-foreground" size={12} />
+            )}
+            <Text className="text-xs font-semibold text-muted-foreground">TASKS ({plan.todos.length})</Text>
           </Pressable>
           {tasksExpanded && (
             <View className="px-4 pb-3">
@@ -237,64 +270,39 @@ function PlanCardImpl({ plan, onBuild, onConfirm, onOpenPlan, onViewFull, isConf
 
       {/* Actions */}
       {!isConfirmed && (
-        <View className="flex-row flex-wrap items-center gap-2 px-4 py-3 border-t border-border bg-muted/20">
-          {buildAction && (
-            <Pressable
-              onPress={buildAction}
-              className="flex-row items-center gap-1.5 rounded-lg bg-primary px-4 py-2"
-            >
-              <Play className="h-3.5 w-3.5 text-primary-foreground" size={14} />
-              <Text className="text-xs font-semibold text-primary-foreground">
-                Build
-              </Text>
-            </Pressable>
-          )}
-          {handleViewFull && (
-            <Pressable
-              onPress={handleViewFull}
-              className="flex-row items-center gap-1.5 rounded-lg border border-border px-4 py-2"
-            >
-              {viewFullExpands
-                ? (expanded
-                    ? <ChevronUp className="h-3 w-3 text-muted-foreground" size={12} />
-                    : <ChevronDown className="h-3 w-3 text-muted-foreground" size={12} />)
-                : <ChevronRight className="h-3 w-3 text-muted-foreground" size={12} />}
-              <Text className="text-xs text-muted-foreground">
-                {viewFullExpands && expanded ? "Collapse Plan" : "View Full Plan"}
-              </Text>
-            </Pressable>
-          )}
-          {/* On-demand summary generation for plans that didn't have one
-              auto-generated (Dual Plan off, or older plan). Requires a saved
-              filepath because the runtime endpoint operates on .plan.md. */}
-          {handleGenerate && !summaryAvailable && !!plan.filepath && (
-            <Pressable
-              onPress={handleGenerate}
-              disabled={generating}
-              className={cn(
-                "flex-row items-center gap-1.5 rounded-lg border px-4 py-2",
-                generating
-                  ? "border-sky-500/30 bg-sky-500/5 opacity-70"
-                  : "border-sky-500/40 bg-sky-500/10"
-              )}
-            >
-              {generating ? (
-                <ActivityIndicator size="small" />
-              ) : (
-                <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
-              )}
-              <Text className="text-xs font-semibold text-sky-400">
-                {generating ? "Generating..." : "Summary"}
-              </Text>
-            </Pressable>
-          )}
+        <View className="gap-2 px-4 py-3 border-t border-border bg-muted/20">
+          <View className="flex-row flex-wrap items-center gap-x-2 gap-y-2">
+            <PlanBuildActions
+              buildModelId={buildModelId}
+              isPro={isPro}
+              nativeSheet={isPhoneChrome}
+              onSelectModel={setBuildModelId}
+              onBuild={handleBuildPress}
+              onViewPlan={handleViewFull ?? undefined}
+            />
+            {handleGenerate && !summaryAvailable && !!plan.filepath ? (
+              <Pressable
+                onPress={handleGenerate}
+                disabled={generating}
+                className={cn(
+                  "flex-row items-center gap-1 py-1",
+                  generating && "opacity-70"
+                )}
+              >
+                {generating ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
+                )}
+                <Text className="text-xs font-semibold text-sky-400">{generating ? "Generating..." : "Summary"}</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       )}
 
       {generateError && !summaryAvailable && (
-        <Text className="px-4 pb-2 text-xs text-destructive">
-          {generateError}
-        </Text>
+        <Text className="px-4 pb-2 text-xs text-destructive">{generateError}</Text>
       )}
 
       {isConfirmed && (

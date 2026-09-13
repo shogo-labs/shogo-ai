@@ -65,6 +65,10 @@ export const NATIVE_PHONE_PICKER_GUTTER = NATIVE_PHONE_PICKER_INSET / 2
 export const NATIVE_PHONE_HAIRLINE_COLOR = 'rgba(127,127,127,0.35)'
 /** Tap target for native phone icon buttons (Library refresh, period refresh). */
 export const NATIVE_PHONE_CONTROL_SIZE = 44
+/** Extra scroll padding below native Account groups (`insets.bottom + 24`). */
+export const NATIVE_ACCOUNT_SCROLL_EXTRA_PAD = 24
+/** Native Account screen title. Not PHONE_DENSITY.title (`text-xl`). */
+export const NATIVE_ACCOUNT_TITLE_CLASS = 'text-[17px]'
 /** Row gap between native phone chrome controls (`gap-2`). */
 export const NATIVE_PHONE_ROW_GAP = 8
 /** Wrap-row gap between two-column stat cards (`gap-3`). */
@@ -75,11 +79,11 @@ export const NATIVE_PHONE_CARD_GAP = 12
  */
 export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
 /**
- * Dark home only: the old charcoal wash, not OLED black. Search, files, and
- * other screens keep `NATIVE_PHONE_CANVAS.dark`. The drawer still lifts this
- * to `NATIVE_DRAWER_SHEET_OPEN_CANVAS` when the sidebar opens.
+ * Dark home sheet fill. Same OLED black as the rest of native chrome; kept as
+ * its own token so the home drawer can stay on a static canvas without
+ * duplicating the hex.
  */
-export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
+export const NATIVE_PHONE_HOME_CANVAS = NATIVE_PHONE_CANVAS.dark
 
 /**
  * ChatGPT iOS icon ink, sampled from App Store screenshots.
@@ -89,7 +93,7 @@ export const NATIVE_PHONE_HOME_CANVAS = '#0C0C0C' as const
 export const NATIVE_PHONE_ICON = { dark: '#F4F4F4', light: '#0D0D0D' } as const
 export const NATIVE_PHONE_ICON_STROKE = 1.75
 /** Header menu / bell on native phone and narrow web (`AppHeader`). */
-export const NATIVE_PHONE_HEADER_ICON_SIZE = 26
+export const NATIVE_PHONE_HEADER_ICON_SIZE = 28
 
 export function nativePhoneIconColor(isDark: boolean): string {
   return isDark ? NATIVE_PHONE_ICON.dark : NATIVE_PHONE_ICON.light
@@ -123,13 +127,17 @@ export const NATIVE_PHONE_SHEET_BORDER = {
   light: 'rgba(0,0,0,0.08)',
 } as const
 export const NATIVE_PHONE_SHEET_BACKDROP = {
-  dark: 'rgba(0,0,0,0.40)',
-  light: 'rgba(0,0,0,0.50)',
+  /** Bottom sheets stay non-blocking visually; the press target remains dismissible. */
+  dark: 'transparent',
+  light: 'transparent',
 } as const
 
 export const NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO = 0.78;
 export const NATIVE_PHONE_SHEET_COMPACT_RATIO = 0.72;
 export const NATIVE_PHONE_SHEET_BODY_RATIO = 0.62;
+/** Tall sheet so Account can host a settings tab without a push. */
+export const NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO = 0.92;
+export const NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO = 0.78;
 export const NATIVE_PHONE_SHEET_ACTIVITY_BODY_RATIO = 0.56;
 export const NATIVE_PHONE_SHEET_FADE_MS = 320;
 export const NATIVE_PHONE_SYSTEM_GRAY = {
@@ -163,6 +171,46 @@ export const NATIVE_PHONE_DOCK_FADE = 80
 export const NATIVE_PHONE_DOCK_FADE_LOCATIONS = [0, 0.42, 1] as const
 /** Gap between ChatDock banners (errors, plans, approvals) and the composer pill. */
 export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
+/**
+ * Native blocking question/permission cards stay in the composer column, so
+ * they must leave room for messages above and the pill below. Cap the
+ * scrollable option body rather than the whole card — header and submit
+ * stay pinned.
+ */
+export const NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT = 280
+export const NATIVE_PHONE_DOCK_BLOCKING_MAX_RATIO = 0.38
+export const NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT = 140
+
+export function nativePhoneDockBlockingBodyMaxHeight(
+  availableHeight?: number,
+): number {
+  const fromViewport = availableHeight
+    ? Math.round(availableHeight * NATIVE_PHONE_DOCK_BLOCKING_MAX_RATIO)
+    : NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT
+  return Math.max(
+    NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT,
+    Math.min(NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT, fromViewport),
+  )
+}
+
+/**
+ * Cap the status zone (Plan, errors, files) so an expanded plan cannot
+ * consume the composer column. Uses window height, not the messages sibling,
+ * to avoid a layout loop.
+ */
+export const NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT = 280
+export const NATIVE_PHONE_DOCK_STATUS_MAX_RATIO = 0.32
+export const NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT = 120
+
+export function nativePhoneDockStatusMaxHeight(windowHeight?: number): number {
+  const fromViewport = windowHeight
+    ? Math.round(windowHeight * NATIVE_PHONE_DOCK_STATUS_MAX_RATIO)
+    : NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT
+  return Math.max(
+    NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT,
+    Math.min(NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT, fromViewport),
+  )
+}
 
 export const NATIVE_PHONE_DOCK_GLASS = {
   dark: {

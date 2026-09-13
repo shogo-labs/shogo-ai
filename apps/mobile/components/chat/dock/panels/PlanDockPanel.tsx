@@ -11,26 +11,40 @@
 import { useMemo } from "react"
 import { ClipboardList } from "lucide-react-native"
 import { PlanCard, type PlanData } from "../../PlanCard"
+import { useIsNativePhoneLayout } from "../../../../lib/native-phone-layout"
 import { useDockPanel } from "../useDockPanel"
 import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
 
 export interface PlanDockPanelProps {
   pendingPlan: PlanData | null
   confirmedPlan: PlanData | null
-  onBuild: ((plan: PlanData) => void) | null
-  onOpenPlan?: (filepath: string) => void
+  onBuild: ((plan: PlanData, modelId?: string) => void) | null
+  onOpenPlan?: (filepath?: string) => void
   /** Resolved value is intentionally untyped: `ChatPanel`'s generator
    *  resolves with the generated text, but `PlanCard` only awaits
    *  completion to know when to clear its loading state. */
   onGenerateSummary?: (filepath: string) => Promise<unknown> | void
+  selectedModel?: string
+  isPro?: boolean
 }
 
-export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan, onGenerateSummary }: PlanDockPanelProps) {
+export function PlanDockPanel({
+  pendingPlan,
+  confirmedPlan,
+  onBuild,
+  onOpenPlan,
+  onGenerateSummary,
+  selectedModel,
+  isPro = true,
+}: PlanDockPanelProps) {
+  const nativePhone = useIsNativePhoneLayout()
   const plan = pendingPlan ?? confirmedPlan
   const isConfirmed = !!confirmedPlan && !pendingPlan
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!plan) return null
+    // Native phone uses the Cursor-style Plan Ready oval above the composer,
+    // not this expanded Technical/Summary dock card.
+    if (nativePhone || !plan) return null
     return {
       id: "plan",
       kind: "status",
@@ -43,8 +57,10 @@ export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan,
         <PlanCard
           plan={plan}
           embedded
-          onBuild={!isConfirmed && onBuild ? () => onBuild(plan) : undefined}
-          onOpenPlan={onOpenPlan && plan.filepath ? () => onOpenPlan(plan.filepath!) : undefined}
+          selectedModel={selectedModel}
+          isPro={isPro}
+          onBuild={!isConfirmed && onBuild ? (modelId) => onBuild(plan, modelId) : undefined}
+          onOpenPlan={onOpenPlan ? () => onOpenPlan(plan.filepath) : undefined}
           onGenerateSummary={
             onGenerateSummary && plan.filepath
               ? async () => {
@@ -57,7 +73,7 @@ export function PlanDockPanel({ pendingPlan, confirmedPlan, onBuild, onOpenPlan,
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary])
+  }, [nativePhone, plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary, selectedModel, isPro])
 
   useDockPanel(descriptor)
   return null

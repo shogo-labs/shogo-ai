@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 export { ComposerPlusTrigger } from "./ComposerPlusTrigger";
+export { ProjectComposerDock } from "./ProjectComposerDock";
 export { ComposerSendButton } from "./ComposerSendButton";
 export { ProminentComposerField } from "./ProminentComposerField";
 export { composerModelPickerProps } from "./composerModelPickerProps";

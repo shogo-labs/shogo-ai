@@ -9,15 +9,73 @@
  * Billing-page size; `CompactUsageWindows` renders both windows at the smaller
  * density used in the sidebar and project top bar.
  */
+import { useState } from 'react'
 import { View, Text } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { UsageWindowView, UsageWindows } from '@shogo/shared-app/hooks'
 import {
   formatResetCountdown,
+  formatUsd,
   getWindowDisplays,
   getUsageLimitNotice,
+  usageFillPixelWidth,
   type UsageOverageContext,
+  type WindowDisplay,
 } from '../../lib/billing-config'
+import { isNativePlatform, nativePhoneFillStyle } from '../../lib/native-phone-layout'
+
+/** NativeWind `h-2` / `h-1.5` on the billing and compact meters. */
+const USAGE_TRACK_HEIGHT = 8
+const COMPACT_USAGE_TRACK_HEIGHT = 6
+
+function usageLabel(display: Pick<WindowDisplay, 'empty' | 'uncapped' | 'pct' | 'usedUsd'>): string {
+  if (display.empty) return '—'
+  if (display.uncapped) {
+    return display.usedUsd > 0 ? `${formatUsd(display.usedUsd)} used` : 'Unlimited'
+  }
+  return `${display.pct}% used`
+}
+
+function UsageMeterTrack({
+  pct,
+  height,
+}: {
+  pct: number
+  height: number
+}) {
+  // Yoga treats percentage `width` as 0 inside overflow-hidden native cards.
+  // Web/desktop keep `%` so the bar does not wait on an onLayout pass.
+  const native = isNativePlatform()
+  const [trackW, setTrackW] = useState(0)
+  const fillW = usageFillPixelWidth(trackW, pct)
+  const fillClass = cn('rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')
+
+  return (
+    <View
+      className="overflow-hidden rounded-full bg-muted"
+      style={{
+        height,
+        ...(native ? { position: 'relative' as const, alignSelf: 'stretch' as const } : null),
+      }}
+      onLayout={
+        native
+          ? (e) => {
+              const next = e.nativeEvent.layout.width
+              if (next !== trackW) setTrackW(next)
+            }
+          : undefined
+      }
+    >
+      {native ? (
+        fillW > 0 ? (
+          <View className={fillClass} style={nativePhoneFillStyle(fillW)} />
+        ) : null
+      ) : pct > 0 ? (
+        <View className={fillClass} style={{ width: `${pct}%`, height }} />
+      ) : null}
+    </View>
+  )
+}
 
 export function UsageWindowBar({
   label,
@@ -34,12 +92,12 @@ export function UsageWindowBar({
   const utilization = window ? Math.min(1, Math.max(0, window.utilization)) : 0
   const pct = coupledFull && !uncapped ? 100 : Math.round(utilization * 100)
   const countdown = window ? formatResetCountdown(window.resetsAt) : ''
-
-  const usageText = !window
-    ? '—'
-    : uncapped
-      ? 'Unlimited'
-      : `${pct}% used`
+  const usageText = usageLabel({
+    empty: !window,
+    uncapped,
+    pct,
+    usedUsd: window?.usedUsd ?? 0,
+  })
 
   return (
     <View className="gap-1.5">
@@ -47,14 +105,7 @@ export function UsageWindowBar({
         <Text className="text-sm font-medium text-foreground">{label}</Text>
         <Text className="text-sm text-muted-foreground">{usageText}</Text>
       </View>
-      <View className="h-2 rounded-full bg-muted overflow-hidden">
-        {!uncapped && (
-          <View
-            className={cn('h-2 rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')}
-            style={{ width: `${uncapped ? 0 : pct}%` }}
-          />
-        )}
-      </View>
+      <UsageMeterTrack pct={uncapped ? 0 : pct} height={USAGE_TRACK_HEIGHT} />
       {!uncapped && countdown ? (
         <Text className="text-xs text-muted-foreground">
           {pct >= 100 ? `Limit reached — resets in ${countdown}` : `Resets in ${countdown}`}
@@ -70,31 +121,21 @@ function CompactWindowRow({
   comfortable = false,
 }: {
   label: string
-  display: { pct: number; uncapped: boolean; empty: boolean }
+  display: WindowDisplay
   comfortable?: boolean
 }) {
-  const { pct, uncapped, empty } = display
-
-  const usageText = empty
-    ? '—'
-    : uncapped
-      ? 'Unlimited'
-      : `${pct}% used`
-
   return (
-    <View className={comfortable ? "gap-1.5" : "gap-1"}>
+    <View className={comfortable ? 'gap-1.5' : 'gap-1'}>
       <View className="flex-row items-center justify-between">
-        <Text className={cn(comfortable ? "text-sm" : "text-xs", "text-muted-foreground")}>{label}</Text>
-        <Text className={cn(comfortable ? "text-sm" : "text-xs", "font-medium text-foreground")}>{usageText}</Text>
+        <Text className={cn(comfortable ? 'text-sm' : 'text-xs', 'text-muted-foreground')}>{label}</Text>
+        <Text className={cn(comfortable ? 'text-sm' : 'text-xs', 'font-medium text-foreground')}>
+          {usageLabel(display)}
+        </Text>
       </View>
-      <View className={cn("rounded-full bg-muted overflow-hidden", comfortable ? "h-2" : "h-1.5")}>
-        {!uncapped && (
-          <View
-            className={cn('h-full rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')}
-            style={{ width: `${uncapped ? 0 : pct}%` }}
-          />
-        )}
-      </View>
+      <UsageMeterTrack
+        pct={display.uncapped ? 0 : display.pct}
+        height={comfortable ? USAGE_TRACK_HEIGHT : COMPACT_USAGE_TRACK_HEIGHT}
+      />
     </View>
   )
 }
@@ -117,7 +158,7 @@ export function CompactUsageWindows({
   const notice = getUsageLimitNotice({ atLimit, overage, countdown })
 
   return (
-    <View className={comfortable ? "gap-3" : "gap-2.5"}>
+    <View className={comfortable ? 'gap-3' : 'gap-2.5'}>
       <CompactWindowRow label="5-hour window" display={fiveHour} comfortable={comfortable} />
       <CompactWindowRow label="Weekly window" display={weekly} comfortable={comfortable} />
       {notice ? (

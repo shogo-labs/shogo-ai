@@ -18,6 +18,8 @@ import { Input } from '../primitives/Input'
 import { Alert, AlertDescription } from '../primitives/Alert'
 import { Separator } from '../primitives/Separator'
 import { cn } from '../primitives/cn'
+import { BRAND_LANDING_HEX } from '../tokens/brand'
+import { ShogoWordmark } from '../branding/ShogoWordmark'
 
 /** ~`text-muted-foreground` — lucide icons need explicit color */
 const PASSWORD_TOGGLE_ICON_COLOR = '#71717a'
@@ -214,12 +216,14 @@ const LOGIN_HERO_BREAKPOINT = 768
 /** Responsive web viewports at or below this width use the native phone surface. */
 const LOGIN_PHONE_WEB_MAX_WIDTH = LOGIN_HERO_BREAKPOINT - 1
 
-/** Short native-landing typewriter lines. Keep similar length so the hero stays one line. */
+/** Native-landing typewriter lines. The hero text scales down to stay on one line. */
 const NATIVE_LANDING_HERO_PHRASES = [
-  "Let's build",
-  'Build an agent',
-  'Create a canvas',
-  'Ship an app',
+  'Automate my inbox',
+  'Summarize my meetings',
+  'Build a presentation',
+  'Analyze this spreadsheet',
+  'Create a project plan',
+  'Draft a customer reply',
 ] as const
 
 /** Light veil only — the compact web form sits over the login artwork. */
@@ -754,7 +758,7 @@ function NativeMobileLoginPanel({
         <View
           accessible
           accessibilityRole="header"
-          accessibilityLabel="Shogo AI"
+          accessibilityLabel="Shogo"
           style={{
             zIndex: 1,
             flexDirection: 'row',
@@ -764,28 +768,7 @@ function NativeMobileLoginPanel({
             paddingBottom: 12,
           }}
         >
-          <Image
-            source={shogoRadialCursor}
-            accessible={false}
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 20,
-              marginRight: 12,
-            }}
-            resizeMode="contain"
-          />
-          <Text
-            style={{
-              color: '#FFFFFF',
-              fontSize: 32,
-              lineHeight: 38,
-              fontWeight: '700',
-              letterSpacing: -0.5,
-            }}
-          >
-            Shogo AI
-          </Text>
+          <ShogoWordmark colorScheme="dark" className="h-9 w-36" decorative />
         </View>
         <View
           style={{
@@ -798,7 +781,13 @@ function NativeMobileLoginPanel({
           }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'center' }}>
-            <Text numberOfLines={1} maxFontSizeMultiplier={1.15} style={heroTextStyle}>
+            <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.5}
+              maxFontSizeMultiplier={1.15}
+              style={heroTextStyle}
+            >
               {typedHeroText}
             </Text>
             <Animated.Image
@@ -907,21 +896,14 @@ function NativeMobileLoginPanel({
           <View
             accessible
             accessibilityRole="header"
-            accessibilityLabel="Shogo AI"
+            accessibilityLabel="Shogo"
             style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 48 }}
           >
-            <Image
-              source={shogoRadialCursor}
-              accessible={false}
-              style={{ width: 32, height: 32, borderRadius: 16, marginRight: 10 }}
-              resizeMode="contain"
+            <ShogoWordmark
+              colorScheme="dark"
+              className={isNarrow ? 'h-7 w-28' : 'h-8 w-32'}
+              decorative
             />
-            <Text
-              numberOfLines={1}
-              style={{ color: '#FFFFFF', fontSize: isNarrow ? 22 : 26, lineHeight: 32, fontWeight: '700', letterSpacing: -0.4 }}
-            >
-              Shogo AI
-            </Text>
           </View>
           <Pressable
             onPress={() => { setShowEmailForm(false); dismissError() }}
@@ -1105,12 +1087,7 @@ function CompactWebLoginPanel({
           <Card className="w-full max-w-md self-center border-border bg-card shadow-lg">
             <CardContent className="p-6">
               <View className="items-center mb-6">
-                <Image
-                  source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
-                  style={{ width: 80, height: 80, marginBottom: 16 }}
-                  resizeMode="contain"
-                />
-                <Text className="text-2xl font-bold text-foreground">Shogo</Text>
+                <ShogoWordmark colorScheme={scheme} className="h-11 w-44" />
                 <Text className="text-sm text-muted-foreground mt-1">
                   Sign in to your account or create a new one
                 </Text>

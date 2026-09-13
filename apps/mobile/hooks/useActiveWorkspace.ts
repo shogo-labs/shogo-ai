@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { useSyncExternalStore } from 'react'
 import { useWorkspaceCollection } from '../contexts/domain'
-import { resolveActiveWorkspaceId } from '../lib/workspace-store'
+import {
+  getActiveWorkspaceId,
+  resolveActiveWorkspaceId,
+  subscribeActiveWorkspaceId,
+} from '../lib/workspace-store'
 
 /**
  * Returns the workspace the user last selected, falling back to the first
@@ -11,9 +16,14 @@ import { resolveActiveWorkspaceId } from '../lib/workspace-store'
  */
 export function useActiveWorkspace() {
   const workspaces = useWorkspaceCollection()
+  const persistedId = useSyncExternalStore(
+    subscribeActiveWorkspaceId,
+    getActiveWorkspaceId,
+    getActiveWorkspaceId,
+  )
   const all = workspaces?.all ?? []
   const ownIds = all.map((w: any) => w.id)
-  const resolvedId = resolveActiveWorkspaceId(ownIds)
+  const resolvedId = resolveActiveWorkspaceId(ownIds, persistedId)
 
   if (resolvedId) {
     const match = all.find((w: any) => w.id === resolvedId)

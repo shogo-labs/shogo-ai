@@ -10,12 +10,34 @@
 import { useState, useCallback, useEffect } from 'react'
 import {
   View,
-  Text,
   Pressable,
   ActivityIndicator,
   ScrollView,
 } from 'react-native'
 import {
+  DollarSign as DollarSignIcon,
+  TrendingDown as TrendingDownIcon,
+  TrendingUp as TrendingUpIcon,
+  Minus as MinusIcon,
+  Lightbulb as LightbulbIcon,
+  Bell as BellIcon,
+  FlaskConical as FlaskConicalIcon,
+  Cpu as CpuIcon,
+  Zap as ZapIcon,
+  Clock as ClockIcon,
+  CheckCircle2 as CheckCircle2Icon,
+  XCircle as XCircleIcon,
+  ChevronDown as ChevronDownIcon,
+  ChevronUp as ChevronUpIcon,
+  Settings as SettingsGlyph,
+} from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+import {
+  AccountSheetText as Text,
+  wrapAccountSheetIcons,
+} from '../settings/account-sheet-chrome'
+
+const {
   DollarSign,
   TrendingDown,
   TrendingUp,
@@ -30,9 +52,24 @@ import {
   XCircle,
   ChevronDown,
   ChevronUp,
-  Settings as SettingsIcon,
-} from 'lucide-react-native'
-import { cn } from '@shogo/shared-ui/primitives'
+  SettingsIcon,
+} = wrapAccountSheetIcons({
+  DollarSign: DollarSignIcon,
+  TrendingDown: TrendingDownIcon,
+  TrendingUp: TrendingUpIcon,
+  Minus: MinusIcon,
+  Lightbulb: LightbulbIcon,
+  Bell: BellIcon,
+  FlaskConical: FlaskConicalIcon,
+  Cpu: CpuIcon,
+  Zap: ZapIcon,
+  Clock: ClockIcon,
+  CheckCircle2: CheckCircle2Icon,
+  XCircle: XCircleIcon,
+  ChevronDown: ChevronDownIcon,
+  ChevronUp: ChevronUpIcon,
+  SettingsIcon: SettingsGlyph,
+})
 import {
   type AnalyticsPeriod,
   PeriodSelector,

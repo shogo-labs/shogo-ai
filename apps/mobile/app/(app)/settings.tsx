@@ -12,10 +12,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
-  Text,
   ScrollView,
   Pressable,
-  TextInput,
   Modal,
   ActivityIndicator,
   Linking,
@@ -27,32 +25,37 @@ import { useRouter, useLocalSearchParams } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import {
-  ArrowLeft,
-  Building2,
-  Users,
-  Boxes,
-  Shield,
-  User,
-  ExternalLink,
-  Trash2,
-  ChevronDown,
-  X,
-  Search,
-  UserPlus,
-  Mail,
-  BarChart3,
-  MessageSquare,
-  Zap,
-  CreditCard,
-  Cloud,
-  Server,
-  Coins,
-  Plug,
-  Download,
-  Bug,
-  Monitor,
-  Paintbrush,
+  ArrowLeft as ArrowLeftIcon,
+  Building2 as Building2Icon,
+  Users as UsersIcon,
+  Boxes as BoxesIcon,
+  Shield as ShieldIcon,
+  User as UserIcon,
+  ExternalLink as ExternalLinkIcon,
+  Trash2 as Trash2Icon,
+  ChevronDown as ChevronDownIcon,
+  X as XGlyph,
+  Search as SearchIcon,
+  UserPlus as UserPlusIcon,
+  Mail as MailIcon,
+  BarChart3 as BarChart3Icon,
+  MessageSquare as MessageSquareIcon,
+  Zap as ZapIcon,
+  CreditCard as CreditCardIcon,
+  Cloud as CloudIcon,
+  Server as ServerIcon,
+  Coins as CoinsIcon,
+  Plug as PlugIcon,
+  Download as DownloadIcon,
+  Bug as BugIcon,
+  Monitor as MonitorIcon,
+  Paintbrush as PaintbrushIcon,
 } from 'lucide-react-native'
+import {
+  AccountSheetText as Text,
+  AccountSheetTextInput as TextInput,
+  wrapAccountSheetIcons,
+} from '../../components/settings/account-sheet-chrome'
 import { AppearanceTab } from '../../components/settings/AppearanceTab'
 import { useAuth } from '../../contexts/auth'
 import {
@@ -98,6 +101,8 @@ import { BillingProgressCard } from '../../components/billing/BillingProgressCar
 import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
 import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
 import { useVisibleModels } from '../../lib/visible-models'
+import { isNativePhoneIntegrationsLayout, WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
+import { leaveSettings } from '../../lib/settings-back'
 import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
 import { invitationEvents } from '../../lib/invitation-events'
 import {
@@ -114,14 +119,68 @@ import {
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../lib/notifications/preferences'
 import { useDualPlan } from '../../lib/dual-plan-preference'
 
+const {
+  ArrowLeft,
+  Building2,
+  Users,
+  Boxes,
+  Shield,
+  User,
+  ExternalLink,
+  Trash2,
+  ChevronDown,
+  X,
+  Search,
+  UserPlus,
+  Mail,
+  BarChart3,
+  MessageSquare,
+  Zap,
+  CreditCard,
+  Cloud,
+  Server,
+  Coins,
+  Plug,
+  Download,
+  Bug,
+  Monitor,
+  Paintbrush,
+} = wrapAccountSheetIcons({
+  ArrowLeft: ArrowLeftIcon,
+  Building2: Building2Icon,
+  Users: UsersIcon,
+  Boxes: BoxesIcon,
+  Shield: ShieldIcon,
+  User: UserIcon,
+  ExternalLink: ExternalLinkIcon,
+  Trash2: Trash2Icon,
+  ChevronDown: ChevronDownIcon,
+  X: XGlyph,
+  Search: SearchIcon,
+  UserPlus: UserPlusIcon,
+  Mail: MailIcon,
+  BarChart3: BarChart3Icon,
+  MessageSquare: MessageSquareIcon,
+  Zap: ZapIcon,
+  CreditCard: CreditCardIcon,
+  Cloud: CloudIcon,
+  Server: ServerIcon,
+  Coins: CoinsIcon,
+  Plug: PlugIcon,
+  Download: DownloadIcon,
+  Bug: BugIcon,
+  Monitor: MonitorIcon,
+  Paintbrush: PaintbrushIcon,
+})
+
 const DOCS_URL = 'https://docs.shogo.ai'
 
-type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support' | 'appearance'
+export type TabId = 'workspace' | 'people' | 'models' | 'integrations' | 'remote-control' | 'account' | 'security' | 'billing' | 'compute' | 'analytics' | 'costs' | 'support' | 'appearance'
 
 const ALL_TAB_IDS: TabId[] = ['workspace', 'people', 'models', 'integrations', 'remote-control', 'account', 'security', 'billing', 'compute', 'analytics', 'costs', 'support', 'appearance']
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
-const SETTINGS_WIDE_BREAKPOINT = 768
+const SETTINGS_WIDE_BREAKPOINT = WEB_WIDE_MIN_WIDTH
 const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === 'ios'
 
 interface NavItem {
@@ -282,7 +341,7 @@ function SettingsSidebar({
   return (
     <View className="w-[210px] pt-4 pb-3 px-3">
       <Pressable
-        onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}
+        onPress={() => leaveSettings(router, false)}
         className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
       >
         <ArrowLeft size={14} className="text-muted-foreground" />
@@ -3261,7 +3320,7 @@ function WorkspaceCostTab() {
 // ============================================================================
 
 
-const SettingsContent = observer(function SettingsContent({
+export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false
 }: {
@@ -3291,8 +3350,9 @@ const SettingsContent = observer(function SettingsContent({
 export default observer(function SettingsPage() {
   const router = useRouter()
   const params = useLocalSearchParams<{ tab?: string }>()
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const { user } = useAuth()
   const currentWorkspace = useActiveWorkspace()
   const { features, localMode } = usePlatformConfig()
@@ -3351,7 +3411,11 @@ export default observer(function SettingsPage() {
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
-        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/projects')}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          onPress={() => leaveSettings(router, isNativePhone)}
+        >
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
         <Text className="text-xl font-bold text-foreground">Settings</Text>

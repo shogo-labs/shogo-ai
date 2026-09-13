@@ -109,6 +109,7 @@ Use Tailwind CSS classes. The app supports both light and dark mode automaticall
 - **Pair action buttons with icons** from lucide-react (e.g. \`Plus\`, \`Trash2\`, \`Search\`)
 - Use semantic color tokens (\`text-foreground\`, \`text-muted-foreground\`, \`bg-muted\`) for dark mode compatibility
 - **NEVER add borders** (\`border\`, \`border-t\`, \`divide-y\`, etc.) unless the user asks — use spacing and subtle backgrounds for separation instead
+- **Mobile / narrow preview (required)**: canvases also open on iPhone. Never use a fixed \`grid-cols-3\` or \`grid-cols-4\` for KPI rows. Start at one column and step up: \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\`. Do not put \`truncate\` on primary card labels. Page padding \`p-4 sm:p-6\`. Headers and tab lists must wrap or scroll, not overflow.
 
 See the **UI/UX Design Guide** section for comprehensive design patterns and anti-patterns.
 
@@ -517,7 +518,7 @@ export default function Dashboard() {
         </div>
         <Badge variant="outline">Live</Badge>
       </div>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {metrics.map(m => <MetricCard key={m.label} {...m} />)}
       </div>
     </div>
@@ -674,7 +675,37 @@ export default function App() {
 `
 
 // ---------------------------------------------------------------------------
-// Section 5: Brief reference for non-canvas modes
+// Section 5: Phone + desktop preview (always-on in canvas mode)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact layout contract injected in canvas mode. Full CANVAS_V2_GUIDE is
+ * on-demand via read_guide to save tokens; this block must stay in the live
+ * prompt or agents keep shipping desktop-only shells (fixed KPI grids, pinned
+ * left nav) that break on iPhone.
+ */
+export const CANVAS_MOBILE_PREVIEW_GUIDE = `## Canvas preview (phone and desktop)
+
+**Default. Do not wait to be asked.** Every canvas write under \`src/\` must work on iPhone (~390px) and desktop in the same app. Never ship a desktop-only shell and never ask the user to prompt for a "mobile version".
+
+- **KPI / card rows**: \`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\` — never a fixed \`grid-cols-3\` or \`grid-cols-4\`.
+- **App chrome**: do not pin a left sidebar at phone widths. Stack panes with \`flex flex-col md:flex-row\`, or put nav in a top bar / \`Sheet\`. A \`flex h-screen\` + \`w-64\` rail is a desktop pattern.
+- **Page padding** \`p-4 sm:p-6\`. Do not \`truncate\` primary labels. Headers and tab lists wrap or scroll, never overflow.
+- **Primary actions** stay reachable with the thumb (top or bottom bar), not only in a left rail.
+
+The **Viewer** section is the live preview size (like a device toolbar). Use it to prioritize layout, not as a switch that turns responsive design on.
+`
+
+/** Stable prompt blocks that change only when visual mode changes. */
+export function canvasModeStableGuides(activeMode: string): Array<[id: string, text: string]> {
+  if (activeMode === 'canvas') {
+    return [['canvas-mobile-preview', CANVAS_MOBILE_PREVIEW_GUIDE]]
+  }
+  return [['canvas-file-reference', CANVAS_FILE_REFERENCE]]
+}
+
+// ---------------------------------------------------------------------------
+// Section 6: Brief reference for non-canvas modes
 // ---------------------------------------------------------------------------
 
 export const CANVAS_FILE_REFERENCE = `## Frontend App Reference
@@ -689,6 +720,8 @@ Your workspace is a Vite + React app. Build features as components under \`src/c
 - \`@/components/ui/*\` — card, button, badge, input, label, textarea, checkbox, switch, select, tabs, table, dialog, alert, accordion, progress, separator, scroll-area, skeleton, tooltip, avatar, dropdown-menu, sheet, popover
 - \`@shogo-ai/sdk\` — createClient, HttpClient, OptimisticStore
 - \`@shogo-ai/sdk/tools\` — ToolsClient, useTools (call installed integration tools from code)
+
+${CANVAS_MOBILE_PREVIEW_GUIDE}
 
 ### Validation
 After writing or editing files under \`src/\`, call \`read_lints\` with no arguments to check for errors and fix immediately. It auto-scopes to the files you just touched.
