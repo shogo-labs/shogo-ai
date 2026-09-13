@@ -352,6 +352,18 @@ export async function startLocalServer(): Promise<void> {
     CANVAS_GLOBALS_DTS: IS_DEV
       ? path.join(projectRoot, 'packages', 'canvas-runtime', 'src', 'canvas-globals.d.ts')
       : path.join(projectRoot, 'canvas-runtime', 'canvas-globals.d.ts'),
+    // Where the agent-runtime finds `canvas-bridge.js` (served into every
+    // preview iframe at /agent/canvas/bridge.js). The packaged runtime is a
+    // standalone `bun build --compile` binary whose `__dirname` is the CI
+    // build path, so its default sibling lookup (`__dirname/../static`)
+    // misses and it serves an empty stub — the iframe then never posts
+    // `canvas-ready` and the canvas hangs on "Loading preview…". The runtime
+    // also probes next to `process.execPath`, but exporting it here keeps
+    // the location explicit and greppable. bundle-api.mjs copies
+    // packages/agent-runtime/static → resources/static (see forge extraResource).
+    CANVAS_BRIDGE_DIR: IS_DEV
+      ? path.join(projectRoot, 'packages', 'agent-runtime', 'static')
+      : path.join(projectRoot, 'static'),
     ...(IS_DEV ? {} : {
       TREE_SITTER_WASM_DIR: path.join(projectRoot, 'tree-sitter-wasm'),
       // Point Playwright at the Chromium copy bundled into resources/
