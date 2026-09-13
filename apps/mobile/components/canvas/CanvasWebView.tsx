@@ -114,6 +114,22 @@ export function CanvasWebView({ agentUrl, canvasBaseUrl, previewUrl, onCanvasErr
 // Web — iframe + postMessage bridge
 // ---------------------------------------------------------------------------
 
+/**
+ * How long after the iframe's `load` event to keep waiting for the bridge's
+ * `canvas-ready` handshake before showing the document anyway.
+ *
+ * `canvas-ready` is posted by `canvas-bridge.js`, a deferred classic script
+ * the runtime injects into the preview HTML. Deferred scripts run *before*
+ * `load`, so in the healthy case the handshake has already arrived by the
+ * time `load` fires and this timer never matters. If it hasn't, the bridge
+ * is missing or broken (e.g. the runtime served its `canvas-bridge.js
+ * missing` stub — the Desktop compiled-binary regression, Sept 2026) and
+ * waiting longer can never succeed: the document is fully loaded, so we
+ * reveal it rather than spin on "Loading preview…" forever. The small grace
+ * covers a bridge that posts asynchronously on slow machines.
+ */
+export const CANVAS_READY_GRACE_AFTER_LOAD_MS = 1_500
+
 interface ThemeMessage {
   type: 'canvas-theme'
   variables: CanvasThemeVariant
@@ -138,6 +154,15 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ phase: string; message: string } | null>(null)
   const [refreshCount, setRefreshCount] = useState(0)
+  // Pending "document loaded but no canvas-ready yet" fallback timer.
+  const loadFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearLoadFallback = useCallback(() => {
+    if (loadFallbackTimerRef.current) {
+      clearTimeout(loadFallbackTimerRef.current)
+      loadFallbackTimerRef.current = null
+    }
+  }, [])
 
   const sendToIframe = useCallback((msg: unknown) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*')
@@ -155,7 +180,28 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
   useEffect(() => {
     setLoading(true)
     setError(null)
-  }, [refreshCount])
+    clearLoadFallback()
+  }, [refreshCount, clearLoadFallback])
+
+  useEffect(() => clearLoadFallback, [clearLoadFallback])
+
+  // The document finished loading. Normally `canvas-ready` has already
+  // arrived (the bridge is a deferred script, which runs before `load`). If
+  // it hasn't, give it a short grace and then reveal the document anyway —
+  // a missing/broken bridge must degrade to "no theme sync", not to an
+  // overlay that hides a perfectly good preview forever.
+  const handleIframeLoad = useCallback(() => {
+    if (readyRef.current) return
+    clearLoadFallback()
+    loadFallbackTimerRef.current = setTimeout(() => {
+      loadFallbackTimerRef.current = null
+      if (readyRef.current) return
+      console.warn(
+        '[canvas] iframe loaded but canvas-ready never arrived — showing the document without the bridge handshake',
+      )
+      setLoading(false)
+    }, CANVAS_READY_GRACE_AFTER_LOAD_MS)
+  }, [clearLoadFallback])
 
   // Listen for messages from the iframe
   useEffect(() => {
@@ -165,6 +211,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 
       if (msg.type === 'canvas-ready') {
         readyRef.current = true
+        clearLoadFallback()
         setLoading(false)
         if (themeMessage) sendToIframe(themeMessage)
       } else if (msg.type === 'canvas-capabilities') {
@@ -192,14 +239,15 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [agentUrl, sendToIframe, themeMessage, onCanvasError, onCanvasCapabilities])
+  }, [agentUrl, sendToIframe, themeMessage, onCanvasError, onCanvasCapabilities, clearLoadFallback])
 
   const handleRetry = useCallback(() => {
     setError(null)
     setLoading(true)
     readyRef.current = false
+    clearLoadFallback()
     setRefreshCount((c) => c + 1)
-  }, [])
+  }, [clearLoadFallback])
 
   return (
     <View style={styles.container}>
@@ -228,6 +276,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
         src={`${url}${url.includes('?') ? '&' : '?'}_v=${refreshCount}`}
         data-testid="canvas-preview-iframe"
         title="Project preview"
+        onLoad={handleIframeLoad}
         style={{
           width: '100%',
           height: '100%',

@@ -26,7 +26,7 @@
  *      lives in `binary-ships-canvas-bridge.integration.test.ts`.)
  */
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -175,6 +175,53 @@ describe('loadCanvasBridgeSource', () => {
     // env block could omit the var on an older app build).
     expect(resolveCanvasBridgePath({ CANVAS_BRIDGE_DIR: undefined }))
       .toMatch(/[\\/]static[\\/]canvas-bridge\.js$/)
+  })
+
+  test('compiled binary: falls back to static/ next to dirname(process.execPath) when __dirname is a build-machine path', () => {
+    // Desktop ships the runtime as a `bun build --compile` executable at
+    // `resources/bundle/agent-runtime`. Inside it `__dirname` is the CI
+    // build path (e.g. /Users/runner/work/shogo-ai/.../agent-runtime/src),
+    // which doesn't exist on the user's machine — so the sibling formula
+    // missed, the stub was served, the iframe never posted `canvas-ready`,
+    // and the Desktop canvas hung on "Loading preview…" (Sept 2026).
+    const appRoot = join(tmpDir, 'compiled-app')
+    const bundleDir = join(appRoot, 'bundle')
+    const staticDir = join(appRoot, 'static')
+    mkdirSync(bundleDir, { recursive: true })
+    mkdirSync(staticDir, { recursive: true })
+    const body = '/* compiled bridge */ window.__COMPILED_BRIDGE__ = 1;\n'
+    writeFileSync(join(staticDir, 'canvas-bridge.js'), body, 'utf-8')
+    const fakeBinary = join(bundleDir, 'agent-runtime')
+    writeFileSync(fakeBinary, '', 'utf-8')
+
+    const ghostModuleDir = join(tmpDir, 'runner', 'work', 'shogo-ai', 'packages', 'agent-runtime', 'src')
+    expect(existsSync(ghostModuleDir)).toBe(false)
+
+    const resolved = resolveCanvasBridgePath({}, { execPath: fakeBinary, moduleDir: ghostModuleDir })
+    expect(resolved).toBe(join(staticDir, 'canvas-bridge.js'))
+    expect(loadCanvasBridgeSource(resolved)).toBe(body)
+  })
+
+  test('compiled binary: env override still wins over the execPath sidecar', () => {
+    const appRoot = join(tmpDir, 'compiled-app-override')
+    mkdirSync(join(appRoot, 'static'), { recursive: true })
+    writeFileSync(join(appRoot, 'static', 'canvas-bridge.js'), '/* sidecar */', 'utf-8')
+    const resolved = resolveCanvasBridgePath(
+      { CANVAS_BRIDGE_DIR: '/explicit/static' },
+      { execPath: join(appRoot, 'bundle', 'agent-runtime'), moduleDir: join(tmpDir, 'ghost') },
+    )
+    expect(resolved).toBe(join('/explicit/static', 'canvas-bridge.js'))
+  })
+
+  test('when neither sibling nor execPath sidecar exists, returns the sibling path so the warning names the expected location', () => {
+    const ghostModuleDir = join(tmpDir, 'nowhere', 'src')
+    const resolved = resolveCanvasBridgePath({}, {
+      execPath: join(tmpDir, 'nowhere-else', 'bundle', 'agent-runtime'),
+      moduleDir: ghostModuleDir,
+    })
+    expect(resolved).toBe(join(ghostModuleDir, '..', 'static', 'canvas-bridge.js'))
+    // And an undefined execPath (stubbed `process`) must not throw.
+    expect(() => resolveCanvasBridgePath({}, { execPath: undefined, moduleDir: ghostModuleDir })).not.toThrow()
   })
 
   test('end-to-end: a CANVAS_BRIDGE_DIR override resolves AND loads the real file', () => {
