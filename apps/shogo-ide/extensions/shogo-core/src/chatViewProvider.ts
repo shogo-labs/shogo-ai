@@ -53,6 +53,10 @@ function addCacheBust(rawUrl: string): string {
 export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | null = null
   private contextDisposables: vscode.Disposable[] = []
+  private contextUpdateTimer: ReturnType<typeof setTimeout> | null = null
+  private workspaceItemsCache: { version: number; expiresAt: number; items: IdeFileResult[] } | null = null
+  private workspaceItemsPromise: Promise<IdeFileResult[]> | null = null
+  private workspaceItemsVersion = 0
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -70,7 +74,7 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
       void this.handleMessage(raw)
     })
     this.installContextListeners(webviewView)
-    void this.postIdeContext()
+    this.schedulePostIdeContext(0)
   }
 
   async focus(): Promise<void> {
@@ -99,11 +103,14 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
     const addDisposable = (value: unknown): void => {
       if (value && typeof (value as vscode.Disposable).dispose === 'function') disposables.push(value as vscode.Disposable)
     }
-    addDisposable(windowApi.onDidChangeActiveTextEditor?.(() => void this.postIdeContext()))
-    addDisposable(windowApi.onDidChangeTextEditorSelection?.(() => void this.postIdeContext()))
-    addDisposable(workspaceApi.onDidChangeWorkspaceFolders?.(() => void this.postIdeContext()))
+    addDisposable(windowApi.onDidChangeActiveTextEditor?.(() => this.schedulePostIdeContext()))
+    addDisposable(windowApi.onDidChangeTextEditorSelection?.(() => this.schedulePostIdeContext()))
+    addDisposable(workspaceApi.onDidChangeWorkspaceFolders?.(() => {
+      this.invalidateWorkspaceItems()
+      this.schedulePostIdeContext(0)
+    }))
     addDisposable(viewApi.onDidChangeVisibility?.(() => {
-      if (viewApi.visible) void this.postIdeContext()
+      if (viewApi.visible) this.schedulePostIdeContext(0)
     }))
     this.contextDisposables = disposables
   }
@@ -162,6 +169,38 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
     await this.view?.webview.postMessage({ type: 'shogo.ide.hostReady' })
   }
 
+  private schedulePostIdeContext(delay = 180): void {
+    if (this.contextUpdateTimer) clearTimeout(this.contextUpdateTimer)
+    this.contextUpdateTimer = setTimeout(() => {
+      this.contextUpdateTimer = null
+      void this.postIdeContext()
+    }, delay)
+  }
+
+  private invalidateWorkspaceItems(): void {
+    this.workspaceItemsVersion += 1
+    this.workspaceItemsCache = null
+    this.workspaceItemsPromise = null
+  }
+
+  private async getWorkspaceItems(): Promise<IdeFileResult[]> {
+    const now = Date.now()
+    const cached = this.workspaceItemsCache
+    if (cached && cached.version === this.workspaceItemsVersion && cached.expiresAt > now) return cached.items
+    if (this.workspaceItemsPromise) return this.workspaceItemsPromise
+
+    const version = this.workspaceItemsVersion
+    this.workspaceItemsPromise = this.listFiles('')
+      .then((items) => {
+        this.workspaceItemsCache = { version, expiresAt: Date.now() + 15_000, items }
+        return items
+      })
+      .finally(() => {
+        if (version === this.workspaceItemsVersion) this.workspaceItemsPromise = null
+      })
+    return this.workspaceItemsPromise
+  }
+
   private async postIdeContext(): Promise<void> {
     const editor = vscode.window.activeTextEditor
     const folders = vscode.workspace.workspaceFolders ?? []
@@ -187,7 +226,7 @@ export class ShogoChatViewProvider implements vscode.WebviewViewProvider {
       name: folder.name,
       path: this.workspaceRelativePath(folder.uri),
     }))
-    const workspaceItems = await this.listFiles('')
+    const workspaceItems = await this.getWorkspaceItems()
     const storedContext = this.services.contextStore.list().map((item) => ({
       id: item.id,
       kind: item.kind === 'workspace' ? 'folder' : item.kind === 'active-file' ? 'active-file' : 'selection',
