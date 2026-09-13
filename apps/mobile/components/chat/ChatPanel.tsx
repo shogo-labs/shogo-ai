@@ -5851,8 +5851,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               "max-w-3xl w-full self-center",
             )}
             contentContainerStyle={
-              nativePhonePanelWidth
-                ? { width: nativePhonePanelWidth }
+              nativePhoneColumnWidth
+                ? { width: nativePhoneColumnWidth }
                 : // Same belt-and-suspenders cap as the composer below —
                   // pins the `max-w-3xl` width even if the className
                   // doesn't resolve on this content container.
