@@ -20,7 +20,7 @@
 
 import { existsSync, readFileSync } from 'fs'
 import { join, resolve } from 'path'
-import { spawnSync } from 'child_process'
+import { runPackagePool, type PackagePoolJob, type PackagePoolResult } from './lib/package-pool'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
 
@@ -31,8 +31,10 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
 // doesn't install its devDependencies (@docusaurus/tsconfig etc.). The
 // docs site has its own Docker build + deploy pipeline.
 const PACKAGES: readonly string[] = [
-  'packages/agent',
+  'apps/api',
+  'apps/mobile',
   'packages/agent-runtime',
+  'packages/agent',
   'packages/canvas-runtime',
   'packages/cli',
   'packages/core',
@@ -45,8 +47,6 @@ const PACKAGES: readonly string[] = [
   'packages/shogo-worker',
   'packages/ui-kit',
   'packages/voice',
-  'apps/api',
-  'apps/mobile',
 ]
 
 // Packages with known pre-existing typecheck failures. Their failures
@@ -99,7 +99,7 @@ interface Result {
   output: string
 }
 
-const results: Result[] = []
+const typecheckJobs: PackagePoolJob[] = []
 
 for (const pkg of PACKAGES) {
   const pkgDir = join(REPO_ROOT, pkg)
@@ -126,28 +126,33 @@ for (const pkg of PACKAGES) {
     continue
   }
 
-  const startedAt = Date.now()
-  console.log(`[typecheck] ${pkg} ...`)
-  const proc = spawnSync('bun', ['run', 'typecheck'], {
+  typecheckJobs.push({
+    name: pkg,
+    command: 'bun',
+    args: ['run', 'typecheck'],
     cwd: pkgDir,
-    encoding: 'utf8',
-    stdio: 'pipe',
   })
-  const durationMs = Date.now() - startedAt
-  const ok = proc.status === 0
-  const output = `${proc.stdout ?? ''}${proc.stderr ?? ''}`.trim()
+}
 
-  if (ok) {
-    console.log(`[typecheck] OK   ${pkg} (${durationMs}ms)`)
-  } else {
-    console.log(`[typecheck] FAIL ${pkg} (${durationMs}ms)`)
-    if (output) {
-      console.log(output)
+function printTypecheckResult(result: PackagePoolResult): void {
+  const status = result.exitCode === 0 ? 'OK  ' : 'FAIL'
+  process.stdout.write(
+    `[typecheck] ${status} ${result.job.name} (${result.durationMs}ms)\n`,
+  )
+  if (result.exitCode !== 0) {
+    if (result.stdout || result.stderr) {
+      process.stdout.write(result.stdout + result.stderr)
     }
   }
-
-  results.push({ pkg, ok, durationMs, output })
 }
+
+const packageResults = await runPackagePool(typecheckJobs, 4, printTypecheckResult)
+const results: Result[] = packageResults.map((result) => ({
+  pkg: result.job.name,
+  ok: result.exitCode === 0,
+  durationMs: result.durationMs,
+  output: `${result.stdout}\n${result.stderr}`.trim(),
+}))
 
 const failed = results.filter((r) => !r.ok)
 const newRegressions = failed.filter((r) => !EXPECTED_FAIL.has(r.pkg))
