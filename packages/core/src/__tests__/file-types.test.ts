@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, it } from 'bun:test'
-import { isBinaryFilePath, BINARY_FILE_EXTENSIONS } from '../file-types.js'
+import { isBinaryBuffer, isBinaryFilePath, BINARY_FILE_EXTENSIONS } from '../file-types.js'
 
 describe('isBinaryFilePath', () => {
   it('returns true for common binary extensions', () => {
@@ -73,5 +73,14 @@ describe('isBinaryFilePath', () => {
     expect(BINARY_FILE_EXTENSIONS.has('safetensors')).toBe(true)
     expect(BINARY_FILE_EXTENSIONS.has('mcap')).toBe(true)
     expect(BINARY_FILE_EXTENSIONS.has('ts')).toBe(false)
+    expect(BINARY_FILE_EXTENSIONS.has('xlsx')).toBe(true)
+    expect(BINARY_FILE_EXTENSIONS.has('docx')).toBe(true)
+  })
+
+  it('detects common binary magic even without a known extension', () => {
+    expect(isBinaryBuffer(new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))).toBe(true)
+    expect(isBinaryBuffer(new TextEncoder().encode('PK\x03\x04content'))).toBe(true)
+    expect(isBinaryBuffer(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true)
+    expect(isBinaryBuffer(new TextEncoder().encode('plain text'))).toBe(false)
   })
 })

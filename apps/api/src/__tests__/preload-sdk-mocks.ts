@@ -186,4 +186,36 @@ mock.module('@shogo/shared-runtime', () => ({
     listProjectArchives: async () => [],
   }),
   isMacOSJunkName: (_name: string) => false,
+  // publish.ts uses these for static asset response headers (added by the
+  // titles/uploads/cache-headers change). Mirror the real, trivial
+  // implementations in packages/shared-runtime/src/{static-asset-cache,file-types}.ts
+  // exactly rather than stubbing, since publish-always-on.test.ts /
+  // publish-plan-gate.test.ts exercise the route end-to-end.
+  isContentHashedFilename: (fileName: string) => {
+    const base = fileName.split('/').pop() || fileName
+    return /[-_][A-Za-z0-9]{8,}\.[A-Za-z0-9]+$/.test(base)
+  },
+  staticAssetCacheControl: (fileName: string) => {
+    const base = fileName.split('/').pop() || fileName
+    const hashed = /[-_][A-Za-z0-9]{8,}\.[A-Za-z0-9]+$/.test(base)
+    return hashed ? 'public, max-age=31536000, immutable' : 'no-cache'
+  },
+  isBinaryBuffer: (bytes: Uint8Array, inspectBytes = 8192) => {
+    const head = bytes.subarray(0, Math.min(bytes.length, inspectBytes))
+    if (head.includes(0)) return true
+    const startsWith = (...signature: number[]) =>
+      signature.every((value, index) => head[index] === value)
+    const ascii = (value: string) =>
+      Array.from(value).every((char, index) => head[index] === char.charCodeAt(0))
+    return (
+      startsWith(0x50, 0x4b, 0x03, 0x04) ||
+      startsWith(0x50, 0x4b, 0x05, 0x06) ||
+      startsWith(0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1) ||
+      ascii('%PDF-') ||
+      startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) ||
+      startsWith(0xff, 0xd8, 0xff) ||
+      startsWith(0x47, 0x49, 0x46, 0x38) ||
+      startsWith(0x52, 0x49, 0x46, 0x46)
+    )
+  },
 }))

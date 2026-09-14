@@ -487,6 +487,31 @@ describe.skipIf(!RUN_INTEGRATION)('Workspace HTTP API Integration', () => {
     expect(data.path).toBe('test.md')
   })
 
+  test('binary workspace files round-trip as base64 and reject UTF-8 writes', async () => {
+    const bytes = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x10])
+    const binary = Buffer.from(bytes).toString('base64')
+    const put = await fetch(`${BASE}/agent/workspace/files/upload.xlsx`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentBase64: binary }),
+    })
+    expect(put.ok).toBe(true)
+
+    const read = await fetch(`${BASE}/agent/workspace/files/upload.xlsx`)
+    expect(read.ok).toBe(true)
+    const data = await read.json() as any
+    expect(data.encoding).toBe('base64')
+    expect(data.contentBase64).toBe(binary)
+
+    const rejected = await fetch(`${BASE}/agent/workspace/files/upload.xlsx`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'corrupted text' }),
+    })
+    expect(rejected.status).toBe(400)
+    expect((await rejected.json() as any).error).toMatch(/binary/i)
+  })
+
   test('GET /agent/workspace/tree shows created file', async () => {
     const res = await fetch(`${BASE}/agent/workspace/tree`)
     const data = await res.json() as any

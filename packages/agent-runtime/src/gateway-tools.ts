@@ -65,6 +65,7 @@ import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
+import { isBinaryFilePath } from '@shogo/shared-runtime'
 
 /**
  * Tool-layer wrapper for `assertAllowedPath` that returns a uniform
@@ -1149,6 +1150,11 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
+      if (isBinaryFilePath(filePath)) {
+        return textResult({
+          error: `Refusing to write binary file "${filePath}" as UTF-8 text. Use exec with a binary-safe tool or provide the file as base64.`,
+        })
+      }
       const dir = dirname(resolved)
       if (dir && dir !== resolved) mkdirSync(dir, { recursive: true })
 
@@ -1680,6 +1686,11 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
+      if (isBinaryFilePath(filePath)) {
+        return textResult({
+          error: `Refusing to edit binary file "${filePath}" as UTF-8 text. Use exec with a binary-safe tool instead.`,
+        })
+      }
 
       // Jupyter notebook redirect
       if (filePath.endsWith('.ipynb')) {
@@ -2146,7 +2157,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
-      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user.',
+      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. If the user still sees an old version, first distinguish the stable preview URL from the published URL, then refresh after cache propagation before changing code.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -2238,8 +2249,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         republished: wasRepublish,
         verified,
         note: verified
-          ? `The app is live at ${url}. Share this URL with the user.`
-          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load.`,
+          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers, but a browser or edge may take a short while to revalidate; refresh once if an old version remains.`
+          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version, distinguish preview from published URL and refresh after propagation before changing code.`,
       })
     },
   }
@@ -2504,6 +2515,116 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
 interface GoogleUrlRoute {
   query: string
   searchType: string
+}
+
+export interface GoogleDriveUrlRoute {
+  id: string
+  kind: 'file' | 'document' | 'spreadsheet' | 'presentation'
+  downloadUrl: string
+  extension: string
+}
+
+/**
+ * Convert public Drive/Docs URLs into a direct export/download request.
+ * Drive share pages require browser cookies and otherwise return login or
+ * virus-scan HTML, so they must not go through the generic text fetcher.
+ */
+export function detectGoogleDriveUrl(url: string): GoogleDriveUrlRoute | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+
+  const host = u.hostname.replace(/^www\./, '')
+  if (host === 'drive.google.com') {
+    const pathId = u.pathname.match(/^\/file\/d\/([^/]+)/)?.[1]
+    const id = pathId || u.searchParams.get('id')
+    if (!id) return null
+    return {
+      id,
+      kind: 'file',
+      extension: '',
+      downloadUrl: `https://drive.google.com/uc?export=download&id=${encodeURIComponent(id)}&confirm=t`,
+    }
+  }
+
+  if (host !== 'docs.google.com') return null
+  const match = u.pathname.match(/^\/(document|spreadsheets|presentation)\/d\/([^/]+)/)
+  if (!match) return null
+  const kind = match[1] === 'document'
+    ? 'document'
+    : match[1] === 'spreadsheets'
+      ? 'spreadsheet'
+      : 'presentation'
+  const format = kind === 'document' ? 'txt' : kind === 'spreadsheet' ? 'xlsx' : 'pptx'
+  return {
+    id: match[2],
+    kind,
+    extension: `.${format}`,
+    downloadUrl: `https://docs.google.com/${match[1]}/d/${encodeURIComponent(match[2])}/export?format=${format}`,
+  }
+}
+
+function driveFilename(route: GoogleDriveUrlRoute, response: Response): string {
+  const disposition = response.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)"?/i)
+  const fromHeader = match?.[1] ? decodeURIComponent(match[1]).trim() : ''
+  const fallback = `google-drive-${route.id}${route.extension || '.bin'}`
+  return (fromHeader || fallback).replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+async function fetchGoogleDriveFile(
+  url: string,
+  route: GoogleDriveUrlRoute,
+  workspaceDir: string,
+): Promise<AgentToolResult<any>> {
+  try {
+    const response = await fetch(route.downloadUrl, {
+      headers: {
+        'User-Agent': BROWSER_USER_AGENT,
+        'Accept': '*/*',
+      },
+      signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+      redirect: 'follow',
+    })
+    if (!response.ok) {
+      return textResult({
+        error: `Google Drive download failed: HTTP ${response.status}`,
+        url,
+        suggestion: 'Connect Google Drive with connect("googledrive"), or make the file accessible to anyone with the link.',
+      })
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const contentType = response.headers.get('content-type') || ''
+    const sample = bytes.subarray(0, 512).toString('utf-8').toLowerCase()
+    if (contentType.includes('text/html') || /<html|google\.com\/accounts|virus scan/.test(sample)) {
+      return textResult({
+        error: 'Google Drive returned a login or download-confirmation page instead of the file.',
+        url,
+        suggestion: 'Connect Google Drive with connect("googledrive"), or make the file accessible to anyone with the link.',
+      })
+    }
+
+    const filename = driveFilename(route, response)
+    const filesDir = join(workspaceDir, 'files')
+    mkdirSync(filesDir, { recursive: true })
+    const absolutePath = join(filesDir, filename)
+    writeFileSync(absolutePath, bytes)
+    const savedPath = `files/${filename}`
+    return textResult({
+      ok: true,
+      url,
+      downloadedPath: savedPath,
+      bytes: bytes.length,
+      contentType: contentType || 'application/octet-stream',
+      message: `Downloaded Google Drive file to ${savedPath}`,
+    })
+  } catch (err: any) {
+    return textResult({
+      error: `Google Drive download failed: ${err?.message || String(err)}`,
+      url,
+      suggestion: 'Connect Google Drive with connect("googledrive"), or make the file accessible to anyone with the link.',
+    })
+  }
 }
 
 /**
@@ -2788,7 +2909,7 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
   return textResult({ error: 'All fetch attempts failed', url })
 }
 
-function createWebTool(): AgentTool {
+function createWebTool(ctx: ToolContext): AgentTool {
   return {
     name: 'web',
     description: 'Unified web tool: fetch a URL or search the web via Google (Serper API). Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) are automatically routed through the search API for rich results. Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
@@ -2822,6 +2943,10 @@ function createWebTool(): AgentTool {
 
       // If a URL is provided, check for Google property routing first
       if (url) {
+        const driveRoute = detectGoogleDriveUrl(url)
+        if (driveRoute) {
+          return fetchGoogleDriveFile(url, driveRoute, ctx.workspaceDir)
+        }
         const googleRoute = detectGoogleUrl(url)
         if (googleRoute) {
           return serperSearch(googleRoute.query, googleRoute.searchType, { num, gl, hl })
@@ -5115,7 +5240,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createImpactRadiusTool(ctx), 'file_read'),
     g(createDetectChangesTool(ctx), 'file_read'),
     g(createReviewContextTool(ctx), 'file_read'),
-    g(createWebTool(), 'network'),
+    g(createWebTool(ctx), 'network'),
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemorySearchTool(ctx),

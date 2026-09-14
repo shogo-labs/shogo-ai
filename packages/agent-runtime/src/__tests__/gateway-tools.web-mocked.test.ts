@@ -15,7 +15,7 @@
  * runs against canned responses, without any network access.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, rmSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync } from 'fs'
 import { createTools, type ToolContext } from '../gateway-tools'
 
 const TEST_DIR = '/tmp/test-gateway-tools-web-mocked'
@@ -248,6 +248,40 @@ describe('gateway-tools web tool (mocked fetch)', () => {
     installFetch(async () => makeResponse({ contentType: 'application/json', body: {} }))
     const r = await callWeb({ url: 'https://maps.google.com/maps/place/Tokyo+Tower' })
     expect(r.searchType).toBe('places')
+  })
+
+  test('Google Drive file URLs download bytes into files instead of parsing HTML', async () => {
+    const bytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+    installFetch(async (url) => {
+      expect(url).toBe('https://drive.google.com/uc?export=download&id=file-123&confirm=t')
+      return makeResponse({
+        contentType: 'application/octet-stream',
+        body: bytes,
+      })
+    })
+    const r = await callWeb({ url: 'https://drive.google.com/file/d/file-123/view?usp=sharing' })
+    expect(r.ok).toBe(true)
+    expect(r.downloadedPath).toBe('files/google-drive-file-123.bin')
+    expect(readFileSync(`${TEST_DIR}/${r.downloadedPath}`)).toEqual(Buffer.from(bytes))
+  })
+
+  test('Google Drive private files return a connection hint', async () => {
+    installFetch(async () => makeResponse({ status: 401, ok: false, body: '' }))
+    const r = await callWeb({ url: 'https://drive.google.com/open?id=private-123' })
+    expect(r.error).toContain('HTTP 401')
+    expect(r.suggestion).toContain('googledrive')
+  })
+
+  test('Google Sheets links use the export endpoint', async () => {
+    installFetch(async (url) => {
+      expect(url).toBe('https://docs.google.com/spreadsheets/d/sheet-123/export?format=xlsx')
+      return makeResponse({
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        body: new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+      })
+    })
+    const r = await callWeb({ url: 'https://docs.google.com/spreadsheets/d/sheet-123/edit' })
+    expect(r.downloadedPath).toBe('files/google-drive-sheet-123.xlsx')
   })
 
   test('non-google host like google-clone.com is not routed', async () => {

@@ -84,6 +84,16 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 - Prefer editing existing files over creating new ones
 - Always read a file before editing it — never edit blind
 
+### Uploaded binary files
+
+- Treat \`.xls\`, \`.xlsx\`, \`.xlsm\`, \`.doc\`, \`.docx\`, \`.ppt\`, \`.pptx\`, images,
+  archives, PDFs, and other binary attachments as bytes, not UTF-8 text.
+- Do not use \`write_file\` or \`edit_file\` to recreate a binary file. Use a
+  binary-safe command or the file's dedicated tool.
+- If a parser reports \`BadZipFile\`, \`EOCD\`, \`Bad offset for central directory\`,
+  or replacement-byte output such as \`efbfbd\`, assume the upload was corrupted
+  and ask the user to re-upload it instead of attempting to repair it.
+
 ### exec Safety
 
 - Quote file paths containing spaces with double quotes

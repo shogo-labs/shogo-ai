@@ -37,6 +37,7 @@ import {
 import { getShogoCloudUrl } from "../lib/cloud-urls"
 import { getUpstreamCredential } from "../lib/federated-upstream"
 import { isProjectCloudLinked } from "../lib/runtime/cloud-content-sync"
+import { staticAssetCacheControl } from "@shogo/shared-runtime"
 import { shouldSkipForwardedHeader, shouldSkipResponseHeader } from "../lib/proxy-headers"
 import {
   cfStateToStatus,
@@ -1003,11 +1004,41 @@ async function uploadToS3(subdomain: string, files: Map<string, Buffer>): Promis
       Key: key,
       Body: content,
       ContentType: contentType,
-      CacheControl: filePath === 'index.html' ? 'max-age=0, must-revalidate' : 'max-age=31536000, immutable',
+      CacheControl: staticAssetCacheControl(filePath),
     }))
   }
   
   console.log(`[Publish] Upload complete`)
+}
+
+/** Best-effort purge for stable, unhashed URLs after a republish. */
+async function purgePublishedCache(subdomain: string): Promise<void> {
+  const token = process.env.CLOUDFLARE_API_TOKEN
+  const zoneId = process.env.CLOUDFLARE_PUBLISH_ZONE_ID
+  if (!token || !zoneId) return
+
+  const origin = `https://${subdomain}.${PUBLISH_DOMAIN}`
+  try {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/zones/${zoneId}/purge_cache`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          files: [`${origin}/`, `${origin}/index.html`, `${origin}/favicon.ico`],
+        }),
+        signal: AbortSignal.timeout(10_000),
+      },
+    )
+    if (!response.ok) {
+      console.warn(`[Publish] Cloudflare cache purge returned HTTP ${response.status}`)
+    }
+  } catch (err: any) {
+    console.warn('[Publish] Cloudflare cache purge failed (continuing):', err?.message ?? err)
+  }
 }
 
 /**
@@ -1201,6 +1232,7 @@ export async function publishProject(
         await setPublishStatus(projectId, 'uploading')
         try {
           await uploadToS3(subdomain, files)
+          await purgePublishedCache(subdomain)
         } catch (err: any) {
           console.error("[Publish] Failed to upload to S3:", err)
           await setPublishStatus(projectId, 'failed', 'upload_failed')
@@ -1633,6 +1665,7 @@ export function publishRoutes() {
 
           await setPublishStatus(projectId, 'uploading')
           await uploadToS3(subdomain, files)
+          await purgePublishedCache(subdomain)
 
           // Re-provision the published service. configurePublishedService
           // re-creates the right service type (which bumps the Knative

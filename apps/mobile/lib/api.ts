@@ -1107,12 +1107,36 @@ export const api = {
 
   // ─── Project Naming ────────────────────────────────────────
 
-  async generateProjectName(http: HttpClient, prompt: string, workspaceId?: string) {
-    const res = await http.post<{ name: string; description: string }>(
-      '/api/generate-project-name',
-      { prompt, workspaceId },
-    )
-    return res.data ?? { name: '', description: '' }
+  async generateProjectName(
+    http: HttpClient,
+    prompt: string,
+    workspaceId?: string,
+    projectId?: string,
+  ) {
+    type TitleResponse = {
+      name: string
+      description: string
+      source?: 'ai' | 'heuristic'
+    }
+    const body = { prompt, workspaceId, projectId }
+    const request = () => {
+      return http.request<TitleResponse>('/api/generate-project-name', {
+        method: 'POST',
+        body,
+        signal: AbortSignal.timeout(15_000),
+      })
+    }
+    let lastError: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const res = await request()
+        return res.data ?? { name: '', description: '', source: 'heuristic' as const }
+      } catch (error) {
+        lastError = error
+        if (attempt === 0) continue
+      }
+    }
+    throw lastError
   },
 
   // ─── Runtime Prewarm ────────────────────────────────────────

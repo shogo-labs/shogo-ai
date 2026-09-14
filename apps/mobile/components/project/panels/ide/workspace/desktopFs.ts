@@ -65,6 +65,8 @@ export interface DesktopFsBridge {
   readFile(root: string, relPath: string): Promise<{
     ok: boolean
     content?: string
+    contentBase64?: string
+    encoding?: 'utf-8' | 'base64'
     size?: number
     mtime?: number
     error?: string
@@ -175,7 +177,7 @@ export class DesktopFs implements WorkspaceService {
     const p = (async () => {
       try {
         const res = await this.bridge.readFile(this.root, path)
-        if (!res.ok || res.content == null) {
+        if (!res.ok || res.content == null || res.encoding === 'base64' || res.contentBase64 != null) {
           // Oversized files, binary files, or a missing-after-listing race —
           // delegate to SdkFs which streams + handles the error UX.
           return this.sdkFs.readFile(path)

@@ -67,6 +67,20 @@ describe('createEditFileTool', () => {
     expect(readFileSync(join(TEST_DIR, 'f.txt'), 'utf8')).toBe('alpha BETA gamma')
   })
 
+  test('refuses to edit Office files as UTF-8 text', async () => {
+    writeFileSync(join(TEST_DIR, 'upload.docx'), Buffer.from([0x50, 0x4b, 0x03, 0x04]))
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    const r = await run(ctx, 'edit_file', {
+      path: 'upload.docx',
+      old_string: 'anything',
+      new_string: 'changed',
+    })
+    expect(String(r.details.error)).toMatch(/binary file/i)
+    expect(readFileSync(join(TEST_DIR, 'upload.docx'))).toEqual(
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    )
+  })
+
   test('old_string equal to new_string is rejected as a no-op', async () => {
     writeFileSync(join(TEST_DIR, 'g.txt'), 'x')
     const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })

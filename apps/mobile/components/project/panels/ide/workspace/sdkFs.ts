@@ -12,6 +12,7 @@
  */
 
 import { AgentClient, type FileNode, type WorkspaceEvent } from '@shogo-ai/sdk/agent'
+import { isBinaryFilePath } from '@shogo-ai/sdk/file-types'
 import type {
   SearchOptions,
   SearchResponse,
@@ -58,6 +59,7 @@ function languageFor(path: string): string {
   return 'plaintext'
 }
 function isTextLikely(path: string): boolean {
+  if (isBinaryFilePath(path)) return false
   const ext = extOf(path)
   if (TEXT_EXTS.has(ext)) return true
   const name = (path.split('/').pop() ?? '').toLowerCase()
@@ -142,6 +144,9 @@ export class SdkFs implements WorkspaceService {
   }
 
   async readFile(path: string): Promise<WsFile> {
+    if (isBinaryFilePath(path)) {
+      throw new Error(`Binary file cannot be opened as text: ${path}`)
+    }
     const existing = this.readInFlight.get(path)
     if (existing) return existing
     const p = (async () => {
@@ -175,6 +180,9 @@ export class SdkFs implements WorkspaceService {
   }
 
   async writeFile(path: string, content: string) {
+    if (isBinaryFilePath(path)) {
+      throw new Error(`Binary file cannot be written as UTF-8 text: ${path}`)
+    }
     await retry429(() => this.client.writeFile(path, content))
     return { mtime: Date.now(), size: new Blob([content]).size }
   }

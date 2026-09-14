@@ -12,5 +12,6 @@
 
 export {
   BINARY_FILE_EXTENSIONS,
+  isBinaryBuffer,
   isBinaryFilePath,
 } from '@shogo-ai/sdk/file-types'

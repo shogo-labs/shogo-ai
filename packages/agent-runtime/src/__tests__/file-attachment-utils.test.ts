@@ -67,6 +67,22 @@ describe('parseFileAttachments', () => {
     expect(textContext).not.toContain('[End of Attached File]')
   })
 
+  test('does not inline Office files as UTF-8 text', () => {
+    const oleBytes = Buffer.from([
+      0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1,
+      0x00, 0x00, 0x00, 0x00,
+    ])
+    const { textContext } = parseFileAttachments([{
+      type: 'file',
+      mediaType: 'application/vnd.ms-excel',
+      url: dataUrl('application/vnd.ms-excel', oleBytes),
+      name: 'report.xls',
+      savedPath: 'files/report.xls',
+    }])
+    expect(textContext).toContain('Binary content')
+    expect(textContext).not.toContain('�')
+  })
+
   test('routes images to the images array and announces saved path when present', () => {
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
     const parts: FilePart[] = [
