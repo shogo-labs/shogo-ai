@@ -1,7 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+
+// buildWorkspaceEnv resolves agent model defaults via
+// resolveAgentModelEnv() -> agent-model-defaults.ts's
+// isModelAccessibleForWorkspace(), which calls
+// billingService.hasAdvancedModelAccess(). Unlike every other prisma-backed
+// lookup in build-workspace-env.ts, this call has no test-injection seam and
+// isn't wrapped in a try/catch, so without this mock the real service falls
+// through to a live prisma.workspace.findUnique() lookup that has no
+// reachable Postgres in test/CI, throwing an unhandled ECONNREFUSED that
+// fails every test in this file that calls buildWorkspaceEnv().
+mock.module('../../../services/billing.service', () => ({
+  hasAdvancedModelAccess: async () => true,
+}))
+
 import { buildWorkspaceEnv } from '../build-workspace-env'
 
 const seams = {

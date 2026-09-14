@@ -48,16 +48,16 @@ describe('trackChatStreamForBilling', () => {
 
   test('agentic loop with N AI proxy calls and 1 image emits exactly ONE chat_message row', async () => {
     const projectId = 'proj-agent-loop'
-    openSession(projectId, 'ws-loop', 'user-loop')
+    await openSession(projectId, 'ws-loop', 'user-loop')
 
     // Simulate 3 AI proxy completions and 1 image generation that the
     // runtime would have triggered during the agent loop. These run in
     // the proxy and accumulate against the open session — they should
     // NOT each become their own usage_events row.
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 200)
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 500, 100)
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 800, 150)
-    accumulateImageUsage(projectId, 'gpt-image-1', 0.04, 0.06)
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 200)
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 500, 100)
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 800, 150)
+    await accumulateImageUsage(projectId, 'gpt-image-1', 0.04, 0.06)
 
     // The runtime's terminal `data-turn-complete` frame is what tells the
     // tracker the turn finished cleanly (vs an upstream cut).
@@ -68,7 +68,7 @@ describe('trackChatStreamForBilling', () => {
 
     await trackChatStreamForBilling(stream, projectId)
 
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
     const args = consumeUsageCalls[0]
     expect(args.actionType).toBe('chat_message')
@@ -79,8 +79,8 @@ describe('trackChatStreamForBilling', () => {
 
   test('stream EOF without data-turn-complete discards the session (no charge)', async () => {
     const projectId = 'proj-eof'
-    openSession(projectId, 'ws-eof', 'user-eof')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 500)
+    await openSession(projectId, 'ws-eof', 'user-eof')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 1000, 500)
 
     // No data-turn-complete frame — simulates upstream activator timeout.
     const stream = makeSseStream([
@@ -91,14 +91,14 @@ describe('trackChatStreamForBilling', () => {
 
     // Session is dropped without charging (auto-resuming-fetch will
     // reconnect; we don't bill twice for the same turn).
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(0)
   })
 
   test('quality signals are forwarded to the closeSession-emitted analytics', async () => {
     const projectId = 'proj-quality'
-    openSession(projectId, 'ws-q', 'user-q')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
+    await openSession(projectId, 'ws-q', 'user-q')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 50)
 
     const stream = makeSseStream([
       `data: ${JSON.stringify({ type: 'data-turn-complete', data: { status: 'completed' } })}\n\n`,
@@ -121,8 +121,8 @@ describe('trackChatStreamForBilling', () => {
 
   test('parses event/id/retry metadata and AI SDK e:/d: compact frames', async () => {
     const projectId = 'proj-compact-frames'
-    openSession(projectId, 'ws-compact', 'user-compact')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 25)
+    await openSession(projectId, 'ws-compact', 'user-compact')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 25)
 
     const stream = makeSseStream([
       'event: message\n',
@@ -141,8 +141,8 @@ describe('trackChatStreamForBilling', () => {
 
   test('direct finish fields override usage object quality signals', async () => {
     const projectId = 'proj-direct-finish'
-    openSession(projectId, 'ws-direct', 'user-direct')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 80, 20)
+    await openSession(projectId, 'ws-direct', 'user-direct')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 80, 20)
 
     const stream = makeSseStream([
       `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n`,
@@ -163,8 +163,8 @@ describe('trackChatStreamForBilling', () => {
 
   test('stream read interruption closes session without discardPartial', async () => {
     const projectId = 'proj-interrupt'
-    openSession(projectId, 'ws-interrupt', 'user-interrupt')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 60, 20)
+    await openSession(projectId, 'ws-interrupt', 'user-interrupt')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 60, 20)
 
     const stream = new ReadableStream<Uint8Array>({
       pull() {
@@ -174,17 +174,17 @@ describe('trackChatStreamForBilling', () => {
 
     await trackChatStreamForBilling(stream, projectId)
 
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls).toHaveLength(1)
   })
 
   test('chatSessionId is threaded through tee → tracker → closeSession', async () => {
     const projectId = 'proj-thread-chat'
-    openSession(projectId, 'ws-thread', 'user-thread', 'chat-thread-1')
-    openSession(projectId, 'ws-thread', 'user-thread-other', 'chat-thread-2')
+    await openSession(projectId, 'ws-thread', 'user-thread', 'chat-thread-1')
+    await openSession(projectId, 'ws-thread', 'user-thread-other', 'chat-thread-2')
 
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 200, 100, 0, 0, 'chat-thread-1')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 9999, 9999, 0, 0, 'chat-thread-2')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 200, 100, 0, 0, 'chat-thread-1')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 9999, 9999, 0, 0, 'chat-thread-2')
 
     const upstream = makeSseStream([
       `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n\n`,
@@ -204,8 +204,8 @@ describe('trackChatStreamForBilling', () => {
     expect(consumeUsageCalls[0].actionMetadata.outputTokens).toBe(100)
     expect(consumeUsageCalls[0].actionMetadata.chatSessionId).toBe('chat-thread-1')
 
-    expect(hasSession(projectId, 'chat-thread-1')).toBe(false)
-    expect(hasSession(projectId, 'chat-thread-2')).toBe(true)
+    expect(await hasSession(projectId, 'chat-thread-1')).toBe(false)
+    expect(await hasSession(projectId, 'chat-thread-2')).toBe(true)
 
     // Clean up sibling session so it doesn't leak into other tests.
     const { closeSession } = await import('../lib/proxy-billing-session')
@@ -214,8 +214,8 @@ describe('trackChatStreamForBilling', () => {
 
   test('teeChatStreamForBilling forwards client chunks while tracking billing in the background', async () => {
     const projectId = 'proj-tee'
-    openSession(projectId, 'ws-tee', 'user-tee')
-    accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 40)
+    await openSession(projectId, 'ws-tee', 'user-tee')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 40)
 
     const upstream = makeSseStream([
       `data: ${JSON.stringify({ type: 'data-turn-complete' })}\n\n`,
@@ -237,7 +237,7 @@ describe('trackChatStreamForBilling', () => {
     expect(body).toContain('data-turn-complete')
     expect(body).toContain('finish')
     expect(consumeUsageCalls).toHaveLength(1)
-    expect(hasSession(projectId)).toBe(false)
+    expect(await hasSession(projectId)).toBe(false)
   })
 
   test('teeChatStreamForBilling can hand the mirrored stream to a persistence tracker', async () => {

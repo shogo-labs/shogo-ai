@@ -23,7 +23,7 @@
  *     analytics emission inside `closeSession` sees them.
  */
 
-import { closeSession, setQualitySignals, type BillingSessionQualitySignals } from './proxy-billing-session'
+import { closeSession, setQualitySignals, type BillingSessionQualitySignals, type BillingSessionFallbackUsage } from './proxy-billing-session'
 
 const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(
   process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000',
@@ -51,6 +51,11 @@ export async function trackChatStreamForBilling(
   let observedTurnComplete = false
   let qualitySignals: BillingSessionQualitySignals = {}
   let streamInterrupted = false
+  // Captured straight off the stream's own `data-usage`/`finish` event, for
+  // `closeSession`'s stream-usage fallback (see proxy-billing-session.ts) —
+  // used ONLY when the billing session's own accumulator comes up with zero
+  // tokens despite the stream reporting real usage.
+  let fallbackUsage: BillingSessionFallbackUsage | undefined
 
   try {
     while (true) {
@@ -115,6 +120,15 @@ export async function trackChatStreamForBilling(
               escalated: usageData.escalated === true,
               responseEmpty: usageData.responseEmpty === true,
             }
+            if (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens) {
+              fallbackUsage = {
+                model: usageData.model,
+                inputTokens: usageData.inputTokens || usageData.promptTokens || 0,
+                outputTokens: usageData.outputTokens || usageData.completionTokens || 0,
+                cachedInputTokens: usageData.cacheReadTokens || usageData.cachedInputTokens || 0,
+                cacheWriteTokens: usageData.cacheWriteTokens || 0,
+              }
+            }
           }
           if (data.success !== undefined || data.hitMaxTurns || data.loopDetected || data.escalated || data.responseEmpty) {
             qualitySignals = {
@@ -123,6 +137,15 @@ export async function trackChatStreamForBilling(
               loopDetected: data.loopDetected === true,
               escalated: data.escalated === true,
               responseEmpty: data.responseEmpty === true,
+            }
+          }
+          if (data.inputTokens || data.outputTokens || data.promptTokens || data.completionTokens) {
+            fallbackUsage = {
+              model: data.model,
+              inputTokens: data.inputTokens || data.promptTokens || 0,
+              outputTokens: data.outputTokens || data.completionTokens || 0,
+              cachedInputTokens: data.cacheReadTokens || data.cachedInputTokens || 0,
+              cacheWriteTokens: data.cacheWriteTokens || 0,
             }
           }
         }
@@ -136,11 +159,12 @@ export async function trackChatStreamForBilling(
   }
 
   const eofWithoutTurnComplete = !streamInterrupted && !observedTurnComplete
-  setQualitySignals(projectId, qualitySignals, chatSessionId)
+  await setQualitySignals(projectId, qualitySignals, chatSessionId)
   try {
     const { billedUsd } = await closeSession(projectId, {
       discardPartial: eofWithoutTurnComplete,
       chatSessionId,
+      fallbackUsage,
     })
     if (billedUsd > 0) {
       console.log(`[ChatUsageTracker] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${projectId}`)
