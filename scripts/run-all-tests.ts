@@ -30,6 +30,7 @@ import { existsSync, readFileSync, mkdirSync, readdirSync, statSync, rmSync, ren
 import { join, resolve } from 'path'
 import { Database } from 'bun:sqlite'
 import { spawnSync } from 'child_process'
+import { runPackagePool, type PackagePoolJob, type PackagePoolResult } from './lib/package-pool'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
 
@@ -39,11 +40,11 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
 // directly by in-process Bun tests and is the metric that matters for
 // shipping the agent platform.
 const BACKEND_PACKAGES = [
-  'packages/model-catalog',
-  'packages/shared-runtime',
-  'packages/sdk',
   'packages/agent-runtime',
   'apps/api',
+  'packages/shared-runtime',
+  'packages/model-catalog',
+  'packages/sdk',
   // Internal repo tooling tests (merge-lcov, etc.). Lives outside the
   // bun workspaces glob — see scripts/package.json. Counted as backend
   // because it tests our build/coverage machinery.
@@ -71,7 +72,16 @@ const FRONTEND_PACKAGES = [
   'packages/shared-app',
 ] as const
 
-const TEST_PACKAGES = [...BACKEND_PACKAGES, ...FRONTEND_PACKAGES] as const
+// Keep the longest packages at the front of the queue. Mobile is listed
+// before the remaining backend packages so it can occupy the second worker
+// as soon as apps/api finishes instead of delaying the overall tail.
+const TEST_PACKAGES = [
+  'packages/agent-runtime',
+  'apps/api',
+  'apps/mobile',
+  ...BACKEND_PACKAGES.slice(2),
+  ...FRONTEND_PACKAGES.slice(1),
+] as const
 
 // In-process e2e suites that import API/runtime modules directly (no
 // external server needed). Counted toward backend coverage because
@@ -132,8 +142,7 @@ function readPkgScripts(pkgDir: string): Record<string, string> {
   }
 }
 
-function runPackage(pkg: string, withCoverage: boolean): PackageResult {
-  const start = Date.now()
+function createPackageTestJob(pkg: string, withCoverage: boolean): PackagePoolJob | null {
   const pkgDir = join(REPO_ROOT, pkg)
   const scripts = readPkgScripts(pkgDir)
 
@@ -142,11 +151,9 @@ function runPackage(pkg: string, withCoverage: boolean): PackageResult {
     : 'test'
 
   if (!scripts[scriptName]) {
-    console.log(`\n=== ${pkg}: no \`${scriptName}\` script — skipping ===`)
-    return { pkg, exitCode: 0, durationMs: 0 }
+    return null
   }
 
-  console.log(`\n=== ${pkg}: bun run ${scriptName} ===`)
   // Scrub local-dev env vars that .env.local bakes into every shell
   // (SHOGO_LOCAL_MODE=true bypasses production guards in
   // permission-engine.ts; DATABASE_URL points at the dev SQLite). If
@@ -166,13 +173,21 @@ function runPackage(pkg: string, withCoverage: boolean): PackageResult {
   // suites that need a proxy stub mock one themselves.
   delete childEnv.AI_PROXY_URL
   delete childEnv.AI_PROXY_TOKEN
-  const proc = spawnSync('bun', ['run', scriptName], {
-    stdio: 'inherit',
+  return {
+    name: pkg,
+    command: 'bun',
+    args: ['run', scriptName],
     cwd: pkgDir,
     env: childEnv,
-  })
-  const durationMs = Date.now() - start
-  return { pkg, exitCode: proc.status ?? 1, durationMs }
+  }
+}
+
+function printPackageResult(result: PackagePoolResult): void {
+  const scriptName = result.job.args[1] ?? 'test'
+  process.stdout.write(`\n=== ${result.job.name}: bun run ${scriptName} ===\n`)
+  if (result.stdout || result.stderr) {
+    process.stdout.write(result.stdout + result.stderr)
+  }
 }
 
 /**
@@ -324,22 +339,49 @@ function findLcovFiles(pkg: string): string[] {
   return existsSync(candidate) ? [candidate] : []
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2)
   const withCoverage = argv.includes('--coverage')
 
   const rootCoverageDir = join(REPO_ROOT, 'coverage')
   const e2eShardsRoot = join(rootCoverageDir, '.e2e-shards')
   if (withCoverage) {
-    try { rmSync(rootCoverageDir, { recursive: true, force: true }) } catch {}
+    // Keep checked-in coverage policy/baseline files (notably
+    // coverage/thresholds.json) intact. Only the generated reports and
+    // temporary e2e shards belong to the per-run cleanup.
+    for (const generated of [
+      'lcov.info',
+      'lcov.info.raw',
+      'summary.json',
+      'frontend-lcov.info',
+      'frontend-lcov.info.raw',
+      'frontend-summary.json',
+    ]) {
+      try { rmSync(join(rootCoverageDir, generated), { force: true }) } catch {}
+    }
+    try { rmSync(e2eShardsRoot, { recursive: true, force: true }) } catch {}
     mkdirSync(rootCoverageDir, { recursive: true })
     mkdirSync(e2eShardsRoot, { recursive: true })
   }
 
-  const results: PackageResult[] = []
+  const packageJobs: PackagePoolJob[] = []
   for (const pkg of TEST_PACKAGES) {
-    results.push(runPackage(pkg, withCoverage))
+    const job = createPackageTestJob(pkg, withCoverage)
+    if (job) {
+      packageJobs.push(job)
+    } else {
+      const scriptName = withCoverage && readPkgScripts(join(REPO_ROOT, pkg))['test:coverage']
+        ? 'test:coverage'
+        : 'test'
+      console.log(`\n=== ${pkg}: no \`${scriptName}\` script — skipping ===`)
+    }
   }
+  const packageResults = await runPackagePool(packageJobs, 2, printPackageResult)
+  const results: PackageResult[] = packageResults.map((result) => ({
+    pkg: result.job.name,
+    exitCode: result.exitCode,
+    durationMs: result.durationMs,
+  }))
 
   // In-process e2e suites — exercise the API server through its real
   // route handlers (with the production middleware layering) but
