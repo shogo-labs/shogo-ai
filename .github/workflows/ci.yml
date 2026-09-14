@@ -2,6 +2,20 @@
 # CI - Lint, Typecheck, and Test
 # =============================================================================
 # Runs on every pull request to main. No secrets required, safe for fork PRs.
+#
+# Split into two independent jobs (`typecheck`, `test`) that run in parallel
+# on separate ubuntu-latest runners, plus a thin `ci` aggregator job that
+# reports pass/fail under the ORIGINAL name "Lint, Typecheck, Test". Branch
+# protection requires that exact context — the aggregator lets us parallelize
+# the underlying work without touching the required-status-check config
+# (which would otherwise block every other open PR against main until each
+# one rebased onto the new job names).
+#
+# Cost of the split: `typecheck` and `test` each redo checkout / bun setup /
+# `bun install` / `build:packages` (~1m40s), since GitHub Actions jobs don't
+# share a filesystem. That's the deliberate trade for wall-clock: the two
+# jobs' longest steps (Typecheck ~70s, Test ~3m) now overlap instead of
+# summing.
 # =============================================================================
 
 name: CI
@@ -29,8 +43,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
-    name: Lint, Typecheck, Test
+  typecheck:
+    name: Typecheck & static checks
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -71,47 +85,6 @@ jobs:
         # subset of workspace packages to source; published-shape
         # imports still need `dist/`.
         run: bun run build:packages
-
-      - name: Build runtime-template (Vite dist for workspace-seeding tests)
-        # `templates/runtime-template/dist/` is gitignored — it's a Vite
-        # build artifact. Several agent-runtime tests (notably
-        # workspace-seeding.test.ts) assert that `seedRuntimeTemplate`
-        # copies `dist/index.html` into a fresh workspace. Without the
-        # build the tests see an empty source tree and fail. The
-        # template has its own `bun install` because it's outside the
-        # root workspaces glob.
-        #
-        # The template pins `@shogo-ai/sdk` as the `workspace:*` sentinel,
-        # which can't resolve in this standalone install — materialize it to
-        # the latest published `^X.Y.Z` first (GitHub runners have npm + net).
-        # Plain `bun install` (not --frozen-lockfile): the rewrite makes the
-        # template's checked-in bun.lock drift from its package.json.
-        #
-        # The rewrite is a BUILD-TIME transform, so undo it once dist/ exists.
-        # Leaving it applied edits tracked files under the tests' feet: the
-        # manifest no longer carries the `workspace:*` sentinel that
-        # materialize-runtime-template.test.ts exists to guard, and every test
-        # that copies the template (workspace-seeding, binary-ships-…) would
-        # silently assert against a manifest that is not the one we ship.
-        # node_modules/ and dist/ survive, so the later template-dist build is
-        # unaffected.
-        run: |
-          bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
-          (cd templates/runtime-template && bun install && bun run build)
-          git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
-
-      - name: Build one agent template (sales-bdr-pipeline) for overlay tests
-        # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.
-        # workspace-seeding.test.ts > "overlays the template-shipped
-        # pre-built dist over the runtime-template stub" depends on
-        # `sales-bdr-pipeline`'s dist existing (it cps it onto the runtime
-        # template stub and asserts the bundle text changes). The script
-        # below stages the runtime-template + agent template src in a
-        # tmpdir and runs vite build into the right output. We pass a
-        # specific id so CI doesn't pay for all ~30 templates — that's
-        # the build-templates.sh job in deploy.yml, which is too heavy
-        # for PR CI.
-        run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
 
       - name: Typecheck
         run: bun run typecheck
@@ -183,6 +156,80 @@ jobs:
         # then add `--strict` here.
         run: bun run check:desktop-schema-drift
 
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Cache bun dependencies
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-
+
+      - name: Install dependencies
+        # See the "Install dependencies" comment in the `typecheck` job —
+        # identical rationale, duplicated here because each job gets its own
+        # fresh runner filesystem.
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        # See the "Build workspace packages" comment in the `typecheck` job.
+        # `bun run test` needs the same compiled `dist/` artifacts as
+        # typecheck for the same cross-package import reasons.
+        run: bun run build:packages
+
+      - name: Build runtime-template (Vite dist for workspace-seeding tests)
+        # `templates/runtime-template/dist/` is gitignored — it's a Vite
+        # build artifact. Several agent-runtime tests (notably
+        # workspace-seeding.test.ts) assert that `seedRuntimeTemplate`
+        # copies `dist/index.html` into a fresh workspace. Without the
+        # build the tests see an empty source tree and fail. The
+        # template has its own `bun install` because it's outside the
+        # root workspaces glob.
+        #
+        # The template pins `@shogo-ai/sdk` as the `workspace:*` sentinel,
+        # which can't resolve in this standalone install — materialize it to
+        # the latest published `^X.Y.Z` first (GitHub runners have npm + net).
+        # Plain `bun install` (not --frozen-lockfile): the rewrite makes the
+        # template's checked-in bun.lock drift from its package.json.
+        #
+        # The rewrite is a BUILD-TIME transform, so undo it once dist/ exists.
+        # Leaving it applied edits tracked files under the tests' feet: the
+        # manifest no longer carries the `workspace:*` sentinel that
+        # materialize-runtime-template.test.ts exists to guard, and every test
+        # that copies the template (workspace-seeding, binary-ships-…) would
+        # silently assert against a manifest that is not the one we ship.
+        # node_modules/ and dist/ survive, so the later template-dist build is
+        # unaffected.
+        run: |
+          bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
+          (cd templates/runtime-template && bun install && bun run build)
+          git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
+
+      - name: Build one agent template (sales-bdr-pipeline) for overlay tests
+        # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.
+        # workspace-seeding.test.ts > "overlays the template-shipped
+        # pre-built dist over the runtime-template stub" depends on
+        # `sales-bdr-pipeline`'s dist existing (it cps it onto the runtime
+        # template stub and asserts the bundle text changes). The script
+        # below stages the runtime-template + agent template src in a
+        # tmpdir and runs vite build into the right output. We pass a
+        # specific id so CI doesn't pay for all ~30 templates — that's
+        # the build-templates.sh job in deploy.yml, which is too heavy
+        # for PR CI.
+        run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
+
       - name: Desktop bundle + launcher assertions
         # test-web-bundle.ts / test-sync-web.ts / test-forge-config.ts are
         # hand-rolled assertion scripts rather than `bun test` files, so
@@ -202,3 +249,23 @@ jobs:
 
       - name: Test
         run: bun run test
+
+  # Thin aggregator so branch protection's required status check keeps its
+  # original name/context ("Lint, Typecheck, Test") no matter how the real
+  # work above gets split or resharded. `if: always()` makes this run even
+  # when a dependency fails (default behavior would skip it, and a skipped
+  # required check blocks merges anyway — but an explicit failure is a much
+  # clearer signal in the PR checks UI than "skipped").
+  ci:
+    name: Lint, Typecheck, Test
+    needs: [typecheck, test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check upstream job results
+        run: |
+          echo "typecheck: ${{ needs.typecheck.result }}"
+          echo "test: ${{ needs.test.result }}"
+          if [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ]; then
+            exit 1
+          fi
