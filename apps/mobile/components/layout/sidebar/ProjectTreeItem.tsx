@@ -21,6 +21,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Folder,
   Pencil,
   Pin,
@@ -120,6 +121,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   isPinned,
   onTogglePin,
   mobileProjectFirstTapShowsChats,
+  onMobileProjectExpand,
+  mobileProjectDetail,
+  onMobileCollapse,
 }: {
   project: any;
   collapsed?: boolean;
@@ -127,6 +131,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   isPinned?: boolean;
   onTogglePin?: (projectId: string, next: boolean) => void;
   mobileProjectFirstTapShowsChats?: boolean;
+  onMobileProjectExpand?: (projectId: string) => void;
+  mobileProjectDetail?: boolean;
+  onMobileCollapse?: () => void;
 }) {
   const router = useRouter();
   const isNative = Platform.OS !== "web";
@@ -283,6 +290,12 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     }
   }, [isActive, collapsed, loadChats, mobileProjectFirstTapShowsChats]);
 
+  useEffect(() => {
+    if (!mobileProjectDetail || collapsed) return;
+    setExpanded(true);
+    void loadChats();
+  }, [collapsed, loadChats, mobileProjectDetail]);
+
   const openProject = useCallback(() => {
     void api.prewarmProjectRuntime(http, project.id);
     // Clicking a project name is an explicit "take me to this project's main
@@ -310,6 +323,10 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
 
   const handleProjectPress = useCallback(() => {
     if (mobileProjectFirstTapShowsChats) {
+      if (onMobileProjectExpand) {
+        onMobileProjectExpand(project.id);
+        return;
+      }
       router.push({
         pathname: "/(app)/project-chats",
         params: { id: project.id },
@@ -320,6 +337,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     openProject();
   }, [
     mobileProjectFirstTapShowsChats,
+    onMobileProjectExpand,
     onNavPress,
     openProject,
     project.id,
@@ -519,9 +537,164 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     },
   ];
 
+  const renderChatList = () => {
+    const activeSessions = visibleProjectChatItems(sessions);
+    const archivedSessions = sessions.filter((s: any) => s.isArchived);
+    const renderChat = (s: any, key = s.id) => (
+      <ChatTreeItem
+        key={key}
+        session={s}
+        active={isActive && s.id === activeChatId}
+        isStreaming={streamingIds.has(s.id)}
+        isCompleted={completedIds.has(s.id)}
+        onSelect={handleSelectChat}
+        onTogglePin={handleTogglePin}
+        onRename={handleRename}
+        onToggleArchive={handleToggleArchive}
+        onRequestDelete={(id) =>
+          setConfirmDelete({
+            kind: "chat",
+            id,
+            label: projectChatLabel(s),
+          })
+        }
+        onMeasureHeight={handleChatRowHeight}
+      />
+    );
+    const chatRows = createSidebarChatRows(
+      activeSessions,
+      archivedSessions,
+      archivedExpanded,
+    );
+
+    return (
+      <View className={mobileProjectDetail ? "flex-1" : "ml-6 mt-0.5"}>
+        {sessions.length === 0 ? (
+          <View className="px-2 py-3">
+            <Text
+              className="text-sm text-muted-foreground opacity-70"
+              numberOfLines={1}
+            >
+              {loaded ? "No chats yet" : "Loading…"}
+            </Text>
+          </View>
+        ) : (
+          <ScrollView
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={
+              mobileProjectDetail || chatRows.length > MAX_VISIBLE_CHATS
+            }
+            accessibilityLabel={`${project.name || "Untitled"} chats`}
+            style={
+              mobileProjectDetail
+                ? { flex: 1 }
+                : (getSidebarChatScrollStyle(
+                    chatRowHeight,
+                    chatRows.length,
+                  ) as any)
+            }
+            contentContainerStyle={SIDEBAR_CHAT_SCROLL_CONTENT_STYLE}
+            onScroll={handleChatScroll}
+            scrollEventThrottle={64}
+            {...(Platform.OS === "web"
+              ? ({
+                  dataSet: SIDEBAR_CHAT_SCROLL_DATASET,
+                  tabIndex: 0,
+                  role: "list",
+                } as any)
+              : {})}
+          >
+            {chatRows.map((row) => {
+              if (row.type === "chat") return renderChat(row.session, row.id);
+              return (
+                <Pressable
+                  key={row.id}
+                  onPress={() => setArchivedExpanded((v) => !v)}
+                  accessibilityLabel={`${archivedExpanded ? "Collapse" : "Expand"} archived chats`}
+                  accessibilityState={{ expanded: archivedExpanded }}
+                  className="flex-row items-center gap-1 px-1 pt-2 pb-0.5 active:opacity-70"
+                >
+                  {archivedExpanded ? (
+                    <ChevronDown
+                      size={10}
+                      className="text-muted-foreground shrink-0"
+                    />
+                  ) : (
+                    <ChevronRight
+                      size={10}
+                      className="text-muted-foreground shrink-0"
+                    />
+                  )}
+                  <Text
+                    className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1"
+                    numberOfLines={1}
+                  >
+                    Archived
+                  </Text>
+                  <Text className="text-[10px] text-muted-foreground shrink-0">
+                    {archivedSessions.length}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            {loadingMoreChats && (
+              <View className="px-2 py-1.5">
+                <Text
+                  className="text-xs text-muted-foreground opacity-70"
+                  numberOfLines={1}
+                >
+                  Loading more…
+                </Text>
+              </View>
+            )}
+          </ScrollView>
+        )}
+      </View>
+    );
+  };
+
   return (
-    <View>
-      {editing ? (
+    <View className={mobileProjectDetail ? "flex-1" : undefined}>
+      {mobileProjectDetail ? (
+        <View className="flex-1">
+          <View className="flex-row items-center gap-2 border-b border-border px-3 py-3">
+            <View className="min-w-0 flex-1 flex-row items-center gap-2">
+              <Folder
+                size={density.icon.md}
+                className="text-muted-foreground shrink-0"
+              />
+              <Text
+                className={`${density.text.body} flex-1 font-semibold text-foreground`}
+                numberOfLines={1}
+              >
+                {project.name || "Untitled"}
+              </Text>
+            </View>
+            <View className="flex-row items-center gap-1">
+              <Pressable
+                onPress={handleCreateChat}
+                accessibilityLabel={`New chat in ${project.name || "Untitled"}`}
+                className="h-10 w-10 items-center justify-center rounded-md active:bg-muted"
+              >
+                <Plus size={density.icon.lg} className="text-foreground" />
+              </Pressable>
+              <Pressable
+                onPress={onMobileCollapse}
+                accessibilityLabel="Collapse project chats"
+                className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
+              >
+                <ChevronUp
+                  size={density.icon.lg}
+                  className="text-foreground"
+                />
+              </Pressable>
+            </View>
+          </View>
+          {renderChatList()}
+        </View>
+      ) : editing ? (
         <View
           className={cn(
             "flex-row items-center rounded-md px-2",
@@ -649,123 +822,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           )}
         </View>
       )}
-      {expanded &&
-        !mobileProjectFirstTapShowsChats &&
-        (() => {
-          const activeSessions = visibleProjectChatItems(sessions);
-          const archivedSessions = sessions.filter((s: any) => s.isArchived);
-          const renderChat = (s: any, key = s.id) => (
-            <ChatTreeItem
-              key={key}
-              session={s}
-              active={isActive && s.id === activeChatId}
-              isStreaming={streamingIds.has(s.id)}
-              isCompleted={completedIds.has(s.id)}
-              onSelect={handleSelectChat}
-              onTogglePin={handleTogglePin}
-              onRename={handleRename}
-              onToggleArchive={handleToggleArchive}
-              onRequestDelete={(id) =>
-                setConfirmDelete({
-                  kind: "chat",
-                  id,
-                  label: projectChatLabel(s),
-                })
-              }
-              onMeasureHeight={handleChatRowHeight}
-            />
-          );
-          const chatRows = createSidebarChatRows(
-            activeSessions,
-            archivedSessions,
-            archivedExpanded,
-          );
-          return (
-            <View className="ml-6 mt-0.5">
-              {sessions.length === 0 ? (
-                <View className="px-2 py-1.5">
-                  <Text
-                    className="text-xs text-muted-foreground opacity-70"
-                    numberOfLines={1}
-                  >
-                    {loaded ? "No chats yet" : "Loading…"}
-                  </Text>
-                </View>
-              ) : (
-                <ScrollView
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  showsHorizontalScrollIndicator={false}
-                  showsVerticalScrollIndicator={
-                    chatRows.length > MAX_VISIBLE_CHATS
-                  }
-                  accessibilityLabel={`${project.name || "Untitled"} chats`}
-                  style={
-                    getSidebarChatScrollStyle(
-                      chatRowHeight,
-                      chatRows.length,
-                    ) as any
-                  }
-                  contentContainerStyle={SIDEBAR_CHAT_SCROLL_CONTENT_STYLE}
-                  onScroll={handleChatScroll}
-                  scrollEventThrottle={64}
-                  {...(Platform.OS === "web"
-                    ? ({
-                        dataSet: SIDEBAR_CHAT_SCROLL_DATASET,
-                        tabIndex: 0,
-                        role: "list",
-                      } as any)
-                    : {})}
-                >
-                  {chatRows.map((row) => {
-                    if (row.type === "chat")
-                      return renderChat(row.session, row.id);
-                    return (
-                      <Pressable
-                        key={row.id}
-                        onPress={() => setArchivedExpanded((v) => !v)}
-                        accessibilityLabel={`${archivedExpanded ? "Collapse" : "Expand"} archived chats`}
-                        accessibilityState={{ expanded: archivedExpanded }}
-                        className="flex-row items-center gap-1 px-1 pt-2 pb-0.5 active:opacity-70"
-                      >
-                        {archivedExpanded ? (
-                          <ChevronDown
-                            size={10}
-                            className="text-muted-foreground shrink-0"
-                          />
-                        ) : (
-                          <ChevronRight
-                            size={10}
-                            className="text-muted-foreground shrink-0"
-                          />
-                        )}
-                        <Text
-                          className="text-[10px] uppercase tracking-wide text-muted-foreground flex-1"
-                          numberOfLines={1}
-                        >
-                          Archived
-                        </Text>
-                        <Text className="text-[10px] text-muted-foreground shrink-0">
-                          {archivedSessions.length}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                  {loadingMoreChats && (
-                    <View className="px-2 py-1.5">
-                      <Text
-                        className="text-xs text-muted-foreground opacity-70"
-                        numberOfLines={1}
-                      >
-                        Loading more…
-                      </Text>
-                    </View>
-                  )}
-                </ScrollView>
-              )}
-            </View>
-          );
-        })()}
+      {!mobileProjectDetail && expanded && !mobileProjectFirstTapShowsChats && renderChatList()}
       {menu && (
         <SidebarContextMenu
           x={menu.x}

@@ -16,6 +16,9 @@ import {
   BackHandler,
   useWindowDimensions,
   Platform,
+  Animated,
+  Easing,
+  StyleSheet,
 } from "react-native";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { useResolvedTheme } from "../../../contexts/theme";
@@ -355,6 +358,9 @@ export const AppSidebar = observer(function AppSidebar({
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [mobileExpandedProjectId, setMobileExpandedProjectId] = useState<string | null>(null);
+  const [mobileProjectPanelId, setMobileProjectPanelId] = useState<string | null>(null);
+  const mobileProjectTransition = useRef(new Animated.Value(0)).current;
 
   const toggleProjectsExpanded = useCallback(() => {
     setProjectsExpanded((expanded) => !expanded);
@@ -438,6 +444,39 @@ export const AppSidebar = observer(function AppSidebar({
   const hiddenProjectCount =
     unpinnedProjects.length - visibleUnpinnedProjects.length;
 
+  const mobileProjectPanel = mobileProjectPanelId
+    ? workspaceProjects.find((project: any) => project.id === mobileProjectPanelId)
+    : undefined;
+
+  const openMobileProject = useCallback((projectId: string) => {
+    setMobileProjectPanelId(projectId);
+    setMobileExpandedProjectId(projectId);
+  }, []);
+
+  const closeMobileProject = useCallback(() => {
+    setMobileExpandedProjectId(null);
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setMobileExpandedProjectId(null);
+      setMobileProjectPanelId(null);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    const expanded = mobileExpandedProjectId !== null;
+    if (expanded && !mobileProjectPanelId) return;
+    Animated.timing(mobileProjectTransition, {
+      toValue: expanded ? 1 : 0,
+      duration: 440,
+      easing: Easing.inOut(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished && !expanded) setMobileProjectPanelId(null);
+    });
+  }, [mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition]);
+
   const [collapsed, setCollapsed] = useState(false);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } =
@@ -469,6 +508,7 @@ export const AppSidebar = observer(function AppSidebar({
   }, [isOpen]);
 
   const closeNativeDrawer = useCallback(() => {
+    setMobileExpandedProjectId(null);
     onClose?.();
   }, [onClose]);
 
@@ -540,15 +580,15 @@ export const AppSidebar = observer(function AppSidebar({
   }, [signOut, posthog]);
 
   const onNavPress = useCallback(() => {
-    if (!isWide) onClose?.();
-  }, [isWide, onClose]);
+    if (!isWide) closeNativeDrawer();
+  }, [closeNativeDrawer, isWide]);
 
   const prevPathnameRef = useRef(pathname);
   useEffect(() => {
     if (prevPathnameRef.current === pathname) return;
     prevPathnameRef.current = pathname;
-    if (isOpen && isNativeDrawer) onClose?.();
-  }, [isNativeDrawer, isOpen, onClose, pathname]);
+    if (isOpen && isNativeDrawer) closeNativeDrawer();
+  }, [closeNativeDrawer, isNativeDrawer, isOpen, pathname]);
 
   const handleSearchPress = useCallback(() => {
     if (isNativeDrawer) {
@@ -754,6 +794,9 @@ export const AppSidebar = observer(function AppSidebar({
                     isPinned
                     onTogglePin={handleToggleProjectPin}
                     mobileProjectFirstTapShowsChats={isNativeDrawer}
+                    onMobileProjectExpand={
+                      isNativeDrawer ? openMobileProject : undefined
+                    }
                   />
                 ))}
             </View>
@@ -933,6 +976,9 @@ export const AppSidebar = observer(function AppSidebar({
                     isPinned={pinnedProjectIds.has(project.id)}
                     onTogglePin={handleToggleProjectPin}
                     mobileProjectFirstTapShowsChats={isNativeDrawer}
+                    onMobileProjectExpand={
+                      isNativeDrawer ? openMobileProject : undefined
+                    }
                   />
                 ))}
                 {!collapsed &&
@@ -1122,8 +1168,52 @@ export const AppSidebar = observer(function AppSidebar({
 
   if (isNativeDrawer) {
     return (
-      <View style={{ flex: 1, backgroundColor: nativeDrawerCanvas }}>
-        {sidebarContent}
+      <View
+        style={{ flex: 1, position: "relative", backgroundColor: nativeDrawerCanvas }}
+      >
+        <Animated.View
+          style={{
+            flex: 1,
+            opacity: mobileProjectTransition.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0],
+            }),
+          }}
+          pointerEvents={mobileExpandedProjectId ? "none" : "auto"}
+        >
+          {sidebarContent}
+        </Animated.View>
+        {mobileProjectPanel && (
+          <Animated.View
+            style={[
+              StyleSheet.absoluteFillObject,
+              {
+                backgroundColor: nativeDrawerCanvas,
+                opacity: mobileProjectTransition.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 1],
+                }),
+                transform: [
+                  {
+                    translateX: mobileProjectTransition.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [28, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+            pointerEvents={mobileExpandedProjectId ? "auto" : "none"}
+          >
+            <View style={{ height: drawerTopInset }} />
+            <ProjectTreeItem
+              project={mobileProjectPanel}
+              mobileProjectDetail
+              onMobileCollapse={closeMobileProject}
+              onNavPress={onNavPress}
+            />
+          </Animated.View>
+        )}
       </View>
     );
   }
