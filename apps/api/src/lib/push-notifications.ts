@@ -29,6 +29,31 @@ interface ExpoPushMessage {
   channelId?: string
 }
 
+async function sendExpoMessages(messages: ExpoPushMessage[], tokensToClean: string[] = []) {
+  const resp = await fetch(EXPO_PUSH_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(messages),
+  })
+
+  if (!resp.ok) {
+    console.error(`[Push] Expo push failed: HTTP ${resp.status}`)
+    return
+  }
+
+  // Expo reports invalid/uninstalled device tokens per message. Remove them
+  // so future completions do not keep attempting delivery to dead devices.
+  const payload = typeof resp.json === 'function'
+    ? await resp.json().catch(() => null) as { data?: Array<{ status?: string; details?: { error?: string } }> } | null
+    : null
+  const invalidTokens = (payload?.data ?? [])
+    .map((receipt, index) => receipt.status === 'error' && receipt.details?.error === 'DeviceNotRegistered' ? tokensToClean[index] : null)
+    .filter((token): token is string => Boolean(token))
+  if (invalidTokens.length > 0) {
+    await prisma.mobilePushSubscription.deleteMany({ where: { pushToken: { in: invalidTokens } } }).catch(() => {})
+  }
+}
+
 export async function sendPushToInstance(
   instanceId: string,
   payload: PushPayload,
@@ -47,16 +72,35 @@ export async function sendPushToInstance(
       channelId: 'remote-control',
     }))
 
-    const resp = await fetch(EXPO_PUSH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(messages),
-    })
-
-    if (!resp.ok) {
-      console.error(`[Push] Expo push failed: HTTP ${resp.status}`)
-    }
+    await sendExpoMessages(messages, subs.map((sub) => sub.pushToken))
   } catch (err) {
     console.error('[Push] Error sending push notification:', (err as Error).message)
+  }
+}
+
+export async function sendPushToUser(
+  userId: string,
+  payload: { title: string; body: string; data?: Record<string, unknown>; priority?: 'high' | 'default' },
+): Promise<void> {
+  try {
+    const subs = await prisma.mobilePushSubscription.findMany({
+      where: { userId },
+      select: { pushToken: true },
+    })
+    if (subs.length === 0) return
+
+    await sendExpoMessages(
+      subs.map((sub) => ({
+        to: sub.pushToken,
+        title: payload.title,
+        body: payload.body,
+        data: { ...(payload.data ?? {}), type: 'chat-complete' },
+        priority: payload.priority ?? 'high',
+        channelId: 'chat-complete',
+      })),
+      subs.map((sub) => sub.pushToken),
+    )
+  } catch (err) {
+    console.error('[Push] Error sending user push notification:', (err as Error).message)
   }
 }

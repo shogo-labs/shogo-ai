@@ -263,6 +263,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Mobile star-toggle; double-tap during failover is the race window. P2 — needs idempotent upsert in the route.',
   },
   {
+    key: 'MobilePushSubscription.pushToken',
+    category: 'single_tenant_upsert',
+    reason:
+      'The authenticated mobile registration route upserts one globally unique Expo token and transfers ownership when a signed-in account re-registers the same device.',
+  },
+  {
     key: 'BillingAccount.workspaceId',
     category: 'single_tenant_upsert',
     reason: 'billing.service.ts:900 upserts on workspaceId from Stripe flow.',

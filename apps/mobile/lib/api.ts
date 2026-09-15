@@ -469,6 +469,16 @@ export const api = {
     return res.data?.count ?? 0
   },
 
+  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android' }) {
+    const res = await http.post<{ ok?: boolean; id?: string }>('/api/mobile-push-subscriptions', body)
+    return res.data
+  },
+
+  async unregisterMobilePushSubscription(http: HttpClient, pushToken: string) {
+    const res = await http.delete<{ ok?: boolean }>('/api/mobile-push-subscriptions', { pushToken })
+    return res.data
+  },
+
   async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string } = {}) {
     const query = new URLSearchParams()
     if (params.status) query.set('status', params.status)

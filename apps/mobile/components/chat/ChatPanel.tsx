@@ -89,6 +89,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
+import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
 
 import { isPhoneLayout,
   useNativePhoneWindow } from "../../lib/native-phone-layout"
@@ -1119,6 +1120,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
   const currentSessionId = chatSessionId ?? null
+
+  // Native push notifications are still useful when another project is open,
+  // or when the app is backgrounded. Suppress only the notification for the
+  // exact chat currently visible in the foreground.
+  useEffect(() => {
+    if (!isActive || !currentSessionId || !projectId) return
+    setActiveChatNotificationContext({ sessionId: currentSessionId, projectId })
+    return () => setActiveChatNotificationContext(null)
+  }, [currentSessionId, isActive, projectId])
+
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)

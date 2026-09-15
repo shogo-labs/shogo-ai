@@ -69,6 +69,12 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   return permissionCache === 'granted'
 }
 
+export function setActiveChatNotificationContext(
+  _context: { sessionId: string; projectId: string } | null,
+): void {
+  // Web notifications are already gated by the existing active-window logic.
+}
+
 // Module-level bus for browser-side click delivery. The Web Notification API
 // only surfaces click via the Notification instance's `onclick`; we normalise
 // that into the same `subscribeNotificationClicks` channel as Electron.

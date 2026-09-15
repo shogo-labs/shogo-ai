@@ -33,6 +33,12 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   return false
 }
 
+export function setActiveChatNotificationContext(
+  _context: { sessionId: string; projectId: string } | null,
+): void {
+  // no-op fallback
+}
+
 export async function notifyChatFinished(_p: ChatNotificationPayload): Promise<void> {
   // no-op fallback
 }

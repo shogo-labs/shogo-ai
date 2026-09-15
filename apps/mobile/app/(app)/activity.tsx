@@ -136,14 +136,37 @@ export default function ActivityScreen() {
   const completed = useMemo(() => tasks.filter((task) => task.status === 'completed'), [tasks])
   const failedOrCancelled = useMemo(() => tasks.filter((task) => task.status === 'failed' || task.status === 'cancelled'), [tasks])
   const projectActivity = useMemo(() => {
-    const groups = new Map<string, { id: string | null; name: string; completed: number; running: number; failed: number; total: number }>()
+    const groups = new Map<string, {
+      id: string | null
+      name: string
+      completed: number
+      running: number
+      failed: number
+      total: number
+      latestChatActivity: number
+      latestChatSessionId: string | null
+    }>()
     for (const task of tasks) {
       const key = task.projectId || 'home'
-      const group = groups.get(key) ?? { id: task.projectId, name: task.projectName || 'Home', completed: 0, running: 0, failed: 0, total: 0 }
+      const taskActivity = timestamp(task.updatedAt || task.completedAt || task.startedAt || task.createdAt)
+      const group = groups.get(key) ?? {
+        id: task.projectId,
+        name: task.projectName || 'Home',
+        completed: 0,
+        running: 0,
+        failed: 0,
+        total: 0,
+        latestChatActivity: 0,
+        latestChatSessionId: null,
+      }
       group.total += 1
       if (task.status === 'completed') group.completed += 1
       if (task.status === 'queued' || task.status === 'running') group.running += 1
       if (task.status === 'failed') group.failed += 1
+      if (task.chatSessionId && taskActivity >= group.latestChatActivity) {
+        group.latestChatActivity = taskActivity
+        group.latestChatSessionId = task.chatSessionId
+      }
       groups.set(key, group)
     }
     return [...groups.values()].sort((a, b) => b.total - a.total)
@@ -223,7 +246,7 @@ export default function ActivityScreen() {
 
           <SectionHeader title="Project activity" count={projectActivity.length} />
           {projectActivity.length === 0 ? <EmptyActivityCard title="No tracked projects yet" message="Project-level progress will appear here once a task is created." /> : projectActivity.map((group) => (
-            <Pressable key={group.id || 'home'} disabled={!group.id} onPress={() => group.id && router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id } } as any)} className={cn('mx-4 mt-3 rounded-2xl border border-border bg-card p-4', group.id ? 'active:bg-muted/50' : 'opacity-90')}>
+            <Pressable key={group.id || 'home'} disabled={!group.id} onPress={() => group.id && router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) } } as any)} className={cn('mx-4 mt-3 rounded-2xl border border-border bg-card p-4', group.id ? 'active:bg-muted/50' : 'opacity-90')}>
               <View className="flex-row items-center gap-3">
                 <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted"><Folder size={19} className="text-muted-foreground" /></View>
                 <View className="flex-1"><Text className="font-semibold text-foreground">{group.name}</Text><Text className="mt-1 text-xs text-muted-foreground">{group.total} tracked {group.total === 1 ? 'task' : 'tasks'}</Text></View>

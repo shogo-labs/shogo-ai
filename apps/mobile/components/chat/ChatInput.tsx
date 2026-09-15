@@ -1692,7 +1692,7 @@ function ChatInputImpl({
           className={cn(
             "flex-row items-center justify-between",
             useProminentComposer
-              ? "min-h-[48px] py-1 pl-2.5 pr-1.5 overflow-hidden"
+              ? "py-1 pl-2.5 pr-1.5 overflow-hidden"
               : isNative
                 ? "min-h-12 px-2 py-1"
                 : "p-1.5",
