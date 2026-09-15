@@ -793,7 +793,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           <Pressable
             onPress={
               mobileProjectFirstTapShowsChats
-                ? openRecentChat
+                ? openProject
                 : handleProjectPress
             }
             onLongPress={isNative ? openNativeActions : undefined}
@@ -802,7 +802,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             accessibilityLabel={`Project: ${project.name || "Untitled"}`}
             accessibilityHint={
               mobileProjectFirstTapShowsChats
-                ? "Opens chats for this project"
+                ? "Opens this project's first chat"
                 : isNative
                   ? "Long press for project actions"
                   : undefined
