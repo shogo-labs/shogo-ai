@@ -5,6 +5,7 @@ import type {
   AgentClientConfig,
   AgentExportBundle,
   AgentImportResult,
+  AgentHistoryResult,
   AgentPlanSummary,
   AgentStatus,
   ChatMessage,
@@ -319,6 +320,18 @@ export class AgentClient {
   async listPlans(): Promise<AgentPlanSummary[]> {
     const data = await this.fetchJson<{ plans: AgentPlanSummary[] }>('/agent/plans')
     return data.plans ?? []
+  }
+
+  async searchHistory(
+    query: string,
+    options: { kind?: 'chat' | 'plan' | 'all'; limit?: number; exclude?: string } = {},
+  ): Promise<AgentHistoryResult[]> {
+    const params = new URLSearchParams({ q: query })
+    if (options.kind) params.set('kind', options.kind)
+    if (options.limit != null) params.set('limit', String(options.limit))
+    if (options.exclude) params.set('exclude', options.exclude)
+    const data = await this.fetchJson<{ results?: AgentHistoryResult[] }>(`/agent/history/search?${params}`)
+    return data.results ?? []
   }
 
   async getPlan(filename: string): Promise<{ filename: string; content: string; summary?: string }> {

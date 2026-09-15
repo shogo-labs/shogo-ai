@@ -19,6 +19,7 @@
  */
 
 import { prisma } from './prisma'
+import { readWorkspacePlan, renderWorkspaceTranscript } from './history-search'
 
 /** Max projects to enumerate in a workspace reference summary. */
 const MAX_WORKSPACE_PROJECTS = 50
@@ -197,4 +198,71 @@ export async function enrichProjectReferences(
 
   if (changed) parsedBody.references = next
   return { changed, attachProjectIds: Array.from(new Set(attachProjectIds)) }
+}
+
+/**
+ * Validate history references and inline bounded data before it reaches a
+ * runtime that may not have the referenced project's files mounted.
+ */
+export async function enrichChatReferences(
+  parsedBody: any,
+  actingUserId: string | undefined,
+  runtimeProjectId: string | undefined,
+  runtimeWorkspaceId: string | undefined,
+): Promise<boolean> {
+  const refs = parsedBody?.references
+  if (!Array.isArray(refs) || !refs.length || !actingUserId || !runtimeWorkspaceId) return false
+  let changed = false
+  const next: any[] = []
+  for (const ref of refs) {
+    if (!ref || typeof ref !== 'object' || (ref.type !== 'chat' && ref.type !== 'plan')) {
+      next.push(ref)
+      continue
+    }
+    try {
+      if (ref.type === 'chat' && typeof ref.id === 'string') {
+        const transcript = await renderWorkspaceTranscript(ref.id, {
+          workspaceId: runtimeWorkspaceId,
+          userId: actingUserId,
+          limit: 100,
+          maxBytes: 64 * 1024,
+        })
+        if (!transcript || (runtimeProjectId && transcript.projectId && transcript.projectId !== runtimeProjectId)) {
+          changed = true
+          continue
+        }
+        next.push({
+          type: 'chat',
+          id: ref.id,
+          name: transcript.title,
+          label: ref.label || transcript.title,
+          projectId: transcript.projectId,
+          transcript: transcript.messages.map((message) => `${message.role}: ${message.text}`).join('\n'),
+        })
+        if (JSON.stringify(next[next.length - 1]) !== JSON.stringify(ref)) changed = true
+      } else if (ref.type === 'plan') {
+        const id = typeof ref.planId === 'string' ? ref.planId : typeof ref.id === 'string' ? ref.id : ''
+        const plan = id ? await readWorkspacePlan(id, { workspaceId: runtimeWorkspaceId, userId: actingUserId }) : null
+        if (!plan || (runtimeProjectId && plan.projectId && plan.projectId !== runtimeProjectId)) {
+          changed = true
+          continue
+        }
+        next.push({
+          type: 'plan',
+          planId: plan.id,
+          filename: plan.filename,
+          name: plan.name,
+          label: ref.label || plan.name,
+          projectId: plan.projectId,
+          content: plan.content,
+        })
+        if (JSON.stringify(next[next.length - 1]) !== JSON.stringify(ref)) changed = true
+      }
+    } catch (error: any) {
+      console.error('[chat-references] Failed to enrich history reference:', error?.message)
+      changed = true
+    }
+  }
+  if (changed) parsedBody.references = next
+  return changed
 }

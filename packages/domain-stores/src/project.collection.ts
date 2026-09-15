@@ -411,7 +411,7 @@ export const ProjectCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["workspace","folder","members","inviteLinks","featureSessions","chatSessions","usageEvents","liveSessionMeters","checkpoints","githubConnection","starredBy","agentConfig","meetings","marketplaceListing","agentCostMetrics","modelExperiments","subagentModelOverrides","agentEvalSets","voiceConfig","agents","projectFolders","preferredInstance","authConfig","authSignIns","attachedSessions","attachments","attachedTo","customDomains"]
+const relationFields = ["workspace","folder","members","inviteLinks","featureSessions","chatSessions","plans","usageEvents","liveSessionMeters","checkpoints","githubConnection","starredBy","agentConfig","meetings","marketplaceListing","agentCostMetrics","modelExperiments","subagentModelOverrides","agentEvalSets","voiceConfig","agents","projectFolders","preferredInstance","authConfig","authSignIns","attachedSessions","attachments","attachedTo","customDomains"]
 
 /**
  * Transform API response for MST compatibility:

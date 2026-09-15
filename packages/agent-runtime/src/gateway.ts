@@ -2203,7 +2203,7 @@ export class AgentGateway {
       const PLAN_MODE_ALLOWED = new Set([
         'read_file', 'search',
         'web',
-        'memory_read', 'memory_search',
+        'memory_read', 'memory_search', 'search_history', 'read_history',
         'ask_user', 'todo_write', 'create_plan', 'update_plan',
         'skill',
       ])

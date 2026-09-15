@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
+import { Database } from 'bun:sqlite'
 import { join } from 'path'
 import { AgentGateway } from '../gateway'
 import type { Message } from '@mariozechner/pi-ai'
@@ -75,6 +76,41 @@ describe('AgentGateway integration', () => {
 
     expect(response).toBe('The file contains: important data')
     expect(capturedMessages.length).toBeGreaterThanOrEqual(1)
+  })
+
+  test('search_history and read_history expose persisted chats and plans', async () => {
+    mkdirSync(join(TEST_DIR, '.shogo', 'plans'), { recursive: true })
+    writeFileSync(join(TEST_DIR, '.shogo', 'plans', 'history.plan.md'), '---\nname: History Plan\nstatus: active\n---\nUse FTS5')
+    gateway = createGateway([
+      buildToolUseResponse([{
+        name: 'search_history',
+        arguments: { query: 'FTS5', kind: 'all', scope: 'project' },
+        id: 'toolu_history_search',
+      }]),
+      buildToolUseResponse([{
+        name: 'read_history',
+        arguments: { kind: 'plan', id: 'history.plan.md', scope: 'project' },
+        id: 'toolu_history_read',
+      }]),
+      buildTextResponse('History loaded'),
+    ])
+    await gateway.start()
+    const sessions = new Database(join(TEST_DIR, '.shogo', 'sessions.db'))
+    sessions.prepare('INSERT OR REPLACE INTO sessions (id, data, updated_at) VALUES (?, ?, ?)').run(
+      'history-chat',
+      JSON.stringify({
+        id: 'history-chat',
+        messages: [{ role: 'user', content: 'We discussed FTS5.' }],
+      }),
+      1,
+    )
+    sessions.close()
+
+    const response = await gateway.processChatMessage('Find the previous history plan')
+    expect(response).toBe('History loaded')
+    expect(capturedMessages.some((messages) => messages.some((message: any) =>
+      typeof message.content === 'string' && message.content.includes('history.plan.md'),
+    ))).toBe(true)
   })
 
   test('heartbeat returns HEARTBEAT_OK', async () => {

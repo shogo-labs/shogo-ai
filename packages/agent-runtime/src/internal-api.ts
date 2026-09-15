@@ -152,6 +152,46 @@ export async function postWorktreeStatus(
   }
 }
 
+export interface PlanMirrorPayload {
+  action?: 'upsert' | 'delete'
+  filename: string
+  name?: string
+  overview?: string
+  status?: string
+  content?: string
+  createdAt?: string
+  projectId?: string
+  workspaceId?: string
+  chatSessionId?: string
+  runtimeKey?: string
+}
+
+export async function postPlanMirror(payload: PlanMirrorPayload): Promise<boolean> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl || !payload.filename) return false
+  try {
+    const response = await fetch(`${apiUrl}/api/internal/plans`, {
+      method: payload.action === 'delete' ? 'DELETE' : 'POST',
+      headers: getInternalHeaders(),
+      body: JSON.stringify({
+        ...payload,
+        projectId: payload.projectId || process.env.PROJECT_ID || undefined,
+        workspaceId: payload.workspaceId || process.env.WORKSPACE_ID || undefined,
+        runtimeKey: payload.runtimeKey || process.env.WORKSPACE_RUNTIME_KEY || process.env.PROJECT_ID || undefined,
+      }),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!response.ok) {
+      console.warn(`[Runtime] postPlanMirror HTTP ${response.status} for ${payload.filename}`)
+      return false
+    }
+    return true
+  } catch (error: any) {
+    console.warn('[Runtime] postPlanMirror failed:', error?.message ?? error)
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Checkpoint read/rollback wrappers (WS4)
 //

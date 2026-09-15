@@ -111,7 +111,8 @@ import {
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
 import {
@@ -360,6 +361,19 @@ async function reportHeartbeatComplete(projectId: string): Promise<void> {
 // =============================================================================
 
 let agentGateway: any = null
+let historyIndex: HistoryIndex | null = null
+let historyIndexWorkspaceDir: string | null = null
+function getHistoryIndex(): HistoryIndex {
+  if (historyIndex && historyIndexWorkspaceDir !== WORKSPACE_DIR) {
+    historyIndex.close()
+    historyIndex = null
+  }
+  if (!historyIndex) {
+    historyIndex = new HistoryIndex(WORKSPACE_DIR)
+    historyIndexWorkspaceDir = WORKSPACE_DIR
+  }
+  return historyIndex
+}
 let s3SyncInstance: import('@shogo/shared-runtime').S3Sync | null = null
 let gitSyncInstance: GitWorkspaceSync | null = null
 /** Resolves once the deferred local git bootstrap (initializeEssentials) has run; see gitLayerReady users. */
@@ -1707,7 +1721,12 @@ app.post('/agent/chat', async (c) => {
     if (ideContext) {
       userText = userText ? `${userText}\n\n${ideContext}` : ideContext
     }
-    const referencedContext = buildReferencedContext(body.references, WORKSPACE_DIR)
+    const referencedContext = buildReferencedContext(body.references, WORKSPACE_DIR, {
+      history: getHistoryIndex(),
+      currentChatSessionId:
+        c.req.header('X-Chat-Session-Id') ||
+        (typeof body.chatSessionId === 'string' ? body.chatSessionId : undefined),
+    })
     if (referencedContext) {
       userText = userText ? `${userText}\n\n${referencedContext}` : referencedContext
     }
@@ -1759,13 +1778,18 @@ app.post('/agent/chat', async (c) => {
     )
   }
   const chatSessionKey = rawChatSessionKey
+  const sessionManager = agentGateway!.getSessionManager()
+  sessionManager.getOrCreate(chatSessionKey)
+  if (typeof body.chatSessionName === 'string' && body.chatSessionName.trim()) {
+    sessionManager.setSessionMetadata(chatSessionKey, { title: body.chatSessionName.trim().slice(0, 200) })
+  }
 
   // Seed the chat session with prior conversation history from the request.
   // AI SDK clients and eval runners send the full message array each turn;
   // the session is the authoritative store so we only seed when it's empty
   // to avoid duplicating messages on subsequent turns.
   if (allMessages.length > 1) {
-    const sessionMgr = agentGateway!.getSessionManager()
+    const sessionMgr = sessionManager
     const session = sessionMgr.getOrCreate(chatSessionKey)
     if (session.messages.length === 0) {
       const priorMessages = allMessages.slice(0, -1)
@@ -2353,6 +2377,13 @@ app.put('/agent/plans/:filename', async (c) => {
   ].join('\n')
 
   writeFileSync(filepath, content, 'utf-8')
+  void postPlanMirror({
+    filename,
+    name: updatedName,
+    overview: updatedOverview,
+    status: body.status ?? existingStatus,
+    content,
+  })
   return c.json({ updated: true, filename })
 })
 
@@ -2366,6 +2397,7 @@ app.delete('/agent/plans/:filename', async (c) => {
     return c.json({ error: 'Plan not found' }, 404)
   }
   unlinkSync(filepath)
+  void postPlanMirror({ filename, action: 'delete' })
   return c.json({ deleted: true })
 })
 
@@ -2415,6 +2447,7 @@ app.post('/agent/plans/:filename/summarize', async (c) => {
     })
     const next = upsertSummarySection(current, summary)
     writeFileSync(filepath, next, 'utf-8')
+    void postPlanMirror({ filename, content: next, name, overview })
     return c.json({ summary })
   } catch (err: any) {
     return c.json({ error: err?.message || 'Summary generation failed' }, 500)
@@ -4046,6 +4079,19 @@ app.post('/agent/workspace/search', async (c) => {
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
   }
+})
+
+app.get('/agent/history/search', (c) => {
+  const query = c.req.query('q') || c.req.query('query') || ''
+  const rawKind = c.req.query('kind') || 'all'
+  const kind = rawKind === 'chat' || rawKind === 'plan' ? rawKind : 'all'
+  const rawLimit = Number(c.req.query('limit') || 8)
+  const results = getHistoryIndex().search(query, {
+    kind,
+    limit: Number.isFinite(rawLimit) ? rawLimit : 8,
+    excludeRefId: c.req.query('exclude') || undefined,
+  })
+  return c.json({ query, kind, results, count: results.length })
 })
 
 // Re-index files (manual trigger)

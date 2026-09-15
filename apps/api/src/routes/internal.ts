@@ -31,6 +31,7 @@ import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { resolve as resolvePath } from 'path'
+import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
 
 const app = new Hono()
 
@@ -707,6 +708,99 @@ app.get('/workspaces/:workspaceId/projects', async (c) => {
       attachMode: attached.find((row) => row.projectId === project.id)?.attachMode ?? null,
     })),
   })
+})
+
+app.get('/workspaces/:workspaceId/history/search', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const rawKind = c.req.query('kind')
+  const kind = rawKind === 'chat' || rawKind === 'plan' ? rawKind : 'all'
+  return c.json({
+    workspaceId,
+    kind,
+    ...(await searchWorkspaceHistory({
+      workspaceId,
+      query: c.req.query('q') || c.req.query('query') || '',
+      kind,
+      limit: Number(c.req.query('limit') || 8),
+      excludeSessionId: c.req.query('exclude') || undefined,
+    })),
+  })
+})
+
+app.get('/workspaces/:workspaceId/history/read', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const kind = c.req.query('kind')
+  const id = c.req.query('id')
+  if ((kind !== 'chat' && kind !== 'plan') || !id) return c.json({ error: 'kind and id are required' }, 400)
+  if (kind === 'plan') {
+    const plan = await readWorkspacePlan(id, { workspaceId })
+    return plan ? c.json(plan) : c.json({ error: 'Not found' }, 404)
+  }
+  const transcript = await renderWorkspaceTranscript(id, {
+    workspaceId,
+    from: Number(c.req.query('from') || 0),
+    limit: Number(c.req.query('limit') || 100),
+  })
+  return transcript ? c.json(transcript) : c.json({ error: 'Not found' }, 404)
+})
+
+app.get('/chat-sessions/:chatSessionId/transcript', async (c) => {
+  const chatSessionId = c.req.param('chatSessionId')
+  const workspaceId = c.req.query('workspaceId')
+  if (!workspaceId || !(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const transcript = await renderWorkspaceTranscript(chatSessionId, {
+    workspaceId,
+    from: Number(c.req.query('from') || 0),
+    limit: Number(c.req.query('limit') || 100),
+  })
+  return transcript ? c.json(transcript) : c.json({ error: 'Not found' }, 404)
+})
+
+app.post('/plans', async (c) => {
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body.filename !== 'string' || typeof body.content !== 'string') return c.json({ error: 'filename and content are required' }, 400)
+  const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
+  const workspaceId = typeof body.workspaceId === 'string'
+    ? body.workspaceId
+    : projectId
+      ? (await (prisma as any).project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }))?.workspaceId ?? null
+      : null
+  if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const where = { projectId: projectId ?? null, filename: body.filename }
+  const existing = await (prisma as any).plan.findFirst({ where })
+  const data = {
+    workspaceId,
+    projectId: projectId ?? null,
+    chatSessionId: typeof body.chatSessionId === 'string' ? body.chatSessionId : null,
+    runtimeKey: typeof body.runtimeKey === 'string' ? body.runtimeKey : null,
+    filename: body.filename,
+    name: typeof body.name === 'string' ? body.name : body.filename,
+    overview: typeof body.overview === 'string' ? body.overview : '',
+    status: typeof body.status === 'string' ? body.status : 'pending',
+    content: body.content,
+    ...(body.createdAt ? { createdAt: new Date(String(body.createdAt)) } : {}),
+  }
+  const plan = existing
+    ? await (prisma as any).plan.update({ where: { id: existing.id }, data })
+    : await (prisma as any).plan.create({ data })
+  return c.json(plan)
+})
+
+app.delete('/plans', async (c) => {
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body.filename !== 'string') return c.json({ error: 'filename is required' }, 400)
+  const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
+  const workspaceId = typeof body.workspaceId === 'string'
+    ? body.workspaceId
+    : projectId
+      ? (await (prisma as any).project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }))?.workspaceId ?? null
+      : null
+  if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const existing = await (prisma as any).plan.findFirst({ where: { projectId: projectId ?? null, filename: body.filename } })
+  if (existing) await (prisma as any).plan.delete({ where: { id: existing.id } })
+  return c.json({ deleted: Boolean(existing) })
 })
 
 app.post('/workspaces/:workspaceId/sessions/:sessionId/members', async (c) => {

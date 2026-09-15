@@ -87,7 +87,7 @@ import {
   nextProminentComposerHeight,
 } from "./useProminentComposerExpansion"
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
-import { AgentClient } from "@shogo-ai/sdk/agent"
+import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { useChatContextSafe } from "./ChatContext"
 import type { IdeContextState, IdeFileResult } from "./ideBridge"
@@ -185,6 +185,8 @@ export type ChatReference =
   | { type: "file"; path: string; name: string; label?: string }
   | { type: "folder"; path: string; name: string; label?: string }
   | { type: "project"; id: string; name: string; label?: string }
+  | { type: "chat"; id: string; name: string; projectId?: string; label?: string; transcript?: string }
+  | { type: "plan"; planId: string; filename: string; name: string; projectId?: string; label?: string; content?: string }
   | { type: "workspace"; id: string; name: string; slug: string; summary?: string; label?: string }
 
 /** Lightweight sibling-project shape the composer needs for the "@" menu. */
@@ -198,6 +200,8 @@ type MentionItem =
   | { kind: "file"; path: string; name: string }
   | { kind: "folder"; path: string; name: string }
   | { kind: "project"; id: string; name: string }
+  | { kind: "chat"; id: string; name: string; projectId?: string; result: AgentHistoryResult }
+  | { kind: "plan"; id: string; name: string; filename: string; projectId?: string; result: AgentHistoryResult }
 
 const MAX_MENTION_FILE_RESULTS = 8
 const MAX_IDE_MENTION_FILE_RESULTS = 80
@@ -207,6 +211,8 @@ function referenceKey(ref: ChatReference): string {
   if (ref.type === "file") return `file:${ref.path}`
   if (ref.type === "folder") return `folder:${ref.path}`
   if (ref.type === "project") return `project:${ref.id}`
+  if (ref.type === "chat") return `chat:${ref.id}`
+  if (ref.type === "plan") return `plan:${ref.planId}`
   return `workspace:${ref.id}`
 }
 
@@ -371,6 +377,8 @@ export interface ChatInputProps {
    * ChatInput doesn't re-render every render.
    */
   projects?: ProjectMentionOption[]
+  chatSessionId?: string | null
+  workspaceHistorySearch?: (query: string, kind?: "chat" | "plan") => Promise<AgentHistoryResult[]>
   ideMode?: boolean
   ideContext?: IdeContextState
   ideFileSearch?: (query?: string) => Promise<IdeFileResult[]>
@@ -437,6 +445,8 @@ function ChatInputImpl({
   restoreDraftRequest,
   projectId,
   projects = [],
+  chatSessionId,
+  workspaceHistorySearch,
   ideMode = false,
   ideContext,
   ideFileSearch,
@@ -645,6 +655,7 @@ function ChatInputImpl({
   const [mentionQuery, setMentionQuery] = useState("")
   const [mentionIndex, setMentionIndex] = useState(0)
   const [fileResults, setFileResults] = useState<IdeFileResult[]>([])
+  const [historyResults, setHistoryResults] = useState<AgentHistoryResult[]>([])
   // Per-project cache of the workspace file list, so name matching as the user
   // types is instant and doesn't refetch the tree on every keystroke.
   const treeFilesRef = useRef<{
@@ -816,6 +827,43 @@ function ChatInputImpl({
     }
   }, [showMentionMenu, mentionQuery, agentClient, projectId, ideMode, ideFileSearch, ideContext?.workspaceItems])
 
+  useEffect(() => {
+    if (!showMentionMenu || ideMode) {
+      setHistoryResults([])
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      try {
+        const local = agentClient
+          ? await agentClient.searchHistory(mentionQuery.trim(), {
+              kind: "all",
+              limit: 8,
+              exclude: chatSessionId || undefined,
+            })
+          : []
+        const remote = workspaceHistorySearch
+          ? await workspaceHistorySearch(mentionQuery.trim())
+          : []
+        if (!cancelled) {
+          const seen = new Set<string>()
+          setHistoryResults([...local, ...remote].filter((result) => {
+            const key = `${result.kind}:${result.id}`
+            if (seen.has(key) || (result.kind === "chat" && result.id === chatSessionId)) return false
+            seen.add(key)
+            return true
+          }).slice(0, 12))
+        }
+      } catch {
+        if (!cancelled) setHistoryResults([])
+      }
+    }, 180)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [showMentionMenu, mentionQuery, agentClient, chatSessionId, workspaceHistorySearch, ideMode])
+
   const filteredProjects = useMemo(() => {
     if (ideMode) return []
     const q = mentionQuery.trim().toLowerCase()
@@ -829,7 +877,16 @@ function ChatInputImpl({
     return matched.slice(0, MAX_MENTION_PROJECT_RESULTS)
   }, [projects, mentionQuery, ideMode])
 
-  // Flat, ordered list backing keyboard navigation (files first, then projects).
+  const historyItems = useMemo<MentionItem[]>(
+    () => historyResults.map((result) =>
+      result.kind === "chat"
+        ? { kind: "chat", id: result.id, name: result.title, projectId: result.projectId, result }
+        : { kind: "plan", id: result.id, name: result.title, filename: result.filename || result.id, projectId: result.projectId, result }
+    ),
+    [historyResults],
+  )
+
+  // Flat, ordered list backing keyboard navigation (files, projects, chats, plans).
   const mentionItems = useMemo<MentionItem[]>(
     () => [
       ...fileResults.map((f) => ({ kind: f.type, path: f.path, name: f.name })),
@@ -838,8 +895,9 @@ function ChatInputImpl({
         id: p.id,
         name: p.name,
       })),
+      ...historyItems,
     ],
-    [fileResults, filteredProjects]
+    [fileResults, filteredProjects, historyItems]
   )
 
   const addReference = useCallback((ref: ChatReference) => {
@@ -860,7 +918,7 @@ function ChatInputImpl({
       cancelPendingTextChangeFlush()
       const base = inputValueRef.current
       const token = mentionTokenRef.current
-      const label = `@${item.kind === "project" ? slugifyMention(item.name) : item.name}`
+      const label = `@${item.kind === "project" ? slugifyMention(item.name) : item.kind === "chat" ? `chat:${item.id}` : item.kind === "plan" ? `plan:${slugifyMention(item.name)}` : item.name}`
       let caret: number
       if (token) {
         const start = Math.max(0, Math.min(token.start, base.length))
@@ -883,8 +941,26 @@ function ChatInputImpl({
         addReference({ type: "file", path: item.path, name: item.name, label })
       } else if (item.kind === "folder") {
         addReference({ type: "folder", path: item.path, name: item.name, label })
-      } else {
+      } else if (item.kind === "project") {
         addReference({ type: "project", id: item.id, name: item.name, label })
+      } else if (item.kind === "chat") {
+        addReference({
+          type: "chat",
+          id: item.id,
+          name: item.name,
+          projectId: item.projectId,
+          label,
+          ...(item.result.transcript ? { transcript: item.result.transcript } : {}),
+        })
+      } else {
+        addReference({
+          type: "plan",
+          planId: item.id,
+          filename: item.filename,
+          name: item.name,
+          projectId: item.projectId,
+          label,
+        })
       }
 
       closeMentionMenu()
@@ -1397,6 +1473,55 @@ function ChatInputImpl({
                         <Text className="flex-1 text-xs text-foreground" numberOfLines={1}>
                           {proj.name}
                         </Text>
+                      </Pressable>
+                    )
+                  })}
+                </>
+              )}
+
+              {historyItems.filter((item) => item.kind === "chat").length > 0 && (
+                <>
+                  <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Chats
+                  </Text>
+                  {historyItems.filter((item): item is Extract<MentionItem, { kind: "chat" }> => item.kind === "chat").map((chat, i) => {
+                    const idx = fileResults.length + filteredProjects.length + i
+                    return (
+                      <Pressable
+                        key={`mention-chat-${chat.id}`}
+                        onPress={() => selectMention(chat)}
+                        className={cn("w-full flex-row items-center gap-2 px-3 py-1.5", idx === mentionIndex && "bg-accent")}
+                      >
+                        <Bot className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        <View className="flex-1 min-w-0">
+                          <Text className="text-xs text-foreground" numberOfLines={1}>{chat.name}</Text>
+                          {chat.result.projectName && <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>{chat.result.projectName}</Text>}
+                        </View>
+                      </Pressable>
+                    )
+                  })}
+                </>
+              )}
+
+              {historyItems.filter((item) => item.kind === "plan").length > 0 && (
+                <>
+                  <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Plans
+                  </Text>
+                  {historyItems.filter((item): item is Extract<MentionItem, { kind: "plan" }> => item.kind === "plan").map((plan, i) => {
+                    const chatCount = historyItems.filter((item) => item.kind === "chat").length
+                    const idx = fileResults.length + filteredProjects.length + chatCount + i
+                    return (
+                      <Pressable
+                        key={`mention-plan-${plan.id}`}
+                        onPress={() => selectMention(plan)}
+                        className={cn("w-full flex-row items-center gap-2 px-3 py-1.5", idx === mentionIndex && "bg-accent")}
+                      >
+                        <ClipboardList className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        <View className="flex-1 min-w-0">
+                          <Text className="text-xs text-foreground" numberOfLines={1}>{plan.name}</Text>
+                          <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>{plan.filename}</Text>
+                        </View>
                       </Pressable>
                     )
                   })}

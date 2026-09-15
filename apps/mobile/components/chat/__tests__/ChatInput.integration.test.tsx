@@ -157,19 +157,48 @@ mock.module("../../voice-mode/ChatBridgeContext", () => ({
   useChatBridgeOptional: () => null,
 }))
 mock.module("../turns/AskUserQuestionWidget", () => ({ AskUserQuestionWidget: () => null }))
+let mentionHistoryResults: any[] = []
 mock.module("@shogo-ai/sdk/agent", () => ({
   AgentClient: class {
     getWorkspaceTree = mock(async () => [])
     searchFiles = mock(async () => [])
+    searchHistory = mock(async () => mentionHistoryResults)
   },
 }))
 mock.module("../../../lib/agent-fetch", () => ({ agentFetch: fetch }))
-mock.module("../ChatContext", () => ({ useChatContextSafe: () => null }))
+let chatContext: any = null
+mock.module("../ChatContext", () => ({ useChatContextSafe: () => chatContext }))
 mock.module("../EnvironmentPicker", () => ({ EnvironmentPicker: () => null }))
 
 const { ChatInput } = await import("../ChatInput")
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  mentionHistoryResults = []
+  chatContext = null
+})
+
+describe("ChatInput integration — chat and plan mentions", () => {
+  test("renders Chats and Plans sections and submits structured references", async () => {
+    mentionHistoryResults = [
+      { kind: "chat", id: "chat-1", title: "SQLite decision", snippet: "Use SQLite", score: 1, projectId: "project-1" },
+      { kind: "plan", id: "plan-1", title: "History Search", filename: "history.plan.md", snippet: "Search", score: 1, projectId: "project-1" },
+    ]
+    chatContext = { agentUrl: "http://runtime.test" }
+    const onSubmit = mock(() => {})
+    render(<ChatInput onSubmit={onSubmit} isPro />)
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "@" } })
+      await new Promise((resolve) => setTimeout(resolve, 240))
+    })
+    expect(screen.getByText("Chats")).toBeTruthy()
+    expect(screen.getByText("Plans")).toBeTruthy()
+    fireEvent.click(screen.getByText("SQLite decision"))
+    expect(input.value).toContain("@chat:chat-1")
+    expect(screen.getByText("History Search")).toBeTruthy()
+  })
+})
 
 describe("ChatInput integration — mobile-web TextInput changes", () => {
   test("repeated same-value TextInput echoes do not cause nested update-depth failures", async () => {

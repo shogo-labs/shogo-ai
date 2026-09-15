@@ -25,6 +25,8 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+mock.module('@shogo-ai/sdk/cloud-file-transport', () => ({}))
+
 // ─── Mocks for all transient dependencies ─────────────────────────────
 
 const k8sAuth = {
@@ -42,6 +44,19 @@ const runtimeToken = {
   ),
 }
 mock.module('../lib/runtime-token', () => runtimeToken)
+
+let workspaceTokenFixture: { workspaceId: string } | null = null
+mock.module('../lib/workspace-runtime-token', () => ({
+  verifyWorkspaceRuntimeToken: mock((_token: string) =>
+    workspaceTokenFixture
+      ? { ok: true, workspaceId: workspaceTokenFixture.workspaceId }
+      : { ok: false, reason: 'bad' },
+  ),
+  deriveWorkspaceRuntimeToken: (workspaceId: string) => `workspace-token:${workspaceId}`,
+}))
+mock.module('../lib/project-runtime-token', () => ({
+  resolveProjectWorkspaceId: async () => 'workspace-1',
+}))
 
 const previewToken = {
   verifyPreviewToken: mock(async (_t: string) =>
@@ -61,10 +76,26 @@ mock.module('../lib/warm-pool-controller', () => warmPoolMock)
 
 // Prisma mock
 let projectFindFirstImpl: (args: any) => Promise<any> = async () => null
+let historyProjectIds: Array<{ id: string }> = []
+let historySession: any = null
+let historyPlan: any = null
 let agentConfigState: Map<string, any>
 const prismaMock = {
   project: {
     findFirst: (args: any) => projectFindFirstImpl(args),
+    findMany: async () => historyProjectIds,
+  },
+  member: { findFirst: async () => ({ id: 'member-1' }) },
+  chatSession: {
+    findMany: async () => historySession ? [historySession] : [],
+    findFirst: async () => historySession,
+  },
+  plan: {
+    findMany: async () => historyPlan ? [historyPlan] : [],
+    findFirst: async () => historyPlan,
+    create: async ({ data }: any) => ({ id: 'plan-created', ...data }),
+    update: async ({ data }: any) => ({ id: 'plan-updated', ...data }),
+    delete: async ({ where }: any) => ({ id: where.id }),
   },
   agentConfig: {
     findUnique: async ({ where }: any) => agentConfigState.get(where.projectId) ?? null,
@@ -133,6 +164,10 @@ beforeEach(() => {
   k8sAuth.validatePodToken.mockImplementation(async () => null)
   runtimeToken.verifyRuntimeToken.mockClear()
   runtimeToken.verifyRuntimeToken.mockImplementation(() => ({ ok: false, reason: 'bad' }))
+  workspaceTokenFixture = null
+  historyProjectIds = []
+  historySession = null
+  historyPlan = null
   previewToken.verifyPreviewToken.mockClear()
   previewToken.verifyPreviewToken.mockImplementation(async () => null)
   buildProjectEnvImpl = async () => ({ PROJECT_ID: 'p1', FOO: 'bar' })
@@ -597,6 +632,56 @@ describe('GET /subagent-overrides/resolve', () => {
       { headers: k8sHeaders() },
     )
     expect(res.status).toBe(500)
+  })
+
+  test('workspace history routes enforce token scope and render chat transcripts', async () => {
+    workspaceTokenFixture = { workspaceId: 'workspace-1' }
+    historyProjectIds = [{ id: 'project-1' }]
+    historySession = {
+      id: 'chat-1',
+      name: 'Earlier chat',
+      inferredName: '',
+      contextType: 'project',
+      contextId: 'project-1',
+      createdAt: new Date(),
+      lastActiveAt: new Date(),
+      project: { id: 'project-1', name: 'App' },
+      messages: [{ role: 'user', content: 'SQLite history', createdAt: new Date() }],
+    }
+    const headers = { 'x-runtime-token': 'workspace-token' }
+    const denied = await app.request('/workspaces/other/history/search?q=SQLite', { headers })
+    expect(denied.status).toBe(401)
+    const search = await app.request('/workspaces/workspace-1/history/search?q=SQLite', { headers })
+    expect(search.status).toBe(200)
+    expect((await search.json()).results[0].id).toBe('chat-1')
+    const transcript = await app.request('/chat-sessions/chat-1/transcript?workspaceId=workspace-1', { headers })
+    expect(transcript.status).toBe(200)
+    expect((await transcript.json()).messages[0].text).toContain('SQLite')
+  })
+
+  test('workspace plan mirror route upserts and deletes within token scope', async () => {
+    workspaceTokenFixture = { workspaceId: 'workspace-1' }
+    const headers = { 'x-runtime-token': 'workspace-token' }
+    const body = {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      filename: 'history.plan.md',
+      name: 'History',
+      content: '# History',
+    }
+    const created = await app.request('/plans', {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    expect(created.status).toBe(200)
+    expect((await created.json()).filename).toBe('history.plan.md')
+    const deleted = await app.request('/plans', {
+      method: 'DELETE',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    expect(deleted.status).toBe(200)
   })
 })
 

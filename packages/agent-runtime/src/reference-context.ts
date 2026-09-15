@@ -27,12 +27,15 @@
 import { Dirent, existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { resolve, sep } from 'path'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
+import type { HistoryIndex } from './history-index'
 
 /** Structured reference shape mirrored from the web composer. */
 export type ChatReference =
   | { type: 'file'; path?: string; name?: string }
   | { type: 'folder'; path?: string; name?: string }
   | { type: 'project'; id?: string; name?: string }
+  | { type: 'chat'; id?: string; name?: string; projectId?: string; label?: string; transcript?: string }
+  | { type: 'plan'; filename?: string; name?: string; planId?: string; projectId?: string; label?: string; content?: string }
   | { type: 'workspace'; id?: string; name?: string; slug?: string; summary?: string }
 
 /** Per-file inlined-content cap. Larger files are truncated. */
@@ -224,6 +227,10 @@ export function buildIdeContext(ideContext: unknown): string {
 export function buildReferencedContext(
   references: unknown,
   workspaceDir: string,
+  options: {
+    history?: Pick<HistoryIndex, 'readChat' | 'readPlan'>
+    currentChatSessionId?: string
+  } = {},
 ): string {
   if (!Array.isArray(references) || references.length === 0) return ''
 
@@ -234,7 +241,35 @@ export function buildReferencedContext(
     if (!raw || typeof raw !== 'object') continue
     const ref = raw as ChatReference
 
-    if (ref.type === 'file') {
+    if (ref.type === 'chat') {
+      const id = typeof ref.id === 'string' ? ref.id : ''
+      if (!id || id === options.currentChatSessionId) {
+        if (id === options.currentChatSessionId) sections.push(`[Referenced Chat: ${ref.name || id}] (current chat omitted)`)
+        continue
+      }
+      let transcript = typeof ref.transcript === 'string' ? ref.transcript : ''
+      if (!transcript && options.history) {
+        const chat = options.history.readChat(id, { limit: 100 })
+        transcript = chat
+          ? [
+              `Title: ${chat.title}`,
+              chat.summary ? `Summary: ${chat.summary}` : '',
+              ...chat.messages.map((message) => `${message.role}: ${message.text}`),
+            ].filter(Boolean).join('\n')
+          : ''
+      }
+      sections.push(
+        `[Referenced Chat: ${ref.label || ref.name || id}]\n${transcript || '(chat transcript unavailable)'}\n[End of Referenced Chat]`,
+      )
+    } else if (ref.type === 'plan') {
+      const filename = typeof ref.filename === 'string' ? ref.filename : ''
+      let content = typeof ref.content === 'string' ? ref.content : ''
+      if (!content && filename && options.history) content = options.history.readPlan(filename)?.content || ''
+      if (!content && ref.planId && options.history) content = options.history.readPlan(ref.planId)?.content || ''
+      sections.push(
+        `[Referenced Plan: ${ref.label || ref.name || filename || ref.planId || 'plan'}]\n${content || '(plan content unavailable)'}\n[End of Referenced Plan]`,
+      )
+    } else if (ref.type === 'file') {
       const relPath = typeof ref.path === 'string' ? ref.path : ''
       if (!relPath) continue
 

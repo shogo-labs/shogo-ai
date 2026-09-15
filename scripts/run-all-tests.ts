@@ -110,6 +110,7 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
     files: [
       'e2e/ez-mode-persistence.test.ts',
       'e2e/project-export-import.test.ts',
+      'e2e/history-search.test.ts',
     ],
     env: {
       SHOGO_LOCAL_MODE: 'true',

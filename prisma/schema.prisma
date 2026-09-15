@@ -184,6 +184,7 @@ model Workspace {
   slackInstallation      SlackWorkspaceInstallation?
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
+  plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
 
   @@index([createdAt])
@@ -303,6 +304,7 @@ model Project {
   inviteLinks            InviteLink[]
   featureSessions        FeatureSession[]
   chatSessions           ChatSession[]
+  plans                 Plan[]
   usageEvents            UsageEvent[]
   liveSessionMeters      LiveSessionMeter[]
   checkpoints            ProjectCheckpoint[]
@@ -1184,11 +1186,38 @@ model ChatSession {
   attachedProjects ChatSessionProject[]
   messages         ChatMessage[]
   toolCallLogs     ToolCallLog[]
+  plans            Plan[]
 
   @@index([contextType, contextId])
   @@index([workspaceId])
   @@index([createdAt])
   @@map("chat_sessions")
+}
+
+model Plan {
+  id            String   @id @default(uuid())
+  workspaceId   String?
+  projectId     String?
+  chatSessionId String?
+  runtimeKey    String?
+  filename      String
+  name          String
+  overview      String   @default("")
+  status        String   @default("pending")
+  content       String   @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, filename])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([chatSessionId])
+  @@index([updatedAt])
+  @@map("plans")
 }
 
 /// Projects attached to a workspace-scoped ChatSession. The workspace

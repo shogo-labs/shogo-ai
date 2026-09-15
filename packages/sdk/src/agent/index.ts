@@ -47,6 +47,7 @@ export type {
   AgentClientConfig,
   AgentExportBundle,
   AgentImportResult,
+  AgentHistoryResult,
   AgentPlanSummary,
   AgentStatus,
   CanvasViewerFormFactor,
