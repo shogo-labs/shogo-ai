@@ -8,8 +8,8 @@
 #   refs/tags/v1.13.34           → 1.13.34   (unified release)
 #   refs/tags/android-v1.13.34   → 1.13.34   (Android-only)
 #   refs/tags/ios-v1.13.34       → 1.13.34   (iOS-only)
-#   production workflow_dispatch → nearest v* tag
-#   staging / main               → apps/mobile/app.json
+#   production dispatch / main   → latest existing v* production tag
+#   staging                     → apps/mobile/app.json
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -37,7 +37,10 @@ elif [[ "$ENV" == production ]]; then
   TAG="$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
   if [[ -n "$TAG" ]]; then
     VERSION="${TAG#v}"
-    SOURCE="latest v* tag (production dispatch)"
+    SOURCE="current production tag ($TAG)"
+  else
+    echo "::error::No production v* tag was found; refusing to use apps/mobile/app.json as a production version."
+    exit 1
   fi
 fi
 
