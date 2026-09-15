@@ -57,6 +57,7 @@ const EXEMPT: Record<string, string> = {
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',
   instanceSubscription: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   inviteLink: 'Mutated via /api/workspaces/:id/invite-links — resolved by path workspaceId.',
+  liveSessionMeter: 'Counter table written from the signed live-session token workspaceId — not URL-resolvable, same shape as voiceCallMeter.',
   marketplaceInstall: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   marketplaceListing: 'Mutated via /api/projects/:projectId/... — resolved by path projectId.',
   modelExperiment: 'Mutated via workspace/project-scoped routes — resolved by path params.',
