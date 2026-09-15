@@ -166,6 +166,8 @@ export interface AssignedVm {
    * suspend. Persisted so it survives adopt-on-restart. Host-local only.
    */
   runtimeToken?: string
+  /** Mounted member ids for a merged-root workspace runtime. */
+  workspaceMemberIds?: string[]
   /**
    * Set for a SERVER-BACKED published microVM (assign env `SHOGO_PUBLISHED_MODE`
    * + `PUBLISHED_SUBDOMAIN`). Marks this VM as owning a live site's writable
@@ -810,13 +812,82 @@ export class MetalWarmPool {
     console.error(`[pool] guest serial tail (${reason}) project=${a.projectId} vm=${a.handle.id}:\n${tail}`)
   }
 
+  /** Mount a project archive into an already-running workspace microVM. */
+  async mountWorkspaceMember(
+    runtimeKey: string,
+    projectId: string,
+    destDir: string,
+  ): Promise<{ hydrated: boolean }> {
+    const assigned = this.assigned.get(runtimeKey)
+    if (!assigned) throw new Error(`workspace runtime ${runtimeKey} is not assigned`)
+    const env = assigned.runtimeToken ? { RUNTIME_AUTH_SECRET: assigned.runtimeToken } : {}
+    const ref = await this.sourceRef(projectId)
+    if (ref) {
+      await this.applyArchive(assigned.handle, env, ref, `${projectId} workspace member`, destDir)
+    }
+    const response = await fetch(
+      `${assigned.handle.agentUrl}/internal/workspace/members`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(assigned.runtimeToken ? { 'x-runtime-token': assigned.runtimeToken } : {}),
+        },
+        body: JSON.stringify({ id: projectId }),
+        signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      },
+    )
+    if (!response.ok) {
+      throw new Error(`workspace member mount failed (${response.status}): ${await response.text().catch(() => '')}`)
+    }
+    assigned.workspaceMemberIds = [...new Set([...(assigned.workspaceMemberIds ?? []), projectId])]
+    this.writeLive(assigned)
+    return { hydrated: !!ref }
+  }
+
+  /** Export and remove a member from a running workspace microVM. */
+  async unmountWorkspaceMember(
+    runtimeKey: string,
+    projectId: string,
+    destDir: string,
+  ): Promise<{ exported: boolean }> {
+    const assigned = this.assigned.get(runtimeKey)
+    if (!assigned) return { exported: false }
+    const bytes = await this.fetchExport(assigned.handle, assigned.runtimeToken, destDir)
+    let exported = false
+    if (bytes) {
+      const outcome = await this.uploadBackupGuarded(projectId, bytes, {
+        adoptWhenUnknown: true,
+      })
+      exported = outcome.status === 'created' || outcome.status === 'written' || outcome.status === 'adopted' || outcome.status === 'promoted'
+    }
+    const response = await fetch(
+      `${assigned.handle.agentUrl}/internal/workspace/members/${encodeURIComponent(projectId)}`,
+      {
+        method: 'DELETE',
+        headers: assigned.runtimeToken ? { 'x-runtime-token': assigned.runtimeToken } : {},
+        signal: AbortSignal.timeout(10_000),
+      },
+    )
+    if (!response.ok) {
+      throw new Error(`workspace member unmount failed (${response.status}): ${await response.text().catch(() => '')}`)
+    }
+    assigned.workspaceMemberIds = (assigned.workspaceMemberIds ?? []).filter((id) => id !== projectId)
+    this.writeLive(assigned)
+    return { exported }
+  }
+
   /**
    * Open a project on this host: resume its snapshot if one exists (hot local
    * OR durable store), else claim+assign a warm VM. Concurrent opens for the
    * same project collapse into one via singleflight (no double cold-boot / no
    * racing resumes).
    */
-  async open(projectId: string, env: Record<string, string> = {}): Promise<OpenResult> {
+  async open(
+    projectId: string,
+    env: Record<string, string> = {},
+    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+  ): Promise<OpenResult> {
     const r = await this.openFlight.run(projectId, async () => {
       // Idempotent: if the project is already live here, hand back the same VM
       // rather than restoring a duplicate from the store (which a re-/assign
@@ -836,6 +907,10 @@ export class MetalWarmPool {
         if (this.mgr.isRunning(live.handle) && (await this.isGuestHealthy(live.handle))) {
           live.lastTouchedAt = Date.now()
           live.lastHealthOk = true
+          if (bind?.attachedProjectIds) {
+            live.workspaceMemberIds = [...bind.attachedProjectIds]
+            this.writeLive(live)
+          }
           // `reused`: re-attached an already-running VM (no boot, no resume).
           // The control plane records this as a warm hit, not a cold miss.
           return { handle: live.handle, mode: 'assigned' as const, reused: true }
@@ -875,7 +950,7 @@ export class MetalWarmPool {
           this.evictLocal(projectId)
         }
       }
-      const a = await this.assign(projectId, env)
+      const a = await this.assign(projectId, env, bind)
       return { handle: a.handle, mode: 'assigned' as const }
     })
     // Always-on: paid tiers (control plane sets SHOGO_ALWAYS_ON) must never be
@@ -900,7 +975,11 @@ export class MetalWarmPool {
   }
 
   /** Claim + assign a warm VM to a project (or boot one on a cold miss). */
-  async assign(projectId: string, env: Record<string, string> = {}): Promise<AssignedVm> {
+  async assign(
+    projectId: string,
+    env: Record<string, string> = {},
+    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+  ): Promise<AssignedVm> {
     let vm = this.claim()
     if (!vm) vm = await this.heavy.run(() => this.bootOne(false))
 
@@ -912,7 +991,11 @@ export class MetalWarmPool {
       const res = await fetch(`${vm.handle.agentUrl}/pool/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, env }),
+        body: JSON.stringify({
+          projectId,
+          env,
+          ...(bind?.workspaceId ? { workspaceId: bind.workspaceId, attachedProjectIds: bind.attachedProjectIds ?? [] } : {}),
+        }),
         signal: AbortSignal.timeout(30000),
       })
       if (!res.ok) throw new Error(`/pool/assign failed (${res.status}): ${await res.text()}`)
@@ -932,6 +1015,10 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       lastRealActivityAt: now,
       runtimeToken: env.RUNTIME_AUTH_SECRET,
+      workspaceMemberIds:
+        typeof env.WORKSPACE_PROJECT_IDS === 'string'
+          ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
+          : undefined,
       publishedSubdomain,
       // Provisional: a warm VM boots from the template. Promoted to 'backup'
       // below iff hydrate applies real source; a hydrate that CAN'T confirm the
@@ -954,7 +1041,9 @@ export class MetalWarmPool {
     // snapshotted/backed up over their real source on the next idle-suspend.
     // Tear the VM down and surface the error so the control plane retries.
     try {
-      const h = await this.hydrateFromBackup(projectId, vm.handle, env)
+      const h = projectId.startsWith('ws:')
+        ? { hydrated: false as const }
+        : await this.hydrateFromBackup(projectId, vm.handle, env)
       if (h.hydrated) {
         a.workspaceOrigin = 'backup'
         a.backupParentEtag = h.parentEtag
@@ -966,6 +1055,18 @@ export class MetalWarmPool {
       this.live.remove(projectId)
       await this.mgr.stopVM(vm.handle).catch(() => {})
       throw err
+    }
+
+    if (projectId.startsWith('ws:')) {
+      try {
+        await this.hydrateWorkspaceMembers(a, env)
+      } catch (err: any) {
+        console.error(`[pool] workspace member hydrate failed for ${projectId}:`, err?.message ?? err)
+        this.assigned.delete(projectId)
+        this.live.remove(projectId)
+        await this.mgr.stopVM(vm.handle).catch(() => {})
+        throw err
+      }
     }
 
     // Overlay the project's durable WRITABLE STATE (database + uploads) on top
@@ -980,7 +1081,9 @@ export class MetalWarmPool {
     // untrusted is what stops that empty database from being exported over the
     // user's data — the exact incident this subsystem exists to prevent.
     try {
-      const d = await this.hydrateProjectData(projectId, vm.handle, env)
+      const d = projectId.startsWith('ws:')
+        ? { hydrated: false as const }
+        : await this.hydrateProjectData(projectId, vm.handle, env)
       if (d.hydrated) {
         a.dataParentEtag = d.parentEtag
         this.writeLive(a)
@@ -1003,7 +1106,9 @@ export class MetalWarmPool {
     // starts serving chat. A failed overlay must not later overwrite the
     // durable archive with the template seed `.git`.
     try {
-      const r = await this.hydrateRepo(projectId, vm.handle, env)
+      const r = projectId.startsWith('ws:')
+        ? { hydrated: false as const }
+        : await this.hydrateRepo(projectId, vm.handle, env)
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         this.writeLive(a)
@@ -1103,6 +1208,7 @@ export class MetalWarmPool {
     env: Record<string, string>,
     ref: ArchiveRef,
     what: string,
+    destDir?: string,
   ): Promise<void> {
     const token = env.RUNTIME_AUTH_SECRET
     const auth = token ? { Authorization: `Bearer ${token}` } : {}
@@ -1125,7 +1231,7 @@ export class MetalWarmPool {
       const res = await fetch(`${handle.agentUrl}/pool/hydrate-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...auth },
-        body: JSON.stringify({ url, bytes: ref.bytes, timeoutMs: budgetMs }),
+        body: JSON.stringify({ url, bytes: ref.bytes, timeoutMs: budgetMs, ...(destDir ? { destDir } : {}) }),
         // The guest holds the transfer open for the whole pull, so the host's
         // own deadline has to cover it with room to answer.
         signal: AbortSignal.timeout(budgetMs + 30_000),
@@ -1149,7 +1255,11 @@ export class MetalWarmPool {
     const bytes = await ref.load()
     const res = await fetch(`${handle.agentUrl}/pool/hydrate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/gzip', ...auth },
+      headers: {
+        'Content-Type': 'application/gzip',
+        ...auth,
+        ...(destDir ? { 'x-shogo-dest-dir': destDir } : {}),
+      },
       ...this.archiveBody(bytes),
       signal: AbortSignal.timeout(this.hydrateBudgetMs(bytes.byteLength)),
     } as any)
@@ -1204,10 +1314,14 @@ export class MetalWarmPool {
    * `protected` seam so tests can inject bytes (or null) without a live guest.
    * Returns null when the guest reports nothing to back up (204, empty project).
    */
-  protected async fetchExport(handle: FcVmHandle, token?: string): Promise<Uint8Array | null> {
+  protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<Uint8Array | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export`, {
       method: 'POST',
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...(dir ? { body: JSON.stringify({ dir }) } : {}),
       signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
     })
     if (res.status === 204) return null
@@ -1302,6 +1416,46 @@ export class MetalWarmPool {
       }
       case 'skipped':
         break
+    }
+  }
+
+  private async saveWorkspaceMembersToStore(a: AssignedVm): Promise<void> {
+    for (const projectId of a.workspaceMemberIds ?? []) {
+      try {
+        const bytes = await this.fetchExport(
+          a.handle,
+          a.runtimeToken,
+          `/app/workspace/${projectId}`,
+        )
+        if (!bytes) continue
+        const outcome = await this.uploadBackupGuarded(projectId, bytes, {
+          adoptWhenUnknown: true,
+        })
+        if (['created', 'written', 'adopted', 'promoted'].includes(outcome.status)) {
+          console.log(`[pool] saved workspace member backup for ${projectId} (${bytes.byteLength} bytes)`)
+        } else {
+          console.warn(`[pool] workspace member backup for ${projectId} was not promoted (${outcome.status})`)
+        }
+      } catch (error: any) {
+        console.error(`[pool] workspace member backup failed for ${projectId}:`, error?.message ?? error)
+      }
+    }
+  }
+
+  private async hydrateWorkspaceMembers(a: AssignedVm, env: Record<string, string>): Promise<void> {
+    for (const projectId of a.workspaceMemberIds ?? []) {
+      const ref = await this.sourceRef(projectId)
+      if (!ref) {
+        console.log(`[pool] no durable backup for workspace member ${projectId} — keeping its seeded directory`)
+        continue
+      }
+      await this.applyArchive(
+        a.handle,
+        env,
+        ref,
+        `${projectId} workspace member`,
+        `/app/workspace/${projectId}`,
+      )
     }
   }
 
@@ -1805,9 +1959,13 @@ export class MetalWarmPool {
       // the latest source and push it to the durable S3 backup so a resume on a
       // DIFFERENT metal machine (snapshot miss) still cold-hydrates real source.
       // Best-effort — the snapshot below is the primary cross-host resume path.
-      await this.saveBackupToStore(a).catch((err) =>
-        console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
-      )
+      if (a.projectId.startsWith('ws:')) {
+        await this.saveWorkspaceMembersToStore(a)
+      } else {
+        await this.saveBackupToStore(a).catch((err) =>
+          console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
+        )
+      }
 
       // Same for writable state (database + uploads), and for the same reason:
       // the snapshot is not a backup. A rootfs rebuild invalidates every
@@ -2052,6 +2210,10 @@ export class MetalWarmPool {
       // Carry the runtime token so /pool/export (source backup on suspend) and
       // adopt-on-restart keep working after a resume, not just after an assign.
       runtimeToken: env.RUNTIME_AUTH_SECRET || undefined,
+      workspaceMemberIds:
+        typeof env.WORKSPACE_PROJECT_IDS === 'string'
+          ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
+          : undefined,
       // Carry the published marker so a resumed server-backed site keeps
       // exporting its writable state (the resume env re-asserts it).
       publishedSubdomain: publishedSubdomainFromEnv(env),

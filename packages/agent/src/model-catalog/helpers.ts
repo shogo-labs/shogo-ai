@@ -11,6 +11,7 @@ import {
   type ModelTier,
   type ModelFamily,
   type ModelGeneration,
+  type ModelKind,
   type AgentMode,
   type BillingModel,
   type Provider,
@@ -185,6 +186,23 @@ export function modelSupportsAudioInput(id: string): boolean {
   return entry?.capabilities?.supportsAudioInput === true
 }
 
+/** Return the transport kind for a model. Unannotated catalog entries are chat models. */
+export function getModelKind(id: string): ModelKind {
+  return getModelEntry(id)?.kind ?? 'chat'
+}
+
+/** Whether a model uses the persistent Live Sessions transport. */
+export function isLiveModel(id: string): boolean {
+  return getModelKind(id) === 'live'
+}
+
+/** Calculate the provider charge for a Live session, billed per second. */
+export function calculateLiveSessionCost(id: string, seconds: number): number {
+  const perMinute = getModelEntry(id)?.usdPerMinute ?? 0
+  if (!Number.isFinite(seconds) || seconds <= 0 || perMinute <= 0) return 0
+  return (seconds / 60) * perMinute
+}
+
 // ---------------------------------------------------------------------------
 // Family (for UI color coding)
 // ---------------------------------------------------------------------------
@@ -225,6 +243,7 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-5.6-terra': { inputPerMillion: 2.50,  cacheWritePerMillion: 3.125, cachedInputPerMillion: 0.25, outputPerMillion: 15.00 },
   'gpt-5.6-sol':   { inputPerMillion: 5.00,  cacheWritePerMillion: 6.25,  cachedInputPerMillion: 0.50, outputPerMillion: 30.00 },
   'gpt-6-astra':   { inputPerMillion: 10.00, cacheWritePerMillion: 12.50, cachedInputPerMillion: 1.00, outputPerMillion: 50.00 },
+  'gpt-live-1':    { inputPerMillion: 0, cacheWritePerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
 }
 
 /**
@@ -283,6 +302,7 @@ export function getSubagentOrchestrationReliability(id: string): CapabilityRatin
 
 export interface AvailableModelFilter {
   generation?: ModelGeneration
+  kind?: ModelKind
   provider?: Provider
   tier?: ModelTier
 }
@@ -294,6 +314,7 @@ export interface AvailableModelFilter {
 export function getAvailableModels(filter: AvailableModelFilter = { generation: 'current' }): ModelEntry[] {
   return Object.values(MODEL_CATALOG).filter(entry => {
     if (filter.generation && entry.generation !== filter.generation) return false
+    if ((filter.kind ?? 'chat') !== ((entry as ModelEntry).kind ?? 'chat')) return false
     if (filter.provider && entry.provider !== filter.provider) return false
     if (filter.tier && entry.tier !== filter.tier) return false
     return true

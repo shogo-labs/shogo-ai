@@ -45,6 +45,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { slackAgentRoutes } from './routes/slack-agent'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
@@ -57,6 +58,14 @@ import { gitLfsRoutes } from './routes/git-lfs'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
+import { aiLiveRoutes } from './routes/ai-live'
+import { authenticateLiveHeaders } from './lib/live-auth'
+import {
+  isLiveRelayData,
+  liveRelayClose,
+  liveRelayMessage,
+  liveRelayOpen,
+} from './lib/live-session-relay'
 import { publicApiRoutes } from './routes/public-api'
 import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
@@ -1466,6 +1475,9 @@ app.route('/api', syncRoutes())
 // workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+// Workspace-level Slack base agent. Slack's Events API must terminate at one
+// stable API URL, then route each request to an enabled project runtime.
+app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
@@ -7669,6 +7681,7 @@ app.post('/api/webhooks/stripe', async (c) => {
 // The proxy uses its own project-scoped token authentication.
 const aiProxy = aiProxyRoutes()
 app.route('/api', aiProxy)
+app.route('/api', aiLiveRoutes())
 
 // Public OpenAI-compatible API. External developers call this with a Shogo API
 // key (`shogo_sk_*`); auth is handled in-route (no session cookies / runtime
@@ -8783,6 +8796,32 @@ export default {
   hostname: "0.0.0.0",
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
+    if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const livePrimary = url.pathname === '/api/ai/v1/live/sessions'
+      const liveAttach = /^\/api\/ai\/v1\/live\/sessions\/([^/]+)\/attach$/.exec(url.pathname)
+      if (livePrimary || liveAttach) {
+        const tokenPayload = await authenticateLiveHeaders(req.headers)
+        if (!tokenPayload) return new Response('Unauthorized', { status: 401 })
+        let sessionId: string | undefined
+        try {
+          sessionId = liveAttach ? decodeURIComponent(liveAttach[1]) : undefined
+        } catch {
+          return new Response('Invalid session id', { status: 400 })
+        }
+        const data = {
+          kind: 'live-relay' as const,
+          tokenPayload,
+          ...(sessionId ? { sessionId, attach: true } : {}),
+        }
+        const upgradeOptions: Record<string, unknown> = { data }
+        if (req.headers.get('sec-websocket-protocol')?.includes('shogo-insecure-api-key.')) {
+          upgradeOptions.headers = { 'Sec-WebSocket-Protocol': 'shogo-live' }
+        }
+        const upgraded = server.upgrade(req, upgradeOptions)
+        if (upgraded) return undefined
+        return new Response('Live WebSocket upgrade failed', { status: 500 })
+      }
+    }
     if (url.pathname === '/api/instances/ws' && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const authResult = await authenticateInstanceWs(req)
       if (!authResult) {
@@ -8824,15 +8863,18 @@ export default {
   },
   websocket: {
     open(ws: any) {
-      if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
+      if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
+      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
-      if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
+      if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
+      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
+      if (isLiveRelayData(ws.data)) liveRelayClose(ws)
+      else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },

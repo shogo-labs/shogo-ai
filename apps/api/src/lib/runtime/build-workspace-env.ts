@@ -73,6 +73,9 @@ export interface BuildWorkspaceEnvOpts {
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
   _loadProjects?: (projectIds: string[]) => Promise<Array<{ id: string; name: string | null }>>
+  _loadAvailableProjects?: (
+    workspaceId: string,
+  ) => Promise<Array<{ id: string; name: string | null; description?: string | null }>>
   /**
    * Cloud per-project DB provisioning. When supplied, called once per
    * attached project to obtain that project's isolated DATABASE_URL (e.g. a
@@ -161,6 +164,26 @@ export async function buildWorkspaceEnv(
     // Preserve attach order; fall back to the id when a name is missing.
     const manifest = attachedProjectIds.map((id) => ({ id, name: nameById.get(id) || id }))
     env.WORKSPACE_PROJECTS = JSON.stringify(manifest)
+
+    const loadAvailable =
+      opts._loadAvailableProjects ??
+      (async (id: string) => {
+        const { prisma } = await import('../prisma')
+        return (await prisma.project.findMany({
+          where: { workspaceId: id },
+          select: { id: true, name: true, description: true },
+          orderBy: { name: 'asc' },
+          take: 500,
+        })) as Array<{ id: string; name: string | null; description?: string | null }>
+      })
+    const available = await loadAvailable(workspaceId)
+    env.WORKSPACE_AVAILABLE_PROJECTS = JSON.stringify(
+      available.map((project) => ({
+        id: project.id,
+        name: project.name || project.id,
+        description: project.description ? project.description.slice(0, 240) : null,
+      })),
+    )
   } catch (err: any) {
     console.error(`[${prefix}] Failed to build project catalog for workspace ${workspaceId}:`, err?.message)
   }

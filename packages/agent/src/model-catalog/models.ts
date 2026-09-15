@@ -25,9 +25,10 @@ export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
+export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
-  | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna'
+  | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -82,8 +83,12 @@ export interface ModelEntry {
   tier: ModelTier
   family: ModelFamily
   generation: ModelGeneration
+  /** `chat` models use the OpenAI-compatible LLM gateway; `live` models use a session transport. */
+  kind?: ModelKind
   billingModel: BillingModel
   maxOutputTokens: number
+  /** Provider charge in USD per minute for session-based models. */
+  usdPerMinute?: number
   /**
    * Optional capability ratings — see `ModelCapabilities`. Absent for
    * unrated catalog entries and for dynamically-added OpenRouter
@@ -321,6 +326,21 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 128_000,
     // Not yet run through the subagent-smoke eval — unrated until verified
     // (see `ModelCapabilities` doc comment above).
+  },
+  'gpt-live-1': {
+    id: 'gpt-live-1',
+    provider: 'openai',
+    apiModel: 'gpt-live-1',
+    displayName: 'GPT-Live 1',
+    shortDisplayName: 'GPT-Live 1',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'current',
+    kind: 'live',
+    billingModel: 'gpt-live-1',
+    maxOutputTokens: 0,
+    usdPerMinute: 0.05,
+    description: 'Full-duplex voice conversations with interruption handling and backend delegation.',
   },
 
   // OpenAI — audio-native (accepts `input_audio` content blocks directly;

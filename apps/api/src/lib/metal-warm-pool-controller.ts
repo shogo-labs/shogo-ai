@@ -25,6 +25,7 @@
 
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { buildProjectEnv, buildPublishedProjectEnv } from './runtime/build-project-env'
+import { buildWorkspaceEnv } from './runtime/build-workspace-env'
 import { getMetalPlacementRegistry, type HostScalars, type MetalPlacementRegistry } from './metal-placement-registry'
 
 /**
@@ -508,6 +509,55 @@ export class MetalWarmPoolController {
     return this.resolveRuntime(projectId, () => this.envBuilder(projectId, { forMetal: true }))
   }
 
+  /** Resolve a merged-root workspace microVM on Metal. */
+  async getMetalWorkspaceUrl(
+    workspaceId: string,
+    attachedProjectIds: string[],
+    opts: { anchorProjectId?: string; readonlyProjectIds?: string[] } = {},
+  ): Promise<string> {
+    const key = `ws:${workspaceId}`
+    return this.resolveRuntime(key, () =>
+      buildWorkspaceEnv(workspaceId, attachedProjectIds, {
+        forMetal: true,
+        anchorProjectId: opts.anchorProjectId,
+        readonlyProjectIds: opts.readonlyProjectIds,
+      }),
+      { workspaceId, attachedProjectIds },
+    )
+  }
+
+  /**
+   * Proxy a live workspace member operation through the metal host. The API
+   * pod can reach the host control port over the mesh, while the guest URL is
+   * intentionally only used for normal runtime traffic.
+   */
+  async workspaceMember(
+    workspaceId: string,
+    action: 'mount' | 'unmount',
+    projectId: string,
+    destDir: string,
+  ): Promise<Record<string, unknown>> {
+    const runtimeKey = `ws:${workspaceId}`
+    const hostId = this.projectHost.get(runtimeKey)
+    const host = hostId ? this.hosts.get(hostId) : undefined
+    if (!host) throw new Error(`No Metal host placement for workspace ${workspaceId}`)
+    const path =
+      action === 'mount'
+        ? `/runtimes/${encodeURIComponent(runtimeKey)}/members`
+        : `/runtimes/${encodeURIComponent(runtimeKey)}/members/${encodeURIComponent(projectId)}`
+    const response = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}${path}`, {
+      method: action === 'mount' ? 'POST' : 'DELETE',
+      headers: this.agentHeaders(),
+      body: JSON.stringify({ projectId, destDir }),
+      signal: AbortSignal.timeout(10 * 60_000),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(body?.error || `metal workspace member HTTP ${response.status}`)
+    }
+    return body
+  }
+
   /**
    * Resolve ANY runtime key (a bare projectId for dev/preview, or
    * `published:{id}` for a live site) to a mesh-routable URL. Shares the whole
@@ -516,7 +566,11 @@ export class MetalWarmPoolController {
    * aware routing as a preview VM. `buildEnv` supplies the assign env lazily
    * (only built once the lease is held / a host is available).
    */
-  private async resolveRuntime(runtimeKey: string, buildEnv: () => Promise<Record<string, string>>): Promise<string> {
+  private async resolveRuntime(
+    runtimeKey: string,
+    buildEnv: () => Promise<Record<string, string>>,
+    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+  ): Promise<string> {
     // Fast path: an already-resolved, still-running runtime returns its cached
     // URL without touching the host — killing the per-request /assign churn that
     // a client polling loop (e.g. a stuck preview iframe) would otherwise create.
@@ -528,7 +582,7 @@ export class MetalWarmPoolController {
     }
     const inflight = this.pending.get(runtimeKey)
     if (inflight) return inflight
-    const p = this._resolve(runtimeKey, buildEnv).finally(() => this.pending.delete(runtimeKey))
+    const p = this._resolve(runtimeKey, buildEnv, bind).finally(() => this.pending.delete(runtimeKey))
     this.pending.set(runtimeKey, p)
     return p
   }
@@ -555,7 +609,11 @@ export class MetalWarmPoolController {
     this.urlCache.delete(projectId)
   }
 
-  private async _resolve(projectId: string, buildEnv: () => Promise<Record<string, string>>): Promise<string> {
+  private async _resolve(
+    projectId: string,
+    buildEnv: () => Promise<Record<string, string>>,
+    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+  ): Promise<string> {
     return tracer.startActiveSpan('metal.get_pod_url', { attributes: { 'project.id': projectId } }, async (span) => {
       try {
         // Anti split brain: acquire a short-TTL lease before resuming. The
@@ -588,7 +646,7 @@ export class MetalWarmPoolController {
 
         for (const host of cands) {
           try {
-            const res = await this.assignOnHost(host, projectId, env)
+            const res = await this.assignOnHost(host, projectId, env, bind)
             this.projectHost.set(projectId, host.hostId)
             // Publish placement so sibling replicas route here (cache-aware) and
             // any lease loser converges on this host. The project is now local.
@@ -904,12 +962,23 @@ export class MetalWarmPoolController {
     return out
   }
 
-  private async assignOnHost(host: HostEntry, projectId: string, env: Record<string, string>): Promise<AssignResult> {
+  private async assignOnHost(
+    host: HostEntry,
+    projectId: string,
+    env: Record<string, string>,
+    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+  ): Promise<AssignResult> {
     const base = `http://${host.meshIp}:${host.agentPort}`
     const res = await this.fetchImpl(`${base}/assign`, {
       method: 'POST',
       headers: this.agentHeaders(),
-      body: JSON.stringify({ projectId, env }),
+      body: JSON.stringify({
+        projectId,
+        env,
+        ...(bind?.workspaceId
+          ? { workspaceId: bind.workspaceId, attachedProjectIds: bind.attachedProjectIds ?? [] }
+          : {}),
+      }),
       signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
     })
     if (!res.ok) {
