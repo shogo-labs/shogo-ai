@@ -509,6 +509,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Written when a user attaches a project to a workspace-scoped chat session (generated chat-session-project route). One user request per attach; the unique pair just dedupes a double-attach of the same project to the same session.',
   },
   {
+    key: 'Plan.(filename,projectId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Runtime plan mirroring upserts one plan filename within its owning project; the runtime capability is scoped to that project/workspace, so this is a single-tenant write rather than a global uniqueness race.',
+  },
+  {
     key: 'ProjectAttachment.(attachedProjectId,projectId)',
     category: 'single_tenant_upsert',
     reason:

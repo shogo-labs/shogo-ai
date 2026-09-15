@@ -442,11 +442,14 @@ describe('gateway-tools', () => {
     test('createTools returns expected tools', () => {
       // Base tool count with every feature flag at its production default
       // (notably SHOGO_SEARCH_ENABLED unset, so `search` is not registered).
-      expect(createTools(createCtx())).toHaveLength(53)
+      // 55 = 53 + `search_history` + `read_history` (chat/plan history search).
+      expect(createTools(createCtx())).toHaveLength(55)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'browser')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'search_history')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'read_history')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeUndefined()
       expect(createTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeUndefined()
     })

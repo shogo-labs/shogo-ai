@@ -26,7 +26,7 @@ import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
 import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
-import { enrichWorkspaceReferences, enrichProjectReferences } from "../lib/chat-references"
+import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from "../lib/chat-references"
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
@@ -1121,7 +1121,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           verifiedUserId,
           project.workspaceId,
         )
-        if (wsChanged || projectRefs.changed) {
+        const historyChanged = await enrichChatReferences(
+          parsedBody,
+          verifiedUserId,
+          projectId,
+          project.workspaceId,
+        )
+        if (wsChanged || projectRefs.changed || historyChanged) {
           body = JSON.stringify(parsedBody)
         }
       }

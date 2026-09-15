@@ -109,6 +109,22 @@ export interface AgentPlanSummary {
   status: string
 }
 
+export interface AgentHistoryResult {
+  kind: 'chat' | 'plan'
+  id: string
+  title: string
+  snippet: string
+  score: number
+  seq?: number
+  projectId?: string
+  projectName?: string
+  filename?: string
+  overview?: string
+  status?: string
+  createdAt: string | number
+  lastActivityAt: string | number
+}
+
 export interface AgentClientConfig {
   baseUrl?: string
   /**

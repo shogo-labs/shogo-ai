@@ -115,6 +115,7 @@ import {
   type ProjectMentionOption,
   type RestoreDraftRequest,
 } from "./ChatInput"
+import type { AgentHistoryResult } from "@shogo-ai/sdk/agent"
 import {
   loadInteractionModePreference,
   saveInteractionModePreference,
@@ -872,6 +873,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (Platform.OS === 'web') return undefined
     return require('expo/fetch').fetch as typeof globalThis.fetch
   }, [])
+
+  const workspaceHistorySearch = useCallback(async (query: string): Promise<AgentHistoryResult[]> => {
+    if (!workspaceId) return []
+    try {
+      const fetchFn = expoFetch ?? globalThis.fetch
+      const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+      const params = new URLSearchParams({ q: query, kind: "all", limit: "12", exclude: chatSessionId || "" })
+      const response = await fetchFn(
+        `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/history/search?${params}`,
+        { headers, credentials: Platform.OS === "web" ? "include" : undefined } as any,
+      )
+      if (!response.ok) return []
+      const data = await response.json()
+      return Array.isArray(data?.results) ? data.results : []
+    } catch {
+      return []
+    }
+  }, [workspaceId, chatSessionId, nativeHeaders, expoFetch])
 
   // Quick actions state
   const [quickActions, setQuickActions] = useState<{ label: string; prompt: string }[]>([])
@@ -4119,6 +4138,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
           featureId,
           phase,
           chatSessionId: currentSessionId,
+          chatSessionName:
+            (currentSession as any)?.name ||
+            (currentSession as any)?.inferredName ||
+            undefined,
           workspaceId,
           userId,
           projectId,
@@ -6080,6 +6103,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               restoreDraftRequest={restoreDraftRequest}
               projectId={projectId}
               projects={projectMentionOptions}
+              chatSessionId={currentSessionId}
+              workspaceHistorySearch={workspaceHistorySearch}
               ideMode={ideMode}
               ideContext={ideBridge.context}
               ideFileSearch={ideBridge.listFiles}

@@ -61,6 +61,7 @@ const EXEMPT: Record<string, string> = {
   marketplaceInstall: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   marketplaceListing: 'Mutated via /api/projects/:projectId/... — resolved by path projectId.',
   modelExperiment: 'Mutated via workspace/project-scoped routes — resolved by path params.',
+  plan: 'Mutated via flat POST/DELETE /api/internal/plans (upsert-by-filename, not path-scoped) — the caller (agent-runtime postPlanMirror) sends workspaceId/projectId as QUERY params, resolved by router steps 2/5b before the body is read.',
   projectAgent: 'Mutated via /api/projects/:projectId/agents — resolved by path projectId.',
   projectAttachment: 'Mutated via /api/projects/:projectId/attachments — resolved by path projectId.',
   projectAuthConfig: 'Mutated via /api/projects/:projectId/auth — resolved by path projectId.',

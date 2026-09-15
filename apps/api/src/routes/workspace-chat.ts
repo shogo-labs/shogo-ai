@@ -44,7 +44,7 @@ import {
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session'
-import { enrichWorkspaceReferences, enrichProjectReferences } from '../lib/chat-references'
+import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
 import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
@@ -592,6 +592,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const wsChanged = await enrichWorkspaceReferences(parsedBody, auth.userId)
       const projectRefs = await enrichProjectReferences(parsedBody, auth.userId, workspaceId)
       const anchorProjectId = runtimeExtra.anchorProjectId
+      const historyChanged = await enrichChatReferences(
+        parsedBody,
+        auth.userId,
+        anchorProjectId,
+        workspaceId,
+      )
       if (anchorProjectId && projectRefs.attachProjectIds.length > 0) {
         const alreadyAttached = new Set(attachedProjectIds)
         const newIds = projectRefs.attachProjectIds.filter(
@@ -619,7 +625,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           }
         }
       }
-      if (wsChanged || projectRefs.changed) body = JSON.stringify(parsedBody)
+      if (wsChanged || projectRefs.changed || historyChanged) body = JSON.stringify(parsedBody)
     }
 
     // Billing anchor: the AI proxy accumulates usage keyed by projectId, and

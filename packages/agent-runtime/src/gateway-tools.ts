@@ -59,6 +59,7 @@ import {
 } from './edit-file-utils'
 import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
+import { HistoryIndex, type HistoryKind } from './history-index'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
@@ -92,6 +93,7 @@ import {
   rollbackCheckpoint as apiRollbackCheckpoint,
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
+  postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
@@ -3214,6 +3216,125 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function createSearchHistoryTool(ctx: ToolContext): AgentTool {
+  let index: HistoryIndex | null = null
+  const local = () => (index ??= new HistoryIndex(ctx.workspaceDir))
+  return {
+    name: 'search_history',
+    description:
+      'Search previous Shogo chats and plans for earlier decisions, conversations, and implementation plans. ' +
+      'Use workspace scope in a multi-project workspace.',
+    label: 'Search Chat History',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Words or a natural-language phrase to search for' }),
+      kind: Type.Optional(Type.Union([Type.Literal('chat'), Type.Literal('plan'), Type.Literal('all')])),
+      scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('workspace')])),
+      limit: Type.Optional(Type.Number()),
+    }),
+    execute: async (_id, raw) => {
+      const params = raw as {
+        query: string
+        kind?: HistoryKind | 'all'
+        scope?: 'project' | 'workspace'
+        limit?: number
+      }
+      const scope = params.scope ?? (workspaceMetaToolEnabled(ctx) ? 'workspace' : 'project')
+      if (scope === 'workspace' && workspaceMetaToolEnabled(ctx)) {
+        try {
+          const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+          const qs = new URLSearchParams({
+            query: params.query,
+            kind: params.kind || 'all',
+            limit: String(params.limit || 8),
+            ...(ctx.userId ? { userId: ctx.userId } : {}),
+            ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+          })
+          return textResult({
+            scope,
+            ...(await workspaceMetaFetch(
+              ctx,
+              `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/search?${qs}`,
+            )),
+          })
+        } catch (error: any) {
+          const results = local().search(params.query, {
+            kind: params.kind,
+            limit: params.limit,
+            excludeRefId: ctx.sessionId,
+          })
+          return textResult({
+            scope: 'project',
+            fallback: true,
+            warning: error?.message || String(error),
+            results,
+            totalMatches: results.length,
+          })
+        }
+      }
+      const results = local().search(params.query, {
+        kind: params.kind,
+        limit: params.limit,
+        excludeRefId: ctx.sessionId,
+      })
+      return textResult({ scope: 'project', results, totalMatches: results.length })
+    },
+  }
+}
+
+function createReadHistoryTool(ctx: ToolContext): AgentTool {
+  let index: HistoryIndex | null = null
+  const local = () => (index ??= new HistoryIndex(ctx.workspaceDir))
+  return {
+    name: 'read_history',
+    description: 'Read a previous chat transcript or plan returned by search_history.',
+    label: 'Read Chat History',
+    parameters: Type.Object({
+      kind: Type.Union([Type.Literal('chat'), Type.Literal('plan')]),
+      id: Type.String(),
+      scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('workspace')])),
+      projectId: Type.Optional(Type.String()),
+      fromSeq: Type.Optional(Type.Number()),
+      limit: Type.Optional(Type.Number()),
+    }),
+    execute: async (_id, raw) => {
+      const params = raw as {
+        kind: 'chat' | 'plan'
+        id: string
+        scope?: 'project' | 'workspace'
+        projectId?: string
+        fromSeq?: number
+        limit?: number
+      }
+      const scope = params.scope ?? (workspaceMetaToolEnabled(ctx) ? 'workspace' : 'project')
+      if (scope === 'workspace' && workspaceMetaToolEnabled(ctx)) {
+        try {
+          const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+          const qs = new URLSearchParams({
+            kind: params.kind,
+            id: params.id,
+            ...(params.projectId ? { projectId: params.projectId } : {}),
+            ...(params.fromSeq != null ? { from: String(params.fromSeq) } : {}),
+            ...(params.limit != null ? { limit: String(params.limit) } : {}),
+          })
+          return textResult({
+            scope,
+            ...(await workspaceMetaFetch(
+              ctx,
+              `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/read?${qs}`,
+            )),
+          })
+        } catch (error: any) {
+          return textResult({ error: error?.message || String(error), kind: params.kind, id: params.id })
+        }
+      }
+      const result = params.kind === 'chat'
+        ? local().readChat(params.id, { fromSeq: params.fromSeq, limit: params.limit })
+        : local().readPlan(params.id)
+      return textResult({ scope: 'project', kind: params.kind, id: params.id, result })
+    },
+  }
+}
+
 function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () => void }> {
   const { spawn } = require('child_process') as typeof import('child_process')
   // Use fileURLToPath so this works on Windows. `new URL(import.meta.url).pathname`
@@ -5414,6 +5535,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemorySearchTool(ctx),
+    createSearchHistoryTool(ctx),
+    createReadHistoryTool(ctx),
     createTodoWriteTool(ctx),
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
@@ -7177,6 +7300,14 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
       mkdirSync(plansDir, { recursive: true })
       const filepath = join(plansDir, filename)
       writeFileSync(filepath, content, 'utf-8')
+      void postPlanMirror({
+        filename,
+        name: params.name,
+        overview: params.overview,
+        status: 'pending',
+        content,
+        chatSessionId: ctx.sessionId,
+      })
 
       if (ctx.uiWriter) {
         ctx.uiWriter.write({
@@ -7295,6 +7426,15 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
       ].join('\n')
 
       writeFileSync(resolved, content, 'utf-8')
+      void postPlanMirror({
+        filename: planFilepath.split('/').pop()!,
+        name: updatedName,
+        overview: updatedOverview,
+        status: existingStatus,
+        content,
+        createdAt: existingCreatedAt,
+        chatSessionId: ctx.sessionId,
+      })
 
       if (ctx.uiWriter) {
         ctx.uiWriter.write({

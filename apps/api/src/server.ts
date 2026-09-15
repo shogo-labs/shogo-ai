@@ -128,6 +128,7 @@ import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverri
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
+import { historyRoutes } from './routes/history'
 // Generated admin CRUD routes (unrestricted, middleware-protected)
 import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
@@ -1475,6 +1476,7 @@ app.route('/api', syncRoutes())
 // workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
