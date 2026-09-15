@@ -21,8 +21,10 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
+  Linking,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
+import { useLocalSearchParams, useRouter } from 'expo-router'
 import {
   Globe as GlobeIcon,
   RefreshCw as RefreshCwIcon,
@@ -37,8 +39,10 @@ import {
 } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
+import { useAuth } from '../../contexts/auth'
 import { api, API_URL } from '../../lib/api'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
+import { SlackProjectsModal, type SlackProjectRow } from './SlackProjectsModal'
 import {
   Card,
   CardContent,
@@ -136,8 +140,16 @@ export function IntegrationsTab() {
     AlertCircle: AlertCircleIcon,
   })
   const http = useDomainHttp()
+  const router = useRouter()
+  // `slackLinked=1` is appended by the `/auth/slack-link` bridge page right
+  // after it finishes linking a Slack account, so this tab can pop open the
+  // project manager with a success banner instead of the user landing on an
+  // unchanged-looking settings page and wondering if anything happened.
+  const searchParams = useLocalSearchParams<{ slackLinked?: string }>()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
+  const { user } = useAuth()
+  const currentUserId = user?.id
 
   const [connections, setConnections] = useState<Connection[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
@@ -152,6 +164,102 @@ export function IntegrationsTab() {
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const [showBrowse, setShowBrowse] = useState(false)
   const [browseQuery, setBrowseQuery] = useState('')
+
+  // ── Shogo Agent for Slack (workspace-level install, separate from the
+  // Composio "Slack" OAuth toolkit listed below) ──────────────────────
+  const [slackAgentConfig, setSlackAgentConfig] = useState<{
+    installed: boolean
+    installation?: { slackTeamId: string; slackTeamName?: string | null } | null
+    projects: SlackProjectRow[]
+  } | null>(null)
+  const [slackAgentLoading, setSlackAgentLoading] = useState(false)
+  const [slackProjectSaving, setSlackProjectSaving] = useState<string | null>(null)
+  const [slackBulkSaving, setSlackBulkSaving] = useState(false)
+  const [slackManageOpen, setSlackManageOpen] = useState(false)
+  const [slackJustLinked, setSlackJustLinked] = useState(false)
+
+  const loadSlackAgentConfig = useCallback(async () => {
+    if (!workspaceId) return
+    setSlackAgentLoading(true)
+    try {
+      const data = await api.getSlackAgentConfig(http, workspaceId)
+      setSlackAgentConfig(data)
+    } catch (err: any) {
+      console.warn(LOG_PREFIX, 'Failed to load Slack Agent config', err)
+      setSlackAgentConfig(null)
+    } finally {
+      setSlackAgentLoading(false)
+    }
+  }, [http, workspaceId])
+
+  useEffect(() => {
+    loadSlackAgentConfig()
+  }, [loadSlackAgentConfig])
+
+  // React to `?slackLinked=1` (see the comment on `searchParams` above).
+  // Waits for `slackAgentConfig` to actually load — opening the modal a
+  // beat before `installed`/`projects` are known would just show an empty
+  // list — then opens the project manager with the success banner, and
+  // strips the query param so a refresh or back-navigation doesn't
+  // re-trigger it.
+  useEffect(() => {
+    if (searchParams.slackLinked !== '1') return
+    if (slackAgentLoading || !slackAgentConfig?.installed) return
+    setSlackJustLinked(true)
+    setSlackManageOpen(true)
+    router.setParams({ slackLinked: undefined } as any)
+  }, [searchParams.slackLinked, slackAgentLoading, slackAgentConfig, router])
+
+  const toggleSlackProject = useCallback(
+    async (projectId: string, enabled: boolean) => {
+      if (!workspaceId) return
+      setSlackProjectSaving(projectId)
+      try {
+        await api.setSlackAgentProjectEnabled(http, workspaceId, projectId, enabled)
+        setSlackAgentConfig((prev) =>
+          prev
+            ? {
+                ...prev,
+                projects: prev.projects.map((p) =>
+                  p.id === projectId ? { ...p, slackEnabled: enabled } : p,
+                ),
+              }
+            : prev,
+        )
+      } catch (err: any) {
+        setError(err?.message ?? String(err))
+      } finally {
+        setSlackProjectSaving(null)
+      }
+    },
+    [http, workspaceId],
+  )
+
+  const bulkToggleSlackProjects = useCallback(
+    async (projectIds: string[], enabled: boolean) => {
+      if (!workspaceId || projectIds.length === 0) return
+      setSlackBulkSaving(true)
+      try {
+        await api.setSlackAgentProjectsEnabled(http, workspaceId, projectIds, enabled)
+        const ids = new Set(projectIds)
+        setSlackAgentConfig((prev) =>
+          prev
+            ? {
+                ...prev,
+                projects: prev.projects.map((p) =>
+                  ids.has(p.id) ? { ...p, slackEnabled: enabled } : p,
+                ),
+              }
+            : prev,
+        )
+      } catch (err: any) {
+        setError(err?.message ?? String(err))
+      } finally {
+        setSlackBulkSaving(false)
+      }
+    },
+    [http, workspaceId],
+  )
 
   const loadConnections = useCallback(async () => {
     if (!workspaceId) return
@@ -313,6 +421,98 @@ export function IntegrationsTab() {
           Connect once here and your agents pick them up automatically.
         </Text>
       </View>
+
+      {/* Shogo Agent for Slack — a single workspace-level install, kept
+          separate from the Composio OAuth list below since it's Slack's
+          native Agents platform (DM/mention the bot), not a per-tool
+          OAuth grant an agent uses to call the Slack API. */}
+      <Card>
+        <CardContent className="p-3">
+          <View className="flex-row items-center gap-3">
+            <View className="w-10 h-10 rounded-md bg-muted items-center justify-center">
+              <Text className="text-lg">🧠</Text>
+            </View>
+            <View className="flex-1">
+              <View className="flex-row items-center gap-2">
+                <Text className="text-sm font-medium text-foreground">
+                  Shogo Agent for Slack
+                </Text>
+                {slackAgentConfig?.installed && (
+                  <View className="flex-row items-center gap-1">
+                    <View className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                    <Text className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                      Active
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text className="text-xs text-muted-foreground mt-0.5">
+                {slackAgentLoading
+                  ? 'Loading…'
+                  : slackAgentConfig?.installed
+                    ? `Installed in ${slackAgentConfig.installation?.slackTeamName ?? 'your Slack workspace'}. DM or @mention it to route requests to any enabled project.`
+                    : 'One workspace-level Shogo agent that can route Slack requests to any project you enable below.'}
+              </Text>
+            </View>
+            {!slackAgentConfig?.installed && (
+              <Pressable
+                onPress={() =>
+                  workspaceId &&
+                  Linking.openURL(
+                    `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
+                  )
+                }
+                className="px-3 py-1.5 bg-primary rounded-md active:bg-primary/80"
+              >
+                <Text className="text-xs text-primary-foreground">Add to Slack</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {slackAgentConfig?.installed && (
+            <View className="mt-3 pt-3 border-t border-border">
+              <View className="flex-row items-center gap-3">
+                <View className="flex-1">
+                  <Text className="text-xs text-foreground">
+                    {slackAgentConfig.projects.filter((p) => p.slackEnabled).length} of{' '}
+                    {slackAgentConfig.projects.length} project
+                    {slackAgentConfig.projects.length === 1 ? '' : 's'} enabled
+                  </Text>
+                  <Text className="text-[11px] text-muted-foreground mt-0.5">
+                    New projects are Slack-enabled by default. In Slack, run{' '}
+                    <Text className="font-mono text-foreground">@Shogo settings</Text> to set
+                    personal or channel defaults.
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => setSlackManageOpen(true)}
+                  disabled={slackAgentConfig.projects.length === 0}
+                  className="px-3 py-1.5 border border-border rounded-md active:bg-muted"
+                >
+                  <Text className="text-xs text-foreground">Manage projects</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </CardContent>
+      </Card>
+
+      {slackAgentConfig?.installed && (
+        <SlackProjectsModal
+          visible={slackManageOpen}
+          onClose={() => {
+            setSlackManageOpen(false)
+            setSlackJustLinked(false)
+          }}
+          projects={slackAgentConfig.projects}
+          currentUserId={currentUserId}
+          onToggle={toggleSlackProject}
+          onBulkToggle={bulkToggleSlackProjects}
+          savingProjectId={slackProjectSaving}
+          bulkSaving={slackBulkSaving}
+          justLinked={slackJustLinked}
+        />
+      )}
 
       {scopeError === 'unsupported' ? (
         <Card>

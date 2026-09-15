@@ -1,6 +1,12 @@
 # dependencies (bun install)
 node_modules
 
+# Slack CLI: per-developer app registration + local manifest-diff cache.
+# `.slack/hooks.json` (shared repo config) stays tracked.
+.slack/apps.dev.json
+.slack/apps.json
+.slack/cache/
+
 # virtual environments
 **/.venv/
 **/.venv.bak/

@@ -84,6 +84,12 @@ export interface ResolveWorkspaceRuntimeOpts {
 
   /** Test-only override: is the workspace-runtime feature enabled? */
   _isEnabled?: () => boolean
+  /**
+   * Internal callers such as Slack have no alternate project-runtime path.
+   * They still use the same resolver, but may explicitly opt into the
+   * workspace runtime without requiring the UI feature flag.
+   */
+  alwaysEnabled?: boolean
   /** Test-only override for the K8s mode probe. */
   _isKubernetes?: () => boolean
   /** Test-only override for the metal mode probe. */
@@ -95,12 +101,7 @@ export interface ResolveWorkspaceRuntimeOpts {
     attachedProjectIds: string[],
     opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
   ) => Promise<string>
-  /**
-   * Metal workspace (merged-root microVM) resolver. Injected because the
-   * merged-root metal driver is not built yet. Without it the metal branch
-   * throws a clear "not configured" error instead of silently falling
-   * through to the Knative workspace driver in metal regions.
-   */
+  /** Test seam / optional override for the Metal merged-root microVM resolver. */
   _metalResolver?: (
     workspaceId: string,
     attachedProjectIds: string[],
@@ -216,24 +217,30 @@ export async function resolveWorkspaceRuntimeUrl(
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
   }
-  if (!isEnabled()) {
+  if (!opts.alwaysEnabled && !isEnabled()) {
     throw new WorkspaceRuntimeNotEnabledError(workspaceId)
   }
 
   // Metal takes precedence over the k8s (Knative) branch: in metal regions the
-  // API pod runs IN Kubernetes, so without this a workspace runtime would wrongly
-  // create a Knative `workspace-{id}` Service instead of a metal merged-root VM.
-  // The merged-root metal driver isn't built yet, so we resolve via an injected
-  // `_metalResolver` and otherwise throw a clear not-configured error — never a
-  // silent Knative fallthrough.
+  // API pod runs IN Kubernetes, so a workspace runtime must resolve to a
+  // merged-root microVM rather than creating a Knative Service.
   if (isMetalEnabled()) {
-    if (!opts._metalResolver) {
+    if (!opts._metalResolver && !defaultIsMetalEnabled()) {
       throw new Error(
         `[${tag}] metal workspace runtime driver not configured (merged-root metal microVM ` +
           `not yet wired). Inject _metalResolver — see resolve-workspace-runtime-url.ts.`,
       )
     }
-    const resolver = opts._metalResolver
+    const resolver =
+      opts._metalResolver ??
+      (async (
+        id: string,
+        ids: string[],
+        resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+      ) => {
+        const { getMetalWarmPoolController } = await import('./metal-warm-pool-controller')
+        return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
+      })
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
     const url = await spawnLease(leaseKey, () =>
       resolver(workspaceId, attachedProjectIds, {
@@ -241,6 +248,12 @@ export async function resolveWorkspaceRuntimeUrl(
         readonlyProjectIds: opts.readonlyProjectIds,
       }),
     )
+    try {
+      const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')
+      getWorkspaceKeepWarm().recordOpened(leaseKey, url)
+    } catch {
+      // Keep-warm is an optimization and must never fail a runtime resolve.
+    }
     return { mode: 'metal', url }
   }
 

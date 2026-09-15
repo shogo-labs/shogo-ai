@@ -59,6 +59,8 @@ export function workspaceAttachedProjectIds(env: NodeJS.ProcessEnv = process.env
 export interface WorkspaceProjectEntry {
   id: string
   name: string
+  description?: string | null
+  mounted?: boolean
 }
 
 /**
@@ -81,9 +83,37 @@ export function workspaceProjectsManifest(env: NodeJS.ProcessEnv = process.env):
       const id = typeof (e as any).id === 'string' ? (e as any).id : null
       if (!id) continue
       const name = typeof (e as any).name === 'string' && (e as any).name.length > 0 ? (e as any).name : id
-      out.push({ id, name })
+      const entry: WorkspaceProjectEntry = { id, name }
+      if (typeof (e as any).description === 'string') entry.description = (e as any).description
+      if ((e as any).mounted === true) entry.mounted = true
+      out.push(entry)
     }
     return out
+  } catch {
+    return []
+  }
+}
+
+/** Full project catalog available to a workspace meta-agent. */
+export function workspaceAvailableProjectsManifest(
+  env: NodeJS.ProcessEnv = process.env,
+): WorkspaceProjectEntry[] {
+  if (!isWorkspaceRuntimeMode(env)) return []
+  const raw = env.WORKSPACE_AVAILABLE_PROJECTS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((e) => e && typeof e === 'object' && typeof (e as any).id === 'string')
+      .map((e) => ({
+        id: String((e as any).id),
+        name:
+          typeof (e as any).name === 'string' && (e as any).name.length > 0
+            ? String((e as any).name)
+            : String((e as any).id),
+        description: typeof (e as any).description === 'string' ? String((e as any).description) : null,
+      }))
   } catch {
     return []
   }
@@ -115,7 +145,21 @@ export function renderWorkspaceManifestMarkdown(
       lines.push(`- \`${p.id}/\` — **${p.name}**`)
     }
   }
+  lines.push('## Available projects')
   lines.push('')
+  lines.push(
+    'Projects below are available but not necessarily mounted. Use the `list_projects` tool to refresh this catalog, and use `mount_project` only when you need to inspect or change a project.',
+  )
+  lines.push('')
+  lines.push(
+    '## Previewing a mounted project\'s app',
+    '',
+    'Never construct or hand out a `localhost`/bare-port link yourself (including this runtime\'s own ' +
+      'base URL or `PORT` env var — that only serves the chat/tool API, not any project\'s app). To share a ' +
+      'working preview link, call the `preview_project` tool with the mounted project\'s id and use ONLY the ' +
+      '`url` it returns. If it errors, tell the user honestly rather than guessing a link.',
+    '',
+  )
   lines.push(
     'All of these projects belong to the current user and are part of this',
     'workspace — you have been granted access to every folder above. They are',

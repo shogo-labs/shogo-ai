@@ -1639,6 +1639,25 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * Refresh the host-side merged root for a workspace-keyed runtime without
+   * restarting the agent process. The workspace meta-agent uses this after a
+   * hot mount/unmount so the symlink view matches ChatSessionProject rows.
+   */
+  async refreshWorkspaceMergedRoot(
+    workspaceId: string,
+    memberProjectIds: string[],
+    readonlyProjectIds: string[] = [],
+  ): Promise<{ dir: string; linkedFolders: string[]; readonlyFolders: string[] }> {
+    if (!workspaceId) throw new Error('[RuntimeManager] workspaceId is required')
+    const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
+    if (!existsSync(workspacesDir)) mkdirSync(workspacesDir, { recursive: true })
+    return this.buildWorkspaceMergedRoot(workspacesDir, workspaceId, memberProjectIds, {
+      localFolders: [],
+      readonlyProjectIds,
+    })
+  }
+
+  /**
    * Start (or join an in-flight start of) a PROJECT-ANCHORED merged-root
    * runtime — the universal "every project runs on the workspace runtime"
    * path. Keyed by the anchor project id, it mounts the anchor plus its
