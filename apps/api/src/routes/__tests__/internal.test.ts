@@ -55,6 +55,7 @@ mock.module('../../lib/runtime-token', () => ({
 mock.module('../../lib/workspace-runtime-token', () => ({
   verifyWorkspaceRuntimeToken: (_t: string) =>
     store.workspaceVerify ?? { ok: false, reason: 'malformed' },
+  deriveWorkspaceRuntimeToken: (_workspaceId: string) => 'mock-token',
 }))
 
 mock.module('../../lib/project-runtime-token', () => ({
