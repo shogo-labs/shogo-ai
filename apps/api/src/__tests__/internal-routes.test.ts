@@ -25,8 +25,6 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
-mock.module('@shogo-ai/sdk/cloud-file-transport', () => ({}))
-
 // ─── Mocks for all transient dependencies ─────────────────────────────
 
 const k8sAuth = {

@@ -170,13 +170,25 @@ export async function postPlanMirror(payload: PlanMirrorPayload): Promise<boolea
   const apiUrl = deriveApiUrl()
   if (!apiUrl || !payload.filename) return false
   try {
-    const response = await fetch(`${apiUrl}/api/internal/plans`, {
+    const projectId = payload.projectId || process.env.PROJECT_ID || undefined
+    const workspaceId = payload.workspaceId || process.env.WORKSPACE_ID || undefined
+    // workspaceId/projectId MUST also be query params, not just body fields:
+    // the API's home-region router resolves writes from the URL only (never
+    // the body, since it may need to buffer/replay it to proxy the request),
+    // so a body-only workspaceId would silently handle this write locally
+    // instead of routing it to the workspace's home region. See the
+    // `POST /plans` comment in apps/api/src/routes/internal.ts.
+    const query = new URLSearchParams()
+    if (workspaceId) query.set('workspaceId', workspaceId)
+    if (projectId) query.set('projectId', projectId)
+    const qs = query.toString()
+    const response = await fetch(`${apiUrl}/api/internal/plans${qs ? `?${qs}` : ''}`, {
       method: payload.action === 'delete' ? 'DELETE' : 'POST',
       headers: getInternalHeaders(),
       body: JSON.stringify({
         ...payload,
-        projectId: payload.projectId || process.env.PROJECT_ID || undefined,
-        workspaceId: payload.workspaceId || process.env.WORKSPACE_ID || undefined,
+        projectId,
+        workspaceId,
         runtimeKey: payload.runtimeKey || process.env.WORKSPACE_RUNTIME_KEY || process.env.PROJECT_ID || undefined,
       }),
       signal: AbortSignal.timeout(5_000),

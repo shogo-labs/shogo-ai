@@ -108,8 +108,17 @@ describe('AgentGateway integration', () => {
 
     const response = await gateway.processChatMessage('Find the previous history plan')
     expect(response).toBe('History loaded')
+    // `read_history`'s result lands in a `toolResult` message, whose
+    // `content` is a block array (`[{ type: 'text', text }]`), not a plain
+    // string — unlike a simple `user` message. Extract text from both shapes.
+    const textOf = (content: unknown): string =>
+      typeof content === 'string'
+        ? content
+        : Array.isArray(content)
+          ? content.filter((c: any) => c?.type === 'text').map((c: any) => c.text).join('\n')
+          : ''
     expect(capturedMessages.some((messages) => messages.some((message: any) =>
-      typeof message.content === 'string' && message.content.includes('history.plan.md'),
+      textOf(message.content).includes('history.plan.md'),
     ))).toBe(true)
   })
 

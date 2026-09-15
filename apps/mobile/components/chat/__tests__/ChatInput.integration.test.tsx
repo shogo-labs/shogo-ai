@@ -194,9 +194,13 @@ describe("ChatInput integration — chat and plan mentions", () => {
     })
     expect(screen.getByText("Chats")).toBeTruthy()
     expect(screen.getByText("Plans")).toBeTruthy()
+    // Both mention results render while the "@" dropdown is open. Assert the
+    // plan item's title BEFORE selecting the chat item below — clicking a
+    // mention closes the dropdown, so "History Search" (only rendered inside
+    // it) would no longer be in the DOM afterward.
+    expect(screen.getByText("History Search")).toBeTruthy()
     fireEvent.click(screen.getByText("SQLite decision"))
     expect(input.value).toContain("@chat:chat-1")
-    expect(screen.getByText("History Search")).toBeTruthy()
   })
 })
 

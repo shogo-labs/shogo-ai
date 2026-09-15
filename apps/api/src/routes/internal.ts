@@ -759,14 +759,21 @@ app.get('/chat-sessions/:chatSessionId/transcript', async (c) => {
 })
 
 app.post('/plans', async (c) => {
+  // `workspaceId`/`projectId` are read from the QUERY string (not just the
+  // body) so `resolveWorkspaceIdForRequest` can home-region-route this write
+  // via its normal path/query resolution (steps 2/5b) *before* the body is
+  // read/proxied. The router deliberately never reads the body — a body-only
+  // workspaceId falls through to "handle locally", which is wrong here since
+  // this route can UPDATE an existing row (upsert-by-filename), not just
+  // create one. Callers (see `postPlanMirror`) must send both as query params.
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
   if (!body || typeof body.filename !== 'string' || typeof body.content !== 'string') return c.json({ error: 'filename and content are required' }, 400)
-  const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
-  const workspaceId = typeof body.workspaceId === 'string'
+  const projectId = c.req.query('projectId') || (typeof body.projectId === 'string' ? body.projectId : undefined)
+  const workspaceId = c.req.query('workspaceId') || (typeof body.workspaceId === 'string'
     ? body.workspaceId
     : projectId
       ? (await (prisma as any).project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }))?.workspaceId ?? null
-      : null
+      : null)
   if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return c.json({ error: 'Unauthorized' }, 401)
   const where = { projectId: projectId ?? null, filename: body.filename }
   const existing = await (prisma as any).plan.findFirst({ where })
@@ -789,14 +796,16 @@ app.post('/plans', async (c) => {
 })
 
 app.delete('/plans', async (c) => {
+  // See the POST /plans comment above: workspaceId/projectId must come from
+  // the query string for the home-region router to resolve this write.
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
   if (!body || typeof body.filename !== 'string') return c.json({ error: 'filename is required' }, 400)
-  const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
-  const workspaceId = typeof body.workspaceId === 'string'
+  const projectId = c.req.query('projectId') || (typeof body.projectId === 'string' ? body.projectId : undefined)
+  const workspaceId = c.req.query('workspaceId') || (typeof body.workspaceId === 'string'
     ? body.workspaceId
     : projectId
       ? (await (prisma as any).project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }))?.workspaceId ?? null
-      : null
+      : null)
   if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return c.json({ error: 'Unauthorized' }, 401)
   const existing = await (prisma as any).plan.findFirst({ where: { projectId: projectId ?? null, filename: body.filename } })
   if (existing) await (prisma as any).plan.delete({ where: { id: existing.id } })
