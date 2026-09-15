@@ -33,6 +33,13 @@ export interface ShogoClientConfig<DB = unknown> {
   shogoApiKey?: string
 
   /**
+   * Browser-safe project-scoped key used by `client.chat`. Unlike
+   * `shogoApiKey`, this key is origin-allowlisted and limited to public chat
+   * routes. It is safe to expose in a browser bundle.
+   */
+  publishableKey?: string
+
+  /**
    * Override the Shogo Cloud base URL used by `client.llm` (no trailing slash,
    * no `/api/ai/v1` suffix). Defaults to `https://studio.shogo.ai`. Useful for
    * staging / self-hosted Shogo deployments.

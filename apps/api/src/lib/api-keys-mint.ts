@@ -7,7 +7,7 @@
  * and the device-code login `/cli/login/approve` route (`routes/cli-auth.ts`)
  * mint device-tagged keys that must be byte-identical in shape:
  *
- *   - Same `shogo_sk_` prefix + 32 random bytes hex-encoded.
+ *   - Same `shogo_sk_` / `shogo_pk_` prefix + 32 random bytes hex-encoded.
  *   - Same SHA-256 hash strategy for the persisted `keyHash` column.
  *   - Same prefix-prefix length stored in `keyPrefix` (used as a key hint
  *     in the dashboard and for deduping search).
@@ -27,11 +27,13 @@
  */
 
 import crypto from 'crypto'
-import type { PrismaClient } from '@prisma/client'
+import type { PrismaClient } from '../generated/prisma-pg/client'
 
 /** Public prefix on every minted key. Matched against incoming Bearer
  * tokens to short-circuit obvious non-API-key inputs. */
 export const SHOGO_API_KEY_PREFIX = 'shogo_sk_'
+/** Browser-safe, project-scoped API key prefix. */
+export const SHOGO_PUBLISHABLE_KEY_PREFIX = 'shogo_pk_'
 
 /** Random suffix length in BYTES (hex-encoded → 2× chars on the wire). */
 export const SHOGO_API_KEY_RANDOM_BYTES = 32
@@ -41,6 +43,8 @@ export const SHOGO_API_KEY_RANDOM_BYTES = 32
  * portion. */
 export const SHOGO_API_KEY_PREFIX_DISPLAY_LENGTH =
   SHOGO_API_KEY_PREFIX.length + 8
+export const SHOGO_PUBLISHABLE_KEY_PREFIX_DISPLAY_LENGTH =
+  SHOGO_PUBLISHABLE_KEY_PREFIX.length + 8
 
 /**
  * SHA-256 the raw bearer token to the value we persist in
@@ -81,6 +85,25 @@ export async function generateApiKey(): Promise<{
   const fullKey = `${SHOGO_API_KEY_PREFIX}${generateRawKeySuffix()}`
   const keyHash = await hashApiKey(fullKey)
   const keyPrefix = fullKey.slice(0, SHOGO_API_KEY_PREFIX_DISPLAY_LENGTH)
+  return { fullKey, keyHash, keyPrefix }
+}
+
+/**
+ * Generate a browser-safe publishable key. Publishable keys are intentionally
+ * distinguishable from workspace secret keys so auth middleware can apply a
+ * narrow project-scoped route allowlist before doing any work.
+ */
+export async function generatePublishableApiKey(): Promise<{
+  fullKey: string
+  keyHash: string
+  keyPrefix: string
+}> {
+  const fullKey = `${SHOGO_PUBLISHABLE_KEY_PREFIX}${generateRawKeySuffix()}`
+  const keyHash = await hashApiKey(fullKey)
+  const keyPrefix = fullKey.slice(
+    0,
+    SHOGO_PUBLISHABLE_KEY_PREFIX_DISPLAY_LENGTH,
+  )
   return { fullKey, keyHash, keyPrefix }
 }
 

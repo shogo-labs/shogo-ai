@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useMemo, useSyncExternalStore, useState, useCallback, useEffect, useRef } from "react"
-import { View, Text, ScrollView, Pressable, StyleSheet } from "react-native"
+import { View, Text, ScrollView, Pressable, StyleSheet, TextInput } from "react-native"
+import * as Clipboard from "expo-clipboard"
 import {
   Bot,
   CheckCircle2,
@@ -20,6 +21,7 @@ import {
   TrendingUp,
   AlertTriangle,
   Square,
+  Copy,
 } from "lucide-react-native"
 import { Motion } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -36,6 +38,7 @@ import {
   NATIVE_PHONE_SYSTEM_GRAY,
 } from "../../../lib/native-phone-layout"
 import { NativePhonePane } from "../../phone/NativePhonePane";
+import { API_URL } from "../../../lib/api"
 import { subagentStreamStore, type SubagentStreamData } from "../../../lib/subagent-stream-store"
 import { stopSubagent } from "../../../lib/subagent-stop"
 import { resolveShortName } from "../../../lib/visible-models"
@@ -53,12 +56,13 @@ import type { MessagePart } from "../../chat/turns/types"
 interface AgentsPanelProps {
   visible: boolean
   selectedToolId?: string | null
+  projectId?: string | null
   /** Agent runtime base URL — threaded through to the Live browser screencast
    *  subscription under each running subagent card. */
   agentUrl?: string | null
 }
 
-type SubTab = "activity" | "tasks" | "team" | "registry"
+type SubTab = "activity" | "tasks" | "team" | "registry" | "embed"
 
 const PULSE_DURATION = 1200
 
@@ -739,6 +743,93 @@ function AgentDetailView({ agent, onBack }: { agent: AgentTypeInfo; onBack: () =
   )
 }
 
+function EmbedSubTab({ projectId, agentUrl }: { projectId?: string | null; agentUrl?: string | null }) {
+  const [transport, setTransport] = useState<'persona' | 'runtime'>('persona')
+  const [publishableKey, setPublishableKey] = useState('YOUR_SHOGO_PUBLISHABLE_KEY')
+  const apiUrl = API_URL || agentUrl || 'https://api.shogo.ai'
+  const id = projectId || 'YOUR_PROJECT_ID'
+  const reactSnippet = `import { createChatClient } from '@shogo-ai/chat'
+import { ChatLauncher } from '@shogo-ai/chat/react'
+
+const client = createChatClient({
+  apiUrl: '${apiUrl}',
+  projectId: '${id}',
+  publishableKey: '${publishableKey}',
+  transport: '${transport}',
+})
+
+export function SupportChat() {
+  return <ChatLauncher client={client} />
+}`
+  const pageSnippet = `<ChatPage client={client} />`
+  const scriptSnippet = `<script
+  src="${apiUrl}/embed/v1/chat.js"
+  data-project-id="${id}"
+  data-publishable-key="${publishableKey}"
+  data-transport="${transport}"
+></script>`
+
+  const copy = (value: string) => void Clipboard.setStringAsync(value)
+  const snippet = transport === 'runtime' ? scriptSnippet : reactSnippet
+
+  return (
+    <ScrollView className="flex-1" contentContainerClassName="px-4 py-4 gap-4">
+      <View className="gap-1">
+        <Text className="text-base font-semibold text-foreground">Embed chat</Text>
+        <Text className="text-xs leading-5 text-muted-foreground">
+          Add the same Shogo chat UI to a customer site as a launcher or full page.
+          Create a publishable key in the Keys screen before deploying.
+        </Text>
+      </View>
+      <View className="flex-row gap-2">
+        {(['persona', 'runtime'] as const).map((value) => (
+          <Pressable
+            key={value}
+            onPress={() => setTransport(value)}
+            className={cn('rounded-md border px-3 py-2', transport === value ? 'border-primary bg-primary/10' : 'border-border')}
+          >
+            <Text className="text-xs text-foreground">{value === 'runtime' ? 'Live runtime' : 'Cloud persona'}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <View className="gap-2">
+        <Text className="text-xs font-medium text-foreground">Publishable key</Text>
+        <View className="flex-row items-center gap-2 rounded-md border border-border px-3 py-2">
+          <TextInput
+            className="flex-1 font-mono text-xs text-foreground"
+            value={publishableKey}
+            onChangeText={setPublishableKey}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="shogo_pk_..."
+          />
+          <Pressable onPress={() => copy(publishableKey)} accessibilityLabel="Copy publishable key">
+            <Copy size={14} className="text-muted-foreground" />
+          </Pressable>
+        </View>
+      </View>
+      {[['React launcher', reactSnippet], ['React full page', pageSnippet], ['Script tag', scriptSnippet]].map(([label, value]) => (
+        <View key={label} className="gap-1">
+          <View className="flex-row items-center justify-between">
+            <Text className="text-xs font-medium text-foreground">{label}</Text>
+            <Pressable onPress={() => copy(value)} className="flex-row items-center gap-1">
+              <Copy size={12} className="text-muted-foreground" />
+              <Text className="text-xs text-muted-foreground">Copy</Text>
+            </Pressable>
+          </View>
+          <Text className="rounded-md border border-border bg-muted/30 p-3 font-mono text-[10px] leading-4 text-foreground">
+            {value}
+          </Text>
+        </View>
+      ))}
+      <Text className="text-[10px] leading-4 text-muted-foreground">
+        The runtime option enables tools and memory through WebChat. Keep the publishable key
+        origin allowlist narrow.
+      </Text>
+    </ScrollView>
+  )
+}
+
 function RegistrySubTab() {
   const comfortable = useIsNativePhoneLayout()
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
@@ -825,9 +916,10 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: "tasks", label: "Tasks" },
   { id: "team", label: "Team" },
   { id: "registry", label: "Registry" },
+  { id: "embed", label: "Embed" },
 ]
 
-export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelProps) {
+export function AgentsPanel({ visible, selectedToolId, projectId, agentUrl }: AgentsPanelProps) {
   const { isPhone: comfortable, width: pageWidth } = useNativePhoneWindow()
   const gutter = comfortable ? NATIVE_PHONE_PICKER_GUTTER : NATIVE_PHONE_GUTTER
   const chips = comfortable ? nativeEqualChipWidths(pageWidth, SUB_TABS.length, NATIVE_PHONE_ROW_GAP) : { row: 0, chip: 0, lastChip: 0 }
@@ -936,6 +1028,7 @@ export function AgentsPanel({ visible, selectedToolId, agentUrl }: AgentsPanelPr
           />
         )}
         {subTab === "registry" && <RegistrySubTab />}
+        {subTab === "embed" && <EmbedSubTab projectId={projectId} agentUrl={agentUrl} />}
       </View>
     </NativePhonePane>
   )

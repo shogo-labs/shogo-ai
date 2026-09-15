@@ -31,6 +31,7 @@ import { resolve } from 'path'
  * fully-typed `ShogoFeatures` in without an extra cast.
  */
 export interface DepsDoctorFeatures {
+  chat?: boolean
   voice?:
     | boolean
     | { phoneNumber?: boolean }
@@ -42,6 +43,10 @@ export interface DepsDoctorFeatures {
  * generator release to the next.
  */
 export const FEATURE_DEPS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  chat: {
+    '@shogo-ai/chat': '^1.0.0',
+    '@shogo/chat-ui': '^1.0.0',
+  },
   voice: {
     // 1.1+ is required because `useConversation` now lives behind
     // `<ConversationProvider>` (which the SDK surfaces as
@@ -111,6 +116,7 @@ export function ensureFeatureDeps(opts: {
 
   // Build the list of enabled features.
   const enabledFeatures: string[] = []
+  if (opts.features?.chat) enabledFeatures.push('chat')
   if (opts.features?.voice) enabledFeatures.push('voice')
 
   for (const feature of enabledFeatures) {

@@ -1,0 +1,53 @@
+{
+  "name": "@shogo/chat-ui",
+  "version": "1.0.0",
+  "description": "Shared Shogo chat presentation components used by Studio and embedded chat.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.tsx",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "development": "./src/host.tsx",
+      "import": "./dist/host.js",
+      "require": "./dist/host.cjs"
+    },
+    "./styles.css": {
+      "development": "./src/styles.css",
+      "default": "./dist/styles.css"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup && cp src/styles.css dist/styles.css",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "ai": "^6.0.73",
+    "clsx": "^2.1.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

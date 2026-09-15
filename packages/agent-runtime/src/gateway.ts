@@ -1544,9 +1544,21 @@ export class AgentGateway {
           ? { adapter, channelId: message.channelId }
           : undefined
 
-        const response = await this.agentTurn(prompt, sessionId, false, streamTarget, undefined, activeSkill)
+        const response = await this.agentTurn(
+          prompt,
+          sessionId,
+          false,
+          streamTarget,
+          message.uiWriter,
+          activeSkill,
+        )
 
-        if (adapter && message.channelId && !this.config.streamChunk) {
+        if (
+          adapter &&
+          message.channelId &&
+          !message.uiWriter &&
+          !this.config.streamChunk
+        ) {
           await adapter.sendMessage(message.channelId, response)
         }
 
@@ -2428,7 +2440,7 @@ export class AgentGateway {
     // Streaming: set up block chunker only if streamChunk config is enabled
     let chunker: BlockChunker | undefined
     const streamedChunks: string[] = []
-    if (streamTarget && this.config.streamChunk) {
+    if (streamTarget && this.config.streamChunk && !uiWriter) {
       chunker = new BlockChunker(
         (chunk) => {
           streamedChunks.push(chunk)
@@ -5017,6 +5029,11 @@ export class AgentGateway {
 
   getAllowedModes(): VisualMode[] {
     return this.config.allowedModes || ['canvas', 'none']
+  }
+
+  /** Return the persisted conversation history for an external channel. */
+  getSessionHistory(sessionId: string, limit = 100): unknown[] {
+    return this.sessionManager.buildHistory(sessionId).slice(-limit)
   }
 
   /** Map of sessionId -> AbortController for cancelling in-progress agent turns */

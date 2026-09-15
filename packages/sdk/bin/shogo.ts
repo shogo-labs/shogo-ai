@@ -42,6 +42,8 @@ import {
  * those files need.
  */
 interface ShogoFeatures {
+  /** Embedded chat feature. Emits a Chat component scaffold and deps. */
+  chat?: boolean
   /**
    * Voice feature. `true` enables the zero-config voice path:
    *   - emits `src/lib/shogo.ts` (shogo-client)
@@ -127,6 +129,10 @@ function isVoiceEnabled(features?: ShogoFeatures): boolean {
   return features?.voice === true || (typeof features?.voice === 'object' && features.voice !== null)
 }
 
+function isChatEnabled(features?: ShogoFeatures): boolean {
+  return features?.chat === true
+}
+
 // ============================================================================
 // CLI Parsing
 // ============================================================================
@@ -184,6 +190,18 @@ const { values, positionals } = parseArgs({
       type: 'boolean',
     },
     project: {
+      type: 'string',
+    },
+    publishable: {
+      type: 'boolean',
+    },
+    name: {
+      type: 'string',
+    },
+    origins: {
+      type: 'string',
+    },
+    'expires-in-days': {
       type: 'string',
     },
   },
@@ -274,8 +292,9 @@ Usage:
 Commands:
   generate              Generate routes, types, stores, and docs from Prisma schema
   enable <feature>      Enable a feature in shogo.config.json and re-run codegen
-                          (voice | voice.phoneNumber)
+                          (chat | voice | voice.phoneNumber)
   deploy                Reconcile shogo.config.json#agents with the cloud
+  keys create           Create a project-scoped publishable browser key
   dev                   Runtime-token preflight then passthrough to \`bun run dev\`
   db switch <provider>  Switch Prisma schema provider (sqlite | postgres)
   db status             Show current schema provider
@@ -293,6 +312,13 @@ DB Options:
   --push                 Run prisma db push after switching (creates SQLite DB)
   --no-generate          Skip prisma generate after switching
   --url <url>            DATABASE_URL to use
+
+Keys Options:
+  --publishable          Create a browser-safe shogo_pk_* key
+  --project <id>         Project id (defaults to PROJECT_ID)
+  --origins <list>       Comma-separated allowed website origins
+  --name <name>          Dashboard name
+  --expires-in-days <n>  Optional key expiry
 
 General Options:
   -h, --help             Show this help message
@@ -419,7 +445,7 @@ async function handleEnableCommand() {
   const cwd = process.cwd()
 
   if (!feature || values.help) {
-    console.log(`\nshogo enable <feature>\n\nEnable a Shogo feature in shogo.config.json and re-run codegen.\n\nFeatures:\n  voice                 Enable voice (emits VoiceButton/VoiceSphere/PhoneButton + shogo client)\n  voice.phoneNumber     Enable voice + Twilio phone-number provisioning\n\nExamples:\n  shogo enable voice\n  shogo enable voice.phoneNumber\n`)
+    console.log(`\nshogo enable <feature>\n\nEnable a Shogo feature in shogo.config.json and re-run codegen.\n\nFeatures:\n  chat                  Enable embedded ChatLauncher scaffolding\n  voice                 Enable voice (emits VoiceButton/VoiceSphere/PhoneButton + shogo client)\n  voice.phoneNumber     Enable voice + Twilio phone-number provisioning\n\nExamples:\n  shogo enable chat\n  shogo enable voice\n  shogo enable voice.phoneNumber\n`)
     process.exit(feature ? 0 : 1)
   }
 
@@ -449,7 +475,9 @@ async function handleEnableCommand() {
   config.features = config.features ?? {}
 
   const [head, tail] = feature.split('.') as [string, string | undefined]
-  if (head === 'voice') {
+  if (head === 'chat' && !tail) {
+    config.features.chat = true
+  } else if (head === 'voice') {
     if (tail === 'phoneNumber') {
       const existing = config.features.voice
       const base = typeof existing === 'object' && existing !== null ? existing : {}
@@ -466,7 +494,7 @@ async function handleEnableCommand() {
     }
   } else {
     console.error(`❌ Unknown feature: ${feature}`)
-    console.error('   Supported: voice, voice.phoneNumber')
+    console.error('   Supported: chat, voice, voice.phoneNumber')
     process.exit(1)
   }
 
@@ -775,6 +803,60 @@ async function handleDeployCommand() {
 // ============================================================================
 
 // ============================================================================
+// Keys Command Handler
+// ============================================================================
+
+async function handleKeysCommand() {
+  const subcommand = positionals[1]
+  if (subcommand !== 'create' || values.help) {
+    console.log('Usage: shogo keys create --publishable --project <id> --origins https://example.com')
+    process.exit(subcommand === 'create' ? 0 : 1)
+  }
+  if (values.publishable !== true) {
+    console.error('Only publishable keys are currently supported. Pass --publishable.')
+    process.exit(1)
+  }
+
+  const apiUrl = String(process.env.SHOGO_API_URL || 'https://api.shogo.ai').replace(/\/+$/, '')
+  const apiKey = process.env.SHOGO_API_KEY
+  const projectId = String(values.project || process.env.PROJECT_ID || '')
+  if (!apiKey || !apiKey.startsWith('shogo_sk_')) {
+    console.error('SHOGO_API_KEY must contain a workspace secret key (shogo_sk_...)')
+    process.exit(1)
+  }
+  if (!projectId) {
+    console.error('Pass --project or set PROJECT_ID')
+    process.exit(1)
+  }
+
+  const origins = String(values.origins || process.env.SHOGO_ALLOWED_ORIGINS || '*')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+  const response = await fetch(`${apiUrl}/api/api-keys`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      kind: 'publishable',
+      projectId,
+      workspaceId: process.env.WORKSPACE_ID || undefined,
+      name: values.name || 'Shogo Chat',
+      allowedOrigins: origins,
+      expiresInDays: values['expires-in-days'] ? Number(values['expires-in-days']) : undefined,
+    }),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    console.error(`Failed to create publishable key (${response.status}):`, JSON.stringify(body))
+    process.exit(1)
+  }
+  console.log(JSON.stringify(body, null, 2))
+  console.warn('Store this key safely. It is shown only once and is safe for browser use only because its origins are allowlisted.')
+}
+
 // DB Command Handler
 // ============================================================================
 
@@ -892,6 +974,11 @@ async function main() {
   // Handle db command
   if (command === 'db') {
     await handleDbCommand()
+    process.exit(0)
+  }
+
+  if (command === 'keys') {
+    await handleKeysCommand()
     process.exit(0)
   }
 
@@ -1015,6 +1102,12 @@ async function main() {
       // who want a different layout should list `voice-components` as
       // its own `outputs[]` entry with a custom `dir`.
       first.voiceComponents = first.voiceComponents ?? {}
+    }
+    if (isChatEnabled(config.features) && outputs.length > 0) {
+      const first = outputs[0]!
+      if (!first.generate.includes('chat-components')) {
+        first.generate = [...first.generate, 'chat-components']
+      }
     }
   } else if (values.output) {
     // Legacy single-dir mode

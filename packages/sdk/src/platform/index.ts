@@ -56,13 +56,14 @@ export type FeatureFlagPatch = Partial<{
   phoneChannel: boolean | null
 }>
 
-/** API keys come in two flavours:
+/** API keys come in three flavours:
  * - "user": manually created via the Keys UI or the SHOGO_API_KEY env var.
  * - "device": minted automatically when a Shogo desktop install signs in to
  *   Shogo Cloud. Carries device metadata so the cloud UI can surface it as a
  *   managed device session. Revoking a device key effectively signs the
- *   device out on its next proxy call. */
-export type ApiKeyKind = 'user' | 'device'
+ *   device out on its next proxy call.
+ * - "publishable": project-scoped browser key for embedded chat. */
+export type ApiKeyKind = 'user' | 'device' | 'publishable'
 
 export interface ApiKeyInfo {
   id: string
@@ -73,6 +74,8 @@ export interface ApiKeyInfo {
   createdAt: string
   userId: string
   kind?: ApiKeyKind
+  projectId?: string | null
+  allowedOrigins?: string[] | null
   deviceId?: string | null
   deviceName?: string | null
   devicePlatform?: string | null
@@ -91,6 +94,8 @@ export interface ApiKeyCreateResult {
   expiresAt: string | null
   createdAt: string
   kind?: ApiKeyKind
+  projectId?: string | null
+  allowedOrigins?: string[] | null
   deviceId?: string | null
   deviceName?: string | null
   devicePlatform?: string | null
@@ -510,6 +515,26 @@ export class PlatformApi {
     const res = await this.http.post<ApiKeyCreateResult>(
       '/api/api-keys',
       { name, workspaceId },
+    )
+    return res.data!
+  }
+
+  /** Create a browser-safe, project-scoped key for embedded chat. */
+  async createPublishableApiKey(
+    projectId: string,
+    allowedOrigins: string[] = ['*'],
+    opts?: { name?: string; workspaceId?: string; expiresInDays?: number },
+  ): Promise<ApiKeyCreateResult> {
+    const res = await this.http.post<ApiKeyCreateResult>(
+      '/api/api-keys',
+      {
+        kind: 'publishable',
+        projectId,
+        workspaceId: opts?.workspaceId,
+        allowedOrigins,
+        name: opts?.name || 'Shogo Chat',
+        expiresInDays: opts?.expiresInDays,
+      },
     )
     return res.data!
   }

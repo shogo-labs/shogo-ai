@@ -183,7 +183,7 @@ function resolveStubFor(context, moduleName) {
 // `packages/<pkg>/src/` directory we own, retry a trailing `.js` as
 // `.ts` then `.tsx`. We bound the rewrite by origin path so workspace
 // code that genuinely imports `.js` siblings is unaffected.
-const SHOGO_SOURCE_PACKAGES = ['sdk', 'core', 'agent', 'db', 'email', 'voice', 'cli']
+const SHOGO_SOURCE_PACKAGES = ['sdk', 'core', 'agent', 'db', 'email', 'voice', 'cli', 'chat-ui', 'chat']
 const SHOGO_SRC_FRAGMENTS = SHOGO_SOURCE_PACKAGES.map(
   (pkg) => `${path.sep}packages${path.sep}${pkg}${path.sep}src${path.sep}`,
 )
