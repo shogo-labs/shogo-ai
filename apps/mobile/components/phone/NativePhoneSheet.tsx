@@ -21,6 +21,7 @@ import {
   NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO,
   useNativePhoneSheetChrome,
 } from '../../lib/native-phone-layout'
+import { acquireNativePhoneSheetLock } from '../../lib/native-phone-sheet-lock'
 
 const NATIVE_PHONE_SHEET_SLIDE_IN_MS = 240
 const NATIVE_PHONE_SHEET_SLIDE_OUT_MS = 180
@@ -138,6 +139,11 @@ export function NativePhoneSheet({
   const panelSlide = animationType === 'slide'
   const { mounted, transition } = useNativePhoneSheetSlide(visible, panelSlide)
   const panelHeight = Math.round(height * maxHeightRatio)
+
+  useEffect(() => {
+    if (!mounted) return
+    return acquireNativePhoneSheetLock()
+  }, [mounted])
 
   if (!mounted) return null
 

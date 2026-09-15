@@ -191,6 +191,25 @@ export function serializeAutoTierMapEnv(
  * fallback so a transient outage does not prevent runtime startup.
  */
 export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<AgentModelEnv> {
+  // A local LLM is the source of truth for local development. Do not let
+  // cloud/admin Auto-tier defaults leak into the spawned runtime: those model
+  // ids (for example Claude ids) are not present in Ollama and make local
+  // agent turns fail before the task can receive a response.
+  const localModel = process.env.LOCAL_LLM_BASIC_MODEL?.trim()
+  if (process.env.LOCAL_LLM_BASE_URL && localModel) {
+    const advancedModel = process.env.LOCAL_LLM_ADVANCED_MODEL?.trim() || localModel
+    const autoTiers = serializeAutoTierMapEnv({
+      economy: { id: localModel, provider: 'local' },
+      standard: { id: advancedModel, provider: 'local' },
+      premium: { id: advancedModel, provider: 'local' },
+    })
+    return {
+      AGENT_BASIC_MODEL: localModel,
+      AGENT_ADVANCED_MODEL: advancedModel,
+      AGENT_AUTO_TIER_MAP: autoTiers as string,
+    }
+  }
+
   const cloudDefaults = await fetchCloudAgentModelDefaults()
   if (cloudDefaults) {
     const autoTierMap = serializeAutoTierMapEnv(cloudDefaults.autoTiers)

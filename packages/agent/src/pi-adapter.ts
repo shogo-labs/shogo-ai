@@ -37,6 +37,9 @@ import { getMaxOutputTokens, OPENROUTER_MODEL_PREFIX, stripOpenRouterPrefix } fr
 // ---------------------------------------------------------------------------
 
 const PROVIDER_API_KEY_ENV: Record<string, string> = {
+  // Local models still use the runtime's proxy token when requests are sent
+  // through the API's OpenAI-compatible proxy endpoint.
+  local: 'OPENAI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_API_KEY',
@@ -49,6 +52,7 @@ const PROVIDER_API_KEY_ENV: Record<string, string> = {
 }
 
 const PROVIDER_BASE_URL_ENV: Record<string, string> = {
+  local: 'OPENAI_BASE_URL',
   anthropic: 'ANTHROPIC_BASE_URL',
   openai: 'OPENAI_BASE_URL',
   google: 'GOOGLE_BASE_URL',
@@ -109,13 +113,14 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
     // OpenRouter is OpenAI Chat Completions-compatible — use that API
     // shape and route through OpenRouter's base URL. Pi-ai's built-in
     // OpenRouter model entries follow exactly the same convention.
+    const isLocal = provider === 'local'
     const isOpenRouter = provider === 'openrouter'
     model = {
       id: lookupId,
       name: lookupId,
       api: provider === 'anthropic'
         ? 'anthropic-messages'
-        : isOpenRouter
+        : isOpenRouter || isLocal
           ? 'openai-completions'
           : 'openai-responses',
       provider,

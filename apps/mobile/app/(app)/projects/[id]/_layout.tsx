@@ -413,6 +413,7 @@ export default observer(function ProjectLayout() {
   // loading state rather than the legacy empty/project-tab chat, so there is no
   // async swap/re-mount race. On failure we fall through to the legacy chat.
   const [pinnedResolveFailed, setPinnedResolveFailed] = useState(false)
+  const [chatViewportHeight, setChatViewportHeight] = useState(0)
   // Tracks whether we've already promoted the pinned session to the active
   // chat for the current project, so we only force it once (the user can
   // switch tabs afterwards).
@@ -2736,10 +2737,6 @@ export default observer(function ProjectLayout() {
     />
   )
 
-  const nativePhoneChatViewportHeight = nativePhone
-      ? Math.max(0, height - insets.top - insets.bottom - 24)
-      : undefined
-
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
@@ -2753,8 +2750,12 @@ export default observer(function ProjectLayout() {
             style={
               !isActive
                 ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 }
-                : nativePhoneChatViewportHeight
-                  ? { height: nativePhoneChatViewportHeight }
+                : nativePhone
+                  ? {
+                    flex: 1,
+                    minHeight: 0,
+                    ...(chatViewportHeight > 0 ? { height: chatViewportHeight } : {}),
+                    }
                   : undefined
             }
             pointerEvents={isActive ? 'auto' : 'none'}
@@ -3208,6 +3209,15 @@ export default observer(function ProjectLayout() {
             ref={splitRowRef}
             collapsable={phoneLayout && !isWide ? false : undefined}
             style={phoneLayout && !isWide ? { width, flex: 1 } : undefined}
+            onLayout={(event) => {
+              const nextHeight = event.nativeEvent?.layout?.height
+              if (typeof nextHeight === 'number' && nextHeight > 0) {
+                setChatViewportHeight((current) => {
+                  const rounded = Math.round(nextHeight)
+                  return current === rounded ? current : rounded
+                })
+              }
+            }}
           >
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
             {(() => {

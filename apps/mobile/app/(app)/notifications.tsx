@@ -17,6 +17,7 @@ import {
   Bell,
   CheckCheck,
   CheckCircle2,
+  Clock3,
   AlertTriangle,
   Receipt,
   Gauge,
@@ -50,6 +51,12 @@ function visualForType(type: string): { Icon: React.ElementType; color: string }
       return { Icon: Users, color: 'text-primary' }
     case 'workspace_updated':
       return { Icon: Building2, color: 'text-muted-foreground' }
+    case 'agent_task_started':
+      return { Icon: Clock3, color: 'text-primary' }
+    case 'agent_task_completed':
+      return { Icon: CheckCircle2, color: 'text-emerald-600' }
+    case 'agent_task_failed':
+      return { Icon: AlertTriangle, color: 'text-destructive' }
     default:
       return { Icon: Bell, color: 'text-muted-foreground' }
   }

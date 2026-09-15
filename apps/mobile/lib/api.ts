@@ -189,6 +189,29 @@ export interface WorkspaceChildrenResponse {
   children: ChildWorkspaceSummary[]
 }
 
+export type AgentTaskStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface AgentTask {
+  id: string
+  userId: string
+  workspaceId: string
+  projectId: string | null
+  projectName: string | null
+  chatSessionId: string | null
+  title: string
+  notes: string | null
+  dueAt: string | null
+  status: AgentTaskStatus
+  currentStep: string | null
+  resultSummary: string | null
+  errorMessage: string | null
+  queuedAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface RegionalCurrencyInfo {
   code: string
   symbol: string
@@ -444,6 +467,48 @@ export const api = {
   async getUnreadNotificationCount(http: HttpClient) {
     const res = await http.get<{ ok?: boolean; count?: number }>('/api/notifications/unread-count')
     return res.data?.count ?? 0
+  },
+
+  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string } = {}) {
+    const query = new URLSearchParams()
+    if (params.status) query.set('status', params.status)
+    if (params.projectId) query.set('projectId', params.projectId)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    const res = await http.get<{ ok?: boolean; items?: AgentTask[] }>(`/api/agent-tasks${suffix}`)
+    return res.data?.items ?? []
+  },
+
+  async createAgentTask(
+    http: HttpClient,
+    body: { workspaceId: string; projectId?: string | null; title: string; notes?: string; dueAt?: string | null },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: AgentTask }>('/api/agent-tasks', body)
+    if (!res.data?.data) throw new Error('Failed to create task')
+    return res.data.data
+  },
+
+  async startAgentTask(http: HttpClient, taskId: string) {
+    const res = await http.post<{ ok?: boolean; data?: AgentTask }>(`/api/agent-tasks/${encodeURIComponent(taskId)}/start`, {})
+    if (!res.data?.data) throw new Error('Failed to start task')
+    return res.data.data
+  },
+
+  async cancelAgentTask(http: HttpClient, taskId: string) {
+    const res = await http.post<{ ok?: boolean; data?: AgentTask }>(`/api/agent-tasks/${encodeURIComponent(taskId)}/cancel`, {})
+    if (!res.data?.data) throw new Error('Failed to cancel task')
+    return res.data.data
+  },
+
+  async deleteAgentTask(http: HttpClient, taskId: string) {
+    await http.delete<{ ok?: boolean }>(`/api/agent-tasks/${encodeURIComponent(taskId)}`)
+  },
+
+  async listProjectFiles(http: HttpClient, projectId: string) {
+    const res = await http.get<{
+      ok?: boolean
+      files?: Array<{ path: string; name: string; type: 'file' | 'directory'; extension?: string; size?: number }>
+    }>(`/api/projects/${encodeURIComponent(projectId)}/files`)
+    return res.data?.files ?? []
   },
 
   async setUsageBasedPricing(

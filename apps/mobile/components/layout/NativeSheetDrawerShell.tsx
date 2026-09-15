@@ -15,6 +15,7 @@ export interface NativeSheetDrawerShellProps {
   sidebarSheet: ReactNode
   sidebarOverlay?: ReactNode
   header: ReactNode | null
+  bottomNav?: ReactNode | null
   children: ReactNode
   drawer: ReturnType<typeof useNativeSheetDrawer>
 }
@@ -32,6 +33,7 @@ export function NativeSheetDrawerShell({
   sidebarSheet,
   sidebarOverlay,
   header,
+  bottomNav = null,
   children,
   drawer,
 }: NativeSheetDrawerShellProps) {
@@ -92,6 +94,7 @@ export function NativeSheetDrawerShell({
               >
                 {header}
                 <View className="flex-1">{children}</View>
+                {bottomNav}
               </View>
             </Animated.View>
           </Animated.View>

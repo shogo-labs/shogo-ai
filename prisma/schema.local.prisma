@@ -40,6 +40,7 @@ model User {
   accounts             Account[]
   members              Member[]
   notifications        Notification[]
+  agentTasks           AgentTask[]
   starredProjects      StarredProject[]
   apiKeys              ApiKey[]
   creatorProfile       CreatorProfile?
@@ -139,6 +140,7 @@ model Workspace {
   usageEvents            UsageEvent[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
+  agentTasks             AgentTask[]
   instances              Instance[]
   apiKeys                ApiKey[]
   meetings               Meeting[]
@@ -230,6 +232,7 @@ model Project {
   githubConnection       GitHubConnection?
   starredBy              StarredProject[]
   agentConfig            AgentConfig?
+  agentTasks             AgentTask[]
   meetings               Meeting[]
   marketplaceListing     MarketplaceListing?
   voiceConfig            VoiceProjectConfig?
@@ -559,6 +562,37 @@ model Notification {
   @@map("notifications")
 }
 
+model AgentTask {
+  id            String   @id @default(uuid())
+  userId        String
+  workspaceId   String
+  projectId     String?
+  chatSessionId String?
+  title         String
+  notes         String?
+  dueAt         DateTime?
+  status        String   @default("draft")
+  currentStep   String?
+  resultSummary String?
+  errorMessage  String?
+  queuedAt      DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([workspaceId, status])
+  @@index([projectId, status])
+  @@index([chatSessionId])
+  @@map("agent_tasks")
+}
+
 /// Captures UTM parameters and referrer info at signup time. One row
 /// per user. Mirrors prisma/schema.prisma SignupAttribution.
 model SignupAttribution {
@@ -795,6 +829,7 @@ model ChatSession {
   attachedProjects ChatSessionProject[]
   messages         ChatMessage[]
   toolCallLogs     ToolCallLog[]
+  agentTasks       AgentTask[]
 
   @@index([contextType, contextId])
   @@index([workspaceId])

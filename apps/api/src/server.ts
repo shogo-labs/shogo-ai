@@ -45,6 +45,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
@@ -1466,6 +1467,7 @@ app.route('/api', syncRoutes())
 // workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 startTunnelHeartbeat()
 
 // Warm pool + cluster capacity status (for operational dashboards and load testing)
