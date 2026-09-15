@@ -31,6 +31,7 @@ import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { isMetalEligibleProject } from "../lib/metal-eligibility"
+import { sendPushToUser } from "../lib/push-notifications"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -133,6 +134,10 @@ export async function trackUsageFromStream(
      * the wrong session. See project-chat-session-id-split.test.ts.
      */
     chatSessionId?: string | null
+    /** Authenticated user who should receive a background completion push. */
+    userId?: string
+    /** Human-readable project label used in the push title. */
+    projectName?: string
   } = {},
 ) {
   const decoder = new TextDecoder()
@@ -741,6 +746,15 @@ export async function trackUsageFromStream(
         console.log(
           `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`
         )
+
+        if (observedTurnComplete && turnCompleteStatus === 'completed' && options.userId) {
+          const preview = accumulatedText.replace(/\s+/g, ' ').trim().slice(0, 180)
+          void sendPushToUser(options.userId, {
+            title: `${options.projectName || 'Project'} response ready`,
+            body: preview || 'The agent finished responding.',
+            data: { sessionId: chatSessionId, projectId: project.id },
+          })
+        }
 
         const now = new Date()
         // Bump the session's lastActiveAt so the chat history sidebar
@@ -1493,6 +1507,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // pass it through so closeSession + persistence key on the
             // same id and never diverge from billing.
             chatSessionId: incomingChatSessionId,
+            userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
+            projectName: project.name,
             // Server-side auto-resume hook. When the original POST stream
             // EOFs before `data-turn-complete`, the tracker reconnects
             // here to drain the rest of the turn from the runtime's

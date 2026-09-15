@@ -16,7 +16,7 @@
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, Animated } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { NATIVE_PHONE_ICON_STROKE,
+import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT, NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
 import {
   Popover,
@@ -627,13 +627,17 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             className={cn(
               "flex-row items-center justify-between",
               useProminentComposer
-                ? "min-h-[48px] py-1 pl-2.5 pr-1.5 overflow-hidden"
+                ? "py-1 pl-2.5 pr-1.5 overflow-hidden"
                 : useCurrentNativeSizing
                   ? "min-h-12 px-2 py-1"
                   : "p-1.5",
               !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
             )}
-            style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
+            style={
+              useProminentComposer
+                ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX, height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT }
+                : undefined
+            }
             pointerEvents={useProminentComposer ? "box-none" : undefined}
           >
             {/* Left side buttons */}

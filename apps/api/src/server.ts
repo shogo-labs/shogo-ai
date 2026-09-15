@@ -107,6 +107,7 @@ import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
+import { mobilePushRoutes } from './routes/mobile-push'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
@@ -1459,6 +1460,7 @@ app.route('/api', cliAuthRoutes())
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
+app.route('/api', mobilePushRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder

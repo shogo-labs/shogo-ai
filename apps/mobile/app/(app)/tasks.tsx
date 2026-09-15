@@ -13,6 +13,7 @@ import { agentTaskEvents } from '../../lib/agent-task-events'
 import { NativePhoneSheet } from '../../components/phone/NativePhoneSheet'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
+import { getPinnedProjectIds } from '../../lib/project-prefs-store'
 
 function statusClass(status: AgentTaskStatus) {
   switch (status) {
@@ -236,7 +237,36 @@ export default function TasksScreen() {
     )
   }
 
-  const projectsForPicker = projects.all.filter((project: any) => project.workspaceId === workspace?.id)
+  const projectPickerGroups = useMemo(() => {
+    const pinnedIds = new Set(getPinnedProjectIds())
+    const workspaceProjects = projects.all
+      .filter((project: any) => project.workspaceId === workspace?.id)
+      .sort((a: any, b: any) => {
+        const timestamp = (project: any) => {
+          const value = project.createdAt ?? project.updatedAt ?? project.lastMessageAt
+          if (typeof value === 'number') return value
+          if (value instanceof Date) return value.getTime()
+          const parsed = Date.parse(String(value ?? ''))
+          return Number.isNaN(parsed) ? 0 : parsed
+        }
+        return timestamp(b) - timestamp(a)
+      })
+
+    return {
+      pinned: workspaceProjects.filter((project: any) => pinnedIds.has(project.id)),
+      recent: workspaceProjects.filter((project: any) => !pinnedIds.has(project.id)),
+    }
+  }, [projects.all, showCreate, workspace?.id])
+
+  const renderProjectChip = (project: any) => {
+    const selected = selectedProjectId === project.id
+    return (
+      <Pressable key={project.id} onPress={() => setSelectedProjectId(project.id)} accessibilityRole="radio" accessibilityState={{ selected }} className={`h-11 max-w-[190px] flex-row items-center gap-1.5 rounded-full border px-3.5 ${selected ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
+        {selected ? <Check size={15} className="text-primary" /> : <Folder size={14} className="text-muted-foreground" />}
+        <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{project.name}</Text>
+      </Pressable>
+    )
+  }
 
   return (
     <View className="flex-1 bg-background">
@@ -328,21 +358,26 @@ export default function TasksScreen() {
               <Text className="text-[13px] font-semibold text-foreground">Project</Text>
               <Text className="text-xs text-muted-foreground">Optional</Text>
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2" accessibilityLabel="Choose a project">
-              <Pressable onPress={() => setSelectedProjectId(null)} accessibilityRole="radio" accessibilityState={{ selected: selectedProjectId === null }} className={`h-11 flex-row items-center gap-1.5 rounded-full border px-3.5 ${selectedProjectId === null ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
-                {selectedProjectId === null ? <Check size={15} className="text-primary" /> : null}
-                <Text className="text-sm font-medium text-foreground">No project</Text>
-              </Pressable>
-              {projectsForPicker.map((project: any) => {
-                const selected = selectedProjectId === project.id
-                return (
-                  <Pressable key={project.id} onPress={() => setSelectedProjectId(project.id)} accessibilityRole="radio" accessibilityState={{ selected }} className={`h-11 max-w-[190px] flex-row items-center gap-1.5 rounded-full border px-3.5 ${selected ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
-                    {selected ? <Check size={15} className="text-primary" /> : <Folder size={14} className="text-muted-foreground" />}
-                    <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{project.name}</Text>
-                  </Pressable>
-                )
-              })}
-            </ScrollView>
+            <Pressable onPress={() => setSelectedProjectId(null)} accessibilityRole="radio" accessibilityState={{ selected: selectedProjectId === null }} className={`h-11 self-start flex-row items-center gap-1.5 rounded-full border px-3.5 ${selectedProjectId === null ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
+              {selectedProjectId === null ? <Check size={15} className="text-primary" /> : null}
+              <Text className="text-sm font-medium text-foreground">No project</Text>
+            </Pressable>
+            {projectPickerGroups.pinned.length > 0 ? (
+              <View className="mt-4">
+                <Text className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pinned</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2" accessibilityLabel="Choose a pinned project">
+                  {projectPickerGroups.pinned.map(renderProjectChip)}
+                </ScrollView>
+              </View>
+            ) : null}
+            {projectPickerGroups.recent.length > 0 ? (
+              <View className="mt-4">
+                <Text className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Recent projects</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerClassName="gap-2" accessibilityLabel="Choose a recent project">
+                  {projectPickerGroups.recent.map(renderProjectChip)}
+                </ScrollView>
+              </View>
+            ) : null}
           </View>
         </View>
       </NativePhoneSheet>

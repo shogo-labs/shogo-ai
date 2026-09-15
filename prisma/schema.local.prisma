@@ -49,6 +49,7 @@ model User {
   affiliate            Affiliate?
   affiliateAttribution AffiliateAttribution?
   projectAuthSignIns   ProjectAuthSignIn[]
+  mobilePushSubscriptions MobilePushSubscription[]
 
   @@map("users")
 }
@@ -1513,6 +1514,20 @@ model PushSubscription {
   @@unique([instanceId, pushToken])
   @@index([instanceId])
   @@map("push_subscriptions")
+}
+
+model MobilePushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  pushToken String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("mobile_push_subscriptions")
 }
 
 // =============================================================================

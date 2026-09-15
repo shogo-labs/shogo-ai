@@ -9,7 +9,13 @@ import { Activity, ListTodo, MessageCircle, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../../lib/native-composer-keyboard'
-import { NATIVE_PHONE_DOCK_COMPOSER_GAP, WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
+import {
+  NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+  NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET,
+  NATIVE_PHONE_DOCK_COMPOSER_GAP,
+  NATIVE_PHONE_GUTTER,
+  WEB_WIDE_MIN_WIDTH,
+} from '../../lib/native-phone-layout'
 
 let lastProjectContext: { projectId: string; chatSessionId?: string } | null = null
 
@@ -106,7 +112,7 @@ export function MobileBottomNav() {
 
   return (
     <View
-      className="bg-transparent px-3 pt-1"
+      className="bg-transparent pt-1"
       style={{
         marginTop: isProjectPath(pathname)
           ? -(NATIVE_PHONE_DOCK_COMPOSER_GAP + NATIVE_PHONE_PROJECT_NAV_OVERLAP)
@@ -116,12 +122,18 @@ export function MobileBottomNav() {
         // inset here so the composer and this capsule move up together and
         // match the project-chat dock position.
         paddingBottom: isHomePath(pathname) ? insets.bottom + 8 : 8,
+        paddingHorizontal: NATIVE_PHONE_GUTTER,
       }}
       testID="mobile-bottom-nav"
     >
       <View
-        className="h-12 w-full flex-row items-center gap-1 rounded-full border border-border bg-card/95 px-1.5 shadow-sm"
-        style={{ maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH, alignSelf: 'center' }}
+        className="w-full flex-row items-center gap-1 border border-border bg-card/95 px-1.5 shadow-sm"
+        style={{
+          height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+          maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+          alignSelf: 'center',
+          borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
+        }}
       >
         {items.map(({ id, label, Icon, onPress }) => {
           const selected = active === id
@@ -132,7 +144,8 @@ export function MobileBottomNav() {
               accessibilityRole="tab"
               accessibilityState={{ selected }}
               accessibilityLabel={label}
-              className={cn('h-10 flex-1 items-center justify-center rounded-full', selected && 'bg-muted')}
+              className={cn('flex-1 items-center justify-center rounded-full', selected && 'bg-muted')}
+              style={{ height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT - NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2 }}
             >
               <Icon size={23} color={selected ? (isDark ? '#ffffff' : '#111827') : (isDark ? '#a1a1aa' : '#6b7280')} strokeWidth={selected ? 2.2 : 1.9} />
             </Pressable>

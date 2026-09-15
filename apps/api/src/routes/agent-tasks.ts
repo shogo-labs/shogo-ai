@@ -195,6 +195,23 @@ async function ensureProjectChat(task: {
     }
   }
 
+  if (!sessionId && task.projectId) {
+    // A tagged task belongs in the project's existing conversation. The
+    // project sidebar opens this first chat, so creating a second session here
+    // would make the task appear to disappear when the user opens the project
+    // normally. Keep the task's prompt and response in that same thread.
+    const firstProjectSession = await prisma.chatSession.findFirst({
+      where: {
+        contextType: 'project',
+        contextId: projectId,
+        isArchived: false,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true },
+    })
+    sessionId = firstProjectSession?.id ?? null
+  }
+
   if (!sessionId) {
     const session = await prisma.chatSession.create({
       data: {

@@ -32,6 +32,7 @@ import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
+import { useMobilePushRegistration } from '../../lib/notifications/mobile-push-registration'
 import { mark as csMark } from '../../lib/cold-start-timing'
 import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS,
   WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
@@ -86,6 +87,7 @@ export default function AppLayout() {
   usePostHogIdentify()
   const posthog = usePostHogSafe()
   useNotificationClickRouter()
+  useMobilePushRegistration(user?.id ?? null)
 
   useEffect(() => {
     if (isAuthenticated && posthog) {
