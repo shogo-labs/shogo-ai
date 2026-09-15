@@ -1206,6 +1206,30 @@ export const AppSidebar = observer(function AppSidebar({
             pointerEvents={mobileExpandedProjectId ? "auto" : "none"}
           >
             <View style={{ height: drawerTopInset }} />
+            <View className="h-16 flex-row items-center justify-between px-3">
+              <Pressable
+                onPress={() => {
+                  router.push("/(app)" as any);
+                  onNavPress();
+                }}
+                role="link"
+                accessibilityLabel="Shogo Home"
+                className="flex-row items-center"
+              >
+                <ShogoWordmark className="h-8 w-[136px]" />
+              </Pressable>
+              <Pressable
+                onPress={handleSearchPress}
+                accessibilityLabel="Search"
+                className={cn("rounded-md active:bg-muted", drawerDensity.hit)}
+              >
+                <Search
+                  size={drawerDensity.icon.lg}
+                  color={iconChrome.color}
+                  strokeWidth={iconChrome.strokeWidth}
+                />
+              </Pressable>
+            </View>
             <ProjectTreeItem
               project={mobileProjectPanel}
               mobileProjectDetail

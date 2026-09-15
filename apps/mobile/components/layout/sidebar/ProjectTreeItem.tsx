@@ -389,6 +389,46 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     onNavPress?.();
   }, [isActive, project.id, router, onNavPress]);
 
+  // On phone, the project row has two distinct actions: the chevron opens
+  // this project's chat list, while the project name takes the user straight
+  // to the most recent chat. Fetch on demand when the row was tapped before
+  // its chat list had a chance to seed.
+  const openRecentChat = useCallback(async () => {
+    let recentChat = visibleProjectChatItems(sessions)[0];
+
+    if (!recentChat && !loaded && http) {
+      try {
+        const result = await fetchProjectChatSessions(
+          http,
+          project.id,
+          PROJECT_CHAT_PAGE_SIZE,
+        );
+        setSessions(result.sessions);
+        setHasMoreChats(result.hasMore);
+        setLoaded(true);
+        recentChat = visibleProjectChatItems(result.sessions)[0];
+      } catch (e) {
+        console.error("[AppSidebar] Failed to load recent chat:", e);
+      }
+    }
+
+    if (recentChat) {
+      handleSelectChat(recentChat.id);
+      return;
+    }
+
+    // A project without a chat still opens the project chat surface so the
+    // user can start one there.
+    handleCreateChat();
+  }, [
+    handleCreateChat,
+    handleSelectChat,
+    http,
+    loaded,
+    project.id,
+    sessions,
+  ]);
+
   // Pin / rename / archive operate against the domain collection and update
   // local state optimistically (the sidebar fetches chats over HTTP, so it
   // isn't auto-synced to the collection). On failure we re-fetch to reconcile.
@@ -659,8 +699,12 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     <View className={mobileProjectDetail ? "flex-1" : undefined}>
       {mobileProjectDetail ? (
         <View className="flex-1">
-          <View className="flex-row items-center gap-2 border-b border-border px-3 py-3">
-            <View className="min-w-0 flex-1 flex-row items-center gap-2">
+          <View className="flex-row items-center gap-2 px-3 py-3">
+            <Pressable
+              onPress={openRecentChat}
+              accessibilityLabel={`Open recent chat in ${project.name || "Untitled"}`}
+              className="min-w-0 flex-1 flex-row items-center gap-2 active:opacity-70"
+            >
               <Folder
                 size={density.icon.md}
                 className="text-muted-foreground shrink-0"
@@ -671,7 +715,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               >
                 {project.name || "Untitled"}
               </Text>
-            </View>
+            </Pressable>
             <View className="flex-row items-center gap-1">
               <Pressable
                 onPress={handleCreateChat}
@@ -747,7 +791,11 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           )}
         >
           <Pressable
-            onPress={handleProjectPress}
+            onPress={
+              mobileProjectFirstTapShowsChats
+                ? openRecentChat
+                : handleProjectPress
+            }
             onLongPress={isNative ? openNativeActions : undefined}
             delayLongPress={isNative ? 400 : undefined}
             role="link"
@@ -777,13 +825,20 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             >
               {project.name || "Untitled"}
             </Text>
-            {mobileProjectFirstTapShowsChats ? (
+          </Pressable>
+          {mobileProjectFirstTapShowsChats ? (
+            <Pressable
+              onPress={handleProjectPress}
+              accessibilityLabel={`Show chats for ${project.name || "Untitled"}`}
+              accessibilityHint="Opens the project's chats"
+              className="h-11 w-10 items-center justify-center rounded-md active:opacity-70"
+            >
               <ChevronRight
                 size={isNative ? density.icon.sm : 16}
                 className="text-muted-foreground shrink-0"
               />
-            ) : null}
-          </Pressable>
+            </Pressable>
+          ) : null}
           {/* Persistent pin glyph when pinned (web). Hidden on native — the
               Pinned section already groups these rows, and hover-reveal
               actions do not exist on phone. */}
