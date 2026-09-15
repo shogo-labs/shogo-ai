@@ -85,6 +85,8 @@
  * ```
  *
  * @experimental V1 surface — shape may evolve before promotion.
+ * @deprecated For embedded website chat use `@shogo-ai/chat/react`. This hook
+ * remains for pod-local applications and voice/text bridge compatibility.
  */
 
 import {

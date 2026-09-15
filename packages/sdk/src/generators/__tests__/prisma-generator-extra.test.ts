@@ -300,6 +300,26 @@ datasource db {
     }
   })
 
+  test('chat-components emits launcher and page scaffolds', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'pg-extra-chat-'))
+    try {
+      const schemaPath = setupProject(tmp, 'chat', SMALL_SCHEMA)
+      const result = await generateFromPrisma({
+        schemaPath,
+        outputs: [{ dir: 'o', generate: ['chat-components'] }],
+      })
+      const chatFiles = result.files.filter((file) => file.path.startsWith('o/components/shogo/'))
+      expect(chatFiles.map((file) => file.path)).toEqual([
+        'o/components/shogo/ChatLauncher.tsx',
+        'o/components/shogo/ChatPage.tsx',
+        'o/components/shogo/index.tsx',
+      ])
+      expect(chatFiles.every((file) => file.skipIfExists)).toBe(true)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   test('legacy single-dir mode emits types/hooks/index files', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'pg-extra-legacy-'))
     try {

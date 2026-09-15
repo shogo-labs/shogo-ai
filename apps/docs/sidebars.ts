@@ -78,6 +78,19 @@ const sidebars: SidebarsConfig = {
             "features/external-triggers/webhook-channel",
           ],
         },
+        {
+          type: "category",
+          label: "Embedded Chat",
+          items: [
+            "features/embedded-chat/overview",
+            "features/embedded-chat/quickstart-react",
+            "features/embedded-chat/quickstart-script-tag",
+            "features/embedded-chat/publishable-keys",
+            "features/embedded-chat/live-agent-mode",
+            "features/embedded-chat/customization",
+            "features/embedded-chat/reference",
+          ],
+        },
       ],
     },
     {

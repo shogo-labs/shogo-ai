@@ -27,6 +27,7 @@ lockstep on the `sdk-v*` tag:
 | `@shogo-ai/email` | Transactional email (SES / SMTP / OCI) |
 | `@shogo-ai/voice` | ElevenLabs + Twilio voice infra + React/RN UI |
 | `@shogo-ai/cli` | Deploy / manifest / packager helpers |
+| `@shogo-ai/chat` | Embedded chat client, React UI, and script embed |
 
 Old `@shogo-ai/sdk/<subpath>` imports keep working through back-compat
 re-export shims. New code should import from the corresponding package
@@ -73,6 +74,38 @@ await client.db.todos.delete(todo.id)
 
 The right column tells you where the implementation lives in v1.6+;
 either path works at the import site.
+
+## Embedded agent chat
+
+Use a project-scoped `shogo_pk_*` publishable key for browser visitors. Never
+expose a workspace `shogo_sk_*` key in a browser bundle.
+
+```tsx
+import { createChatClient } from '@shogo-ai/chat'
+import { ChatLauncher } from '@shogo-ai/chat/react'
+
+const chat = createChatClient({
+  apiUrl: 'https://api.shogo.ai',
+  projectId: 'project-id',
+  publishableKey: 'shogo_pk_...',
+  transport: 'runtime', // 'persona' for stateless ProjectAgent chat
+})
+
+export function SupportChat() {
+  return <ChatLauncher client={chat} title="Ask Shogo" />
+}
+```
+
+For a script-tag integration, use the hosted bundle:
+
+```html
+<script
+  src="https://api.shogo.ai/embed/v1/chat.js"
+  data-project-id="project-id"
+  data-publishable-key="shogo_pk_..."
+  data-transport="runtime"
+></script>
+```
 
 ## API Reference
 
@@ -1066,11 +1099,9 @@ in libraries / on transit / with kids asleep, accessibility flows,
 background tabs), drive the same agent persona over a plain streaming
 HTTPS POST instead of an ElevenLabs Convai websocket.
 
-`useShogoChat` (and the lower-level `useChatConversation`) is the
-audio-free sibling of `useShogoVoice`. Same auth surface
-(`shogoApiKey` + `projectId` or session cookie), same client-tool
-registration shape — but no `getUserMedia`, no audio context, no
-websocket.
+For new embedded surfaces, use `@shogo-ai/chat/react`. The older
+`useShogoChat` / `useChatConversation` hooks remain available as deprecated
+compatibility shims for voice-plus-text applications.
 
 > **Status: experimental.** The hook surface may evolve before V1
 > promotion. Pin a SDK version if you embed it in production.

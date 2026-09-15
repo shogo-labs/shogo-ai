@@ -21,6 +21,7 @@ import {
   ChevronRight,
   Copy,
   Check,
+  Key,
   Phone,
   AlertTriangle,
 } from 'lucide-react-native'
@@ -182,11 +183,16 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupLabel: '',
     description: 'Embeddable chat widget for any website',
     fields: [
+      { key: 'widgetSecret', label: 'Widget Key (optional)', placeholder: 'Leave blank to generate one', secret: true },
       { key: 'title', label: 'Chat Title (optional)', placeholder: 'Chat with us', secret: false },
       { key: 'welcomeMessage', label: 'Welcome Message (optional)', placeholder: 'Hi! How can I help you today?', secret: false },
       { key: 'primaryColor', label: 'Theme Color (optional)', placeholder: '#6366f1', secret: false },
       { key: 'position', label: 'Position (optional)', placeholder: 'bottom-right or bottom-left', secret: false },
       { key: 'allowedOrigins', label: 'Allowed Origins (optional)', placeholder: '* (all) or https://example.com', secret: false },
+      { key: 'theme', label: 'Theme (optional)', placeholder: 'light, dark, or auto', secret: false },
+      { key: 'placeholder', label: 'Composer Placeholder (optional)', placeholder: 'Type a message...', secret: false },
+      { key: 'suggestedPrompts', label: 'Suggested Prompts (optional)', placeholder: 'One prompt per line', secret: false },
+      { key: 'poweredBy', label: 'Show Powered by Shogo', placeholder: 'true or false', secret: false },
     ],
   },
 }
@@ -205,6 +211,10 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [savingModel, setSavingModel] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
+  const [webchatWidgetKey, setWebchatWidgetKey] = useState<string | null>(null)
+  const [publishableOrigin, setPublishableOrigin] = useState('')
+  const [publishableKey, setPublishableKey] = useState<string | null>(null)
+  const [creatingPublishableKey, setCreatingPublishableKey] = useState(false)
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
   const [slackAgentConfig, setSlackAgentConfig] = useState<{
@@ -212,6 +222,38 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
     projects: Array<{ id: string; name: string; slackEnabled: boolean }>
   } | null>(null)
   const [slackAgentLoading, setSlackAgentLoading] = useState(false)
+
+  const createPublishableKey = useCallback(async () => {
+    if (!API_URL || !workspaceId) return
+    setCreatingPublishableKey(true)
+    try {
+      const origins = publishableOrigin
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+      const res = await fetch(`${API_URL}/api/api-keys`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'publishable',
+          projectId,
+          workspaceId,
+          allowedOrigins: origins.length > 0 ? origins : ['*'],
+          name: 'Embedded Chat',
+        }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || typeof body.key !== 'string') {
+        throw new Error(body?.error?.message || `HTTP ${res.status}`)
+      }
+      setPublishableKey(body.key)
+    } catch (err: any) {
+      setFormError(err?.message || 'Failed to create publishable key')
+    } finally {
+      setCreatingPublishableKey(false)
+    }
+  }, [projectId, publishableOrigin, workspaceId])
 
   /**
    * Canonical, externally-callable webhook URL for this project.
@@ -398,6 +440,9 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       const data = await res.json()
       if (!res.ok) {
         throw new Error(data.error || `Failed to connect ${type}`)
+      }
+      if (type === 'webchat' && typeof data.widgetKey === 'string') {
+        setWebchatWidgetKey(data.widgetKey)
       }
 
       setExpandedType(null)
@@ -879,12 +924,12 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             className="text-[10px] text-foreground font-mono"
                             selectable
                           >
-                            {`<script src="${agentUrl}/agent/channels/webchat/widget.js"></script>`}
+                            {`<script src="${agentUrl}/agent/channels/webchat/widget.js?widgetKey=${encodeURIComponent(webchatWidgetKey || formInputs.webchat?.widgetSecret || 'YOUR_WIDGET_KEY')}"></script>`}
                           </Text>
                         </View>
                         <Pressable
                           onPress={async () => {
-                            const snippet = `<script src="${agentUrl}/agent/channels/webchat/widget.js"></script>`
+                            const snippet = `<script src="${agentUrl}/agent/channels/webchat/widget.js?widgetKey=${encodeURIComponent(webchatWidgetKey || formInputs.webchat?.widgetSecret || 'YOUR_WIDGET_KEY')}"></script>`
                             await Clipboard.setStringAsync(snippet)
                             setCopiedSnippet(true)
                             setTimeout(() => setCopiedSnippet(false), 2000)
@@ -903,6 +948,46 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             </>
                           )}
                         </Pressable>
+                        <Text className="text-[11px] font-medium text-foreground mt-3">
+                          Anonymous visitor key (recommended)
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Publishable keys are safe in browser code and are restricted to the origins you list.
+                        </Text>
+                        <TextInput
+                          value={publishableOrigin}
+                          onChangeText={setPublishableOrigin}
+                          placeholder="https://example.com"
+                          autoCapitalize="none"
+                          keyboardType="url"
+                          className="rounded-md border border-border bg-background px-2.5 py-2 text-[11px] text-foreground"
+                        />
+                        <Pressable
+                          onPress={createPublishableKey}
+                          disabled={creatingPublishableKey || !workspaceId}
+                          className="flex-row items-center gap-1.5 self-start rounded-md border border-border px-2.5 py-1.5 active:bg-muted"
+                        >
+                          <Key size={12} className="text-muted-foreground" />
+                          <Text className="text-[10px] text-muted-foreground">
+                            {creatingPublishableKey ? 'Creating...' : 'Create publishable key'}
+                          </Text>
+                        </Pressable>
+                        {publishableKey && (
+                          <View className="gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
+                            <Text className="text-[10px] text-amber-700">
+                              Copy this key now; it will not be shown again.
+                            </Text>
+                            <Pressable
+                              onPress={() => Clipboard.setStringAsync(publishableKey)}
+                              className="flex-row items-center gap-1"
+                            >
+                              <Text selectable className="flex-1 font-mono text-[10px] text-foreground">
+                                {publishableKey}
+                              </Text>
+                              <Copy size={12} className="text-muted-foreground" />
+                            </Pressable>
+                          </View>
+                        )}
                       </View>
                     </View>
                   )}

@@ -5,6 +5,8 @@ import { defineConfig } from 'tsup'
 export default defineConfig({
   entry: [
     'src/index.ts',
+    'src/chat/index.ts',
+    'src/chat/react.ts',
     'src/db/index.ts',
     'src/react/index.ts',
     'src/agent/index.ts',
@@ -128,6 +130,8 @@ export default defineConfig({
     '@shogo-ai/voice/route/music',
     '@shogo-ai/voice/route/agent',
     '@shogo-ai/voice/route/audio-tags',
+    '@shogo-ai/chat',
+    '@shogo-ai/chat/react',
     '@shogo-ai/cli',
     '@shogo-ai/cli/deploy',
     '@shogo-ai/cli/pkg',

@@ -3606,6 +3606,7 @@ export default observer(function ProjectLayout() {
                             <AgentsPanel
                               visible
                               selectedToolId={selectedAgentToolId}
+                              projectId={projectId}
                               agentUrl={agentUrl}
                             />
                           </PanelErrorBoundary>

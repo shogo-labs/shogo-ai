@@ -9,6 +9,7 @@ module.exports = {
     './src/**/*.{ts,tsx}',
     '../../packages/shared-ui/src/**/*.{ts,tsx}',
     '../../packages/shared-app/src/**/*.{ts,tsx}',
+    '../../packages/chat-ui/src/**/*.{ts,tsx}',
     './node_modules/streamdown/dist/**/*.js',
   ],
   presets: [require('nativewind/preset')],

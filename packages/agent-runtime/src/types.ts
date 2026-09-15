@@ -12,6 +12,8 @@ export interface IncomingMessage {
   senderName?: string
   timestamp?: number
   metadata?: Record<string, unknown>
+  /** Optional AI SDK UI stream sink for HTTP-backed channel transports. */
+  uiWriter?: { write(chunk: Record<string, unknown>): void }
 }
 
 export interface ChannelConfig {
@@ -35,7 +37,7 @@ export interface ChannelAdapter {
   editMessage?(channelId: string, messageId: string, content: string): Promise<boolean>
   /** Send a typing indicator. Called periodically during agent turns. */
   sendTyping?(channelId: string): Promise<void>
-  onMessage(handler: (msg: IncomingMessage) => void): void
+  onMessage(handler: (msg: IncomingMessage) => void | Promise<void>): void
   getStatus(): ChannelStatus
 }
 

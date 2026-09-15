@@ -23,6 +23,8 @@ const mockPrisma = {
       name: args.data.name,
       keyPrefix: args.data.keyPrefix,
       workspaceId: args.data.workspaceId,
+      projectId: args.data.projectId ?? null,
+      allowedOrigins: args.data.allowedOrigins ?? null,
       expiresAt: args.data.expiresAt ?? null,
       createdAt: new Date('2026-01-01T00:00:00Z'),
       kind: args.data.kind,
@@ -49,6 +51,9 @@ const mockPrisma = {
   workspace: {
     findUnique: mock(async () => workspaceResult),
   },
+  project: {
+    findUnique: mock(async () => ({ id: 'project-1', workspaceId: 'ws-1' })),
+  },
   $transaction: mock(async (fn: any) => fn({
     apiKey: {
       updateMany: mockPrisma.apiKey.updateMany,
@@ -59,7 +64,7 @@ const mockPrisma = {
 
 mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
 
-const { apiKeyRoutes, resolveApiKey } = await import('../routes/api-keys')
+const { apiKeyRoutes, resolveApiKey, resolvePublishableApiKey } = await import('../routes/api-keys')
 
 beforeEach(() => {
   memberResult = { id: 'member-1', workspaceId: 'ws-1' }
@@ -77,6 +82,7 @@ beforeEach(() => {
   mockPrisma.apiKey.update.mockClear()
   mockPrisma.apiKey.updateMany.mockClear()
   mockPrisma.workspace.findUnique.mockClear()
+  mockPrisma.project.findUnique.mockClear()
   mockPrisma.$transaction.mockClear()
 })
 
@@ -116,6 +122,29 @@ describe('apiKeyRoutes create/list/delete', () => {
     expect(body.name).toBe('Shogo Local')
     expect(body.kind).toBe('user')
     expect(mockPrisma.apiKey.create.mock.calls[0][0].data.keyHash).toHaveLength(64)
+  })
+
+  test('creates a project-scoped publishable key with origin policy', async () => {
+    const res = await makeApp().request('/api-keys', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'publishable',
+        projectId: 'project-1',
+        workspaceId: 'ws-1',
+        allowedOrigins: ['https://example.com'],
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const body: any = await res.json()
+    expect(body.key).toStartWith('shogo_pk_')
+    expect(body.kind).toBe('publishable')
+    expect(body.projectId).toBe('project-1')
+    expect(mockPrisma.apiKey.create.mock.calls[0][0].data).toMatchObject({
+      kind: 'publishable',
+      projectId: 'project-1',
+      allowedOrigins: ['https://example.com'],
+    })
   })
 
   test('device key validates deviceId, defaults workspace, revokes old device key, and truncates metadata', async () => {
@@ -437,5 +466,28 @@ describe('resolveApiKey', () => {
       deviceId: null,
     })
     expect(apiKeyUpdates.at(-1).data).toEqual({ lastUsedAt: expect.any(Date) })
+  })
+})
+
+describe('resolvePublishableApiKey', () => {
+  test('requires a live publishable key and returns project origin policy', async () => {
+    expect(await resolvePublishableApiKey('shogo_sk_not_publishable')).toBeNull()
+    apiKeyFindUniqueResult = {
+      id: 'publishable-1',
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      projectId: 'project-1',
+      allowedOrigins: ['https://example.com'],
+      kind: 'publishable',
+      revokedAt: null,
+      expiresAt: null,
+    }
+
+    await expect(resolvePublishableApiKey('shogo_pk_live')).resolves.toEqual({
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      projectId: 'project-1',
+      allowedOrigins: ['https://example.com'],
+    })
   })
 })

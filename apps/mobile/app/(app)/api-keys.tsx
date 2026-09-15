@@ -38,7 +38,7 @@ import {
 import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
 import { formatDistanceToNow } from 'date-fns'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
+import { useDomainHttp, useProjectCollection, useWorkspaceCollection } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import {
   Card,
@@ -49,6 +49,7 @@ import {
   cn,
 } from '@shogo/shared-ui/primitives'
 import { useNativePhoneWindow } from '../../lib/native-phone-layout'
+import { workspaceProjectFilter } from '../../lib/project-load'
 
 function formatLastSeen(ts: string | null | undefined): string {
   if (!ts) return 'Never'
@@ -83,6 +84,7 @@ export default observer(function ApiKeysPage() {
   const { width: windowWidth, height: windowHeight,
     isPhone: isNativePhone } = useNativePhoneWindow()
   const workspaces = useWorkspaceCollection()
+  const projects = useProjectCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()
 
@@ -106,9 +108,19 @@ export default observer(function ApiKeysPage() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
   const [isRevoking, setIsRevoking] = useState(false)
   const [showManualKeys, setShowManualKeys] = useState(false)
+  const [publishableProjectId, setPublishableProjectId] = useState('')
+  const [publishableOrigin, setPublishableOrigin] = useState('')
+  const [publishableKey, setPublishableKey] = useState<string | null>(null)
+  const [publishableError, setPublishableError] = useState<string | null>(null)
+  const [isCreatingPublishable, setIsCreatingPublishable] = useState(false)
 
   const deviceKeys = useMemo(() => keys.filter((k) => k.kind === 'device'), [keys])
-  const userKeys = useMemo(() => keys.filter((k) => k.kind !== 'device'), [keys])
+  const publishableKeys = useMemo(() => keys.filter((k) => k.kind === 'publishable'), [keys])
+  const userKeys = useMemo(() => keys.filter((k) => k.kind !== 'device' && k.kind !== 'publishable'), [keys])
+  const workspaceProjects = useMemo(
+    () => (projects.all ?? []).filter((project: any) => project.workspaceId === workspace?.id),
+    [projects.all, workspace?.id],
+  )
 
   const loadKeys = useCallback(async () => {
     if (!workspace?.id) {
@@ -126,6 +138,11 @@ export default observer(function ApiKeysPage() {
   }, [workspace?.id, platform])
 
   useEffect(() => { loadKeys() }, [loadKeys])
+
+  useEffect(() => {
+    const filter = workspaceProjectFilter(workspace?.id)
+    if (filter) projects.loadAll(filter).catch(() => undefined)
+  }, [projects, workspace?.id])
 
   const handleCreate = async () => {
     if (!workspace?.id || !newKeyName.trim()) return
@@ -152,6 +169,26 @@ export default observer(function ApiKeysPage() {
       console.error('[ApiKeys] Failed to revoke:', err)
     } finally {
       setIsRevoking(false)
+    }
+  }
+
+  const handleCreatePublishable = async () => {
+    if (!publishableProjectId || !workspace?.id) return
+    setIsCreatingPublishable(true)
+    setPublishableError(null)
+    try {
+      const origins = publishableOrigin.split(',').map((origin) => origin.trim()).filter(Boolean)
+      const result = await platform.createPublishableApiKey(
+        publishableProjectId,
+        origins.length > 0 ? origins : ['*'],
+        { workspaceId: workspace.id },
+      )
+      setPublishableKey(result.key)
+      await loadKeys()
+    } catch (err: any) {
+      setPublishableError(err?.message || 'Failed to create publishable key')
+    } finally {
+      setIsCreatingPublishable(false)
     }
   }
 
@@ -338,6 +375,68 @@ export default observer(function ApiKeysPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Browser-safe publishable keys */}
+        <Text className="text-base font-semibold text-foreground mb-3">Publishable keys</Text>
+        <Card className="mb-6">
+          <CardContent className="p-4 gap-3">
+            <Text className="text-sm text-muted-foreground leading-5">
+              Use these project-scoped keys in an embedded chat. They are safe for browser code and
+              only work from the origins you allow.
+            </Text>
+            {workspaceProjects.length === 0 ? (
+              <Text className="text-sm text-muted-foreground">No projects found in this workspace.</Text>
+            ) : (
+              <View className="gap-2">
+                <Text className="text-sm font-medium text-foreground">Project</Text>
+                <View className="flex-row flex-wrap gap-2">
+                  {workspaceProjects.map((project: any) => (
+                    <Pressable
+                      key={project.id}
+                      onPress={() => setPublishableProjectId(project.id)}
+                      className={cn(
+                        'rounded-md border px-3 py-2',
+                        publishableProjectId === project.id ? 'border-primary bg-primary/10' : 'border-border',
+                      )}
+                    >
+                      <Text className="text-sm text-foreground">{project.name || project.id}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Input
+                  value={publishableOrigin}
+                  onChangeText={setPublishableOrigin}
+                  placeholder="https://example.com, https://app.example.com"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Button
+                  onPress={handleCreatePublishable}
+                  disabled={isCreatingPublishable || !publishableProjectId}
+                >
+                  {isCreatingPublishable ? 'Creating...' : 'Create publishable key'}
+                </Button>
+              </View>
+            )}
+            {publishableError && <Text className="text-sm text-destructive">{publishableError}</Text>}
+            {publishableKey && (
+              <View className="gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                <Text className="text-sm text-foreground">
+                  Copy this key now. It is safe to expose in browser code.
+                </Text>
+                <Pressable onPress={() => handleCopy(publishableKey)} className="flex-row items-center gap-2">
+                  <Text selectable className="flex-1 font-mono text-xs text-foreground">{publishableKey}</Text>
+                  {copied ? <Check size={16} className="text-green-500" /> : <Copy size={16} className="text-muted-foreground" />}
+                </Pressable>
+              </View>
+            )}
+            {publishableKeys.length > 0 && (
+              <Text className="text-xs text-muted-foreground">
+                {publishableKeys.length} publishable key{publishableKeys.length === 1 ? '' : 's'} configured.
+              </Text>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Manual API keys (advanced) */}
         <Pressable

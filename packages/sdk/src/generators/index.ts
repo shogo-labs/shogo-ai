@@ -173,6 +173,12 @@ export {
   type VoiceComponentsGeneratorOptions,
 } from './voice-components-generator'
 
+export {
+  generateChatComponents,
+  type GeneratedChatComponentFile,
+  type ChatComponentsGeneratorOptions,
+} from './chat-components-generator'
+
 // deps-doctor: reconcile features → runtime deps in package.json
 export {
   ensureFeatureDeps,
