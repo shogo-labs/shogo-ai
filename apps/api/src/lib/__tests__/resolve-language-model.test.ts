@@ -175,7 +175,7 @@ describe('resolveLanguageModel — header forwarding', () => {
 })
 
 describe('DEFAULT_ASSISTANT_MODEL', () => {
-  test('is the Hoshi public alias', () => {
-    expect(DEFAULT_ASSISTANT_MODEL).toBe('hoshi-1.0')
+  test('is the Hoshi 2.0 public alias', () => {
+    expect(DEFAULT_ASSISTANT_MODEL).toBe('hoshi-2-0')
   })
 })

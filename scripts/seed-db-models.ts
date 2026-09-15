@@ -26,6 +26,9 @@
  *     the model backing the public `hoshi-1.0` alias, so re-running this
  *     script also flips on audio support for Hoshi (see
  *     `resolveModelSupportsAudioInput` in apps/api/src/routes/ai-proxy.ts).
+ *   - Hoshi 2.0 (`hoshi-2-0`) — a DeepSeek-V4.1-Flash custom provider with
+ *     high-effort thinking enabled. Only seeded when `DEEPSEEK_API_KEY` and
+ *     `SECRETS_ENCRYPTION_KEY` are configured.
  *
  * Idempotent — safe to re-run (upserts by id / by provider label).
  *
@@ -35,6 +38,7 @@
  *
  * Hosted / Postgres:
  *   DATABASE_URL=postgres://... SECRETS_ENCRYPTION_KEY=... MIMO_API_KEY=sk-... \
+ *     DEEPSEEK_API_KEY=sk-... \
  *     bun scripts/seed-db-models.ts
  *
  * Note: the MiMo staging key shared during development MUST be rotated and set
@@ -240,6 +244,64 @@ async function seedMimo(): Promise<void> {
   console.log('[seed-db-models] Upserted MiMo v2.5 (apiModel=mimo-v2.5)')
 }
 
+async function seedDeepSeek(): Promise<void> {
+  const apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey) {
+    console.log(
+      '[seed-db-models] DEEPSEEK_API_KEY not set — skipping Hoshi 2.0. Add the provider + key from the super-admin "Custom Providers" form instead.',
+    )
+    return
+  }
+  if (!isSecretCryptoConfigured()) {
+    console.log('[seed-db-models] SECRETS_ENCRYPTION_KEY not configured — cannot encrypt DeepSeek key; skipping Hoshi 2.0.')
+    return
+  }
+
+  const label = 'DeepSeek'
+  const existing = await (prisma as any).modelProvider.findFirst({ where: { label } })
+  const providerData = {
+    label,
+    baseUrl: 'https://api.deepseek.com/v1',
+    protocol: 'openai',
+    authStyle: 'bearer',
+    encryptedApiKey: encryptSecret(apiKey),
+    enabled: true,
+    updatedBy: SEED_USER,
+  }
+  const provider = existing
+    ? await (prisma as any).modelProvider.update({ where: { id: existing.id }, data: providerData })
+    : await (prisma as any).modelProvider.create({ data: providerData })
+  console.log(`[seed-db-models] Upserted DeepSeek provider (${provider.id})`)
+
+  const modelCommon = {
+    providerId: provider.id,
+    displayName: 'Hoshi 2.0',
+    shortDisplayName: 'Hoshi 2.0',
+    tier: 'standard',
+    family: 'other',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    contextWindow: 1_000_000,
+    reasoningEffort: 'high',
+    enabled: true,
+    aliases: ['hoshi-2-0'],
+    capabilities: { upstream: 'deepseek', supportsAudioInput: false },
+    // Keep the user-facing Hoshi rate unchanged; provider cost is tracked
+    // separately using DeepSeek's current rates in release analytics.
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.001,
+    cacheWritePerMillion: 0.15,
+    outputPerMillion: 0.30,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'custom', apiModel: 'deepseek-flash' },
+    { sortOrder: 1, ...modelCommon },
+    modelCommon,
+  )
+  console.log('[seed-db-models] Upserted Hoshi 2.0 (apiModel=deepseek-flash)')
+}
+
 async function seedGptLive1(): Promise<void> {
   const common = {
     displayName: 'GPT-Live 1',
@@ -274,6 +336,7 @@ async function main(): Promise<void> {
   await seedSonnet5()
   await seedSonnet46()
   await seedMimo()
+  await seedDeepSeek()
   await seedGptLive1()
   console.log('[seed-db-models] Done.')
 }

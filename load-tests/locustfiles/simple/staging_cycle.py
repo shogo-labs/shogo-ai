@@ -23,7 +23,7 @@ Env:
   LOAD_TEST_SECRET   rate-limit bypass key (must match api-secrets on staging)
   HOST_HEADER        api.shogo-staging-system.staging.shogo.ai
   ORIGIN_OVERRIDE    https://studio.staging.shogo.ai
-  CHAT_MODEL         hoshi-1.0 (cheap economy model)
+  CHAT_MODEL         hoshi-2-0 (DeepSeek-V4.1-Flash)
   PROJECTS_PER_USER  projects each VU owns and rotates through (default 5)
   MSGS_PER_PROJECT   messages sent before rotating to the next project (default 3)
 """
@@ -41,7 +41,7 @@ from locustfiles.common.config import config  # noqa: E402
 HOST_HEADER = os.getenv("HOST_HEADER", "")
 ORIGIN = os.getenv("ORIGIN_OVERRIDE", "") or (f"https://{HOST_HEADER}" if HOST_HEADER else "")
 SECRET = config.LOAD_TEST_SECRET
-MODEL = os.getenv("CHAT_MODEL", "hoshi-1.0")
+MODEL = os.getenv("CHAT_MODEL", "hoshi-2-0")
 PROJECTS_PER_USER = int(os.getenv("PROJECTS_PER_USER", "5"))
 MSGS_PER_PROJECT = int(os.getenv("MSGS_PER_PROJECT", "3"))
 

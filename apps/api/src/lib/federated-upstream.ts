@@ -460,6 +460,7 @@ let cachedVisibleModels: { value: CloudVisibleModels; expiresAt: number } | null
 export interface CloudAgentModelEntry {
   id: string
   provider?: string
+  upstream?: string
 }
 
 export interface CloudAgentModelDefaults {
@@ -472,6 +473,7 @@ export interface CloudAgentModelDefaults {
     premium: CloudAgentModelEntry
   }
   hasAdvancedModelAccess: boolean
+  deepseekModelIds?: string[]
 }
 
 /** Test-only: drop the visible-models cache. */

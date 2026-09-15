@@ -97,6 +97,10 @@ spec:
               value: "8002"
             - name: NODE_ENV
               value: "production"
+            # DeepSeek Hoshi 2.0 does not advertise native audio input yet;
+            # keep voice translation on the validated Hoshi 1.0 path.
+            - name: SHOGO_VOICE_TRANSLATOR_MODEL
+              value: "hoshi-1-0"
             - name: SYSTEM_NAMESPACE
               value: "shogo-system"
             - name: NODE_TLS_REJECT_UNAUTHORIZED

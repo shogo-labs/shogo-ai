@@ -85,6 +85,7 @@ export interface ModelTierMap {
 export interface AutoTierEntry {
   id: string
   provider?: string
+  upstream?: string
 }
 
 /** Per-tier Auto override map, injected from admin config into the runtime. */

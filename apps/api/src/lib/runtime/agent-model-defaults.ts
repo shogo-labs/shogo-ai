@@ -27,6 +27,7 @@ export type AgentModelTier = 'economy' | 'standard' | 'premium'
 export interface AgentModelEntry {
   id: string
   provider?: string
+  upstream?: string
 }
 
 export interface AgentModelDefaults {
@@ -35,12 +36,14 @@ export interface AgentModelDefaults {
   defaultMode: string | null
   autoTiers: Record<AgentModelTier, AgentModelEntry>
   hasAdvancedModelAccess: boolean
+  deepseekModelIds: string[]
 }
 
 export interface AgentModelEnv {
   AGENT_BASIC_MODEL: string
   AGENT_ADVANCED_MODEL: string
   AGENT_AUTO_TIER_MAP: string
+  AGENT_DEEPSEEK_MODEL_IDS?: string
 }
 
 const AUTO_TIERS: AgentModelTier[] = ['economy', 'standard', 'premium']
@@ -66,6 +69,9 @@ function resolveModelEntry(raw: string): AgentModelEntry {
   return {
     id,
     provider: mergedEntry?.provider ?? inferProviderFromModel(id, 'custom'),
+    ...(mergedEntry?.capabilities?.upstream
+      ? { upstream: mergedEntry.capabilities.upstream }
+      : {}),
   }
 }
 
@@ -165,6 +171,13 @@ export async function resolveEffectiveAgentModelDefaults(
     defaultMode: await readDefaultMode(),
     autoTiers,
     hasAdvancedModelAccess: await billingService.hasAdvancedModelAccess(workspaceId),
+    deepseekModelIds: [
+      basic,
+      advanced,
+      ...Object.values(autoTiers),
+    ]
+      .filter((entry) => entry.upstream === 'deepseek')
+      .map((entry) => entry.id),
   }
 }
 
@@ -178,6 +191,7 @@ export function serializeAutoTierMapEnv(
     out[tier] = {
       id: entry.id.trim(),
       ...(entry.provider ? { provider: entry.provider } : {}),
+      ...(entry.upstream ? { upstream: entry.upstream } : {}),
     }
   }
   return Object.keys(out).length > 0 ? JSON.stringify(out) : undefined
@@ -199,6 +213,9 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
         AGENT_BASIC_MODEL: cloudDefaults.basic,
         AGENT_ADVANCED_MODEL: cloudDefaults.advanced,
         AGENT_AUTO_TIER_MAP: autoTierMap,
+        ...(cloudDefaults.deepseekModelIds?.length
+          ? { AGENT_DEEPSEEK_MODEL_IDS: cloudDefaults.deepseekModelIds.join(',') }
+          : {}),
       }
     }
   }
@@ -208,5 +225,8 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
     AGENT_BASIC_MODEL: localDefaults.basic,
     AGENT_ADVANCED_MODEL: localDefaults.advanced,
     AGENT_AUTO_TIER_MAP: serializeAutoTierMapEnv(localDefaults.autoTiers) as string,
+    ...(localDefaults.deepseekModelIds.length
+      ? { AGENT_DEEPSEEK_MODEL_IDS: localDefaults.deepseekModelIds.join(',') }
+      : {}),
   }
 }

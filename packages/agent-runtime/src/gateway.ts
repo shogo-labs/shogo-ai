@@ -170,7 +170,8 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
     const id = typeof e.id === 'string' ? e.id.trim() : ''
     if (!id) continue
     const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
-    out[tier] = { id, provider }
+    const upstream = typeof e.upstream === 'string' && e.upstream.trim() ? e.upstream.trim() : undefined
+    out[tier] = { id, provider, upstream }
   }
   return Object.keys(out).length > 0 ? out : undefined
 }

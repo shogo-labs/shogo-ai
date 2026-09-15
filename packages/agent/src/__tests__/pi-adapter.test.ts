@@ -5,6 +5,7 @@ import { resolveModel } from '../pi-adapter.js'
 
 describe('resolveModel — custom OpenAI-compatible (DB) providers', () => {
   const PREV = process.env.OPENAI_BASE_URL
+  const PREV_DEEPSEEK = process.env.AGENT_DEEPSEEK_MODEL_IDS
 
   beforeEach(() => {
     // Simulate configureAIProxy having pointed OpenAI traffic at the proxy.
@@ -13,6 +14,8 @@ describe('resolveModel — custom OpenAI-compatible (DB) providers', () => {
   afterEach(() => {
     if (PREV === undefined) delete process.env.OPENAI_BASE_URL
     else process.env.OPENAI_BASE_URL = PREV
+    if (PREV_DEEPSEEK === undefined) delete process.env.AGENT_DEEPSEEK_MODEL_IDS
+    else process.env.AGENT_DEEPSEEK_MODEL_IDS = PREV_DEEPSEEK
   })
 
   it('routes a custom model through the OpenAI chat-completions proxy', () => {
@@ -34,5 +37,21 @@ describe('resolveModel — custom OpenAI-compatible (DB) providers', () => {
     const model = resolveModel('custom', 'some-db-model')
     expect(model.api).toBe('openai-completions')
     expect(model.baseUrl).toBe('https://api.openai.com')
+  })
+
+  it('adds explicit DeepSeek compatibility for DB-backed Hoshi models', () => {
+    process.env.AGENT_DEEPSEEK_MODEL_IDS = 'hoshi-2-0'
+    const model = resolveModel('custom', 'hoshi-2-0') as any
+    expect(model.compat).toEqual({
+      thinkingFormat: 'deepseek',
+      requiresReasoningContentOnAssistantMessages: true,
+      supportsStore: false,
+      supportsDeveloperRole: false,
+    })
+  })
+
+  it('also recognizes a direct DeepSeek model id', () => {
+    const model = resolveModel('custom', 'deepseek-flash') as any
+    expect(model.compat?.thinkingFormat).toBe('deepseek')
   })
 })

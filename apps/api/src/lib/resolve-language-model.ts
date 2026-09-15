@@ -35,7 +35,7 @@ import { resolvePublicModelSync } from '../services/public-models.service'
  * Expressed as a public alias so `resolveLanguageModel` resolves it to the
  * current backing model id at call time.
  */
-export const DEFAULT_ASSISTANT_MODEL = 'hoshi-1.0'
+export const DEFAULT_ASSISTANT_MODEL = 'hoshi-2-0'
 
 export interface ResolvedLanguageModel {
   /** AI-SDK model instance usable with `streamText` / `generateText`. */

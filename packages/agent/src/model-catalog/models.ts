@@ -46,6 +46,8 @@ export type AgentMode = 'basic' | 'advanced'
 export type CapabilityReliability = 'reliable' | 'flaky' | 'unsupported'
 
 export interface ModelCapabilities {
+  /** Optional upstream protocol identity used for provider-specific routing. */
+  upstream?: string
   /**
    * How reliably the model orchestrates subagents (`agent_spawn`,
    * `agent_create`, `agent_result`). Multi-agent flows like canvas

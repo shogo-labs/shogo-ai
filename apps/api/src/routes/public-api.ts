@@ -381,8 +381,8 @@ export function publicApiRoutes() {
             request,
             apiKey,
             modelConfig,
-            (inTok, outTok, cachedTok) =>
-              recordUsage(payload, backingId, inTok, outTok, cachedTok, 0, null),
+            (inTok, outTok, cachedTok, reasoningTok) =>
+              recordUsage(payload, backingId, inTok, outTok, cachedTok, 0, null, null, reasoningTok),
             c.req.raw.signal,
           )
         }
@@ -402,16 +402,25 @@ export function publicApiRoutes() {
         result = await proxyOpenAINonStream(request, apiKey, modelConfig, c.req.raw.signal)
       }
 
-      const totalPrompt = result?.usage?.prompt_tokens || 0
-      const cachedPrompt = result?.usage?.prompt_tokens_details?.cached_tokens || 0
+      const usage = result?.usage || {}
+      const totalPrompt = usage.prompt_tokens || 0
+      const cachedPrompt =
+        usage.prompt_tokens_details?.cached_tokens ??
+        usage.prompt_cache_hit_tokens ??
+        0
+      const inputPrompt =
+        usage.prompt_cache_miss_tokens ??
+        Math.max(0, totalPrompt - cachedPrompt)
       recordUsage(
         payload,
         backingId,
-        totalPrompt - cachedPrompt,
-        result?.usage?.completion_tokens || 0,
+        inputPrompt,
+        usage.completion_tokens || 0,
         cachedPrompt,
         0,
         null,
+        null,
+        usage.completion_tokens_details?.reasoning_tokens || 0,
       )
 
       if (result && typeof result === 'object') result.model = publicId

@@ -37,7 +37,8 @@ const VALID_TRACKS = [
   'startup-cto', 'freelancer', 'content-creator', 'event-planner',
   'nonprofit', 'adversarial', 'cross-cutting', 'workspace-attachments',
   'preview-url', 'truncation', 'codegen-safety', 'verification', 'loops',
-  'long-task', 'test-hygiene', 'agent-hardening',
+  'long-task', 'test-hygiene', 'agent-hardening', 'tool-discipline',
+  'typed-build', 'reliability-regression', 'secret-hygiene',
 ]
 
 const VALID_MODELS = new Set([
@@ -734,7 +735,11 @@ export function evalAdminRoutes(): Hono {
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    if (!VALID_MODELS.has(model)) {
+    const dbModel = await (prisma as any).modelDefinition?.findUnique?.({
+      where: { id: model },
+      select: { enabled: true },
+    })
+    if (!VALID_MODELS.has(model) && dbModel?.enabled !== true) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 

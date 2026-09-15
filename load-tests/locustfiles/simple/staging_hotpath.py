@@ -3,8 +3,8 @@ Staging HOT PATH load test: project creation -> warm-pool assignment
 (Object Storage hydration) -> agent chat proxied through the API.
 
 This targets the app's real bottleneck (not auth): the warm pool + runtime
-assignment and the API-as-data-plane-proxy chat path. Uses the hoshi-1.0
-(mimo-v2.5, economy) model so LLM round-trips are cheap.
+assignment and the API-as-data-plane-proxy chat path. Uses the hoshi-2-0
+(DeepSeek-V4.1-Flash) model by default.
 
 Targets the Kourier LB over HTTP; captures the __Secure- session cookie from
 sign-up and replays it as a Cookie header (Secure cookies aren't sent over http).
@@ -28,7 +28,7 @@ from locustfiles.common.config import config  # noqa: E402
 HOST_HEADER = os.getenv("HOST_HEADER", "")
 ORIGIN = os.getenv("ORIGIN_OVERRIDE", "") or (f"https://{HOST_HEADER}" if HOST_HEADER else "")
 SECRET = config.LOAD_TEST_SECRET
-MODEL = os.getenv("CHAT_MODEL", "hoshi-1.0")
+MODEL = os.getenv("CHAT_MODEL", "hoshi-2-0")
 
 COOKIE_RE = re.compile(r"(__Secure-shogo\.[A-Za-z_]+=[^;]+)")
 

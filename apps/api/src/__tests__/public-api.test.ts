@@ -88,7 +88,7 @@ mock.module('../services/billing.service', () => ({
 
 // Imported AFTER the mocks so the route module binds to the stubs.
 const { publicApiRoutes } = await import('../routes/public-api')
-const { primePublicModels } = await import('../services/public-models.service')
+const { primePublicModels, normalizePublicModelId } = await import('../services/public-models.service')
 
 describe('Public API /v1', () => {
   let app: Hono
@@ -103,6 +103,12 @@ describe('Public API /v1', () => {
     hasBalanceValue = true
     hasAdvancedValue = true
     consumeUsageCalls.length = 0
+  })
+
+  test('normalizes dotted and dashed Hoshi public ids to the same alias', () => {
+    expect(normalizePublicModelId('hoshi-1.0')).toBe('hoshi-1-0')
+    expect(normalizePublicModelId('hoshi-1-0')).toBe('hoshi-1-0')
+    expect(normalizePublicModelId('other-model')).toBe('other-model')
   })
 
   // ---- health -------------------------------------------------------------
@@ -261,6 +267,57 @@ describe('Public API /v1', () => {
       expect(consumeUsageCalls.length).toBe(1)
       expect(consumeUsageCalls[0].workspaceId).toBe('ws-1')
       expect(consumeUsageCalls[0].actionMetadata.model).toBe('gpt-5.5')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  // ---- chat completions: DeepSeek-style usage metering --------------------
+  // The public surface reuses `recordUsage` but parses the upstream `usage`
+  // object itself (see `public-api.ts`), so it needs its own coverage of the
+  // `prompt_cache_hit_tokens` / `reasoning_tokens` fallback — a DeepSeek
+  // response has no `prompt_tokens_details.cached_tokens`, only the legacy
+  // top-level fields.
+
+  test('POST /v1/chat/completions records cache-hit and reasoning tokens from a DeepSeek-shaped usage payload', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-deepseek-test',
+          object: 'chat.completion',
+          model: 'gpt-5.5',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'hello', reasoning_content: 'thinking...' }, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 40,
+            total_tokens: 140,
+            prompt_cache_hit_tokens: 60,
+            prompt_cache_miss_tokens: 40,
+            completion_tokens_details: { reasoning_tokens: 25 },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }) as any
+
+    try {
+      const res = await app.fetch(
+        new Request('http://localhost/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${VALID_KEY}` },
+          body: JSON.stringify({ model: 'hoshi-1.0', messages: [{ role: 'user', content: 'hi' }] }),
+        }),
+      )
+      expect(res.status).toBe(200)
+      expect(consumeUsageCalls.length).toBe(1)
+      const metadata = consumeUsageCalls[0].actionMetadata
+      // Cache-hit tokens come from `prompt_cache_hit_tokens`, input tokens
+      // from `prompt_cache_miss_tokens` — not `prompt_tokens - cached`, which
+      // would be wrong once cache-write tokens are in the mix.
+      expect(metadata.cachedInputTokens).toBe(60)
+      expect(metadata.inputTokens).toBe(40)
+      expect(metadata.reasoningTokens).toBe(25)
     } finally {
       globalThis.fetch = originalFetch
     }
