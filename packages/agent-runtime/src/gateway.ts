@@ -232,6 +232,10 @@ export function resolveThinkingLevel(
   modelOverride?: string,
   configThinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh',
 ): 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  // Ollama models such as qwen2.5:3b do not accept provider reasoning
+  // parameters. Local development must send a plain completion request even
+  // when the shared Auto-mode defaults would normally choose medium thinking.
+  if (process.env.LOCAL_LLM_BASE_URL) return 'off'
   const envLevel = process.env.AGENT_THINKING_LEVEL as any
   if (modelOverride === 'basic') {
     return (process.env.AGENT_BASIC_THINKING_LEVEL as any) || 'medium'

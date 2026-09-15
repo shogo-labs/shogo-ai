@@ -55,6 +55,7 @@ model User {
   accounts             Account[]
   members              Member[]
   notifications        Notification[]
+  agentTasks            AgentTask[]
   starredProjects      StarredProject[]
   signupAttribution    SignupAttribution?
   apiKeys              ApiKey[]
@@ -168,6 +169,7 @@ model Workspace {
   usageEvents            UsageEvent[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
+  agentTasks             AgentTask[]
   apiKeys                ApiKey[]
   instances              Instance[]
   meetings               Meeting[]
@@ -315,6 +317,7 @@ model Project {
   attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
   attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
+  agentTasks             AgentTask[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -772,6 +775,46 @@ model Notification {
   @@map("notifications")
 }
 
+model AgentTask {
+  id             String          @id @default(uuid())
+  userId         String
+  workspaceId    String
+  projectId      String?
+  chatSessionId  String?
+  title          String
+  notes          String?
+  dueAt          DateTime?
+  status         AgentTaskStatus @default(draft)
+  currentStep    String?
+  resultSummary  String?
+  errorMessage   String?
+  queuedAt       DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([workspaceId, status])
+  @@index([projectId, status])
+  @@index([chatSessionId])
+  @@map("agent_tasks")
+}
+
+enum AgentTaskStatus {
+  draft
+  queued
+  running
+  completed
+  failed
+  cancelled
+}
+
 enum NotificationType {
   invitation_pending
   invitation_accepted
@@ -791,6 +834,9 @@ enum NotificationType {
   // Fires when a bring-your-own custom domain finishes DNS + SSL
   // validation and goes live (written by the poll-custom-domains cron).
   custom_domain_live
+  agent_task_started
+  agent_task_completed
+  agent_task_failed
 }
 
 // =============================================================================
@@ -1076,6 +1122,7 @@ model ChatSession {
   attachedProjects ChatSessionProject[]
   messages         ChatMessage[]
   toolCallLogs     ToolCallLog[]
+  agentTasks       AgentTask[]
 
   @@index([contextType, contextId])
   @@index([workspaceId])

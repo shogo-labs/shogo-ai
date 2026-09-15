@@ -16,12 +16,16 @@ import { chatComposerDockStyle } from "../../../lib/native-composer-keyboard"
 export function ProjectComposerDock({
   columnWidth,
   keyboardPad,
+  keyboardOpen,
+  restPad,
   applyKeyboardPad,
   native,
   children,
 }: {
   columnWidth?: number
   keyboardPad: Animated.Value
+  keyboardOpen: boolean
+  restPad: number
   applyKeyboardPad: boolean
   native: boolean
   children: ReactNode
@@ -32,7 +36,10 @@ export function ProjectComposerDock({
         testID="project-composer-dock"
         style={chatComposerDockStyle({
           measuredWidth: columnWidth,
-          keyboardPad: applyKeyboardPad ? keyboardPad : undefined,
+          // Only use the measured keyboard overlap while the keyboard is
+          // actually visible. A stale keyboard frame must never leave the
+          // composer floating in the middle of the chat after dismissal.
+          keyboardPad: applyKeyboardPad ? (keyboardOpen ? keyboardPad : restPad) : undefined,
           webOverflowVisible: applyKeyboardPad && !native,
         })}
       >

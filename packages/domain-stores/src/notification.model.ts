@@ -19,7 +19,7 @@ export const NotificationModel = types
   .model("Notification", {
     id: types.identifier,
     userId: types.string,
-    type: types.enumeration("NotificationType", ["invitation_pending", "invitation_accepted", "member_joined", "member_left", "workspace_updated", "payment_succeeded", "payment_failed", "overage_charged", "usage_threshold", "spend_limit_reached", "custom_domain_live"]),
+    type: types.enumeration("NotificationType", ["invitation_pending", "invitation_accepted", "member_joined", "member_left", "workspace_updated", "payment_succeeded", "payment_failed", "overage_charged", "usage_threshold", "spend_limit_reached", "custom_domain_live", "agent_task_started", "agent_task_completed", "agent_task_failed"]),
     title: types.string,
     message: types.string,
     metadata: types.optional(types.frozen(), {}),

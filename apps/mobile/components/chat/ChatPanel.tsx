@@ -162,11 +162,6 @@ import {
 } from "./ChatContext"
 import { useIdeBridge } from "./ideBridge"
 
-// Stable empty array we hand to the chat context's `messages` field.
-// See the long comment near `contextValue` below — we intentionally do
-// not plumb the live message list through context, so this constant
-// satisfies the type without flipping per token.
-const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
 import {
   MessageEditProvider,
@@ -212,6 +207,35 @@ import {
 // ============================================================
 // Types
 // ============================================================
+
+// Stable empty array we hand to the chat context's `messages` field.
+// See the long comment near `contextValue` below — we intentionally do
+// not plumb the live message list through context, so this constant
+// satisfies the type without flipping per token.
+const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
+const DELEGATED_TASK_PROMPT_PREFIX = "This is a delegated task from the user's task list:"
+const DELEGATED_TASK_POLL_INTERVAL_MS = 1_000
+const DELEGATED_TASK_MAX_WAIT_MS = 5 * 60 * 1_000
+
+function messageTimestamp(value: unknown): number {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === "number") return value
+  const parsed = Date.parse(String(value ?? ""))
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function latestDelegatedTaskPromptIndex(messages: readonly any[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (
+      message?.role === "user" &&
+      extractTextContent(message).trim().startsWith(DELEGATED_TASK_PROMPT_PREFIX)
+    ) {
+      return index
+    }
+  }
+  return -1
+}
 
 type SubagentProgressEvent =
   | { type: "subagent-start"; agentId: string; agentType: string; timestamp: number }
@@ -2920,6 +2944,128 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
+
+  // A task started from the Tasks tab runs its turn on the server before this
+  // screen mounts. The first history-load probe can therefore legitimately
+  // see `unknown` while the worker is still preparing the runtime. Keep the
+  // task chat attached during that hand-off so the user sees the same live
+  // response as a normal chat send instead of only seeing it after reopening
+  // the project.
+  const delegatedTaskPromptIndex = useMemo(
+    () => latestDelegatedTaskPromptIndex(messages),
+    [messages],
+  )
+  const delegatedTaskHasResponse = useMemo(
+    () => delegatedTaskPromptIndex >= 0 && messages.some((message: any, index) => index > delegatedTaskPromptIndex && message.role === 'assistant'),
+    [delegatedTaskPromptIndex, messages],
+  )
+
+  useEffect(() => {
+    if (
+      !isActive ||
+      !currentSessionId ||
+      !sessionMessages ||
+      delegatedTaskPromptIndex < 0 ||
+      delegatedTaskHasResponse ||
+      isStreaming
+    ) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const startedAt = Date.now()
+
+    const refreshPersistedTaskResponse = async () => {
+      if (cancelled || isStreamingRef.current) return
+      await sessionMessages.loadPage(
+        { sessionId: currentSessionId, agent: 'technical' },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (cancelled || isStreamingRef.current) return
+
+      const loaded = [...sessionMessages.all].sort(
+        (a: any, b: any) => messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
+      )
+      const promptIndex = latestDelegatedTaskPromptIndex(loaded)
+      if (promptIndex < 0 || !loaded.some((message: any, index) => index > promptIndex && message.role === 'assistant')) return
+
+      const aiMessages = loaded.map((message: any) => {
+        const next: any = {
+          id: message.id,
+          role: message.role as 'user' | 'assistant',
+          content: message.content ?? extractTextContent(message),
+          createdAt: message.createdAt,
+        }
+        if (message.parts) {
+          try {
+            next.parts = JSON.parse(message.parts)
+          } catch {
+            // Keep the text content when an older message has malformed parts.
+          }
+        }
+        return next
+      })
+      cachedMessagesRef.current = aiMessages
+      sessionMessageCache.set(currentSessionId, aiMessages)
+      setMessages(aiMessages)
+    }
+
+    const poll = async () => {
+      if (cancelled || isStreamingRef.current) return
+      try {
+        const turnUrl = buildChatTurnUrl(
+          API_URL!,
+          projectId,
+          localAgentUrl,
+          currentSessionId,
+          chatWorkspaceId,
+        )
+        const turnStatus = await probeChatTurnStatus({
+          url: turnUrl,
+          fetch: expoFetch,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          credentials: Platform.OS === 'web' ? 'include' : undefined,
+        })
+        if (cancelled || isStreamingRef.current) return
+
+        if (shouldAttachLiveStream(turnStatus)) {
+          guardedAutoResumeStream('live-turn-probe')
+          return
+        }
+
+        // The worker may have completed between probes. Reconcile persisted
+        // history as well as the live turn status so a fast response is still
+        // shown without navigating away and back.
+        await refreshPersistedTaskResponse()
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[ChatPanel] delegated task reconciliation failed', error)
+        }
+      }
+      if (!cancelled && Date.now() - startedAt < DELEGATED_TASK_MAX_WAIT_MS && !isStreamingRef.current) {
+        timer = setTimeout(() => void poll(), DELEGATED_TASK_POLL_INTERVAL_MS)
+      }
+    }
+
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [
+    isActive,
+    currentSessionId,
+    sessionMessages,
+    delegatedTaskPromptIndex,
+    delegatedTaskHasResponse,
+    isStreaming,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    guardedAutoResumeStream,
+    setMessages,
+  ])
 
   // Detect when the AI SDK stream ends but we never observed a
   // `data-turn-complete` marker. The fetch wrapper auto-resumes through
@@ -5769,7 +5915,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Render collapsed state
   if (isCollapsed) {
     return (
-      <View className={cn("flex-row flex-1", className)}>
+      <View
+        className={cn("flex-row flex-1", className)}
+        style={{ flex: 1, minHeight: 0 }}
+      >
         {children && (
           <TodoStateStoreContext.Provider value={todoStateStore}>
             <ChatContextProvider value={contextValue}>
@@ -5781,6 +5930,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       </View>
     )
   }
+
+  const ChatSurface = isNativePhoneLayout ? View : KeyboardAvoidingView
 
   return (
     <TodoStateStoreContext.Provider value={todoStateStore}>
@@ -5820,25 +5971,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         onSendMessage={(text) => handleInputSubmit(text)}
       />
       <ChangesDockPanel />
-      <View className={cn("flex-row flex-1", className)}>
+      <View
+        className={cn(isNativePhoneLayout ? "flex-col flex-1" : "flex-row flex-1", className)}
+        style={{ flex: 1, minHeight: 0 }}
+      >
         {/* Main content area */}
         {children && (
           <View className="flex-1 min-w-0 overflow-hidden">{children}</View>
         )}
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
-        <KeyboardAvoidingView
-          behavior={
-            isNativePhoneLayout
-              ? undefined
-              : Platform.OS === "ios"
-                ? "padding"
-                : "height"
-          }
+        <ChatSurface
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
           className="flex-1 flex-col bg-background"
-          keyboardVerticalOffset={
-            isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50
-          }
+          style={{ flex: 1, minHeight: 0 }}
+          keyboardVerticalOffset={isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50}
         >
           {/* Messages with Turn Grouping */}
           <View
@@ -6028,7 +6175,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           <ProjectComposerDock
             columnWidth={nativePhoneColumnWidth}
             keyboardPad={composerKeyboardPad}
-            applyKeyboardPad={isPhoneViewport}
+            keyboardOpen={nativeKeyboardOpen}
+            restPad={restComposerPad}
+            applyKeyboardPad={isPhoneViewport || isNativePhoneLayout}
             native={isNative}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
@@ -6098,7 +6247,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               }
             />
           )}
-        </KeyboardAvoidingView>
+        </ChatSurface>
       </View>
     </ChatContextProvider>
     </FileChangeStoreContext.Provider>

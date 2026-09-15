@@ -36,7 +36,9 @@ import { mark as csMark } from '../../lib/cold-start-timing'
 import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS,
   WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe';
+import { useNativePhoneSheetOpen } from '../../lib/native-phone-sheet-lock'
 import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell"
+import { MobileBottomNav } from '../../components/layout/MobileBottomNav'
 
 csMark('app:layout:module-load')
 
@@ -62,6 +64,7 @@ export default function AppLayout() {
   const { width } = useWindowDimensions()
   const isNativeApp = Platform.OS !== 'web'
   const isDark = useResolvedTheme() === 'dark'
+  const phoneSheetOpen = useNativePhoneSheetOpen()
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= WEB_WIDE_MIN_WIDTH
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
@@ -149,7 +152,7 @@ export default function AppLayout() {
     isAccountPage ||
     isSearchPage ||
     isProjectChatsPage
-  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
+  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader && !phoneSheetOpen
   const nativeSheetDrawer = !isWide && !isIdeEmbed
   const drawer = useNativeSheetDrawer({
     windowWidth: width,
@@ -158,6 +161,10 @@ export default function AppLayout() {
     closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
   });
   const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
+
+  useEffect(() => {
+    if (phoneSheetOpen && drawerOpen) closeDrawer()
+  }, [closeDrawer, drawerOpen, phoneSheetOpen])
 
   useEffect(() => {
     if (!isWide && !isAccountPage) return
@@ -247,6 +254,7 @@ export default function AppLayout() {
             <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
           ) : null
         }
+        bottomNav={<MobileBottomNav />}
         drawer={drawer}
       >
         {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}

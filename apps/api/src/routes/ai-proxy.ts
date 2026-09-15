@@ -222,6 +222,17 @@ export function resolveModel(model: string): ModelConfig | null {
   }
 
   // Infer provider from model name
+  // Local development may use an arbitrary Ollama model id that is not part
+  // of Shogo's static catalog (for example `qwen2.5:3b`). When the local LLM
+  // is configured, route unknown ids to the OpenAI-compatible local endpoint
+  // instead of rejecting them as unsupported cloud models.
+  if (process.env.LOCAL_LLM_BASE_URL) {
+    return {
+      provider: 'local',
+      apiModel: model,
+      displayName: model,
+    }
+  }
   if (model.startsWith('claude')) {
     return {
       provider: 'anthropic',

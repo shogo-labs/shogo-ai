@@ -1060,12 +1060,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Enforce model tier for free/basic-plan workspaces (server-side guard)
       if (parsedBody.agentMode) {
-        const resolved = resolveModelId(parsedBody.agentMode)
-        const tier = getModelTier(resolved)
-        if (tier !== 'economy') {
-          const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
-          if (!hasAdvanced) {
-            parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+        // Local LLM models are user-configured and are not cloud-tiered. Do
+        // not replace Auto/local routing with the cloud Claude fallback.
+        const localLlmConfigured = Boolean(process.env.LOCAL_LLM_BASE_URL)
+        if (!localLlmConfigured) {
+          const resolved = resolveModelId(parsedBody.agentMode)
+          const tier = getModelTier(resolved)
+          if (tier !== 'economy') {
+            const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
+            if (!hasAdvanced) {
+              parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+            }
           }
         }
         // Resolve the model's native provider from the registry and stamp it on

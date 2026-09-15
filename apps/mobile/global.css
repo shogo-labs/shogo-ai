@@ -146,19 +146,19 @@
   --color-card-foreground: 10 10 10;
   --color-popover: 255 255 255;
   --color-popover-foreground: 10 10 10;
-  --color-primary: 226 121 39;
+  --color-primary: 194 65 12;
   --color-primary-foreground: 255 255 255;
   --color-secondary: 244 244 245;
   --color-secondary-foreground: 24 24 27;
   --color-muted: 244 244 245;
-  --color-muted-foreground: 113 113 122;
+  --color-muted-foreground: 82 82 91;
   --color-accent: 244 244 245;
   --color-accent-foreground: 24 24 27;
-  --color-destructive: 220 38 38;
+  --color-destructive: 185 28 28;
   --color-destructive-foreground: 255 255 255;
-  --color-border: 228 228 231;
-  --color-input: 228 228 231;
-  --color-ring: 226 121 39;
+  --color-border: 113 113 122;
+  --color-input: 113 113 122;
+  --color-ring: 194 65 12;
 
   --color-sidebar: 244 244 245;
   --color-sidebar-foreground: 24 24 27;
@@ -170,7 +170,7 @@
   --color-surface-3: 234 234 235;
 
   /* Shogo landing / marketing accent (hero CTAs, campaign buttons) */
-  --color-brand-landing: 226 121 39;
+  --color-brand-landing: 194 65 12;
 }
 
 .dark {
@@ -181,17 +181,17 @@
   --color-popover: 30 30 30;
   --color-popover-foreground: 222 222 222;
   --color-primary: 240 144 80;
-  --color-primary-foreground: 255 255 255;
+  --color-primary-foreground: 24 24 27;
   --color-secondary: 51 51 51;
   --color-secondary-foreground: 255 255 255;
   --color-muted: 42 42 42;
   --color-muted-foreground: 163 163 163;
   --color-accent: 51 51 51;
   --color-accent-foreground: 255 255 255;
-  --color-destructive: 220 38 38;
-  --color-destructive-foreground: 255 255 255;
-  --color-border: 51 51 51;
-  --color-input: 51 51 51;
+  --color-destructive: 248 113 113;
+  --color-destructive-foreground: 24 24 27;
+  --color-border: 113 113 122;
+  --color-input: 113 113 122;
   --color-ring: 240 144 80;
 
   --color-sidebar: 42 42 42;
