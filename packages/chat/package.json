@@ -1,0 +1,62 @@
+{
+  "name": "@shogo-ai/chat",
+  "version": "1.0.0",
+  "description": "Shogo embedded chat client, React UI, and script-tag embed.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "development": "./src/react.tsx",
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
+    },
+    "./embed": {
+      "types": "./dist/embed.d.ts",
+      "development": "./src/embed.ts",
+      "import": "./dist/embed.js",
+      "require": "./dist/embed.cjs"
+    },
+    "./frame": {
+      "types": "./dist/frame.d.ts",
+      "development": "./src/frame.tsx",
+      "import": "./dist/frame.js",
+      "require": "./dist/frame.cjs"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup && cp dist/react.css dist/styles.css",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "@shogo/chat-ui": "workspace:*",
+    "ai": "^6.0.73",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

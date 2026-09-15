@@ -59,6 +59,17 @@ describe('ensureFeatureDeps', () => {
     expect(pkg.dependencies.react).toBe('^19.0.0')
   })
 
+  test('chat feature enabled + missing deps → adds chat packages', () => {
+    writePkg(workDir, { name: 'test', dependencies: {} })
+    const report = ensureFeatureDeps({
+      cwd: workDir,
+      features: { chat: true },
+    })
+    expect(report.modified).toBe(true)
+    expect(report.added['@shogo-ai/chat']).toBe(FEATURE_DEPS.chat!['@shogo-ai/chat'])
+    expect(report.added['@shogo/chat-ui']).toBe(FEATURE_DEPS.chat!['@shogo/chat-ui'])
+  })
+
   test('voice feature (object form) enabled → same treatment', () => {
     writePkg(workDir, { name: 'test', dependencies: {} })
     const report = ensureFeatureDeps({

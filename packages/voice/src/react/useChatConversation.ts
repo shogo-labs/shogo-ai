@@ -84,6 +84,8 @@ function syntheticId(prefix: string): string {
  * the AI-SDK status. State management is in-memory only — for durable
  * threads, persist `messages` yourself (e.g. on `status === 'ready'`)
  * and rehydrate via `setMessages(...)` on next mount.
+ *
+ * @deprecated For new embedded chat integrations use `@shogo-ai/chat/react`.
  */
 export function useChatConversation(
   options: UseChatConversationOptions = {},

@@ -169,6 +169,7 @@ import { useIdeBridge } from "./ideBridge"
 // satisfies the type without flipping per token.
 const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
+import { ChatUiHostProvider } from "@shogo/chat-ui/host"
 import {
   MessageEditProvider,
   dispatchNativeInlineEditTap,
@@ -5994,14 +5995,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   Platform.OS === "web" ? undefined : setNativeInlineEditing
                 }
               >
-                <TurnFooterProvider {...turnFooterValue}>
-                  <TurnList
-                    messages={displayMessages}
-                    isStreaming={isStreaming}
-                    phase={phase}
-                    subagentToolCalls={accumulatedSubagentTools}
-                  />
-                </TurnFooterProvider>
+                <ChatUiHostProvider value={{ compact: Platform.OS === "web" }}>
+                  <TurnFooterProvider {...turnFooterValue}>
+                    <TurnList
+                      messages={displayMessages}
+                      isStreaming={isStreaming}
+                      phase={phase}
+                      subagentToolCalls={accumulatedSubagentTools}
+                    />
+                  </TurnFooterProvider>
+                </ChatUiHostProvider>
               </MessageEditProvider>
             ) : !isStreaming && !isInitialLoadComplete && currentSessionId ? (
               <View className="flex-col items-center justify-center flex-1 gap-3">

@@ -6,6 +6,8 @@ import {
   SHOGO_API_KEY_PREFIX,
   SHOGO_API_KEY_PREFIX_DISPLAY_LENGTH,
   SHOGO_API_KEY_RANDOM_BYTES,
+  SHOGO_PUBLISHABLE_KEY_PREFIX,
+  generatePublishableApiKey,
   generateApiKey,
   hashApiKey,
   mintDeviceApiKey,
@@ -23,6 +25,10 @@ describe('public constants', () => {
   test('SHOGO_API_KEY_PREFIX_DISPLAY_LENGTH is prefix.length + 8 hex chars', () => {
     expect(SHOGO_API_KEY_PREFIX_DISPLAY_LENGTH).toBe(SHOGO_API_KEY_PREFIX.length + 8)
     expect(SHOGO_API_KEY_PREFIX_DISPLAY_LENGTH).toBe(17)
+  })
+
+  test('publishable keys use the browser-safe prefix', () => {
+    expect(SHOGO_PUBLISHABLE_KEY_PREFIX).toBe('shogo_pk_')
   })
 })
 
@@ -97,6 +103,15 @@ describe('generateApiKey', () => {
       seen.add(fullKey)
     }
     expect(seen.size).toBe(100)
+  })
+})
+
+describe('generatePublishableApiKey', () => {
+  test('returns a publishable key with a matching hash and display prefix', async () => {
+    const out = await generatePublishableApiKey()
+    expect(out.fullKey).toMatch(/^shogo_pk_[0-9a-f]{64}$/)
+    expect(out.keyHash).toBe(await hashApiKey(out.fullKey))
+    expect(out.keyPrefix).toBe(out.fullKey.slice(0, SHOGO_PUBLISHABLE_KEY_PREFIX.length + 8))
   })
 })
 

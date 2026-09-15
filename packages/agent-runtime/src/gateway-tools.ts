@@ -6691,7 +6691,7 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
       '',
       'After connecting, give the user the embed snippet to paste on their website.',
       'The widget appears as a chat bubble — visitors can chat with the agent directly.',
-      'Optional config: title, subtitle, welcomeMessage, primaryColor (hex), position ("bottom-right" or "bottom-left"), avatarUrl, allowedOrigins.',
+      'Optional config: title, subtitle, welcomeMessage, primaryColor (hex), position ("bottom-right" or "bottom-left"), avatarUrl, theme, placeholder, launcherIcon, poweredBy, suggestedPrompts, allowedOrigins.',
     ].join('\n'),
   },
 }
@@ -6805,14 +6805,15 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
               message: [
                 'WebChat channel connected and live!',
                 '',
-                'Tell the user to add this single script tag before the closing </body> tag on their website:',
+                'Tell the user to add this script tag before the closing </body> tag on their website:',
                 '',
-                `<script src="${widgetUrl}"></script>`,
+                `<script src="${widgetUrl}" data-project-id="${ctx.projectId}" data-transport="runtime"></script>`,
                 '',
-                'A chat bubble will appear on their page. Visitors can click it to chat with the agent. No other setup needed.',
-                'The user can also find the embed snippet in the Channels panel.',
+                'The script loads the shared Shogo chat UI in an isolated iframe. Visitors can click the bubble to chat with the live agent.',
+                'For a full-page experience use data-mode="page" and data-target="#support-chat". For production, prefer a shogo_pk_* publishable key with an origin allowlist.',
+                'The user can also find React, full-page, and script snippets in the Agents → Embed panel.',
               ].join('\n'),
-              embedSnippet: `<script src="${widgetUrl}"></script>`,
+              embedSnippet: `<script src="${widgetUrl}" data-project-id="${ctx.projectId}" data-transport="runtime"></script>`,
             })
           }
 

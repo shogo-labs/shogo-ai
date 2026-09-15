@@ -1514,6 +1514,8 @@ model ApiKey {
   keyPrefix   String
   workspaceId String
   userId      String
+  projectId      String?
+  allowedOrigins Json?
   lastUsedAt  DateTime?
   expiresAt   DateTime?
   createdAt   DateTime  @default(now())
@@ -1532,6 +1534,7 @@ model ApiKey {
   @@index([workspaceId])
   @@index([userId])
   @@index([workspaceId, deviceId])
+  @@index([projectId, kind])
   @@map("api_keys")
 }
 

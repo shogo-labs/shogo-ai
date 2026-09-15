@@ -13,7 +13,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
     "build": "bun run build:packages && bun run --cwd packages/agent-runtime build",
-    "build:packages": "bun run build:core && bun run build:agent && bun run build:db && bun run build:email && bun run build:voice && bun run build:cli && bun run build:sdk",
+    "build:packages": "bun run build:core && bun run build:agent && bun run build:db && bun run build:email && bun run build:voice && bun run build:cli && bun run build:chat-ui && bun run build:chat && bun run build:sdk",
     "build:sdk": "bun run --cwd packages/sdk build",
     "build:core": "bun run --cwd packages/core build",
     "build:agent": "bun run --cwd packages/agent build",
@@ -21,6 +21,8 @@
     "build:email": "bun run --cwd packages/email build",
     "build:voice": "bun run --cwd packages/voice build",
     "build:cli": "bun run --cwd packages/cli build",
+    "build:chat-ui": "bun run --cwd packages/chat-ui build",
+    "build:chat": "bun run --cwd packages/chat build",
     "web:dev": "bun run --cwd apps/mobile dev:web",
     "mobile:dev": "bun run --cwd apps/mobile expo start --go",
     "//web:build": "Delegates to the mobile workspace's `build` script (which prepends `node scripts/copy-monaco-vs.mjs` before `expo export --platform web`). Calling `expo export` directly here used to skip the Monaco mirror step, so apps/mobile/dist/ shipped without vs/loader.js + vs/editor/editor.main.js — exactly the bug that triggered the v1.8.12 'Shogo install is incomplete' dialog on the desktop. See apps/desktop/scripts/sync-web.mjs and apps/desktop/src/web-bundle.ts for the matching runtime/integrity guards.",
