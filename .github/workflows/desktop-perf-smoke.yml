@@ -28,6 +28,13 @@ jobs:
         with:
           bun-version-file: package.json
       - run: bun install --frozen-lockfile
+        # `GITHUB_TOKEN` is required so that `@vscode/ripgrep`'s postinstall
+        # authenticates its `api.github.com/repos/microsoft/ripgrep-prebuilt`
+        # lookup. Without it, GitHub-hosted runners (macos-latest especially)
+        # share the 60/hr anon quota and this 403s intermittently. Same fix
+        # as desktop-release-windows.yml / desktop-release-macos.yml.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: bun test apps/desktop/src/__tests__/runtime-memory.test.ts
       - run: bun build scripts/bench/project-open.ts --target bun --format esm --outfile .perf-smoke/project-open.js
       - run: bun build packages/agent-runtime/src/server.ts --target bun --format esm --packages external --outfile .perf-smoke/agent-runtime.js
