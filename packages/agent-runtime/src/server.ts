@@ -127,6 +127,13 @@ import {
   parseWorkspacePreviewUrls,
   isAttachedProjectId,
 } from './workspace-runtime-mode'
+import {
+  initWorkspaceMembers,
+  mountWorkspaceMember,
+  unmountWorkspaceMember,
+  listWorkspaceMembers,
+  listAvailableWorkspaceProjects,
+} from './workspace-members'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
@@ -141,6 +148,7 @@ import { runtimeLogsRoutes } from './runtime-logs-routes'
 import { subscribe as subscribeScreencast, getLastFrame as getLastScreencastFrame } from './screencast-broadcaster'
 import { WhatsAppAdapter } from './channels/whatsapp'
 import { TeamsAdapter } from './channels/teams'
+import { SlackAgentAdapter } from './channels/slack-agent'
 import { saveUploadedFileParts, buildUploadedFilesNote } from './upload-attachments'
 import { buildIdeContext, buildReferencedContext } from './reference-context'
 import { maybeRunInteractive } from './interactive/entry'
@@ -190,8 +198,8 @@ const WORKING_MODE: 'managed' | 'external' =
  * a top-level subfolder). Toggles off single-project assumptions in the
  * boot path — see workspace-runtime-mode.ts.
  */
-const IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
-const WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
+let IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
+let WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
 
 /**
  * Server-backed published mode. When `SHOGO_PUBLISHED_MODE=true` this pod is
@@ -594,6 +602,23 @@ const { app, state, logTiming } = await createRuntimeApp({
       // assignments keep `/workspace` as the symlink anchor.
       WORKSPACE_DIR = assignedWorkspaceDir
       process.env.WORKSPACE_DIR = assignedWorkspaceDir
+    }
+
+    if (envVars.WORKSPACE_RUNTIME === 'true' && envVars.WORKSPACE_ID) {
+      IS_WORKSPACE_RUNTIME = true
+      WORKSPACE_RUNTIME_PROJECT_IDS = (envVars.WORKSPACE_PROJECT_IDS || '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+      initTrustResolver({
+        projectId: null,
+        workspaceDir: WORKSPACE_DIR,
+        workingMode: 'managed',
+        linkedFolders: [],
+        readonlyRoots: [],
+        isWorkspaceRuntime: true,
+      })
+      initWorkspaceMembers()
     }
 
     // Graceful fallback: if mount requested but 9p device is absent, warn and use overlay
@@ -1244,6 +1269,14 @@ TeamsAdapter.registerRoutes(app, () => {
   return agentGateway.getChannel('teams') as any
 })
 
+// Register the normalized HTTP Slack Agent ingress. The workspace-level
+// distributable app normally terminates events in apps/api, but runtimes can
+// also receive normalized events directly through this route.
+SlackAgentAdapter.registerRoutes(app, () => {
+  if (!agentGateway) return null
+  return (agentGateway.getChannel('slack-agent') as SlackAgentAdapter | undefined) ?? null
+})
+
 // Register WebChat embeddable widget routes
 WebChatAdapter.registerRoutes(app, () => {
   if (!agentGateway) return null
@@ -1453,7 +1486,7 @@ app.post('/agent/channels/connect', async (c) => {
     return c.json({ error: 'type and config are required' }, 400)
   }
 
-  const validTypes = ['telegram', 'discord', 'slack', 'whatsapp', 'email', 'webhook', 'webchat', 'teams']
+  const validTypes = ['telegram', 'discord', 'slack', 'slack-agent', 'whatsapp', 'email', 'webhook', 'webchat', 'teams']
   if (!validTypes.includes(type)) {
     return c.json({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` }, 400)
   }
@@ -2554,13 +2587,36 @@ function getPreviewManager(): PreviewManager {
 const workspacePreviewManagers = new Map<string, PreviewManager>()
 
 /**
+ * The full set of project ids this runtime will serve a preview for: the
+ * boot-time attached list (`WORKSPACE_RUNTIME_PROJECT_IDS`, from
+ * `WORKSPACE_PROJECT_IDS` env) PLUS anything the meta-agent has mounted live
+ * via `mount_project` since boot (`workspace-members.ts`'s own registry).
+ *
+ * These are two separate data stores on purpose — `workspace-members.ts`
+ * owns live mount/unmount so it can hot-update trust roots + WORKSPACE.md
+ * without server.ts's involvement — but preview serving must not gate on
+ * the boot-time list alone, or a project the meta-agent mounts mid-session
+ * (the Slack meta-agent's normal case: it boots with zero members) would
+ * 404 with `project_not_attached` even though it's fully mounted and
+ * editable. Boot-time ids keep their original (stable-across-restart)
+ * order/index first; live-only mounts are appended in registry order.
+ */
+function effectiveWorkspaceProjectIds(): string[] {
+  const ids = [...WORKSPACE_RUNTIME_PROJECT_IDS]
+  for (const member of listWorkspaceMembers()) {
+    if (!ids.includes(member.id)) ids.push(member.id)
+  }
+  return ids
+}
+
+/**
  * Deterministic per-project sidecar port: `WORKSPACE_API_PORT_BASE` (default
  * 3101) offset by the project's index in the attached list. Stable across a
  * runtime's lifetime so restarts reuse the same port.
  */
 function workspaceProjectApiPort(projectId: string): number {
   const base = parseInt(process.env.WORKSPACE_API_PORT_BASE || '3101', 10)
-  const idx = WORKSPACE_RUNTIME_PROJECT_IDS.indexOf(projectId)
+  const idx = effectiveWorkspaceProjectIds().indexOf(projectId)
   // A project that isn't a known member has no deterministic port slot.
   // Returning `base + 0` would alias it onto the FIRST member's sidecar
   // (port collision → two server.tsx processes fighting over one port), so
@@ -2582,7 +2638,7 @@ function workspaceProjectApiPort(projectId: string): number {
  */
 function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
   if (!IS_WORKSPACE_RUNTIME) return null
-  if (!isAttachedProjectId(projectId, WORKSPACE_RUNTIME_PROJECT_IDS)) return null
+  if (!isAttachedProjectId(projectId, effectiveWorkspaceProjectIds())) return null
   let pm = workspacePreviewManagers.get(projectId)
   if (!pm) {
     const previewUrls = parseWorkspacePreviewUrls()
@@ -2707,9 +2763,20 @@ function scheduleHydrateRebuild(): void {
  * containing the TEMPLATE's rows, with `integrity_check` reporting "ok". The
  * restore is silently undone.
  */
-function finishHydrate(entries: string[]): void {
+function resolvePoolWorkspaceDir(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length === 0) return WORKSPACE_DIR
+  const candidate = resolve(raw.startsWith('/') ? raw : join(WORKSPACE_DIR, raw))
+  const root = resolve(WORKSPACE_DIR)
+  if (candidate !== root && !candidate.startsWith(`${root}/`)) {
+    throw new Error('workspace destination must be inside WORKSPACE_DIR')
+  }
+  mkdirSync(candidate, { recursive: true })
+  return candidate
+}
+
+function finishHydrate(entries: string[], destinationDir = WORKSPACE_DIR): void {
   if (archiveNeedsSidecarClear(entries)) {
-    const removed = clearSqliteSidecars(WORKSPACE_DIR)
+    const removed = clearSqliteSidecars(destinationDir)
     if (removed.length) {
       console.log(`[pool/hydrate] cleared stale SQLite sidecars: ${removed.join(', ')}`)
     }
@@ -2717,12 +2784,12 @@ function finishHydrate(entries: string[]): void {
   // Hydrate can restore a `.tech-stack` written on an earlier boot that
   // lacked TECH_STACK_ID (defaults to react-app). Re-stamp from env so
   // the subsequent PreviewManager.restart() drives Expo, not vite.
-  if (applyEnvTechStackMarker(WORKSPACE_DIR)) {
+  if (destinationDir === WORKSPACE_DIR && applyEnvTechStackMarker(WORKSPACE_DIR)) {
     console.log(`[pool/hydrate] re-applied TECH_STACK_ID=${process.env.TECH_STACK_ID} to .tech-stack`)
   }
   // Rebuild so the served dist reflects everything that was hydrated —
   // debounced, because more overlays are usually still arriving.
-  scheduleHydrateRebuild()
+  if (destinationDir === WORKSPACE_DIR) scheduleHydrateRebuild()
 }
 
 /** Ceiling on a pull, however generous a deadline the host asks for. */
@@ -2743,7 +2810,7 @@ const PULL_MAX_SECONDS = 30 * 60
  * the two sides can roll out in either order.
  */
 app.post('/pool/hydrate-url', async (c) => {
-  let body: { url?: unknown; bytes?: unknown; timeoutMs?: unknown }
+  let body: { url?: unknown; bytes?: unknown; timeoutMs?: unknown; destDir?: unknown }
   try {
     body = await c.req.json()
   } catch {
@@ -2758,13 +2825,19 @@ app.post('/pool/hydrate-url', async (c) => {
   const expected = typeof body.bytes === 'number' ? body.bytes : 0
   const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : 0
   const maxSeconds = Math.min(PULL_MAX_SECONDS, Math.max(30, Math.ceil(timeoutMs / 1000)))
+  let destinationDir: string
+  try {
+    destinationDir = resolvePoolWorkspaceDir(body.destDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid destination' }, 400)
+  }
 
   sweepSpool()
   try {
-    const { matched } = await extractTarFromUrl(url, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY, {
+    const { matched } = await extractTarFromUrl(url, destinationDir, SQLITE_SIDECAR_ENTRY, {
       maxSeconds,
     })
-    finishHydrate(matched)
+    finishHydrate(matched, destinationDir)
     // The URL carries a live read capability in its signature; log where it
     // pointed, never how to get there again.
     console.log(
@@ -2780,6 +2853,13 @@ app.post('/pool/hydrate-url', async (c) => {
 app.post('/pool/hydrate', async (c) => {
   const stream = c.req.raw.body
   if (!stream) return c.json({ error: 'empty archive' }, 400)
+  const destination = c.req.header('x-shogo-dest-dir')
+  let destinationDir: string
+  try {
+    destinationDir = resolvePoolWorkspaceDir(destination)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid destination' }, 400)
+  }
   sweepSpool()
   let bytes = 0
   try {
@@ -2790,11 +2870,11 @@ app.post('/pool/hydrate', async (c) => {
     // `/pool/hydrate-url` for why that is not something this side can fix.
     // Only the database and its WAL affect the sidecar decision, so the listing
     // is filtered as it streams instead of being accumulated.
-    const result = await extractTarStream(stream, WORKSPACE_DIR, SQLITE_SIDECAR_ENTRY)
+    const result = await extractTarStream(stream, destinationDir, SQLITE_SIDECAR_ENTRY)
     bytes = result.bytes
     if (bytes === 0) return c.json({ error: 'empty archive' }, 400)
 
-    finishHydrate(result.matched)
+    finishHydrate(result.matched, destinationDir)
     console.log(`[pool/hydrate] hydrated workspace from durable backup (${bytes} bytes)`)
     return c.json({ ok: true, bytes })
   } catch (err: any) {
@@ -2817,9 +2897,12 @@ app.post('/pool/export', async (c) => {
   const tmp = spoolPath('pool-export.tar.gz')
   let handedOff = false
   try {
+    const body = await c.req.json().catch(() => ({}))
+    const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+    const projectId = typeof body?.projectId === 'string' ? body.projectId : process.env.PROJECT_ID || ''
     const sync =
-      s3SyncInstance ??
-      createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+      (destinationDir === WORKSPACE_DIR ? s3SyncInstance : null) ??
+      createS3SyncForProject(destinationDir, projectId, {
         watchEnabled: false,
         syncInterval: 0,
         suppressProjectArchive: true,
@@ -2866,12 +2949,14 @@ app.post('/pool/export-repo', async (c) => {
   const tmp = spoolPath('pool-export-repo.tar.gz')
   let handedOff = false
   try {
+    const body = await c.req.json().catch(() => ({}))
+    const destinationDir = resolvePoolWorkspaceDir(body?.dir)
     let excludeLfsObjects = false
     if (isLfsActive()) {
       const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
       if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
     }
-    const packed = await packRepoArchive(WORKSPACE_DIR, tmp, { excludeLfsObjects })
+    const packed = await packRepoArchive(destinationDir, tmp, { excludeLfsObjects })
     if (!packed) return c.body(null, 204)
     const size = statSync(tmp).size
     console.log(`[pool/export-repo] packed .git for durable backup (${size} bytes)`)
@@ -2920,7 +3005,14 @@ app.post('/pool/export-repo', async (c) => {
 // `writable-state.ts` alongside the snapshot logic that consumes it.
 
 app.post('/pool/export-data', async (c) => {
-  const tag = writableStateTag(WORKSPACE_DIR)
+  const body = await c.req.json().catch(() => ({}))
+  let destinationDir: string
+  try {
+    destinationDir = resolvePoolWorkspaceDir(body?.dir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid destination' }, 400)
+  }
+  const tag = writableStateTag(destinationDir)
   // 204 = "nothing to persist", which the host must NOT confuse with an empty
   // archive to write over a real one.
   if (tag === null) return c.body(null, 204)
@@ -2941,7 +3033,7 @@ app.post('/pool/export-data', async (c) => {
   const out = join(stage, 'data.tar.gz')
   try {
     const pack = await packWritableState({
-      workspaceDir: WORKSPACE_DIR,
+      workspaceDir: destinationDir,
       stageDir: join(stage, 'db'),
       outPath: out,
       // Reuse the tag from the 304 check above: it was taken before any of the
@@ -3205,6 +3297,56 @@ app.post('/internal/refresh-trust', async (c) => {
   }
   await refreshTrust()
   return c.json({ ok: true })
+})
+
+function verifyWorkspaceMemberAuth(c: any): boolean {
+  const token = c.req.header('x-runtime-token')
+  const webhook = c.req.header('x-webhook-token')
+  return (
+    (typeof token === 'string' && token.length > 0 && token === process.env.RUNTIME_AUTH_SECRET) ||
+    (typeof webhook === 'string' && webhook === WEBHOOK_TOKEN)
+  )
+}
+
+app.get('/internal/workspace/members', (c) => {
+  if (!IS_WORKSPACE_RUNTIME || !verifyWorkspaceMemberAuth(c)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  return c.json({
+    workspaceId: process.env.WORKSPACE_ID || null,
+    mounted: listWorkspaceMembers(),
+    available: listAvailableWorkspaceProjects(),
+  })
+})
+
+app.post('/internal/workspace/members', async (c) => {
+  if (!IS_WORKSPACE_RUNTIME || !verifyWorkspaceMemberAuth(c)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const body = await c.req.json().catch(() => ({}))
+  if (!body || typeof body.id !== 'string') {
+    return c.json({ error: 'id is required' }, 400)
+  }
+  try {
+    const member = await mountWorkspaceMember({
+      id: body.id,
+      name: typeof body.name === 'string' ? body.name : undefined,
+      description: typeof body.description === 'string' ? body.description : undefined,
+      realPath: typeof body.realPath === 'string' ? body.realPath : undefined,
+      readonly: body.readonly === true,
+    })
+    return c.json({ ok: true, member })
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'mount failed' }, 400)
+  }
+})
+
+app.delete('/internal/workspace/members/:projectId', async (c) => {
+  if (!IS_WORKSPACE_RUNTIME || !verifyWorkspaceMemberAuth(c)) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  const removed = await unmountWorkspaceMember(c.req.param('projectId'))
+  return c.json({ ok: true, removed })
 })
 
 app.post('/agent/hooks/wake', async (c) => {
@@ -5516,6 +5658,7 @@ async function initializeEssentials(): Promise<void> {
 
   // Bootstrap workspace files
   ensureWorkspaceFiles()
+  if (IS_WORKSPACE_RUNTIME) initWorkspaceMembers()
   logTiming('Workspace files ready')
 
   // Seed tech stack if specified (covers warm pool assignment path where

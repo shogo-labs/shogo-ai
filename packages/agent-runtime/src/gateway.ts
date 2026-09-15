@@ -2031,6 +2031,7 @@ export class AgentGateway {
       channels: this.channels,
       config: this.config,
       projectId: this.projectId,
+      workspaceId: process.env.WORKSPACE_ID,
       sessionId,
       sandbox: this.config.sandbox,
       mainSessionIds: this.config.mainSessionIds,
@@ -4492,6 +4493,11 @@ export class AgentGateway {
       case 'slack': {
         const { SlackAdapter } = await import('./channels/slack')
         adapter = new SlackAdapter(config)
+        break
+      }
+      case 'slack-agent': {
+        const { SlackAgentAdapter } = await import('./channels/slack-agent')
+        adapter = new SlackAgentAdapter(config)
         break
       }
       case 'whatsapp': {

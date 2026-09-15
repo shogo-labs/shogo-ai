@@ -152,6 +152,32 @@ export function getResolvedTrust(): ResolvedTrust {
   }
 }
 
+/**
+ * Workspace runtimes can add/remove sibling projects while the process is
+ * alive.  Keep the immutable single-project semantics above, but allow the
+ * workspace member registry to update the roots used by path checks.
+ */
+export function updateWorkspaceFolders(args: {
+  add?: string[]
+  remove?: string[]
+  readonlyAdd?: string[]
+  readonlyRemove?: string[]
+}): void {
+  const remove = new Set((args.remove ?? []).filter((p) => typeof p === 'string' && p.length > 0))
+  const readonlyRemove = new Set((args.readonlyRemove ?? []).filter((p) => typeof p === 'string' && p.length > 0))
+  const add = (args.add ?? []).filter((p) => typeof p === 'string' && p.length > 0)
+  const readonlyAdd = (args.readonlyAdd ?? []).filter((p) => typeof p === 'string' && p.length > 0)
+
+  state.linkedFolders = [...new Set([
+    ...state.linkedFolders.filter((p) => !remove.has(p)),
+    ...add,
+  ])]
+  state.readonlyRoots = [...new Set([
+    ...state.readonlyRoots.filter((p) => !remove.has(p) && !readonlyRemove.has(p)),
+    ...readonlyAdd,
+  ])]
+}
+
 /** Has the resolver ever successfully fetched from the API? */
 export function isTrustResolverInitialized(): boolean {
   return state.initialized

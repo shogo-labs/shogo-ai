@@ -967,6 +967,50 @@ export const api = {
     await http.delete(`/api/integrations/connections/${connectionId}`)
   },
 
+  /**
+   * Shogo Agent for Slack — a single workspace-level Slack app install
+   * (Slack's native Agents platform) that routes DMs/mentions to any
+   * Slack-enabled project. Distinct from the generic Composio "Slack"
+   * OAuth toolkit above, which just lets an *agent* call the Slack Web
+   * API — the two are unrelated and can both be connected independently.
+   */
+  async getSlackAgentConfig(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{
+      installed: boolean
+      installation?: { slackTeamId: string; slackTeamName?: string | null } | null
+      projects: Array<{
+        id: string
+        name: string
+        description?: string | null
+        slackEnabled: boolean
+        createdBy?: string | null
+      }>
+    }>(`/api/integrations/slack/workspaces/${encodeURIComponent(workspaceId)}`)
+    return res.data
+  },
+
+  async setSlackAgentProjectEnabled(http: HttpClient, workspaceId: string, projectId: string, enabled: boolean) {
+    await http.patch(
+      `/api/integrations/slack/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}`,
+      { slackEnabled: enabled },
+    )
+  },
+
+  /** Bulk variant — powers "Enable all" / "Disable all" in the Manage
+   * Projects modal without one request per project. */
+  async setSlackAgentProjectsEnabled(
+    http: HttpClient,
+    workspaceId: string,
+    projectIds: string[],
+    enabled: boolean,
+  ) {
+    const res = await http.patch<{ ok: boolean; updated: number }>(
+      `/api/integrations/slack/workspaces/${encodeURIComponent(workspaceId)}/projects`,
+      { projectIds, slackEnabled: enabled },
+    )
+    return res.data
+  },
+
   async getIntegrationStatuses(
     http: HttpClient,
     toolkits: string[],

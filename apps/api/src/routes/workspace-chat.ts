@@ -65,6 +65,8 @@ export interface WorkspaceChatRoutesConfig {
    * production server.ts passes `getAuthUserId`; tests inject a stub.
    */
   resolveUserId: (c: any) => Promise<string | null>
+  /** Internal integrations may opt into the workspace runtime as their only path. */
+  alwaysEnabled?: boolean
 }
 
 function mapSessionError(c: any, err: unknown) {
@@ -193,6 +195,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         attachedProjectIds,
         logTag,
         runtimeManager,
+        alwaysEnabled: config.alwaysEnabled,
         ...extra,
       })
       return { url: resolved.url, mode: resolved.mode }
@@ -232,6 +235,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       attachedProjectIds,
       logTag: 'WorkspaceRuntime',
       runtimeManager,
+      alwaysEnabled: config.alwaysEnabled,
       ...extra,
     })
     const headers = new Headers(init?.headers)

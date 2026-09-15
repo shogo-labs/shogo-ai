@@ -133,12 +133,13 @@ const server = Bun.serve({
       }
 
       if (path === '/assign' && req.method === 'POST') {
-        const { projectId, env } = await json(req)
-        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        const { projectId, workspaceId, attachedProjectIds, env } = await json(req)
+        if (!projectId && !workspaceId) return Response.json({ error: 'projectId or workspaceId required' }, { status: 400 })
+        const runtimeKey = workspaceId ? `ws:${workspaceId}` : projectId
         // Resume-or-assign under one singleflight key (no double cold-boot on a
         // concurrent burst). A stale/cold miss falls through to a fresh assign.
-        const r = await pool.open(projectId, env ?? {})
-        const url = await fwd.ensure(projectId, r.handle.guestIp)
+        const r = await pool.open(runtimeKey, env ?? {}, workspaceId ? { workspaceId, attachedProjectIds } : undefined)
+        const url = await fwd.ensure(runtimeKey, r.handle.guestIp)
         return Response.json({ url, mode: r.mode, source: r.source, readyMs: r.readyMs, reused: r.reused })
       }
 
@@ -174,6 +175,28 @@ const server = Bun.serve({
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
         pool.touch(projectId)
         return Response.json({ ok: true })
+      }
+
+      if (path.startsWith('/runtimes/') && path.endsWith('/members') && req.method === 'POST') {
+        const runtimeKey = decodeURIComponent(path.slice('/runtimes/'.length, -'/members'.length))
+        const body = await json(req)
+        if (!runtimeKey || typeof body?.projectId !== 'string' || typeof body?.destDir !== 'string') {
+          return Response.json({ error: 'runtime key, projectId, and destDir are required' }, { status: 400 })
+        }
+        const result = await pool.mountWorkspaceMember(runtimeKey, body.projectId, body.destDir)
+        return Response.json({ ok: true, ...result })
+      }
+
+      if (path.startsWith('/runtimes/') && path.includes('/members/') && req.method === 'DELETE') {
+        const marker = '/members/'
+        const markerIndex = path.indexOf(marker)
+        const runtimeKey = decodeURIComponent(path.slice('/runtimes/'.length, markerIndex))
+        const projectId = decodeURIComponent(path.slice(markerIndex + marker.length))
+        const body = await json(req).catch(() => ({}))
+        const destDir = typeof body?.destDir === 'string' ? body.destDir : `/app/workspace/${projectId}`
+        if (!runtimeKey || !projectId) return Response.json({ error: 'runtime key and projectId are required' }, { status: 400 })
+        const result = await pool.unmountWorkspaceMember(runtimeKey, projectId, destDir)
+        return Response.json({ ok: true, ...result })
       }
 
       if (path === '/status' && req.method === 'POST') {

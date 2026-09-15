@@ -21,6 +21,16 @@ import {
 import { prisma } from '../lib/prisma'
 import { hydrateRepo } from '../services/git-repo-store'
 import { trackEvent } from '../services/loops.service'
+import {
+  attachProject,
+  detachProject,
+  getAttachedProjects,
+} from '../services/workspace-session.service'
+import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
+import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
+import { getRuntimeManager } from '../lib/runtime/manager'
+import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
+import { resolve as resolvePath } from 'path'
 
 const app = new Hono()
 
@@ -598,6 +608,181 @@ app.post('/agent-cost-metrics', async (c) => {
   } catch (err: any) {
     console.error('[Internal] Failed to record agent cost metric:', err.message)
     return c.json({ error: 'Failed to record metric' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Workspace meta-agent membership
+// ---------------------------------------------------------------------------
+
+async function accessibleWorkspaceProjects(workspaceId: string, userId: string) {
+  const workspaceMember = await prisma.member.findFirst({
+    where: { workspaceId, userId },
+    select: { id: true },
+  })
+  return prisma.project.findMany({
+    where: {
+      workspaceId,
+      ...(workspaceMember ? {} : { members: { some: { userId } } }),
+    },
+    select: { id: true, name: true, description: true, createdBy: true },
+    orderBy: { name: 'asc' },
+  })
+}
+
+async function workspaceRuntimeMemberCall(
+  workspaceId: string,
+  attachedProjectIds: string[],
+  path: string,
+  init: RequestInit,
+  opts: { readonlyProjectIds?: string[]; hostRealPath?: string } = {},
+) {
+  const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+    attachedProjectIds,
+    runtimeManager: getRuntimeManager(),
+    alwaysEnabled: true,
+    logTag: 'WorkspaceMembers',
+  })
+  const requestJson =
+    typeof init.body === 'string' ? JSON.parse(init.body) : {}
+  if (resolved.mode === 'metal' && path.startsWith('/internal/workspace/members')) {
+    const projectId =
+      typeof requestJson?.id === 'string'
+        ? requestJson.id
+        : decodeURIComponent(path.split('/').pop() || '')
+    const result = await getMetalWarmPoolController().workspaceMember(
+      workspaceId,
+      path.endsWith('/members') ? 'mount' : 'unmount',
+      projectId,
+      `/app/workspace/${projectId}`,
+    )
+    return { resolved, body: result }
+  }
+  if (resolved.mode === 'host') {
+    await getRuntimeManager().refreshWorkspaceMergedRoot(
+      workspaceId,
+      attachedProjectIds,
+      opts.readonlyProjectIds ?? [],
+    )
+  }
+  let requestBody = init.body
+  if (resolved.mode === 'host' && opts.hostRealPath && typeof requestBody === 'string') {
+    const parsed = JSON.parse(requestBody)
+    parsed.realPath = opts.hostRealPath
+    requestBody = JSON.stringify(parsed)
+  }
+  const headers = new Headers(init.headers)
+  headers.set('Content-Type', 'application/json')
+  headers.set('x-runtime-token', deriveWorkspaceRuntimeToken(workspaceId))
+  const response = await fetch(`${resolved.url}${path}`, { ...init, headers, ...(requestBody ? { body: requestBody } : {}) })
+  const responseBody = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(responseBody?.error?.message || responseBody?.error || `workspace runtime HTTP ${response.status}`)
+  }
+  return { resolved, body: responseBody }
+}
+
+async function authorizeWorkspaceRuntimeRequest(c: Context, workspaceId: string): Promise<InternalIdentity | null> {
+  const identity = await authenticate(c)
+  if (!identity) return null
+  if (identity.kind === 'project') return null
+  if (identity.kind === 'workspace' && identity.workspaceId !== workspaceId) return null
+  return identity
+}
+
+app.get('/workspaces/:workspaceId/projects', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+  if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+  const userId = c.req.query('userId')
+  const sessionId = c.req.query('sessionId')
+  if (!userId) return c.json({ error: 'userId is required' }, 400)
+  const projects = await accessibleWorkspaceProjects(workspaceId, userId)
+  const attached = sessionId ? await getAttachedProjects(sessionId) : []
+  const attachedIds = new Set(attached.map((row) => row.projectId))
+  return c.json({
+    projects: projects.map((project) => ({
+      ...project,
+      mounted: attachedIds.has(project.id),
+      attachMode: attached.find((row) => row.projectId === project.id)?.attachMode ?? null,
+    })),
+  })
+})
+
+app.post('/workspaces/:workspaceId/sessions/:sessionId/members', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const sessionId = c.req.param('sessionId')
+  const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+  if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json().catch(() => ({}))
+  const userId = typeof body?.userId === 'string' ? body.userId : ''
+  const projectId = typeof body?.projectId === 'string' ? body.projectId : ''
+  if (!userId || !projectId) return c.json({ error: 'userId and projectId are required' }, 400)
+  const projects = await accessibleWorkspaceProjects(workspaceId, userId)
+  const project = projects.find((row) => row.id === projectId)
+  if (!project) return c.json({ error: 'Project is not accessible in this workspace' }, 403)
+
+  try {
+    const attachedRow = await attachProject(
+      sessionId,
+      projectId,
+      body?.attachMode === 'readonly' ? 'readonly' : 'readwrite',
+    )
+    const attached = await getAttachedProjects(sessionId)
+    const attachedIds = attached.map((row) => row.projectId)
+    const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
+    const hostPath = resolvePath(process.env.WORKSPACES_DIR || resolvePath(process.cwd(), 'workspaces'), projectId)
+    const { body: runtimeBody } = await workspaceRuntimeMemberCall(
+      workspaceId,
+      attachedIds,
+      '/internal/workspace/members',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          id: project.id,
+          name: project.name,
+          description: project.description,
+          readonly: attachedRow.attachMode === 'readonly',
+        }),
+      },
+      {
+        readonlyProjectIds: readonlyIds,
+        hostRealPath: hostPath,
+      },
+    )
+    return c.json({ ok: true, attached: attachedRow, project, runtime: runtimeBody })
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'mount failed' }, 502)
+  }
+})
+
+app.delete('/workspaces/:workspaceId/sessions/:sessionId/members/:projectId', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const sessionId = c.req.param('sessionId')
+  const projectId = c.req.param('projectId')
+  const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+  if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json().catch(() => ({}))
+  const userId = typeof body?.userId === 'string' ? body.userId : ''
+  if (!userId) return c.json({ error: 'userId is required' }, 400)
+  const accessible = await accessibleWorkspaceProjects(workspaceId, userId)
+  if (!accessible.some((project) => project.id === projectId)) {
+    return c.json({ error: 'Project is not accessible in this workspace' }, 403)
+  }
+  try {
+    const removed = await detachProject(sessionId, projectId)
+    const attached = await getAttachedProjects(sessionId)
+    const attachedIds = attached.map((row) => row.projectId)
+    const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
+    const { body: runtimeBody } = await workspaceRuntimeMemberCall(
+      workspaceId,
+      attachedIds,
+      `/internal/workspace/members/${encodeURIComponent(projectId)}`,
+      { method: 'DELETE', body: JSON.stringify({}) },
+    )
+    return c.json({ ok: true, removed, runtime: runtimeBody })
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'unmount failed' }, 502)
   }
 })
 
