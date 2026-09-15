@@ -119,6 +119,11 @@ export const PRICING: Record<string, { input: number; output: number; cacheRead:
   'mimo-v2.5': { input: 0.00000015, output: 0.0000003, cacheRead: 0.000000001, cacheWrite: 0.00000015 },
   'hoshi-1.0': { input: 0.00000015, output: 0.0000003, cacheRead: 0.000000001, cacheWrite: 0.00000015 },
   '38e6339d-9135-4aff-8641-eba3ae7bebe5': { input: 0.00000015, output: 0.0000003, cacheRead: 0.000000001, cacheWrite: 0.00000015 },
+  // Hoshi 2.0 / DeepSeek-V4.1-Flash official off-peak rates. Reasoning
+  // tokens are included in completion_tokens and therefore use output pricing.
+  'deepseek-flash': { input: 0.00000015, output: 0.0000006, cacheRead: 0.000000003, cacheWrite: 0 },
+  'hoshi-2-0': { input: 0.00000015, output: 0.0000006, cacheRead: 0.000000003, cacheWrite: 0 },
+  'hoshi-2.0': { input: 0.00000015, output: 0.0000006, cacheRead: 0.000000003, cacheWrite: 0 },
 }
 
 /** Infer provider from a resolved model ID string. */

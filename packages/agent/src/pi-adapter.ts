@@ -75,6 +75,7 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
   // OPENAI_BASE_URL) are used for auth and routing.
   if (provider === 'custom') {
     const baseUrl = resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai')
+    const deepSeek = isDeepSeekModel(modelId)
     return {
       id: modelId,
       name: modelId,
@@ -86,6 +87,16 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
       maxTokens: getMaxOutputTokens(modelId),
+      ...(deepSeek
+        ? {
+            compat: {
+              thinkingFormat: 'deepseek',
+              requiresReasoningContentOnAssistantMessages: true,
+              supportsStore: false,
+              supportsDeveloperRole: false,
+            },
+          }
+        : {}),
     } as Model<Api>
   }
 
@@ -147,6 +158,15 @@ function resolveBaseUrl(provider: string): string | undefined {
   if (envVar) return process.env[envVar]
   const genericKey = `${provider.toUpperCase().replace(/-/g, '_')}_BASE_URL`
   return process.env[genericKey]
+}
+
+function isDeepSeekModel(modelId: string): boolean {
+  if (modelId.startsWith('deepseek-')) return true
+  const configured = (process.env.AGENT_DEEPSEEK_MODEL_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+  return configured.includes(modelId)
 }
 
 function getDefaultBaseUrl(provider: string): string {

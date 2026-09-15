@@ -701,7 +701,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
 
   const selectedLabel = selected
     ? (models.find((m) => m.id === selected)?.displayName || selected)
-    : 'Default (Hoshi 1.0)'
+    : 'Default (Hoshi 2.0)'
 
   return (
     <View
@@ -717,7 +717,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
           <AutoSaveIndicator status={saveStatus} />
         </View>
         <Text className="text-xs text-muted-foreground">
-          The model used to generate short titles for new chats and projects. Defaults to Hoshi 1.0.
+          The model used to generate short titles for new chats and projects. Defaults to Hoshi 2.0.
         </Text>
       </View>
       <View className="px-5 py-4" style={{ zIndex: 10 }}>
@@ -744,7 +744,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
                     selected === '' && 'bg-primary/5'
                   )}
                 >
-                  <Text className="text-sm font-medium text-foreground">Default (Hoshi 1.0)</Text>
+                  <Text className="text-sm font-medium text-foreground">Default (Hoshi 2.0)</Text>
                   <Text className="text-[11px] text-muted-foreground">
                     Use the platform default model
                   </Text>
@@ -781,7 +781,7 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
 // Auto-mode Tier Models Card — super-admin selectable model per Auto router
 // tier (economy / standard / premium). When unset, the runtime falls back to
 // its hardcoded defaults (Nano / Haiku / Sonnet). Selecting a public alias such
-// as `hoshi-1.0` is resolved to its backing model when injected into runtimes.
+// as `hoshi-2-0` is resolved to its backing model when injected into runtimes.
 // Self-contained: loads + saves its own values via the PlatformApi. Only the
 // auto-* fields are written, so it never clobbers the basic/advanced defaults.
 // =============================================================================
@@ -823,7 +823,7 @@ function AutoTierModelsCard({ platform }: { platform: PlatformApi }) {
   }, [platform])
 
   // Selectable models = visible catalog/picker models plus enabled public
-  // aliases (e.g. hoshi-1.0), so admins can route Auto tiers at Hoshi.
+  // aliases (e.g. hoshi-2-0), so admins can route Auto tiers at Hoshi.
   const options = useMemo(() => {
     const opts: { id: string; label: string }[] = models.map((m) => ({ id: m.id, label: m.displayName }))
     for (const p of publicModels) {

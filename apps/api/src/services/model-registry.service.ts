@@ -68,6 +68,10 @@ export interface ModelRoutingConfig {
   apiKey?: string
   /** Set for `provider === 'custom'`: how to attach the key. */
   authStyle?: 'bearer' | 'api-key-header'
+  /** Model-configured reasoning effort for upstreams such as DeepSeek. */
+  reasoningEffort?: string
+  /** Optional provider-specific upstream identity from model capabilities. */
+  upstream?: string
 }
 
 interface ProviderRow {
@@ -300,6 +304,14 @@ async function refresh(): Promise<void> {
         provider: row.provider,
         apiModel: row.apiModel,
         displayName: row.displayName,
+        reasoningEffort: row.reasoningEffort ?? undefined,
+      }
+      const capabilities =
+        row.capabilities && typeof row.capabilities === 'object'
+          ? (row.capabilities as Record<string, unknown>)
+          : null
+      if (typeof capabilities?.upstream === 'string' && capabilities.upstream.trim()) {
+        routing.upstream = capabilities.upstream.trim()
       }
       if (row.provider === 'custom' && row.providerId) {
         const provider = providersById.get(row.providerId)

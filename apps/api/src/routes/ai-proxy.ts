@@ -76,7 +76,14 @@ interface AnthropicCacheControl { type: string; ttl?: string }
 
 /** Vercel AI SDK provider-options shape for Anthropic (per-message / per-block / top-level). */
 interface AnthropicProviderOptions { cacheControl?: AnthropicCacheControl }
-interface ProviderOptionsField { anthropic?: AnthropicProviderOptions }
+interface ProviderOptionsField {
+  anthropic?: AnthropicProviderOptions
+  /** Shogo's private provider options namespace for custom upstreams. */
+  shogo?: {
+    thinking?: { type?: 'enabled' | 'disabled' }
+    reasoning_effort?: string
+  }
+}
 
 /** A content block on a chat-completion message. We accept both OpenAI-shaped
  *  parts and Anthropic-shaped passthrough metadata so SDK clients that set
@@ -131,6 +138,11 @@ export interface ChatCompletionRequest {
     }
   }>
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } }
+  /** OpenAI-compatible reasoning controls forwarded to DeepSeek. */
+  thinking?: { type: 'enabled' | 'disabled' }
+  reasoning_effort?: string
+  /** DeepSeek requires this field on replayed assistant tool-call messages. */
+  reasoning_content?: string
   /** Top-level provider options. The Anthropic cache directive is applied to
    *  the last system block AND the last user message's last content block,
    *  matching Anthropic's documented cacheable anchors. */
@@ -148,6 +160,10 @@ export interface ModelConfig {
   apiKey?: string
   /** Custom-provider auth style for attaching the key. */
   authStyle?: 'bearer' | 'api-key-header'
+  /** Model-configured reasoning effort, used by upstreams such as DeepSeek. */
+  reasoningEffort?: string
+  /** Optional upstream identifier for provider-specific body compatibility. */
+  upstream?: string
 }
 
 // =============================================================================
@@ -207,6 +223,8 @@ export function resolveModel(model: string): ModelConfig | null {
       baseUrl: dbRouting.baseUrl,
       apiKey: dbRouting.apiKey,
       authStyle: dbRouting.authStyle,
+      reasoningEffort: dbRouting.reasoningEffort,
+      upstream: dbRouting.upstream,
     }
   }
 
@@ -1554,6 +1572,55 @@ function buildOpenAICompatibleBody(
     if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
     else body.max_tokens = max_tokens
   }
+
+  const isDeepSeek =
+    modelConfig.upstream === 'deepseek' ||
+    (modelConfig.provider === 'custom' && modelConfig.baseUrl?.includes('api.deepseek.com') === true)
+  if (!isDeepSeek) return body
+
+  // DeepSeek's OpenAI-compatible endpoint uses the legacy max_tokens field,
+  // even when the caller/runtime emitted OpenAI's max_completion_tokens.
+  if (body.max_completion_tokens !== undefined && body.max_tokens === undefined) {
+    body.max_tokens = body.max_completion_tokens
+    delete body.max_completion_tokens
+  }
+
+  // DeepSeek rejects OpenAI-only request fields and requires developer prompts
+  // to use the system role. The proxy is the compatibility boundary, so keep
+  // this normalization here rather than making every client know the
+  // upstream-specific wire format.
+  delete body.store
+  const providerOptions = body.providerOptions as ProviderOptionsField | undefined
+  const shogoOptions = providerOptions?.shogo
+  delete body.providerOptions
+
+  const explicitThinking = request.thinking ?? shogoOptions?.thinking
+  body.thinking = explicitThinking ?? { type: 'enabled' }
+  const thinking = body.thinking as { type?: 'enabled' | 'disabled' }
+  const reasoningEffort =
+    shogoOptions?.reasoning_effort ??
+    modelConfig.reasoningEffort ??
+    request.reasoning_effort
+  if (reasoningEffort && thinking.type !== 'disabled') {
+    body.reasoning_effort = reasoningEffort
+  } else if (thinking.type === 'disabled') {
+    delete body.reasoning_effort
+  }
+
+  if (Array.isArray(body.messages)) {
+    body.messages = body.messages.map((message: any) => {
+      const normalized = { ...message }
+      if (normalized.role === 'developer') normalized.role = 'system'
+      if (normalized.role === 'assistant' && normalized.reasoning_content === undefined) {
+        // With tools present, DeepSeek requires reasoning_content on every
+        // replayed assistant message, including messages from before the
+        // thinking-enabled model was introduced.
+        normalized.reasoning_content = ''
+      }
+      return normalized
+    })
+  }
+
   return body
 }
 
@@ -1564,7 +1631,12 @@ export async function proxyOpenAIStream(
   request: ChatCompletionRequest,
   apiKey: string,
   modelConfig: ModelConfig,
-  onComplete?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void,
+  onComplete?: (
+    inputTokens: number,
+    outputTokens: number,
+    cachedInputTokens: number,
+    reasoningTokens: number,
+  ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
   const url = getOpenAICompatibleBaseUrl(modelConfig)
@@ -1602,6 +1674,7 @@ export async function proxyOpenAIStream(
   let inputTokens = 0
   let outputTokens = 0
   let cachedInputTokens = 0
+  let reasoningTokens = 0
   let sseBuffer = ''
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
@@ -1620,10 +1693,17 @@ export async function proxyOpenAIStream(
         try {
           const parsed = JSON.parse(data)
           if (parsed.usage) {
-            const totalPrompt = parsed.usage.prompt_tokens || 0
-            cachedInputTokens = parsed.usage.prompt_tokens_details?.cached_tokens || 0
-            inputTokens = totalPrompt - cachedInputTokens
+            const usage = parsed.usage
+            const totalPrompt = usage.prompt_tokens || 0
+            cachedInputTokens =
+              usage.prompt_tokens_details?.cached_tokens ??
+              usage.prompt_cache_hit_tokens ??
+              0
+            inputTokens =
+              usage.prompt_cache_miss_tokens ??
+              Math.max(0, totalPrompt - cachedInputTokens)
             outputTokens = parsed.usage.completion_tokens || 0
+            reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
           }
         } catch {
           // Skip unparseable lines
@@ -1631,7 +1711,7 @@ export async function proxyOpenAIStream(
       }
     },
     flush() {
-      onComplete(inputTokens, outputTokens, cachedInputTokens)
+      onComplete(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
     },
   })
 
@@ -1915,6 +1995,7 @@ export async function recordUsage(
   cacheWriteTokens: number = 0,
   chatSessionId?: string | null,
   internalUsage?: { actionType: string } | null,
+  reasoningTokens: number = 0,
 ) {
   // For API-key auth the projectId is a sentinel ('api-key'), and the API
   // server's own internal proxy token uses the 'system' sentinel — neither is a
@@ -1954,7 +2035,7 @@ export async function recordUsage(
           source: 'daily',
           balanceBefore: 0,
           balanceAfter: 0,
-          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens, internal: true, billable: false },
+          actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens, internal: true, billable: false },
         },
       })
       console.log(`[AI Proxy] 🗒️ Recorded internal '${internalUsage.actionType}' usage (raw $${rawUsd.toFixed(4)}, ${totalTokens} tokens, model: ${billingModel}) — not billed`)
@@ -1965,7 +2046,7 @@ export async function recordUsage(
   }
 
   // If a billing session is open, accumulate — the session closer will charge
-  if (billingProjectId && await accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)) {
+  if (billingProjectId && await accumulateUsage(billingProjectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId, reasoningTokens)) {
     const totalTokens = inputTokens + cachedInputTokens + cacheWriteTokens + outputTokens
     // Per-request cache breakdown — same gate as the agent-runtime cache-debug
     // logs so a single env flag turns the whole picture on. This is the
@@ -1999,7 +2080,7 @@ export async function recordUsage(
       actionType: 'ai_proxy_completion',
       rawUsd,
       billedUsd,
-      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, totalTokens },
+      actionMetadata: { model, billingModel, rawUsd, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, totalTokens },
     })
 
     if (result.success) {
@@ -2791,8 +2872,8 @@ export function aiProxyRoutes() {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
           }, c.req.raw.signal)
         } else {
-          return await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage)
+          return await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage, reasoningTok)
           }, c.req.raw.signal)
         }
       } else {
@@ -2804,17 +2885,25 @@ export function aiProxyRoutes() {
         }
 
         if (!isByokOpenRouter) {
-          const totalPrompt = result.usage?.prompt_tokens || 0
-          const cachedPrompt = result.usage?.prompt_tokens_details?.cached_tokens || 0
+          const usage = result.usage || {}
+          const totalPrompt = usage.prompt_tokens || 0
+          const cachedPrompt =
+            usage.prompt_tokens_details?.cached_tokens ??
+            usage.prompt_cache_hit_tokens ??
+            0
+          const inputPrompt =
+            usage.prompt_cache_miss_tokens ??
+            Math.max(0, totalPrompt - cachedPrompt)
           recordUsage(
             tokenPayload,
             request.model,
-            totalPrompt - cachedPrompt,
-            result.usage?.completion_tokens || 0,
+            inputPrompt,
+            usage.completion_tokens || 0,
             cachedPrompt,
             0,
             chatSessionId,
             internalUsage,
+            usage.completion_tokens_details?.reasoning_tokens || 0,
           )
         }
 
@@ -2974,10 +3063,16 @@ export function aiProxyRoutes() {
               try {
                 const parsed = JSON.parse(data)
                 if (parsed.type === 'response.completed' && parsed.response?.usage) {
-                  const totalInput = parsed.response.usage.input_tokens || 0
-                  cachedInputTokens = parsed.response.usage.input_tokens_details?.cached_tokens || 0
-                  inputTokens = totalInput - cachedInputTokens
-                  outputTokens = parsed.response.usage.output_tokens || 0
+                  const usage = parsed.response.usage
+                  const totalInput = usage.input_tokens || 0
+                  cachedInputTokens =
+                    usage.input_tokens_details?.cached_tokens ??
+                    usage.prompt_cache_hit_tokens ??
+                    0
+                  inputTokens =
+                    usage.prompt_cache_miss_tokens ??
+                    Math.max(0, totalInput - cachedInputTokens)
+                  outputTokens = usage.output_tokens || 0
                 }
               } catch {}
             }
@@ -3008,9 +3103,25 @@ export function aiProxyRoutes() {
       } else {
         const result = await response.json() as any
         if (result.usage) {
-          const totalInput = result.usage.input_tokens || 0
-          const cachedInput = result.usage.input_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, requestedModel, totalInput - cachedInput, result.usage.output_tokens || 0, cachedInput, 0, chatSessionId, internalUsage)
+          const usage = result.usage
+          const totalInput = usage.input_tokens || 0
+          const cachedInput =
+            usage.input_tokens_details?.cached_tokens ??
+            usage.prompt_cache_hit_tokens ??
+            0
+          recordUsage(
+            tokenPayload,
+            requestedModel,
+            usage.prompt_cache_miss_tokens ?? Math.max(0, totalInput - cachedInput),
+            usage.output_tokens || 0,
+            cachedInput,
+            0,
+            chatSessionId,
+            internalUsage,
+            usage.output_tokens_details?.reasoning_tokens ||
+              usage.completion_tokens_details?.reasoning_tokens ||
+              0,
+          )
         }
         return c.json(result)
       }

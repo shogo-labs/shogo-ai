@@ -32,6 +32,16 @@ export const PUBLIC_MODELS_SETTING_KEY = 'public-models'
 
 const CACHE_TTL_MS = 30_000
 
+/**
+ * Hoshi aliases historically used both dotted and dashed minor versions
+ * (`hoshi-1.0` in code/docs and `hoshi-1-0` in one production setting).
+ * Keep the stored/public spelling intact, but compare both forms at lookup
+ * time so a rollout cannot make an existing public model disappear.
+ */
+export function normalizePublicModelId(publicId: string): string {
+  return publicId.trim().replace(/^(hoshi-\d+)[.-](\d+)$/, '$1-$2')
+}
+
 /** A single public model alias entry as stored and served. */
 export interface PublicModel {
   /** External-facing model id (e.g. `hoshi-1.0`). */
@@ -88,8 +98,9 @@ export function parsePublicModels(value: string | null | undefined): PublicModel
     const entry = coerceEntry(raw)
     if (!entry) continue
     // Last write wins on duplicate publicId, but keep first to be stable.
-    if (seen.has(entry.publicId)) continue
-    seen.add(entry.publicId)
+    const normalizedId = normalizePublicModelId(entry.publicId)
+    if (seen.has(normalizedId)) continue
+    seen.add(normalizedId)
     out.push(entry)
   }
   return out
@@ -145,7 +156,8 @@ export function getPublicModelsSync(): PublicModel[] {
  */
 export function resolvePublicModelSync(publicId: string): PublicModel | null {
   refreshIfStaleInBackground()
-  const match = snapshot.models.find((m) => m.publicId === publicId)
+  const normalizedId = normalizePublicModelId(publicId)
+  const match = snapshot.models.find((m) => normalizePublicModelId(m.publicId) === normalizedId)
   if (!match || !match.enabled) return null
   return match
 }

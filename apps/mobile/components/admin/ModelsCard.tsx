@@ -211,7 +211,7 @@ const EMPTY_PUBLIC_FORM: PublicModelFormState = {
 }
 
 /**
- * Manage the public `/v1/*` API model aliases (e.g. `hoshi-1.0`). Each alias
+ * Manage the public `/v1/*` API model aliases (e.g. `hoshi-2-0`). Each alias
  * maps an external, Shogo-branded `publicId` to an internal backing model id
  * (any DB-defined or static-catalog model). The whole map is replaced on each
  * write via `putPublicModels`, mirroring the server's PUT semantics.
@@ -374,7 +374,7 @@ function PublicModelsSection({
         <>
           <Text className="text-[11px] text-muted-foreground">
             Shogo-branded model ids served on the OpenAI-compatible /v1 API (e.g.
-            hoshi-1.0). Each maps to an internal backing model; the provider stays
+            hoshi-2-0). Each maps to an internal backing model; the provider stays
             hidden from callers.
           </Text>
 
@@ -477,7 +477,7 @@ function PublicModelsSection({
                   value={form.publicId}
                   onChangeText={(t) => setForm((f) => ({ ...f, publicId: t }))}
                   editable={!editingId}
-                  placeholder="hoshi-1.0"
+                  placeholder="hoshi-2-0"
                   placeholderTextColor="#9ca3af"
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -493,7 +493,7 @@ function PublicModelsSection({
                 <TextInput
                   value={form.displayName}
                   onChangeText={(t) => setForm((f) => ({ ...f, displayName: t }))}
-                  placeholder="Hoshi 1.0"
+                  placeholder="Hoshi 2.0"
                   placeholderTextColor="#9ca3af"
                   className="px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm"
                 />

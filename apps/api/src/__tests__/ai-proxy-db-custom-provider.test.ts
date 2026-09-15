@@ -32,6 +32,8 @@ delete process.env.SHOGO_API_KEY
 delete process.env.SHOGO_CLOUD_URL
 
 const MIMO_KEY = 'sk-mimo-staging-routing-key-abcdef'
+const DEEPSEEK_KEY = 'sk-deepseek-staging-routing-key-abcdef'
+const DEEPSEEK_UUID = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
 
 // Opaque UUIDs are how DB models are really addressed in production (the slug
 // lives in `apiModel`/`aliases`, not the id). The prior native-routing
@@ -48,6 +50,8 @@ const OPUS5_UUID = '22222222-3333-4444-5555-666666666666'
 let MODELS: any[] = []
 let PROVIDERS: any[] = []
 let hasAdvanced = true
+let consumedUsageCalls: any[] = []
+let nextOpenAIUsage: any = null
 
 function seed() {
   PROVIDERS = [
@@ -58,6 +62,15 @@ function seed() {
       protocol: 'openai',
       authStyle: 'bearer',
       encryptedApiKey: encryptSecret(MIMO_KEY),
+      enabled: true,
+    },
+    {
+      id: 'prov-deepseek',
+      label: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      protocol: 'openai',
+      authStyle: 'bearer',
+      encryptedApiKey: encryptSecret(DEEPSEEK_KEY),
       enabled: true,
     },
   ]
@@ -81,6 +94,27 @@ function seed() {
       cachedInputPerMillion: 0.3,
       cacheWritePerMillion: 2,
       outputPerMillion: 6,
+    },
+    {
+      id: DEEPSEEK_UUID,
+      provider: 'custom',
+      providerId: 'prov-deepseek',
+      apiModel: 'deepseek-flash',
+      displayName: 'Hoshi 2.0',
+      shortDisplayName: 'Hoshi 2.0',
+      tier: 'standard',
+      family: 'other',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 2,
+      aliases: ['hoshi-2-0'],
+      capabilities: { upstream: 'deepseek', supportsAudioInput: false },
+      reasoningEffort: 'high',
+      inputPerMillion: 0.15,
+      cachedInputPerMillion: 0.003,
+      cacheWritePerMillion: 0,
+      outputPerMillion: 0.6,
     },
     {
       id: 'claude-opus-4-8',
@@ -197,7 +231,10 @@ mock.module('../services/billing.service', () => ({
     message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
   }),
   hasAdvancedModelAccess: async () => hasAdvanced,
-  consumeUsage: async () => ({ success: true, remainingIncludedUsd: 100 }),
+  consumeUsage: async (args: any) => {
+    consumedUsageCalls.push(args)
+    return { success: true, remainingIncludedUsd: 100 }
+  },
   getSubscription: async () => ({ planId: 'pro', status: 'active' }),
   getUsageWallet: async () => ({ workspaceId: 'ws-1' }),
 }))
@@ -235,7 +272,7 @@ beforeAll(() => {
     return new Response(JSON.stringify({
       id: 'cmpl_1', object: 'chat.completion',
       choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 10, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0 } },
+      usage: nextOpenAIUsage ?? { prompt_tokens: 10, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0 } },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }) as any
   }) as any
 })
@@ -264,15 +301,21 @@ beforeEach(async () => {
   lastFetchUrl = null
   lastFetchInit = undefined
   hasAdvanced = true
+  consumedUsageCalls = []
+  nextOpenAIUsage = null
   seed()
   await primeModelRegistry()
 })
 
 function postChat(app: any, model: string) {
+  return postChatBody(app, { model, messages: [{ role: 'user', content: 'hi' }] })
+}
+
+function postChatBody(app: any, body: Record<string, unknown>) {
   return app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }] }),
+    body: JSON.stringify(body),
   }))
 }
 
@@ -325,6 +368,74 @@ describe('ai-proxy DB-defined model routing', () => {
     const res = await postChat(buildApp(), 'mimo')
     expect(res.status).toBe(200)
     expect(lastFetchUrl).toBe('https://api.xiaomimimo.com/v1/chat/completions')
+  })
+
+  test('adapts a DeepSeek-backed custom model for thinking and tool-call replay', async () => {
+    const res = await postChatBody(buildApp(), {
+      model: DEEPSEEK_UUID,
+      max_completion_tokens: 42,
+      store: true,
+      messages: [
+        { role: 'developer', content: 'Be concise.' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{}' },
+          }],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: 'result' },
+        { role: 'user', content: 'Continue.' },
+      ],
+      tools: [{
+        type: 'function',
+        function: { name: 'lookup', description: 'Lookup', parameters: { type: 'object' } },
+      }],
+    })
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.deepseek.com/v1/chat/completions')
+    const body = lastForwardedBody()
+    expect(body.model).toBe('deepseek-flash')
+    expect(body.max_tokens).toBe(42)
+    expect(body.max_completion_tokens).toBeUndefined()
+    expect(body.store).toBeUndefined()
+    expect(body.thinking).toEqual({ type: 'enabled' })
+    expect(body.reasoning_effort).toBe('high')
+    expect(body.messages[0].role).toBe('system')
+    expect(body.messages[1].reasoning_content).toBe('')
+    expect(body.providerOptions).toBeUndefined()
+  })
+
+  test('honors an explicit disabled thinking option for DeepSeek titles', async () => {
+    const res = await postChatBody(buildApp(), {
+      model: DEEPSEEK_UUID,
+      messages: [{ role: 'user', content: 'Name this project.' }],
+      providerOptions: { shogo: { thinking: { type: 'disabled' } } },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.reasoning_effort).toBeUndefined()
+    expect(body.providerOptions).toBeUndefined()
+  })
+
+  test('meters DeepSeek cache hits and reasoning tokens from usage details', async () => {
+    nextOpenAIUsage = {
+      prompt_tokens: 100,
+      prompt_cache_hit_tokens: 80,
+      prompt_cache_miss_tokens: 20,
+      completion_tokens: 30,
+      completion_tokens_details: { reasoning_tokens: 18 },
+    }
+    const res = await postChat(buildApp(), DEEPSEEK_UUID)
+    expect(res.status).toBe(200)
+    const metadata = consumedUsageCalls.at(-1)?.actionMetadata
+    expect(metadata.cachedInputTokens).toBe(80)
+    expect(metadata.inputTokens).toBe(20)
+    expect(metadata.outputTokens).toBe(30)
+    expect(metadata.reasoningTokens).toBe(18)
   })
 
   test('routes a native DB-defined model to Anthropic', async () => {
