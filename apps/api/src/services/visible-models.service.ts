@@ -67,7 +67,9 @@ export interface VisibleCatalogModel {
   shortDisplayName: string
   tier: string
   family: string
+  kind?: string
   maxOutputTokens: number
+  usdPerMinute?: number
   sortOrder?: number
   description?: string
   contextWindow?: number
@@ -203,6 +205,7 @@ function bySortOrder<T extends { sortOrder?: number }>(rows: T[]): T[] {
  *  label/color and gate a model they don't carry in their bundled catalog. */
 export async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
+  options: { includeLive?: boolean } = {},
 ): Promise<VisibleCatalogModel[]> {
   const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync } = await import('./model-registry.service')
   const toVisible = (entry: any): VisibleCatalogModel => ({
@@ -212,7 +215,9 @@ export async function resolveVisibleCatalogModels(
     shortDisplayName: entry.shortDisplayName,
     tier: entry.tier,
     family: entry.family,
+    ...(entry.kind ? { kind: entry.kind } : {}),
     maxOutputTokens: entry.maxOutputTokens,
+    ...(typeof entry.usdPerMinute === 'number' ? { usdPerMinute: entry.usdPerMinute } : {}),
     ...(typeof entry.sortOrder === 'number' ? { sortOrder: entry.sortOrder } : {}),
     ...(entry.description ? { description: entry.description } : {}),
     ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
@@ -230,6 +235,7 @@ export async function resolveVisibleCatalogModels(
     return bySortOrder(
       source
         .filter((e) => e.generation === 'current')
+        .filter((e) => options.includeLive || e.kind !== 'live')
         // Provider-key gating is meaningful for admin-managed rows: if the
         // admin has configured models but removed the backing provider key,
         // those models should disappear from the picker. The static catalog is
@@ -243,7 +249,9 @@ export async function resolveVisibleCatalogModels(
   const out: VisibleCatalogModel[] = []
   for (const id of catalogIds) {
     const entry = getMergedModelEntrySync(id)
-    if (entry && isModelProviderConfigured(entry.provider)) out.push(toVisible(entry))
+    if (entry && (options.includeLive || entry.kind !== 'live') && isModelProviderConfigured(entry.provider)) {
+      out.push(toVisible(entry))
+    }
   }
   return bySortOrder(out)
 }
@@ -254,9 +262,11 @@ export async function resolveVisibleCatalogModels(
  *  (which intersects this with the workspace's own allowlist). Local-only —
  *  does not consult a connected cloud (see `resolvePlatformVisibleModelsForRequest`
  *  for the cloud-aware variant). */
-export async function resolvePlatformVisibleModels(): Promise<VisibleModelsPayload> {
+export async function resolvePlatformVisibleModels(
+  options: { includeLive?: boolean } = {},
+): Promise<VisibleModelsPayload> {
   const config = await readVisibleModelsConfig()
-  const catalogModels = await resolveVisibleCatalogModels(config.catalogIds)
+  const catalogModels = await resolveVisibleCatalogModels(config.catalogIds, options)
   return { catalogIds: config.catalogIds, openrouterModels: config.openrouterModels, catalogModels }
 }
 
@@ -265,20 +275,23 @@ export async function resolvePlatformVisibleModels(): Promise<VisibleModelsPaylo
  *  super-admin curated under "Available Models") and fall back to the local
  *  DB-backed resolution otherwise. Mirrors the fallback in
  *  `GET /api/platform/visible-models`. */
-export async function resolvePlatformVisibleModelsForRequest(): Promise<VisibleModelsPayload> {
+export async function resolvePlatformVisibleModelsForRequest(
+  options: { includeLive?: boolean } = {},
+): Promise<VisibleModelsPayload> {
   try {
     const fromCloud = await fetchCloudVisibleModels()
     if (fromCloud) {
       return {
         catalogIds: fromCloud.catalogIds,
         openrouterModels: (fromCloud.openrouterModels ?? []) as VisibleOpenRouterModelStored[],
-        catalogModels: (fromCloud.catalogModels ?? []) as VisibleCatalogModel[],
+        catalogModels: ((fromCloud.catalogModels ?? []) as VisibleCatalogModel[])
+          .filter((entry) => options.includeLive || entry.kind !== 'live'),
       }
     }
   } catch {
     // unreachable cloud / parse error — fall through to local resolution
   }
-  return resolvePlatformVisibleModels()
+  return resolvePlatformVisibleModels(options)
 }
 
 /**
@@ -290,11 +303,23 @@ export async function resolvePlatformVisibleModelsForRequest(): Promise<VisibleM
  */
 export async function resolveVisibleModelsForWorkspace(
   workspaceId: string,
+  options: { includeLive?: boolean } = {},
 ): Promise<ResolvedVisibleModelSets> {
-  const platform = await resolvePlatformVisibleModelsForRequest()
+  const platform = await resolvePlatformVisibleModelsForRequest(options)
   const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
   if (allowed === null) {
     return { catalogModels: platform.catalogModels, openrouterModels: platform.openrouterModels }
   }
   return workspaceModelsService.filterToAllowlist(platform, allowed)
+}
+
+/** Resolve only live-session models for SDK consumers. */
+export async function resolveVisibleLiveModelsForWorkspace(
+  workspaceId: string,
+): Promise<ResolvedVisibleModelSets> {
+  const visible = await resolveVisibleModelsForWorkspace(workspaceId, { includeLive: true })
+  return {
+    catalogModels: visible.catalogModels.filter((entry) => entry.kind === 'live'),
+    openrouterModels: [],
+  }
 }

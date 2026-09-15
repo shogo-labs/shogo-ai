@@ -14,6 +14,7 @@ export default defineConfig({
     'src/route/music.ts',
     'src/route/agent.ts',
     'src/route/audio-tags.ts',
+    'src/live/client.ts',
   ],
   format: ['cjs', 'esm'],
   dts: true,

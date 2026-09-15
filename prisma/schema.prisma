@@ -166,6 +166,7 @@ model Workspace {
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
+  liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
   apiKeys                ApiKey[]
@@ -295,6 +296,7 @@ model Project {
   featureSessions        FeatureSession[]
   chatSessions           ChatSession[]
   usageEvents            UsageEvent[]
+  liveSessionMeters      LiveSessionMeter[]
   checkpoints            ProjectCheckpoint[]
   githubConnection       GitHubConnection?
   starredBy              StarredProject[]
@@ -1766,6 +1768,7 @@ model ModelDefinition {
   tier             String  @default("standard") // "economy" | "standard" | "premium"
   family           String  @default("other") // "opus" | "sonnet" | "haiku" | "gpt" | "other"
   generation       String  @default("current") // "current" | "legacy"
+  kind             String  @default("chat") // "chat" | "live"
   maxOutputTokens  Int     @default(64000)
   enabled          Boolean @default(true)
   sortOrder        Int?
@@ -1782,6 +1785,7 @@ model ModelDefinition {
   cachedInputPerMillion Float @default(0)
   cacheWritePerMillion  Float @default(0)
   outputPerMillion      Float @default(0)
+  usdPerMinute          Float?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2577,6 +2581,35 @@ model VoiceCallMeter {
   @@index([projectId])
   @@index([workspaceId])
   @@map("voice_call_meters")
+}
+
+// Meters GPT-Live sessions. A session emits cumulative duration snapshots,
+// so this row is the idempotency boundary for final usage billing.
+model LiveSessionMeter {
+  id              String    @id @default(cuid())
+  sessionId       String    @unique
+  workspaceId     String
+  projectId       String?
+  memberId        String
+  model           String
+  backendModel    String?
+  transport       String
+  seconds         Float     @default(0)
+  rawUsd          Float     @default(0)
+  billedUsd       Float     @default(0)
+  usageConfirmed  Boolean   @default(false)
+  billed          Boolean   @default(false)
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("live_session_meters")
 }
 
 // =============================================================================

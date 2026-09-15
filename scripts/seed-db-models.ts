@@ -240,12 +240,41 @@ async function seedMimo(): Promise<void> {
   console.log('[seed-db-models] Upserted MiMo v2.5 (apiModel=mimo-v2.5)')
 }
 
+async function seedGptLive1(): Promise<void> {
+  const common = {
+    displayName: 'GPT-Live 1',
+    shortDisplayName: 'GPT-Live 1',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'current',
+    kind: 'live',
+    maxOutputTokens: 0,
+    enabled: true,
+    aliases: ['gpt-live-1'],
+    description: 'Full-duplex voice conversations with interruption handling and backend delegation.',
+    usdPerMinute: 0.05,
+    // Live sessions are billed by duration rather than tokens.
+    inputPerMillion: 0,
+    cachedInputPerMillion: 0,
+    cacheWritePerMillion: 0,
+    outputPerMillion: 0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-live-1' },
+    { providerId: null, sortOrder: 100, ...common },
+    common,
+  )
+  console.log('[seed-db-models] Upserted GPT-Live 1')
+}
+
 async function main(): Promise<void> {
   await seedOpus48()
   await seedOpus5()
   await seedSonnet5()
   await seedSonnet46()
   await seedMimo()
+  await seedGptLive1()
   console.log('[seed-db-models] Done.')
 }
 
