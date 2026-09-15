@@ -55,6 +55,7 @@ import {
   resolveAgentModeDefault,
   getMaxOutputTokens,
   modelSupportsAudioInput,
+  isLiveModel,
   isOpenRouterModel,
   stripOpenRouterPrefix,
   type Provider,
@@ -2678,6 +2679,20 @@ export function aiProxyRoutes() {
         )
       }
 
+      const modelEntry = getMergedModelEntrySync(request.model)
+      if (isLiveModel(request.model) || modelEntry?.kind === 'live') {
+        return c.json(
+          {
+            error: {
+              message: `Model '${request.model}' is a Live Sessions model. Use /ai/v1/live/sessions instead of chat completions.`,
+              type: 'invalid_request_error',
+              code: 'model_not_supported_on_endpoint',
+            },
+          },
+          400,
+        )
+      }
+
       // Reject `input_audio` content blocks up front with a clear, actionable
       // error instead of letting them reach OpenAI/Anthropic and bounce back
       // with a generic "content blocks are expected to be text or image_url"
@@ -2885,6 +2900,20 @@ export function aiProxyRoutes() {
         return c.json({ error: { message: `Model '${requestedModel}' is not supported.`, type: 'invalid_request_error' } }, 400)
       }
 
+      const modelEntry = getMergedModelEntrySync(resolvedModel)
+      if (isLiveModel(resolvedModel) || modelEntry?.kind === 'live') {
+        return c.json(
+          {
+            error: {
+              message: `Model '${requestedModel}' is a Live Sessions model. Use /ai/v1/live/sessions instead of the Responses API.`,
+              type: 'invalid_request_error',
+              code: 'model_not_supported_on_endpoint',
+            },
+          },
+          400,
+        )
+      }
+
       if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
         return c.json(
           {
@@ -3015,7 +3044,7 @@ export function aiProxyRoutes() {
     }
 
     const created = Math.floor(Date.now() / 1000)
-    const visible = await resolveVisibleModelsForWorkspace(tokenPayload.workspaceId)
+    const visible = await resolveVisibleModelsForWorkspace(tokenPayload.workspaceId, { includeLive: true })
 
     const models = [
       ...visible.catalogModels.map((entry) => ({
@@ -3024,6 +3053,8 @@ export function aiProxyRoutes() {
         created,
         owned_by: entry.provider,
         display_name: entry.displayName,
+        ...(entry.kind ? { kind: entry.kind } : {}),
+        ...(typeof entry.usdPerMinute === 'number' ? { usd_per_minute: entry.usdPerMinute } : {}),
         // Indicate if the provider is actually configured
         available: isModelProviderConfigured(entry.provider),
       })),
