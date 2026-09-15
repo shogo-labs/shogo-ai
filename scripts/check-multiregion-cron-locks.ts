@@ -279,6 +279,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
   },
   {
+    key: 'LiveSessionMeter.sessionId',
+    category: 'external_global_id',
+    reason:
+      'OpenAI-assigned Live session id is globally unique; session creation is the single provider-backed writer and retries upsert the same meter.',
+  },
+  {
     key: 'Subscription.workspaceId',
     category: 'single_tenant_upsert',
     reason: 'billing.service.ts:829 upserts on workspaceId; one webhook ingest.',

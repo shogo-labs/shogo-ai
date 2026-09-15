@@ -153,7 +153,7 @@ function openRouterPerMillion(v: unknown): number | undefined {
 
 /** OpenAI's /models lists embeddings, audio, image, moderation, etc. Keep only
  *  chat-capable text models so the picker isn't flooded. */
-const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|realtime|dall-e|image|moderation|transcribe|search|babbage|davinci|ada|curie|codex|guard)/i
+const OPENAI_NON_CHAT = /(embedding|whisper|tts|audio|realtime|live|dall-e|image|moderation|transcribe|search|babbage|davinci|ada|curie|codex|guard)/i
 
 async function discoverProviderModels(
   provider: string,
