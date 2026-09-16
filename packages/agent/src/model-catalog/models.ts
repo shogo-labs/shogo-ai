@@ -23,11 +23,11 @@ export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter
 export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local'
 export type ModelTier = 'economy' | 'standard' | 'premium'
-export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'gpt' | 'other'
+export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
-  | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus'
+  | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
   | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
 export type AgentMode = 'basic' | 'advanced'
 
@@ -144,6 +144,20 @@ export const MODEL_CATALOG = {
     family: 'sonnet',
     generation: 'current',
     billingModel: 'sonnet',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  'claude-fable-5-1': {
+    id: 'claude-fable-5-1',
+    provider: 'anthropic',
+    apiModel: 'claude-fable-5-1',
+    displayName: 'Claude Fable 5.1',
+    shortDisplayName: 'Fable 5.1',
+    tier: 'premium',
+    family: 'fable',
+    generation: 'current',
+    billingModel: 'claude-fable-5-1',
     maxOutputTokens: 128_000,
     // Not yet run through the subagent-smoke eval — unrated until verified
     // (see `ModelCapabilities` doc comment above).

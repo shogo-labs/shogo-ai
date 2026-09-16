@@ -11,6 +11,8 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // Current-generation Anthropic aliases
   'claude-opus': 'claude-opus-5',
   'claude-sonnet': 'claude-sonnet-5',
+  'claude-fable': 'claude-fable-5-1',
+  'fable': 'claude-fable-5-1',
   'claude-haiku': 'claude-haiku-4-5-20251001',
   'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
 

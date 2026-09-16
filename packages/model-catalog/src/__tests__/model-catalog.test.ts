@@ -238,4 +238,8 @@ describe('getModelFamily', () => {
   test('gpt models return gpt family', () => {
     expect(getModelFamily('gpt-5.4-nano')).toBe('gpt')
   })
+
+  test('fable models return fable family', () => {
+    expect(getModelFamily('claude-fable-5-1')).toBe('fable')
+  })
 })

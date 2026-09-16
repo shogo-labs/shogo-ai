@@ -45,6 +45,10 @@ const GPT_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 // the id/apiModel pairing from the 2026-08-16 incident (86b8db4c-78fa-4594-
 // 95ea-35058748a986 in prod, apiModel `claude-opus-5`).
 const OPUS5_UUID = '22222222-3333-4444-5555-666666666666'
+// Claude Fable 5.1, addressed by its DB UUID — same production-incident
+// shape as Opus 5/Sonnet 5 above: a new current-gen Anthropic model whose
+// apiModel supports adaptive thinking but whose id does not.
+const FABLE51_UUID = '33333333-4444-5555-6666-777777777777'
 
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
@@ -179,6 +183,27 @@ function seed() {
       cachedInputPerMillion: 0.5,
       cacheWritePerMillion: 6.25,
       outputPerMillion: 25,
+    },
+    // UUID-addressed Fable 5.1 — same addressing shape as Opus 5 above.
+    {
+      id: FABLE51_UUID,
+      provider: 'anthropic',
+      providerId: null,
+      apiModel: 'claude-fable-5-1',
+      displayName: 'Claude Fable 5.1 (DB)',
+      shortDisplayName: 'Fable 5.1',
+      tier: 'premium',
+      family: 'fable',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 5,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 10,
+      cachedInputPerMillion: 0.25,
+      cacheWritePerMillion: 12.5,
+      outputPerMillion: 50,
     },
     // UUID-addressed GPT: native OpenAI, routed through the Responses API.
     {
@@ -614,6 +639,21 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(res.status).toBe(200)
     const body = lastForwardedBody()
     expect(body.model).toBe('claude-opus-5')
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.thinking.budget_tokens).toBeUndefined()
+    expect(body.output_config?.effort).toBe('high')
+  })
+
+  // Same regression, for the newly-added Fable 5.1 — guards against Fable 5.1
+  // landing in the model catalog / pi-ai patch without also landing in this
+  // proxy's own mirrored allowlist (apiModelSupportsAdaptiveThinking).
+  test('rewrites budget-based thinking to adaptive for a UUID-addressed Fable 5.1', async () => {
+    const res = await postAnthropic(buildApp(), FABLE51_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 20000 },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.model).toBe('claude-fable-5-1')
     expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
     expect(body.thinking.budget_tokens).toBeUndefined()
     expect(body.output_config?.effort).toBe('high')

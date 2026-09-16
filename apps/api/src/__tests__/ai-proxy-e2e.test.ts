@@ -115,6 +115,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     // OpenAI models are present.
     expect(modelIds).toContain('claude-opus-5')
     expect(modelIds).toContain('claude-sonnet-5')
+    expect(modelIds).toContain('claude-fable-5-1')
     expect(modelIds).toContain('claude-haiku-4-5-20251001')
     expect(modelIds).toContain('gpt-6-astra')
     expect(modelIds).toContain('gpt-5.6-terra')

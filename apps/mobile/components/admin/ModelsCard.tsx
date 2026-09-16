@@ -71,7 +71,7 @@ function isDiscoveryProvider(p: string): p is DiscoveryProviderId {
 
 const PROVIDER_OPTIONS = ['anthropic', 'openai', 'openrouter', 'google', 'local', 'custom'] as const
 const MODEL_TIER_OPTIONS = ['economy', 'standard', 'premium'] as const
-const MODEL_FAMILY_OPTIONS = ['opus', 'sonnet', 'haiku', 'gpt', 'other'] as const
+const MODEL_FAMILY_OPTIONS = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'other'] as const
 const MODEL_GENERATION_OPTIONS = ['current', 'legacy'] as const
 const MODEL_REASONING_EFFORT_OPTIONS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
 
@@ -146,6 +146,7 @@ function inferFamily(id: string): FamilyOption {
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
+  if (lower.includes('fable')) return 'fable'
   if (lower.includes('gpt')) return 'gpt'
   return 'other'
 }
