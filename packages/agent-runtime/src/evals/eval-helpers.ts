@@ -8,6 +8,121 @@
  */
 
 import type { EvalResult } from './types'
+import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
+import { join } from 'path'
+
+/**
+ * Reads a file from the eval's live workspace directory (post-run), or ''
+ * if the workspace is unavailable or the file doesn't exist.
+ *
+ * Grading criteria like `wroteSchema`/`schemaContainsModel` historically
+ * only inspected this-phase tool-call diffs (`result.toolCalls`), which
+ * made them blind to code that was already correct on disk — e.g. built by
+ * an earlier pipeline phase, or present in a seeded fixture — that the
+ * current phase correctly didn't need to rewrite. Use this as a fallback
+ * so an efficient agent that reuses already-correct work isn't scored as
+ * if that work doesn't exist.
+ */
+export function readWorkspaceFile(result: EvalResult, relPath: string): string {
+  const dir = result.workspaceDir
+  if (!dir) return ''
+  try {
+    return readFileSync(join(dir, relPath), 'utf-8')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Lists the repo-relative paths (e.g. `src/components/Foo.tsx`) of every
+ * `.ts`/`.tsx`/`.js`/`.jsx` file under `src/` in the eval's live workspace
+ * (skipping `src/generated`). Disk-state counterpart to `wroteCanvasFile`,
+ * which only looks at this-phase `write_file` tool calls — see
+ * `readWorkspaceFile` above for why that's insufficient on its own.
+ */
+export function listSrcFilePathsFromDisk(result: EvalResult): string[] {
+  const dir = result.workspaceDir
+  if (!dir) return []
+  const srcDir = join(dir, 'src')
+  if (!existsSync(srcDir)) return []
+  const out: string[] = []
+  const walk = (d: string, relPrefix: string, depth: number) => {
+    if (depth > 10) return
+    let entries: string[]
+    try {
+      entries = readdirSync(d)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === 'generated' || name === 'node_modules') continue
+      const full = join(d, name)
+      const rel = relPrefix ? `${relPrefix}/${name}` : name
+      let isDir = false
+      try {
+        isDir = statSync(full).isDirectory()
+      } catch {
+        continue
+      }
+      if (isDir) {
+        walk(full, rel, depth + 1)
+        continue
+      }
+      if (/\.(tsx?|jsx?)$/.test(name)) {
+        out.push(`src/${rel}`)
+      }
+    }
+  }
+  walk(srcDir, '', 0)
+  return out
+}
+
+/**
+ * Concatenates the content of all `.ts`/`.tsx`/`.js`/`.jsx` files under
+ * `src/` in the eval's live workspace (skipping `src/generated`). Disk-state
+ * counterpart to the various per-file `allCanvasCode(r)` helpers, which only
+ * look at this-phase `write_file`/`edit_file` tool calls — see
+ * `readWorkspaceFile` above for why that's insufficient on its own.
+ */
+export function readAllSrcCodeFromDisk(result: EvalResult): string {
+  const dir = result.workspaceDir
+  if (!dir) return ''
+  const srcDir = join(dir, 'src')
+  if (!existsSync(srcDir)) return ''
+  const out: string[] = []
+  const walk = (d: string, depth: number) => {
+    if (depth > 10) return
+    let entries: string[]
+    try {
+      entries = readdirSync(d)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === 'generated' || name === 'node_modules') continue
+      const full = join(d, name)
+      let isDir = false
+      try {
+        isDir = statSync(full).isDirectory()
+      } catch {
+        continue
+      }
+      if (isDir) {
+        walk(full, depth + 1)
+        continue
+      }
+      if (/\.(tsx?|jsx?)$/.test(name)) {
+        try {
+          out.push(readFileSync(full, 'utf-8'))
+        } catch {
+          // ignore unreadable files
+        }
+      }
+    }
+  }
+  walk(srcDir, 0)
+  return out.join('\n')
+}
 
 /** True if `toolName` was called in any turn (history + final). */
 export function usedTool(result: EvalResult, toolName: string): boolean {
