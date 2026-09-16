@@ -23,6 +23,7 @@ import {
   toolCallArgsContain,
   toolCallCount,
   responseContains,
+  anyTurnResponseContains,
   toolCallsJson,
   lastSchemaPreservesModel,
   readWorkspaceFile,
@@ -842,10 +843,17 @@ const PHASE_4: AgentEval = {
       description: 'Trending response covers AI hardware, foldables, smart home',
       points: 4,
       phase: 'execution',
+      // This eval's `conversationHistory` asks for the trending research in
+      // an EARLIER turn (see `input` vs `conversationHistory` above) — the
+      // final turn is a separate demographics-dashboard request that never
+      // mentions any of this. `responseContains` only ever sees the final
+      // turn's text, so it's structurally unable to pass here regardless of
+      // how good the earlier research was. Use `anyTurnResponseContains` to
+      // search every turn's response instead.
       validate: (r) =>
-        responseContains(r, 'ai') &&
-        (responseContains(r, 'foldable') || responseContains(r, 'phone')) &&
-        (responseContains(r, 'smart home') || responseContains(r, 'home')),
+        anyTurnResponseContains(r, 'ai') &&
+        (anyTurnResponseContains(r, 'foldable') || anyTurnResponseContains(r, 'phone')) &&
+        (anyTurnResponseContains(r, 'smart home') || anyTurnResponseContains(r, 'home')),
     },
     {
       id: 'competitor-parallel',
@@ -860,8 +868,11 @@ const PHASE_4: AgentEval = {
       description: 'All three creators referenced',
       points: 5,
       phase: 'execution',
+      // Same issue as `trending-topics` above — the competitor research is
+      // requested and reported in an earlier history turn, not the final
+      // one. See `anyTurnResponseContains`.
       validate: (r) =>
-        responseContains(r, 'mkbhd') && responseContains(r, 'dave2d') && responseContains(r, 'linus'),
+        anyTurnResponseContains(r, 'mkbhd') && anyTurnResponseContains(r, 'dave2d') && anyTurnResponseContains(r, 'linus'),
     },
     {
       id: 'demographics-dashboard',

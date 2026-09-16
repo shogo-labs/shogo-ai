@@ -173,6 +173,21 @@ export function responseContains(result: EvalResult, ...terms: string[]): boolea
   return terms.every(t => text.includes(t.toLowerCase()))
 }
 
+/**
+ * Like `responseContains`, but searches every real turn's response text in
+ * this eval (`allResponseText`), not just the final turn's (`responseText`).
+ *
+ * Use this for multi-turn evals whose `conversationHistory` asks for
+ * genuinely distinct work in an earlier turn (e.g. "research trending
+ * topics" in turn 2, then "build a demographics dashboard" in turn 4) —
+ * `responseContains` would only ever see turn 4's text and could never
+ * find content that was correctly produced and reported in turn 2.
+ */
+export function anyTurnResponseContains(result: EvalResult, ...terms: string[]): boolean {
+  const text = (result.allResponseText || result.responseText).toLowerCase()
+  return terms.every(t => text.includes(t.toLowerCase()))
+}
+
 /** JSON-stringified tool calls for ad-hoc substring searches. */
 export function toolCallsJson(result: EvalResult): string {
   return JSON.stringify(result.toolCalls).toLowerCase()

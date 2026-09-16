@@ -523,7 +523,14 @@ const PHASE_2: AgentEval = {
   pipeline: 'subagent-coordination',
   pipelinePhase: 2,
   input: PHASE_2_PROMPT,
-  conversationHistory: [{ role: 'user', content: PHASE_2_PROMPT }],
+  // Empty: `input` below (== PHASE_2_PROMPT) is this phase's only new turn.
+  // Pipeline continuity comes from the shared workspace + `pipelineToolCalls`
+  // (see runner.ts), NOT from replaying this prompt as fake prior history —
+  // doing that sent the identical prompt to the agent twice as two separate
+  // real turns, and it correctly treated turn 2 as a duplicate of turn 1 and
+  // declined to redo the work, which silently broke the criteria that expect
+  // to find this phase's own tool calls (see PR description for details).
+  conversationHistory: [],
   pipelineFiles: {},
   maxScore: 30,
   validationCriteria: [
@@ -602,7 +609,14 @@ const PHASE_3: AgentEval = {
   pipeline: 'subagent-coordination',
   pipelinePhase: 3,
   input: PHASE_3_PROMPT,
-  conversationHistory: [{ role: 'user', content: PHASE_3_PROMPT }],
+  // Empty: `input` below (== PHASE_3_PROMPT) is this phase's only new turn.
+  // Pipeline continuity comes from the shared workspace + `pipelineToolCalls`
+  // (see runner.ts), NOT from replaying this prompt as fake prior history —
+  // doing that sent the identical prompt to the agent twice as two separate
+  // real turns, and it correctly treated turn 2 as a duplicate of turn 1 and
+  // declined to redo the work, which silently broke the criteria that expect
+  // to find this phase's own tool calls (see PR description for details).
+  conversationHistory: [],
   pipelineFiles: {},
   maxScore: 30,
   validationCriteria: [
@@ -692,7 +706,14 @@ const PHASE_4: AgentEval = {
   pipeline: 'subagent-coordination',
   pipelinePhase: 4,
   input: PHASE_4_PROMPT,
-  conversationHistory: [{ role: 'user', content: PHASE_4_PROMPT }],
+  // Empty: `input` below (== PHASE_4_PROMPT) is this phase's only new turn.
+  // Pipeline continuity comes from the shared workspace + `pipelineToolCalls`
+  // (see runner.ts), NOT from replaying this prompt as fake prior history —
+  // doing that sent the identical prompt to the agent twice as two separate
+  // real turns, and it correctly treated turn 2 as a duplicate of turn 1 and
+  // declined to redo the work, which silently broke the criteria that expect
+  // to find this phase's own tool calls (see PR description for details).
+  conversationHistory: [],
   pipelineFiles: {},
   maxScore: 30,
   validationCriteria: [
@@ -764,7 +785,14 @@ const PHASE_5: AgentEval = {
   pipeline: 'subagent-coordination',
   pipelinePhase: 5,
   input: PHASE_5_PROMPT,
-  conversationHistory: [{ role: 'user', content: PHASE_5_PROMPT }],
+  // Empty: `input` below (== PHASE_5_PROMPT) is this phase's only new turn.
+  // Pipeline continuity comes from the shared workspace + `pipelineToolCalls`
+  // (see runner.ts), NOT from replaying this prompt as fake prior history —
+  // doing that sent the identical prompt to the agent twice as two separate
+  // real turns, and it correctly treated turn 2 as a duplicate of turn 1 and
+  // declined to redo the work, which silently broke the criteria that expect
+  // to find this phase's own tool calls (see PR description for details).
+  conversationHistory: [],
   pipelineFiles: {},
   maxScore: 35,
   validationCriteria: [

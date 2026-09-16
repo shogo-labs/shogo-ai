@@ -17,7 +17,7 @@ import { describe, test, expect, afterEach } from 'bun:test'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { parseModels, buildTestBody } from './runtime-checks'
+import { parseModels, buildTestBody, correctedBodyFromValidationError } from './runtime-checks'
 
 const tmpDirs: string[] = []
 
@@ -150,5 +150,52 @@ model Hire {
     const body = buildTestBody(hire)
     expect(body).toEqual({ name: 'eval-test-name' })
     expect(body.departmentId).toBeUndefined()
+  })
+
+  test('uses a valid-looking email format for fields whose name implies email', () => {
+    const schema = makeSchema(`
+model Client {
+  id    String @id @default(uuid())
+  email String
+  name  String
+}
+`)
+    const client = parseModels(schema).find(m => m.name === 'Client')!
+    const body = buildTestBody(client)
+    expect(body.email).toBe('eval-test-email@example.com')
+    expect(body.email).toMatch(/^[^@]+@[^@]+\.[^@]+$/)
+    expect(body.name).toBe('eval-test-name')
+  })
+})
+
+describe('correctedBodyFromValidationError', () => {
+  test('extracts an enum value from a "must be one of" message and substitutes it', () => {
+    const body = { name: 'eval-test-name', department: 'eval-test-department' }
+    const corrected = correctedBodyFromValidationError(
+      body,
+      'Department must be one of: design, dev, pm, leadership',
+    )
+    expect(corrected).toEqual({ name: 'eval-test-name', department: 'design' })
+  })
+
+  test('matches the field case-insensitively and ignores unrelated fields', () => {
+    const body = { name: 'eval-test-name', stage: 'eval-test-stage' }
+    const corrected = correctedBodyFromValidationError(
+      body,
+      'stage must be one of: lead, proposal, negotiation, won, lost',
+    )
+    expect(corrected).toEqual({ name: 'eval-test-name', stage: 'lead' })
+  })
+
+  test('returns null when the message has no enumerated values', () => {
+    const body = { email: 'eval-test-email' }
+    expect(correctedBodyFromValidationError(body, 'Enter a valid email address')).toBeNull()
+  })
+
+  test('returns null when no field name in the body matches the hint', () => {
+    const body = { name: 'eval-test-name' }
+    expect(
+      correctedBodyFromValidationError(body, 'Priority must be one of: low, medium, high'),
+    ).toBeNull()
   })
 })

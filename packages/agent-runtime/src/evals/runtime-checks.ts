@@ -176,7 +176,17 @@ export function buildTestBody(model: ModelInfo): Record<string, unknown> {
   const body: Record<string, unknown> = {}
   for (const field of model.requiredFields) {
     switch (field.type) {
-      case 'String': body[field.name] = `eval-test-${field.name}`; break
+      case 'String':
+        // Plain `eval-test-<field>` fails format validation on fields the
+        // agent (correctly!) constrains — most commonly `email`. Detect the
+        // common case here; anything else (enums, phone numbers, etc.) is
+        // handled by `retryWithHintedValue` below, which reacts to whatever
+        // validation error the server actually returns instead of trying to
+        // guess every possible format up front.
+        body[field.name] = /email/i.test(field.name)
+          ? `eval-test-${field.name}@example.com`
+          : `eval-test-${field.name}`
+        break
       case 'Int': body[field.name] = 1; break
       case 'Float': body[field.name] = 1.0; break
       case 'Boolean': body[field.name] = false; break
@@ -184,6 +194,43 @@ export function buildTestBody(model: ModelInfo): Record<string, unknown> {
     }
   }
   return body
+}
+
+/**
+ * A generic synthetic test body can't know every field-level validation
+ * rule an agent legitimately adds (enum constraints, phone formats, custom
+ * regexes, ...). Rather than hand-coding a growing list of field-name
+ * heuristics, this parses the server's OWN rejection message for an
+ * enumerated list of valid values (the common shape zod's `.enum([...])`
+ * and hand-rolled validators produce, e.g. `"Department must be one of:
+ * design, dev, pm, leadership"`) and returns a corrected body using one of
+ * the values it names — so a diligent agent's validation doesn't get
+ * mistaken for a broken CRUD endpoint.
+ *
+ * Returns null if no field name + enum hint pair can be matched, i.e. this
+ * doesn't look like a "we rejected a plausible enum value" failure.
+ */
+export function correctedBodyFromValidationError(
+  body: Record<string, unknown>,
+  errorMessage: string,
+): Record<string, unknown> | null {
+  const match = errorMessage.match(/([A-Za-z][\w\s]*?)\s+must be one of:?\s*([\w,\s'".-]+)/i)
+  if (!match) return null
+  const [, fieldHint, valuesList] = match
+  const values = valuesList
+    .split(',')
+    .map(v => v.trim().replace(/^['"]|['"]$/g, ''))
+    .filter(Boolean)
+  if (values.length === 0) return null
+
+  const normalizedHint = fieldHint.trim().toLowerCase().replace(/\s+/g, '')
+  const targetKey = Object.keys(body).find(k => k.toLowerCase() === normalizedHint)
+    // Fall back to a fuzzy match (e.g. "Department" hint vs a `department`
+    // or `departmentType` field) if there's no exact match.
+    ?? Object.keys(body).find(k => k.toLowerCase().includes(normalizedHint) || normalizedHint.includes(k.toLowerCase()))
+  if (!targetKey) return null
+
+  return { ...body, [targetKey]: values[0] }
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +649,24 @@ export async function runRuntimeChecks(opts: RuntimeCheckOptions): Promise<Runti
       let roundTripOk = false
       if (model && serverHealthy && !model.requiresForeignKey) {
         const testBody = buildTestBody(model)
-        const createRes = await postJson(endpoint, testBody)
+        let createRes = await postJson(endpoint, testBody)
         createOk = createRes.ok && createRes.data?.ok === true && createRes.data?.data != null
+
+        // If the agent added its own field validation (e.g. an enum
+        // constraint our generic body can't predict), retry once with a
+        // value corrected from the server's own error message rather than
+        // treating legitimate validation as a broken endpoint. See
+        // `correctedBodyFromValidationError` for what shapes it handles.
+        if (!createOk) {
+          const message = createRes.data?.error?.message ?? createRes.error ?? ''
+          const correctedBody = correctedBodyFromValidationError(testBody, String(message))
+          if (correctedBody) {
+            if (verbose) console.log(`  [${LOG_PREFIX}] POST /api/${routePath}: retrying with corrected value from validation error`)
+            createRes = await postJson(endpoint, correctedBody)
+            createOk = createRes.ok && createRes.data?.ok === true && createRes.data?.data != null
+          }
+        }
+
         if (!createOk) {
           errors.push(`POST /api/${routePath}: ${createRes.error || JSON.stringify(createRes.data)}`)
         }

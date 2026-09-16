@@ -48,10 +48,18 @@ interface RegisteredAgent {
 export interface ActivityEntry {
   tool: string
   summary: string
+  /** Truncated JSON of the tool call's input args (e.g. `{"path":"reports/x.md"}`). */
+  input?: string
   at: number
 }
 
-const MAX_RECENT_ACTIVITY = 10
+// Bumped from 10 → 30: this window is also returned to the caller in
+// `agent_result`'s completed response (see gateway-tools.ts) so a
+// coordinating agent — and eval graders — can see what a spawned subagent
+// actually did, not just a tool-call count. 10 was too easy to overflow
+// past a subagent's final/most-meaningful calls (e.g. the `write_file` at
+// the end of a research-then-write task) on anything but the shortest runs.
+const MAX_RECENT_ACTIVITY = 30
 
 export interface ManagedInstance {
   id: string
@@ -321,7 +329,11 @@ export class AgentManager {
         const summary = isError
           ? 'ERROR'
           : typeof result === 'string' ? result.substring(0, 120) : JSON.stringify(result).substring(0, 120)
-        recentActivity.push({ tool: toolName, summary, at: Date.now() })
+        let input: string | undefined
+        try {
+          input = JSON.stringify(args).substring(0, 200)
+        } catch { /* non-serializable args — omit */ }
+        recentActivity.push({ tool: toolName, summary, input, at: Date.now() })
         if (recentActivity.length > MAX_RECENT_ACTIVITY) recentActivity.shift()
         await callbacks?.onAfterToolCall?.(toolName, args, result, isError, toolCallId)
       },
