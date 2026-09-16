@@ -40,7 +40,13 @@
  *     high-effort thinking enabled. Only seeded when `DEEPSEEK_API_KEY` and
  *     `SECRETS_ENCRYPTION_KEY` are configured.
  *
- * Idempotent — safe to re-run (upserts by id / by provider label).
+ * Idempotent — safe to re-run (upserts by `(provider, apiModel)` / by
+ * provider label). Re-running refreshes code-owned config (display names,
+ * pricing, family/tier, aliases, capabilities) but never touches
+ * admin-owned state on an existing row: `enabled`, `sortOrder`, `providerId`,
+ * and a custom provider's `encryptedApiKey` are only set when a row is first
+ * created, so re-running this script can't silently undo an admin disabling
+ * a model, reordering the picker, or rotating a provider key from the UI.
  *
  * Usage (local mode / sqlite):
  *   SHOGO_LOCAL_MODE=true SECRETS_ENCRYPTION_KEY=$(openssl rand -base64 32) \
@@ -60,6 +66,17 @@ import { prisma } from '../apps/api/src/lib/prisma'
 import { encryptSecret, isSecretCryptoConfigured } from '../apps/api/src/lib/secret-crypto'
 
 const SEED_USER = 'seed:db-models'
+
+/** Shallow-omit a set of keys — used to keep admin-owned fields (`enabled`,
+ *  `encryptedApiKey`) out of the `update` payload below, so re-running this
+ *  script can't silently undo an admin toggling a model off or rotating a
+ *  provider key from the UI. Those fields are only ever set on first
+ *  `create`. */
+function omit<T extends Record<string, unknown>, K extends keyof T>(obj: T, keys: K[]): Omit<T, K> {
+  const copy = { ...obj }
+  for (const key of keys) delete copy[key]
+  return copy
+}
 
 /**
  * Upsert a model definition keyed on `(provider, apiModel)` rather than a
@@ -107,7 +124,7 @@ async function seedOpus48(): Promise<void> {
   await upsertModel(
     { provider: 'anthropic', apiModel: 'claude-opus-4-8' },
     { providerId: null, sortOrder: 0, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Opus 4.8 (apiModel=claude-opus-4-8)')
 }
@@ -135,7 +152,7 @@ async function seedOpus5(): Promise<void> {
   await upsertModel(
     { provider: 'anthropic', apiModel: 'claude-opus-5' },
     { providerId: null, sortOrder: 0, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Opus 5 (apiModel=claude-opus-5)')
 }
@@ -163,7 +180,7 @@ async function seedSonnet5(): Promise<void> {
   await upsertModel(
     { provider: 'anthropic', apiModel: 'claude-sonnet-5' },
     { providerId: null, sortOrder: 1, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Sonnet 5 (apiModel=claude-sonnet-5)')
 }
@@ -188,7 +205,7 @@ async function seedSonnet46(): Promise<void> {
   await upsertModel(
     { provider: 'anthropic', apiModel: 'claude-sonnet-4-6' },
     { providerId: null, sortOrder: 2, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Sonnet 4.6 (apiModel=claude-sonnet-4-6)')
 }
@@ -218,7 +235,7 @@ async function seedFable51(): Promise<void> {
   await upsertModel(
     { provider: 'anthropic', apiModel: 'claude-fable-5-1' },
     { providerId: null, sortOrder: 0, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Fable 5.1 (apiModel=claude-fable-5-1)')
 }
@@ -246,7 +263,7 @@ async function seedGptAstra(): Promise<void> {
   await upsertModel(
     { provider: 'openai', apiModel: 'gpt-6-astra' },
     { providerId: null, sortOrder: 3, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted GPT-6 Astra (apiModel=gpt-6-astra)')
 }
@@ -277,7 +294,13 @@ async function seedMimo(): Promise<void> {
     updatedBy: SEED_USER,
   }
   const provider = existing
-    ? await (prisma as any).modelProvider.update({ where: { id: existing.id }, data: providerData })
+    ? await (prisma as any).modelProvider.update({
+        where: { id: existing.id },
+        // Never clobber an admin-rotated key or an admin-toggled disable
+        // from the "Custom Providers" UI on re-run — those are admin-owned
+        // once the provider exists; only `create` sets them.
+        data: omit(providerData, ['encryptedApiKey', 'enabled']),
+      })
     : await (prisma as any).modelProvider.create({ data: providerData })
   console.log(`[seed-db-models] Upserted MiMo provider (${provider.id})`)
 
@@ -307,7 +330,7 @@ async function seedMimo(): Promise<void> {
   await upsertModel(
     { provider: 'custom', apiModel: 'mimo-v2.5' },
     { sortOrder: 1, ...modelCommon },
-    modelCommon,
+    omit(modelCommon, ['enabled']),
   )
   console.log('[seed-db-models] Upserted MiMo v2.5 (apiModel=mimo-v2.5)')
 }
@@ -337,7 +360,13 @@ async function seedDeepSeek(): Promise<void> {
     updatedBy: SEED_USER,
   }
   const provider = existing
-    ? await (prisma as any).modelProvider.update({ where: { id: existing.id }, data: providerData })
+    ? await (prisma as any).modelProvider.update({
+        where: { id: existing.id },
+        // Never clobber an admin-rotated key or an admin-toggled disable
+        // from the "Custom Providers" UI on re-run — those are admin-owned
+        // once the provider exists; only `create` sets them.
+        data: omit(providerData, ['encryptedApiKey', 'enabled']),
+      })
     : await (prisma as any).modelProvider.create({ data: providerData })
   console.log(`[seed-db-models] Upserted DeepSeek provider (${provider.id})`)
 
@@ -365,7 +394,7 @@ async function seedDeepSeek(): Promise<void> {
   await upsertModel(
     { provider: 'custom', apiModel: 'deepseek-flash' },
     { sortOrder: 1, ...modelCommon },
-    modelCommon,
+    omit(modelCommon, ['enabled']),
   )
   console.log('[seed-db-models] Upserted Hoshi 2.0 (apiModel=deepseek-flash)')
 }
@@ -393,7 +422,7 @@ async function seedGptLive1(): Promise<void> {
   await upsertModel(
     { provider: 'openai', apiModel: 'gpt-live-1' },
     { providerId: null, sortOrder: 100, ...common },
-    common,
+    omit(common, ['enabled']),
   )
   console.log('[seed-db-models] Upserted GPT-Live 1')
 }
