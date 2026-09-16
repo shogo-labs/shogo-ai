@@ -135,6 +135,18 @@ export const NATIVE_PHONE_SHEET_BACKDROP = {
 export const NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO = 0.78;
 export const NATIVE_PHONE_SHEET_COMPACT_RATIO = 0.72;
 export const NATIVE_PHONE_SHEET_BODY_RATIO = 0.62;
+/** Supplemental lift for bottom sheets while the native keyboard is visible. */
+export const NATIVE_PHONE_SHEET_KEYBOARD_GAP = 8;
+export const NATIVE_PHONE_SHEET_KEYBOARD_MAX_LIFT = 72;
+
+export function nativePhoneSheetKeyboardLift(overlap: number): number {
+  if (overlap <= 0) return 0;
+  return Math.min(
+    overlap + NATIVE_PHONE_SHEET_KEYBOARD_GAP,
+    NATIVE_PHONE_SHEET_KEYBOARD_MAX_LIFT,
+  );
+}
+
 /** Tall sheet so Account can host a settings tab without a push. */
 export const NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO = 0.92;
 export const NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO = 0.78;

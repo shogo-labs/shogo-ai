@@ -6,12 +6,14 @@ import { Keyboard, Platform, Pressable, View, useWindowDimensions } from 'react-
 import { useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Activity, ListTodo, MessageCircle, Store } from 'lucide-react-native'
+import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../../lib/native-composer-keyboard'
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
   NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET,
+  NATIVE_PHONE_DOCK_FADE,
   NATIVE_PHONE_DOCK_COMPOSER_GAP,
   NATIVE_PHONE_GUTTER,
   WEB_WIDE_MIN_WIDTH,
@@ -177,6 +179,7 @@ export function MobileBottomNav() {
     <View
       className="bg-transparent pt-1"
       style={{
+        position: 'relative',
         marginTop: isProjectPath(pathname)
           ? -(NATIVE_PHONE_DOCK_COMPOSER_GAP + NATIVE_PHONE_PROJECT_NAV_OVERLAP)
           : -(NATIVE_PHONE_DOCK_COMPOSER_GAP + 16),
@@ -189,6 +192,13 @@ export function MobileBottomNav() {
       }}
       testID="mobile-bottom-nav"
     >
+      {!isProjectPath(pathname) ? (
+        <NativePhoneBottomFade
+          isDark={isDark}
+          height={NATIVE_PHONE_DOCK_FADE + NATIVE_PHONE_COMPOSER_PILL_HEIGHT + 16}
+          style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+        />
+      ) : null}
       <View
         className="w-full flex-row items-center gap-1 border border-border bg-card/95 px-1.5 shadow-sm"
         style={{

@@ -5,7 +5,13 @@ import type { ReactNode } from "react"
 import { Animated, View } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { chatComposerDockStyle } from "../../../lib/native-composer-keyboard"
-import { NATIVE_PHONE_GUTTER } from "../../../lib/native-phone-layout"
+import {
+  NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+  NATIVE_PHONE_DOCK_FADE,
+  NATIVE_PHONE_GUTTER,
+} from "../../../lib/native-phone-layout"
+import { useResolvedTheme } from "../../../contexts/theme"
+import { NativePhoneBottomFade } from "../../phone/NativePhoneBottomFade"
 
 /**
  * Project chat composer column.
@@ -31,6 +37,7 @@ export function ProjectComposerDock({
   native: boolean
   children: ReactNode
 }) {
+  const isDark = useResolvedTheme() === 'dark'
   const nativeColumnWidth =
     native && columnWidth != null
       ? Math.max(0, columnWidth - NATIVE_PHONE_GUTTER * 2)
@@ -49,6 +56,13 @@ export function ProjectComposerDock({
           webOverflowVisible: applyKeyboardPad && !native,
         })}
       >
+        {native ? (
+          <NativePhoneBottomFade
+            isDark={isDark}
+            height={NATIVE_PHONE_DOCK_FADE + NATIVE_PHONE_COMPOSER_PILL_HEIGHT + 16}
+            style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+          />
+        ) : null}
         <View className={cn("bg-transparent w-full mt-1", !native && "relative")}>
           {children}
         </View>

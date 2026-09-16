@@ -4,8 +4,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Animated,
+  Keyboard,
   Modal,
   Pressable,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,8 +19,14 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { PHONE_DENSITY, type Density } from '../../lib/phone-density'
 import {
+  nativeComposerKeyboardDuration,
+  nativeComposerKeyboardOverlap,
+  type NativeComposerKeyboardEvent,
+} from '../../lib/native-composer-keyboard'
+import {
   NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO,
+  nativePhoneSheetKeyboardLift,
   useNativePhoneSheetChrome,
 } from '../../lib/native-phone-layout'
 import { acquireNativePhoneSheetLock } from '../../lib/native-phone-sheet-lock'
@@ -69,6 +77,61 @@ function useNativePhoneSheetSlide(visible: boolean, enabled: boolean) {
   }, [enabled, transition, visible])
 
   return { mounted, transition }
+}
+
+/**
+ * Lift a bottom sheet clear of the software keyboard while editing.
+ *
+ * The modal is transparent and bottom-aligned. Native keyboard resizing can
+ * already move it partway, so this adds only a small supplemental transform
+ * and lets the keyboard animation drive the sheet up and back down smoothly.
+ */
+function useNativePhoneSheetKeyboardShift(visible: boolean, viewportHeight: number) {
+  const shift = useRef(new Animated.Value(0)).current
+
+  useEffect(() => {
+    if (!visible) {
+      shift.stopAnimation()
+      shift.setValue(0)
+      return
+    }
+    // Web and desktop retain their existing sheet behavior; this adjustment
+    // is only needed for native software-keyboard frames.
+    if (Platform.OS === 'web') return
+
+    const animateTo = (next: number, duration?: number) => {
+      Animated.timing(shift, {
+        toValue: next,
+        duration: duration && duration > 0 ? duration : 220,
+        useNativeDriver: true,
+      }).start()
+    }
+
+    const handleKeyboardFrame = (event: NativeComposerKeyboardEvent) => {
+      const overlap = nativeComposerKeyboardOverlap(event.endCoordinates, viewportHeight)
+      // iOS can emit a zero-height intermediate frame while opening. Let the
+      // hide event own the reset so the sheet does not snap down mid-animation.
+      if (overlap <= 0) return
+      animateTo(-nativePhoneSheetKeyboardLift(overlap), nativeComposerKeyboardDuration(event.duration))
+    }
+    const handleKeyboardHide = (event: NativeComposerKeyboardEvent) => {
+      animateTo(0, nativeComposerKeyboardDuration(event.duration))
+    }
+
+    const frameEvent = Platform.OS === 'ios' ? 'keyboardWillChangeFrame' : 'keyboardDidShow'
+    const frameSubscription = Keyboard.addListener(frameEvent, handleKeyboardFrame)
+    const hideSubscription = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      handleKeyboardHide,
+    )
+
+    return () => {
+      frameSubscription.remove()
+      hideSubscription.remove()
+    }
+  }, [shift, viewportHeight, visible])
+
+  return shift
 }
 
 export function NativePhoneSheetCloseButton({
@@ -139,6 +202,7 @@ export function NativePhoneSheet({
   const panelSlide = animationType === 'slide'
   const { mounted, transition } = useNativePhoneSheetSlide(visible, panelSlide)
   const panelHeight = Math.round(height * maxHeightRatio)
+  const keyboardShift = useNativePhoneSheetKeyboardShift(visible, height)
 
   useEffect(() => {
     if (!mounted) return
@@ -157,9 +221,10 @@ export function NativePhoneSheet({
               outputRange: [panelHeight, 0],
             }),
           },
+          { translateY: keyboardShift },
         ],
       }
-    : undefined
+    : { transform: [{ translateY: keyboardShift }] }
   const backdropMotionStyle = panelSlide ? { opacity: transition } : undefined
   const body = scroll ? (
     <ScrollView
