@@ -5,6 +5,7 @@ import { Camera, FolderOpen, Image as ImageIcon } from 'lucide-react-native'
 import { Platform, type TextInputProps } from 'react-native'
 import type { NativeAttachAction } from './native-attachment-picker'
 import { NATIVE_PHONE_ICON } from './native-phone-layout'
+import { SURFACE_COLORS } from './surface-tokens'
 
 /** Multiline composer input behavior: Return inserts a newline on native. */
 export function composerKeyboardProps(
@@ -39,8 +40,8 @@ export function composerSendChrome(phone: boolean): {
 /** Shared ChatGPT-style composer colors used by both composer variants. */
 export const CHATGPT_COMPOSER = {
   light: {
-    fill: '#ffffff',
-    border: '#e5e5e5',
+    fill: SURFACE_COLORS.light.container,
+    border: SURFACE_COLORS.light.containerHighest,
     borderFocus: '#cfcfcf',
     text: NATIVE_PHONE_ICON.light,
     placeholder: '#8e8e8e',
@@ -49,7 +50,7 @@ export const CHATGPT_COMPOSER = {
     sendIcon: '#ffffff',
   },
   dark: {
-    fill: '#212121',
+    fill: SURFACE_COLORS.dark.container,
     border: 'rgba(255,255,255,0.08)',
     borderFocus: 'rgba(255,255,255,0.16)',
     text: NATIVE_PHONE_ICON.dark,

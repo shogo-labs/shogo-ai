@@ -15,9 +15,9 @@
  */
 
 import { memo, useCallback, useEffect, useState } from "react"
-import { View, Text, Pressable } from "react-native"
+import { Platform, Share as NativeShare, View, Text, Pressable } from "react-native"
 import * as Clipboard from "expo-clipboard"
-import { Copy, Check, ThumbsUp, ThumbsDown, GitFork, Loader2 } from "lucide-react-native"
+import { Copy, Check, Share2, ThumbsUp, ThumbsDown, GitFork, Loader2 } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useTurnFooterContext } from "./TurnFooterContext"
 import { formatRelativeTime } from "./turnShaping"
@@ -84,6 +84,29 @@ function CopyAction({ text }: { text: string }) {
   )
 }
 
+function ShareAction({ text }: { text: string }) {
+  const handleShare = useCallback(async () => {
+    if (!text) return
+    try {
+      await NativeShare.share({ message: text })
+    } catch {
+      // The user can dismiss the native share sheet without an error state.
+    }
+  }, [text])
+
+  return (
+    <Pressable
+      testID="turn-footer-share"
+      onPress={handleShare}
+      disabled={!text}
+      className={cn("items-center justify-center rounded-lg p-1 hover:bg-muted/40", !text && "opacity-40")}
+      accessibilityLabel="Share message"
+    >
+      <Share2 className="h-3.5 w-3.5 text-muted-foreground" />
+    </Pressable>
+  )
+}
+
 export const TurnFooter = memo(function TurnFooter({
   messageId,
   text,
@@ -129,6 +152,7 @@ export const TurnFooter = memo(function TurnFooter({
     <View className={cn("flex-row items-center justify-between pl-3 pr-1", className)}>
       <View className="flex-row items-center gap-0.5">
         <CopyAction text={text} />
+        {Platform.OS !== "web" ? <ShareAction text={text} /> : null}
 
         <Pressable
           testID="turn-footer-thumb-up"

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
-import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Trash2, X, XCircle } from 'lucide-react-native'
+import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Trash2, XCircle } from 'lucide-react-native'
 import { useProjectCollection } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
@@ -46,6 +46,23 @@ function statusIconClass(status: AgentTaskStatus) {
     case 'queued': return 'bg-amber-500/15 text-amber-800 dark:text-amber-200'
     default: return 'bg-muted text-muted-foreground'
   }
+}
+
+function StatusBadge({ status }: { status: AgentTaskStatus }) {
+  const className = statusClass(status)
+  const textClass = status === 'completed'
+    ? 'text-emerald-700 dark:text-emerald-300'
+    : status === 'failed'
+      ? 'text-red-700 dark:text-red-300'
+      : status === 'queued'
+        ? 'text-amber-800 dark:text-amber-200'
+        : 'text-foreground'
+  return (
+    <View className={`flex-row items-center gap-1 rounded-full px-3 py-2 ${className}`}>
+      {status === 'completed' ? <Check size={13} className="text-emerald-700 dark:text-emerald-300" /> : null}
+      <Text className={`text-[12px] font-semibold ${textClass}`}>{taskStatusLabel(status)}</Text>
+    </View>
+  )
 }
 
 export default function TasksScreen() {
@@ -194,43 +211,49 @@ export default function TasksScreen() {
   const renderTask = (task: AgentTask) => {
     const busy = busyTaskId === task.id
     const StatusIcon = statusIcon(task.status)
+    const showStatusIcon = task.status !== 'completed'
     return (
-      <View key={task.id} className="mx-4 mb-3 rounded-2xl border border-border bg-card p-4">
+      <View
+        key={task.id}
+        className="mx-4 mb-3 rounded-2xl border border-border bg-card p-4"
+      >
         <View className="flex-row items-start gap-3">
-          <View className={`h-12 w-12 items-center justify-center rounded-2xl ${statusIconClass(task.status)}`}>
-            <StatusIcon size={24} className={statusIconClass(task.status).split(' ')[1]} />
-          </View>
+          {showStatusIcon ? (
+            <View className={`h-12 w-12 items-center justify-center rounded-2xl ${statusIconClass(task.status)}`}>
+              <StatusIcon size={24} className={statusIconClass(task.status).split(' ')[1]} />
+            </View>
+          ) : null}
           <View className="min-w-0 flex-1">
             <View className="flex-row items-start justify-between gap-2">
               <Text className="flex-1 text-[17px] font-semibold leading-6 text-foreground" numberOfLines={2}>{task.title}</Text>
-              <Text className={`rounded-full px-3 py-1.5 text-xs font-semibold ${statusClass(task.status)}`}>{taskStatusLabel(task.status)}</Text>
+              <StatusBadge status={task.status} />
             </View>
             {task.currentStep ? <Text className="mt-2 text-[15px] leading-5 text-muted-foreground" numberOfLines={2}>{task.currentStep}</Text> : null}
           </View>
         </View>
-        {task.notes ? <Text className="mt-4 rounded-xl bg-muted/60 px-3.5 py-3 text-[15px] leading-6 text-foreground" numberOfLines={4}>{task.notes}</Text> : null}
-        {task.status !== 'completed' && task.resultSummary ? <Text className="mt-4 rounded-xl bg-muted/60 px-3.5 py-3 text-[15px] leading-6 text-foreground" numberOfLines={3}>{task.resultSummary}</Text> : null}
-        {task.errorMessage ? <Text className="mt-4 rounded-xl bg-destructive/10 px-3.5 py-3 text-[15px] leading-6 text-destructive" numberOfLines={3}>{readableAgentTaskError(task.errorMessage)}</Text> : null}
-        <View className="mt-4 flex-row items-center gap-2 border-t border-border pt-4">
+        {task.notes ? <Text className="mt-4 text-[15px] leading-6 text-foreground" style={{ backgroundColor: 'transparent' }} numberOfLines={4}>{task.notes}</Text> : null}
+        {task.status !== 'completed' && task.resultSummary ? <Text className="mt-4 text-[15px] leading-6 text-foreground" style={{ backgroundColor: 'transparent' }} numberOfLines={3}>{task.resultSummary}</Text> : null}
+        {task.errorMessage ? <Text className="mt-4 text-[15px] leading-6 text-destructive" numberOfLines={3}>{readableAgentTaskError(task.errorMessage)}</Text> : null}
+        <View className="mt-4 flex-row items-center gap-2" style={{ borderTopWidth: 0, borderBottomWidth: 0 }}>
           {task.status === 'draft' ? (
-            <Pressable onPress={() => void mutateTask(task, 'start')} disabled={busy} className="flex-row items-center gap-2 rounded-xl bg-primary px-4 py-3 active:opacity-80">
+            <Pressable onPress={() => void mutateTask(task, 'start')} disabled={busy} className="h-12 flex-row items-center gap-2 rounded-full bg-primary px-4 active:opacity-80">
               {busy ? <ActivityIndicator size="small" color={primaryActionColor} /> : <Play size={18} color={primaryActionColor} />}
               <Text className="text-[15px] font-semibold text-primary-foreground">Start agent</Text>
             </Pressable>
           ) : null}
           {(task.status === 'queued' || task.status === 'running') ? (
-            <Pressable onPress={() => void mutateTask(task, 'cancel')} disabled={busy} className="flex-row items-center gap-2 rounded-xl bg-muted px-4 py-3 active:opacity-80">
+            <Pressable onPress={() => void mutateTask(task, 'cancel')} disabled={busy} className="h-12 flex-row items-center gap-2 rounded-full bg-muted px-4 active:opacity-80">
               <XCircle size={18} className="text-foreground" />
               <Text className="text-[15px] font-medium text-foreground">Cancel</Text>
             </Pressable>
           ) : null}
           {task.chatSessionId ? (
-            <Pressable onPress={() => openChat(task)} className="rounded-xl px-3 py-3 active:bg-muted">
+            <Pressable onPress={() => openChat(task)} className="h-12 flex-row items-center rounded-full border border-primary px-4 active:bg-primary/10">
               <Text className="text-[15px] font-medium text-primary">Open chat</Text>
             </Pressable>
           ) : null}
           <Pressable onPress={() => confirmDeleteTask(task)} disabled={busy} accessibilityLabel="Delete task" className="ml-auto h-11 w-11 items-center justify-center rounded-xl active:bg-muted disabled:opacity-50">
-            <Trash2 size={19} className="text-destructive" />
+            <Trash2 size={19} className="text-red-400 dark:text-red-300" />
           </Pressable>
         </View>
       </View>
@@ -261,7 +284,7 @@ export default function TasksScreen() {
   const renderProjectChip = (project: any) => {
     const selected = selectedProjectId === project.id
     return (
-      <Pressable key={project.id} onPress={() => setSelectedProjectId(project.id)} accessibilityRole="radio" accessibilityState={{ selected }} className={`h-11 max-w-[190px] flex-row items-center gap-1.5 rounded-full border px-3.5 ${selected ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
+      <Pressable key={project.id} onPress={() => setSelectedProjectId(selected ? null : project.id)} accessibilityRole="radio" accessibilityState={{ selected }} className={`h-11 max-w-[190px] flex-row items-center gap-1.5 rounded-full border px-3.5 ${selected ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
         {selected ? <Check size={15} className="text-primary" /> : <Folder size={14} className="text-muted-foreground" />}
         <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{project.name}</Text>
       </Pressable>
@@ -305,10 +328,11 @@ export default function TasksScreen() {
         visible={showCreate}
         onClose={() => setShowCreate(false)}
         title="New task"
-        subtitle="Save a draft now. Start agent work when ready."
-        headerRight={<Pressable onPress={() => setShowCreate(false)} accessibilityLabel="Close task form" className="h-10 w-10 items-center justify-center rounded-full border border-border bg-muted active:opacity-70"><X size={18} className="text-foreground" /></Pressable>}
+        headerTitleAlign="left"
+        headerBorder
         scroll
         maxHeightRatio={0.84}
+        draggable
         animationType="slide"
         footer={(
           <View className="border-t border-border bg-card px-4 pb-1 pt-3">
@@ -323,7 +347,7 @@ export default function TasksScreen() {
             <Text className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Task details</Text>
             <Text className="text-xs text-muted-foreground">Required fields marked *</Text>
           </View>
-          <View>
+          <View className="border-b border-border pb-5">
             <Text className="mb-2 text-[13px] font-semibold text-foreground">What do you need to do? <Text className="text-primary">*</Text></Text>
             <TextInput
               value={title}
@@ -358,10 +382,6 @@ export default function TasksScreen() {
               <Text className="text-[13px] font-semibold text-foreground">Project</Text>
               <Text className="text-xs text-muted-foreground">Optional</Text>
             </View>
-            <Pressable onPress={() => setSelectedProjectId(null)} accessibilityRole="radio" accessibilityState={{ selected: selectedProjectId === null }} className={`h-11 self-start flex-row items-center gap-1.5 rounded-full border px-3.5 ${selectedProjectId === null ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
-              {selectedProjectId === null ? <Check size={15} className="text-primary" /> : null}
-              <Text className="text-sm font-medium text-foreground">No project</Text>
-            </Pressable>
             {projectPickerGroups.pinned.length > 0 ? (
               <View className="mt-4">
                 <Text className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pinned</Text>

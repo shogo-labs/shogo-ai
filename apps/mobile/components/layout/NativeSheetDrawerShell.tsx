@@ -37,19 +37,11 @@ export function NativeSheetDrawerShell({
   children,
   drawer,
 }: NativeSheetDrawerShellProps) {
-  const {
-    drawerOpen,
-    sheetSwipeHandlers,
-    sheetStyle,
-    sheetClipStyle,
-    sheetFill,
-    sheetCompositing,
-    underlayStyle,
-  } = drawer
+  const { drawerOpen, sheetSwipeHandlers, sheetStyle, sheetClipStyle, sheetFill, sheetCompositing, underlayStyle } =
+    drawer
   const frameFill = nativeSheetDrawer ? (sheetFill ?? canvas) : canvas
   const flattenSheet = nativeSheetDrawer && (drawerOpen || sheetCompositing)
-  const frameOverflow =
-    nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
+  const frameOverflow = nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
 
   return (
     <SafeAreaView

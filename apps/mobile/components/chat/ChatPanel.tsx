@@ -6055,7 +6055,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             className="flex-1"
             style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
-              isPhoneViewport ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
+              isPhoneViewport ? "px-4 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
             contentContainerStyle={

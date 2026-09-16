@@ -18,16 +18,18 @@ import {
 export function NativePhoneBottomFade({
   isDark,
   height,
+  canvasHex,
   style,
 }: {
   isDark: boolean
   height: number
+  canvasHex?: string
   style?: StyleProp<ViewStyle>
 }) {
   return (
     <LinearGradient
       pointerEvents="none"
-      colors={[...nativePhoneDockFadeColors(isDark, nativePhoneCanvas(isDark))]}
+      colors={[...nativePhoneDockFadeColors(isDark, canvasHex ?? nativePhoneCanvas(isDark))]}
       locations={[...NATIVE_PHONE_DOCK_FADE_LOCATIONS]}
       style={[{ height }, style]}
     />

@@ -56,6 +56,7 @@ import { TechStackPicker } from '../../components/chat/TechStackPicker'
 import { techStackDisplayName } from '../../lib/tech-stack-catalog'
 import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
+import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -859,7 +860,7 @@ const HomeScreen = observer(function HomeScreen() {
 
   const greeting = (
     <Text
-      className={`text-center text-foreground ${isNativePhone ? 'font-semibold' : 'font-bold mb-2'}`}
+      className={`text-center text-foreground ${isNativePhone ? 'font-medium' : 'font-bold mb-2'}`}
       style={heroTitleStyle}
     >
       {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
@@ -963,6 +964,7 @@ const HomeScreen = observer(function HomeScreen() {
             nativeEntranceStyle,
           ]}
         >
+          {isNativePhone ? <ShogoLogoMark className="mb-6 h-28 w-28" /> : null}
           {greeting}
         </Animated.View>
         <View

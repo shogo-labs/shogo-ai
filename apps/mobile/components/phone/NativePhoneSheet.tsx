@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Animated,
   Keyboard,
   Modal,
+  PanResponder,
   Pressable,
   Platform,
   ScrollView,
@@ -34,6 +35,16 @@ import { acquireNativePhoneSheetLock } from '../../lib/native-phone-sheet-lock'
 const NATIVE_PHONE_SHEET_SLIDE_IN_MS = 240
 const NATIVE_PHONE_SHEET_SLIDE_OUT_MS = 180
 const SHEET_CLOSE_HIT_SLOP = 8
+const NATIVE_PHONE_SHEET_DRAG_MIN_DISTANCE = 4
+const NATIVE_PHONE_SHEET_DRAG_COLLAPSED_VISIBLE_HEIGHT = 88
+const NATIVE_PHONE_SHEET_DRAG_PROJECTION_MS = 120
+const NATIVE_PHONE_SHEET_DRAG_CLOSE_MARGIN = 96
+const NATIVE_PHONE_SHEET_DRAG_SPRING = {
+  stiffness: 300,
+  damping: 32,
+  mass: 0.8,
+  useNativeDriver: true,
+} as const
 
 function useNativePhoneSheetSlide(visible: boolean, enabled: boolean) {
   const [mounted, setMounted] = useState(visible)
@@ -162,6 +173,8 @@ export interface NativePhoneSheetProps {
   subtitle?: string
   headerLeft?: ReactNode
   headerRight?: ReactNode
+  headerTitleAlign?: 'left' | 'center'
+  headerBorder?: boolean
   footer?: ReactNode
   scroll?: boolean
   maxHeightRatio?: number
@@ -170,6 +183,7 @@ export interface NativePhoneSheetProps {
   grabber?: boolean | 'compact'
   testID?: string
   density?: Density
+  draggable?: boolean
 }
 
 /**
@@ -184,6 +198,8 @@ export function NativePhoneSheet({
   subtitle,
   headerLeft,
   headerRight,
+  headerTitleAlign = 'center',
+  headerBorder = false,
   footer,
   scroll = false,
   maxHeightRatio = NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO,
@@ -192,6 +208,7 @@ export function NativePhoneSheet({
   grabber = true,
   testID,
   density = PHONE_DENSITY,
+  draggable = false,
 }: NativePhoneSheetProps) {
   const { height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -203,6 +220,62 @@ export function NativePhoneSheet({
   const { mounted, transition } = useNativePhoneSheetSlide(visible, panelSlide)
   const panelHeight = Math.round(height * maxHeightRatio)
   const keyboardShift = useNativePhoneSheetKeyboardShift(visible, height)
+  const dragOffset = useRef(new Animated.Value(0)).current
+  const dragStart = useRef(0)
+  const dragBounds = useMemo(() => {
+    const top = -Math.max(0, height - panelHeight - insets.top - SHEET_CLOSE_HIT_SLOP)
+    const collapsed = Math.max(0, panelHeight - NATIVE_PHONE_SHEET_DRAG_COLLAPSED_VISIBLE_HEIGHT)
+    return { top, collapsed }
+  }, [height, insets.top, panelHeight])
+
+  useEffect(() => {
+    dragOffset.stopAnimation()
+    dragOffset.setValue(0)
+  }, [dragOffset, visible])
+
+  const panelGesture = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => draggable,
+    onMoveShouldSetPanResponder: (_event, gesture) => (
+      draggable && Math.abs(gesture.dy) > NATIVE_PHONE_SHEET_DRAG_MIN_DISTANCE && Math.abs(gesture.dy) > Math.abs(gesture.dx)
+    ),
+    onPanResponderGrant: () => {
+      dragOffset.stopAnimation((value) => {
+        dragStart.current = value
+      })
+    },
+    onPanResponderMove: (_event, gesture) => {
+      const next = Math.min(
+        dragBounds.collapsed,
+        Math.max(dragBounds.top, dragStart.current + gesture.dy),
+      )
+      dragOffset.setValue(next)
+    },
+    onPanResponderRelease: (_event, gesture) => {
+      const projected = dragStart.current + gesture.dy + gesture.vy * NATIVE_PHONE_SHEET_DRAG_PROJECTION_MS
+      // Close before the collapsed stop so a deliberate, slow downward drag
+      // can dismiss the sheet without depending on release velocity.
+      const closeThreshold = Math.max(0, dragBounds.collapsed - Math.min(NATIVE_PHONE_SHEET_DRAG_CLOSE_MARGIN, panelHeight * 0.12))
+      if (projected > closeThreshold) {
+        onClose()
+        return
+      }
+      const target = projected < dragBounds.top / 2
+        ? dragBounds.top
+        : projected > dragBounds.collapsed / 2
+          ? dragBounds.collapsed
+          : 0
+      Animated.spring(dragOffset, {
+        toValue: target,
+        ...NATIVE_PHONE_SHEET_DRAG_SPRING,
+      }).start()
+    },
+    onPanResponderTerminate: () => {
+      Animated.spring(dragOffset, {
+        toValue: 0,
+        ...NATIVE_PHONE_SHEET_DRAG_SPRING,
+      }).start()
+    },
+  }), [dragBounds, dragOffset, draggable, onClose, panelHeight])
 
   useEffect(() => {
     if (!mounted) return
@@ -222,9 +295,10 @@ export function NativePhoneSheet({
             }),
           },
           { translateY: keyboardShift },
+          { translateY: dragOffset },
         ],
       }
-    : { transform: [{ translateY: keyboardShift }] }
+    : { transform: [{ translateY: keyboardShift }, { translateY: dragOffset }] }
   const backdropMotionStyle = panelSlide ? { opacity: transition } : undefined
   const body = scroll ? (
     <ScrollView
@@ -268,7 +342,7 @@ export function NativePhoneSheet({
             ]}
           >
             {grabber ? (
-              <View className="items-center pt-2 pb-1">
+              <View {...(draggable ? panelGesture.panHandlers : {})} className="items-center pt-2 pb-1">
                 <View
                   className={
                     grabber === 'compact'
@@ -279,13 +353,17 @@ export function NativePhoneSheet({
               </View>
             ) : null}
             {hasHeader ? (
-              <View className={cn("flex-row items-center px-4 pb-3", grabber ? null : "pt-3")}>
-                {headerLeft ?? <View className={density.hitSize} />}
-                <View className="flex-1 px-3">
+              <View className={cn(
+                "flex-row items-center px-4 pb-3",
+                grabber ? null : "pt-3",
+                headerBorder ? "border-b border-border" : null,
+              )}>
+                {headerLeft ?? (headerTitleAlign === 'center' ? <View className={density.hitSize} /> : null)}
+                <View className={cn('flex-1', headerTitleAlign === 'center' ? 'px-3' : 'pr-3')}>
                   {title ? (
                       <Text
                         className={cn(
-                          'text-center',
+                          headerTitleAlign === 'left' ? 'text-left' : 'text-center',
                           density.text.title,
                           'font-semibold text-foreground',
                         )}
@@ -297,7 +375,7 @@ export function NativePhoneSheet({
                   {subtitle ? (
                       <Text
                         className={cn(
-                          'text-center',
+                          headerTitleAlign === 'left' ? 'text-left' : 'text-center',
                           density.text.label,
                           'text-muted-foreground',
                         )}
@@ -307,7 +385,7 @@ export function NativePhoneSheet({
                     </Text>
                   ) : null}
                 </View>
-                {headerRight ?? <View className={density.hitSize} />}
+                {headerRight ?? (headerTitleAlign === 'center' ? <View className={density.hitSize} /> : null)}
               </View>
             ) : null}
             {body}

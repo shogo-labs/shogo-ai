@@ -2,16 +2,17 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 'use client';
 import { vars } from 'nativewind';
+import { SURFACE_RGB } from '../../../lib/surface-tokens';
 
 export const config = {
   light: vars({
     /* Semantic tokens (space-separated RGB, mirroring global.css :root) */
-    '--color-background': '255 255 255',
-    '--color-foreground': '10 10 10',
-    '--color-card': '255 255 255',
-    '--color-card-foreground': '10 10 10',
-    '--color-popover': '255 255 255',
-    '--color-popover-foreground': '10 10 10',
+    '--color-background': SURFACE_RGB.light.surface,
+    '--color-foreground': SURFACE_RGB.light.onSurface,
+    '--color-card': SURFACE_RGB.light.container,
+    '--color-card-foreground': SURFACE_RGB.light.onSurface,
+    '--color-popover': SURFACE_RGB.light.containerHigh,
+    '--color-popover-foreground': SURFACE_RGB.light.onSurface,
     '--color-primary': '226 121 39',
     '--color-primary-foreground': '255 255 255',
     '--color-secondary': '244 244 245',
@@ -172,11 +173,12 @@ export const config = {
     '--color-background-muted': '247 248 247',
     '--color-background-info': '235 248 254',
 
-    /* Surface container progression (M3-style, mirrors global.css :root) */
-    '--color-surface-0': '255 255 255',
-    '--color-surface-1': '247 247 248',
-    '--color-surface-2': '240 240 241',
-    '--color-surface-3': '234 234 235',
+    /* Figma surface containers (mirrors global.css :root). */
+    '--color-surface-0': SURFACE_RGB.light.containerLowest,
+    '--color-surface-1': SURFACE_RGB.light.containerLow,
+    '--color-surface-2': SURFACE_RGB.light.container,
+    '--color-surface-3': SURFACE_RGB.light.containerHigh,
+    '--color-surface-4': SURFACE_RGB.light.containerHighest,
 
     /* Focus Ring Indicator  */
     '--color-indicator-primary': '55 55 55',
@@ -185,12 +187,12 @@ export const config = {
   }),
   dark: vars({
     /* Semantic tokens (space-separated RGB, mirroring global.css .dark) */
-    '--color-background': '18 18 18',
-    '--color-foreground': '222 222 222',
-    '--color-card': '30 30 30',
-    '--color-card-foreground': '222 222 222',
-    '--color-popover': '30 30 30',
-    '--color-popover-foreground': '222 222 222',
+    '--color-background': SURFACE_RGB.dark.surface,
+    '--color-foreground': SURFACE_RGB.dark.onSurface,
+    '--color-card': SURFACE_RGB.dark.container,
+    '--color-card-foreground': SURFACE_RGB.dark.onSurface,
+    '--color-popover': SURFACE_RGB.dark.containerHigh,
+    '--color-popover-foreground': SURFACE_RGB.dark.onSurface,
     '--color-primary': '240 144 80',
     '--color-primary-foreground': '255 255 255',
     '--color-secondary': '51 51 51',
@@ -351,11 +353,12 @@ export const config = {
     '--color-background-muted': '51 51 51',
     '--color-background-info': '26 40 46',
 
-    /* Surface container progression (M3-style, mirrors global.css .dark) */
-    '--color-surface-0': '30 30 30',
-    '--color-surface-1': '37 37 38',
-    '--color-surface-2': '44 44 45',
-    '--color-surface-3': '52 52 53',
+    /* Figma surface containers (mirrors global.css .dark). */
+    '--color-surface-0': SURFACE_RGB.dark.containerLowest,
+    '--color-surface-1': SURFACE_RGB.dark.containerLow,
+    '--color-surface-2': SURFACE_RGB.dark.container,
+    '--color-surface-3': SURFACE_RGB.dark.containerHigh,
+    '--color-surface-4': SURFACE_RGB.dark.containerHighest,
 
     /* Focus Ring Indicator  */
     '--color-indicator-primary': '247 247 247',

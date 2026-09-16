@@ -16,6 +16,7 @@ import {
   NATIVE_PHONE_DOCK_FADE,
   NATIVE_PHONE_DOCK_COMPOSER_GAP,
   NATIVE_PHONE_GUTTER,
+  NATIVE_PHONE_HOME_CANVAS,
   WEB_WIDE_MIN_WIDTH,
 } from '../../lib/native-phone-layout'
 
@@ -195,6 +196,7 @@ export function MobileBottomNav() {
       {!isProjectPath(pathname) ? (
         <NativePhoneBottomFade
           isDark={isDark}
+          canvasHex={isHomePath(pathname) && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined}
           height={NATIVE_PHONE_DOCK_FADE + NATIVE_PHONE_COMPOSER_PILL_HEIGHT + 16}
           style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
         />

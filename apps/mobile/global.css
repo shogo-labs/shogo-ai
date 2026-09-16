@@ -140,12 +140,12 @@
 }
 
 :root {
-  --color-background: 255 255 255;
-  --color-foreground: 10 10 10;
-  --color-card: 255 255 255;
-  --color-card-foreground: 10 10 10;
-  --color-popover: 255 255 255;
-  --color-popover-foreground: 10 10 10;
+  --color-background: 245 251 245;
+  --color-foreground: 28 27 27;
+  --color-card: 241 237 236;
+  --color-card-foreground: 28 27 27;
+  --color-popover: 235 231 230;
+  --color-popover-foreground: 28 27 27;
   --color-primary: 226 121 39;
   --color-primary-foreground: 255 255 255;
   --color-secondary: 244 244 245;
@@ -163,23 +163,24 @@
   --color-sidebar: 244 244 245;
   --color-sidebar-foreground: 24 24 27;
 
-  /* M3 surface container progression — each depth gets progressively darker */
+  /* Figma surface containers: lowest → low → default → high → highest. */
   --color-surface-0: 255 255 255;
-  --color-surface-1: 247 247 248;
-  --color-surface-2: 240 240 241;
-  --color-surface-3: 234 234 235;
+  --color-surface-1: 247 243 242;
+  --color-surface-2: 241 237 236;
+  --color-surface-3: 235 231 230;
+  --color-surface-4: 229 226 225;
 
   /* Shogo landing / marketing accent (hero CTAs, campaign buttons) */
   --color-brand-landing: 226 121 39;
 }
 
 .dark {
-  --color-background: 18 18 18;
-  --color-foreground: 222 222 222;
-  --color-card: 30 30 30;
-  --color-card-foreground: 222 222 222;
-  --color-popover: 30 30 30;
-  --color-popover-foreground: 222 222 222;
+  --color-background: 20 19 19;
+  --color-foreground: 255 255 255;
+  --color-card: 32 31 31;
+  --color-card-foreground: 255 255 255;
+  --color-popover: 42 42 41;
+  --color-popover-foreground: 255 255 255;
   --color-primary: 240 144 80;
   --color-primary-foreground: 255 255 255;
   --color-secondary: 51 51 51;
@@ -197,11 +198,12 @@
   --color-sidebar: 42 42 42;
   --color-sidebar-foreground: 222 222 222;
 
-  /* M3 surface container progression — each depth gets progressively lighter */
-  --color-surface-0: 30 30 30;
-  --color-surface-1: 37 37 38;
-  --color-surface-2: 44 44 45;
-  --color-surface-3: 52 52 53;
+  /* Figma surface containers: lowest → low → default → high → highest. */
+  --color-surface-0: 14 14 14;
+  --color-surface-1: 28 27 27;
+  --color-surface-2: 32 31 31;
+  --color-surface-3: 42 42 41;
+  --color-surface-4: 53 52 52;
 
   --color-brand-landing: 226 121 39;
 }

@@ -58,12 +58,12 @@ function SectionHeader({ title, count }: { title: string; count?: number }) {
 
 function Metric({ label, value, tone }: { label: string; value: number; tone: 'primary' | 'success' | 'muted' }) {
   return (
-    <View className="flex-1 px-3 py-3">
+    <View className="flex-1 items-center justify-center px-3 py-5">
       <Text className={cn(
-        'text-2xl font-semibold',
+        'text-3xl font-semibold',
         tone === 'primary' ? 'text-primary' : tone === 'success' ? 'text-emerald-700 dark:text-emerald-300' : 'text-foreground',
       )}>{value}</Text>
-      <Text className="mt-1 text-[11px] font-medium text-muted-foreground">{label}</Text>
+      <Text className="mt-2 text-xs font-medium text-muted-foreground">{label}</Text>
     </View>
   )
 }
@@ -71,11 +71,11 @@ function Metric({ label, value, tone }: { label: string; value: number; tone: 'p
 function StatusPill({ label, tone }: { label: string; tone: 'success' | 'primary' | 'danger' | 'muted' }) {
   return (
     <View className={cn(
-      'rounded-full px-2.5 py-1',
+      'rounded-full px-3 py-2',
       tone === 'success' ? 'bg-emerald-500/10' : tone === 'primary' ? 'bg-background' : tone === 'danger' ? 'bg-destructive/10' : 'bg-muted',
     )}>
       <Text className={cn(
-        'text-[11px] font-medium',
+        'text-[10px] font-medium',
         tone === 'success' ? 'text-emerald-700 dark:text-emerald-300' : tone === 'primary' ? 'text-primary' : tone === 'danger' ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground',
       )}>{label}</Text>
     </View>
@@ -233,15 +233,11 @@ export default function ActivityScreen() {
     .slice()
     .sort((a: any, b: any) => timestamp(b.createdAt) - timestamp(a.createdAt))
     .slice(0, 12) as any[]
+
   const unreadNotifications = notificationItems.filter((notification) => !notification.readAt).length
 
   return (
     <View className="flex-1 bg-background">
-      <View className="border-b border-border px-5 pb-4 pt-3">
-        <Text className="text-[11px] font-semibold uppercase tracking-[2px] text-primary">Workspace pulse</Text>
-        <Text className="mt-1 text-3xl font-semibold tracking-tight text-foreground">Activity</Text>
-        <Text className="mt-1 text-sm leading-5 text-muted-foreground">Monitor live agent work and workspace-level status.</Text>
-      </View>
       {error ? (
         <View className="mx-4 mt-3 flex-row items-start gap-2 rounded-2xl border border-destructive bg-destructive/10 px-3 py-3">
           <CircleAlert size={18} className="mt-0.5 text-destructive" />
@@ -258,13 +254,9 @@ export default function ActivityScreen() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load() }} />}
         >
-          <View className="mx-4 mt-4 overflow-hidden rounded-3xl border border-border bg-card">
-            <View className="px-4 pb-4 pt-4">
-              <Text className="text-[11px] font-semibold uppercase tracking-[1.5px] text-muted-foreground">Overview</Text>
-              <Text className="mt-2 text-base font-medium text-foreground">{active.length > 0 ? `${active.length} agent${active.length === 1 ? '' : 's'} working right now` : 'Everything is quiet right now'}</Text>
-              <Text className="mt-1 text-xs leading-5 text-muted-foreground">Pull down to refresh the latest task activity.</Text>
-            </View>
-            <View className="flex-row border-t border-border">
+          <SectionHeader title="Overview" />
+          <View className="mx-4 mt-3 overflow-hidden rounded-3xl bg-card">
+            <View className="flex-row">
               <Metric label="Active" value={active.length} tone="primary" />
               <Metric label="Completed" value={completed.length} tone="success" />
               <Metric label="Unread" value={unreadNotifications} tone="muted" />
@@ -287,7 +279,7 @@ export default function ActivityScreen() {
 
           <SectionHeader title="Project activity" count={projectActivity.length} />
           {projectActivity.length === 0 ? <EmptyActivityCard title="No tracked projects yet" message="Project-level progress will appear here once a task is created." /> : projectActivity.map((group) => (
-            <Pressable key={group.id || 'home'} disabled={!group.id} onPress={() => group.id && router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) } } as any)} className={cn('mx-4 mt-3 rounded-2xl border border-border bg-card p-4', group.id ? 'active:bg-muted/50' : 'opacity-90')}>
+            <Pressable key={group.id || 'home'} disabled={!group.id} onPress={() => group.id && router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) } } as any)} className={cn('mx-4 mt-3 rounded-2xl bg-card p-4', group.id ? 'active:bg-muted/50' : 'opacity-90')}>
               <View className="flex-row items-center gap-3">
                 <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted"><Folder size={19} className="text-muted-foreground" /></View>
                 <View className="flex-1"><Text className="font-semibold text-foreground">{group.name}</Text><Text className="mt-1 text-xs text-muted-foreground">{group.total} tracked {group.total === 1 ? 'task' : 'tasks'}</Text></View>
