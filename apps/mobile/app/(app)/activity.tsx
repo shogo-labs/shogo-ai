@@ -4,9 +4,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, AppState, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
-import { Bell, ChevronRight, CircleAlert, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
+import { ChevronRight, CircleAlert, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useDomainActions, useNotificationCollection } from '../../contexts/domain'
+import { useNotificationCollection } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, createHttpClient, type AgentTask } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
@@ -14,17 +14,6 @@ import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 import { filterNotificationsForPlatform } from '../../lib/notification-policy'
-
-function relativeTime(value: string | number | null | undefined) {
-  const epoch = typeof value === 'number' ? value : value ? Date.parse(value) : 0
-  if (!epoch) return 'just now'
-  const minutes = Math.max(0, Math.floor((Date.now() - epoch) / 60_000))
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
 
 function timestamp(value: unknown): number {
   if (value instanceof Date) return value.getTime()
@@ -46,7 +35,7 @@ function elapsed(task: AgentTask) {
 function SectionHeader({ title, count }: { title: string; count?: number }) {
   return (
     <View className="mt-6 flex-row items-center justify-between px-4">
-      <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-muted-foreground">{title}</Text>
+      <Text className="text-base font-semibold uppercase tracking-[1.5px] text-muted-foreground">{title}</Text>
       {typeof count === 'number' ? (
         <View className="min-w-6 items-center rounded-full bg-muted px-2 py-1">
           <Text className="text-[11px] font-semibold text-muted-foreground">{count}</Text>
@@ -90,7 +79,7 @@ function EmptyActivityCard({ title, message }: { title: string; message: string 
           <CircleAlert size={18} className="text-muted-foreground" />
         </View>
         <View className="flex-1">
-          <Text className="text-sm font-medium text-foreground">{title}</Text>
+          <Text className="text-base font-medium text-foreground">{title}</Text>
           <Text className="mt-1 text-xs leading-5 text-muted-foreground">{message}</Text>
         </View>
       </View>
@@ -103,7 +92,6 @@ export default function ActivityScreen() {
   const http = useMemo(() => createHttpClient(), [])
   const workspace = useActiveWorkspace()
   const notifications = useNotificationCollection()
-  const actions = useDomainActions()
   const [tasks, setTasks] = useState<AgentTask[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -154,7 +142,10 @@ export default function ActivityScreen() {
 
     void refreshAndSchedule()
     const unsubscribeTasks = agentTaskEvents.subscribe(() => void refreshAndSchedule())
-    const unsubscribeNotifications = notificationEvents.subscribe(() => void refreshAndSchedule())
+    const unsubscribeNotifications = notificationEvents.subscribe(() => {
+      if (!isFocused || (appState !== 'active' && appState !== null)) return
+      void notifications.loadAll()
+    })
     const appStateSubscription = AppState.addEventListener('change', (nextState) => {
       appState = nextState
       if (appState === 'active') void refreshAndSchedule()
@@ -221,20 +212,8 @@ export default function ActivityScreen() {
     }
   }
 
-  const openNotification = async (notification: any) => {
-    if (!notification.readAt) {
-      await actions.markNotificationRead(notification.id).catch(() => undefined)
-      notificationEvents.emit()
-    }
-    if (notification.actionUrl?.startsWith('/')) router.push(notification.actionUrl as any)
-  }
-
-  const notificationItems = filterNotificationsForPlatform(notifications.all, Platform.OS)
-    .slice()
-    .sort((a: any, b: any) => timestamp(b.createdAt) - timestamp(a.createdAt))
-    .slice(0, 12) as any[]
-
-  const unreadNotifications = notificationItems.filter((notification) => !notification.readAt).length
+  const unreadNotifications = filterNotificationsForPlatform(notifications.all, Platform.OS)
+    .filter((notification: any) => !notification.readAt).length
 
   return (
     <View className="flex-1 bg-background">
@@ -294,9 +273,7 @@ export default function ActivityScreen() {
             {failedOrCancelled.map((task) => <Pressable key={task.id} onPress={() => openTaskChat(task)} accessibilityLabel={`Open ${task.title} activity`} className="mx-4 mt-3 rounded-2xl border border-destructive bg-destructive/5 p-4 active:bg-destructive/10"><View className="flex-row items-start gap-3"><View className="h-10 w-10 items-center justify-center rounded-xl bg-destructive/10"><XCircle size={19} className="text-destructive" /></View><View className="flex-1"><View className="flex-row items-start gap-2"><Text className="flex-1 font-semibold text-foreground">{task.title}</Text><ChevronRight size={17} className="text-destructive" /></View><Text className="mt-1 text-xs text-muted-foreground">{task.projectName || 'Home'} · {taskStatusLabel(task.status)}</Text><Text className="mt-3 text-sm leading-5 text-foreground" numberOfLines={3}>{readableAgentTaskError(task.errorMessage, 'This task did not complete.')}</Text></View></View></Pressable>)}
           </> : null}
 
-          <SectionHeader title="Notifications" count={notificationItems.length} />
-          {notificationItems.length === 0 ? <EmptyActivityCard title="No new notifications" message="Updates from completed work will appear here." /> : notificationItems.map((notification) => <Pressable key={notification.id} onPress={() => void openNotification(notification)} className={cn('mx-4 mt-3 rounded-2xl border p-4 active:bg-muted/50', notification.readAt ? 'border-border bg-card' : 'border-primary bg-primary/5')}><View className="flex-row items-start gap-3"><View className={cn('h-9 w-9 items-center justify-center rounded-xl', notification.readAt ? 'bg-muted' : 'bg-primary/10')}><Bell size={17} className={notification.readAt ? 'text-muted-foreground' : 'text-primary'} /></View><View className="flex-1"><View className="flex-row items-center gap-2"><Text className="flex-1 font-medium text-foreground" numberOfLines={2}>{notification.title}</Text>{!notification.readAt ? <View className="h-2 w-2 rounded-full bg-primary" /> : null}</View><Text className="mt-1 text-sm leading-5 text-muted-foreground" numberOfLines={3}>{notification.message}</Text><Text className="mt-2 text-xs text-muted-foreground">{relativeTime(notification.createdAt)}</Text></View></View></Pressable>)}
-          {tasks.length === 0 && notificationItems.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Start a task and its progress, result, and notifications will be collected here." /></View> : null}
+          {tasks.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Start a task and its progress and result will be collected here." /></View> : null}
         </ScrollView>
       )}
     </View>

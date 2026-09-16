@@ -231,8 +231,8 @@ export default function TasksScreen() {
             {task.currentStep ? <Text className="mt-2 text-[15px] leading-5 text-muted-foreground" numberOfLines={2}>{task.currentStep}</Text> : null}
           </View>
         </View>
-        {task.notes ? <Text className="mt-4 text-[15px] leading-6 text-foreground" style={{ backgroundColor: 'transparent' }} numberOfLines={4}>{task.notes}</Text> : null}
-        {task.status !== 'completed' && task.resultSummary ? <Text className="mt-4 text-[15px] leading-6 text-foreground" style={{ backgroundColor: 'transparent' }} numberOfLines={3}>{task.resultSummary}</Text> : null}
+        {task.notes ? <Text className="mt-4 rounded-xl bg-muted/60 px-3.5 py-3 text-[15px] leading-6 text-foreground" numberOfLines={4}>{task.notes}</Text> : null}
+        {task.status !== 'completed' && task.resultSummary ? <Text className="mt-4 rounded-xl bg-muted/60 px-3.5 py-3 text-[15px] leading-6 text-foreground" numberOfLines={3}>{task.resultSummary}</Text> : null}
         {task.errorMessage ? <Text className="mt-4 text-[15px] leading-6 text-destructive" numberOfLines={3}>{readableAgentTaskError(task.errorMessage)}</Text> : null}
         <View className="mt-4 flex-row items-center gap-2" style={{ borderTopWidth: 0, borderBottomWidth: 0 }}>
           {task.status === 'draft' ? (
