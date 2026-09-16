@@ -7,16 +7,20 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 
 let findManyImpl: (args: { where: { instanceId: string } }) => Promise<Array<{ pushToken: string }>> =
   async () => []
+let mobileFindManyImpl: () => Promise<Array<{ pushToken: string }>> = async () => []
 
 mock.module('../prisma', () => ({
   prisma: {
     pushSubscription: {
       findMany: (args: any) => findManyImpl(args),
     },
+    mobilePushSubscription: {
+      findMany: () => mobileFindManyImpl(),
+    },
   },
 }))
 
-const { sendPushToInstance } = await import('../push-notifications')
+const { sendPushToInstance, sendPushToUser } = await import('../push-notifications')
 
 let fetchSpy: ReturnType<typeof spyOn>
 let errorSpy: ReturnType<typeof spyOn>
@@ -33,6 +37,7 @@ beforeEach(() => {
   })
   errorSpy = spyOn(console, 'error').mockImplementation(() => {})
   findManyImpl = async () => []
+  mobileFindManyImpl = async () => []
 })
 
 afterEach(() => {
@@ -120,5 +125,58 @@ describe('sendPushToInstance', () => {
     })
     const body = JSON.parse(lastFetchArgs[1].body)
     expect(body[0].data.instanceId).toBe('canonical-id')
+  })
+})
+
+describe('sendPushToUser', () => {
+  it('sends a completion notification to every registered mobile device', async () => {
+    mobileFindManyImpl = async () => [
+      { pushToken: 'ExponentPushToken[user-a]' },
+      { pushToken: 'ExponentPushToken[user-b]' },
+    ]
+
+    await sendPushToUser('user-1', {
+      title: 'Research task',
+      body: 'The agent completed this task.',
+      data: { taskId: 'task-1', notificationType: 'agent_task_completed' },
+    })
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(lastFetchArgs[1].body)
+    expect(body).toEqual([
+      {
+        to: 'ExponentPushToken[user-a]',
+        title: 'Research task',
+        body: 'The agent completed this task.',
+        data: {
+          taskId: 'task-1',
+          notificationType: 'agent_task_completed',
+          type: 'chat-complete',
+        },
+        priority: 'high',
+        channelId: 'chat-complete',
+      },
+      {
+        to: 'ExponentPushToken[user-b]',
+        title: 'Research task',
+        body: 'The agent completed this task.',
+        data: {
+          taskId: 'task-1',
+          notificationType: 'agent_task_completed',
+          type: 'chat-complete',
+        },
+        priority: 'high',
+        channelId: 'chat-complete',
+      },
+    ])
+  })
+
+  it('does not call Expo when the user has no registered mobile device', async () => {
+    await sendPushToUser('user-1', {
+      title: 'Research task',
+      body: 'The agent completed this task.',
+    })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

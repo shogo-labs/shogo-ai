@@ -85,6 +85,10 @@ import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from
 import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
 import { decideStallRecovery, computeRecoveryBackoff } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
+import {
+  runResumeStreamSingleFlight,
+  type ResumeStreamFlightRef,
+} from "./resume-stream-single-flight"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -2535,10 +2539,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
   })
 
+  // All resume paths share a single-flight guard. The history-load probe and
+  // delegated-task reconciliation can finish at the same time when the app is
+  // reopened, and the stall detector can overlap either of them. AI SDK's
+  // Chat object only supports one active `resumeStream()` request per session;
+  // concurrent calls race while cleaning up `activeResponse` and can throw
+  // "Cannot read property 'state' of undefined" from its `onFinish` path.
+  // User-initiated Retry remains outside the automatic circuit breaker, but it
+  // reuses an already-running resume instead of starting a second one.
+  const resumeStreamInFlightRef = useRef<ResumeStreamFlightRef<void>>({ current: null })
+  const resumeStreamSingleFlight = useCallback(() => {
+    return runResumeStreamSingleFlight(resumeStreamInFlightRef.current, currentSessionId, resumeStream)
+  }, [currentSessionId, resumeStream])
+
   // Circuit breaker for the *automatic* resume paths (Effect 1's post-load
-  // live-turn probe and `attemptStallRecovery`'s stall detector below) — as
-  // opposed to the user-initiated `handleRetry` tap, which always honors the
-  // user's explicit request and is intentionally NOT gated here.
+  // live-turn probe and `attemptStallRecovery`'s stall detector below).
   //
   // Both automatic paths are individually guarded against re-firing for the
   // *same* turn, but a real-world log showed a ~45min storm of `resumeStream()`
@@ -2562,6 +2577,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
+        return
+      }
+      // A second probe can resolve before the first `resumeStream()` updates
+      // the AI SDK status. Do not count or start that duplicate attempt.
+      if (resumeStreamInFlightRef.current.current?.sessionId === currentSessionId) {
         return
       }
       const { timestamps, tripped } = recordAutoResumeAttempt(
@@ -2592,9 +2612,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
         return
       }
-      void resumeStream()
+      void resumeStreamSingleFlight()
     },
-    [resumeStream, projectId],
+    [currentSessionId, projectId, resumeStreamSingleFlight],
   )
   // A session switch means the user navigated away from whatever was
   // looping — give the (new) session a clean breaker rather than carrying a
@@ -5011,7 +5031,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (action === "reconnect") {
         // Agent is still running and buffering frames — reattach. The rendered
         // messages (including completed tool calls) stay exactly as they are.
-        void resumeStream()
+        void resumeStreamSingleFlight()
         return
       }
 
@@ -5036,7 +5056,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [
     messages,
     sendMessageInternal,
-    resumeStream,
+    resumeStreamSingleFlight,
     currentSessionId,
     projectId,
     localAgentUrl,

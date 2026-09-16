@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma'
 import type { NotificationType } from '../lib/prisma'
 import { projectChatRoutes } from './project-chat'
 import { createNotification } from '../services/notification.service'
+import { sendPushToUser } from '../lib/push-notifications'
 
 type RuntimeManager = Parameters<typeof projectChatRoutes>[0]['runtimeManager']
 
@@ -64,6 +65,24 @@ async function notifyTask(
     actionUrl: `/(app)/tasks?taskId=${encodeURIComponent(task.id)}`,
     dedupeKey: `${task.id}:${type}`,
   })
+
+  // The in-app row is only visible while the app is running. Completion and
+  // failure must also reach a backgrounded/closed mobile app, where the
+  // project chat screen (and its local-notification hook) is unmounted. Task
+  // start is intentionally kept in the in-app Activity feed; only actionable
+  // terminal states produce an OS notification.
+  if (type !== 'agent_task_started') {
+    await sendPushToUser(task.userId, {
+      title: task.title,
+      body: message,
+      data: {
+        taskId: task.id,
+        projectId: task.projectId,
+        notificationType: type,
+        actionUrl: `/(app)/tasks?taskId=${encodeURIComponent(task.id)}`,
+      },
+    })
+  }
 }
 
 async function consumeResponse(response: Response): Promise<void> {
