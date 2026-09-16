@@ -2,8 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Web dock cards (Error, Changed files, Queue, …) float above the
- * composer. They must share the transcript's centered `max-w-3xl`
- * column — not stick to the left of a full-bleed overlay.
+ * composer. They must be exactly as wide as the composer column ChatInput
+ * renders in — plain `w-full`, with NO independent `max-w-3xl`/measured-
+ * width cap of its own. `ProjectComposerDock` is the only place that caps
+ * or measures that shared column; a second cap here would let the dock
+ * silently disagree with ChatInput whenever the shared measurement is
+ * off (e.g. the composer rendering narrower/wider than
+ * `useWindowDimensions()` reports — a docked panel, for instance).
  */
 import { describe, expect, mock, test } from "bun:test"
 import { render } from "@testing-library/react"
@@ -58,7 +63,7 @@ function DockHarness() {
 }
 
 describe("ChatDock web alignment", () => {
-  test("centers the max-w-3xl card in the absolute overlay", () => {
+  test("stretches the card to the full overlay instead of applying its own width cap", () => {
     const { container } = render(<DockHarness />)
     const overlay = container.querySelector('[data-rn-shim="chat-dock"]') as HTMLElement | null
     expect(overlay).toBeTruthy()
@@ -69,7 +74,14 @@ describe("ChatDock web alignment", () => {
     expect(overlay?.getAttribute("class")).toBeNull()
 
     const column = overlay?.firstElementChild as HTMLElement | null
-    expect(column?.getAttribute("class") ?? "").toContain("max-w-3xl")
-    expect(column?.getAttribute("class") ?? "").toContain("w-full")
+    const columnClass = column?.getAttribute("class") ?? ""
+    // No independent cap: width comes entirely from the shared
+    // `ProjectComposerDock` column, exactly like `ChatInput`. A stray
+    // `max-w-3xl` here would let the dock drift from the composer
+    // whenever that shared width is mismeasured.
+    expect(columnClass).not.toContain("max-w-3xl")
+    expect(columnClass).toContain("w-full")
+    // Matches `ChatInput`'s own outer horizontal padding on web (`px-3`).
+    expect(columnClass).toContain("px-3")
   })
 })
