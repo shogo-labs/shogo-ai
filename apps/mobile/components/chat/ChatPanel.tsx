@@ -2482,7 +2482,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 if (!studioChat.chatSessionCollection.get(currentSessionId)) {
                   return
                 }
-                if (projectId) {
+                // Only rename the *project* when it hasn't been named yet —
+                // i.e. this session is the one naming a brand-new project
+                // (e.g. the voice-creation flow, which doesn't call
+                // generateProjectName itself). Additional "New Chat" / debug
+                // threads created later in an already-named project must
+                // only rename themselves; otherwise every extra chat sent in
+                // a project would clobber the project's title.
+                const project = projectId
+                  ? projectCollection.all.find((p: any) => p.id === projectId)
+                  : null
+                if (project && project.name === 'New Project') {
                   actions.updateProject(projectId, {
                     name,
                     ...(description ? { description } : {}),
