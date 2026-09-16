@@ -57,7 +57,7 @@ async function saveAccent(value: AccentThemeName): Promise<void> {
 
 function applyAccentToWeb(name: AccentThemeName) {
   if (Platform.OS !== 'web' || typeof document === 'undefined') return
-  const preset = ACCENT_PRESETS[name]
+  const preset = ACCENT_PRESETS[name].web
   const root = document.documentElement
 
   root.style.setProperty('--color-primary', preset.light.primary)

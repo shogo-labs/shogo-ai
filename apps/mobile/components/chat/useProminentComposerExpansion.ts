@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Animated,
   Easing,
+  Platform,
   TextInput,
   type LayoutChangeEvent,
   type NativeSyntheticEvent,
@@ -39,6 +40,12 @@ export const PROMINENT_COMPOSER_DEFAULT_COMPACT_RIGHT = 48
 export const PROMINENT_COMPOSER_SLOT_MEASURED_MIN_WIDTH = 80
 export const PROMINENT_COMPOSER_WRAP_SLOP = 8
 export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
+/**
+ * Native phone text has a slightly lower visual center than the adjacent
+ * toolbar controls even when its line box is mathematically centered. Keep
+ * the correction native-only so web and desktop retain their existing layout.
+ */
+export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = -6
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4
 export const PROMINENT_COMPOSER_TOOLBAR_Z_INDEX = 3
 export const PROMINENT_COMPOSER_CHROME_Z_INDEX = 5
@@ -172,7 +179,10 @@ export function useProminentComposerExpansion({
     pillWidth > 0 && slotWidth > 0
       ? Math.max(PROMINENT_COMPOSER_WRAP_SLOP, pillWidth - slotX - slotWidth)
       : PROMINENT_COMPOSER_DEFAULT_COMPACT_RIGHT
-  const compactTop = chromeHeight + (toolbarMinHeight - minHeight) / 2
+  const compactTop =
+    chromeHeight +
+    (toolbarMinHeight - minHeight) / 2 +
+    (Platform.OS === "web" ? 0 : PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET)
   const stackedTop = chromeHeight + paddingTop
 
   useEffect(() => {

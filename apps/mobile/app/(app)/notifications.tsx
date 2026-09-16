@@ -29,6 +29,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useNotificationCollection, useDomainActions } from '../../contexts/domain'
 import { notificationEvents } from '../../lib/notification-events'
+import { filterNotificationsForPlatform } from '../../lib/notification-policy'
 
 /** Type → icon + accent color (Tailwind text class) for the row glyph. */
 function visualForType(type: string): { Icon: React.ElementType; color: string } {
@@ -100,7 +101,7 @@ export default observer(function NotificationsScreen() {
   }, [load])
 
   // Newest first.
-  const items = notifications.all
+  const items = filterNotificationsForPlatform(notifications.all, Platform.OS)
     .slice()
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   const unread = items.filter((n) => !n.readAt)

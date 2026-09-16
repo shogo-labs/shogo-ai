@@ -8456,7 +8456,9 @@ app.get('/api/notifications/unread-count', async (c) => {
   if (!userId) {
     return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
   }
-  const count = await getUnreadNotificationCount(userId)
+  const count = await getUnreadNotificationCount(userId, {
+    excludeMobileTaskNotifications: c.req.query('excludeMobileTaskNotifications') === 'true',
+  })
   return c.json({ ok: true, count }, 200)
 })
 

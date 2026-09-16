@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { Bell, ChevronRight, CircleAlert, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -13,6 +13,7 @@ import { agentTaskEvents } from '../../lib/agent-task-events'
 import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
+import { filterNotificationsForPlatform } from '../../lib/notification-policy'
 
 function relativeTime(value: string | number | null | undefined) {
   const epoch = typeof value === 'number' ? value : value ? Date.parse(value) : 0
@@ -188,7 +189,7 @@ export default function ActivityScreen() {
     if (notification.actionUrl?.startsWith('/')) router.push(notification.actionUrl as any)
   }
 
-  const notificationItems = notifications.all
+  const notificationItems = filterNotificationsForPlatform(notifications.all, Platform.OS)
     .slice()
     .sort((a: any, b: any) => timestamp(b.createdAt) - timestamp(a.createdAt))
     .slice(0, 12) as any[]

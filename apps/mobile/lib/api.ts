@@ -464,8 +464,14 @@ export const api = {
   },
 
   /** GET /api/notifications/unread-count — unread inbox count for the bell badge. */
-  async getUnreadNotificationCount(http: HttpClient) {
-    const res = await http.get<{ ok?: boolean; count?: number }>('/api/notifications/unread-count')
+  async getUnreadNotificationCount(
+    http: HttpClient,
+    options: { excludeMobileTaskNotifications?: boolean } = {},
+  ) {
+    const query = options.excludeMobileTaskNotifications
+      ? '?excludeMobileTaskNotifications=true'
+      : ''
+    const res = await http.get<{ ok?: boolean; count?: number }>(`/api/notifications/unread-count${query}`)
     return res.data?.count ?? 0
   },
 
