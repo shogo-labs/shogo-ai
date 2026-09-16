@@ -198,6 +198,9 @@ describe('getModelFamily', () => {
   it('infers gpt from "gpt" prefix', () => {
     expect(getModelFamily('gpt-unknown-12')).toBe('gpt')
   })
+  it('infers fable from "fable"', () => {
+    expect(getModelFamily('claude-fable-unknown')).toBe('fable')
+  })
   it('falls back to "other" for unknowns', () => {
     expect(getModelFamily('mystery')).toBe('other')
   })

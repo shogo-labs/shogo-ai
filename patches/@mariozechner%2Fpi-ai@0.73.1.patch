@@ -1,8 +1,8 @@
 diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
-index 3f0cc9aef9fc12485096f89362fc89884ecf87a9..8596fd7133f3910bd8bec2e8fdc0d15adf90bc94 100644
+index 3f0cc9aef9fc12485096f89362fc89884ecf87a9..aa6182977b664ae371d1e3fa74478d9faad16fdb 100644
 --- a/dist/providers/anthropic.js
 +++ b/dist/providers/anthropic.js
-@@ -529,8 +529,12 @@ function supportsAdaptiveThinking(modelId) {
+@@ -529,8 +529,14 @@ function supportsAdaptiveThinking(modelId) {
          modelId.includes("opus-4.6") ||
          modelId.includes("opus-4-7") ||
          modelId.includes("opus-4.7") ||
@@ -12,7 +12,9 @@ index 3f0cc9aef9fc12485096f89362fc89884ecf87a9..8596fd7133f3910bd8bec2e8fdc0d15a
          modelId.includes("sonnet-4-6") ||
 -        modelId.includes("sonnet-4.6"));
 +        modelId.includes("sonnet-4.6") ||
-+        modelId.includes("sonnet-5"));
++        modelId.includes("sonnet-5") ||
++        modelId.includes("fable-5-1") ||
++        modelId.includes("fable-5.1"));
  }
  /**
   * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.

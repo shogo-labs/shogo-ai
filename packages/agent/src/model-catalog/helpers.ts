@@ -215,6 +215,7 @@ export function getModelFamily(id: string): ModelFamily {
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
+  if (lower.includes('fable')) return 'fable'
   if (lower.startsWith('gpt')) return 'gpt'
   return 'other'
 }
@@ -234,6 +235,12 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
   opus:           { inputPerMillion: 5.00, cacheWritePerMillion: 6.25, cachedInputPerMillion: 0.50, outputPerMillion: 25.00 },
+  // Anthropic-published rates (platform.claude.com/docs/en/about-claude/pricing).
+  // `cacheWritePerMillion` is the 5-minute cache-write rate (1-hour writes are
+  // $20/MTok and aren't represented in this cost shape). `cachedInputPerMillion`
+  // uses Fable 5.1's special 0.025x-of-input cache-read multiplier — 4x cheaper
+  // than the standard 0.1x multiplier every other Claude model uses here.
+  'claude-fable-5-1': { inputPerMillion: 10.00, cacheWritePerMillion: 12.50, cachedInputPerMillion: 0.25, outputPerMillion: 50.00 },
   // OpenAI-published input/output rates as of launch. Cache write/read
   // rates aren't broken out in OpenAI's public pricing pages yet — these
   // follow the same ratio as the existing gpt-5.4-mini/nano buckets

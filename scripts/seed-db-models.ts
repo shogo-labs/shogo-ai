@@ -13,6 +13,16 @@
  *     `MODEL_CATALOG` (see packages/agent/src/model-catalog/models.ts);
  *     the DB rows here let a deployment pick them up immediately, before
  *     the next image rollout.
+ *   - Fable 5.1 (`claude-fable-5-1`) — native Anthropic, premium / fable /
+ *     current, 128k output, real published per-token pricing ($10 in / $50
+ *     out, $0.25 cached-input — Fable 5.1's special 0.025x cache-read rate).
+ *   - GPT-6 Astra (`gpt-6-astra`) — native OpenAI, premium / gpt / current,
+ *     128k output. Already existed in the static `MODEL_CATALOG` but was
+ *     never DB-seeded, so it never actually appeared in the picker on any
+ *     deployment with DB-defined models (the picker only falls back to the
+ *     static catalog when the DB has zero rows — see
+ *     `resolveVisibleCatalogModels` in
+ *     apps/api/src/services/visible-models.service.ts).
  *   - Sonnet 4.6 (`claude-sonnet-4-6`) — explicit `legacy` row, mirroring
  *     the Opus 4.8 row below, so it's visible/manageable in the DB-backed
  *     admin model list rather than only existing implicitly via the
@@ -183,6 +193,64 @@ async function seedSonnet46(): Promise<void> {
   console.log('[seed-db-models] Upserted Sonnet 4.6 (apiModel=claude-sonnet-4-6)')
 }
 
+async function seedFable51(): Promise<void> {
+  const common = {
+    displayName: 'Claude Fable 5.1',
+    shortDisplayName: 'Fable 5.1',
+    tier: 'premium',
+    family: 'fable',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['claude-fable-5-1', 'fable', 'claude-fable'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // Anthropic-published rates (see MODEL_DOLLAR_COSTS['claude-fable-5-1']).
+    // cachedInputPerMillion uses Fable 5.1's special 0.025x-of-input cache-read
+    // rate rather than the standard 0.1x multiplier.
+    inputPerMillion: 10.0,
+    cachedInputPerMillion: 0.25,
+    cacheWritePerMillion: 12.5,
+    outputPerMillion: 50.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-fable-5-1' },
+    { providerId: null, sortOrder: 0, ...common },
+    common,
+  )
+  console.log('[seed-db-models] Upserted Fable 5.1 (apiModel=claude-fable-5-1)')
+}
+
+async function seedGptAstra(): Promise<void> {
+  const common = {
+    displayName: 'GPT-6 Astra',
+    shortDisplayName: 'Astra',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['gpt-6-astra', 'astra'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // OpenAI-published rates (see MODEL_DOLLAR_COSTS['gpt-6-astra']).
+    inputPerMillion: 10.0,
+    cachedInputPerMillion: 1.0,
+    cacheWritePerMillion: 12.5,
+    outputPerMillion: 50.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-6-astra' },
+    { providerId: null, sortOrder: 3, ...common },
+    common,
+  )
+  console.log('[seed-db-models] Upserted GPT-6 Astra (apiModel=gpt-6-astra)')
+}
+
 async function seedMimo(): Promise<void> {
   const apiKey = process.env.MIMO_API_KEY
   if (!apiKey) {
@@ -334,10 +402,12 @@ async function main(): Promise<void> {
   await seedOpus48()
   await seedOpus5()
   await seedSonnet5()
+  await seedFable51()
   await seedSonnet46()
   await seedMimo()
   await seedDeepSeek()
   await seedGptLive1()
+  await seedGptAstra()
   console.log('[seed-db-models] Done.')
 }
 
