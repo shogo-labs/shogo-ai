@@ -956,16 +956,19 @@ async function runEvalOnWorker(
         }
       } else {
         // Docker forwards `SKILL_SERVER_BASE_PORT + id` on the host to the
-        // container's API server (3001). For --local, we run a single
-        // worker per host process and PreviewManager listens on 3001
-        // directly — no port mapping. The eval suite asserts canvas calls
-        // hit /api/* (relative paths), so canvasExpectedPort is the same
-        // port runtime-checks itself probes against.
-        const hostSkillPort = localFlag ? CONTAINER_SKILL_PORT : SKILL_SERVER_BASE_PORT + worker.id
+        // container's API server (3001). For --local with a single worker,
+        // that also happens to equal CONTAINER_SKILL_PORT (4100 + 0's legacy
+        // alias historically collapsed to 3001), but `local-worker.ts` sets
+        // each worker's own `SKILL_SERVER_PORT` to `SKILL_SERVER_BASE_PORT +
+        // worker.id` and PreviewManager binds to that directly (no docker
+        // port mapping to normalize away). With `--local --workers > 1`,
+        // hardcoding CONTAINER_SKILL_PORT here would probe the wrong port
+        // for every worker but worker 0, so always use the per-worker port.
+        const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
         runtimeResults = await runRuntimeChecks({
           workspaceDir: worker.dir,
           apiServerPort: hostSkillPort,
-          canvasExpectedPort: CONTAINER_SKILL_PORT,
+          canvasExpectedPort: localFlag ? hostSkillPort : CONTAINER_SKILL_PORT,
           evalId: ev.id,
           verbose: verboseFlag,
           runtimePort: worker.port,
@@ -1192,11 +1195,26 @@ async function main() {
     // Clone each eval `repeatArg` times with a unique id/name suffix so trials
     // are distinct in the results/output (the runner resets the session between
     // every eval, so each trial is an independent sample of the model).
+    //
+    // For pipeline evals (`ev.pipeline` set), the clone's `pipeline` tag must
+    // also be made unique per trial. `buildWorkQueue` groups every eval that
+    // shares the same `pipeline` string into ONE sequential chain that keeps
+    // a single shared workspace across phases (`skipCleanup` after phase 1).
+    // Without disambiguating by trial here, cloning preserved the original
+    // `pipeline: 'nonprofit'` (etc.) on all 3 trial-clones of all 5 phases,
+    // so buildWorkQueue collapsed 3 supposedly-independent 5-phase trials
+    // into ONE 15-phase chain sharing a single workspace/session — trial 2's
+    // "phase 1" ran on top of trial 1's leftover files, trial 1's "phase 2"
+    // actually continued from trial 3's phase-1 output, etc. That silently
+    // violates the "fresh session per trial" contract above and explains
+    // stray leftover files/rows and phase-position-correlated score decay
+    // observed in multi-phase mega-evals under `--repeat`.
     evals = evals.flatMap(e =>
       Array.from({ length: repeatArg }, (_, k) => ({
         ...e,
         id: `${e.id}#t${k + 1}`,
         name: `${e.name} (trial ${k + 1}/${repeatArg})`,
+        pipeline: e.pipeline ? `${e.pipeline}#t${k + 1}` : e.pipeline,
       })),
     )
     console.log(`  Repeat:     ${repeatArg}× per eval → ${evals.length} total trials`)
