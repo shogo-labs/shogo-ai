@@ -19,6 +19,10 @@ import {
 
 let lastProjectContext: { projectId: string; chatSessionId?: string } | null = null
 
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
+}
+
 // The project composer already reserves a small safe-area pad. Pull the nav
 // capsule into that space so the resting composer-to-nav gap stays around
 // 24–28px on an iPhone instead of leaving a large visual hole.
@@ -32,6 +36,17 @@ function isHomePath(pathname: string) {
   return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 }
 
+function isBottomTabPath(pathname: string) {
+  return ['/tasks', '/activity', '/marketplace'].some((path) =>
+    pathname === path || pathname.endsWith(path) || pathname.includes(`(app)${path}`),
+  )
+}
+
+function projectIdFromPath(pathname: string): string | undefined {
+  const match = pathname.match(/\/projects\/([^/]+)/)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+}
+
 function isHiddenPath(pathname: string) {
   return [
     '/settings', '/billing', '/account', '/profile', '/api-keys', '/search',
@@ -42,25 +57,48 @@ function isHiddenPath(pathname: string) {
 export function MobileBottomNav() {
   const router = useRouter()
   const pathname = usePathname()
-  const params = useLocalSearchParams<{ id?: string; chatSessionId?: string }>()
+  const params = useLocalSearchParams<{
+    id?: string
+    chatSessionId?: string
+    projectId?: string
+    returnProjectId?: string
+    returnChatSessionId?: string
+  }>()
   const { width } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const isDark = useResolvedTheme() === 'dark'
   const [keyboardOpen, setKeyboardOpen] = useState(false)
 
-  const projectId = Array.isArray(params.id) ? params.id[0] : params.id
-  const chatSessionId = Array.isArray(params.chatSessionId) ? params.chatSessionId[0] : params.chatSessionId
+  const routeProjectId = firstParam(params.id)
+  const tabProjectId = firstParam(params.returnProjectId) ?? firstParam(params.projectId)
+  const pathnameProjectId = projectIdFromPath(pathname)
+  const activeProjectId = routeProjectId ?? pathnameProjectId
+  const chatSessionId = firstParam(params.chatSessionId) ?? firstParam(params.returnChatSessionId)
 
   useEffect(() => {
-    if (projectId && isProjectPath(pathname)) {
-      lastProjectContext = { projectId, ...(chatSessionId ? { chatSessionId } : {}) }
+    if (activeProjectId && isProjectPath(pathname)) {
+      lastProjectContext = { projectId: activeProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
+    } else if (tabProjectId && isBottomTabPath(pathname)) {
+      // Keep the context alive even if the app layout remounts while moving
+      // between bottom tabs. The params are passed by the tab buttons below.
+      lastProjectContext = { projectId: tabProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
     } else if (isHomePath(pathname)) {
-      // Re-entering Home intentionally resets the context. Tasks, Activity,
-      // and Library preserve the last project context while they are opened
-      // from a project, so Chat can return to that project.
+      // Re-entering Home intentionally resets the context. The other bottom
+      // tabs preserve the last project context while opened from a project,
+      // so Chat can return to that project.
       lastProjectContext = null
     }
-  }, [chatSessionId, pathname, projectId])
+  }, [activeProjectId, chatSessionId, pathname, tabProjectId])
+
+  // Prefer the current project route immediately, before the effect above
+  // has necessarily populated the cross-tab context. This prevents the first
+  // bottom-nav tap after entering a project from falling back to Home.
+  const currentProjectContext =
+    isProjectPath(pathname) && activeProjectId
+      ? { projectId: activeProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
+      : isBottomTabPath(pathname) && tabProjectId
+        ? { projectId: tabProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
+        : lastProjectContext
 
   useEffect(() => {
     const show = () => setKeyboardOpen(true)
@@ -82,12 +120,12 @@ export function MobileBottomNav() {
   if (isHiddenPath(pathname) || keyboardOpen) return null
 
   const goChat = () => {
-    if (lastProjectContext?.projectId) {
+    if (currentProjectContext?.projectId) {
       router.replace({
         pathname: '/(app)/projects/[id]' as any,
         params: {
-          id: lastProjectContext.projectId,
-          ...(lastProjectContext.chatSessionId ? { chatSessionId: lastProjectContext.chatSessionId } : {}),
+          id: currentProjectContext.projectId,
+          ...(currentProjectContext.chatSessionId ? { chatSessionId: currentProjectContext.chatSessionId } : {}),
         },
       } as any)
     } else {
@@ -101,13 +139,38 @@ export function MobileBottomNav() {
       id: 'tasks',
       label: 'Tasks',
       Icon: ListTodo,
+      onPress: () => {
+        const context = currentProjectContext
+        router.push({
+          pathname: '/(app)/tasks' as any,
+          ...(context?.projectId
+            ? { params: { projectId: context.projectId, returnChatSessionId: context.chatSessionId } }
+            : {}),
+        } as any)
+      },
+    },
+    {
+      id: 'activity',
+      label: 'Activity',
+      Icon: Activity,
       onPress: () => router.push({
-        pathname: '/(app)/tasks' as any,
-        ...(lastProjectContext?.projectId ? { params: { projectId: lastProjectContext.projectId } } : {}),
+        pathname: '/(app)/activity' as any,
+        ...(currentProjectContext?.projectId
+          ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
+          : {}),
       } as any),
     },
-    { id: 'activity', label: 'Activity', Icon: Activity, onPress: () => router.push('/(app)/activity' as any) },
-    { id: 'marketplace', label: 'Marketplace', Icon: Store, onPress: () => router.push('/(app)/marketplace' as any) },
+    {
+      id: 'marketplace',
+      label: 'Marketplace',
+      Icon: Store,
+      onPress: () => router.push({
+        pathname: '/(app)/marketplace' as any,
+        ...(currentProjectContext?.projectId
+          ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
+          : {}),
+      } as any),
+    },
   ] as const
 
   return (

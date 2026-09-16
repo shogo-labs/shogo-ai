@@ -172,10 +172,10 @@ export const NATIVE_PHONE_DOCK_FADE_LOCATIONS = [0, 0.42, 1] as const
 /** Gap between ChatDock banners (errors, plans, approvals) and the composer pill. */
 export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
 /**
- * Resting prominent-composer capsule (toolbar `min-h-12` + `py-1`).
+ * Resting prominent-composer capsule.
  * Home bottom nav uses the same outer size so the two bars share width/height.
  */
-export const NATIVE_PHONE_COMPOSER_PILL_HEIGHT = 56
+export const NATIVE_PHONE_COMPOSER_PILL_HEIGHT = 45
 /** Inner inset matching composer toolbar `py-1`. */
 export const NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET = 4
 /**

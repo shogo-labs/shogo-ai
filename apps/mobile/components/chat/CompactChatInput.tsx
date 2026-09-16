@@ -62,6 +62,7 @@ import {
   PROMINENT_COMPOSER_PADDING_BOTTOM,
   PROMINENT_COMPOSER_PADDING_HORIZONTAL,
   PROMINENT_COMPOSER_PADDING_TOP,
+  PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
   nextProminentComposerHeight,
@@ -474,10 +475,18 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             useProminentComposer
               ? {
                   overflow: "hidden" as const,
-                  borderTopLeftRadius: PROMINENT_COMPOSER_RADIUS,
-                  borderTopRightRadius: PROMINENT_COMPOSER_RADIUS,
-                  borderBottomLeftRadius: PROMINENT_COMPOSER_RADIUS,
-                  borderBottomRightRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderTopLeftRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
+                  borderTopRightRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
+                  borderBottomLeftRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
+                  borderBottomRightRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
                   borderColor: keyboardBorderColor,
                   backgroundColor: chatgptComposer.fill,

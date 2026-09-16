@@ -31,7 +31,10 @@ export const PROMINENT_COMPOSER_FONT_SIZE = 16
 export const PROMINENT_COMPOSER_PADDING_TOP = 14
 export const PROMINENT_COMPOSER_PADDING_HORIZONTAL = 16
 export const PROMINENT_COMPOSER_PADDING_BOTTOM = 8
+/** Preserve the existing web/desktop radius. */
 export const PROMINENT_COMPOSER_RADIUS = 28
+/** Native phone capsule radius derived from its shared 45pt height. */
+export const PROMINENT_COMPOSER_NATIVE_RADIUS = NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2
 export const PROMINENT_COMPOSER_TOOLBAR_MIN_HEIGHT = NATIVE_PHONE_COMPOSER_PILL_HEIGHT
 export const PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION = 200
 export const PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION = 150
@@ -40,12 +43,10 @@ export const PROMINENT_COMPOSER_DEFAULT_COMPACT_RIGHT = 48
 export const PROMINENT_COMPOSER_SLOT_MEASURED_MIN_WIDTH = 80
 export const PROMINENT_COMPOSER_WRAP_SLOP = 8
 export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
-/**
- * Native phone text has a slightly lower visual center than the adjacent
- * toolbar controls even when its line box is mathematically centered. Keep
- * the correction native-only so web and desktop retain their existing layout.
- */
-export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = -6
+/** Keep the native compact field centered in the 45px toolbar row. */
+export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = 0
+/** iOS placeholder glyphs sit slightly low inside the compact line box. */
+export const PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP = -2
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4
 export const PROMINENT_COMPOSER_TOOLBAR_Z_INDEX = 3
 export const PROMINENT_COMPOSER_CHROME_Z_INDEX = 5

@@ -26,7 +26,8 @@ import {
   Animated,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { NATIVE_PHONE_ICON_STROKE,
+import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+  NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
 import {
   Popover,
@@ -82,6 +83,7 @@ import {
   PROMINENT_COMPOSER_PADDING_HORIZONTAL,
   PROMINENT_COMPOSER_PADDING_TOP,
   PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
+  PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
   nextProminentComposerHeight,
@@ -396,8 +398,6 @@ export interface ChatInputProps {
    * over this prop.
    */
   highlighted?: boolean
-  /** Removes the idle bottom breathing room while the native keyboard is open. */
-  keyboardOpen?: boolean
   /**
    * Strip the outer wrapper's horizontal padding so the visible
    * input box sits flush against its parent's left/right edges.
@@ -453,7 +453,6 @@ function ChatInputImpl({
   onOpenIdeFile,
   dimWhenDisabled = true,
   highlighted = false,
-  keyboardOpen = false,
   flush = false,
 }: ChatInputProps) {
   const { features } = usePlatformConfig()
@@ -1292,10 +1291,12 @@ function ChatInputImpl({
   }, [])
       return (
         <View className={cn(
-      flush
+        flush
         ? "pb-3"
         : useProminentComposer
-          ? cn("px-3 pt-0", !keyboardOpen && "pb-2")
+          ? isNative
+            ? "pt-0"
+            : "px-3 pb-2 pt-0"
           : isNative
             ? "px-2 pb-4 pt-0"
             : "p-3 pt-0",
@@ -1554,7 +1555,9 @@ function ChatInputImpl({
           style={
             useProminentComposer
               ? {
-                  borderRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
                   borderColor: chatgptComposer.border,
                   backgroundColor: chatgptComposer.fill,
@@ -1823,7 +1826,14 @@ function ChatInputImpl({
                 : "p-1.5",
             !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
           )}
-          style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
+          style={
+            useProminentComposer
+              ? {
+                  zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                  ...(isNative ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT } : {}),
+                }
+              : undefined
+          }
           pointerEvents={useProminentComposer ? "box-none" : undefined}
         >
           {/* Left side buttons */}

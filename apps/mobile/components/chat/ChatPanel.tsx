@@ -1018,6 +1018,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const composerKeyboardPad = useNativeComposerDockPad({
     enabled: Platform.OS !== "web" && isNativePhoneLayout,
     restPad: restComposerPad,
+    safeAreaBottom: insets.bottom,
     iosKeyboardAvoiding: iosComposerAvoiding,
     onOpenChange: setNativeKeyboardOpen,
   })
@@ -6269,7 +6270,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
               ideContext={ideBridge.context}
               ideFileSearch={ideBridge.listFiles}
               onOpenIdeFile={ideBridge.openFile}
-              keyboardOpen={nativeKeyboardOpen}
             />
           </ProjectComposerDock>
           ) : (
