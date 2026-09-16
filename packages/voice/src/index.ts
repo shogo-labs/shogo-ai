@@ -111,3 +111,19 @@ export {
 } from './telephony.js'
 
 export { MockTelephonyClient, isVoiceMockEnv } from './mock-telephony.js'
+
+export {
+  ShogoLiveClient,
+  LiveSession,
+  type ShogoLiveClientOptions,
+  type LiveSessionHandlers,
+  type LiveAudioConfig,
+  type LiveResponsesDelegation,
+  type LiveSessionConfig,
+  type LiveSessionEvent,
+  type LiveSessionStartedEvent,
+  type LiveSessionUsageUpdatedEvent,
+  type LiveSessionClosedEvent,
+  type LiveErrorEvent,
+  type LiveWebRtcSession,
+} from './live/client.js'

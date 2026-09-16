@@ -170,7 +170,8 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
     const id = typeof e.id === 'string' ? e.id.trim() : ''
     if (!id) continue
     const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
-    out[tier] = { id, provider }
+    const upstream = typeof e.upstream === 'string' && e.upstream.trim() ? e.upstream.trim() : undefined
+    out[tier] = { id, provider, upstream }
   }
   return Object.keys(out).length > 0 ? out : undefined
 }
@@ -2035,6 +2036,7 @@ export class AgentGateway {
       channels: this.channels,
       config: this.config,
       projectId: this.projectId,
+      workspaceId: process.env.WORKSPACE_ID,
       sessionId,
       sandbox: this.config.sandbox,
       mainSessionIds: this.config.mainSessionIds,
@@ -2206,7 +2208,7 @@ export class AgentGateway {
       const PLAN_MODE_ALLOWED = new Set([
         'read_file', 'search',
         'web',
-        'memory_read', 'memory_search',
+        'memory_read', 'memory_search', 'search_history', 'read_history',
         'ask_user', 'todo_write', 'create_plan', 'update_plan',
         'skill',
       ])
@@ -4496,6 +4498,11 @@ export class AgentGateway {
       case 'slack': {
         const { SlackAdapter } = await import('./channels/slack')
         adapter = new SlackAdapter(config)
+        break
+      }
+      case 'slack-agent': {
+        const { SlackAgentAdapter } = await import('./channels/slack-agent')
+        adapter = new SlackAgentAdapter(config)
         break
       }
       case 'whatsapp': {

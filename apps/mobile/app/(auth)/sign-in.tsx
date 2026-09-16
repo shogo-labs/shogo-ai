@@ -9,7 +9,7 @@ import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
-import { api, createHttpClient } from '../../lib/api'
+import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 import * as AppleAuthentication from 'expo-apple-authentication'
@@ -55,11 +55,31 @@ export default function SignInScreen() {
     return path
   }
 
+  /**
+   * Navigate after a successful sign-in/sign-up.
+   *
+   * `next` paths starting with `/api/` (e.g. the Slack account-link
+   * handshake at `/api/integrations/slack/link?state=…`) must hit the API
+   * server, not the SPA router — `router.replace` would just 404 inside
+   * Expo Router since no such screen exists. In production the frontend
+   * and API share an origin so a same-origin fetch would "just work" either
+   * way, but local dev runs them on different ports (8081 vs 8002), so we
+   * always do a full navigation to `API_URL` for `/api/` paths.
+   */
+  const navigateAfterAuth = () => {
+    const path = resolveNext()
+    if (path.startsWith('/api/') && typeof window !== 'undefined') {
+      window.location.href = `${API_URL}${path}`
+      return
+    }
+    router.replace(path as any)
+  }
+
   const handleSignIn = async (email: string, password: string) => {
     try {
       await signIn(email, password)
       trackLogin('email')
-      router.replace(resolveNext() as any)
+      navigateAfterAuth()
     } catch (e) {
       if (e instanceof EmailNotVerifiedError) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email } })
@@ -94,7 +114,7 @@ export default function SignInScreen() {
       if (result.requiresVerification) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email, next: nextPath !== '/' ? nextPath : undefined } as any })
       } else {
-        router.replace(resolveNext() as any)
+        navigateAfterAuth()
       }
     } catch {}
   }
@@ -150,7 +170,7 @@ export default function SignInScreen() {
       await signInWithApple({ idToken: credential.identityToken, nonce: hashedNonce })
       trackLogin('apple')
       sendAttribution('apple')
-      try { router.replace(resolveNext() as any) } catch {}
+      try { navigateAfterAuth() } catch {}
     } catch (e: any) {
       if (e?.code === 'ERR_REQUEST_CANCELED') return
       clearError()

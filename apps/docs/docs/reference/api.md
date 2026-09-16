@@ -10,7 +10,9 @@ from any OpenAI client library, your backend, or `curl`. You authenticate with a
 **Shogo API key** (`shogo_sk_…`), and usage is billed to your workspace just
 like usage inside the app.
 
-The first model available on the public API is **Hoshi 1.0** (`hoshi-1.0`).
+The current model available on the public API is **Hoshi 2.0** (`hoshi-2-0`),
+backed by DeepSeek-V4.1-Flash with thinking enabled. Hoshi 1.0
+(`hoshi-1-0`) remains available as a legacy model during the migration window.
 
 ## Base URL
 
@@ -46,8 +48,8 @@ credentials such as runtime tokens are not valid here.
 
 ## Models
 
-Hoshi 1.0 is served under the stable id `hoshi-1.0`. List the models available
-to your key:
+Hoshi 2.0 is served under the stable id `hoshi-2-0`. The dotted spelling
+`hoshi-2.0` is accepted as an alias. List the models available to your key:
 
 ```bash
 curl https://studio.shogo.ai/api/v1/models \
@@ -59,10 +61,10 @@ curl https://studio.shogo.ai/api/v1/models \
   "object": "list",
   "data": [
     {
-      "id": "hoshi-1.0",
+      "id": "hoshi-2-0",
       "object": "model",
       "owned_by": "shogo",
-      "display_name": "Hoshi 1.0"
+      "display_name": "Hoshi 2.0"
     }
   ]
 }
@@ -77,7 +79,7 @@ curl https://studio.shogo.ai/api/v1/chat/completions \
   -H "Authorization: Bearer $SHOGO_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "hoshi-1.0",
+    "model": "hoshi-2-0",
     "messages": [
       { "role": "user", "content": "Write a haiku about debugging." }
     ]
@@ -95,7 +97,7 @@ client = OpenAI(
 )
 
 resp = client.chat.completions.create(
-    model="hoshi-1.0",
+    model="hoshi-2-0",
     messages=[{"role": "user", "content": "Write a haiku about debugging."}],
 )
 print(resp.choices[0].message.content)
@@ -112,7 +114,7 @@ const client = new OpenAI({
 });
 
 const resp = await client.chat.completions.create({
-  model: "hoshi-1.0",
+  model: "hoshi-2-0",
   messages: [{ role: "user", content: "Write a haiku about debugging." }],
 });
 console.log(resp.choices[0].message.content);
@@ -128,7 +130,7 @@ curl https://studio.shogo.ai/api/v1/chat/completions \
   -H "Authorization: Bearer $SHOGO_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "hoshi-1.0",
+    "model": "hoshi-2-0",
     "stream": true,
     "messages": [{ "role": "user", "content": "Count to five." }]
   }'

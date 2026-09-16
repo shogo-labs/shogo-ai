@@ -7,13 +7,15 @@
 # for the build. EAS Update is still used for OTA JS-only updates.
 #
 # Environments:
-#   staging    — push to main branch (auto OTA to staging channel)
-#   production — push v* (unified release tag, e.g. v1.13.34) or ios-v* (iOS-only)
-#                or manual dispatch with environment=production
+#   production — push to main branch or push v* (unified release tag, e.g.
+#                v1.13.34) / ios-v* (iOS-only), or manual dispatch with
+#                environment=production. Main uses the current production tag.
+#   staging    — manual dispatch only (OTA or full build)
 #   Marketing version is taken from the git tag (same as desktop-release-*),
 #   not from the placeholder in apps/mobile/app.json.
 #
-# Decision matrix (same logic as android.yml):
+# Decision matrix:
+#   - Main branch push → always full production build + TestFlight submit
 #   - Tag push (v* or ios-v*) → always full build + submit
 #   - Cache hit on fingerprint → OTA update only
 #   - mode=ota dispatch → OTA only
@@ -81,8 +83,9 @@ on:
 
 jobs:
   # ===========================================================================
-  # Skip main-branch pushes that do not touch mobile / this workflow.
-  # Tags and workflow_dispatch always continue.
+  # Main-branch pushes always continue so every merge builds and uploads to
+  # TestFlight. Tags and workflow_dispatch always continue; non-main pushes keep
+  # using path gating.
   # ===========================================================================
   gate:
     name: Gate
@@ -95,11 +98,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Skip unrelated main-branch changes
+      - name: Resolve path gate
         id: paths
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
-        run: bash scripts/ci/mobile-workflow-should-run.sh ios.yml
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" = "main" ]; then
+            echo "Main branch push → running iOS build/TestFlight pipeline"
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          else
+            bash scripts/ci/mobile-workflow-should-run.sh ios.yml
+          fi
 
   # ===========================================================================
   # Check if native code changed
@@ -124,7 +133,7 @@ jobs:
           elif [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
             ENV="production"
           elif [ "${{ github.ref_name }}" = "main" ]; then
-            ENV="staging"
+            ENV="production"
           else
             ENV="staging"
           fi
@@ -136,7 +145,7 @@ jobs:
         with:
           fetch-tags: true
 
-      - name: Resolve app version from git tag
+      - name: Resolve app version from current production tag
         id: resolve-version
         env:
           MOBILE_RELEASE_ENV: ${{ steps.resolve-env.outputs.environment }}
@@ -181,6 +190,9 @@ jobs:
         run: |
           if [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
             echo "Tag push (${{ github.ref_name }}) → release event, forcing full build + submit"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" = "main" ]; then
+            echo "Main branch push → forcing full build + TestFlight submit"
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"

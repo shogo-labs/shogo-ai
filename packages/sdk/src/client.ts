@@ -26,11 +26,19 @@ import {
   HostedTelephonyClient,
   MockTelephonyClient,
   isVoiceMockEnv,
+  ShogoLiveClient,
+  type ShogoLiveClient as ShogoLiveClientType,
   type TelephonyClient,
 } from '@shogo-ai/voice'
 import type { ShogoClientConfig } from './types.js'
 
 export interface ShogoVoiceModule {
+  /**
+   * GPT-Live full-duplex voice sessions through Shogo's authenticated gateway.
+   * `null` when neither a runtime token nor a Shogo API key is configured.
+   */
+  live: ShogoLiveClientType | null
+
   /**
    * Telephony client for Twilio + ElevenLabs.
    *
@@ -196,7 +204,10 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     this.shogoCloudUrl = config.shogoCloudUrl
     this.llm = this.buildLlm(config.shogoApiKey ?? null)
 
-    this.voice = { telephony: this.buildTelephony(config.shogoApiKey) }
+    this.voice = {
+      live: this.buildLive(config.shogoApiKey),
+      telephony: this.buildTelephony(config.shogoApiKey),
+    }
   }
 
   private buildLlm(
@@ -296,10 +307,35 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
     return null
   }
 
+  private buildLive(
+    shogoApiKey: string | undefined | null,
+  ): ShogoLiveClientType | null {
+    const runtimeToken =
+      typeof process !== 'undefined'
+        ? process.env?.RUNTIME_AUTH_SECRET
+        : undefined
+    if (runtimeToken) {
+      return new ShogoLiveClient({
+        runtimeToken,
+        apiUrl: this.config.apiUrl,
+      })
+    }
+    if (shogoApiKey) {
+      return new ShogoLiveClient({
+        apiKey: shogoApiKey,
+        apiUrl: this.config.apiUrl,
+      })
+    }
+    return null
+  }
+
   setShogoApiKey(key: string | null): void {
     this.shogoApiKey = key
     this.llm = this.buildLlm(key)
-    this.voice = { telephony: this.buildTelephony(key) }
+    this.voice = {
+      live: this.buildLive(key),
+      telephony: this.buildTelephony(key),
+    }
   }
 }
 

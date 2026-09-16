@@ -8,6 +8,7 @@ import {
   ScrollView,
   ActivityIndicator,
   TextInput,
+  Switch,
   Linking,
 } from 'react-native'
 import {
@@ -121,6 +122,14 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
       { key: 'appToken', label: 'App Token (xapp-...)', placeholder: 'xapp-...', secret: true },
     ],
   },
+  'slack-agent': {
+    name: 'Shogo Agent for Slack',
+    emoji: '🧠',
+    setupUrl: '',
+    setupLabel: '',
+    description: 'One workspace-level Shogo agent that can route requests to enabled projects',
+    fields: [],
+  },
   whatsapp: {
     name: 'WhatsApp',
     emoji: '💬',
@@ -198,6 +207,11 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [copiedSnippet, setCopiedSnippet] = useState(false)
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
+  const [slackAgentConfig, setSlackAgentConfig] = useState<{
+    installed: boolean
+    projects: Array<{ id: string; name: string; slackEnabled: boolean }>
+  } | null>(null)
+  const [slackAgentLoading, setSlackAgentLoading] = useState(false)
 
   /**
    * Canonical, externally-callable webhook URL for this project.
@@ -307,6 +321,56 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   useEffect(() => {
     if (visible) loadChannels()
   }, [visible, loadChannels])
+
+  const loadSlackAgentConfig = useCallback(async () => {
+    if (!visible || !API_URL || !workspaceId) return
+    setSlackAgentLoading(true)
+    try {
+      const res = await fetch(
+        `${API_URL}/api/integrations/slack/workspaces/${encodeURIComponent(workspaceId)}`,
+        { credentials: 'include' },
+      )
+      if (!res.ok) throw new Error(`Slack Agent: HTTP ${res.status}`)
+      const data = await res.json()
+      setSlackAgentConfig({
+        installed: data.installed === true,
+        projects: Array.isArray(data.projects) ? data.projects : [],
+      })
+    } catch {
+      setSlackAgentConfig(null)
+    } finally {
+      setSlackAgentLoading(false)
+    }
+  }, [visible, workspaceId])
+
+  useEffect(() => {
+    loadSlackAgentConfig()
+  }, [loadSlackAgentConfig])
+
+  const toggleSlackProject = useCallback(async (enabled: boolean) => {
+    if (!API_URL || !workspaceId) return
+    try {
+      const res = await fetch(
+        `${API_URL}/api/integrations/slack/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}`,
+        {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slackEnabled: enabled }),
+        },
+      )
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setSlackAgentConfig((previous) => previous
+        ? {
+            ...previous,
+            projects: previous.projects.map((project) =>
+              project.id === projectId ? { ...project, slackEnabled: enabled } : project),
+          }
+        : previous)
+    } catch (err: any) {
+      setFormError(err?.message || 'Failed to update Slack Agent project access')
+    }
+  }, [workspaceId, projectId])
 
   const handleConnect = useCallback(async (type: string) => {
     if (!agentUrl) return
@@ -419,7 +483,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
 
   if (!visible) return null
 
-  if (!agentUrl) {
+  if (!agentUrl && !workspaceId) {
     return (
       <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
         <View className="px-4 py-3 border-b border-border flex-row items-center gap-2">
@@ -441,7 +505,10 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
     )
   }
 
-  const connectedTypes = new Set(channels.map(ch => ch.type))
+  const connectedTypes = new Set([
+    ...channels.map(ch => ch.type),
+    ...(slackAgentConfig?.installed ? ['slack-agent'] : []),
+  ])
 
   return (
     <View className="absolute inset-0 flex-col" style={{ display: visible ? 'flex' : 'none' }}>
@@ -590,8 +657,11 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
         ) : (
           <View className="gap-2">
             {Object.entries(CHANNEL_DEFS).map(([type, def]) => {
+              const isSlackAgent = type === 'slack-agent'
               const liveChannel = channels.find(ch => ch.type === type)
-              const isConnected = liveChannel?.connected ?? false
+              const isConnected = isSlackAgent
+                ? slackAgentConfig?.installed === true
+                : liveChannel?.connected ?? false
               const hasError = liveChannel && !liveChannel.connected && liveChannel.error
               const isExpanded = expandedType === type
               const isConnecting = connecting === type
@@ -603,6 +673,14 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                   {/* Channel header row */}
                   <Pressable
                     onPress={() => {
+                      if (isSlackAgent && !isConnected) {
+                        if (API_URL && workspaceId) {
+                          Linking.openURL(
+                            `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
+                          )
+                        }
+                        return
+                      }
                       if (!isConnected && !hasForm) return
                       setExpandedType(isExpanded ? null : type)
                       setFormError(null)
@@ -611,7 +689,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                       'flex-row items-center gap-3 active:bg-muted/50',
                       comfortable ? 'min-h-14 px-4 py-3.5' : 'px-3 py-2.5',
                     )}
-                    disabled={!isConnected && !hasForm}
+                    disabled={!isSlackAgent && !isConnected && !hasForm}
                   >
                     <Text
                       className="text-lg"
@@ -637,7 +715,22 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                       )}
                     </View>
 
-                    {isConnected ? (
+                    {isSlackAgent ? (
+                      isConnected ? (
+                        <View className="flex-row items-center gap-2">
+                          <CheckCircle size={16} className="text-emerald-500" />
+                          {isExpanded ? (
+                            <ChevronDown size={14} className="text-muted-foreground" />
+                          ) : (
+                            <ChevronRight size={14} className="text-muted-foreground" />
+                          )}
+                        </View>
+                      ) : (
+                        <Text className="text-xs text-primary">
+                          {slackAgentLoading ? 'Loading…' : 'Add to Slack'}
+                        </Text>
+                      )
+                    ) : isConnected ? (
                       <View className="flex-row items-center gap-2">
                         <CheckCircle size={16} className="text-emerald-500" />
                         <Pressable
@@ -676,6 +769,47 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                       </Pressable>
                     ) : null}
                   </Pressable>
+
+                  {isSlackAgent && isExpanded && workspaceId && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2.5">
+                        <Text className="text-[11px] text-muted-foreground">
+                          Install one Shogo app for this workspace, then choose which projects it may use.
+                          In Slack, run <Text className="font-mono text-foreground">@Shogo settings</Text> to
+                          set personal or channel defaults.
+                        </Text>
+                        {!slackAgentConfig?.installed ? (
+                          <Pressable
+                            onPress={() => API_URL && Linking.openURL(
+                              `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
+                            )}
+                            className="self-start px-3 py-1.5 bg-primary rounded-md active:bg-primary/80"
+                          >
+                            <Text className="text-xs text-primary-foreground">Add Shogo to Slack</Text>
+                          </Pressable>
+                        ) : (
+                          <>
+                            <View className="flex-row items-center justify-between gap-3">
+                              <View className="flex-1">
+                                <Text className="text-xs text-foreground">Allow this project in Slack</Text>
+                                <Text className="text-[10px] text-muted-foreground">
+                                  The base Shogo agent can route Slack requests here.
+                                </Text>
+                              </View>
+                              <Switch
+                                value={slackAgentConfig.projects.find((project) => project.id === projectId)?.slackEnabled ?? false}
+                                onValueChange={toggleSlackProject}
+                              />
+                            </View>
+                            <Text className="text-[10px] text-muted-foreground">
+                              {slackAgentConfig.projects.filter((project) => project.slackEnabled).length} project(s) enabled
+                              in this workspace.
+                            </Text>
+                          </>
+                        )}
+                      </View>
+                    </View>
+                  )}
 
                   {/* Webhook public URL — visible whenever the user opens
                       the channel, even before connecting, so they can wire

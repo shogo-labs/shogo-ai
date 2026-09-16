@@ -38,6 +38,7 @@ import type {
   ModelTier,
   ModelFamily,
   ModelGeneration,
+  ModelKind,
 } from '@shogo/model-catalog'
 
 // Namespace import + fallback so a partial test mock of the (large) catalog
@@ -67,6 +68,10 @@ export interface ModelRoutingConfig {
   apiKey?: string
   /** Set for `provider === 'custom'`: how to attach the key. */
   authStyle?: 'bearer' | 'api-key-header'
+  /** Model-configured reasoning effort for upstreams such as DeepSeek. */
+  reasoningEffort?: string
+  /** Optional provider-specific upstream identity from model capabilities. */
+  upstream?: string
 }
 
 interface ProviderRow {
@@ -89,6 +94,7 @@ interface ModelRow {
   tier: string
   family: string
   generation: string
+  kind?: string
   maxOutputTokens: number
   enabled: boolean
   sortOrder: number | null
@@ -101,6 +107,7 @@ interface ModelRow {
   cachedInputPerMillion: number
   cacheWritePerMillion: number
   outputPerMillion: number
+  usdPerMinute?: number | null
 }
 
 interface RegistrySnapshot {
@@ -171,8 +178,12 @@ function rowToModelEntry(row: ModelRow): ModelEntry {
     tier: row.tier as ModelTier,
     family: row.family as ModelFamily,
     generation: row.generation as ModelGeneration,
-    billingModel: deriveBillingModel(row.family, row.tier),
+    ...(row.kind === 'live' ? { kind: 'live' as ModelKind } : {}),
+    billingModel: row.kind === 'live' && row.apiModel === 'gpt-live-1'
+      ? 'gpt-live-1'
+      : deriveBillingModel(row.family, row.tier),
     maxOutputTokens: row.maxOutputTokens,
+    ...(typeof row.usdPerMinute === 'number' ? { usdPerMinute: row.usdPerMinute } : {}),
     ...(capabilities ? { capabilities } : {}),
     ...(typeof row.sortOrder === 'number' ? { sortOrder: row.sortOrder } : {}),
     ...(row.description ? { description: row.description } : {}),
@@ -212,8 +223,10 @@ function cloudCatalogModelToEntry(raw: unknown): ModelEntry | null {
     tier,
     family,
     generation: 'current' as ModelGeneration,
+    ...(m.kind === 'live' ? { kind: 'live' as ModelKind } : {}),
     billingModel: deriveBillingModel(family, tier),
     maxOutputTokens: typeof m.maxOutputTokens === 'number' ? m.maxOutputTokens : 8192,
+    ...(typeof m.usdPerMinute === 'number' ? { usdPerMinute: m.usdPerMinute } : {}),
     ...(typeof m.sortOrder === 'number' ? { sortOrder: m.sortOrder } : {}),
     ...(typeof m.description === 'string' ? { description: m.description } : {}),
     ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
@@ -291,6 +304,14 @@ async function refresh(): Promise<void> {
         provider: row.provider,
         apiModel: row.apiModel,
         displayName: row.displayName,
+        reasoningEffort: row.reasoningEffort ?? undefined,
+      }
+      const capabilities =
+        row.capabilities && typeof row.capabilities === 'object'
+          ? (row.capabilities as Record<string, unknown>)
+          : null
+      if (typeof capabilities?.upstream === 'string' && capabilities.upstream.trim()) {
+        routing.upstream = capabilities.upstream.trim()
       }
       if (row.provider === 'custom' && row.providerId) {
         const provider = providersById.get(row.providerId)

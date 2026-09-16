@@ -59,6 +59,7 @@ import {
 } from './edit-file-utils'
 import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
+import { HistoryIndex, type HistoryKind } from './history-index'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
@@ -86,12 +87,13 @@ function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', 
   }
 }
 import {
-  deriveApiUrl, derivePublicApiUrl,
+  deriveApiUrl, derivePublicApiUrl, getInternalHeaders,
   listCheckpoints as apiListCheckpoints,
   getCheckpointDiff as apiGetCheckpointDiff,
   rollbackCheckpoint as apiRollbackCheckpoint,
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
+  postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
@@ -107,6 +109,8 @@ export interface ToolContext {
   channels: Map<string, import('./types').ChannelAdapter>
   config: import('./gateway').GatewayConfig
   projectId: string
+  /** Workspace scope for the live mount/list tools. */
+  workspaceId?: string
   sessionId?: string
   sandbox?: Partial<import('./types').SandboxConfig>
   mainSessionIds?: string[]
@@ -335,6 +339,174 @@ export function textResult(data: any): AgentToolResult<any> {
   return {
     content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }],
     details: data,
+  }
+}
+
+function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
+  return process.env.WORKSPACE_RUNTIME === 'true' && Boolean(process.env.WORKSPACE_ID || ctx.workspaceId)
+}
+
+async function workspaceMetaFetch(
+  ctx: ToolContext,
+  path: string,
+  init: RequestInit = {},
+): Promise<any> {
+  const apiUrl = deriveApiUrl()
+  const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+  if (!apiUrl || !workspaceId) throw new Error('Workspace runtime API is not configured')
+  const headers = new Headers(getInternalHeaders())
+  headers.set('Content-Type', 'application/json')
+  const body = init.body && typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+  if (body) {
+    body.userId ??= ctx.userId
+    body.sessionId ??= ctx.sessionId
+  }
+  const response = await fetch(`${apiUrl}${path}`, {
+    ...init,
+    headers,
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(30_000),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result?.error?.message || result?.error || `Workspace API HTTP ${response.status}`)
+  return result
+}
+
+function createListProjectsTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'list_projects',
+    label: 'List Projects',
+    description:
+      'List projects available in this Shogo workspace and show which ones are currently mounted. ' +
+      'Use this before mounting when the request names a project ambiguously or asks about project availability.',
+    parameters: Type.Object({}),
+    execute: async () => {
+      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+      const qs = new URLSearchParams({
+        ...(ctx.userId ? { userId: ctx.userId } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      })
+      return textResult(await workspaceMetaFetch(ctx, `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/projects?${qs}`))
+    },
+  }
+}
+
+function createMountProjectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'mount_project',
+    label: 'Mount Project',
+    description:
+      'Mount one available Shogo project into the workspace runtime. Mount read-only when you only need to inspect it; use readwrite when the user asks for edits or commands.',
+    parameters: Type.Object({
+      projectId: Type.String({ description: 'The exact project id returned by list_projects.' }),
+      mode: Type.Optional(Type.Union([
+        Type.Literal('readwrite'),
+        Type.Literal('readonly'),
+      ])),
+    }),
+    execute: async (_toolCallId, params: any) => {
+      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+      return textResult(await workspaceMetaFetch(
+        ctx,
+        `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            projectId: params.projectId,
+            attachMode: params.mode === 'readonly' ? 'readonly' : 'readwrite',
+            userId: ctx.userId,
+            sessionId: ctx.sessionId,
+          }),
+        },
+      ))
+    },
+  }
+}
+
+function createUnmountProjectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'unmount_project',
+    label: 'Unmount Project',
+    description:
+      'Unmount a project from the workspace runtime after work is complete or when switching away. Never unmount a project that is needed for the current follow-up.',
+    parameters: Type.Object({
+      projectId: Type.String({ description: 'The exact mounted project id.' }),
+    }),
+    execute: async (_toolCallId, params: any) => {
+      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+      return textResult(await workspaceMetaFetch(
+        ctx,
+        `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members/${encodeURIComponent(params.projectId)}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify({ userId: ctx.userId, sessionId: ctx.sessionId }),
+        },
+      ))
+    },
+  }
+}
+
+/**
+ * Builds (or reuses) a mounted member's static preview and returns the ONE
+ * URL that's actually reachable — never this runtime's own control-plane
+ * port (`process.env.PORT`), which only serves the chat/tool API and is
+ * meaningless to open in a browser.
+ *
+ * A workspace runtime multiplexes every mounted project's `dist/` under
+ * `/p/<projectId>/` on its own HTTP port (see `workspace-runtime-mode.ts` +
+ * the `/p/:projectId/*` routes in `server.ts`); mounted (non-anchor) members
+ * don't auto-build on mount (cross-folder editing is the common case, and
+ * spinning up a vite watch + API sidecar per attachment would be wasteful),
+ * so this tool is what actually triggers that on-demand build via the
+ * runtime's own `POST /p/<projectId>/preview/start`.
+ */
+function createPreviewProjectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'preview_project',
+    label: 'Preview Project',
+    description:
+      'Build and serve a mounted project\'s app so it can be opened in a browser, and return the one URL that is ' +
+      'actually reachable. Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
+      'a localhost/port link yourself (e.g. from this runtime\'s own base URL or an env var); only the URL this ' +
+      'tool returns is guaranteed to work. If this tool errors, there is NO working localhost fallback — report ' +
+      'the error to the user and offer to retry or publish; do not suggest any other link, including this ' +
+      'runtime\'s own base URL.',
+    parameters: Type.Object({
+      projectId: Type.String({ description: 'The mounted project id to preview (must already be mounted via mount_project).' }),
+    }),
+    execute: async (_toolCallId, params: any) => {
+      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      const projectId = String(params?.projectId || '')
+      if (!projectId) return textResult({ error: 'projectId is required' })
+      const port = process.env.PORT || '8080'
+      try {
+        const response = await fetch(
+          `http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`,
+          { method: 'POST', signal: AbortSignal.timeout(60_000) },
+        )
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok || result?.error) {
+          return textResult({
+            error: result?.error || result?.message || `preview start failed (HTTP ${response.status})`,
+            noFallbackUrl: true,
+            guidance: 'There is no working localhost/fallback link. Tell the user this failed — do not construct or offer any other URL.',
+          })
+        }
+        let externalUrls: Record<string, string> = {}
+        try { externalUrls = JSON.parse(process.env.WORKSPACE_PREVIEW_URLS || '{}') } catch {}
+        const url = externalUrls[projectId] || `http://localhost:${port}/p/${projectId}/`
+        return textResult({ ...result, url })
+      } catch (error: any) {
+        return textResult({
+          error: error?.message || 'preview start failed',
+          noFallbackUrl: true,
+          guidance: 'There is no working localhost/fallback link. Tell the user this failed — do not construct or offer any other URL.',
+        })
+      }
+    },
   }
 }
 
@@ -3044,6 +3216,125 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function createSearchHistoryTool(ctx: ToolContext): AgentTool {
+  let index: HistoryIndex | null = null
+  const local = () => (index ??= new HistoryIndex(ctx.workspaceDir))
+  return {
+    name: 'search_history',
+    description:
+      'Search previous Shogo chats and plans for earlier decisions, conversations, and implementation plans. ' +
+      'Use workspace scope in a multi-project workspace.',
+    label: 'Search Chat History',
+    parameters: Type.Object({
+      query: Type.String({ description: 'Words or a natural-language phrase to search for' }),
+      kind: Type.Optional(Type.Union([Type.Literal('chat'), Type.Literal('plan'), Type.Literal('all')])),
+      scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('workspace')])),
+      limit: Type.Optional(Type.Number()),
+    }),
+    execute: async (_id, raw) => {
+      const params = raw as {
+        query: string
+        kind?: HistoryKind | 'all'
+        scope?: 'project' | 'workspace'
+        limit?: number
+      }
+      const scope = params.scope ?? (workspaceMetaToolEnabled(ctx) ? 'workspace' : 'project')
+      if (scope === 'workspace' && workspaceMetaToolEnabled(ctx)) {
+        try {
+          const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+          const qs = new URLSearchParams({
+            query: params.query,
+            kind: params.kind || 'all',
+            limit: String(params.limit || 8),
+            ...(ctx.userId ? { userId: ctx.userId } : {}),
+            ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+          })
+          return textResult({
+            scope,
+            ...(await workspaceMetaFetch(
+              ctx,
+              `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/search?${qs}`,
+            )),
+          })
+        } catch (error: any) {
+          const results = local().search(params.query, {
+            kind: params.kind,
+            limit: params.limit,
+            excludeRefId: ctx.sessionId,
+          })
+          return textResult({
+            scope: 'project',
+            fallback: true,
+            warning: error?.message || String(error),
+            results,
+            totalMatches: results.length,
+          })
+        }
+      }
+      const results = local().search(params.query, {
+        kind: params.kind,
+        limit: params.limit,
+        excludeRefId: ctx.sessionId,
+      })
+      return textResult({ scope: 'project', results, totalMatches: results.length })
+    },
+  }
+}
+
+function createReadHistoryTool(ctx: ToolContext): AgentTool {
+  let index: HistoryIndex | null = null
+  const local = () => (index ??= new HistoryIndex(ctx.workspaceDir))
+  return {
+    name: 'read_history',
+    description: 'Read a previous chat transcript or plan returned by search_history.',
+    label: 'Read Chat History',
+    parameters: Type.Object({
+      kind: Type.Union([Type.Literal('chat'), Type.Literal('plan')]),
+      id: Type.String(),
+      scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('workspace')])),
+      projectId: Type.Optional(Type.String()),
+      fromSeq: Type.Optional(Type.Number()),
+      limit: Type.Optional(Type.Number()),
+    }),
+    execute: async (_id, raw) => {
+      const params = raw as {
+        kind: 'chat' | 'plan'
+        id: string
+        scope?: 'project' | 'workspace'
+        projectId?: string
+        fromSeq?: number
+        limit?: number
+      }
+      const scope = params.scope ?? (workspaceMetaToolEnabled(ctx) ? 'workspace' : 'project')
+      if (scope === 'workspace' && workspaceMetaToolEnabled(ctx)) {
+        try {
+          const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+          const qs = new URLSearchParams({
+            kind: params.kind,
+            id: params.id,
+            ...(params.projectId ? { projectId: params.projectId } : {}),
+            ...(params.fromSeq != null ? { from: String(params.fromSeq) } : {}),
+            ...(params.limit != null ? { limit: String(params.limit) } : {}),
+          })
+          return textResult({
+            scope,
+            ...(await workspaceMetaFetch(
+              ctx,
+              `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/read?${qs}`,
+            )),
+          })
+        } catch (error: any) {
+          return textResult({ error: error?.message || String(error), kind: params.kind, id: params.id })
+        }
+      }
+      const result = params.kind === 'chat'
+        ? local().readChat(params.id, { fromSeq: params.fromSeq, limit: params.limit })
+        : local().readPlan(params.id)
+      return textResult({ scope: 'project', kind: params.kind, id: params.id, result })
+    },
+  }
+}
+
 function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () => void }> {
   const { spawn } = require('child_process') as typeof import('child_process')
   // Use fileURLToPath so this works on Windows. `new URL(import.meta.url).pathname`
@@ -5244,6 +5535,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createBrowserTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemorySearchTool(ctx),
+    createSearchHistoryTool(ctx),
+    createReadHistoryTool(ctx),
     createTodoWriteTool(ctx),
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
@@ -5296,6 +5589,13 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   // BETA: per-chat git worktrees — cross-chat awareness tool
   tools.push(createWorktreeListTool(ctx))
+
+  if (process.env.WORKSPACE_RUNTIME === 'true') {
+    tools.push(createListProjectsTool(ctx))
+    tools.push(createMountProjectTool(ctx))
+    tools.push(createUnmountProjectTool(ctx))
+    tools.push(createPreviewProjectTool(ctx))
+  }
 
   if (extraTools) {
     tools.push(...extraTools)
@@ -7000,6 +7300,14 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
       mkdirSync(plansDir, { recursive: true })
       const filepath = join(plansDir, filename)
       writeFileSync(filepath, content, 'utf-8')
+      void postPlanMirror({
+        filename,
+        name: params.name,
+        overview: params.overview,
+        status: 'pending',
+        content,
+        chatSessionId: ctx.sessionId,
+      })
 
       if (ctx.uiWriter) {
         ctx.uiWriter.write({
@@ -7118,6 +7426,15 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
       ].join('\n')
 
       writeFileSync(resolved, content, 'utf-8')
+      void postPlanMirror({
+        filename: planFilepath.split('/').pop()!,
+        name: updatedName,
+        overview: updatedOverview,
+        status: existingStatus,
+        content,
+        createdAt: existingCreatedAt,
+        chatSessionId: ctx.sessionId,
+      })
 
       if (ctx.uiWriter) {
         ctx.uiWriter.write({

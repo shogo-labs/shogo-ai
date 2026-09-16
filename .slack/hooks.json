@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "get-manifest": "bun scripts/slack-get-manifest.ts"
+  },
+  "config": {
+    "watch": {
+      "manifest": {
+        "paths": [
+          "docs/slack/manifest.yml"
+        ]
+      }
+    }
+  }
+}

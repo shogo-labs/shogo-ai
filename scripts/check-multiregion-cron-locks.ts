@@ -279,10 +279,46 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'Random UUID; collision impossible in practice.',
   },
   {
+    key: 'SlackWorkspaceInstallation.workspaceId',
+    category: 'request_scoped',
+    reason:
+      'slack-agent.ts OAuth callback upserts keyed on slackTeamId (the Slack-assigned id), not workspaceId; a collision on this secondary unique would need the same Shogo workspace installing two different Slack teams concurrently during failover. P2 — rare, not a cron/leader-election writer.',
+  },
+  {
+    key: 'SlackWorkspaceInstallation.slackTeamId',
+    category: 'single_tenant_upsert',
+    reason:
+      'slack-agent.ts OAuth callback: `prisma.slackWorkspaceInstallation.upsert({ where: { slackTeamId: oauth.team.id } })` from a single user-initiated install request.',
+  },
+  {
+    key: 'SlackUserLink.(slackTeamId,slackUserId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'slack-agent.ts account-link callback: `prisma.slackUserLink.upsert({ where: { slackTeamId_slackUserId: {...} } })` from a single user-initiated link request.',
+  },
+  {
+    key: 'SlackChannelSettings.(slackChannelId,slackTeamId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'slack-agent.ts settings/interactivity handler: `prisma.slackChannelSettings.upsert({ where: { slackTeamId_slackChannelId: {...} } })` from a single request-scoped settings update.',
+  },
+  {
+    key: 'SlackProjectRoutingRule.(keyword,slackTeamId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'slack-agent.ts settings handler: `prisma.slackProjectRoutingRule.upsert({ where: { slackTeamId_keyword: {...} } })` from a single request-scoped settings update.',
+  },
+  {
     key: 'Subscription.stripeSubscriptionId',
     category: 'external_global_id',
     reason:
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
+  },
+  {
+    key: 'LiveSessionMeter.sessionId',
+    category: 'external_global_id',
+    reason:
+      'OpenAI-assigned Live session id is globally unique; session creation is the single provider-backed writer and retries upsert the same meter.',
   },
   {
     key: 'Subscription.workspaceId',
@@ -477,6 +513,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       'Written when a user attaches a project to a workspace-scoped chat session (generated chat-session-project route). One user request per attach; the unique pair just dedupes a double-attach of the same project to the same session.',
+  },
+  {
+    key: 'Plan.(filename,projectId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Runtime plan mirroring upserts one plan filename within its owning project; the runtime capability is scoped to that project/workspace, so this is a single-tenant write rather than a global uniqueness race.',
   },
   {
     key: 'ProjectAttachment.(attachedProjectId,projectId)',

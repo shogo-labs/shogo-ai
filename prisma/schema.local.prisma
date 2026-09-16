@@ -45,11 +45,12 @@ model User {
   apiKeys              ApiKey[]
   creatorProfile       CreatorProfile?
   signupAttribution    SignupAttribution?
-  creatorFollows       CreatorFollow[]      @relation("UserFollows")
+  creatorFollows       CreatorFollow[]       @relation("UserFollows")
   affiliate            Affiliate?
   affiliateAttribution AffiliateAttribution?
   projectAuthSignIns   ProjectAuthSignIn[]
   mobilePushSubscriptions MobilePushSubscription[]
+  slackUserLinks       SlackUserLink[]
 
   @@map("users")
 }
@@ -109,26 +110,26 @@ model Verification {
 // =============================================================================
 
 model Workspace {
-  id            String   @id @default(uuid())
-  name          String
-  slug          String   @unique
-  description   String?
-  ssoSettings   String?
-  instanceSize  String   @default("micro")
+  id                String   @id @default(uuid())
+  name              String
+  slug              String   @unique
+  description       String?
+  ssoSettings       String?
+  instanceSize      String   @default("micro")
   // See packages/agent-runtime/src/composio.ts and
   // apps/api/src/routes/integrations.ts. New workspaces default to
   // "workspace" (one OAuth shared across the workspace); existing
   // workspaces are migrated to "project" to preserve current behavior.
-  composioScope String   @default("workspace")
+  composioScope     String   @default("workspace")
   // Optional parent workspace. When set, this workspace is a "child" that
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
   parentWorkspaceId String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  parent                 Workspace?   @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
-  children               Workspace[]  @relation("WorkspaceHierarchy")
+  parent                 Workspace?                  @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  children               Workspace[]                 @relation("WorkspaceHierarchy")
   projects               Project[]
   members                Member[]
   billingAccounts        BillingAccount[]
@@ -139,6 +140,7 @@ model Workspace {
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
+  liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
   agentTasks             AgentTask[]
@@ -155,7 +157,9 @@ model Workspace {
   agentEvalSets          AgentEvalSet[]
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
+  plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
+  slackInstallation      SlackWorkspaceInstallation?
 
   @@index([parentWorkspaceId])
   @@map("workspaces")
@@ -206,9 +210,12 @@ model Project {
   lastMessageAt      DateTime?
   // External / IDE-style project mode. See prisma/schema.prisma for the
   // canonical comment.
-  workingMode    String  @default("managed")
-  runtimeEnabled Boolean @default(true)
-  trustLevel     String  @default("trusted")
+  workingMode        String    @default("managed")
+  runtimeEnabled     Boolean   @default(true)
+  // Workspace-level Slack routing considers every project enabled by
+  // default (opt-out) once installed. See prisma/schema.prisma.
+  slackEnabled       Boolean   @default(true)
+  trustLevel         String    @default("trusted")
 
   // External-trigger routing. See prisma/schema.prisma for the canonical comment.
   preferredInstanceId     String?
@@ -222,13 +229,15 @@ model Project {
   //   where cloud sync is disabled (SHOGO_LOCAL_MODE).
   cloudSyncMode String @default("git_only")
 
-  workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  workspace              Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder                 Folder?                      @relation(fields: [folderId], references: [id], onDelete: SetNull)
   members                Member[]
   inviteLinks            InviteLink[]
   featureSessions        FeatureSession[]
   chatSessions           ChatSession[]
+  plans                 Plan[]
   usageEvents            UsageEvent[]
+  liveSessionMeters      LiveSessionMeter[]
   checkpoints            ProjectCheckpoint[]
   githubConnection       GitHubConnection?
   starredBy              StarredProject[]
@@ -243,18 +252,107 @@ model Project {
   subagentModelOverrides SubagentModelOverride[]
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
-  preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  preferredInstance      Instance?                    @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
-  attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
-  attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
+  attachments            ProjectAttachment[]          @relation("ProjectAttachmentAnchor")
+  attachedTo             ProjectAttachment[]          @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
+  slackWorkspaceDefaults SlackWorkspaceInstallation[] @relation("SlackWorkspaceDefaultProject")
+  slackUserDefaults      SlackUserLink[]              @relation("SlackUserDefaultProject")
+  slackUserRecent        SlackUserLink[]              @relation("SlackUserLastUsedProject")
+  slackChannelDefaults   SlackChannelSettings[]       @relation("SlackChannelDefaultProject")
+  slackRoutingRules      SlackProjectRoutingRule[]
 
   @@index([workspaceId])
   @@index([folderId])
   @@index([preferredInstanceId])
   @@map("projects")
+}
+
+/// Workspace-level Slack app installation. SQLite mirror of
+/// prisma/schema.prisma — see the canonical model there for field comments.
+model SlackWorkspaceInstallation {
+  id                      String   @id @default(uuid())
+  workspaceId             String   @unique
+  slackTeamId             String   @unique
+  slackTeamName           String?
+  botAccessTokenEncrypted String
+  botUserId               String?
+  installerUserId         String?
+  defaultProjectId        String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  workspace       Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  defaultProject  Project?                  @relation("SlackWorkspaceDefaultProject", fields: [defaultProjectId], references: [id], onDelete: SetNull)
+  userLinks       SlackUserLink[]
+  channelSettings SlackChannelSettings[]
+  routingRules    SlackProjectRoutingRule[]
+
+  @@index([defaultProjectId])
+  @@map("slack_workspace_installations")
+}
+
+/// Per-team mapping between a Slack identity and a Shogo user identity.
+model SlackUserLink {
+  id                       String   @id @default(uuid())
+  slackTeamId              String
+  slackUserId              String
+  shogoUserId              String
+  personalDefaultProjectId String?
+  lastUsedProjectId        String?
+  // Thread continuity for casual DM chat — see prisma/schema.prisma.
+  activeDmChannelId        String?
+  activeDmThreadTs         String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  installation           SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
+  shogoUser              User                       @relation(fields: [shogoUserId], references: [id], onDelete: Cascade)
+  personalDefaultProject Project?                   @relation("SlackUserDefaultProject", fields: [personalDefaultProjectId], references: [id], onDelete: SetNull)
+  lastUsedProject        Project?                   @relation("SlackUserLastUsedProject", fields: [lastUsedProjectId], references: [id], onDelete: SetNull)
+
+  @@unique([slackTeamId, slackUserId])
+  @@index([shogoUserId])
+  @@index([personalDefaultProjectId])
+  @@index([lastUsedProjectId])
+  @@map("slack_user_links")
+}
+
+/// Per-channel project default configured by `@Shogo settings`.
+model SlackChannelSettings {
+  id               String   @id @default(uuid())
+  slackTeamId      String
+  slackChannelId   String
+  defaultProjectId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  installation   SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
+  defaultProject Project?                   @relation("SlackChannelDefaultProject", fields: [defaultProjectId], references: [id], onDelete: SetNull)
+
+  @@unique([slackTeamId, slackChannelId])
+  @@index([defaultProjectId])
+  @@map("slack_channel_settings")
+}
+
+/// Admin-managed keyword to project mapping for the Slack base agent.
+model SlackProjectRoutingRule {
+  id          String   @id @default(uuid())
+  slackTeamId String
+  keyword     String
+  projectId   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  installation SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
+  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([slackTeamId, keyword])
+  @@index([projectId])
+  @@map("slack_project_routing_rules")
 }
 
 /// Persistent project-to-project attachment. See prisma/schema.prisma for
@@ -666,8 +764,8 @@ model WorkspaceGrant {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  licenseKeys  LicenseKey[]
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  licenseKeys LicenseKey[]
 
   @@index([workspaceId, expiresAt])
   @@map("workspace_grants")
@@ -704,16 +802,16 @@ model LicenseKey {
 }
 
 model UsageWallet {
-  id                           String   @id @default(uuid())
-  workspaceId                  String   @unique
-  monthlyIncludedUsd           Float    @default(0)
-  dailyIncludedUsd             Float    @default(0)
-  monthlyIncludedAllocationUsd Float    @default(0)
-  dailyUsedThisMonthUsd        Float    @default(0)
-  overageEnabled               Boolean  @default(true)
+  id                           String    @id @default(uuid())
+  workspaceId                  String    @unique
+  monthlyIncludedUsd           Float     @default(0)
+  dailyIncludedUsd             Float     @default(0)
+  monthlyIncludedAllocationUsd Float     @default(0)
+  dailyUsedThisMonthUsd        Float     @default(0)
+  overageEnabled               Boolean   @default(true)
   overageHardLimitUsd          Float?
-  overageAccumulatedUsd        Float    @default(0)
-  overageBilledUsd             Float    @default(0)
+  overageAccumulatedUsd        Float     @default(0)
+  overageBilledUsd             Float     @default(0)
   // JSON-encoded per-period alert dedupe ledger (Json? on PG). See
   // prisma/schema.prisma UsageWallet.alertsSentThisPeriod.
   alertsSentThisPeriod         String?
@@ -722,11 +820,11 @@ model UsageWallet {
   lastDailyReset               DateTime
   lastMonthlyReset             DateTime
   fiveHourWindowStart          DateTime?
-  fiveHourUsedUsd              Float    @default(0)
+  fiveHourUsedUsd              Float     @default(0)
   weeklyWindowStart            DateTime?
-  weeklyUsedUsd                Float    @default(0)
-  createdAt                    DateTime @default(now())
-  updatedAt                    DateTime @updatedAt
+  weeklyUsedUsd                Float     @default(0)
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
@@ -820,10 +918,10 @@ model ChatSession {
   lastActiveAt        DateTime @default(now())
 
   // BETA: per-chat git worktrees (mirrors schema.prisma). null when off.
-  worktreeBranch      String?
+  worktreeBranch String?
   // active | merging | merged
-  worktreeStatus      String?
-  worktreePath        String?
+  worktreeStatus String?
+  worktreePath   String?
 
   project          Project?             @relation(fields: [contextId], references: [id], onDelete: Cascade)
   workspace        Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -831,10 +929,37 @@ model ChatSession {
   messages         ChatMessage[]
   toolCallLogs     ToolCallLog[]
   agentTasks       AgentTask[]
+  plans            Plan[]
 
   @@index([contextType, contextId])
   @@index([workspaceId])
   @@map("chat_sessions")
+}
+
+model Plan {
+  id            String   @id @default(uuid())
+  workspaceId   String?
+  projectId     String?
+  chatSessionId String?
+  runtimeKey    String?
+  filename      String
+  name          String
+  overview      String   @default("")
+  status        String   @default("pending")
+  content       String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, filename])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([chatSessionId])
+  @@index([updatedAt])
+  @@map("plans")
 }
 
 /// Projects attached to a workspace-scoped ChatSession (see schema.prisma).
@@ -1351,6 +1476,7 @@ model ModelDefinition {
   tier             String  @default("standard") // "economy" | "standard" | "premium"
   family           String  @default("other") // "opus" | "sonnet" | "haiku" | "gpt" | "other"
   generation       String  @default("current") // "current" | "legacy"
+  kind             String  @default("chat") // "chat" | "live"
   maxOutputTokens  Int     @default(64000)
   enabled          Boolean @default(true)
   sortOrder        Int?
@@ -1358,8 +1484,8 @@ model ModelDefinition {
   capabilities     String? // JSON-encoded { subagentOrchestration?: ..., supportsAudioInput?: boolean }
 
   // User-facing picker metadata.
-  description    String? // Short blurb shown in the model picker info panel.
-  contextWindow  Int? // Total context window in tokens (distinct from maxOutputTokens).
+  description     String? // Short blurb shown in the model picker info panel.
+  contextWindow   Int? // Total context window in tokens (distinct from maxOutputTokens).
   reasoningEffort String? // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
   // Per-1M-token USD list prices (raw; markup applied at billing time).
@@ -1367,6 +1493,7 @@ model ModelDefinition {
   cachedInputPerMillion Float @default(0)
   cacheWritePerMillion  Float @default(0)
   outputPerMillion      Float @default(0)
+  usdPerMinute          Float?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1470,10 +1597,10 @@ model Instance {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  remoteActions     RemoteAction[]
-  pushSubscriptions PushSubscription[]
-  preferredByProjects Project[]        @relation("ProjectPreferredInstance")
+  workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  remoteActions       RemoteAction[]
+  pushSubscriptions   PushSubscription[]
+  preferredByProjects Project[]          @relation("ProjectPreferredInstance")
 
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
@@ -1770,9 +1897,9 @@ model MarketplaceListing {
   publishedAt          DateTime?
   featuredAt           DateTime?
   // Phase 7 admin review queue.
-  rejectionReason String?
-  reviewedAt      DateTime?
-  reviewedBy      String?
+  rejectionReason      String?
+  reviewedAt           DateTime?
+  reviewedBy           String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -1794,14 +1921,14 @@ model MarketplaceListing {
 }
 
 model MarketplaceListingVersion {
-  id                String  @id @default(cuid())
-  listingId         String
-  version           String
-  changelog         String?
+  id            String    @id @default(cuid())
+  listingId     String
+  version       String
+  changelog     String?
   // Phase 7 audit pipeline. SQLite has no enum/Json — auditStatus is one of
   // 'none' | 'pending' | 'passed' | 'flagged' | 'errored'; auditFindings is
   // a JSON-encoded string. See prisma/schema.prisma for the shape.
-  auditStatus   String  @default("none")
+  auditStatus   String    @default("none")
   auditedAt     DateTime?
   auditedBy     String?
   auditFindings String?
@@ -1981,6 +2108,35 @@ model VoiceCallMeter {
   @@index([projectId])
   @@index([workspaceId])
   @@map("voice_call_meters")
+}
+
+// Meters GPT-Live sessions. A session emits cumulative duration snapshots,
+// so this row is the idempotency boundary for final usage billing.
+model LiveSessionMeter {
+  id              String    @id @default(cuid())
+  sessionId       String    @unique
+  workspaceId     String
+  projectId       String?
+  memberId        String
+  model           String
+  backendModel    String?
+  transport       String
+  seconds         Float     @default(0)
+  rawUsd          Float     @default(0)
+  billedUsd       Float     @default(0)
+  usageConfirmed  Boolean   @default(false)
+  billed          Boolean   @default(false)
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("live_session_meters")
 }
 
 // =============================================================================
@@ -2173,9 +2329,9 @@ model Affiliate {
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 
-  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent       Affiliate?             @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
-  children     Affiliate[]            @relation("AffiliateUpline")
+  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent         Affiliate?               @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
+  children       Affiliate[]              @relation("AffiliateUpline")
   clicks         AffiliateClick[]
   attributions   AffiliateAttribution[]
   commissions    AffiliateCommission[]
@@ -2278,12 +2434,12 @@ model AffiliatePayout {
 }
 
 model AffiliateCommissionTier {
-  id           String  @id @default(cuid())
-  level        Int     @unique
-  rateBps      Int
-  durationDays Int?
+  id               String  @id @default(cuid())
+  level            Int     @unique
+  rateBps          Int
+  durationDays     Int?
   secondaryRateBps Int?
-  label        String?
+  label            String?
 
   @@map("affiliate_commission_tiers")
 }

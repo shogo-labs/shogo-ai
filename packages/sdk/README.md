@@ -862,6 +862,40 @@ Turn your Shogo app into a live voice agent with two files: one server mount
 and one React component. The SDK proxies to [ElevenLabs Conversational AI](https://elevenlabs.io/docs/conversational-ai/overview)
 so your `ELEVENLABS_API_KEY` never touches the browser.
 
+### GPT-Live sessions
+
+`client.voice.live` exposes OpenAI GPT-Live through Shogo's authenticated
+gateway. The OpenAI key stays server-side, and Live sessions are billed by
+duration. `gpt-live-1` is intentionally not included in the main chat model
+picker or `client.llm()`.
+
+```ts
+const live = client.voice.live!
+const session = live.connect({
+  model: 'gpt-live-1',
+  audio: {
+    format: { type: 'audio/pcm', rate: 24000 },
+    output: { voice: 'marin' },
+  },
+  delegation: {
+    type: 'responses',
+    responses: { model: 'gpt-5.6-luna' },
+  },
+})
+
+session.on('session.output_audio.delta', (event) => {
+  // Decode event.delta and queue the PCM audio for playback.
+})
+await session.started
+session.appendAudio(pcmBytes)
+```
+
+For browser/mobile WebRTC, create an SDP offer with the platform's
+`RTCPeerConnection`, send it through `live.createWebRtcSession({ session, sdp })`,
+and apply the returned `transport.sdp` as the remote description. Audio then
+flows directly between the client and OpenAI while Shogo meters the session
+through a server-side sideband.
+
 ### What you get
 
 - `@shogo-ai/sdk/voice` — framework-agnostic helpers (`ElevenLabsClient`, `composeAgentPrompt`, `stripAudioTags`, `AUDIO_TAGS`, expressivity block composer).

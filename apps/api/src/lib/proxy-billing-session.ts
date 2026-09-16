@@ -149,6 +149,7 @@ interface BillingSession {
   cachedInputTokens: number
   cacheWriteTokens: number
   outputTokens: number
+  reasoningTokens: number
   requestCount: number
   imageRawUsd: number
   imageBilledUsd: number
@@ -200,6 +201,7 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     requestCount: 0,
     imageRawUsd: 0,
     imageBilledUsd: 0,
@@ -223,6 +225,7 @@ function parseSessionHash(hash: Record<string, string>, imageModels: string[]): 
     cachedInputTokens: Number(hash.cachedInputTokens || 0),
     cacheWriteTokens: Number(hash.cacheWriteTokens || 0),
     outputTokens: Number(hash.outputTokens || 0),
+    reasoningTokens: Number(hash.reasoningTokens || 0),
     requestCount: Number(hash.requestCount || 0),
     imageRawUsd: Number(hash.imageRawUsd || 0),
     imageBilledUsd: Number(hash.imageBilledUsd || 0),
@@ -254,9 +257,10 @@ redis.call('HINCRBY', KEYS[1], 'inputTokens', ARGV[2])
 redis.call('HINCRBY', KEYS[1], 'outputTokens', ARGV[3])
 redis.call('HINCRBY', KEYS[1], 'cachedInputTokens', ARGV[4])
 redis.call('HINCRBY', KEYS[1], 'cacheWriteTokens', ARGV[5])
+redis.call('HINCRBY', KEYS[1], 'reasoningTokens', ARGV[6])
 redis.call('HINCRBY', KEYS[1], 'requestCount', 1)
-redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[6])
-redis.call('PEXPIRE', KEYS[1], ARGV[7])
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[7])
+redis.call('PEXPIRE', KEYS[1], ARGV[8])
 return 1
 `
 
@@ -317,6 +321,7 @@ function accumulateUsageLocal(
   outputTokens: number,
   cachedInputTokens: number,
   cacheWriteTokens: number,
+  reasoningTokens: number,
   chatSessionId?: string | null,
 ): boolean {
   const session = lookupSessionLocal(projectId, chatSessionId)
@@ -325,6 +330,7 @@ function accumulateUsageLocal(
   session.cachedInputTokens += cachedInputTokens
   session.cacheWriteTokens += cacheWriteTokens
   session.outputTokens += outputTokens
+  session.reasoningTokens += reasoningTokens
   session.requestCount += 1
   session.model = model
   session.lastActivityAt = Date.now()
@@ -413,6 +419,7 @@ async function accumulateUsageRedis(
   outputTokens: number,
   cachedInputTokens: number,
   cacheWriteTokens: number,
+  reasoningTokens: number,
   chatSessionId?: string | null,
 ): Promise<boolean> {
   const composite = chatSessionId ? redisHashKey(sessionKey(projectId, chatSessionId)) : null
@@ -422,7 +429,7 @@ async function accumulateUsageRedis(
     const result = await r.eval(
       ACCUMULATE_SCRIPT, 1, key,
       model, String(inputTokens), String(outputTokens), String(cachedInputTokens), String(cacheWriteTokens),
-      String(now), String(REDIS_TTL_MS),
+      String(reasoningTokens), String(now), String(REDIS_TTL_MS),
     )
     if (result === 1) return true
   }
@@ -687,16 +694,17 @@ export async function accumulateUsage(
   cachedInputTokens: number = 0,
   cacheWriteTokens: number = 0,
   chatSessionId?: string | null,
+  reasoningTokens: number = 0,
 ): Promise<boolean> {
   const r = redisOrNull()
   if (r) {
     try {
-      return await withRedisTimeout(accumulateUsageRedis(r, projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId))
+      return await withRedisTimeout(accumulateUsageRedis(r, projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, chatSessionId))
     } catch (err) {
       console.warn(`[BillingSession] Redis accumulateUsage failed, falling back to local map:`, (err as Error).message)
     }
   }
-  return accumulateUsageLocal(projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, chatSessionId)
+  return accumulateUsageLocal(projectId, model, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, chatSessionId)
 }
 
 /**
@@ -945,6 +953,7 @@ export async function closeSession(
         cachedInputTokens: session.cachedInputTokens,
         cacheWriteTokens: session.cacheWriteTokens,
         outputTokens: session.outputTokens,
+        reasoningTokens: session.reasoningTokens,
         totalTokens,
         model: session.model,
         billingModel,

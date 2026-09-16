@@ -231,6 +231,10 @@ export interface VisibleCatalogModel {
    *  Optional for back-compat with API servers that predate this field;
    *  lets clients label purely-DB-defined models they don't bundle. */
   family?: string
+  /** `live` models use the Live Sessions transport instead of chat completions. */
+  kind?: 'chat' | 'live'
+  /** Provider charge in USD per minute for session-based models. */
+  usdPerMinute?: number
   /** Max output tokens, shipped so clients can size requests for DB-only
    *  models absent from their bundled catalog. */
   maxOutputTokens?: number
