@@ -18,6 +18,12 @@ import {
 } from './chat-notifier'
 
 function buildChatHref(data: ChatNotificationClickData) {
+  if (data.taskId) {
+    return {
+      pathname: '/(app)/tasks' as const,
+      params: { taskId: data.taskId },
+    }
+  }
   return {
     pathname: '/(app)/projects/[id]' as const,
     params: { id: data.projectId, chatSessionId: data.sessionId },

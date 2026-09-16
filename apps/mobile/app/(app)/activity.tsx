@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { ActivityIndicator, AppState, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { Bell, ChevronRight, CircleAlert, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -108,8 +108,11 @@ export default function ActivityScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const loadInFlight = useRef(false)
 
   const load = useCallback(async () => {
+    if (loadInFlight.current) return
+    loadInFlight.current = true
     try {
       setError(null)
       await notifications.loadAll()
@@ -118,18 +121,55 @@ export default function ActivityScreen() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load activity')
     } finally {
+      loadInFlight.current = false
       setLoading(false)
       setRefreshing(false)
     }
   }, [http, notifications, workspace?.id])
 
   useFocusEffect(useCallback(() => {
-    void load()
-    const unsubscribeTasks = agentTaskEvents.subscribe(() => void load())
-    const unsubscribeNotifications = notificationEvents.subscribe(() => void load())
+    let isFocused = true
+    let appState = AppState.currentState
+    let pollTimer: ReturnType<typeof setTimeout> | null = null
+
+    const clearPoll = () => {
+      if (pollTimer) clearTimeout(pollTimer)
+      pollTimer = null
+    }
+    const schedulePoll = () => {
+      clearPoll()
+      // React Native can report null briefly during launch. Treat that as
+      // foreground so the initial Activity load is never skipped.
+      if (!isFocused || (appState !== 'active' && appState !== null)) return
+      pollTimer = setTimeout(async () => {
+        await load()
+        schedulePoll()
+      }, 5_000)
+    }
+    const refreshAndSchedule = async () => {
+      if (!isFocused || (appState !== 'active' && appState !== null)) return
+      await load()
+      schedulePoll()
+    }
+
+    void refreshAndSchedule()
+    const unsubscribeTasks = agentTaskEvents.subscribe(() => void refreshAndSchedule())
+    const unsubscribeNotifications = notificationEvents.subscribe(() => void refreshAndSchedule())
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      appState = nextState
+      if (appState === 'active') void refreshAndSchedule()
+      else clearPoll()
+    })
+    // Agent state changes on the server, so the process-local event bus cannot
+    // update this screen when work finishes in the background. Poll while the
+    // screen is focused so Live Now and project counts converge without a
+    // manual pull-to-refresh.
     return () => {
+      isFocused = false
+      clearPoll()
       unsubscribeTasks()
       unsubscribeNotifications()
+      appStateSubscription.remove()
     }
   }, [load]))
 

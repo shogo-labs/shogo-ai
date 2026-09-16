@@ -29,7 +29,17 @@ interface ExpoPushMessage {
   channelId?: string
 }
 
-async function sendExpoMessages(messages: ExpoPushMessage[], tokensToClean: string[] = []) {
+type InvalidTokenCleanup = (tokens: string[]) => Promise<unknown>
+
+async function deleteMobilePushTokens(tokens: string[]) {
+  return prisma.mobilePushSubscription.deleteMany({ where: { pushToken: { in: tokens } } })
+}
+
+async function sendExpoMessages(
+  messages: ExpoPushMessage[],
+  tokensToClean: string[] = [],
+  cleanupInvalidTokens: InvalidTokenCleanup = deleteMobilePushTokens,
+) {
   const resp = await fetch(EXPO_PUSH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,7 +60,7 @@ async function sendExpoMessages(messages: ExpoPushMessage[], tokensToClean: stri
     .map((receipt, index) => receipt.status === 'error' && receipt.details?.error === 'DeviceNotRegistered' ? tokensToClean[index] : null)
     .filter((token): token is string => Boolean(token))
   if (invalidTokens.length > 0) {
-    await prisma.mobilePushSubscription.deleteMany({ where: { pushToken: { in: invalidTokens } } }).catch(() => {})
+    await cleanupInvalidTokens(invalidTokens).catch(() => {})
   }
 }
 
@@ -72,7 +82,11 @@ export async function sendPushToInstance(
       channelId: 'remote-control',
     }))
 
-    await sendExpoMessages(messages, subs.map((sub) => sub.pushToken))
+    await sendExpoMessages(
+      messages,
+      subs.map((sub) => sub.pushToken),
+      (tokens) => prisma.pushSubscription.deleteMany({ where: { pushToken: { in: tokens } } }),
+    )
   } catch (err) {
     console.error('[Push] Error sending push notification:', (err as Error).message)
   }

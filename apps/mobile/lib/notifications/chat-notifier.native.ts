@@ -132,7 +132,9 @@ export function subscribeNotificationClicks(
     const data = response.notification.request.content.data as
       | Partial<ChatNotificationClickData>
       | undefined
-    if (data?.sessionId && data?.projectId) {
+    if (typeof data?.taskId === 'string') {
+      cb({ taskId: data.taskId })
+    } else if (typeof data?.sessionId === 'string' && typeof data.projectId === 'string') {
       cb({ sessionId: data.sessionId, projectId: data.projectId })
     }
   })
@@ -151,7 +153,10 @@ export async function consumeColdStartNotification(): Promise<ChatNotificationCl
     const data = resp?.notification.request.content.data as
       | Partial<ChatNotificationClickData>
       | undefined
-    if (data?.sessionId && data?.projectId) {
+    if (typeof data?.taskId === 'string') {
+      return { taskId: data.taskId }
+    }
+    if (typeof data?.sessionId === 'string' && typeof data.projectId === 'string') {
       return { sessionId: data.sessionId, projectId: data.projectId }
     }
   } catch {

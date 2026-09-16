@@ -11,6 +11,68 @@ import { sendPushToUser } from '../lib/push-notifications'
 type RuntimeManager = Parameters<typeof projectChatRoutes>[0]['runtimeManager']
 
 const TASK_STATUSES = new Set(['draft', 'queued', 'running', 'completed', 'failed', 'cancelled'])
+const runningTaskControllers = new Map<string, AbortController>()
+
+async function stopTaskRuntime(
+  task: { id: string; projectId: string | null; chatSessionId: string | null },
+  runtimeManager?: RuntimeManager,
+): Promise<void> {
+  if (!task.projectId || !task.chatSessionId) return
+
+  try {
+    const response = await projectChatRoutes({ runtimeManager }).fetch(
+      new Request(`http://internal/projects/${task.projectId}/chat/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatSessionId: task.chatSessionId }),
+        signal: AbortSignal.timeout(10_000),
+      }),
+    )
+    if (!response.ok) {
+      throw new Error(`Runtime stop returned HTTP ${response.status}`)
+    }
+  } catch (error) {
+    // The durable cancelled state is authoritative. Log a failed best-effort
+    // stop so it can be retried/diagnosed without turning cancellation into a
+    // request failure for the user.
+    console.error(`[AgentTask] Failed to stop runtime for ${task.id}:`, error)
+  }
+}
+
+function watchForTaskCancellation(
+  task: { id: string; projectId: string; chatSessionId: string },
+  abortController: AbortController,
+  runtimeManager?: RuntimeManager,
+): () => void {
+  let stopped = false
+  let interval: ReturnType<typeof setInterval> | null = null
+  const stop = () => {
+    stopped = true
+    if (interval) clearInterval(interval)
+    interval = null
+  }
+  const check = async () => {
+    if (stopped) return
+    try {
+      const latest = await prisma.agentTask.findUnique({
+        where: { id: task.id },
+        select: { status: true },
+      })
+      // A deleted task is also a cancellation: the worker has no remaining
+      // owner for this runtime turn.
+      if (latest && latest.status !== 'cancelled') return
+      stop()
+      abortController.abort()
+      await stopTaskRuntime(task, runtimeManager)
+    } catch (error) {
+      // A transient DB read failure must not turn into an unsolicited stop.
+      // The next interval retries the durable-state check.
+      console.error(`[AgentTask] Failed to check cancellation for ${task.id}:`, error)
+    }
+  }
+  interval = setInterval(() => void check(), 2_000)
+  return stop
+}
 
 function authUserId(c: any): string | null {
   const auth = c.get('auth') as { userId?: string; isAuthenticated?: boolean } | undefined
@@ -52,7 +114,13 @@ async function loadTask(id: string, userId: string) {
 }
 
 async function notifyTask(
-  task: { id: string; userId: string; title: string; projectId: string | null },
+  task: {
+    id: string
+    userId: string
+    title: string
+    projectId: string | null
+    chatSessionId: string | null
+  },
   type: Extract<NotificationType, `agent_task_${string}`>,
   message: string,
 ) {
@@ -77,6 +145,7 @@ async function notifyTask(
       body: message,
       data: {
         taskId: task.id,
+        sessionId: task.chatSessionId,
         projectId: task.projectId,
         notificationType: type,
         actionUrl: `/(app)/tasks?taskId=${encodeURIComponent(task.id)}`,
@@ -143,13 +212,6 @@ async function persistAgentTaskPrompt(
   task: { title: string; notes: string | null },
 ) {
   const prompt = buildAgentTaskPrompt(task)
-  const existing = await prisma.chatMessage.findFirst({
-    where: { sessionId, role: 'user', content: prompt, agent: 'technical' },
-    select: { createdAt: true },
-  })
-
-  if (existing) return { prompt, afterCreatedAt: existing.createdAt }
-
   const created = await prisma.chatMessage.create({
     data: {
       sessionId,
@@ -261,12 +323,22 @@ async function runAgentTask(
   if (!task || task.status === 'cancelled') return
 
   let sessionId = task.chatSessionId
+  let abortController: AbortController | null = null
+  let stopCancellationWatch: (() => void) | null = null
   try {
     const started = await prisma.agentTask.updateMany({
       where: { id: taskId, status: 'queued' },
       data: { status: 'running', startedAt: new Date(), currentStep: 'Starting the agent' },
     })
     if (started.count === 0) return
+    abortController = new AbortController()
+    runningTaskControllers.set(taskId, abortController)
+
+    // A cancellation may land after the queued -> running claim but before
+    // this process registers its controller. The DB is the cross-instance
+    // source of truth, so re-check it before any side effect or runtime call.
+    const current = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true } })
+    if (current?.status !== 'running') return
 
     await prisma.agentTask.update({
       where: { id: taskId },
@@ -291,29 +363,40 @@ async function runAgentTask(
       // at the configured Ollama model instead of a cloud Claude id.
       agentMode: 'auto',
       interactionMode: 'agent',
-      clientTurnId: `agent-task-${task.id}`,
+      // A retry is a new delegated execution, not a transport retry of the
+      // previous execution. Give it a fresh idempotency key.
+      clientTurnId: `agent-task-${task.id}-${crypto.randomUUID()}`,
     })
 
     await prisma.agentTask.update({
       where: { id: taskId },
       data: { currentStep: 'Working in the project agent' },
     })
+    const beforeDispatch = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true } })
+    if (beforeDispatch?.status !== 'running') return
     await notifyTask(
       routedTask,
       'agent_task_started',
       'The project agent has started working.',
     )
 
-    const router = projectChatRoutes({ runtimeManager })
+    const router = projectChatRoutes({ runtimeManager, suppressCompletionPush: true })
+    stopCancellationWatch = watchForTaskCancellation(
+      { id: taskId, projectId: routed.projectId, chatSessionId: sessionId },
+      abortController,
+      runtimeManager,
+    )
     const response = await router.fetch(
       new Request(`http://internal/projects/${routed.projectId}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Agent-Task-Id': taskId,
           'X-Chat-Session-Id': sessionId,
           'X-Billing-User-Id': task.userId,
         },
         body,
+        signal: abortController.signal,
       }),
     )
     await consumeResponse(response)
@@ -349,6 +432,11 @@ async function runAgentTask(
     }).catch(() => null)
     if (failed) await notifyTask(failed, 'agent_task_failed', message.slice(0, 500))
     console.error(`[AgentTask] ${taskId} failed:`, message)
+  } finally {
+    stopCancellationWatch?.()
+    if (abortController && runningTaskControllers.get(taskId) === abortController) {
+      runningTaskControllers.delete(taskId)
+    }
   }
 }
 
@@ -473,6 +561,10 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
       where: { id: task.id, status: { in: ['draft', 'queued', 'running'] } },
       data: { status: 'cancelled', currentStep: null },
     })
+    if (cancellation.count > 0) {
+      runningTaskControllers.get(task.id)?.abort()
+      await stopTaskRuntime(task, config.runtimeManager)
+    }
     const cancelled = await loadTask(task.id, userId)
     if (!cancelled) return c.json({ error: { code: 'not_found', message: 'Task not found' } }, 404)
     if (cancellation.count === 0) return c.json({ ok: true, data: taskView(cancelled) })
@@ -507,6 +599,14 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (!userId) return unauthorized(c)
     const task = await loadTask(c.req.param('id'), userId)
     if (!task) return c.json({ error: { code: 'not_found', message: 'Task not found' } }, 404)
+    const cancellation = await prisma.agentTask.updateMany({
+      where: { id: task.id, userId, status: { in: ['queued', 'running'] } },
+      data: { status: 'cancelled', currentStep: null },
+    })
+    if (cancellation.count > 0) {
+      runningTaskControllers.get(task.id)?.abort()
+      await stopTaskRuntime(task, config.runtimeManager)
+    }
     await prisma.agentTask.delete({ where: { id: task.id } })
     return c.json({ ok: true })
   })

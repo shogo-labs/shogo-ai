@@ -53,6 +53,8 @@ export interface ProjectChatRoutesConfig {
    * Local runtime manager (used in non-K8s environments).
    */
   runtimeManager?: IRuntimeManager
+  /** Used only by the internal agent-task dispatcher to avoid duplicate pushes. */
+  suppressCompletionPush?: boolean
 }
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
@@ -138,6 +140,8 @@ export async function trackUsageFromStream(
     userId?: string
     /** Human-readable project label used in the push title. */
     projectName?: string
+    /** A delegated task sends its own terminal notification. */
+    suppressCompletionPush?: boolean
   } = {},
 ) {
   const decoder = new TextDecoder()
@@ -747,7 +751,12 @@ export async function trackUsageFromStream(
           `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`
         )
 
-        if (observedTurnComplete && turnCompleteStatus === 'completed' && options.userId) {
+        if (
+          observedTurnComplete &&
+          turnCompleteStatus === 'completed' &&
+          options.userId &&
+          !options.suppressCompletionPush
+        ) {
           const preview = accumulatedText.replace(/\s+/g, ' ').trim().slice(0, 180)
           void sendPushToUser(options.userId, {
             title: `${options.projectName || 'Project'} response ready`,
@@ -862,7 +871,7 @@ export async function trackUsageFromStream(
 // =============================================================================
 
 export function projectChatRoutes(config: ProjectChatRoutesConfig) {
-  const { runtimeManager } = config
+  const { runtimeManager, suppressCompletionPush = false } = config
   const router = new Hono()
 
   /**
@@ -1315,7 +1324,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // keeps the agent running in memory so the client can resume the stream.
       // trackUsageFromStream also needs the full stream for billing/persistence.
       const clientSignal = c.req.raw.signal
-      const fetchSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      const fetchTimeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      // Normal chat requests intentionally survive a client disconnect so the
+      // runtime can be resumed. Delegated tasks opt into cancellation by
+      // sending X-Agent-Task-Id; their AbortController must reach the runtime.
+      const fetchSignal = c.req.header('X-Agent-Task-Id')
+        ? AbortSignal.any([clientSignal, fetchTimeoutSignal])
+        : fetchTimeoutSignal
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         // Check if client already disconnected before retrying
@@ -1515,6 +1530,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             chatSessionId: incomingChatSessionId,
             userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
             projectName: project.name,
+            // Delegated task completion is announced by agent-tasks with a
+            // task-specific deep link. This is an internal router option, not
+            // a client-controlled request-body or header flag.
+            suppressCompletionPush,
             // Server-side auto-resume hook. When the original POST stream
             // EOFs before `data-turn-complete`, the tracker reconnects
             // here to drain the rest of the turn from the runtime's
@@ -1884,6 +1903,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const response = await fetchFromRuntime(projectId, "/agent/stop", {
         method: "POST",
         body: body || "{}",
+        // Internal callers use a bounded AbortSignal so a stopped runtime
+        // cannot hold a user-facing task cancellation request open forever.
+        signal: c.req.raw.signal,
       })
 
       const result = await response.json()
