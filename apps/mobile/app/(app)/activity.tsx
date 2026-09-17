@@ -148,41 +148,49 @@ export default observer(function ActivityScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const loadInFlight = useRef(false)
+  const loadInFlight = useRef<Promise<void> | null>(null)
   const projectLoadAt = useRef(0)
   const projectLoadScope = useRef<string | null>(null)
 
   const load = useCallback(async (refreshProjects = false) => {
-    if (loadInFlight.current) return
-    loadInFlight.current = true
-    try {
-      setError(null)
-      const projectFilter = !isRemoteSource && workspace?.id
-        ? { workspaceId: workspace.id }
-        : undefined
-      const projectScope = isRemoteSource ? 'remote' : workspace?.id || 'local'
-      const shouldLoadProjects = refreshProjects
-        || projectLoadScope.current !== projectScope
-        || Date.now() - projectLoadAt.current >= PROJECT_REFRESH_INTERVAL_MS
-      const projectLoad = shouldLoadProjects
-        ? projects.loadAll(projectFilter).then(() => {
-            projectLoadAt.current = Date.now()
-            projectLoadScope.current = projectScope
-          })
-        : Promise.resolve()
-      const [, , next] = await Promise.all([
-        notifications.loadAll(),
-        projectLoad,
-        api.listAgentTasks(http),
-      ])
-      setTasks(next.filter((task) => !workspace?.id || task.workspaceId === workspace.id))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load activity')
-    } finally {
-      loadInFlight.current = false
-      setLoading(false)
-      setRefreshing(false)
+    if (loadInFlight.current) return loadInFlight.current
+
+    const request = (async () => {
+      try {
+        setError(null)
+        const projectFilter = !isRemoteSource && workspace?.id
+          ? { workspaceId: workspace.id }
+          : undefined
+        const projectScope = isRemoteSource ? 'remote' : workspace?.id || 'local'
+        const shouldLoadProjects = refreshProjects
+          || projectLoadScope.current !== projectScope
+          || Date.now() - projectLoadAt.current >= PROJECT_REFRESH_INTERVAL_MS
+        const projectLoad = shouldLoadProjects
+          ? projects.loadAll(projectFilter).then(() => {
+              projectLoadAt.current = Date.now()
+              projectLoadScope.current = projectScope
+            })
+          : Promise.resolve()
+        const [, , next] = await Promise.all([
+          notifications.loadAll(),
+          projectLoad,
+          api.listAgentTasks(http),
+        ])
+        setTasks(next.filter((task) => !workspace?.id || task.workspaceId === workspace.id))
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not load activity')
+      } finally {
+        setLoading(false)
+        setRefreshing(false)
+      }
+    })()
+
+    loadInFlight.current = request
+    const clearInFlight = () => {
+      if (loadInFlight.current === request) loadInFlight.current = null
     }
+    void request.then(clearInFlight, clearInFlight)
+    return request
   }, [http, isRemoteSource, notifications, projects, workspace?.id])
 
   useFocusEffect(useCallback(() => {

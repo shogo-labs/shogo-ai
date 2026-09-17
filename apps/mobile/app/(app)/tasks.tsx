@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
 import { useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
+import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, createHttpClient, type AgentTask, type AgentTaskStatus } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
@@ -74,6 +75,7 @@ export default function TasksScreen() {
   const http = useMemo(() => createHttpClient(), [])
   const workspace = useActiveWorkspace()
   const projects = useProjectCollection()
+  const isRemoteSource = useIsRemoteSource()
   const isDark = useResolvedTheme() === 'dark'
   const primaryActionColor = isDark ? '#18181b' : '#ffffff'
   const params = useLocalSearchParams<{ projectId?: string; taskId?: string }>()
@@ -92,23 +94,38 @@ export default function TasksScreen() {
   const [projectSearchOpen, setProjectSearchOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
+  const loadInFlight = useRef<Promise<void> | null>(null)
+  const taskOffsets = useRef(new Map<string, number>())
+  const taskListRef = useRef<ScrollView>(null)
 
   const load = useCallback(async () => {
-    if (!workspace?.id) {
-      setTasks([])
-      setLoading(false)
-      return
+    if (loadInFlight.current) return loadInFlight.current
+
+    const request = (async () => {
+      if (!workspace?.id) {
+        setTasks([])
+        setLoading(false)
+        setRefreshing(false)
+        return
+      }
+      try {
+        setError(null)
+        const next = await api.listAgentTasks(http)
+        setTasks(next.filter((task) => task.workspaceId === workspace.id))
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not load tasks')
+      } finally {
+        setLoading(false)
+        setRefreshing(false)
+      }
+    })()
+
+    loadInFlight.current = request
+    const clearInFlight = () => {
+      if (loadInFlight.current === request) loadInFlight.current = null
     }
-    try {
-      setError(null)
-      const next = await api.listAgentTasks(http)
-      setTasks(next.filter((task) => task.workspaceId === workspace.id))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load tasks')
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-    }
+    void request.then(clearInFlight, clearInFlight)
+    return request
   }, [http, workspace?.id])
 
   useFocusEffect(useCallback(() => {
@@ -119,6 +136,15 @@ export default function TasksScreen() {
   useEffect(() => {
     if (requestedProjectId) setSelectedProjectId(requestedProjectId)
   }, [requestedProjectId])
+
+  useEffect(() => {
+    if (!requestedTaskId || !tasks.some((task) => task.id === requestedTaskId)) return
+    const frame = requestAnimationFrame(() => {
+      const offset = taskOffsets.current.get(requestedTaskId)
+      if (offset != null) taskListRef.current?.scrollTo({ y: Math.max(0, offset - 16), animated: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [requestedTaskId, tasks])
 
   const activeTasks = useMemo(
     () => tasks.filter((task) => task.status === 'draft' || task.status === 'queued' || task.status === 'running'),
@@ -223,6 +249,7 @@ export default function TasksScreen() {
     return (
       <View
         key={task.id}
+        onLayout={(event) => taskOffsets.current.set(task.id, event.nativeEvent.layout.y)}
         className="mx-4 mb-3 rounded-2xl border border-border bg-card p-4"
       >
         <View className="flex-row items-start gap-3">
@@ -272,7 +299,7 @@ export default function TasksScreen() {
     const pinnedIds = new Set(getPinnedProjectIds())
     const query = projectQuery.trim().toLowerCase()
     const workspaceProjects = projects.all
-      .filter((project) => project.workspaceId === workspace?.id)
+      .filter((project) => isRemoteSource || project.workspaceId === workspace?.id)
       .filter((project) => !query || project.name.toLowerCase().includes(query))
       .sort((a, b) => projectTimestamp(b) - projectTimestamp(a))
 
@@ -280,7 +307,7 @@ export default function TasksScreen() {
       pinned: workspaceProjects.filter((project) => pinnedIds.has(project.id)),
       recent: workspaceProjects.filter((project) => !pinnedIds.has(project.id)),
     }
-  }, [projectQuery, projects.all, workspace?.id])
+  }, [isRemoteSource, projectQuery, projects.all, workspace?.id])
 
   const renderProjectChip = (project: IProject) => {
     const selected = selectedProjectId === project.id
@@ -304,7 +331,7 @@ export default function TasksScreen() {
         </View>
       ) : null}
       {loading ? <View className="flex-1 items-center justify-center"><ActivityIndicator /></View> : (
-        <ScrollView className="flex-1" contentContainerStyle={{ paddingTop: 16, paddingBottom: 112 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load() }} />}>
+        <ScrollView ref={taskListRef} className="flex-1" contentContainerStyle={{ paddingTop: 16, paddingBottom: 112 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load() }} />}>
           {activeTasks.length > 0 ? <View className="mb-3 flex-row items-center justify-between px-4"><Text className="text-[13px] font-semibold uppercase tracking-wider text-muted-foreground">Active and drafts</Text><Text className="text-[13px] text-muted-foreground">{activeTasks.length}</Text></View> : null}
           {activeTasks.map(renderTask)}
           {finishedTasks.length > 0 ? <View className="mb-3 mt-3 flex-row items-center justify-between px-4"><Text className="text-[13px] font-semibold uppercase tracking-wider text-muted-foreground">History</Text><Text className="text-[13px] text-muted-foreground">{finishedTasks.length}</Text></View> : null}
