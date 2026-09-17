@@ -176,6 +176,10 @@ export default function AppLayout() {
     let pendingFrame: number | null = null
     const unsubscribe = projectSidebarEvents.subscribeOpenProject(() => {
       if (isWide || isIdeEmbed) return
+      if (drawerOpen) {
+        closeDrawer()
+        return
+      }
       // Let the sidebar commit its focused-project state before the drawer
       // animation starts. Otherwise the default sidebar renders for the first
       // frame and then crossfades into the project panel.
@@ -189,7 +193,7 @@ export default function AppLayout() {
       if (pendingFrame !== null) cancelAnimationFrame(pendingFrame)
       unsubscribe()
     }
-  }, [isIdeEmbed, isWide, openDrawer])
+  }, [closeDrawer, drawerOpen, isIdeEmbed, isWide, openDrawer])
 
   useEffect(() => {
     if (!isWide && !isAccountPage) return

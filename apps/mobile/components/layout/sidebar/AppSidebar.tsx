@@ -448,6 +448,23 @@ export const AppSidebar = observer(function AppSidebar({
   const mobileProjectPanel = mobileProjectPanelId
     ? workspaceProjects.find((project: any) => project.id === mobileProjectPanelId)
     : undefined;
+  const mobileRouteProjectId = pathname.match(/\/projects\/([^/]+)/)?.[1]
+    ? decodeURIComponent(pathname.match(/\/projects\/([^/]+)/)![1])
+    : null;
+  const mobileRouteProject = mobileRouteProjectId
+    ? workspaceProjects.find((project: any) => project.id === mobileRouteProjectId)
+    : undefined;
+
+  // A project-chat swipe opens the shared drawer without going through the
+  // project-sidebar event bus. Prepare the route's project while the drawer is
+  // closed so the panel is already underneath the sheet when a swipe starts.
+  useEffect(() => {
+    if (!isNativeDrawer || !mobileRouteProjectId || !mobileRouteProject) return;
+    if (mobileProjectPanelId === mobileRouteProjectId) return;
+    mobileProjectTransition.stopAnimation();
+    mobileProjectTransition.setValue(1);
+    setMobileProjectPanelId(mobileRouteProjectId);
+  }, [isNativeDrawer, mobileProjectPanelId, mobileProjectTransition, mobileRouteProject, mobileRouteProjectId]);
 
   const openMobileProject = useCallback((projectId: string) => {
     setMobileProjectPanelId(projectId);
@@ -461,9 +478,21 @@ export const AppSidebar = observer(function AppSidebar({
   useEffect(() => {
     if (!isOpen) {
       setMobileExpandedProjectId(null);
-      setMobileProjectPanelId(null);
+      if (!mobileRouteProjectId) {
+        setMobileProjectPanelId(null);
+        mobileProjectTransition.setValue(0);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, mobileProjectTransition, mobileRouteProjectId]);
+
+  useEffect(() => {
+    if (!isNativeDrawer || !isOpen || !mobileRouteProjectId || !mobileRouteProject) return;
+    if (mobileProjectPanelId === mobileRouteProjectId && mobileExpandedProjectId === mobileRouteProjectId) return;
+    mobileProjectTransition.stopAnimation();
+    mobileProjectTransition.setValue(1);
+    setMobileProjectPanelId(mobileRouteProjectId);
+    setMobileExpandedProjectId(mobileRouteProjectId);
+  }, [isNativeDrawer, isOpen, mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition, mobileRouteProject, mobileRouteProjectId]);
 
   useEffect(() => {
     return projectSidebarEvents.subscribeOpenProject((projectId) => {
