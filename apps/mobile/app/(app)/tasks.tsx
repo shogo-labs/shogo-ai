@@ -338,6 +338,14 @@ export default function TasksScreen() {
     keepProjectSearchVisible()
   }, [keepProjectSearchVisible, projectSearchOpen])
 
+  useEffect(() => {
+    if (!projectSearchOpen) return
+    // The keyboard inset changes the visible scroll viewport without changing
+    // the sheet content size, so re-pin after the keyboard finishes opening.
+    const subscription = Keyboard.addListener('keyboardDidShow', keepProjectSearchVisible)
+    return () => subscription.remove()
+  }, [keepProjectSearchVisible, projectSearchOpen])
+
   return (
     <View className="flex-1 bg-background">
       {error ? (
@@ -380,7 +388,7 @@ export default function TasksScreen() {
         scroll
         scrollRef={createSheetScrollRef}
         onContentSizeChange={projectSearchOpen ? keepProjectSearchVisible : undefined}
-        keyboardBehavior={projectSearchOpen ? 'shift' : 'scroll'}
+        keyboardBehavior="scroll"
         maxHeightRatio={0.84}
         draggable
         animationType="slide"
