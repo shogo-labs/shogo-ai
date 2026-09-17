@@ -1622,6 +1622,7 @@ model EvalRun {
   triggeredBy String?
   pid         Int?
   jobName     String?
+  commitSha   String?
   error       String?
   summary     String?
   cost        String?

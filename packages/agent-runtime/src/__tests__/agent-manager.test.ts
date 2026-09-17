@@ -298,6 +298,12 @@ describe('AgentManager — spawn failure path', () => {
     expect(inst.result?.responseText).toBe('boom')
     expect(costs[0].success).toBe(false)
     expect(costs[0].responseEmpty).toBe(true)
+    // `runSubagent` catches ordinary model/tool failures internally and
+    // resolves instead of rejecting (see its own try/catch), so a rejection
+    // reaching AgentManager means the model never ran at all — must land in
+    // a distinct `<type>-failed` bucket, not the plain `custom` type, so it
+    // doesn't get counted against that sub-agent type's measured quality.
+    expect(costs[0].agentType).toBe('custom-failed')
 
     const metrics = m.listTypes().find(t => t.name === 'custom')!.metrics
     expect(metrics.failures).toBe(1)
@@ -308,6 +314,8 @@ describe('AgentManager — spawn failure path', () => {
     runSubagentImpl = () => new Promise<any>((res) => { resolve = res })
     const m = new AgentManager()
     m.register(baseCfg())
+    const costs: AgentCostMetricData[] = []
+    m.onCostMetric((d) => costs.push(d))
     const r = m.spawn('custom', 'x', ctx, tools)
     if (!r.ok) throw new Error(r.error)
     expect(m.cancel(r.instanceId)).toBe(true)
@@ -318,6 +326,10 @@ describe('AgentManager — spawn failure path', () => {
     expect(inst.status).toBe('cancelled')
     const metrics = m.listTypes().find(t => t.name === 'custom')!.metrics
     expect(metrics.failures).toBe(0)
+    // A user-initiated cancel isn't an infra failure — keep it under the
+    // plain type rather than the `-failed` bucket reserved for genuine
+    // pre-LLM/request-path errors.
+    expect(costs[0].agentType).toBe('custom')
   })
 
   it('cancel() returns false for unknown or finished instances', async () => {

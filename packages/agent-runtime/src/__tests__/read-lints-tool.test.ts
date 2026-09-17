@@ -7,7 +7,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'fs'
 import { join } from 'path'
-import { createTools, type ToolContext } from '../gateway-tools'
+import { createTools, classifyLintErrorCause, type ToolContext } from '../gateway-tools'
 import { FileStateCache } from '../file-state-cache'
 import type { LSPDiagnostic, WorkspaceLSPManager } from '@shogo/shared-runtime'
 import { shortenReadLintsWaitForTests, restoreReadLintsWait } from './helpers/read-lints-wait'
@@ -44,7 +44,11 @@ function createMockLSPManager(diagnostics: Map<string, LSPDiagnostic[]> = new Ma
   } as unknown as WorkspaceLSPManager
 }
 
-function createCtx(lspManager?: WorkspaceLSPManager, fileStateCache?: FileStateCache): ToolContext {
+function createCtx(
+  lspManager?: WorkspaceLSPManager,
+  fileStateCache?: FileStateCache,
+  depsReady?: boolean,
+): ToolContext {
   return {
     workspaceDir: TEST_DIR,
     channels: new Map(),
@@ -58,6 +62,7 @@ function createCtx(lspManager?: WorkspaceLSPManager, fileStateCache?: FileStateC
     projectId: 'test',
     lspManager,
     fileStateCache,
+    depsReady,
   }
 }
 
@@ -415,5 +420,107 @@ describe('read_lints tool', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe(
       'const u = `http://localhost:${process.env.API_SERVER_PORT}/x`',
     )
+  })
+
+  // ---------------------------------------------------------------------------
+  // Cause classification — distinguishes "environment noise" (missing deps,
+  // LSP not up) from genuine model mistakes, additive metadata surfaced via
+  // `causeBreakdown` (aggregate) and `files[].causes` (per-error, parallel
+  // to `files[].errors`). See `classifyLintErrorCause` in gateway-tools.ts.
+  // ---------------------------------------------------------------------------
+
+  describe('classifyLintErrorCause (pure function)', () => {
+    test('bare-package "Cannot find module" is missing_deps when deps are not known ready', () => {
+      expect(classifyLintErrorCause("Cannot find module 'react'", undefined)).toBe('missing_deps')
+      expect(classifyLintErrorCause("Cannot find module 'lucide-react'", false)).toBe('missing_deps')
+    })
+
+    test('bare-package "Cannot find module" is model_diagnostic once deps are ready', () => {
+      expect(classifyLintErrorCause("Cannot find module 'totally-made-up-pkg'", true)).toBe('model_diagnostic')
+    })
+
+    test('relative/alias import path failures are always model_diagnostic (deps readiness irrelevant)', () => {
+      expect(classifyLintErrorCause("Cannot find module './missing-file'", undefined)).toBe('model_diagnostic')
+      expect(classifyLintErrorCause("Cannot find module '@/components/ui/card'", undefined)).toBe('model_diagnostic')
+    })
+
+    test('non-module-resolution diagnostics are model_diagnostic', () => {
+      expect(classifyLintErrorCause("Cannot find name 'FakeIcon'.", undefined)).toBe('model_diagnostic')
+      expect(classifyLintErrorCause("Property 'foo' does not exist on type 'Bar'.", true)).toBe('model_diagnostic')
+    })
+  })
+
+  test('causeBreakdown: bare-package module error is missing_deps when depsReady is unset', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'broken.tsx'), "import { X } from 'react'", 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/broken.tsx`, [
+        diag(0, "Cannot find module 'react'.", 1, 2307),
+      ]],
+    ])
+    const ctx = createCtx(createMockLSPManager(diagnostics)) // depsReady left undefined
+    const result = await execReadLints(ctx, { path: 'canvas/broken.tsx' })
+    expect(result.ok).toBe(false)
+    expect(result.files[0].causes).toEqual(['missing_deps'])
+    expect(result.causeBreakdown).toEqual({ missing_deps: 1 })
+  })
+
+  test('causeBreakdown: same bare-package module error is model_diagnostic once depsReady is true', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'broken2.tsx'), "import { X } from 'not-a-real-pkg'", 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/broken2.tsx`, [
+        diag(0, "Cannot find module 'not-a-real-pkg'.", 1, 2307),
+      ]],
+    ])
+    const ctx = createCtx(createMockLSPManager(diagnostics), undefined, /* depsReady */ true)
+    const result = await execReadLints(ctx, { path: 'canvas/broken2.tsx' })
+    expect(result.ok).toBe(false)
+    expect(result.files[0].causes).toEqual(['model_diagnostic'])
+    expect(result.causeBreakdown).toEqual({ model_diagnostic: 1 })
+  })
+
+  test('causeBreakdown: ordinary type/name errors are model_diagnostic and parallel files[].causes to files[].errors', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'broken3.ts'), 'var x = FakeIcon', 'utf-8')
+    const diagnostics = new Map<string, LSPDiagnostic[]>([
+      [`file://${TEST_DIR}/canvas/broken3.ts`, [
+        diag(0, "Cannot find name 'FakeIcon'.", 1, 2304),
+      ]],
+    ])
+    const ctx = createCtx(createMockLSPManager(diagnostics))
+    const result = await execReadLints(ctx, { path: 'canvas/broken3.ts' })
+    expect(result.files[0].errors).toHaveLength(1)
+    expect(result.files[0].causes).toEqual(['model_diagnostic'])
+    expect(result.causeBreakdown).toEqual({ model_diagnostic: 1 })
+  })
+
+  test('causeBreakdown: hardcoded-port errors are always model_diagnostic', async () => {
+    const filePath = join(TEST_DIR, 'canvas', 'seed2.py')
+    writeFileSync(filePath, `URL = "http://localhost:3001/api"\n`, 'utf-8')
+    const cache = new FileStateCache()
+    cache.markEditedThisTurn('canvas/seed2.py')
+    const ctx = createCtx(createMockLSPManager(), cache)
+    const result = await execReadLints(ctx)
+    expect(result.ok).toBe(false)
+    expect(result.files[0].causes).toEqual(['model_diagnostic'])
+    expect(result.causeBreakdown).toEqual({ model_diagnostic: 1 })
+  })
+
+  test('causeBreakdown: environment when the language server never comes up', async () => {
+    const deadLsp = { ...createMockLSPManager(), isRunning: () => false } as unknown as WorkspaceLSPManager
+    const ctx = createCtx(deadLsp)
+    const result = await execReadLints(ctx)
+    expect(result.ok).toBe(false)
+    expect(result.causeBreakdown).toEqual({ environment: 1 })
+  })
+
+  test('causeBreakdown: runtime for canvas compile/render errors reported alongside LSP diagnostics', async () => {
+    writeFileSync(join(TEST_DIR, 'canvas', 'clean2.ts'), 'var x = 1', 'utf-8')
+    const ctx = createCtx(createMockLSPManager())
+    // Simulate a canvas runtime error via the shared ring buffer the tool reads from.
+    const { pushCanvasRuntimeError } = await import('../canvas-runtime-errors')
+    pushCanvasRuntimeError({ phase: 'render', error: 'ReferenceError: foo is not defined', timestamp: Date.now() })
+    const result = await execReadLints(ctx, { path: 'canvas/clean2.ts' })
+    expect(result.ok).toBe(false)
+    expect(result.runtimeErrors).toHaveLength(1)
+    expect(result.causeBreakdown).toEqual({ runtime: 1 })
   })
 })

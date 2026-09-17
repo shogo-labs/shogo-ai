@@ -38,6 +38,28 @@ function emptyMetrics(): AgentTypeMetrics {
   return { totalRuns: 0, successes: 0, failures: 0, totalInputTokens: 0, totalOutputTokens: 0, totalWallTimeMs: 0, totalToolCalls: 0 }
 }
 
+/**
+ * `agentType` suffix for sub-agent runs that never reached `runSubagent`'s
+ * own result path at all — i.e. the promise it returns *rejected* (spawn
+ * setup, tool wiring, an uncaught abort, etc.), not "the model ran and
+ * produced a bad/empty answer".
+ *
+ * This distinction matters because `runSubagent` already catches every
+ * LLM/tool-loop error itself and *resolves* with a `responseEmpty: true`
+ * result (see its own try/catch — the returned promise practically never
+ * rejects for ordinary model failures). So anything that reaches the
+ * `.catch()` below is, by construction, an infrastructure/request-path
+ * failure the model was never given a chance to succeed or fail at.
+ * Recording it under the plain `type` bucket would pollute that sub-agent's
+ * measured quality/success-rate the exact same way un-split `main-chat`
+ * failures used to (see `FAILED_TURN_AGENT_TYPE` in
+ * `apps/api/src/lib/proxy-billing-session.ts`) — this mirrors that fix for
+ * sub-agents.
+ */
+export function subagentFailedAgentType(type: string): string {
+  return `${type}-failed`
+}
+
 interface RegisteredAgent {
   config: SubagentConfig
   createdAt: number
@@ -400,7 +422,15 @@ export class AgentManager {
         }
         try { dropScreencastChannel(instanceId) } catch {}
         this.emitCostMetric({
-          agentType: type,
+          // Not the plain `type` bucket for genuine errors: `runSubagent`
+          // already catches every model/tool-loop failure internally and
+          // *resolves* (see the `.then()` branch above), so a rejection
+          // reaching here means the model never got a chance to run at all
+          // (spawn setup, tool wiring, an uncaught abort, etc.) — see
+          // `subagentFailedAgentType`'s docstring. Keep cancellations
+          // (user-initiated stop, not a failure signal) under the plain type
+          // so they don't get miscounted as infra failures either.
+          agentType: wasCancelled ? type : subagentFailedAgentType(type),
           model: config!.model || 'sonnet',
           inputTokens: 0,
           outputTokens: 0,

@@ -246,9 +246,16 @@ mock.module('../lib/prisma', () => withPrismaExports({
 // Stub the @shogo/model-catalog dep that cost-analytics uses for model id
 // resolution. The real catalog imports a JSON registry; for our tests we
 // just need a stable identity function for known IDs and a couple of
-// dollar-cost helpers that the service / usage-cost call.
+// dollar-cost helpers that the service / usage-cost call. A couple of
+// aliases are mapped (mirroring the real catalog's `MODEL_ALIASES`) so
+// `recordAgentCostMetric`'s normalization can be exercised without pulling
+// in the full catalog.
+const MODEL_ALIASES_STUB: Record<string, string> = {
+  sonnet: 'claude-sonnet-4-6',
+  haiku: 'claude-haiku-4-5',
+}
 mock.module('@shogo/model-catalog', () => ({
-  resolveModelId: (s: string) => s,
+  resolveModelId: (s: string) => MODEL_ALIASES_STUB[s] ?? s,
   getModelTier: () => ({ name: 'medium', includeBudget: 0, overageRate: 0 }),
   getModelBillingModel: (s: string) => s,
   resolveAgentModeDefault: () => 'claude-sonnet-4-6',
@@ -718,6 +725,33 @@ describe('recordAgentCostMetric', () => {
     // Wait a microtask cycle for the fire-and-forget recordExperimentResult.
     await new Promise((r) => setTimeout(r, 5))
     expect(store.experimentUpdates.length).toBeGreaterThan(0)
+  })
+
+  test('normalizes a raw model alias to its canonical id before writing', async () => {
+    // `emptySession()` in proxy-billing-session.ts defaults `model` to the
+    // literal alias `'sonnet'` (and callers can pass any public alias
+    // through the AI proxy) — recordAgentCostMetric must resolve it so
+    // per-model cost/quality breakdowns aren't fragmented across the alias
+    // and its canonical id.
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-1', agentType: 'main-chat', model: 'sonnet',
+      inputTokens: 100, outputTokens: 50, toolCalls: 1, creditCost: 0,
+      wallTimeMs: 10, success: true,
+    })
+    expect(store.metricInserts[0].model).toBe('claude-sonnet-4-6')
+  })
+
+  test('passes the normalized model into server-side creditCost recomputation', async () => {
+    await cost.recordAgentCostMetric({
+      workspaceId: 'ws-1', agentType: 'main-chat', model: 'haiku',
+      inputTokens: 1000, outputTokens: 500, toolCalls: 1, creditCost: 0,
+      wallTimeMs: 10, success: true,
+    })
+    // MODEL_DOLLAR_COSTS stub has both `haiku` and `claude-haiku-4-5` at the
+    // same rate, so this mainly guards that the resolved id (not the raw
+    // alias) is what reaches `serverComputeCreditCost` / the inserted row.
+    expect(store.metricInserts[0].model).toBe('claude-haiku-4-5')
+    expect(store.metricInserts[0].creditCost).toBeGreaterThan(0)
   })
 })
 

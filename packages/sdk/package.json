@@ -287,7 +287,8 @@
     "@shogo-ai/db": "workspace:*",
     "@shogo-ai/email": "workspace:*",
     "@shogo-ai/voice": "workspace:*",
-    "@shogo-ai/cli": "workspace:*"
+    "@shogo-ai/cli": "workspace:*",
+    "@prisma/internals": "^7.3.0"
   },
   "devDependencies": {
     "@ai-sdk/react": "^3.0.99",
@@ -295,7 +296,6 @@
     "@elevenlabs/react": "^1.1.1",
     "@elevenlabs/react-native": "^1.1.4",
     "@playwright/test": "^1.40.0",
-    "@prisma/internals": "^7.3.0",
     "@testing-library/react": "^16.3.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.5.0",

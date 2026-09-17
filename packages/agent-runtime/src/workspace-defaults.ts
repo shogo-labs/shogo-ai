@@ -588,9 +588,23 @@ export function getRuntimeTemplatePath(): string | null {
 // "datasource.url property is required" no matter how DATABASE_URL is set.
 // Restoring the canonical template files closes that gap. Never overwrite an
 // existing file — only fill genuine holes.
+//
+// `scripts/generate.ts` is in this list for the same reason, but the failure
+// mode it closes is worse: it's silent. `shogo generate` treats a missing
+// `scripts/generate.ts` as "this project doesn't use the SDK's codegen" and
+// falls back to a schema-only `prisma db push` — no error, no warning (see
+// the CLI's own loud warning for the case where the template genuinely can't
+// be found). That leaves `server.tsx` and every CRUD route permanently
+// stale/missing for the rest of the workspace's life. It's easy to end up
+// missing just this one file: an agent that hand-writes `schema.prisma` +
+// `prisma.config.ts` from a reference example (skipping the full
+// `seedRuntimeTemplate` copy entirely) creates exactly this half-scaffolded
+// state, and once *any* `package.json` exists, `seedRuntimeTemplate` never
+// gets a second chance to lay down the rest of the template.
 const RUNTIME_TEMPLATE_CRITICAL_FILES = [
   'prisma/schema.prisma',
   'prisma.config.ts',
+  'scripts/generate.ts',
 ]
 
 /**
@@ -616,10 +630,79 @@ export function restoreMissingRuntimeTemplateFiles(dir: string): string[] {
     copyFileSync(src, dest)
     restored.push(rel)
   }
+  // scripts/generate.ts hard-imports `@shogo-ai/sdk/generators` as its
+  // installed-context fallback. Restoring the file (above, or on some
+  // earlier call) is pointless if the workspace's package.json never
+  // declared `@shogo-ai/sdk` as a dependency — exactly the case this
+  // function exists for, where the agent hand-wrote its own package.json
+  // without it. `generate` then fails with "Cannot find module
+  // '@shogo-ai/sdk/generators'" the moment it actually runs. Adding the pin
+  // here (never touching an existing one — migrateLegacyShogoSdkPin owns
+  // upgrades) changes package.json's hash, so the next ensureWorkspaceDeps()
+  // install-marker check picks it up and installs it.
+  if (existsSync(join(dir, 'scripts', 'generate.ts'))) {
+    ensureShogoSdkDependencyDeclared(dir, templatePath)
+  }
   if (restored.length > 0) {
     console.log(`[workspace-defaults] Restored missing runtime-template files: ${restored.join(', ')}`)
   }
   return restored
+}
+
+/**
+ * Add `@shogo-ai/sdk` to `dir`'s package.json dependencies if it isn't
+ * declared at all, using the version the runtime-template itself pins.
+ * Never overwrites an existing pin (that's `migrateLegacyShogoSdkPin`'s job —
+ * this only handles the "missing entirely" case, which that function
+ * deliberately skips via its `if (userSdkRange && ...)` guard).
+ *
+ * Resolves the template's version the same way `migrateLegacyShogoSdkPin`
+ * does: strip a concrete `X.Y.Z` out of its range, or — in a dev checkout
+ * where the template's own pin is the unmaterialized `workspace:*` sentinel —
+ * fall back to the sibling monorepo `packages/sdk` package's version.
+ */
+function ensureShogoSdkDependencyDeclared(dir: string, templatePath: string): void {
+  const pkgPath = join(dir, 'package.json')
+  if (!existsSync(pkgPath)) return
+
+  let raw: string
+  try { raw = readFileSync(pkgPath, 'utf-8') } catch { return }
+  let pkgJson: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }
+  try { pkgJson = JSON.parse(raw) } catch { return }
+  if (pkgJson.dependencies?.['@shogo-ai/sdk'] || pkgJson.devDependencies?.['@shogo-ai/sdk']) return // already declared
+
+  let templateSdkRange: string | null = null
+  try {
+    const templatePkg = JSON.parse(readFileSync(join(templatePath, 'package.json'), 'utf-8'))
+    const range = templatePkg.dependencies?.['@shogo-ai/sdk'] ?? templatePkg.devDependencies?.['@shogo-ai/sdk']
+    if (typeof range === 'string') {
+      const m = range.match(/(\d+\.\d+\.\d+)/)
+      if (m) {
+        templateSdkRange = `^${m[1]}`
+      } else if (range.startsWith('workspace:')) {
+        try {
+          const repoSdkPkg = JSON.parse(
+            readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8'),
+          )
+          if (typeof repoSdkPkg.version === 'string') templateSdkRange = `^${repoSdkPkg.version}`
+        } catch { /* no co-located packages/sdk — leave null, no-op */ }
+      }
+    }
+  } catch { /* template package.json missing/malformed — no pin to add */ }
+  if (!templateSdkRange) return
+
+  pkgJson.dependencies = pkgJson.dependencies ?? {}
+  pkgJson.dependencies['@shogo-ai/sdk'] = templateSdkRange
+  const trailingNewline = raw.endsWith('\n') ? '\n' : ''
+  try {
+    writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + trailingNewline)
+    console.log(
+      `[workspace-defaults] Added missing @shogo-ai/sdk dependency (${templateSdkRange}) to ${pkgPath} ` +
+        `so scripts/generate.ts can resolve its import`,
+    )
+  } catch (err: any) {
+    console.error(`[workspace-defaults] Failed to add @shogo-ai/sdk dependency to ${pkgPath}: ${err.message}`)
+  }
 }
 
 /**

@@ -62,7 +62,13 @@ class FakeChild extends EventEmitter {
 }
 let lastSpawn: FakeChild | null = null
 const spawnSpy = mock((..._args: any[]) => { lastSpawn = new FakeChild(); return lastSpawn as any })
-mock.module('child_process', () => ({ spawn: spawnSpy, execSync: () => '' }))
+// Defaults to a fake SHA so `/runs/trigger`'s best-effort `getServerCommitSha()`
+// has something non-null to store; individual tests override via
+// `execSyncSpy.mockImplementation(...)` (e.g. to simulate `git` being
+// unavailable) and `mockClear()`/reset the default in `beforeEach`.
+const execSyncSpy = mock((..._args: any[]) => 'server-sha-abc123\n')
+mock.module('node:child_process', () => ({ spawn: spawnSpy, execSync: execSyncSpy }))
+mock.module('child_process', () => ({ spawn: spawnSpy, execSync: execSyncSpy }))
 
 // ─── Prisma mock ──────────────────────────────────────────────────────
 
@@ -171,6 +177,8 @@ beforeEach(() => {
   nextId = 1
   spawnSpy.mockClear()
   lastSpawn = null
+  execSyncSpy.mockClear()
+  execSyncSpy.mockImplementation(() => 'server-sha-abc123\n')
   evalJobMgr.createEvalJob.mockClear()
   evalJobMgr.deleteEvalJob.mockClear()
   evalJobMgr.getEvalJobStatus.mockClear()
@@ -365,6 +373,14 @@ describe('POST /runs/trigger', () => {
     expect((await res.json()).data.workers).toBe(1)
   })
 
+  test('stores a best-effort commitSha from the server\'s own git HEAD', async () => {
+    await trigger({ track: 'agentic', model: 'sonnet' })
+    const all = Array.from(runs.values())
+    // run-eval.ts overwrites this with its own commit at /evals/:id/complete
+    // (see below) — this is just a head start in case the run never completes.
+    expect(all[0].commitSha).toBe('server-sha-abc123')
+  })
+
   test('K8s path creates Job and stores jobName', async () => {
     process.env.KUBERNETES_SERVICE_HOST = '1.2.3.4'
     evalJobMgr.createEvalJob.mockImplementation(async () => 'job-abc')
@@ -525,6 +541,51 @@ describe('evalInternalRoutes()', () => {
     })
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // POST /runs/register — self-registration for a direct/local `run-eval.ts
+  // --persist` invocation (no admin/K8s trigger involved). Secured the same
+  // way as the other internal callbacks: shared secret, not a session.
+  // ─────────────────────────────────────────────────────────────────────
+
+  test('POST /runs/register 401 on bad secret', async () => {
+    const res = await authedReq('/runs/register', { track: 'agentic', model: 'sonnet' }, 'wrong')
+    expect(res.status).toBe(401)
+  })
+
+  test('POST /runs/register 409 when a run is already running', async () => {
+    const existing = makeRun({ status: 'running' })
+    runs.set(existing.id, existing)
+    const res = await authedReq('/runs/register', { track: 'agentic', model: 'sonnet' })
+    expect(res.status).toBe(409)
+    expect((await res.json()).id).toBe(existing.id)
+  })
+
+  test('POST /runs/register 400 invalid track', async () => {
+    const res = await authedReq('/runs/register', { track: 'NOT_A_TRACK', model: 'sonnet' })
+    expect(res.status).toBe(400)
+  })
+
+  test('POST /runs/register 400 invalid model', async () => {
+    const res = await authedReq('/runs/register', { track: 'agentic', model: 'NOPE' })
+    expect(res.status).toBe(400)
+  })
+
+  test('POST /runs/register creates a running EvalRun with the reported commitSha and returns its id', async () => {
+    const res = await authedReq('/runs/register', {
+      track: 'agentic', model: 'sonnet', workers: 3, commitSha: 'cli-sha-def456',
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ok).toBe(true)
+    expect(typeof body.data.id).toBe('string')
+    const stored = runs.get(body.data.id)
+    expect(stored.status).toBe('running')
+    expect(stored.workers).toBe(3)
+    expect(stored.commitSha).toBe('cli-sha-def456')
+    // Unlike /runs/trigger, nothing gets spawned — the caller is already running.
+    expect(spawnSpy).not.toHaveBeenCalled()
+  })
+
   test('POST /evals/:id/progress 401 on bad secret', async () => {
     const res = await authedReq('/evals/run_1/progress', { results: [] }, 'wrong')
     expect(res.status).toBe(401)
@@ -579,8 +640,9 @@ describe('evalInternalRoutes()', () => {
     expect(res.status).toBe(401)
   })
 
-  test('POST /evals/:id/complete sets status=completed and stores results', async () => {
-    const r = makeRun({ id: 'rc', status: 'running' })
+  test('POST /evals/:id/complete sets status=completed, stores results, and overwrites commitSha with run-eval.ts\'s own', async () => {
+    // Best-effort value the server itself set at /runs/trigger time.
+    const r = makeRun({ id: 'rc', status: 'running', commitSha: 'server-sha-abc123' })
     runs.set(r.id, r)
     await authedReq('/evals/rc/complete', {
       suite: {
@@ -596,13 +658,31 @@ describe('evalInternalRoutes()', () => {
           timing: { durationMs: 50 },
           metrics: { tokens: null, toolCallCount: 0, failedToolCalls: 0, iterations: 0 },
         }],
+        // run-eval.ts's own `git rev-parse HEAD` — authoritative over
+        // whatever the server guessed at trigger time.
+        commitSha: 'cli-sha-def456',
       },
       logs: { e1: 'log content' },
     })
     expect(runs.get('rc').status).toBe('completed')
     expect(runs.get('rc').summary.total).toBe(1)
+    expect(runs.get('rc').commitSha).toBe('cli-sha-def456')
     expect(results).toHaveLength(1)
     expect(results[0].log).toBe('log content')
+  })
+
+  test('POST /evals/:id/complete leaves the existing commitSha alone when the suite omits one (older run-eval.ts build)', async () => {
+    const r = makeRun({ id: 'rc2', status: 'running', commitSha: 'server-sha-abc123' })
+    runs.set(r.id, r)
+    await authedReq('/evals/rc2/complete', {
+      suite: {
+        name: 'agentic', model: 'sonnet', timestamp: new Date().toISOString(),
+        summary: { total: 0, passed: 0, failed: 0 }, cost: {}, byCategory: {}, results: [],
+      },
+      logs: {},
+    })
+    expect(runs.get('rc2').status).toBe('completed')
+    expect(runs.get('rc2').commitSha).toBe('server-sha-abc123')
   })
 
   test('POST /evals/:id/fail marks failed and stores error', async () => {

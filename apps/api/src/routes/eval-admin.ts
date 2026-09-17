@@ -15,7 +15,7 @@
  */
 
 import { Hono } from 'hono'
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { MODEL_CATALOG, MODEL_ALIASES } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'
@@ -111,6 +111,26 @@ function getCallbackUrl(): string {
   }
   const port = process.env.API_PORT || '8002'
   return `http://localhost:${port}`
+}
+
+let _serverCommitShaCache: string | null | undefined
+/**
+ * Best-effort git commit SHA for the API server's own checkout. Memoized —
+ * the server doesn't change commit mid-process. Returns null (not thrown)
+ * when `git` is unavailable or this isn't a git checkout (e.g. some
+ * container images), so callers can treat it as optional metadata.
+ */
+function getServerCommitSha(): string | null {
+  if (_serverCommitShaCache !== undefined) return _serverCommitShaCache
+  try {
+    _serverCommitShaCache = execSync('git rev-parse HEAD', {
+      cwd: AGENT_RUNTIME_DIR,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim() || null
+  } catch {
+    _serverCommitShaCache = null
+  }
+  return _serverCommitShaCache
 }
 
 function durationMs(start?: Date | null, end?: Date | null): number | null {
@@ -752,6 +772,13 @@ export function evalAdminRoutes(): Hono {
         status: 'running',
         triggeredBy: auth?.userId ?? null,
         startedAt: new Date(),
+        // Best-effort: the admin server's own checkout is usually the same
+        // commit it's about to spawn/schedule run-eval.ts from. run-eval.ts
+        // overwrites this with its own `git rev-parse HEAD` at completion
+        // (see /evals/:id/complete below) since it's the process that
+        // actually executes the eval code — this is just a head start so
+        // the run has a commit attached even if it never completes.
+        commitSha: getServerCommitSha(),
       },
     })
 
@@ -926,6 +953,69 @@ function validateCallbackSecret(c: any): boolean {
 export function evalInternalRoutes(): Hono {
   const router = new Hono()
 
+  // POST /runs/register — Self-registration for a run-eval.ts invocation
+  // that is *already running* directly from the CLI (e.g.
+  // `bun run src/evals/run-eval.ts --track X --model Y --persist`), as
+  // opposed to one spawned by POST /admin/evals/runs/trigger.
+  //
+  // A bare direct CLI run never gets `--run-id`/`--callback-url`, so its
+  // results only ever landed in a /tmp JSON dump — nothing reached
+  // `eval_runs`/`eval_run_results`, which is why joining eval pass rate
+  // against a production telemetry window had zero rows to work with.
+  // `--persist` has run-eval.ts call this first to obtain a run id, then
+  // it reuses the exact same /evals/:id/result + /evals/:id/complete
+  // callbacks admin-triggered runs already use — no separate persistence
+  // path to maintain.
+  //
+  // Secured by the shared callback secret (same trust model as the other
+  // routes below) rather than a super-admin session, since a local CLI
+  // invocation has no session — only whoever can read `EVAL_CALLBACK_SECRET`
+  // (already required to run *any* eval against a real server) can call it.
+  router.post('/runs/register', async (c) => {
+    if (!validateCallbackSecret(c)) {
+      return c.json({ ok: false, error: 'Invalid callback secret' }, 401)
+    }
+
+    const body = await c.req.json() as {
+      track?: string
+      model?: string
+      workers?: number
+      commitSha?: string | null
+    }
+    const track = body.track ?? 'agentic'
+    const model = body.model ?? 'sonnet'
+    const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
+
+    if (!VALID_TRACKS.includes(track)) {
+      return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
+    }
+    const dbModel = await (prisma as any).modelDefinition?.findUnique?.({
+      where: { id: model },
+      select: { enabled: true },
+    })
+    if (!VALID_MODELS.has(model) && dbModel?.enabled !== true) {
+      return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
+    }
+
+    const existing = await prisma.evalRun.findFirst({ where: { status: 'running' } })
+    if (existing) {
+      return c.json({ ok: false, error: 'An eval run is already in progress', id: existing.id }, 409)
+    }
+
+    const run = await prisma.evalRun.create({
+      data: {
+        track,
+        model,
+        workers,
+        status: 'running',
+        startedAt: new Date(),
+        commitSha: body.commitSha ?? null,
+      },
+    })
+
+    return c.json({ ok: true, data: { id: run.id } })
+  })
+
   // POST /evals/:id/progress — Update partial results during a run
   router.post('/evals/:id/progress', async (c) => {
     if (!validateCallbackSecret(c)) {
@@ -1047,6 +1137,8 @@ export function evalInternalRoutes(): Hono {
         byCategory: any
         resources?: any
         results: any[]
+        /** run-eval.ts's own `git rev-parse HEAD` — see `EvalRun.commitSha`. */
+        commitSha?: string | null
       }
       logs: Record<string, string>
     }
@@ -1098,6 +1190,13 @@ export function evalInternalRoutes(): Hono {
         byCategory: suite.byCategory as any,
         resources: suite.resources as any ?? undefined,
         completedAt: new Date(),
+        // run-eval.ts is the process that actually ran the eval code, so its
+        // reported commit is authoritative — overwrite whatever best-effort
+        // value /runs/trigger (or /runs/register) set at creation time.
+        // Only overwrite when it actually reported one; an older run-eval.ts
+        // build (pre-commitSha) posts `undefined` here and must not blank
+        // out the value the admin server already stored.
+        ...(suite.commitSha ? { commitSha: suite.commitSha } : {}),
       },
     })
 

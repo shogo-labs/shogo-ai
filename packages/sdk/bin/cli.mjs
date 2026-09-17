@@ -170,10 +170,26 @@ if (existsSync(generateScript)) {
     process.exit(1)
   }
 } else {
-  // No project-level script - fall back to prisma db push only
+  // No project-level script — this is NOT a normal/expected state for a
+  // project with a Prisma schema (we got past the `schemaPath` check above).
+  // Every project scaffolded via `seedRuntimeTemplate`/the create-app flow
+  // ships `scripts/generate.ts`; its absence here means the workspace has a
+  // hand-rolled or partially-restored scaffold (e.g. `schema.prisma` and
+  // `prisma.config.ts` were created without the rest of the template) and
+  // will silently never get `server.tsx` or CRUD routes generated. Warn
+  // loudly instead of quietly falling back to schema-only sync, so this
+  // doesn't masquerade as "generation succeeded" — see the incident where
+  // this silent fallback caused every CRUD runtime check to fail for an
+  // entire eval pipeline with no error anywhere in the logs.
+  console.warn(
+    '[shogo] WARNING: prisma/schema.prisma exists but scripts/generate.ts is missing — ' +
+      'skipping SDK generation (server.tsx, CRUD routes, hooks will NOT be created/updated). ' +
+      'This project is missing part of its runtime-template scaffold; re-scaffold from the ' +
+      'template or restore scripts/generate.ts to fix this.'
+  )
   if (process.env.DATABASE_URL) {
     try {
-      console.log('[shogo] Step 2/2: prisma db push')
+      console.log('[shogo] Step 2/2: prisma db push (schema-only fallback)')
       execSync('bun x --bun prisma db push --accept-data-loss', { cwd, stdio: 'inherit' })
     } catch (err) {
       console.error('[shogo] prisma db push failed (database may not be ready)')

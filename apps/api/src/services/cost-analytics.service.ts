@@ -1683,10 +1683,22 @@ export async function recordAgentCostMetric(data: {
   metadata?: Record<string, unknown>
 }) {
   try {
+    // Normalize the model label before it lands in analytics. Callers pass
+    // whatever string was on the wire (a public alias like `sonnet`/`haiku`,
+    // an agent-mode default's fallback, or an already-canonical id) — billing
+    // itself tolerates aliases fine (`calculateUsageCost`/`getModelBillingModel`
+    // resolve internally), but leaving them unresolved here means the exact
+    // same model shows up under multiple labels in cost/quality breakdowns
+    // (e.g. a large fraction of `main-chat`/`main-chat-failed` rows stuck on
+    // the `sonnet` alias — the `emptySession()` default — instead of the
+    // canonical id every other writer already uses). Resolve once, here, so
+    // every caller (main-chat, sub-agents, pre-LLM failures) is consistent
+    // without each write site having to remember to do it.
+    const normalizedModel = resolveModelId(data.model)
     let creditCost = data.creditCost
     if (creditCost === 0 && (data.inputTokens > 0 || data.outputTokens > 0)) {
       creditCost = serverComputeCreditCost(
-        data.model,
+        normalizedModel,
         data.inputTokens,
         data.outputTokens,
         data.cachedInputTokens ?? 0,
@@ -1698,7 +1710,7 @@ export async function recordAgentCostMetric(data: {
         projectId: data.projectId ?? null,
         agentRunId: data.agentRunId ?? null,
         agentType: data.agentType,
-        model: data.model,
+        model: normalizedModel,
         inputTokens: data.inputTokens,
         outputTokens: data.outputTokens,
         cachedInputTokens: data.cachedInputTokens ?? 0,
