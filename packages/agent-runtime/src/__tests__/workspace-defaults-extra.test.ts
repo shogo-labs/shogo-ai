@@ -417,6 +417,8 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     mkdirSync(join(tplDir, 'prisma'), { recursive: true })
     writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'datasource db { provider = "sqlite" }')
     writeFileSync(join(tplDir, 'prisma.config.ts'), 'export default {}')
+    mkdirSync(join(tplDir, 'scripts'), { recursive: true })
+    writeFileSync(join(tplDir, 'scripts', 'generate.ts'), '// generate')
     process.env.RUNTIME_TEMPLATE_DIR = tplDir
 
     const dir = makeTmp()
@@ -427,6 +429,102 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     // …but the critical Prisma files were restored from the template.
     expect(existsSync(join(dir, 'prisma', 'schema.prisma'))).toBe(true)
     expect(existsSync(join(dir, 'prisma.config.ts'))).toBe(true)
+    expect(existsSync(join(dir, 'scripts', 'generate.ts'))).toBe(true)
+  })
+
+  test('restores scripts/generate.ts when a hand-rolled schema exists without it', () => {
+    // Regression: an agent that discovers/copies a reference schema.prisma +
+    // prisma.config.ts by hand (bypassing seedRuntimeTemplate entirely) and
+    // then creates its own package.json leaves the workspace with a Prisma
+    // scaffold but no scripts/generate.ts. Every later `shogo generate` call
+    // then silently falls back to schema-only `prisma db push` — server.tsx
+    // and all CRUD routes never get created, with no error anywhere. This
+    // is the exact state that made an entire eval pipeline's runtime checks
+    // fail while looking like a model regression.
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), '{}')
+    mkdirSync(join(tplDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'TEMPLATE schema')
+    writeFileSync(join(tplDir, 'prisma.config.ts'), 'TEMPLATE config')
+    mkdirSync(join(tplDir, 'scripts'), { recursive: true })
+    writeFileSync(join(tplDir, 'scripts', 'generate.ts'), 'TEMPLATE generate script')
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), '{"name":"hand-rolled"}')
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    writeFileSync(join(dir, 'prisma', 'schema.prisma'), 'HAND-WRITTEN schema')
+    writeFileSync(join(dir, 'prisma.config.ts'), 'HAND-WRITTEN config')
+    expect(existsSync(join(dir, 'scripts', 'generate.ts'))).toBe(false)
+
+    expect(wd.seedRuntimeTemplate(dir)).toBe(false) // package.json exists → full seed skipped
+    expect(existsSync(join(dir, 'scripts', 'generate.ts'))).toBe(true)
+    expect(readFileSync(join(dir, 'scripts', 'generate.ts'), 'utf-8')).toBe('TEMPLATE generate script')
+    // The agent's own hand-written scaffold files are left untouched.
+    expect(readFileSync(join(dir, 'prisma', 'schema.prisma'), 'utf-8')).toBe('HAND-WRITTEN schema')
+    expect(readFileSync(join(dir, 'prisma.config.ts'), 'utf-8')).toBe('HAND-WRITTEN config')
+  })
+
+  test('restoring scripts/generate.ts also adds the @shogo-ai/sdk dependency if entirely missing', () => {
+    // Regression: restoring scripts/generate.ts alone isn't enough — the
+    // script hard-imports `@shogo-ai/sdk/generators` as its installed-context
+    // fallback. A hand-rolled package.json (the same scenario the previous
+    // test covers) has no @shogo-ai/sdk entry at all, so `bun install` never
+    // pulls it in and `shogo generate` fails at runtime with "Cannot find
+    // module '@shogo-ai/sdk/generators'" — even though scripts/generate.ts
+    // now exists on disk.
+    const tplDir = makeTmp()
+    writeFileSync(
+      join(tplDir, 'package.json'),
+      JSON.stringify({ name: 'tpl', dependencies: { '@shogo-ai/sdk': '^2.5.0', hono: '^4.0.0' } }),
+    )
+    mkdirSync(join(tplDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'TEMPLATE schema')
+    writeFileSync(join(tplDir, 'prisma.config.ts'), 'TEMPLATE config')
+    mkdirSync(join(tplDir, 'scripts'), { recursive: true })
+    writeFileSync(join(tplDir, 'scripts', 'generate.ts'), 'TEMPLATE generate script')
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'hand-rolled', dependencies: { hono: '^4.0.0' } }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    writeFileSync(join(dir, 'prisma', 'schema.prisma'), 'HAND-WRITTEN schema')
+    writeFileSync(join(dir, 'prisma.config.ts'), 'HAND-WRITTEN config')
+
+    expect(wd.seedRuntimeTemplate(dir)).toBe(false)
+    expect(existsSync(join(dir, 'scripts', 'generate.ts'))).toBe(true)
+
+    const pkgAfter = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'))
+    expect(pkgAfter.dependencies['@shogo-ai/sdk']).toBe('^2.5.0')
+    // Unrelated deps are preserved.
+    expect(pkgAfter.dependencies.hono).toBe('^4.0.0')
+  })
+
+  test('does not touch an existing @shogo-ai/sdk pin when restoring scripts/generate.ts', () => {
+    // migrateLegacyShogoSdkPin owns upgrading an existing pin; the restore
+    // helper must never clobber it.
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({ name: 'tpl', dependencies: { '@shogo-ai/sdk': '^9.9.9' } }))
+    mkdirSync(join(tplDir, 'prisma'), { recursive: true })
+    writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'TEMPLATE schema')
+    writeFileSync(join(tplDir, 'prisma.config.ts'), 'TEMPLATE config')
+    mkdirSync(join(tplDir, 'scripts'), { recursive: true })
+    writeFileSync(join(tplDir, 'scripts', 'generate.ts'), 'TEMPLATE generate script')
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'existing', dependencies: { '@shogo-ai/sdk': '^1.2.3' } }))
+    mkdirSync(join(dir, 'prisma'), { recursive: true })
+    writeFileSync(join(dir, 'prisma', 'schema.prisma'), 'schema')
+    writeFileSync(join(dir, 'prisma.config.ts'), 'config')
+    mkdirSync(join(dir, 'scripts'), { recursive: true })
+    writeFileSync(join(dir, 'scripts', 'generate.ts'), 'USER generate script')
+
+    wd.seedRuntimeTemplate(dir)
+
+    const pkgAfter = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'))
+    expect(pkgAfter.dependencies['@shogo-ai/sdk']).toBe('^1.2.3') // untouched
+    expect(readFileSync(join(dir, 'scripts', 'generate.ts'), 'utf-8')).toBe('USER generate script') // untouched
   })
 
   test('restoreMissingRuntimeTemplateFiles never overwrites existing files', () => {
@@ -435,16 +533,21 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     mkdirSync(join(tplDir, 'prisma'), { recursive: true })
     writeFileSync(join(tplDir, 'prisma', 'schema.prisma'), 'TEMPLATE schema')
     writeFileSync(join(tplDir, 'prisma.config.ts'), 'TEMPLATE config')
+    mkdirSync(join(tplDir, 'scripts'), { recursive: true })
+    writeFileSync(join(tplDir, 'scripts', 'generate.ts'), 'TEMPLATE generate script')
     process.env.RUNTIME_TEMPLATE_DIR = tplDir
 
     const dir = makeTmp()
     mkdirSync(join(dir, 'prisma'), { recursive: true })
     writeFileSync(join(dir, 'prisma', 'schema.prisma'), 'USER schema')
     writeFileSync(join(dir, 'prisma.config.ts'), 'USER config')
+    mkdirSync(join(dir, 'scripts'), { recursive: true })
+    writeFileSync(join(dir, 'scripts', 'generate.ts'), 'USER generate script')
 
     expect(wd.restoreMissingRuntimeTemplateFiles(dir)).toEqual([])
     expect(readFileSync(join(dir, 'prisma', 'schema.prisma'), 'utf-8')).toBe('USER schema')
     expect(readFileSync(join(dir, 'prisma.config.ts'), 'utf-8')).toBe('USER config')
+    expect(readFileSync(join(dir, 'scripts', 'generate.ts'), 'utf-8')).toBe('USER generate script')
   })
 })
 
