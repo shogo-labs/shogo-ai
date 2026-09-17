@@ -385,18 +385,43 @@ function flattenSubagentToolCalls(toolCalls: ToolCallRecord[]): ToolCallRecord[]
     const output = tc.output as any
     if (!output || typeof output !== 'object') continue
 
+    // Legacy/hypothetical shape: a full `parts` transcript. Nothing in the
+    // live agent-runtime actually returns this today (agent_result's real
+    // output is a scalar toolCalls count, never full parts — see below),
+    // but keep parsing it in case some other caller/version does.
     const parts: any[] = output.parts || output.result?.parts
-    if (!Array.isArray(parts)) continue
+    if (Array.isArray(parts)) {
+      for (const part of parts) {
+        if (part?.type !== 'tool' || !part.tool?.toolName) continue
+        nested.push({
+          name: part.tool.toolName,
+          input: part.tool.args ?? {},
+          output: part.tool.result,
+          error: part.tool.state === 'error',
+          viaSubagent: true,
+        })
+      }
+    }
 
-    for (const part of parts) {
-      if (part?.type !== 'tool' || !part.tool?.toolName) continue
-      nested.push({
-        name: part.tool.toolName,
-        input: part.tool.args ?? {},
-        output: part.tool.result,
-        error: part.tool.state === 'error',
-        viaSubagent: true,
-      })
+    // Real shape: `agent_result`'s completed response includes
+    // `tool_activity`, a rolling window of {tool, input, summary} the
+    // subagent actually called (see gateway-tools.ts). `input` is a
+    // truncated JSON string, not a parsed object, so it's wrapped rather
+    // than JSON.parse'd — criteria that substring-search
+    // `JSON.stringify(tc.input)` (the common pattern in this eval suite)
+    // still find whatever survived truncation either way.
+    const activity: any[] = output.tool_activity
+    if (Array.isArray(activity)) {
+      for (const entry of activity) {
+        if (!entry?.tool) continue
+        nested.push({
+          name: entry.tool,
+          input: { raw: entry.input ?? '' },
+          output: entry.summary,
+          error: entry.summary === 'ERROR',
+          viaSubagent: true,
+        })
+      }
     }
   }
   return nested
@@ -457,6 +482,14 @@ export async function runEval(
   const errors: string[] = []
 
   let responseText = ''
+  // Response text from every real turn in this eval, in order (history
+  // turns that were actually executed, then the final turn, then any
+  // ask_user follow-ups). Multi-turn evals sometimes ask for distinct work
+  // in earlier history turns (e.g. "research trending topics" in turn 2,
+  // "build a demographics dashboard" in turn 4) — criteria grading the
+  // earlier turn's content must not rely on `responseText`, which is only
+  // ever the FINAL turn's text. See `anyTurnResponseContains`.
+  const perTurnResponseText: string[] = []
   let toolCalls: ToolCallRecord[] = []
   let finalTurnToolCalls: ToolCallRecord[] = []
   const perTurnToolCalls: ToolCallRecord[][] = []
@@ -510,6 +543,7 @@ export async function runEval(
       messages.push({ role: 'assistant', parts: [{ type: 'text', text: execResp.text }] })
       toolCalls.push(...execResp.toolCalls)
       perTurnToolCalls.push(execResp.toolCalls)
+      perTurnResponseText.push(execResp.text)
       accumulate(execResp)
       lastExecResp = execResp
       current = execResp
@@ -544,6 +578,7 @@ export async function runEval(
               messages.push({ role: 'assistant', parts: [{ type: 'text', text: resp.text }] })
               toolCalls.push(...resp.toolCalls)
               perTurnToolCalls.push(resp.toolCalls)
+              perTurnResponseText.push(resp.text)
               accumulate(resp)
 
               // If the agent asked clarifying questions, send eval-defined responses
@@ -567,6 +602,7 @@ export async function runEval(
     finalTurnToolCalls = response.toolCalls
     toolCalls.push(...response.toolCalls)
     perTurnToolCalls.push(response.toolCalls)
+    perTurnResponseText.push(response.text)
     accumulate(response)
     loopDetected = !!response.loopDetected
     hitMaxTurns = !!response.hitMaxTurns
@@ -634,6 +670,7 @@ export async function runEval(
     maxScore: eval_.maxScore,
     percentage: 0,
     responseText,
+    allResponseText: perTurnResponseText.join('\n\n'),
     toolCalls,
     finalTurnToolCalls,
     perTurnToolCalls,

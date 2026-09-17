@@ -4942,6 +4942,14 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
         status: inst.status,
         response: responseText,
         toolCalls: r?.toolCalls ?? 0,
+        // Rolling window (see MAX_RECENT_ACTIVITY) of the tools this
+        // instance actually called, in order — lets the caller (and eval
+        // graders reconstructing what a delegated subagent did) see more
+        // than a bare count. Previously only surfaced on the "still
+        // running" polling responses above; completed instances returned
+        // nothing beyond the count, which made e.g. "did the subagent
+        // write to reports/x.md" unanswerable from this tool's output.
+        tool_activity: (inst.recentActivity ?? []).map(a => ({ tool: a.tool, input: a.input, summary: a.summary })),
         iterations: r?.iterations ?? 0,
         tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
       })

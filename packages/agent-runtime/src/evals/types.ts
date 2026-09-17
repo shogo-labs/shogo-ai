@@ -226,6 +226,15 @@ export interface EvalResult {
   maxScore: number
   percentage: number
   responseText: string
+  /**
+   * Response text from every real turn in this eval, concatenated in order
+   * (executed history turns, then the final turn, then any ask_user
+   * follow-ups). Use this — not `responseText` — when a criterion needs to
+   * check for content that could plausibly have been produced in an
+   * earlier turn of a multi-turn eval rather than the final one (see
+   * `anyTurnResponseContains` in `eval-helpers.ts`).
+   */
+  allResponseText: string
   /** All tool calls across every turn (history + final). Use for intention checks. */
   toolCalls: ToolCallRecord[]
   /** Tool calls from only the final evaluated turn. Use for negative execution checks. */

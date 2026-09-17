@@ -27,14 +27,14 @@ import {
 } from "react-native"
 import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
-import { AUTO_MODEL_ID, type ModelTier } from "@shogo/model-catalog"
+import { AUTO_MODEL_ID } from "@shogo/model-catalog"
 import { Check, Lock, Settings2, ChevronRight, ChevronDown } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
-import { useModelPickerList, resolveTier, type PickerModel, type ReasoningEffort } from "../../lib/visible-models"
+import { useModelPickerList, type PickerModel, type ReasoningEffort } from "../../lib/visible-models"
 import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
 import { NativeActivitySheet } from "./NativeActivitySheet"
 import { NATIVE_PHONE_SECTION_INSET } from "../../lib/native-phone-layout"
-import { MODEL_COST_BADGE_CLASS, MODEL_COST_LABEL, modelCostHint, modelPickerHidesCostLabels } from "../../lib/model-build-cost"
+import { modelPickerHidesCostLabels } from "../../lib/model-build-cost"
 import { NATIVE_MODEL_SHEET } from "./model-picker-sheet-chrome"
 import { Popover, PopoverBackdrop, PopoverContent } from "@/components/ui/popover"
 
@@ -67,20 +67,19 @@ function formatContextWindow(tokens?: number): string | null {
 /** Width of the detached web info card that floats beside the list on hover. */
 const INFO_PANEL_WIDTH = 232
 const WEB_MENU_WIDTH = 280
+const WEB_MODEL_ROW_HEIGHT = 32
+const WEB_AUTO_ROW_HEIGHT = 32
+const WEB_DIVIDER_HEIGHT = 1
 
 export function getNativeModelMenuWidth(windowWidth: number): number {
   return Math.max(240, Math.min(WEB_MENU_WIDTH, Math.floor(windowWidth - NATIVE_PHONE_SECTION_INSET)))
 }
 
-function ModelInfoPanel({ model, comparedTo }: { model: PickerModel; comparedTo?: ModelTier }) {
+function ModelInfoPanel({ model }: { model: PickerModel }) {
   const context = formatContextWindow(model.contextWindow)
   return (
     <View className="p-4 gap-3">
       <Text className="text-sm font-semibold text-foreground">{model.displayName}</Text>
-      <Text className={cn("text-xs font-medium", MODEL_COST_BADGE_CLASS[model.tier])}>
-        {MODEL_COST_LABEL[model.tier]}
-      </Text>
-      <Text className="text-xs text-muted-foreground leading-5">{modelCostHint(model.tier, comparedTo)}</Text>
       {model.description ? <Text className="text-xs text-muted-foreground leading-5">{model.description}</Text> : null}
       {context ? <Text className="text-xs text-muted-foreground">{context}</Text> : null}
       {model.reasoningEffort ? (
@@ -122,7 +121,6 @@ export function ModelPickerMenu({
   const namesOnly = modelPickerHidesCostLabels(hideCostLabels, presentation)
   const { width: windowWidth } = useWindowDimensions()
   const menuWidth = isSheet ? undefined : isWeb ? WEB_MENU_WIDTH : getNativeModelMenuWidth(windowWidth)
-  const currentTier = resolveTier(currentModelId)
 
   // Web: which row is hovered (drives the side info panel). Native: which row
   // is expanded inline (tap the chevron to toggle).
@@ -132,6 +130,11 @@ export function ModelPickerMenu({
   // Only surface the side info card when a row is actively hovered — it should
   // not default to the current model when the menu first opens.
   const activeInfoModel = hoveredId ? (models.find((m) => m.id === hoveredId) ?? null) : null
+  const activeInfoRowIndex = activeInfoModel ? models.findIndex((model) => model.id === activeInfoModel.id) : -1
+  const activeInfoTop =
+    activeInfoRowIndex >= 0
+      ? WEB_AUTO_ROW_HEIGHT + WEB_DIVIDER_HEIGHT + activeInfoRowIndex * WEB_MODEL_ROW_HEIGHT
+      : 0
 
   const renderRow = (model: PickerModel) => {
     const isSelected = currentModelId === model.id
@@ -149,7 +152,7 @@ export function ModelPickerMenu({
           className={cn(
             "flex-row items-center gap-2.5 px-3",
             isSheet ? NATIVE_MODEL_SHEET.rowClass : isWeb ? "py-2" : "min-h-12 py-2.5",
-            isSelected && "bg-accent",
+            (isWeb ? hoveredId === model.id : isSelected) && "bg-accent",
             isLocked && "opacity-50"
           )}
         >
@@ -172,21 +175,14 @@ export function ModelPickerMenu({
                 {EFFORT_SHORT[effort]}
               </Text>
             ) : null}
-            {!isSelected && !namesOnly ? (
-              <Text
-                className={cn(
-                  isSheet ? NATIVE_MODEL_SHEET.metaClass : isWeb ? "text-[11px]" : "text-xs",
-                  MODEL_COST_BADGE_CLASS[model.tier],
-                )}
-              >
-                {MODEL_COST_LABEL[model.tier]}
-              </Text>
-            ) : null}
           </View>
           {isLocked ? (
             <Lock className="text-muted-foreground" size={isSheet ? NATIVE_MODEL_SHEET.icon : isWeb ? 12 : 17} />
           ) : isSelected ? (
-            <Check className="text-primary" size={isSheet ? NATIVE_MODEL_SHEET.icon : isWeb ? 14 : 18} />
+            <Check
+              className={isWeb ? "text-foreground/80" : "text-primary"}
+              size={isSheet ? NATIVE_MODEL_SHEET.icon : isWeb ? 14 : 18}
+            />
           ) : null}
           {/* Native-only inline details toggle. */}
           {!isWeb ? (
@@ -217,11 +213,6 @@ export function ModelPickerMenu({
                 {contextLabel}
               </Text>
             ) : null}
-            {namesOnly ? null : (
-              <Text className={cn(isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]", MODEL_COST_BADGE_CLASS[model.tier])}>
-                {MODEL_COST_LABEL[model.tier]} · {modelCostHint(model.tier, currentTier)}
-              </Text>
-            )}
             {effort ? (
               <Text className={cn("italic text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px]")}>
                 Reasoning: {EFFORT_WORD[effort]} effort
@@ -238,7 +229,6 @@ export function ModelPickerMenu({
       <AutoModelOption
         currentModelId={currentModelId}
         presentation={presentation}
-        hideCostLabels={namesOnly}
         onSelect={() => onSelect(AUTO_MODEL_ID)}
       />
       <View className="h-px bg-border/50 mx-2" />
@@ -293,16 +283,16 @@ export function ModelPickerMenu({
       {list}
       {activeInfoModel && !namesOnly ? (
         <View
-          className="bg-card border border-border rounded-lg shadow-lg"
+          className="bg-card border border-border rounded-xl shadow-lg"
           style={{
             position: "absolute",
             left: "100%",
-            top: 0,
+            top: activeInfoTop,
             marginLeft: 8,
             width: INFO_PANEL_WIDTH,
           }}
         >
-          <ModelInfoPanel model={activeInfoModel} comparedTo={currentTier} />
+          <ModelInfoPanel model={activeInfoModel} />
         </View>
       ) : null}
     </View>
@@ -478,7 +468,7 @@ export function ComposerModelPicker({
     >
       <PopoverBackdrop />
       <PopoverContent
-        className="p-0 max-h-[360px] web:outline-none web:overflow-visible web:max-w-none"
+        className="p-0 max-h-[360px] rounded-xl web:outline-none web:overflow-visible web:max-w-none"
         style={menuWidth ? { width: menuWidth } : undefined}
       >
         {menu}

@@ -219,6 +219,7 @@ async function runCase(model: string, ev: AgentEval): Promise<CaseRunOutcome> {
   const fakeEvalResult = {
     eval: ev,
     responseText: result.text ?? '',
+    allResponseText: result.text ?? '',
     toolCalls: (result.toolCalls ?? []).map(tc => ({ name: tc.name, input: tc.input ?? {} })),
     finalTurnToolCalls: (result.toolCalls ?? []).map(tc => ({ name: tc.name, input: tc.input ?? {} })),
     perTurnToolCalls: [(result.toolCalls ?? []).map(tc => ({ name: tc.name, input: tc.input ?? {} }))],

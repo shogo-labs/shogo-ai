@@ -1128,6 +1128,7 @@ async function runEvalOnWorker(
       maxScore: ev.maxScore,
       percentage: 0,
       responseText: '',
+      allResponseText: '',
       toolCalls: [],
       finalTurnToolCalls: [],
       perTurnToolCalls: [],
