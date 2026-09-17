@@ -29,6 +29,9 @@ type ProjectActivityGroup = {
   latestChatSessionId: string | null
 }
 
+const PROJECT_PENDING_PUBLISH_STATUSES = new Set(['building', 'uploading', 'configuring'])
+const PROJECT_COMPLETED_PUBLISH_STATUSES = new Set(['live', 'published'])
+
 function timestamp(value: unknown): number {
   if (value instanceof Date) return value.getTime()
   if (typeof value === 'number') return value
@@ -92,12 +95,21 @@ function projectOutcome(project: Pick<ProjectActivityGroup, 'running' | 'failed'
   label: 'Completed' | 'Pending' | 'Failed' | 'No activity'
 } {
   if (project.failed > 0 || project.publishStatus === 'failed') return { label: 'Failed' }
-  if (project.running > 0 || ['building', 'uploading', 'configuring'].includes(project.publishStatus)) return { label: 'Pending' }
+  if (project.running > 0 || PROJECT_PENDING_PUBLISH_STATUSES.has(project.publishStatus)) return { label: 'Pending' }
+  if (PROJECT_COMPLETED_PUBLISH_STATUSES.has(project.publishStatus)) return { label: 'Completed' }
   if (project.total === 0) return { label: 'No activity' }
   return { label: 'Completed' }
 }
 
+function completedActivityCount(group: Pick<ProjectActivityGroup, 'completed' | 'total' | 'publishStatus'>): number {
+  // A published project is a completed workspace activity even when it has no
+  // agent-task rows attached to it.
+  return group.completed + (group.total === 0 && PROJECT_COMPLETED_PUBLISH_STATUSES.has(group.publishStatus) ? 1 : 0)
+}
+
 function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; onPress: () => void }) {
+  const completed = completedActivityCount(group)
+
   return (
     <Pressable onPress={onPress} className="mx-4 mt-3 rounded-2xl bg-card p-4 active:bg-muted/50">
       <View className="flex-row items-center gap-3">
@@ -109,11 +121,9 @@ function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; 
         <ChevronRight size={17} className="text-muted-foreground" />
       </View>
       <View className="mt-4 flex-row flex-wrap gap-2">
-        {group.total > 0 ? <>
-          <StatusPill label={`${group.completed} completed`} tone={group.completed > 0 ? 'success' : 'muted'} />
-          <StatusPill label={`${group.running} pending`} tone={group.running > 0 ? 'primary' : 'muted'} />
-          <StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} />
-        </> : <StatusPill label="No activity yet" tone="muted" />}
+        <StatusPill label={`${completed} completed`} tone={completed > 0 ? 'success' : 'muted'} />
+        <StatusPill label={`${group.running} pending`} tone={group.running > 0 ? 'primary' : 'muted'} />
+        <StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} />
       </View>
     </Pressable>
   )

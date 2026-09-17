@@ -39,7 +39,6 @@ export interface WorkspaceMember extends WorkspaceProjectEntry {
   realPath?: string
   readonly: boolean
 }
-
 export interface MountWorkspaceMemberInput {
   id: string
   name?: string | null
@@ -286,4 +285,3 @@ export async function unmountWorkspaceMember(projectId: string): Promise<boolean
     return true
   })
 }
-

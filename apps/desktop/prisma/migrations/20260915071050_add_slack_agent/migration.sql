@@ -357,4 +357,3 @@ CREATE INDEX "slack_project_routing_rules_projectId_idx" ON "slack_project_routi
 
 -- CreateIndex
 CREATE UNIQUE INDEX "slack_project_routing_rules_slackTeamId_keyword_key" ON "slack_project_routing_rules"("slackTeamId", "keyword");
-

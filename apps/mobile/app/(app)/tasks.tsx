@@ -97,6 +97,13 @@ export default function TasksScreen() {
   const loadInFlight = useRef<Promise<void> | null>(null)
   const taskOffsets = useRef(new Map<string, number>())
   const taskListRef = useRef<ScrollView>(null)
+  const createSheetScrollRef = useRef<ScrollView>(null)
+
+  const keepProjectSearchVisible = useCallback(() => {
+    requestAnimationFrame(() => {
+      createSheetScrollRef.current?.scrollToEnd({ animated: false })
+    })
+  }, [])
 
   const load = useCallback(async () => {
     if (loadInFlight.current) return loadInFlight.current
@@ -319,6 +326,13 @@ export default function TasksScreen() {
     )
   }
 
+  useEffect(() => {
+    if (!projectSearchOpen) return
+    // Pin the form after the search field opens. Subsequent filter changes are
+    // handled by the sheet's content-size callback after their layout pass.
+    keepProjectSearchVisible()
+  }, [keepProjectSearchVisible, projectSearchOpen])
+
   return (
     <View className="flex-1 bg-background">
       {error ? (
@@ -359,6 +373,9 @@ export default function TasksScreen() {
         headerTitleAlign="left"
         headerBorder
         scroll
+        scrollRef={createSheetScrollRef}
+        onContentSizeChange={projectSearchOpen ? keepProjectSearchVisible : undefined}
+        keyboardBehavior="scroll"
         maxHeightRatio={0.84}
         draggable
         animationType="slide"
@@ -370,7 +387,7 @@ export default function TasksScreen() {
           </View>
         )}
       >
-        <View className="gap-5 px-4 pb-5 pt-2">
+        <View className="gap-6 px-4 pb-5 pt-4">
           <View className="flex-row items-center justify-between">
             <Text className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Task details</Text>
             <Text className="text-xs text-muted-foreground">Required fields marked *</Text>
@@ -408,21 +425,22 @@ export default function TasksScreen() {
           <View>
             <View className="mb-2 flex-row items-center justify-between">
               <Text className="text-[13px] font-semibold text-foreground">Project</Text>
-              <View className="flex-row items-center gap-2">
+              <View className="flex-row items-center gap-2.5">
                 <Text className="text-xs text-muted-foreground">Optional</Text>
                 <Pressable
                   onPress={() => setProjectSearchOpen((open) => !open)}
                   accessibilityRole="button"
                   accessibilityLabel={projectSearchOpen ? 'Close project search' : 'Search projects'}
-                  className={`h-9 w-9 items-center justify-center rounded-full ${projectSearchOpen ? 'bg-primary/15' : 'bg-muted'}`}
+                  accessibilityHint={projectSearchOpen ? 'Hide project search' : 'Show project search'}
+                  className={`h-10 w-10 items-center justify-center rounded-2xl border ${projectSearchOpen ? 'border-primary bg-primary/10' : 'border-border bg-muted/70'}`}
                 >
-                  {projectSearchOpen ? <X size={17} className="text-primary" /> : <Search size={17} className="text-foreground" />}
+                  {projectSearchOpen ? <X size={18} className="text-primary" /> : <Search size={18} className="text-foreground" />}
                 </Pressable>
               </View>
             </View>
             {projectSearchOpen ? (
-              <View className="mt-1 flex-row items-center rounded-xl border border-border bg-muted/70 px-3">
-                <Search size={16} className="text-muted-foreground" />
+              <View className="mt-3 h-12 flex-row items-center rounded-2xl border border-border bg-muted/70 px-3.5">
+                <Search size={18} className="text-muted-foreground" />
                 <TextInput
                   value={projectQuery}
                   onChangeText={setProjectQuery}
@@ -431,7 +449,7 @@ export default function TasksScreen() {
                   selectionColor={isDark ? '#f09050' : '#c2410c'}
                   autoFocus
                   returnKeyType="search"
-                  className="h-11 flex-1 px-2 text-[15px] text-foreground"
+                  className="h-12 flex-1 px-2.5 text-base text-foreground"
                   accessibilityLabel="Search projects"
                 />
                 {projectQuery ? (

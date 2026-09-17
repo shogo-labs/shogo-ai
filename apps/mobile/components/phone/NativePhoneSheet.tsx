@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   Animated,
   Keyboard,
@@ -97,11 +97,11 @@ function useNativePhoneSheetSlide(visible: boolean, enabled: boolean) {
  * already move it partway, so this adds only a small supplemental transform
  * and lets the keyboard animation drive the sheet up and back down smoothly.
  */
-function useNativePhoneSheetKeyboardShift(visible: boolean, viewportHeight: number) {
+function useNativePhoneSheetKeyboardShift(visible: boolean, viewportHeight: number, enabled: boolean) {
   const shift = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
-    if (!visible) {
+    if (!visible || !enabled) {
       shift.stopAnimation()
       shift.setValue(0)
       return
@@ -186,6 +186,12 @@ export interface NativePhoneSheetProps {
   draggable?: boolean
   /** Keep the native drawer visible behind this sheet when it opens. */
   keepDrawerOpen?: boolean
+  /** Choose between lifting the panel or letting a scrollable form handle the keyboard. */
+  keyboardBehavior?: 'shift' | 'scroll'
+  /** Ref for callers that need to reposition a scrollable sheet body. */
+  scrollRef?: RefObject<ScrollView | null>
+  /** Called when the scrollable body changes size, such as after filtering results. */
+  onContentSizeChange?: (width: number, height: number) => void
 }
 
 /**
@@ -212,6 +218,9 @@ export function NativePhoneSheet({
   density = PHONE_DENSITY,
   draggable = false,
   keepDrawerOpen = false,
+  keyboardBehavior = 'shift',
+  scrollRef,
+  onContentSizeChange,
 }: NativePhoneSheetProps) {
   const { height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -222,7 +231,7 @@ export function NativePhoneSheet({
   const panelSlide = animationType === 'slide'
   const { mounted, transition } = useNativePhoneSheetSlide(visible, panelSlide)
   const panelHeight = Math.round(height * maxHeightRatio)
-  const keyboardShift = useNativePhoneSheetKeyboardShift(visible, height)
+  const keyboardShift = useNativePhoneSheetKeyboardShift(visible, height, keyboardBehavior === 'shift')
   const dragOffset = useRef(new Animated.Value(0)).current
   const dragStart = useRef(0)
   const dragBounds = useMemo(() => {
@@ -305,9 +314,13 @@ export function NativePhoneSheet({
   const backdropMotionStyle = panelSlide ? { opacity: transition } : undefined
   const body = scroll ? (
     <ScrollView
+      ref={scrollRef}
       style={bodyMaxHeightRatio ? { maxHeight: Math.round(height * bodyMaxHeightRatio) } : undefined}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={keyboardBehavior === 'scroll' ? 'interactive' : undefined}
+      automaticallyAdjustKeyboardInsets={keyboardBehavior === 'scroll' && Platform.OS === 'ios'}
       nestedScrollEnabled
+      onContentSizeChange={onContentSizeChange}
     >
       {children}
     </ScrollView>
