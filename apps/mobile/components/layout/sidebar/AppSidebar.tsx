@@ -362,6 +362,7 @@ export const AppSidebar = observer(function AppSidebar({
   const [mobileExpandedProjectId, setMobileExpandedProjectId] = useState<string | null>(null);
   const [mobileProjectPanelId, setMobileProjectPanelId] = useState<string | null>(null);
   const mobileProjectTransition = useRef(new Animated.Value(0)).current;
+  const mobileProjectCollapsedRef = useRef(false);
 
   const toggleProjectsExpanded = useCallback(() => {
     setProjectsExpanded((expanded) => !expanded);
@@ -455,38 +456,55 @@ export const AppSidebar = observer(function AppSidebar({
     ? workspaceProjects.find((project: any) => project.id === mobileRouteProjectId)
     : undefined;
 
-  // A project-chat swipe opens the shared drawer without going through the
-  // project-sidebar event bus. Prepare the route's project while the drawer is
-  // closed so the panel is already underneath the sheet when a swipe starts.
-  useEffect(() => {
-    if (!isNativeDrawer || !mobileRouteProjectId || !mobileRouteProject) return;
-    if (mobileProjectPanelId === mobileRouteProjectId) return;
-    mobileProjectTransition.stopAnimation();
-    mobileProjectTransition.setValue(1);
-    setMobileProjectPanelId(mobileRouteProjectId);
-  }, [isNativeDrawer, mobileProjectPanelId, mobileProjectTransition, mobileRouteProject, mobileRouteProjectId]);
-
   const openMobileProject = useCallback((projectId: string) => {
+    mobileProjectCollapsedRef.current = false;
     setMobileProjectPanelId(projectId);
     setMobileExpandedProjectId(projectId);
   }, []);
 
   const closeMobileProject = useCallback(() => {
+    mobileProjectCollapsedRef.current = true;
     setMobileExpandedProjectId(null);
   }, []);
 
   useEffect(() => {
-    if (!isOpen) {
-      setMobileExpandedProjectId(null);
-      if (!mobileRouteProjectId) {
-        setMobileProjectPanelId(null);
-        mobileProjectTransition.setValue(0);
-      }
+    if (isOpen) return;
+
+    mobileProjectCollapsedRef.current = false;
+    setMobileExpandedProjectId(null);
+
+    // A project-chat edge swipe does not go through the sidebar event bus.
+    // Prepare that route's panel only while the drawer is closed so it is
+    // ready beneath the moving sheet without fighting an explicit collapse.
+    if (isNativeDrawer && mobileRouteProjectId) {
+      mobileProjectTransition.stopAnimation();
+      mobileProjectTransition.setValue(1);
+      setMobileProjectPanelId(mobileRouteProjectId);
+      return;
     }
-  }, [isOpen, mobileProjectTransition, mobileRouteProjectId]);
+
+    setMobileProjectPanelId(null);
+    mobileProjectTransition.setValue(0);
+  }, [isNativeDrawer, isOpen, mobileProjectTransition, mobileRouteProjectId]);
 
   useEffect(() => {
-    if (!isNativeDrawer || !isOpen || !mobileRouteProjectId || !mobileRouteProject) return;
+    if (!isNativeDrawer) {
+      mobileProjectCollapsedRef.current = false;
+      return;
+    }
+
+    if (!isOpen) {
+      mobileProjectCollapsedRef.current = false;
+      return;
+    }
+
+    // The route project is used to seed the focused panel when the shared
+    // drawer opens (including an edge-swipe). Do not run this on every state
+    // update while the drawer is already open: collapsing the focused panel
+    // with its chevron must be allowed to settle back to the normal sidebar.
+    if (mobileProjectCollapsedRef.current || !mobileRouteProjectId || !mobileRouteProject) return;
+    // If the route project was not loaded in the first open frame, allow the
+    // effect to seed it once the project data arrives during that same open.
     if (mobileProjectPanelId === mobileRouteProjectId && mobileExpandedProjectId === mobileRouteProjectId) return;
     mobileProjectTransition.stopAnimation();
     mobileProjectTransition.setValue(1);
@@ -498,6 +516,7 @@ export const AppSidebar = observer(function AppSidebar({
     return projectSidebarEvents.subscribeOpenProject((projectId) => {
       // This panel is the drawer's first frame when opened from project chat;
       // skip the internal crossfade so the drawer itself owns the motion.
+      mobileProjectCollapsedRef.current = false;
       mobileProjectTransition.stopAnimation();
       mobileProjectTransition.setValue(1);
       setMobileProjectPanelId(projectId);
@@ -507,16 +526,28 @@ export const AppSidebar = observer(function AppSidebar({
 
   useEffect(() => {
     const expanded = mobileExpandedProjectId !== null;
-    if (expanded && !mobileProjectPanelId) return;
+    if (expanded) {
+      if (!mobileProjectPanelId) return;
+      // Focused project panels are prepared before the drawer starts moving.
+      // Snap the internal layer to its final state so the drawer animation is
+      // the only opening motion; otherwise the base sidebar briefly fades in.
+      mobileProjectTransition.stopAnimation();
+      mobileProjectTransition.setValue(1);
+      return;
+    }
+    // When the drawer is closed, keep a route-backed project panel prepared
+    // underneath it for the next open. Only animate back to the base sidebar
+    // when the user explicitly collapses the panel while the drawer is open.
+    if (!mobileProjectPanelId || !isOpen) return;
     Animated.timing(mobileProjectTransition, {
-      toValue: expanded ? 1 : 0,
+      toValue: 0,
       duration: 440,
       easing: Easing.inOut(Easing.cubic),
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (finished && !expanded) setMobileProjectPanelId(null);
     });
-  }, [mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition]);
+  }, [isOpen, mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition]);
 
   const [collapsed, setCollapsed] = useState(false);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);

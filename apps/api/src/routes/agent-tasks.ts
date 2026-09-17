@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { prisma } from '../lib/prisma'
 import type { NotificationType } from '../lib/prisma'
 import { projectChatRoutes } from './project-chat'
@@ -12,6 +12,37 @@ type RuntimeManager = Parameters<typeof projectChatRoutes>[0]['runtimeManager']
 
 const TASK_STATUSES = new Set(['draft', 'queued', 'running', 'completed', 'failed', 'cancelled'])
 const runningTaskControllers = new Map<string, AbortController>()
+
+// Agent work is persisted in the database, but the runtime stream itself is
+// process-local. The dispatcher keeps queued work moving after an API restart
+// and marks abandoned running work as retryable instead of leaving Activity
+// stuck forever.
+const TASK_DISPATCH_INTERVAL_MS = 5_000
+const TASK_HEARTBEAT_INTERVAL_MS = 10_000
+const TASK_STALE_AFTER_MS = 60_000
+const TASK_DISPATCH_BATCH_SIZE = 10
+let taskDispatcherTimer: ReturnType<typeof setInterval> | null = null
+
+type TaskWithProject = {
+  id: string
+  userId: string
+  workspaceId: string
+  projectId: string | null
+  chatSessionId: string | null
+  title: string
+  notes: string | null
+  dueAt: Date | null
+  status: string
+  currentStep: string | null
+  resultSummary: string | null
+  errorMessage: string | null
+  queuedAt: Date | null
+  startedAt: Date | null
+  completedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+  project?: { name: string | null } | null
+}
 
 async function stopTaskRuntime(
   task: { id: string; projectId: string | null; chatSessionId: string | null },
@@ -74,16 +105,20 @@ function watchForTaskCancellation(
   return stop
 }
 
-function authUserId(c: any): string | null {
+function authUserId(c: Context): string | null {
   const auth = c.get('auth') as { userId?: string; isAuthenticated?: boolean } | undefined
   return auth?.isAuthenticated === false ? null : auth?.userId ?? null
 }
 
-function unauthorized(c: any) {
+function unauthorized(c: Context) {
   return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
 }
 
-function taskView(task: any) {
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+function taskView(task: TaskWithProject) {
   return {
     id: task.id,
     userId: task.userId,
@@ -180,23 +215,40 @@ async function consumeResponse(response: Response): Promise<void> {
 
 async function waitForAssistantMessage(
   sessionId: string,
+  promptMessageId: string,
   afterCreatedAt: Date,
   timeoutMs = 10_000,
 ) {
   const deadline = Date.now() + timeoutMs
 
   while (true) {
-    const assistantMessage = await prisma.chatMessage.findFirst({
-      where: { sessionId, role: 'assistant', createdAt: { gt: afterCreatedAt } },
-      orderBy: { createdAt: 'desc' },
-      select: { content: true },
+    const messages = await prisma.chatMessage.findMany({
+      where: { sessionId, role: { in: ['assistant', 'user'] }, createdAt: { gt: afterCreatedAt } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, role: true, content: true },
     })
 
-    if (assistantMessage) return assistantMessage
+    const firstMessage = messages[0]
+    if (firstMessage?.role === 'user' && firstMessage.id !== promptMessageId) {
+      throw new Error('Another chat message started before the delegated task completed. Retry the task to keep its result associated with the correct chat turn.')
+    }
+    if (firstMessage?.role === 'assistant') return firstMessage
     if (Date.now() >= deadline) return null
 
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
+}
+
+function startTaskHeartbeat(taskId: string): () => void {
+  const heartbeat = setInterval(() => {
+    void prisma.agentTask.updateMany({
+      where: { id: taskId, status: 'running' },
+      data: { updatedAt: new Date() },
+    }).catch((error) => {
+      console.error(`[AgentTask] Failed to heartbeat ${taskId}:`, error)
+    })
+  }, TASK_HEARTBEAT_INTERVAL_MS)
+  return () => clearInterval(heartbeat)
 }
 
 function buildAgentTaskPrompt(task: { title: string; notes: string | null }) {
@@ -220,10 +272,10 @@ async function persistAgentTaskPrompt(
       parts: JSON.stringify([{ type: 'text', text: prompt }]),
       agent: 'technical',
     },
-    select: { createdAt: true },
+    select: { id: true, createdAt: true },
   })
 
-  return { prompt, afterCreatedAt: created.createdAt }
+  return { prompt, promptMessageId: created.id, afterCreatedAt: created.createdAt }
 }
 
 type TaskRouting = {
@@ -321,10 +373,12 @@ async function runAgentTask(
 ) {
   const task = await prisma.agentTask.findUnique({ where: { id: taskId } })
   if (!task || task.status === 'cancelled') return
+  if (task.dueAt && task.dueAt.getTime() > Date.now()) return
 
   let sessionId = task.chatSessionId
   let abortController: AbortController | null = null
   let stopCancellationWatch: (() => void) | null = null
+  let stopHeartbeat: (() => void) | null = null
   try {
     const started = await prisma.agentTask.updateMany({
       where: { id: taskId, status: 'queued' },
@@ -333,6 +387,7 @@ async function runAgentTask(
     if (started.count === 0) return
     abortController = new AbortController()
     runningTaskControllers.set(taskId, abortController)
+    stopHeartbeat = startTaskHeartbeat(taskId)
 
     // A cancellation may land after the queued -> running claim but before
     // this process registers its controller. The DB is the cross-instance
@@ -404,7 +459,11 @@ async function runAgentTask(
     const latest = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true } })
     if (latest?.status === 'cancelled') return
 
-    const assistant = await waitForAssistantMessage(sessionId, promptState.afterCreatedAt)
+    const assistant = await waitForAssistantMessage(
+      sessionId,
+      promptState.promptMessageId,
+      promptState.afterCreatedAt,
+    )
     if (!assistant) {
       throw new Error('The agent did not return a response. Check the project runtime and model configuration, then retry.')
     }
@@ -422,8 +481,8 @@ async function runAgentTask(
     if (completedUpdate.count === 0) return
     const completed = await prisma.agentTask.findUnique({ where: { id: taskId } })
     if (completed) await notifyTask(completed, 'agent_task_completed', 'The agent completed this task.')
-  } catch (error: any) {
-    const message = error?.message || 'The agent could not complete this task.'
+  } catch (error: unknown) {
+    const message = errorMessage(error, 'The agent could not complete this task.')
     const latest = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true } }).catch(() => null)
     if (latest?.status === 'cancelled') return
     const failed = await prisma.agentTask.update({
@@ -434,10 +493,69 @@ async function runAgentTask(
     console.error(`[AgentTask] ${taskId} failed:`, message)
   } finally {
     stopCancellationWatch?.()
+    stopHeartbeat?.()
     if (abortController && runningTaskControllers.get(taskId) === abortController) {
       runningTaskControllers.delete(taskId)
     }
   }
+}
+
+async function dispatchQueuedTasks(runtimeManager?: RuntimeManager): Promise<void> {
+  const now = new Date()
+  const staleBefore = new Date(now.getTime() - TASK_STALE_AFTER_MS)
+
+  // A live worker refreshes updatedAt. A task that has not been refreshed for
+  // the lease window was interrupted by a crashed/restarted API process. Mark
+  // it failed so the user can retry it explicitly; silently replaying the
+  // prompt could create duplicate work in the project chat.
+  const abandoned = await prisma.agentTask.updateMany({
+    where: { status: 'running', updatedAt: { lt: staleBefore } },
+    data: {
+      status: 'failed',
+      currentStep: null,
+      errorMessage: 'The agent process stopped before this task completed. Retry the task to continue.',
+    },
+  })
+  if (abandoned.count > 0) {
+    console.warn(`[AgentTask] Marked ${abandoned.count} abandoned task(s) as retryable`)
+  }
+
+  const queued = await prisma.agentTask.findMany({
+    where: {
+      status: 'queued',
+      OR: [{ dueAt: null }, { dueAt: { lte: now } }],
+    },
+    orderBy: [{ queuedAt: 'asc' }, { createdAt: 'asc' }],
+    take: TASK_DISPATCH_BATCH_SIZE,
+    select: { id: true },
+  })
+
+  for (const task of queued) {
+    // runAgentTask performs the atomic queued -> running claim, so multiple
+    // API instances can safely observe the same queue without duplicating work.
+    void runAgentTask(task.id, runtimeManager)
+  }
+}
+
+/** Start the database-backed task dispatcher once during API startup. */
+export function startAgentTaskWorker(runtimeManager?: RuntimeManager): () => void {
+  if (taskDispatcherTimer) return stopAgentTaskWorker
+
+  const tick = () => {
+    void dispatchQueuedTasks(runtimeManager).catch((error) => {
+      console.error('[AgentTask] Dispatcher tick failed:', error)
+    })
+  }
+  tick()
+  taskDispatcherTimer = setInterval(tick, TASK_DISPATCH_INTERVAL_MS)
+  ;(taskDispatcherTimer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
+
+  return stopAgentTaskWorker
+}
+
+export function stopAgentTaskWorker(): void {
+  if (taskDispatcherTimer) clearInterval(taskDispatcherTimer)
+  taskDispatcherTimer = null
 }
 
 export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager } = {}) {
@@ -519,15 +637,13 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     const claimedTask = await loadTask(task.id, userId)
     if (!claimedTask) return c.json({ error: { code: 'not_found', message: 'Task not found' } }, 404)
 
-    let routed
-    let promptState: Awaited<ReturnType<typeof persistAgentTaskPrompt>>
+    let routed: Awaited<ReturnType<typeof ensureProjectChat>>
     try {
       // Resolve the destination before responding so the client can open the
       // exact project chat immediately after Start Agent is tapped.
       routed = await ensureProjectChat(claimedTask)
-      promptState = await persistAgentTaskPrompt(routed.sessionId, claimedTask)
-    } catch (error: any) {
-      const message = error?.message || 'Could not prepare the project chat'
+    } catch (error: unknown) {
+      const message = errorMessage(error, 'Could not prepare the project chat')
       await prisma.agentTask.update({
         where: { id: claimedTask.id },
         data: { status: 'failed', errorMessage: message.slice(0, 2_000) },
@@ -541,11 +657,13 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     const queued = await loadTask(claimedTask.id, userId)
     if (!queued) return c.json({ error: { code: 'not_found', message: 'Task not found' } }, 404)
     if (finalize.count === 0) return c.json({ ok: true, data: taskView(queued) })
-    void runAgentTask(queued.id, config.runtimeManager, {
-      projectId: routed.projectId,
-      sessionId: routed.sessionId,
-      promptState,
-    })
+    const dueAt = queued.dueAt ? new Date(queued.dueAt) : null
+    if (!dueAt || dueAt.getTime() <= Date.now()) {
+      void runAgentTask(queued.id, config.runtimeManager, {
+        projectId: routed.projectId,
+        sessionId: routed.sessionId,
+      })
+    }
     return c.json({ ok: true, data: taskView(queued) }, 202)
   })
 

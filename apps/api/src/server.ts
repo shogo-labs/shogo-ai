@@ -45,7 +45,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
-import { createAgentTaskRoutes } from './routes/agent-tasks'
+import { createAgentTaskRoutes, startAgentTaskWorker, stopAgentTaskWorker } from './routes/agent-tasks'
 import { slackAgentRoutes } from './routes/slack-agent'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -1480,6 +1480,9 @@ app.route('/api', syncRoutes())
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
+// Resume queued agent tasks after API restarts and keep dueAt-backed work
+// moving without relying on a request that happens to remain open.
+startAgentTaskWorker(getRuntimeManager())
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -8530,6 +8533,7 @@ const DRAIN_POLL_MS = 1_000
 async function gracefulShutdown(signal: string) {
   if (isShuttingDown) return
   isShuttingDown = true
+  stopAgentTaskWorker()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain

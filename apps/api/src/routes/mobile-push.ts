@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { prisma } from '../lib/prisma'
 
-function authUserId(c: any): string | null {
+function authUserId(c: Context): string | null {
   const auth = c.get('auth') as { userId?: string; isAuthenticated?: boolean } | undefined
   return auth?.isAuthenticated === false ? null : auth?.userId ?? null
 }
 
-function unauthorized(c: any) {
+function unauthorized(c: Context) {
   return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'P2002'
 }
 
 /** Register the native app's Expo push token for the signed-in user. */
@@ -30,12 +37,51 @@ export function mobilePushRoutes() {
       return c.json({ error: { code: 'invalid_request', message: 'pushToken and a valid platform are required' } }, 400)
     }
 
-    const subscription = await prisma.mobilePushSubscription.upsert({
+    const existing = await prisma.mobilePushSubscription.findUnique({
       where: { pushToken },
-      update: { userId, platform },
-      create: { userId, pushToken, platform },
-      select: { id: true },
+      select: { id: true, userId: true },
     })
+    if (existing && existing.userId !== userId) {
+      return c.json({
+        error: { code: 'conflict', message: 'This push token is already registered to another account' },
+      }, 409)
+    }
+
+    if (existing) {
+      const subscription = await prisma.mobilePushSubscription.update({
+        where: { id: existing.id },
+        data: { platform },
+        select: { id: true },
+      })
+      return c.json({ ok: true, id: subscription.id })
+    }
+
+    let subscription
+    try {
+      subscription = await prisma.mobilePushSubscription.create({
+        data: { userId, pushToken, platform },
+        select: { id: true },
+      })
+    } catch (error) {
+      // Two app surfaces can register the same token at the same time. If the
+      // unique insert lost that race, re-read the row and apply the same
+      // ownership check as the initial lookup instead of returning a 500.
+      if (!isUniqueConstraintError(error)) throw error
+      const raced = await prisma.mobilePushSubscription.findUnique({
+        where: { pushToken },
+        select: { id: true, userId: true },
+      })
+      if (!raced || raced.userId !== userId) {
+        return c.json({
+          error: { code: 'conflict', message: 'This push token is already registered to another account' },
+        }, 409)
+      }
+      subscription = await prisma.mobilePushSubscription.update({
+        where: { id: raced.id },
+        data: { platform },
+        select: { id: true },
+      })
+    }
     return c.json({ ok: true, id: subscription.id })
   })
 

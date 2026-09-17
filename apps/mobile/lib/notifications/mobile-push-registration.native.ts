@@ -7,12 +7,39 @@ import * as Notifications from 'expo-notifications'
 import { useEffect } from 'react'
 import { api, createHttpClient } from '../api'
 import { ensureNotificationPermission } from './chat-notifier'
+import { getNotifyOnTurnComplete } from './preferences'
 
 let registeredDevice: { userId: string; pushToken: string } | null = null
 let registrationInFlight: Promise<void> | null = null
 
-async function registerCurrentDevice(userId: string) {
+async function unregisterRegisteredDevice(): Promise<void> {
+  const device = registeredDevice
+  if (!device) return
+
+  // Clear the local marker before awaiting the network request so a logout or
+  // account switch cannot continue suppressing local notifications if the
+  // server is temporarily unavailable.
+  registeredDevice = null
+  try {
+    await api.unregisterMobilePushSubscription(createHttpClient(), device.pushToken)
+  } catch {
+    // The subscription is best-effort. A later login registers the current
+    // account again, and the server removes invalid tokens when delivering.
+  }
+}
+
+async function registerCurrentDevice(userId: string, enabled: boolean) {
   if (Platform.OS !== 'ios' && Platform.OS !== 'android') return
+
+  if (registeredDevice?.userId !== userId) {
+    await unregisterRegisteredDevice()
+  }
+
+  if (!enabled) {
+    await unregisterRegisteredDevice()
+    return
+  }
+
   if (!(await ensureNotificationPermission())) return
 
   const projectId = Constants.expoConfig?.extra?.eas?.projectId
@@ -30,16 +57,21 @@ async function registerCurrentDevice(userId: string) {
   registeredDevice = { userId, pushToken }
 }
 
-export function useMobilePushRegistration(userId: string | null) {
+export function hasRegisteredMobilePushSubscription(): boolean {
+  return registeredDevice !== null && getNotifyOnTurnComplete()
+}
+
+export function useMobilePushRegistration(userId: string | null, enabled = true) {
   useEffect(() => {
     let cancelled = false
-    if (!userId) return () => { cancelled = true }
 
     const register = async () => {
       if (registrationInFlight) await registrationInFlight.catch(() => {})
       if (cancelled) return
 
-      const request = registerCurrentDevice(userId)
+      const request = userId
+        ? registerCurrentDevice(userId, enabled)
+        : unregisterRegisteredDevice()
       registrationInFlight = request.finally(() => {
         registrationInFlight = null
       })
@@ -48,5 +80,5 @@ export function useMobilePushRegistration(userId: string | null) {
     void register()
 
     return () => { cancelled = true }
-  }, [userId])
+  }, [enabled, userId])
 }
