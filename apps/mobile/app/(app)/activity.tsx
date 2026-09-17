@@ -107,8 +107,19 @@ function completedActivityCount(group: Pick<ProjectActivityGroup, 'completed' | 
   return group.completed + (group.total === 0 && PROJECT_COMPLETED_PUBLISH_STATUSES.has(group.publishStatus) ? 1 : 0)
 }
 
+function pendingActivityCount(group: Pick<ProjectActivityGroup, 'running' | 'total' | 'publishStatus'>): number {
+  return group.running + (group.total === 0 && PROJECT_PENDING_PUBLISH_STATUSES.has(group.publishStatus) ? 1 : 0)
+}
+
+function failedActivityCount(group: Pick<ProjectActivityGroup, 'failed' | 'total' | 'publishStatus'>): number {
+  return group.failed + (group.total === 0 && group.publishStatus === 'failed' ? 1 : 0)
+}
+
 function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; onPress: () => void }) {
   const completed = completedActivityCount(group)
+  const pending = pendingActivityCount(group)
+  const failed = failedActivityCount(group)
+  const hasStatus = completed > 0 || pending > 0 || failed > 0
 
   return (
     <Pressable onPress={onPress} className="mx-4 mt-3 rounded-2xl bg-card p-4 active:bg-muted/50">
@@ -120,11 +131,11 @@ function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; 
         </View>
         <ChevronRight size={17} className="text-muted-foreground" />
       </View>
-      <View className="mt-4 flex-row flex-wrap gap-2">
-        <StatusPill label={`${completed} completed`} tone={completed > 0 ? 'success' : 'muted'} />
-        <StatusPill label={`${group.running} pending`} tone={group.running > 0 ? 'primary' : 'muted'} />
-        <StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} />
-      </View>
+      {hasStatus ? <View className="mt-4 flex-row flex-wrap gap-2">
+        {completed > 0 ? <StatusPill label={`${completed} completed`} tone="success" /> : null}
+        {pending > 0 ? <StatusPill label={`${pending} pending`} tone="primary" /> : null}
+        {failed > 0 ? <StatusPill label={`${failed} failed`} tone="danger" /> : null}
+      </View> : null}
     </Pressable>
   )
 }
