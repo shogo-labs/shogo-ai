@@ -23,21 +23,21 @@ mock.module("../../lib/native-phone-layout", () => ({
 const { AutoModelOption } = await import("../AutoModelOption")
 
 describe("AutoModelOption sheet type", () => {
-  test("uses the larger phone sheet type, not the compact web popover", () => {
+  test("uses the larger phone sheet type without cost copy", () => {
     render(
       <AutoModelOption currentModelId="auto" presentation="sheet" onSelect={() => {}} />,
     )
 
     expect(screen.getByText("Auto").className).toContain(NATIVE_MODEL_SHEET.nameClass)
-    expect(screen.getByText("Uses fewer credits per step").className).toContain(NATIVE_MODEL_SHEET.metaClass)
+    expect(screen.queryByText("Uses fewer credits per step")).toBeNull()
+    expect(screen.queryByText("Cheaper")).toBeNull()
   })
 
-  test("hides cheaper / credit copy when the plan picker asks for names only", () => {
+  test("does not render cost copy when the model is selected", () => {
     render(
       <AutoModelOption
         currentModelId="auto"
         presentation="sheet"
-        hideCostLabels
         onSelect={() => {}}
       />,
     )
