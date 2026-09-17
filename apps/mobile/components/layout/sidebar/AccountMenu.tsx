@@ -86,7 +86,7 @@ export function AccountMenu({
     <>
       <View
         className={cn(
-          "rounded bg-primary/20 items-center justify-center",
+          "rounded-full bg-primary/20 items-center justify-center",
           isNative ? density.hitSize : "h-7 w-7",
         )}
       >
