@@ -106,7 +106,7 @@ export function AccountMenu({
               "text-foreground",
               isNative ? `${density.text.body} font-medium` : "text-sm",
             )}
-            numberOfLines={1}
+            numberOfLines={isNative ? 2 : 1}
             ellipsizeMode="tail"
           >
             {currentWorkspace?.name || "Workspace"}
