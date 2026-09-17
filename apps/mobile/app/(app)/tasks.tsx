@@ -98,9 +98,12 @@ export default function TasksScreen() {
   const taskOffsets = useRef(new Map<string, number>())
   const taskListRef = useRef<ScrollView>(null)
   const createSheetScrollRef = useRef<ScrollView>(null)
+  const projectSearchScrollFrame = useRef<number | null>(null)
 
   const keepProjectSearchVisible = useCallback(() => {
-    requestAnimationFrame(() => {
+    if (projectSearchScrollFrame.current !== null) return
+    projectSearchScrollFrame.current = requestAnimationFrame(() => {
+      projectSearchScrollFrame.current = null
       createSheetScrollRef.current?.scrollToEnd({ animated: false })
     })
   }, [])
@@ -345,6 +348,10 @@ export default function TasksScreen() {
     const subscription = Keyboard.addListener('keyboardDidShow', keepProjectSearchVisible)
     return () => subscription.remove()
   }, [keepProjectSearchVisible, projectSearchOpen])
+
+  useEffect(() => () => {
+    if (projectSearchScrollFrame.current !== null) cancelAnimationFrame(projectSearchScrollFrame.current)
+  }, [])
 
   return (
     <View className="flex-1 bg-background">
