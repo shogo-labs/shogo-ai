@@ -40,6 +40,7 @@ import {
   ChevronRight,
   PanelLeftClose,
   Plus,
+  MessageSquarePlus,
   Inbox,
   Store,
   Mic,
@@ -582,6 +583,32 @@ export const AppSidebar = observer(function AppSidebar({
     if (!isWide) closeNativeDrawer();
   }, [closeNativeDrawer, isWide]);
 
+  const handleNewChat = useCallback(async () => {
+    if (!user?.id || !activeWorkspaceId) return;
+
+    try {
+      const project = await actions.createProject(
+        'Untitled',
+        activeWorkspaceId,
+        undefined,
+        user.id,
+      );
+      if (!project?.id) return;
+
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: {
+          id: project.id,
+          newChat: '1',
+          newChatNonce: String(Date.now()),
+        },
+      } as any);
+      onNavPress();
+    } catch (err) {
+      console.error('[AppSidebar] Failed to create new chat project:', err);
+    }
+  }, [actions, activeWorkspaceId, onNavPress, router, user?.id]);
+
   const prevPathnameRef = useRef(pathname);
   useEffect(() => {
     if (prevPathnameRef.current === pathname) return;
@@ -730,6 +757,12 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
+          <NavItem
+            icon={MessageSquarePlus}
+            label="New Chat"
+            collapsed={collapsed}
+            onPress={handleNewChat}
+          />
           {!isNativeDrawer && (
             <NavItem
               icon={Search}
