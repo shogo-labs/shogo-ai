@@ -37,6 +37,7 @@ import {
   Home,
   Search,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   PanelLeftClose,
   Plus,
@@ -363,6 +364,11 @@ export const AppSidebar = observer(function AppSidebar({
   const [mobileProjectPanelId, setMobileProjectPanelId] = useState<string | null>(null);
   const mobileProjectTransition = useRef(new Animated.Value(0)).current;
   const mobileProjectCollapsedRef = useRef(false);
+  // A project row tap is an explicit drawer navigation intent. While that
+  // focused panel is open, the content route may still point at the previous
+  // project; the route-seeding effect must not immediately overwrite the
+  // user's selection with that stale route project.
+  const mobileProjectSelectionRef = useRef(false);
 
   const toggleProjectsExpanded = useCallback(() => {
     setProjectsExpanded((expanded) => !expanded);
@@ -458,6 +464,7 @@ export const AppSidebar = observer(function AppSidebar({
 
   const openMobileProject = useCallback((projectId: string) => {
     mobileProjectCollapsedRef.current = false;
+    mobileProjectSelectionRef.current = true;
     setMobileProjectPanelId(projectId);
     setMobileExpandedProjectId(projectId);
   }, []);
@@ -495,6 +502,7 @@ export const AppSidebar = observer(function AppSidebar({
 
     if (!isOpen) {
       mobileProjectCollapsedRef.current = false;
+      mobileProjectSelectionRef.current = false;
       return;
     }
 
@@ -502,7 +510,12 @@ export const AppSidebar = observer(function AppSidebar({
     // drawer opens (including an edge-swipe). Do not run this on every state
     // update while the drawer is already open: collapsing the focused panel
     // with its chevron must be allowed to settle back to the normal sidebar.
-    if (mobileProjectCollapsedRef.current || !mobileRouteProjectId || !mobileRouteProject) return;
+    if (
+      mobileProjectCollapsedRef.current ||
+      mobileProjectSelectionRef.current ||
+      !mobileRouteProjectId ||
+      !mobileRouteProject
+    ) return;
     // If the route project was not loaded in the first open frame, allow the
     // effect to seed it once the project data arrives during that same open.
     if (mobileProjectPanelId === mobileRouteProjectId && mobileExpandedProjectId === mobileRouteProjectId) return;
@@ -517,6 +530,7 @@ export const AppSidebar = observer(function AppSidebar({
       // This panel is the drawer's first frame when opened from project chat;
       // skip the internal crossfade so the drawer itself owns the motion.
       mobileProjectCollapsedRef.current = false;
+      mobileProjectSelectionRef.current = false;
       mobileProjectTransition.stopAnimation();
       mobileProjectTransition.setValue(1);
       setMobileProjectPanelId(projectId);
@@ -1327,7 +1341,7 @@ export const AppSidebar = observer(function AppSidebar({
                 />
               </Pressable>
             </View>
-            <View className="px-2 pt-3 pb-2">
+            <View className="px-0 pt-3 pb-2">
               <NavItem
                 icon={Home}
                 label="Home"
@@ -1335,6 +1349,8 @@ export const AppSidebar = observer(function AppSidebar({
                 active={isHomePage}
                 collapsed={false}
                 onNavPress={onNavPress}
+                iconClassName="text-muted-foreground"
+                labelClassName="text-foreground"
               />
               {features.marketplace && (
                 <NavItem
@@ -1344,6 +1360,8 @@ export const AppSidebar = observer(function AppSidebar({
                   active={isMarketplacePage}
                   collapsed={false}
                   onNavPress={onNavPress}
+                  iconClassName="text-muted-foreground"
+                  labelClassName="text-foreground"
                 />
               )}
               <NavItem
@@ -1351,12 +1369,31 @@ export const AppSidebar = observer(function AppSidebar({
                 label="New Chat"
                 collapsed={false}
                 onPress={handleNewChat}
+                iconClassName="text-muted-foreground"
+                labelClassName="text-foreground"
               />
+              <Pressable
+                onPress={closeMobileProject}
+                accessibilityLabel="See all projects"
+                accessibilityHint="Return to the full project list"
+                className="flex-row items-center gap-3 rounded-md px-3 py-2 active:bg-accent/50"
+              >
+                <ChevronLeft
+                  size={drawerDensity.icon.nav}
+                  className="text-muted-foreground shrink-0"
+                />
+                <Text
+                  className={`${drawerDensity.text.body} flex-1 text-foreground`}
+                  numberOfLines={1}
+                >
+                  See All Projects
+                </Text>
+              </Pressable>
             </View>
             <ProjectTreeItem
+              key={mobileProjectPanel.id}
               project={mobileProjectPanel}
               mobileProjectDetail
-              onMobileCollapse={closeMobileProject}
               onNavPress={onNavPress}
             />
           </Animated.View>

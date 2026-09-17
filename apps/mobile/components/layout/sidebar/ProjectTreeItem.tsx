@@ -21,7 +21,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ChevronUp,
   Folder,
   Pencil,
   Pin,
@@ -123,7 +122,6 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   mobileProjectFirstTapShowsChats,
   onMobileProjectExpand,
   mobileProjectDetail,
-  onMobileCollapse,
 }: {
   project: any;
   collapsed?: boolean;
@@ -133,7 +131,6 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   mobileProjectFirstTapShowsChats?: boolean;
   onMobileProjectExpand?: (projectId: string) => void;
   mobileProjectDetail?: boolean;
-  onMobileCollapse?: () => void;
 }) {
   const router = useRouter();
   const isNative = Platform.OS !== "web";
@@ -578,6 +575,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           })
         }
         onMeasureHeight={handleChatRowHeight}
+        mobileProjectDetail={mobileProjectDetail}
       />
     );
     const chatRows = createSidebarChatRows(
@@ -589,7 +587,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     return (
       <View className={mobileProjectDetail ? "flex-1" : "ml-6 mt-0.5"}>
         {sessions.length === 0 ? (
-          <View className="px-2 py-3">
+          <View className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}>
             <Text
               className="text-sm text-muted-foreground opacity-70"
               numberOfLines={1}
@@ -633,7 +631,10 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
                   onPress={() => setArchivedExpanded((v) => !v)}
                   accessibilityLabel={`${archivedExpanded ? "Collapse" : "Expand"} archived chats`}
                   accessibilityState={{ expanded: archivedExpanded }}
-                  className="flex-row items-center gap-1 px-1 pt-2 pb-0.5 active:opacity-70"
+                  className={cn(
+                    "flex-row items-center gap-1 pt-2 pb-0.5 active:opacity-70",
+                    mobileProjectDetail ? "pl-12 pr-1" : "px-1",
+                  )}
                 >
                   {archivedExpanded ? (
                     <ChevronDown
@@ -678,8 +679,8 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     <View className={mobileProjectDetail ? "flex-1" : undefined}>
       {mobileProjectDetail ? (
         <View className="flex-1">
-          <View className="flex-row items-center gap-2 px-3 py-3">
-            <View className="min-w-0 flex-1 flex-row items-center gap-2">
+          <View className="flex-row items-center gap-3 px-3 py-3">
+            <View className="min-w-0 flex-1 flex-row items-center gap-3">
               <Folder
                 size={density.icon.md}
                 className="text-muted-foreground shrink-0"
@@ -698,16 +699,6 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
                 className="h-10 w-10 items-center justify-center rounded-md active:bg-muted"
               >
                 <Plus size={density.icon.lg} className="text-foreground" />
-              </Pressable>
-              <Pressable
-                onPress={onMobileCollapse}
-                accessibilityLabel="Collapse project chats"
-                className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
-              >
-                <ChevronUp
-                  size={density.icon.lg}
-                  className="text-foreground"
-                />
               </Pressable>
             </View>
           </View>
