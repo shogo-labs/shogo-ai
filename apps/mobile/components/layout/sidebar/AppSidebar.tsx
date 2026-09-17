@@ -59,7 +59,6 @@ import {
   useDomainHttp,
 } from "../../../contexts/domain";
 import { useBillingData } from "@shogo/shared-app/hooks";
-import { NotificationBell } from "../../notifications/NotificationBell";
 import { api } from "../../../lib/api";
 import { trackPurchase } from "../../../lib/tracking";
 import {
@@ -1103,13 +1102,6 @@ export const AppSidebar = observer(function AppSidebar({
               localMode={localMode}
             />
           </View>
-
-          {!collapsed && (
-            <NotificationBell
-              size={isNativeDrawer ? drawerDensity.icon.lg : 18}
-              onPress={onNavPress}
-            />
-          )}
 
           {!collapsed && (
             <Pressable
