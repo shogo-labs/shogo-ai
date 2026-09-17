@@ -721,7 +721,7 @@ export const AppSidebar = observer(function AppSidebar({
             collapsed={collapsed}
             onNavPress={onNavPress}
           />
-          {features.marketplace && !isNativeDrawer && (
+          {features.marketplace && (
             <NavItem
               icon={Store}
               label="Marketplace"

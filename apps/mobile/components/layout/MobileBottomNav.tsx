@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Keyboard, Platform, Pressable, View, useWindowDimensions } from 'react-native'
 import { useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Activity, ListTodo, MessageCircle, Store } from 'lucide-react-native'
+import { Activity, LayoutGrid, ListTodo, MessageCircle } from 'lucide-react-native'
 import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
@@ -40,7 +40,7 @@ function isHomePath(pathname: string) {
 }
 
 function isBottomTabPath(pathname: string) {
-  return ['/tasks', '/activity', '/marketplace'].some((path) =>
+  return ['/tasks', '/activity', '/canvases'].some((path) =>
     pathname === path || pathname.endsWith(path) || pathname.includes(`(app)${path}`),
   )
 }
@@ -115,7 +115,8 @@ export function MobileBottomNav() {
   const active = useMemo(() => {
     if (pathname.includes('/tasks')) return 'tasks'
     if (pathname.includes('/activity')) return 'activity'
-    if (pathname.includes('/marketplace')) return 'marketplace'
+    if (pathname.includes('/canvases')) return 'canvases'
+    if (pathname.includes('/marketplace')) return 'none'
     return 'chat'
   }, [pathname])
 
@@ -164,11 +165,11 @@ export function MobileBottomNav() {
       } as any),
     },
     {
-      id: 'marketplace',
-      label: 'Marketplace',
-      Icon: Store,
+      id: 'canvases',
+      label: 'Canvases',
+      Icon: LayoutGrid,
       onPress: () => router.push({
-        pathname: '/(app)/marketplace' as any,
+        pathname: '/(app)/canvases' as any,
         ...(currentProjectContext?.projectId
           ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
           : {}),

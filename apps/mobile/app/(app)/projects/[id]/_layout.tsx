@@ -287,6 +287,8 @@ export default observer(function ProjectLayout() {
      * precedence over the saved last-tab init. See {@link defaultTabForProject}.
      */
     tab?: string
+    /** When '1', a Canvases card explicitly requests the native Canvas view. */
+    openCanvas?: string
     /**
      * Bumped by the sidebar when re-selecting the SAME tab on an already-open
      * project, so the apply effect re-fires even though `tab` is unchanged.
@@ -1572,8 +1574,11 @@ export default observer(function ProjectLayout() {
     ) {
       return
     }
-    const token = `${projectId}:${requested}:${params.tabNonce ?? ''}`
+    const token = `${projectId}:${requested}:${params.tabNonce ?? ''}:${params.openCanvas ?? ''}`
     if (appliedTabIntentRef.current === token) return
+    if (requested === 'canvas' && params.openCanvas === '1') {
+      userRequestedCanvasRef.current = true
+    }
     // A leftover `?tab=chat-fullscreen` from opening this project while it
     // was still chat-only must not override a Canvas click this session on
     // web/desktop. Native phone always honors Chat as the landing tab, even
