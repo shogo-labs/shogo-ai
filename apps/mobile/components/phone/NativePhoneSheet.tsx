@@ -184,6 +184,8 @@ export interface NativePhoneSheetProps {
   testID?: string
   density?: Density
   draggable?: boolean
+  /** Keep the native drawer visible behind this sheet when it opens. */
+  keepDrawerOpen?: boolean
 }
 
 /**
@@ -209,6 +211,7 @@ export function NativePhoneSheet({
   testID,
   density = PHONE_DENSITY,
   draggable = false,
+  keepDrawerOpen = false,
 }: NativePhoneSheetProps) {
   const { height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -278,9 +281,9 @@ export function NativePhoneSheet({
   }), [dragBounds, dragOffset, draggable, onClose, panelHeight])
 
   useEffect(() => {
-    if (!mounted) return
+    if (!mounted || keepDrawerOpen) return
     return acquireNativePhoneSheetLock()
-  }, [mounted])
+  }, [keepDrawerOpen, mounted])
 
   if (!mounted) return null
 

@@ -165,6 +165,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   // Web-only right-click menu anchor (viewport coords) for the project row.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [nativeActionsOpen, setNativeActionsOpen] = useState(false);
+  const suppressNextProjectPressRef = useRef(false);
   // Delete confirmation, shared by this project and its chats.
   const [confirmDelete, setConfirmDelete] = useState<{
     kind: "project" | "chat";
@@ -389,46 +390,6 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     onNavPress?.();
   }, [isActive, project.id, router, onNavPress]);
 
-  // On phone, the project row has two distinct actions: the chevron opens
-  // this project's chat list, while the project name takes the user straight
-  // to the most recent chat. Fetch on demand when the row was tapped before
-  // its chat list had a chance to seed.
-  const openRecentChat = useCallback(async () => {
-    let recentChat = visibleProjectChatItems(sessions)[0];
-
-    if (!recentChat && !loaded && http) {
-      try {
-        const result = await fetchProjectChatSessions(
-          http,
-          project.id,
-          PROJECT_CHAT_PAGE_SIZE,
-        );
-        setSessions(result.sessions);
-        setHasMoreChats(result.hasMore);
-        setLoaded(true);
-        recentChat = visibleProjectChatItems(result.sessions)[0];
-      } catch (e) {
-        console.error("[AppSidebar] Failed to load recent chat:", e);
-      }
-    }
-
-    if (recentChat) {
-      handleSelectChat(recentChat.id);
-      return;
-    }
-
-    // A project without a chat still opens the project chat surface so the
-    // user can start one there.
-    handleCreateChat();
-  }, [
-    handleCreateChat,
-    handleSelectChat,
-    http,
-    loaded,
-    project.id,
-    sessions,
-  ]);
-
   // Pin / rename / archive operate against the domain collection and update
   // local state optimistically (the sidebar fetches chats over HTTP, so it
   // isn't auto-synced to the collection). On failure we re-fetch to reconcile.
@@ -517,8 +478,26 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   }, []);
 
   const openNativeActions = useCallback(() => {
-    if (isNative) setNativeActionsOpen(true);
+    if (!isNative) return;
+    // React Native can deliver onPress after onLongPress on release. Without
+    // suppressing that follow-up press, the normal project navigation calls
+    // onNavPress and closes the drawer underneath this sheet.
+    suppressNextProjectPressRef.current = true;
+    setNativeActionsOpen(true);
   }, [isNative]);
+
+  const closeNativeActions = useCallback(() => {
+    suppressNextProjectPressRef.current = false;
+    setNativeActionsOpen(false);
+  }, []);
+
+  const handleProjectRowPress = useCallback(() => {
+    if (suppressNextProjectPressRef.current) {
+      suppressNextProjectPressRef.current = false;
+      return;
+    }
+    handleProjectPress();
+  }, [handleProjectPress]);
 
   const requestProjectDelete = useCallback(() => {
     setConfirmDelete({
@@ -700,11 +679,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       {mobileProjectDetail ? (
         <View className="flex-1">
           <View className="flex-row items-center gap-2 px-3 py-3">
-            <Pressable
-              onPress={openRecentChat}
-              accessibilityLabel={`Open recent chat in ${project.name || "Untitled"}`}
-              className="min-w-0 flex-1 flex-row items-center gap-2 active:opacity-70"
-            >
+            <View className="min-w-0 flex-1 flex-row items-center gap-2">
               <Folder
                 size={density.icon.md}
                 className="text-muted-foreground shrink-0"
@@ -715,7 +690,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               >
                 {project.name || "Untitled"}
               </Text>
-            </Pressable>
+            </View>
             <View className="flex-row items-center gap-1">
               <Pressable
                 onPress={handleCreateChat}
@@ -791,18 +766,14 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           )}
         >
           <Pressable
-            onPress={
-              mobileProjectFirstTapShowsChats
-                ? openProject
-                : handleProjectPress
-            }
+            onPress={handleProjectRowPress}
             onLongPress={isNative ? openNativeActions : undefined}
             delayLongPress={isNative ? 400 : undefined}
             role="link"
             accessibilityLabel={`Project: ${project.name || "Untitled"}`}
             accessibilityHint={
               mobileProjectFirstTapShowsChats
-                ? "Opens this project's first chat"
+                ? "Opens this project's chats"
                 : isNative
                   ? "Long press for project actions"
                   : undefined
@@ -891,7 +862,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           visible={nativeActionsOpen}
           projectName={project.name || "Untitled"}
           isPinned={!!isPinned}
-          onClose={() => setNativeActionsOpen(false)}
+          onClose={closeNativeActions}
           onRename={startEditProject}
           onTogglePin={() => onTogglePin?.(project.id, !isPinned)}
           onDelete={requestProjectDelete}

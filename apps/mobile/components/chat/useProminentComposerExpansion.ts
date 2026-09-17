@@ -45,8 +45,8 @@ export const PROMINENT_COMPOSER_WRAP_SLOP = 8
 export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
 /** Keep the native compact field centered in the 45px toolbar row. */
 export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = 0
-/** iOS placeholder glyphs sit slightly low inside the compact line box. */
-export const PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP = -2
+/** Keep the iOS placeholder centered with the compact composer controls. */
+export const PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP = 0
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4
 export const PROMINENT_COMPOSER_TOOLBAR_Z_INDEX = 3
 export const PROMINENT_COMPOSER_CHROME_Z_INDEX = 5
