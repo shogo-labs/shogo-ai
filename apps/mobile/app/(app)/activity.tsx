@@ -2,18 +2,19 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, AppState, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, AppState, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
+import { observer } from 'mobx-react-lite'
 import { ChevronRight, CircleAlert, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useNotificationCollection } from '../../contexts/domain'
+import { useNotificationCollection, useProjectCollection } from '../../contexts/domain'
+import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, createHttpClient, type AgentTask } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
 import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
-import { filterNotificationsForPlatform } from '../../lib/notification-policy'
 
 function timestamp(value: unknown): number {
   if (value instanceof Date) return value.getTime()
@@ -32,6 +33,24 @@ function elapsed(task: AgentTask) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
 
+function projectStatusLabel(status: string, publishStatus: string) {
+  if (publishStatus === 'live') return 'Live'
+  if (publishStatus === 'building' || publishStatus === 'uploading' || publishStatus === 'configuring') {
+    return 'Publishing'
+  }
+  if (publishStatus === 'failed') return 'Publish failed'
+  if (status === 'active') return 'Active'
+  if (status === 'archived') return 'Archived'
+  return 'Draft'
+}
+
+function projectStatusTone(status: string, publishStatus: string): 'success' | 'primary' | 'danger' | 'muted' {
+  if (publishStatus === 'live') return 'success'
+  if (publishStatus === 'failed') return 'danger'
+  if (status === 'active' || publishStatus === 'building' || publishStatus === 'uploading' || publishStatus === 'configuring') return 'primary'
+  return 'muted'
+}
+
 function SectionHeader({ title, count }: { title: string; count?: number }) {
   return (
     <View className="mt-6 flex-row items-center justify-between px-4">
@@ -45,12 +64,12 @@ function SectionHeader({ title, count }: { title: string; count?: number }) {
   )
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone: 'primary' | 'success' | 'muted' }) {
+function Metric({ label, value, tone }: { label: string; value: number; tone: 'primary' | 'success' | 'danger' | 'muted' }) {
   return (
     <View className="flex-1 items-center justify-center px-3 py-5">
       <Text className={cn(
         'text-3xl font-semibold',
-        tone === 'primary' ? 'text-primary' : tone === 'success' ? 'text-emerald-700 dark:text-emerald-300' : 'text-foreground',
+        tone === 'primary' ? 'text-primary' : tone === 'success' ? 'text-emerald-700 dark:text-emerald-300' : tone === 'danger' ? 'text-destructive' : 'text-foreground',
       )}>{value}</Text>
       <Text className="mt-2 text-xs font-medium text-muted-foreground">{label}</Text>
     </View>
@@ -87,24 +106,46 @@ function EmptyActivityCard({ title, message }: { title: string; message: string 
   )
 }
 
-export default function ActivityScreen() {
+const PROJECT_REFRESH_INTERVAL_MS = 30_000
+
+export default observer(function ActivityScreen() {
   const router = useRouter()
   const http = useMemo(() => createHttpClient(), [])
   const workspace = useActiveWorkspace()
   const notifications = useNotificationCollection()
+  const projects = useProjectCollection()
+  const isRemoteSource = useIsRemoteSource()
   const [tasks, setTasks] = useState<AgentTask[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const loadInFlight = useRef(false)
+  const projectLoadAt = useRef(0)
+  const projectLoadScope = useRef<string | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refreshProjects = false) => {
     if (loadInFlight.current) return
     loadInFlight.current = true
     try {
       setError(null)
-      await notifications.loadAll()
-      const next = await api.listAgentTasks(http)
+      const projectFilter = !isRemoteSource && workspace?.id
+        ? { workspaceId: workspace.id }
+        : undefined
+      const projectScope = isRemoteSource ? 'remote' : workspace?.id || 'local'
+      const shouldLoadProjects = refreshProjects
+        || projectLoadScope.current !== projectScope
+        || Date.now() - projectLoadAt.current >= PROJECT_REFRESH_INTERVAL_MS
+      const projectLoad = shouldLoadProjects
+        ? projects.loadAll(projectFilter).then(() => {
+            projectLoadAt.current = Date.now()
+            projectLoadScope.current = projectScope
+          })
+        : Promise.resolve()
+      const [, , next] = await Promise.all([
+        notifications.loadAll(),
+        projectLoad,
+        api.listAgentTasks(http),
+      ])
       setTasks(next.filter((task) => !workspace?.id || task.workspaceId === workspace.id))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load activity')
@@ -113,7 +154,7 @@ export default function ActivityScreen() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [http, notifications, workspace?.id])
+  }, [http, isRemoteSource, notifications, projects, workspace?.id])
 
   useFocusEffect(useCallback(() => {
     let isFocused = true
@@ -136,7 +177,7 @@ export default function ActivityScreen() {
     }
     const refreshAndSchedule = async () => {
       if (!isFocused || (appState !== 'active' && appState !== null)) return
-      await load()
+      await load(true)
       schedulePoll()
     }
 
@@ -167,31 +208,57 @@ export default function ActivityScreen() {
   const active = useMemo(() => tasks.filter((task) => task.status === 'queued' || task.status === 'running'), [tasks])
   const completed = useMemo(() => tasks.filter((task) => task.status === 'completed'), [tasks])
   const failedOrCancelled = useMemo(() => tasks.filter((task) => task.status === 'failed' || task.status === 'cancelled'), [tasks])
+  const projectList = projects.all
   const projectActivity = useMemo(() => {
     const groups = new Map<string, {
-      id: string | null
+      id: string
       name: string
+      status: string
+      publishStatus: string
       completed: number
       running: number
       failed: number
       total: number
+      latestActivity: number
       latestChatActivity: number
       latestChatSessionId: string | null
     }>()
-    for (const task of tasks) {
-      const key = task.projectId || 'home'
-      const taskActivity = timestamp(task.updatedAt || task.completedAt || task.startedAt || task.createdAt)
-      const group = groups.get(key) ?? {
-        id: task.projectId,
-        name: task.projectName || 'Home',
+
+    for (const project of projectList) {
+      if (!isRemoteSource && workspace?.id && project.workspaceId !== workspace.id) continue
+      groups.set(project.id, {
+        id: project.id,
+        name: project.name || 'Untitled project',
+        status: project.status,
+        publishStatus: project.publishStatus,
         completed: 0,
         running: 0,
         failed: 0,
         total: 0,
+        latestActivity: Math.max(project.updatedAt || 0, project.lastMessageAt || 0, project.createdAt || 0),
+        latestChatActivity: 0,
+        latestChatSessionId: null,
+      })
+    }
+
+    for (const task of tasks) {
+      const taskActivity = timestamp(task.updatedAt || task.completedAt || task.startedAt || task.createdAt)
+      if (!task.projectId) continue
+      const group = groups.get(task.projectId) ?? {
+        id: task.projectId,
+        name: task.projectName || 'Untitled project',
+        status: 'draft',
+        publishStatus: 'idle',
+        completed: 0,
+        running: 0,
+        failed: 0,
+        total: 0,
+        latestActivity: 0,
         latestChatActivity: 0,
         latestChatSessionId: null,
       }
       group.total += 1
+      group.latestActivity = Math.max(group.latestActivity, taskActivity)
       if (task.status === 'completed') group.completed += 1
       if (task.status === 'queued' || task.status === 'running') group.running += 1
       if (task.status === 'failed') group.failed += 1
@@ -199,10 +266,14 @@ export default function ActivityScreen() {
         group.latestChatActivity = taskActivity
         group.latestChatSessionId = task.chatSessionId
       }
-      groups.set(key, group)
+      groups.set(task.projectId, group)
     }
-    return [...groups.values()].sort((a, b) => b.total - a.total)
-  }, [tasks])
+    return [...groups.values()].sort((a, b) => b.latestActivity - a.latestActivity)
+  }, [isRemoteSource, projectList, tasks, workspace?.id])
+  const failedProjectsCount = useMemo(
+    () => projectActivity.filter((project) => project.failed > 0 || project.publishStatus === 'failed').length,
+    [projectActivity],
+  )
 
   const openTaskChat = (task: AgentTask) => {
     if (task.projectId) {
@@ -212,16 +283,13 @@ export default function ActivityScreen() {
     }
   }
 
-  const unreadNotifications = filterNotificationsForPlatform(notifications.all, Platform.OS)
-    .filter((notification: any) => !notification.readAt).length
-
   return (
     <View className="flex-1 bg-background">
       {error ? (
         <View className="mx-4 mt-3 flex-row items-start gap-2 rounded-2xl border border-destructive bg-destructive/10 px-3 py-3">
           <CircleAlert size={18} className="mt-0.5 text-destructive" />
           <Text className="flex-1 text-sm leading-5 text-destructive">{readableAgentTaskError(error, 'We could not refresh activity.')}</Text>
-          <Pressable onPress={() => { setError(null); setRefreshing(true); void load() }} accessibilityLabel="Try loading activity again" className="rounded-lg px-2 py-1 active:bg-destructive/10">
+          <Pressable onPress={() => { setError(null); setRefreshing(true); void load(true) }} accessibilityLabel="Try loading activity again" className="rounded-lg px-2 py-1 active:bg-destructive/10">
             <Text className="text-sm font-semibold text-destructive">Try again</Text>
           </Pressable>
         </View>
@@ -231,14 +299,14 @@ export default function ActivityScreen() {
           className="flex-1"
           contentContainerClassName="pb-32"
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load() }} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(true) }} />}
         >
           <SectionHeader title="Overview" />
           <View className="mx-4 mt-3 overflow-hidden rounded-3xl bg-card">
             <View className="flex-row">
               <Metric label="Active" value={active.length} tone="primary" />
               <Metric label="Completed" value={completed.length} tone="success" />
-              <Metric label="Unread" value={unreadNotifications} tone="muted" />
+              <Metric label="Failed projects" value={failedProjectsCount} tone="danger" />
             </View>
           </View>
 
@@ -257,14 +325,14 @@ export default function ActivityScreen() {
           ))}
 
           <SectionHeader title="Project activity" count={projectActivity.length} />
-          {projectActivity.length === 0 ? <EmptyActivityCard title="No tracked projects yet" message="Project-level progress will appear here once a task is created." /> : projectActivity.map((group) => (
-            <Pressable key={group.id || 'home'} disabled={!group.id} onPress={() => group.id && router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) } } as any)} className={cn('mx-4 mt-3 rounded-2xl bg-card p-4', group.id ? 'active:bg-muted/50' : 'opacity-90')}>
+          {projectActivity.length === 0 ? <EmptyActivityCard title="No projects in this workspace yet" message="Projects created in this network space will appear here with their current status." /> : projectActivity.map((group) => (
+            <Pressable key={group.id} onPress={() => router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) } } as any)} className="mx-4 mt-3 rounded-2xl bg-card p-4 active:bg-muted/50">
               <View className="flex-row items-center gap-3">
                 <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted"><Folder size={19} className="text-muted-foreground" /></View>
-                <View className="flex-1"><Text className="font-semibold text-foreground">{group.name}</Text><Text className="mt-1 text-xs text-muted-foreground">{group.total} tracked {group.total === 1 ? 'task' : 'tasks'}</Text></View>
-                {group.id ? <ChevronRight size={17} className="text-muted-foreground" /> : null}
+                <View className="flex-1"><Text className="font-semibold text-foreground" numberOfLines={1}>{group.name}</Text><Text className="mt-1 text-xs text-muted-foreground">{group.total ? `${group.total} tracked ${group.total === 1 ? 'task' : 'tasks'}` : 'No tasks yet'}</Text></View>
+                <ChevronRight size={17} className="text-muted-foreground" />
               </View>
-              <View className="mt-4 flex-row flex-wrap gap-2"><StatusPill label={`${group.completed} completed`} tone={group.completed > 0 ? 'success' : 'muted'} /><StatusPill label={`${group.running} running`} tone={group.running > 0 ? 'primary' : 'muted'} /><StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} /></View>
+              <View className="mt-4 flex-row flex-wrap gap-2"><StatusPill label={projectStatusLabel(group.status, group.publishStatus)} tone={projectStatusTone(group.status, group.publishStatus)} />{group.total > 0 ? <><StatusPill label={`${group.completed} completed`} tone={group.completed > 0 ? 'success' : 'muted'} /><StatusPill label={`${group.running} running`} tone={group.running > 0 ? 'primary' : 'muted'} /><StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} /></> : <StatusPill label="No tasks yet" tone="muted" />}</View>
             </Pressable>
           ))}
 
@@ -273,9 +341,9 @@ export default function ActivityScreen() {
             {failedOrCancelled.map((task) => <Pressable key={task.id} onPress={() => openTaskChat(task)} accessibilityLabel={`Open ${task.title} activity`} className="mx-4 mt-3 rounded-2xl border border-destructive bg-destructive/5 p-4 active:bg-destructive/10"><View className="flex-row items-start gap-3"><View className="h-10 w-10 items-center justify-center rounded-xl bg-destructive/10"><XCircle size={19} className="text-destructive" /></View><View className="flex-1"><View className="flex-row items-start gap-2"><Text className="flex-1 font-semibold text-foreground">{task.title}</Text><ChevronRight size={17} className="text-destructive" /></View><Text className="mt-1 text-xs text-muted-foreground">{task.projectName || 'Home'} · {taskStatusLabel(task.status)}</Text><Text className="mt-3 text-sm leading-5 text-foreground" numberOfLines={3}>{readableAgentTaskError(task.errorMessage, 'This task did not complete.')}</Text></View></View></Pressable>)}
           </> : null}
 
-          {tasks.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Start a task and its progress and result will be collected here." /></View> : null}
+          {tasks.length === 0 && projectActivity.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Create a project or start a task to see activity here." /></View> : null}
         </ScrollView>
       )}
     </View>
   )
-}
+})

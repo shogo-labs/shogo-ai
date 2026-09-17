@@ -30,15 +30,16 @@ export function SectionHeader({
   padded = true,
   display = true,
 }: SectionHeaderProps) {
+  const isNative = Platform.OS !== 'web'
   const titleStyle: any = display && Platform.OS === 'web'
     ? { fontFamily: 'Skema Pro Display, ui-serif, Georgia, serif', letterSpacing: -0.4 }
     : undefined
 
   return (
-    <View className={`flex-row items-end justify-between mb-4 ${padded ? 'px-5' : ''}`}>
-      <View className="flex-1 min-w-0 mr-4">
+    <View className={`flex-row items-end justify-between ${isNative ? 'mb-3' : 'mb-4'} ${padded ? (isNative ? 'px-4' : 'px-5') : ''}`}>
+      <View className="flex-1 min-w-0 mr-3">
         <Text
-          className="text-xl font-bold text-foreground"
+          className={`${isNative ? 'text-lg' : 'text-xl'} font-bold text-foreground`}
           style={titleStyle}
           numberOfLines={1}
         >
@@ -46,7 +47,7 @@ export function SectionHeader({
         </Text>
         {subtitle && (
           <Text
-            className="text-sm text-muted-foreground mt-0.5"
+            className={`${isNative ? 'text-xs' : 'text-sm'} text-muted-foreground mt-0.5`}
             numberOfLines={1}
           >
             {subtitle}
@@ -67,7 +68,7 @@ export function SectionHeader({
           accessibilityRole="button"
           accessibilityLabel={`${seeAllLabel} ${title}`}
         >
-          <Text className="text-sm font-medium text-primary">{seeAllLabel}</Text>
+          <Text className={`${isNative ? 'text-xs' : 'text-sm'} font-medium text-primary`}>{seeAllLabel}</Text>
           <ChevronRight size={14} color="#e27927" />
         </Pressable>
       )}

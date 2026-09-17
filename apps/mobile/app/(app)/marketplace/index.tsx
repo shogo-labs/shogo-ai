@@ -184,6 +184,7 @@ export default observer(function MarketplaceHomeScreen() {
   const http = useDomainHttp()
   const { numColumns, cellStyle } = useMarketplaceGridLayout()
   const { user } = useAuth()
+  const isNative = Platform.OS !== 'web'
 
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedSearchQuery = useDebouncedValue(searchQuery)
@@ -687,33 +688,39 @@ export default observer(function MarketplaceHomeScreen() {
   return (
     <View className="flex-1 bg-background">
       {/* Top bar */}
-      <View className="flex-row items-center px-5 pt-3 pb-2">
+      <View className={isNative ? 'flex-row items-center px-4 pt-2 pb-2' : 'flex-row items-center px-5 pt-3 pb-2'}>
         <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1 mr-1">
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
         <Text className="text-base font-semibold text-foreground flex-1 min-w-0">
           Marketplace
         </Text>
-        <View className="flex-row items-center gap-3 shrink-0">
+        <View className={isNative ? 'flex-row items-center gap-1 shrink-0' : 'flex-row items-center gap-3 shrink-0'}>
           <Pressable
             onPress={() => router.push('/(app)/marketplace/installs' as any)}
-            className="flex-row items-center gap-1.5 py-1.5 rounded-lg active:opacity-70"
+            className={isNative ? 'h-10 w-10 items-center justify-center rounded-full active:bg-muted' : 'flex-row items-center gap-1.5 py-1.5 rounded-lg active:opacity-70'}
+            accessibilityRole="button"
+            accessibilityLabel="My installs"
           >
-            <Package size={14} color="#71717a" />
-            <Text className="text-xs font-medium text-muted-foreground">My Installs</Text>
+            <Package size={isNative ? 18 : 14} color={isNative ? '#a1a1aa' : '#71717a'} />
+            {!isNative && <Text className="text-xs font-medium text-muted-foreground">My Installs</Text>}
           </Pressable>
           <Pressable
             onPress={() => router.push('/(app)/marketplace/creators' as any)}
-            className="py-1.5 rounded-lg active:opacity-70"
+            className={isNative ? 'h-10 w-10 items-center justify-center rounded-full active:bg-muted' : 'py-1.5 rounded-lg active:opacity-70'}
+            accessibilityRole="button"
+            accessibilityLabel="Creators"
           >
-            <Text className="text-xs font-medium text-muted-foreground">Creators</Text>
+            {isNative ? <UserCircle size={19} color="#a1a1aa" /> : <Text className="text-xs font-medium text-muted-foreground">Creators</Text>}
           </Pressable>
           <Pressable
             onPress={() => router.push('/(app)/creator?tab=publish' as any)}
-            className="flex-row items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-primary"
+            className={isNative ? 'h-10 w-10 items-center justify-center rounded-full bg-primary active:opacity-80' : 'flex-row items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-primary'}
+            accessibilityRole="button"
+            accessibilityLabel="Creator studio"
           >
-            <UserCircle size={14} color="#fff" />
-            <Text className="text-xs font-semibold text-primary-foreground">Creator</Text>
+            <UserCircle size={isNative ? 18 : 14} color="#fff" />
+            {!isNative && <Text className="text-xs font-semibold text-primary-foreground">Creator</Text>}
           </Pressable>
         </View>
       </View>
@@ -728,72 +735,146 @@ export default observer(function MarketplaceHomeScreen() {
       />
 
       {/* Search + sort + view */}
-      <View className="px-5 pt-4 pb-3 gap-3">
-        <View className="flex-row items-center gap-2">
-          <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11 flex-1">
-            <Search size={16} color="#71717a" />
-            <TextInput
-              className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
-              placeholder="Search agents…"
-              placeholderTextColor="#71717a"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="search"
-            />
-            {searchQuery.length > 0 && (
-              <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
-                <X size={14} color="#71717a" />
-              </Pressable>
-            )}
-          </View>
-          <SortMenu
-            value={sortMode}
-            open={sortMenuOpen}
-            onOpenChange={setSortMenuOpen}
-            onChange={(v) => {
-              setSortMode(v)
-              setBrowseFocus(null)
-              setSortMenuOpen(false)
-            }}
-          />
-          <ViewToggle value={viewMode} onChange={setViewMode} />
-        </View>
+      <View className={isNative ? 'px-4 pt-3 pb-3 gap-3' : 'px-5 pt-4 pb-3 gap-3'}>
+        {isNative ? (
+          <>
+            <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-12 w-full">
+              <Search size={16} color="#71717a" />
+              <TextInput
+                className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
+                placeholder="Search agents…"
+                placeholderTextColor="#71717a"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+              {searchQuery.length > 0 && (
+                <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+                  <X size={14} color="#71717a" />
+                </Pressable>
+              )}
+            </View>
 
-        {/* Category pills + quick filters */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 8, paddingRight: 16 }}
-        >
-          <CategoryPill
-            active={activeCategory === 'all'}
-            label="All"
-            onPress={() => setActiveCategory('all')}
-          />
-          {MARKETPLACE_CATEGORIES.map((cat) => (
-            <CategoryPill
-              key={cat.slug}
-              active={activeCategory === cat.slug}
-              label={cat.label}
-              onPress={() => setActiveCategory(cat.slug)}
-            />
-          ))}
-          <View className="w-px h-6 bg-border mx-1" />
-          <FilterPill
-            active={filterFeatured}
-            icon={<ShieldCheck size={12} color={filterFeatured ? '#e27927' : '#71717a'} />}
-            label="Built for Shogo"
-            onPress={() => setFilterFeatured((v) => !v)}
-          />
-          <FilterPill
-            active={filterFree}
-            icon={<Sparkles size={12} color={filterFree ? '#22c55e' : '#71717a'} />}
-            label="Free only"
-            onPress={() => setFilterFree((v) => !v)}
-          />
-        </ScrollView>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, paddingRight: 16 }}
+            >
+              <SortMenu
+                value={sortMode}
+                open={sortMenuOpen}
+                onOpenChange={setSortMenuOpen}
+                onChange={(v) => {
+                  setSortMode(v)
+                  setBrowseFocus(null)
+                  setSortMenuOpen(false)
+                }}
+              />
+              <FilterPill
+                active={filterFeatured}
+                icon={<ShieldCheck size={13} color={filterFeatured ? '#e27927' : '#71717a'} />}
+                label="Built for Shogo"
+                onPress={() => setFilterFeatured((v) => !v)}
+              />
+              <FilterPill
+                active={filterFree}
+                icon={<Sparkles size={13} color={filterFree ? '#22c55e' : '#71717a'} />}
+                label="Free only"
+                onPress={() => setFilterFree((v) => !v)}
+              />
+              <ViewToggle value={viewMode} onChange={setViewMode} />
+            </ScrollView>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, paddingRight: 16 }}
+            >
+              <CategoryPill
+                active={activeCategory === 'all'}
+                label="All"
+                onPress={() => setActiveCategory('all')}
+              />
+              {MARKETPLACE_CATEGORIES.map((cat) => (
+                <CategoryPill
+                  key={cat.slug}
+                  active={activeCategory === cat.slug}
+                  label={cat.label}
+                  onPress={() => setActiveCategory(cat.slug)}
+                />
+              ))}
+            </ScrollView>
+          </>
+        ) : (
+          <>
+            <View className="flex-row items-center gap-2">
+              <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11 flex-1">
+                <Search size={16} color="#71717a" />
+                <TextInput
+                  className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
+                  placeholder="Search agents…"
+                  placeholderTextColor="#71717a"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                />
+                {searchQuery.length > 0 && (
+                  <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
+                    <X size={14} color="#71717a" />
+                  </Pressable>
+                )}
+              </View>
+              <SortMenu
+                value={sortMode}
+                open={sortMenuOpen}
+                onOpenChange={setSortMenuOpen}
+                onChange={(v) => {
+                  setSortMode(v)
+                  setBrowseFocus(null)
+                  setSortMenuOpen(false)
+                }}
+              />
+              <ViewToggle value={viewMode} onChange={setViewMode} />
+            </View>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, paddingRight: 16 }}
+            >
+              <CategoryPill
+                active={activeCategory === 'all'}
+                label="All"
+                onPress={() => setActiveCategory('all')}
+              />
+              {MARKETPLACE_CATEGORIES.map((cat) => (
+                <CategoryPill
+                  key={cat.slug}
+                  active={activeCategory === cat.slug}
+                  label={cat.label}
+                  onPress={() => setActiveCategory(cat.slug)}
+                />
+              ))}
+              <View className="w-px h-6 bg-border mx-1" />
+              <FilterPill
+                active={filterFeatured}
+                icon={<ShieldCheck size={12} color={filterFeatured ? '#e27927' : '#71717a'} />}
+                label="Built for Shogo"
+                onPress={() => setFilterFeatured((v) => !v)}
+              />
+              <FilterPill
+                active={filterFree}
+                icon={<Sparkles size={12} color={filterFree ? '#22c55e' : '#71717a'} />}
+                label="Free only"
+                onPress={() => setFilterFree((v) => !v)}
+              />
+            </ScrollView>
+          </>
+        )}
       </View>
 
       {/* Content */}
@@ -825,7 +906,10 @@ export default observer(function MarketplaceHomeScreen() {
             extraData={`${sortMode}-${browseFocus ?? 'home'}`}
             numColumns={numColumns}
             columnWrapperStyle={numColumns > 1 ? { gap: 0 } : undefined}
-            contentContainerStyle={{ paddingBottom: 32, paddingHorizontal: MARKETPLACE_GRID_PAD_X }}
+            contentContainerStyle={{
+              paddingBottom: isNative ? 120 : 32,
+              paddingHorizontal: MARKETPLACE_GRID_PAD_X,
+            }}
             {...overlayScrollbarProps}
             ListHeaderComponent={ListHeader}
             onEndReached={handleLoadMore}
@@ -875,7 +959,7 @@ export default observer(function MarketplaceHomeScreen() {
             keyExtractor={(item) => item.slug}
             renderItem={renderListItem}
             extraData={`${sortMode}-${browseFocus ?? 'home'}`}
-            contentContainerStyle={{ paddingBottom: 32 }}
+            contentContainerStyle={{ paddingBottom: isNative ? 120 : 32 }}
             {...overlayScrollbarProps}
             ListHeaderComponent={ListHeader}
             onEndReached={handleLoadMore}
