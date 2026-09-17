@@ -5,8 +5,8 @@ import React from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   Check,
-  ChevronLeft,
   History,
+  Menu,
   MessageSquare,
   MoreHorizontal,
   X,
@@ -35,7 +35,7 @@ const NATIVE_CLUSTER_WIDTH = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * 2;
 export function NativePhoneHeader({
   projectName,
   projectMenu,
-  onBack,
+  onOpenSidebar,
   showTrustBadge,
   trustLevel,
   onToggleTrust,
@@ -50,7 +50,7 @@ export function NativePhoneHeader({
 }: {
   projectName: string;
   projectMenu: React.ReactNode;
-  onBack: () => void;
+  onOpenSidebar?: () => void;
   showTrustBadge: boolean;
   trustLevel?: "restricted" | "trusted";
   onToggleTrust?: () => void;
@@ -117,10 +117,10 @@ export function NativePhoneHeader({
           }}
         >
           <NativeCircleButton
-            icon={ChevronLeft}
-            onPress={onBack}
-            accessibilityLabel="Back to home"
-            testID="project-native-back"
+            icon={Menu}
+            onPress={() => onOpenSidebar?.()}
+            accessibilityLabel="Open project sidebar"
+            testID="project-native-sidebar"
           />
           <View className="flex-row items-center gap-2">
             {showTrustBadge && trustLevel && onToggleTrust && (

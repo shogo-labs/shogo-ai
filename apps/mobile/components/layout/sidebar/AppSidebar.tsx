@@ -83,6 +83,7 @@ import {
   nativeDrawerTopInset,
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
+import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
 import {
   effectiveSidebarProjectFilter,
   getPinnedProjectIds,
@@ -463,6 +464,13 @@ export const AppSidebar = observer(function AppSidebar({
       setMobileProjectPanelId(null);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    return projectSidebarEvents.subscribeOpenProject((projectId) => {
+      setMobileProjectPanelId(projectId);
+      setMobileExpandedProjectId(projectId);
+    });
+  }, []);
 
   useEffect(() => {
     const expanded = mobileExpandedProjectId !== null;

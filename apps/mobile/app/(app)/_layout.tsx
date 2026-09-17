@@ -40,6 +40,7 @@ import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe';
 import { useNativePhoneSheetOpen } from '../../lib/native-phone-sheet-lock'
 import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell"
 import { MobileBottomNav } from '../../components/layout/MobileBottomNav'
+import { projectSidebarEvents } from '../../lib/project-sidebar-events'
 
 csMark('app:layout:module-load')
 
@@ -162,11 +163,17 @@ export default function AppLayout() {
     swipeEnabled: nativeDrawerSwipe,
     closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
   });
-  const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
+  const { drawerOpen, closeDrawer, toggleDrawer, openDrawer, resetDrawer } = drawer
 
   useEffect(() => {
     if (phoneSheetOpen && drawerOpen) closeDrawer()
   }, [closeDrawer, drawerOpen, phoneSheetOpen])
+
+  useEffect(() => {
+    return projectSidebarEvents.subscribeOpenProject(() => {
+      if (!isWide && !isIdeEmbed) openDrawer()
+    })
+  }, [isIdeEmbed, isWide, openDrawer])
 
   useEffect(() => {
     if (!isWide && !isAccountPage) return

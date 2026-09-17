@@ -50,6 +50,7 @@ import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { openWebAppSession } from '../../../../lib/openWebAppSession'
 import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-session-events'
+import { projectSidebarEvents } from '../../../../lib/project-sidebar-events'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { resolveActiveWorkspaceId } from '../../../../lib/workspace-store'
@@ -2932,6 +2933,9 @@ export default observer(function ProjectLayout() {
       Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
+    onOpenSidebar: Platform.OS !== 'web'
+      ? () => projectSidebarEvents.requestOpenProject(projectId!)
+      : undefined,
     idePrimarySideBarPosition,
     onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,
     ideEmbed: isIdeChatEmbed,
