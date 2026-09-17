@@ -16,6 +16,19 @@ import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 
+type ProjectActivityGroup = {
+  id: string
+  name: string
+  publishStatus: string
+  completed: number
+  running: number
+  failed: number
+  total: number
+  latestActivity: number
+  latestChatActivity: number
+  latestChatSessionId: string | null
+}
+
 function timestamp(value: unknown): number {
   if (value instanceof Date) return value.getTime()
   if (typeof value === 'number') return value
@@ -33,28 +46,13 @@ function elapsed(task: AgentTask) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
 
-function projectStatusLabel(status: string, publishStatus: string) {
-  if (publishStatus === 'live') return 'Live'
-  if (publishStatus === 'building' || publishStatus === 'uploading' || publishStatus === 'configuring') {
-    return 'Publishing'
-  }
-  if (publishStatus === 'failed') return 'Publish failed'
-  if (status === 'active') return 'Active'
-  if (status === 'archived') return 'Archived'
-  return 'Draft'
-}
-
-function projectStatusTone(status: string, publishStatus: string): 'success' | 'primary' | 'danger' | 'muted' {
-  if (publishStatus === 'live') return 'success'
-  if (publishStatus === 'failed') return 'danger'
-  if (status === 'active' || publishStatus === 'building' || publishStatus === 'uploading' || publishStatus === 'configuring') return 'primary'
-  return 'muted'
-}
-
-function SectionHeader({ title, count }: { title: string; count?: number }) {
+function SectionHeader({ title, count, subtitle }: { title: string; count?: number; subtitle?: string }) {
   return (
     <View className="mt-6 flex-row items-center justify-between px-4">
-      <Text className="text-base font-semibold uppercase tracking-[1.5px] text-muted-foreground">{title}</Text>
+      <View className="flex-1 pr-3">
+        <Text className="text-base font-semibold uppercase tracking-[1.5px] text-muted-foreground">{title}</Text>
+        {subtitle ? <Text className="mt-1 text-xs text-muted-foreground">{subtitle}</Text> : null}
+      </View>
       {typeof count === 'number' ? (
         <View className="min-w-6 items-center rounded-full bg-muted px-2 py-1">
           <Text className="text-[11px] font-semibold text-muted-foreground">{count}</Text>
@@ -87,6 +85,37 @@ function StatusPill({ label, tone }: { label: string; tone: 'success' | 'primary
         tone === 'success' ? 'text-emerald-700 dark:text-emerald-300' : tone === 'primary' ? 'text-primary' : tone === 'danger' ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground',
       )}>{label}</Text>
     </View>
+  )
+}
+
+function projectOutcome(project: Pick<ProjectActivityGroup, 'running' | 'failed' | 'total' | 'publishStatus'>): {
+  label: 'Completed' | 'Pending' | 'Failed' | 'No activity'
+} {
+  if (project.failed > 0 || project.publishStatus === 'failed') return { label: 'Failed' }
+  if (project.running > 0 || ['building', 'uploading', 'configuring'].includes(project.publishStatus)) return { label: 'Pending' }
+  if (project.total === 0) return { label: 'No activity' }
+  return { label: 'Completed' }
+}
+
+function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} className="mx-4 mt-3 rounded-2xl bg-card p-4 active:bg-muted/50">
+      <View className="flex-row items-center gap-3">
+        <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted"><Folder size={19} className="text-muted-foreground" /></View>
+        <View className="flex-1">
+          <Text className="font-semibold text-foreground" numberOfLines={1}>{group.name}</Text>
+          {group.total > 0 ? <Text className="mt-1 text-xs text-muted-foreground">{`${group.total} tracked ${group.total === 1 ? 'task' : 'tasks'}`}</Text> : null}
+        </View>
+        <ChevronRight size={17} className="text-muted-foreground" />
+      </View>
+      <View className="mt-4 flex-row flex-wrap gap-2">
+        {group.total > 0 ? <>
+          <StatusPill label={`${group.completed} completed`} tone={group.completed > 0 ? 'success' : 'muted'} />
+          <StatusPill label={`${group.running} pending`} tone={group.running > 0 ? 'primary' : 'muted'} />
+          <StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} />
+        </> : <StatusPill label="No activity yet" tone="muted" />}
+      </View>
+    </Pressable>
   )
 }
 
@@ -206,30 +235,16 @@ export default observer(function ActivityScreen() {
   }, [load]))
 
   const active = useMemo(() => tasks.filter((task) => task.status === 'queued' || task.status === 'running'), [tasks])
-  const completed = useMemo(() => tasks.filter((task) => task.status === 'completed'), [tasks])
   const failedOrCancelled = useMemo(() => tasks.filter((task) => task.status === 'failed' || task.status === 'cancelled'), [tasks])
   const projectList = projects.all
   const projectActivity = useMemo(() => {
-    const groups = new Map<string, {
-      id: string
-      name: string
-      status: string
-      publishStatus: string
-      completed: number
-      running: number
-      failed: number
-      total: number
-      latestActivity: number
-      latestChatActivity: number
-      latestChatSessionId: string | null
-    }>()
+    const groups = new Map<string, ProjectActivityGroup>()
 
     for (const project of projectList) {
       if (!isRemoteSource && workspace?.id && project.workspaceId !== workspace.id) continue
       groups.set(project.id, {
         id: project.id,
         name: project.name || 'Untitled project',
-        status: project.status,
         publishStatus: project.publishStatus,
         completed: 0,
         running: 0,
@@ -247,7 +262,6 @@ export default observer(function ActivityScreen() {
       const group = groups.get(task.projectId) ?? {
         id: task.projectId,
         name: task.projectName || 'Untitled project',
-        status: 'draft',
         publishStatus: 'idle',
         completed: 0,
         running: 0,
@@ -261,7 +275,7 @@ export default observer(function ActivityScreen() {
       group.latestActivity = Math.max(group.latestActivity, taskActivity)
       if (task.status === 'completed') group.completed += 1
       if (task.status === 'queued' || task.status === 'running') group.running += 1
-      if (task.status === 'failed') group.failed += 1
+      if (task.status === 'failed' || task.status === 'cancelled') group.failed += 1
       if (task.chatSessionId && taskActivity >= group.latestChatActivity) {
         group.latestChatActivity = taskActivity
         group.latestChatSessionId = task.chatSessionId
@@ -271,7 +285,15 @@ export default observer(function ActivityScreen() {
     return [...groups.values()].sort((a, b) => b.latestActivity - a.latestActivity)
   }, [isRemoteSource, projectList, tasks, workspace?.id])
   const failedProjectsCount = useMemo(
-    () => projectActivity.filter((project) => project.failed > 0 || project.publishStatus === 'failed').length,
+    () => projectActivity.filter((project) => projectOutcome(project).label === 'Failed').length,
+    [projectActivity],
+  )
+  const pendingProjectsCount = useMemo(
+    () => projectActivity.filter((project) => projectOutcome(project).label === 'Pending').length,
+    [projectActivity],
+  )
+  const completedProjectsCount = useMemo(
+    () => projectActivity.filter((project) => projectOutcome(project).label === 'Completed').length,
     [projectActivity],
   )
 
@@ -281,6 +303,13 @@ export default observer(function ActivityScreen() {
     } else {
       router.replace('/(app)' as any)
     }
+  }
+
+  const openProject = (group: ProjectActivityGroup) => {
+    router.push({
+      pathname: '/(app)/projects/[id]' as any,
+      params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) },
+    } as any)
   }
 
   return (
@@ -304,13 +333,13 @@ export default observer(function ActivityScreen() {
           <SectionHeader title="Overview" />
           <View className="mx-4 mt-3 overflow-hidden rounded-3xl bg-card">
             <View className="flex-row">
-              <Metric label="Active" value={active.length} tone="primary" />
-              <Metric label="Completed" value={completed.length} tone="success" />
+              <Metric label="Pending projects" value={pendingProjectsCount} tone="primary" />
+              <Metric label="Completed projects" value={completedProjectsCount} tone="success" />
               <Metric label="Failed projects" value={failedProjectsCount} tone="danger" />
             </View>
           </View>
 
-          <SectionHeader title="Live now" count={active.length} />
+          <SectionHeader title="Running now" count={active.length} subtitle="Live agent work across the workspace" />
           {active.length === 0 ? <EmptyActivityCard title="No agents are currently working" message="When you start an agent, its live progress will appear here." /> : active.map((task) => (
             <Pressable key={task.id} onPress={() => openTaskChat(task)} className="mx-4 mt-3 rounded-2xl border border-primary bg-primary/5 p-4 active:bg-primary/10">
               <View className="flex-row items-start gap-3">
@@ -324,16 +353,9 @@ export default observer(function ActivityScreen() {
             </Pressable>
           ))}
 
-          <SectionHeader title="Project activity" count={projectActivity.length} />
+          <SectionHeader title="Workspace projects" count={projectActivity.length} subtitle="Monitor every project in this workspace" />
           {projectActivity.length === 0 ? <EmptyActivityCard title="No projects in this workspace yet" message="Projects created in this network space will appear here with their current status." /> : projectActivity.map((group) => (
-            <Pressable key={group.id} onPress={() => router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: group.id, ...(group.latestChatSessionId ? { chatSessionId: group.latestChatSessionId } : {}) } } as any)} className="mx-4 mt-3 rounded-2xl bg-card p-4 active:bg-muted/50">
-              <View className="flex-row items-center gap-3">
-                <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted"><Folder size={19} className="text-muted-foreground" /></View>
-                <View className="flex-1"><Text className="font-semibold text-foreground" numberOfLines={1}>{group.name}</Text><Text className="mt-1 text-xs text-muted-foreground">{group.total ? `${group.total} tracked ${group.total === 1 ? 'task' : 'tasks'}` : 'No tasks yet'}</Text></View>
-                <ChevronRight size={17} className="text-muted-foreground" />
-              </View>
-              <View className="mt-4 flex-row flex-wrap gap-2"><StatusPill label={projectStatusLabel(group.status, group.publishStatus)} tone={projectStatusTone(group.status, group.publishStatus)} />{group.total > 0 ? <><StatusPill label={`${group.completed} completed`} tone={group.completed > 0 ? 'success' : 'muted'} /><StatusPill label={`${group.running} running`} tone={group.running > 0 ? 'primary' : 'muted'} /><StatusPill label={`${group.failed} failed`} tone={group.failed > 0 ? 'danger' : 'muted'} /></> : <StatusPill label="No tasks yet" tone="muted" />}</View>
-            </Pressable>
+            <ProjectActivityCard key={group.id} group={group} onPress={() => openProject(group)} />
           ))}
 
           {failedOrCancelled.length > 0 ? <>

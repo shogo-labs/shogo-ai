@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View, useWindowDimensions } from 'react-native'
+import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { CalendarDays, LayoutGrid, MonitorPlay } from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
@@ -21,7 +21,6 @@ export default observer(function CanvasesScreen() {
   const projects = useProjectCollection()
   const workspace = useActiveWorkspace()
   const isRemoteSource = useIsRemoteSource()
-  const { width } = useWindowDimensions()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -52,8 +51,6 @@ export default observer(function CanvasesScreen() {
       .sort((a, b) => (b.publishedAt || b.updatedAt) - (a.publishedAt || a.updatedAt)),
     [isRemoteSource, projects.all, workspace?.id],
   )
-  const cardWidth = Math.max(0, (width - 32 - 12) / 2)
-
   const openCanvas = (projectId: string) => {
     router.push({
       pathname: '/(app)/projects/[id]' as any,
@@ -76,9 +73,7 @@ export default observer(function CanvasesScreen() {
         <FlatList
           data={canvases}
           keyExtractor={(project) => project.id}
-          numColumns={2}
-          columnWrapperStyle={{ gap: 12 }}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 120, gap: 12 }}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 120, gap: 14 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load() }} />}
           renderItem={({ item: project }) => {
             const date = publishedDate(project.publishedAt)
@@ -87,33 +82,36 @@ export default observer(function CanvasesScreen() {
                 onPress={() => openCanvas(project.id)}
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${project.name || 'Untitled project'} canvas`}
-                style={{ width: cardWidth }}
-                className="overflow-hidden rounded-2xl bg-card active:bg-muted/60"
+                className="overflow-hidden rounded-2xl border border-border/70 bg-card active:opacity-90"
               >
-                {project.thumbnailUrl ? (
-                  <Image source={{ uri: project.thumbnailUrl }} resizeMode="cover" className="h-28 w-full bg-muted" />
-                ) : (
-                  <View className="h-28 items-center justify-center bg-muted">
-                    <MonitorPlay size={30} className="text-muted-foreground" />
-                  </View>
-                )}
-                <View className="p-3">
-                  <Text className="font-semibold text-foreground" numberOfLines={1}>
-                    {project.siteTitle || project.name || 'Untitled canvas'}
-                  </Text>
-                  <Text className="mt-1 text-xs text-muted-foreground" numberOfLines={1}>
+                <View className="relative h-44 w-full overflow-hidden bg-muted">
+                  {project.thumbnailUrl ? (
+                    <Image source={{ uri: project.thumbnailUrl }} resizeMode="cover" className="h-full w-full" />
+                  ) : (
+                    <View className="h-full w-full items-center justify-center">
+                      <MonitorPlay size={32} className="text-muted-foreground" />
+                      <Text className="mt-2 text-xs text-muted-foreground">Canvas preview</Text>
+                    </View>
+                  )}
+                </View>
+                <View className="px-4 py-3.5">
+                  <Text className="text-[12px] font-semibold uppercase tracking-[1.4px] text-foreground/70" numberOfLines={1}>
                     {project.name || 'Untitled project'}
                   </Text>
-                  <View className="mt-3 flex-row items-center gap-1.5">
-                    <View className="rounded-full bg-emerald-500/10 px-2 py-1">
-                      <Text className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">Published</Text>
-                    </View>
-                    {date ? (
-                      <View className="flex-row items-center gap-1">
-                        <CalendarDays size={11} className="text-muted-foreground" />
-                        <Text className="text-[10px] text-muted-foreground">{date}</Text>
+                  <View className="mt-2 flex-row items-center justify-between">
+                    <View className="flex-row items-center gap-2">
+                      <View className="flex-row items-center rounded-full bg-emerald-500/10 px-2.5 py-1.5">
+                        <View className="mr-1.5 h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                        <Text className="text-[11px] font-medium text-emerald-400">Published</Text>
                       </View>
-                    ) : null}
+                      <View className="flex-row items-center gap-1.5">
+                        <CalendarDays size={14} className="text-foreground/55" />
+                        <Text className="text-[13px] text-foreground/60">{date || 'recently'}</Text>
+                      </View>
+                    </View>
+                    <View className="rounded-full border border-primary px-3 py-2">
+                      <Text className="text-xs font-medium text-primary">Open canvas</Text>
+                    </View>
                   </View>
                 </View>
               </Pressable>

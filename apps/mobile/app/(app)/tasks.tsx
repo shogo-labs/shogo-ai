@@ -4,8 +4,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
-import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Trash2, XCircle } from 'lucide-react-native'
-import { useProjectCollection } from '../../contexts/domain'
+import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
+import { useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, createHttpClient, type AgentTask, type AgentTaskStatus } from '../../lib/api'
@@ -48,6 +48,10 @@ function statusIconClass(status: AgentTaskStatus) {
   }
 }
 
+function projectTimestamp(project: IProject): number {
+  return Math.max(project.createdAt || 0, project.updatedAt || 0, project.lastMessageAt || 0)
+}
+
 function StatusBadge({ status }: { status: AgentTaskStatus }) {
   const className = statusClass(status)
   const textClass = status === 'completed'
@@ -84,6 +88,8 @@ export default function TasksScreen() {
   const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(requestedProjectId ?? null)
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectSearchOpen, setProjectSearchOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
 
@@ -127,6 +133,8 @@ export default function TasksScreen() {
     setTitle('')
     setNotes('')
     setSelectedProjectId(requestedProjectId ?? null)
+    setProjectQuery('')
+    setProjectSearchOpen(false)
     setError(null)
   }
 
@@ -262,26 +270,19 @@ export default function TasksScreen() {
 
   const projectPickerGroups = useMemo(() => {
     const pinnedIds = new Set(getPinnedProjectIds())
+    const query = projectQuery.trim().toLowerCase()
     const workspaceProjects = projects.all
-      .filter((project: any) => project.workspaceId === workspace?.id)
-      .sort((a: any, b: any) => {
-        const timestamp = (project: any) => {
-          const value = project.createdAt ?? project.updatedAt ?? project.lastMessageAt
-          if (typeof value === 'number') return value
-          if (value instanceof Date) return value.getTime()
-          const parsed = Date.parse(String(value ?? ''))
-          return Number.isNaN(parsed) ? 0 : parsed
-        }
-        return timestamp(b) - timestamp(a)
-      })
+      .filter((project) => project.workspaceId === workspace?.id)
+      .filter((project) => !query || project.name.toLowerCase().includes(query))
+      .sort((a, b) => projectTimestamp(b) - projectTimestamp(a))
 
     return {
-      pinned: workspaceProjects.filter((project: any) => pinnedIds.has(project.id)),
-      recent: workspaceProjects.filter((project: any) => !pinnedIds.has(project.id)),
+      pinned: workspaceProjects.filter((project) => pinnedIds.has(project.id)),
+      recent: workspaceProjects.filter((project) => !pinnedIds.has(project.id)),
     }
-  }, [projects.all, showCreate, workspace?.id])
+  }, [projectQuery, projects.all, workspace?.id])
 
-  const renderProjectChip = (project: any) => {
+  const renderProjectChip = (project: IProject) => {
     const selected = selectedProjectId === project.id
     return (
       <Pressable key={project.id} onPress={() => setSelectedProjectId(selected ? null : project.id)} accessibilityRole="radio" accessibilityState={{ selected }} className={`h-11 max-w-[190px] flex-row items-center gap-1.5 rounded-full border px-3.5 ${selected ? 'border-primary bg-primary/10' : 'border-border bg-muted'}`}>
@@ -380,8 +381,39 @@ export default function TasksScreen() {
           <View>
             <View className="mb-2 flex-row items-center justify-between">
               <Text className="text-[13px] font-semibold text-foreground">Project</Text>
-              <Text className="text-xs text-muted-foreground">Optional</Text>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-xs text-muted-foreground">Optional</Text>
+                <Pressable
+                  onPress={() => setProjectSearchOpen((open) => !open)}
+                  accessibilityRole="button"
+                  accessibilityLabel={projectSearchOpen ? 'Close project search' : 'Search projects'}
+                  className={`h-9 w-9 items-center justify-center rounded-full ${projectSearchOpen ? 'bg-primary/15' : 'bg-muted'}`}
+                >
+                  {projectSearchOpen ? <X size={17} className="text-primary" /> : <Search size={17} className="text-foreground" />}
+                </Pressable>
+              </View>
             </View>
+            {projectSearchOpen ? (
+              <View className="mt-1 flex-row items-center rounded-xl border border-border bg-muted/70 px-3">
+                <Search size={16} className="text-muted-foreground" />
+                <TextInput
+                  value={projectQuery}
+                  onChangeText={setProjectQuery}
+                  placeholder="Search projects"
+                  placeholderTextColor={isDark ? '#a3a3a3' : '#52525b'}
+                  selectionColor={isDark ? '#f09050' : '#c2410c'}
+                  autoFocus
+                  returnKeyType="search"
+                  className="h-11 flex-1 px-2 text-[15px] text-foreground"
+                  accessibilityLabel="Search projects"
+                />
+                {projectQuery ? (
+                  <Pressable onPress={() => setProjectQuery('')} accessibilityLabel="Clear project search" className="h-8 w-8 items-center justify-center rounded-full">
+                    <X size={15} className="text-muted-foreground" />
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
             {projectPickerGroups.pinned.length > 0 ? (
               <View className="mt-4">
                 <Text className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pinned</Text>
@@ -397,6 +429,9 @@ export default function TasksScreen() {
                   {projectPickerGroups.recent.map(renderProjectChip)}
                 </ScrollView>
               </View>
+            ) : null}
+            {projectSearchOpen && projectPickerGroups.pinned.length === 0 && projectPickerGroups.recent.length === 0 ? (
+              <Text className="mt-4 text-sm text-muted-foreground">No projects match “{projectQuery}”.</Text>
             ) : null}
           </View>
         </View>
