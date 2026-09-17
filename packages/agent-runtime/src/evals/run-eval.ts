@@ -19,6 +19,7 @@
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, statSync } from 'fs'
 import { resolve, join, dirname } from 'path'
 import { tmpdir } from 'os'
+import { execSync } from 'node:child_process'
 
 import {
   type DockerWorker,
@@ -152,14 +153,66 @@ const localFlag = args.includes('--local')
 const k8sFlag = args.includes('--k8s') || (!localFlag && !args.includes('--docker') && !!process.env.KUBERNETES_SERVICE_HOST)
 const saveWorkspacesFlag = args.includes('--save-workspaces')
 const noPipelineFlag = args.includes('--no-pipeline')
-const runIdArg = getArg(args, 'run-id')
-const callbackUrlArg = getArg(args, 'callback-url')
+let runIdArg = getArg(args, 'run-id')
+let callbackUrlArg = getArg(args, 'callback-url')
 const callbackSecret = process.env.EVAL_CALLBACK_SECRET || 'dev-eval-secret'
 const recordAgentEvalFlag = args.includes('--record-agent-eval')
 const evalAgentTypeArg = getArg(args, 'agent-type')
 const evalSuiteArg = getArg(args, 'suite', `run-eval.ts:${trackArg}`)
 const evalApiUrlArg = getArg(args, 'api-url', process.env.SHOGO_API_URL || callbackUrlArg)
 const evalWorkspaceIdArg = getArg(args, 'workspace-id') ?? null
+// Opt-in DB persistence for a direct/local CLI invocation (no admin/K8s
+// trigger involved). Without this, `--run-id`/`--callback-url` are only
+// ever set by eval-admin.ts's own spawn, so a bare
+// `bun run run-eval.ts --track X --model Y` never wrote a single row to
+// `eval_runs`/`eval_run_results` — results only ever landed in a /tmp JSON
+// dump. See the self-registration block below.
+const persistFlag = args.includes('--persist')
+
+function getGitCommitSha(): string | undefined {
+  try {
+    return execSync('git rev-parse HEAD', {
+      cwd: REPO_ROOT,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+// The commit run-eval.ts itself is executing from — reported to the admin
+// server so an `eval_runs` row can be joined against the production
+// telemetry window for that exact deploy, instead of only ever knowing
+// "some eval ran at some point" with no way to line it up against prod.
+const commitShaArg = getGitCommitSha()
+
+if (persistFlag && !(runIdArg && callbackUrlArg)) {
+  if (!evalApiUrlArg) {
+    console.error('[persist] --persist requires --api-url (or SHOGO_API_URL) pointing at a running API server.')
+    process.exit(1)
+  }
+  try {
+    const resp = await fetch(`${evalApiUrlArg}/api/internal/runs/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${callbackSecret}` },
+      body: JSON.stringify({
+        track: trackArg,
+        model: MODEL_MAP[modelArg] || modelArg,
+        workers: workersArg,
+        commitSha: commitShaArg ?? null,
+      }),
+    })
+    const json = await resp.json().catch(() => null) as { ok?: boolean; data?: { id: string }; error?: string } | null
+    if (!resp.ok || !json?.ok || !json.data?.id) {
+      throw new Error(json?.error || `HTTP ${resp.status}: ${resp.statusText}`)
+    }
+    runIdArg = json.data.id
+    callbackUrlArg = evalApiUrlArg
+    console.log(`[persist] Registered eval run ${runIdArg} (commit ${commitShaArg ?? 'unknown'}) against ${evalApiUrlArg} — results will persist to eval_runs/eval_run_results.`)
+  } catch (err: any) {
+    console.error(`[persist] Failed to self-register eval run: ${err.message}`)
+    process.exit(1)
+  }
+}
 
 const useCallback = !!(runIdArg && callbackUrlArg)
 
@@ -1766,10 +1819,10 @@ async function main() {
 
   if (useCallback) {
     try {
-      await postCallback(`/evals/${runIdArg}/complete`, { suite: exportData, logs: evalLogs }, 60_000)
+      await postCallback(`/evals/${runIdArg}/complete`, { suite: { ...exportData, commitSha: commitShaArg ?? null }, logs: evalLogs }, 60_000)
     } catch {
       console.warn(`[callback] /complete with full payload failed, retrying summary-only…`)
-      const lightweight = { ...exportData, results: [] }
+      const lightweight = { ...exportData, results: [], commitSha: commitShaArg ?? null }
       await postCallbackSafe(`/evals/${runIdArg}/complete`, { suite: lightweight, logs: {} }, 30_000)
     }
   }

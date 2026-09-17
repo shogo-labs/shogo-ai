@@ -238,6 +238,20 @@ export interface ToolContext {
    *  Bound to the gateway so the worktree_list tool can surface cross-chat
    *  awareness without a direct gateway reference. */
   listWorktreeStatuses?: () => Promise<import('@shogo/shared-runtime').WorktreeStatus[]>
+  /**
+   * True once `PreviewManager.depsReady` (the `npm install`/dep-seed gate)
+   * has resolved at least once — i.e. the workspace's `node_modules` is no
+   * longer mid-install. `undefined` when there's no PreviewManager wired
+   * (rare — some tool-context construction paths, e.g. certain eval/test
+   * harnesses, never attach one).
+   *
+   * read_lints uses this to tell "`Cannot find module 'react'` because the
+   * workspace hasn't finished installing yet" (environment noise — not a
+   * model mistake) apart from "`Cannot find module 'totally-made-up-pkg'`
+   * after deps are ready" (a genuine model diagnostic). See
+   * `HOSHI_CODING_FINDINGS.md`'s "environment noise" tool-failure category.
+   */
+  depsReady?: boolean
 }
 
 // Legacy blocked-command check kept as lightweight fallback for contexts
@@ -7482,6 +7496,53 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
 // Read Lints Tool (LSP-backed diagnostics for any TypeScript file)
 // ---------------------------------------------------------------------------
 
+/**
+ * Cause bucket for a single read_lints error line. Additive metadata only —
+ * consumed by evals/production telemetry, never shown to the agent (the
+ * plain-text `Line N: message` list it reads stays exactly as before).
+ *
+ *   - `missing_deps`      — `Cannot find module '<bare-package>'` while the
+ *                            workspace's own `node_modules` install hasn't
+ *                            finished yet. Environment noise, not a model
+ *                            mistake — see HOSHI_CODING_FINDINGS.md.
+ *   - `model_diagnostic`  — everything else from the language server: type
+ *                           errors, undefined names/properties, bad imports
+ *                           once deps *are* ready, etc. The default bucket;
+ *                           this is "the model wrote something wrong."
+ *   - `runtime`           — canvas compile/render failures caught live by
+ *                           the preview (`canvas-runtime-errors.ts`), not a
+ *                           static LSP diagnostic.
+ *   - `environment`       — the tool itself couldn't produce diagnostics at
+ *                           all (LSP not up yet) — see the early-return
+ *                           branches below.
+ */
+export type LintErrorCause = 'missing_deps' | 'model_diagnostic' | 'runtime' | 'environment'
+
+const BARE_MODULE_IMPORT_RE = /Cannot find module ['"]([^'"]+)['"]/
+
+/**
+ * Classify one LSP diagnostic's message into a `LintErrorCause`. `depsReady`
+ * is `ToolContext.depsReady` — `undefined`/`false` means "don't know / not
+ * finished yet," so a bare-package resolution failure is treated as
+ * environment noise rather than blamed on the model. Once deps are known
+ * ready, the exact same message means the model imported something that
+ * genuinely isn't available.
+ */
+export function classifyLintErrorCause(message: string, depsReady: boolean | undefined): LintErrorCause {
+  const moduleMatch = message.match(BARE_MODULE_IMPORT_RE)
+  if (moduleMatch) {
+    const spec = moduleMatch[1]
+    // Relative/workspace-local imports (./foo, ../foo, @/foo) failing to
+    // resolve are a real path mistake regardless of install state — deps
+    // readiness has nothing to do with those.
+    const isBarePackageImport = !spec.startsWith('.') && !spec.startsWith('/') && !spec.startsWith('@/')
+    if (isBarePackageImport && depsReady !== true) {
+      return 'missing_deps'
+    }
+  }
+  return 'model_diagnostic'
+}
+
 function createReadLintsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_lints',
@@ -7508,9 +7569,11 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         if (runtimeErrors.length > 0) {
           const errors = runtimeErrors.map(e => `[${e.phase}] ${e.error}`)
           clearCanvasRuntimeErrors()
-          return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors })
+          return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors, causeBreakdown: { runtime: errors.length } })
         }
-        return textResult({ ok: false, error: 'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.' })
+        // The tool itself couldn't produce diagnostics — that's an
+        // infra/environment condition, not evidence about the model's code.
+        return textResult({ ok: false, error: 'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.', causeBreakdown: { environment: 1 } })
       }
 
       const { path: filePath } = params as { path?: string }
@@ -7639,6 +7702,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
             ...portMeta,
             runtimeErrors,
             hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.',
+            causeBreakdown: { runtime: runtimeErrors.length },
           })
         }
         return textResult({
@@ -7656,7 +7720,15 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
 
       const TS_RETURN_OUTSIDE_FN = 1108
       let totalErrors = 0
-      const files: Array<{ path: string; ok: boolean; errors: string[] }> = []
+      const files: Array<{ path: string; ok: boolean; errors: string[]; causes: LintErrorCause[] }> = []
+      // Aggregate cause counts across every file, surfaced as `causeBreakdown`
+      // on the final result — the single field evals/production telemetry
+      // read to tell "environment noise" apart from "the model's mistake"
+      // without re-parsing message strings themselves.
+      const causeCounts: Partial<Record<LintErrorCause, number>> = {}
+      const tallyCause = (cause: LintErrorCause, count = 1) => {
+        causeCounts[cause] = (causeCounts[cause] ?? 0) + count
+      }
 
       for (const [uri, diags] of allDiags) {
         // Use the same separator-tolerant relativization as the port scan so
@@ -7675,22 +7747,31 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         }
         if (relPath.endsWith('.d.ts') || relPath.endsWith('.pyi')) continue
 
-        const errors = diags
+        const filteredDiags = diags
           .filter(d => (d.severity ?? 1) === 1)
           .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
-          .map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
+        const errors = filteredDiags.map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
+        const errorCauses = filteredDiags.map(d => classifyLintErrorCause(d.message, ctx.depsReady))
 
         const portErrors = portErrorsByFile.get(relPath) ?? []
+        // Hardcoded-port issues are always something the model wrote —
+        // never environment noise.
+        const portErrorCauses: LintErrorCause[] = portErrors.map(() => 'model_diagnostic')
+
         const combined = [...errors, ...portErrors]
+        const combinedCauses = [...errorCauses, ...portErrorCauses]
         if (combined.length === 0) continue
         totalErrors += combined.length
-        files.push({ path: relPath, ok: false, errors: combined })
+        for (const cause of combinedCauses) tallyCause(cause)
+        files.push({ path: relPath, ok: false, errors: combined, causes: combinedCauses })
         portErrorsByFile.delete(relPath)
       }
       // Files that only had port errors (no LSP diags at all) still need to land.
       for (const [relPath, portErrors] of portErrorsByFile) {
         totalErrors += portErrors.length
-        files.push({ path: relPath, ok: false, errors: portErrors })
+        const causes: LintErrorCause[] = portErrors.map(() => 'model_diagnostic')
+        for (const cause of causes) tallyCause(cause)
+        files.push({ path: relPath, ok: false, errors: portErrors, causes })
       }
 
       if (files.length === 0) {
@@ -7701,6 +7782,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
             ...portMeta,
             runtimeErrors,
             hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.',
+            causeBreakdown: { runtime: runtimeErrors.length },
           })
         }
         return textResult({
@@ -7716,6 +7798,8 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         })
       }
 
+      if (runtimeErrors) tallyCause('runtime', runtimeErrors.length)
+
       const allOk = totalErrors === 0 && !runtimeErrors
       const baseHint = allOk ? null : 'Fix the errors above using edit_file, then run read_lints again to verify.'
       const hint = [fixesHint, baseHint].filter(Boolean).join(' ') || undefined
@@ -7724,6 +7808,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         ...scopeMeta,
         ...portMeta,
         files,
+        ...(Object.keys(causeCounts).length > 0 ? { causeBreakdown: causeCounts } : {}),
         ...(runtimeErrors ? { runtimeErrors } : {}),
         ...(hint ? { hint } : {}),
       })

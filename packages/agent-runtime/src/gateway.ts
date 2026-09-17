@@ -2051,6 +2051,11 @@ export class AgentGateway {
       canvasFileWatcher: this.canvasFileWatcher,
       lspManager: this.lspManager ?? undefined,
       getLspManager: () => this.lspManager,
+      // read_lints' missing-deps-vs-model-mistake classification (see
+      // `ToolContext.depsReady`'s docstring). `depsSettled` is a sync,
+      // already-resolved-or-not snapshot — safe to read on every tool call
+      // without awaiting the `depsReady` promise itself.
+      depsReady: this.previewManager?.depsSettled,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
       skillServerManager: this.skillServerManager,

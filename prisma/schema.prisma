@@ -2193,6 +2193,13 @@ model EvalRun {
   triggeredBy String?
   pid         Int?
   jobName     String?
+  /**
+   * Git commit SHA the run executed against (reported by run-eval.ts itself,
+   * since it's the one that actually runs the eval code — not the admin
+   * server, which may be on a different checkout). Lets a pass-rate window
+   * be joined against the exact prod deployment window for that commit.
+   */
+  commitSha   String?
   error       String?   @db.Text
   summary     Json?
   cost        Json?
