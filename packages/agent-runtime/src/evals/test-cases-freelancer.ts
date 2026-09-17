@@ -25,6 +25,9 @@ import {
   responseContains,
   toolCallsJson,
   lastSchemaPreservesModel,
+  readWorkspaceFile,
+  readAllSrcCodeFromDisk,
+  listSrcFilePathsFromDisk,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -48,20 +51,29 @@ function isCodeFile(path: string): boolean {
 }
 
 function wroteCanvasFile(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
+  const viaToolCall = r.toolCalls.some(t => {
     if (t.name !== 'write_file') return false
     const path = String((t.input as any).path ?? '')
     return isCodeFile(path)
   })
+  if (viaToolCall) return true
+  // Fall back to disk: the file may already exist from an earlier pipeline
+  // phase or seeded fixture, which this phase correctly didn't need to
+  // rewrite. See `readWorkspaceFile` docs.
+  return listSrcFilePathsFromDisk(r).length > 0
 }
 
 function allCanvasCode(r: EvalResult): string {
-  return r.toolCalls
+  const fromToolCalls = r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => isCodeFile(String((t.input as any).path ?? '')))
     .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
     .join('\n')
-    .toLowerCase()
+  // Fall back to actual on-disk src/ content so criteria aren't blind to
+  // code that was already correct going into this phase (e.g. built by an
+  // earlier pipeline phase, or present in a seeded fixture) and which this
+  // phase correctly didn't need to rewrite. See `readWorkspaceFile` docs.
+  return (fromToolCalls + '\n' + readAllSrcCodeFromDisk(r)).toLowerCase()
 }
 
 function anyCanvasCodeContains(r: EvalResult, term: string): boolean {
@@ -69,17 +81,19 @@ function anyCanvasCodeContains(r: EvalResult, term: string): boolean {
 }
 
 function wroteSchema(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
+  const viaToolCall = r.toolCalls.some(t => {
     if (t.name !== 'write_file' && t.name !== 'edit_file') return false
     return String((t.input as any).path ?? '').includes('schema.prisma')
   })
+  return viaToolCall || readWorkspaceFile(r, 'prisma/schema.prisma').length > 0
 }
 
 function schemaContainsModel(r: EvalResult, modelName: string): boolean {
-  return r.toolCalls
+  const viaToolCall = r.toolCalls
     .filter(t => t.name === 'write_file' || t.name === 'edit_file')
     .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
     .some(t => String((t.input as any).content ?? (t.input as any).new_string ?? '').includes(`model ${modelName}`))
+  return viaToolCall || readWorkspaceFile(r, 'prisma/schema.prisma').includes(`model ${modelName}`)
 }
 
 /** True if schema defines `model Time {` (not only a substring of `model TimeEntry`). */
@@ -90,7 +104,8 @@ function schemaHasTimeEntryOrTimeModel(r: EvalResult): boolean {
     .filter(t => String((t.input as any).path ?? '').includes('schema.prisma'))
     .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
     .join('\n')
-  return /\bmodel\s+Time\s*\{/.test(prismaBlocks)
+  const fromDisk = readWorkspaceFile(r, 'prisma/schema.prisma')
+  return /\bmodel\s+Time\s*\{/.test(prismaBlocks) || /\bmodel\s+Time\s*\{/.test(fromDisk)
 }
 
 function canvasCodeFetches(r: EvalResult): boolean {

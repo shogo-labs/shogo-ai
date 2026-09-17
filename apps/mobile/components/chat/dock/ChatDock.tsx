@@ -13,10 +13,18 @@
  *    an active connectivity wait) — these never collapse.
  *
  * Web: `absolute` + `bottom: "100%"` so the dock floats over the message
- * list without pushing layout. The overlay spans the composer wrapper;
- * an inner `max-w-3xl` column is centered so Error / Changed files /
- * Queue cards line up with the transcript (and the intended composer
- * column). NativeWind stays off the overlay View so css-interop cannot
+ * list without pushing layout. The overlay spans the composer wrapper —
+ * `ProjectComposerDock` is the ONE place that caps/measures the shared
+ * composer column's width (`chatComposerDockStyle`), so the inner column
+ * here deliberately stays plain `w-full` rather than re-applying its own
+ * `max-w-3xl`/measured-width cap. A second, independent cap used to live
+ * here and would silently drift from `ChatInput` — which has no cap of
+ * its own and just inherits the shared column — whenever the composer
+ * rendered somewhere narrower/wider than `useWindowDimensions()` (e.g. a
+ * docked panel), producing a dock card that was narrower than the input
+ * box below it. Inheriting the exact same width, unconditionally, is
+ * what keeps the two pixel-identical even when that shared measurement
+ * is wrong. NativeWind stays off the overlay View so css-interop cannot
  * drop `position` / `bottom`.
  *
  * Native: the dock is a normal column sibling of the composer pill.
@@ -72,9 +80,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingBottom: WEB_DOCK_COMPOSER_GAP,
-    // `left` + `right` stretch this overlay to the composer wrapper.
-    // Without centering, `max-w-3xl` on the same node pins the card to
-    // the left while the transcript sits in the centered column.
+    // `left` + `right` stretch this overlay to the composer wrapper. The
+    // inner column is plain `w-full` (see file header), so it already
+    // fills this box exactly — `alignItems: "center"` is just a safety
+    // net in case a future child ever renders narrower than the overlay.
     alignItems: "center",
   },
   relative: { position: "relative" },
@@ -222,7 +231,7 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
         pointerEvents="box-none"
         onLayout={handleLayout}
       >
-        <View className={cn("w-full max-w-3xl self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
+        <View className={cn("w-full self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
           {body}
         </View>
       </View>
@@ -236,7 +245,7 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
       pointerEvents="box-none"
       onLayout={handleLayout}
     >
-      <View className={cn("w-full max-w-3xl gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
+      <View className={cn("w-full gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
         {body}
       </View>
     </View>

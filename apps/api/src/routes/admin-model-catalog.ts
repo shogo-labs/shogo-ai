@@ -51,7 +51,7 @@ const MODEL_PROVIDER_PROTOCOLS = new Set(['openai', 'anthropic'])
 const MODEL_PROVIDER_AUTH_STYLES = new Set(['bearer', 'api-key-header'])
 const MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'openrouter', 'local', 'custom'])
 const MODEL_TIERS = new Set(['economy', 'standard', 'premium'])
-const MODEL_FAMILIES = new Set(['opus', 'sonnet', 'haiku', 'gpt', 'other'])
+const MODEL_FAMILIES = new Set(['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'other'])
 const MODEL_GENERATIONS = new Set(['current', 'legacy'])
 const MODEL_REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
@@ -241,6 +241,7 @@ function inferFamily(provider: string, id: string): string {
     if (lower.includes('opus')) return 'opus'
     if (lower.includes('sonnet')) return 'sonnet'
     if (lower.includes('haiku')) return 'haiku'
+    if (lower.includes('fable')) return 'fable'
     if (lower.includes('gpt') || lower.includes('openai/')) return 'gpt'
     return 'other'
   }
