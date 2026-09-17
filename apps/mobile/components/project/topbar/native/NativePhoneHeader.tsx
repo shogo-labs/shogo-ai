@@ -28,6 +28,7 @@ import { NativeClusterIcon, NATIVE_CLUSTER_SLOT } from "./NativeClusterIcon";
 import { TrustBadge } from "../TrustBadge";
 
 const NATIVE_HEADER_PAD_X = 12;
+const NATIVE_HEADER_PAD_LEFT = 28;
 const NATIVE_HEADER_PAD_TOP = 4;
 const NATIVE_CLUSTER_PAD_X = 6;
 const NATIVE_CLUSTER_WIDTH = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * 2;
@@ -65,7 +66,7 @@ export function NativePhoneHeader({
 }) {
   const onChat = narrowActiveTab === "chat";
   const showChatMoreCluster = !onChat;
-  const leftChrome = NATIVE_HEADER_PAD_X + NATIVE_PHONE_CONTROL_SIZE;
+  const leftChrome = NATIVE_HEADER_PAD_LEFT + NATIVE_PHONE_CONTROL_SIZE;
   const rightChrome =
     NATIVE_HEADER_PAD_X +
     (showChatMoreCluster ? NATIVE_CLUSTER_WIDTH : NATIVE_PHONE_CONTROL_SIZE) +
@@ -113,6 +114,7 @@ export function NativePhoneHeader({
           style={{
             height: NATIVE_PHONE_CONTROL_SIZE,
             paddingHorizontal: NATIVE_HEADER_PAD_X,
+            paddingLeft: NATIVE_HEADER_PAD_LEFT,
             zIndex: 2,
           }}
         >

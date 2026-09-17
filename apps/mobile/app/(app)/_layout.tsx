@@ -155,7 +155,10 @@ export default function AppLayout() {
     isAccountPage ||
     isSearchPage ||
     isProjectChatsPage
-  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader && !phoneSheetOpen
+  // Project chat has its own header, but it still uses the same native drawer
+  // underneath. Keep horizontal drawer gestures enabled there so the sheet
+  // can be opened and dismissed by swiping just like Home.
+  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !phoneSheetOpen && (!suppressNarrowAppHeader || isProjectDetail)
   const nativeSheetDrawer = !isWide && !isIdeEmbed
   const drawer = useNativeSheetDrawer({
     windowWidth: width,
@@ -170,9 +173,22 @@ export default function AppLayout() {
   }, [closeDrawer, drawerOpen, phoneSheetOpen])
 
   useEffect(() => {
-    return projectSidebarEvents.subscribeOpenProject(() => {
-      if (!isWide && !isIdeEmbed) openDrawer()
+    let pendingFrame: number | null = null
+    const unsubscribe = projectSidebarEvents.subscribeOpenProject(() => {
+      if (isWide || isIdeEmbed) return
+      // Let the sidebar commit its focused-project state before the drawer
+      // animation starts. Otherwise the default sidebar renders for the first
+      // frame and then crossfades into the project panel.
+      if (pendingFrame !== null) cancelAnimationFrame(pendingFrame)
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = null
+        openDrawer()
+      })
     })
+    return () => {
+      if (pendingFrame !== null) cancelAnimationFrame(pendingFrame)
+      unsubscribe()
+    }
   }, [isIdeEmbed, isWide, openDrawer])
 
   useEffect(() => {

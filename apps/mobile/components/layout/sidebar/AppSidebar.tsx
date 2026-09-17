@@ -467,10 +467,14 @@ export const AppSidebar = observer(function AppSidebar({
 
   useEffect(() => {
     return projectSidebarEvents.subscribeOpenProject((projectId) => {
+      // This panel is the drawer's first frame when opened from project chat;
+      // skip the internal crossfade so the drawer itself owns the motion.
+      mobileProjectTransition.stopAnimation();
+      mobileProjectTransition.setValue(1);
       setMobileProjectPanelId(projectId);
       setMobileExpandedProjectId(projectId);
     });
-  }, []);
+  }, [mobileProjectTransition]);
 
   useEffect(() => {
     const expanded = mobileExpandedProjectId !== null;
