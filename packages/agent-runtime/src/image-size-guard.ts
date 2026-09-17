@@ -1,19 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Image size guard — enforces Anthropic's 5 MB per-image limit on tool_result
- * and user-vision payloads.
+ * Image content guard — enforces (1) Anthropic's 5 MB per-image size limit
+ * and (2) the image *format* every configured provider actually accepts, on
+ * tool_result and user-vision payloads.
  *
- * Anthropic rejects any `tool_result.content[].image.source.base64` whose
- * encoded payload exceeds 5,242,880 bytes. Base64 inflates raw bytes by ~33%,
- * so a ~4.4 MB PNG can produce a ~5.86 MB string that trips the cap. We guard
- * at two layers:
+ * Size: Anthropic rejects any `tool_result.content[].image.source.base64`
+ * whose encoded payload exceeds 5,242,880 bytes. Base64 inflates raw bytes by
+ * ~33%, so a ~4.4 MB PNG can produce a ~5.86 MB string that trips the cap.
+ *
+ * Format: every provider we route to (Anthropic, OpenAI-compatible
+ * providers, DeepSeek) only documents support for PNG/JPEG/GIF/WebP. Tools
+ * that read arbitrary files from disk (`read_file`) recognize a broader set
+ * of image extensions — including `.bmp`/`.avif`/`.heic`/`.ico`, all common
+ * in seeded web-app templates (e.g. `public/favicon.ico`) — so an agent
+ * reading one of those embeds a `type: 'image'` block the model call will
+ * reject outright (DeepSeek: `400 invalid_request_error`). Because the bad
+ * block lives in session history, every subsequent turn that replays it
+ * fails the same way until something evicts it, which can burn a large
+ * fraction of a turn's wall-clock budget on repeated failed calls before the
+ * agent ever recovers. See eval bug reports referencing
+ * `messages[N].image[0]: unsupported image format`.
+ *
+ * We guard at two layers:
  *
  *   1. At emission time inside tools that can produce images (read_file,
- *      browser screenshot, MCP passthrough), so oversized images never enter
+ *      browser screenshot, MCP passthrough), so bad images never enter
  *      session history.
- *   2. In the per-API-call transformContext, scrub any oversized images that
- *      may already be sitting in history from before this guard shipped.
+ *   2. In the per-API-call transformContext, scrub any bad images that may
+ *      already be sitting in history from before this guard shipped (or from
+ *      a provider switch after the image was embedded).
  *
  * Both layers use the same pure helpers below. The functions are deterministic
  * so they don't disturb stable-compaction's "byte-identical prompt prefix"
@@ -29,6 +45,19 @@ import type { ImageContent, Message, TextContent } from '@mariozechner/pi-ai'
  * 4 KB safety margin to avoid tripping the cap on borderline images.
  */
 export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024 - 4096
+
+/**
+ * Image MIME types every provider we route to (Anthropic, DeepSeek, and
+ * OpenAI-compatible custom providers) documents support for. Deliberately
+ * conservative — anything outside this set has been observed to produce a
+ * hard 400 from at least one configured provider.
+ */
+export const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
 
 export interface OversizedPlaceholderOptions {
   /** Short human-readable source label, e.g. `read_file` or `mcp:foo`. */
@@ -78,10 +107,42 @@ export function buildOversizedPlaceholder(opts: OversizedPlaceholderOptions): Te
 }
 
 /**
- * Return a new content array where any ImageContent whose base64 `data`
- * exceeds the cap is replaced with a placeholder TextContent. Content blocks
- * that are already small (or already text) pass through by reference so the
- * caller can rely on cheap equality checks if nothing changed.
+ * Build a TextContent block that replaces an image whose format no
+ * configured provider accepts. Unlike the oversized-image placeholder this
+ * can't suggest a one-line fix (there's no universal "convert this in place"
+ * command we can promise works), so it just names the problem and the
+ * accepted formats so the agent can re-export/convert deliberately.
+ */
+export function buildUnsupportedFormatPlaceholder(opts: {
+  label: string
+  mimeType?: string
+  pathHint?: string
+}): TextContent {
+  const { label, mimeType, pathHint } = opts
+  const accepted = [...SUPPORTED_IMAGE_MIME_TYPES].map(m => m.replace('image/', '')).join(', ')
+  const lines: string[] = [
+    `[Image omitted — ${label}]`,
+    `Reason: ${mimeType ? `the "${mimeType}"` : 'this'} image format isn't supported by the model provider ` +
+      `(accepted formats: ${accepted}).`,
+  ]
+  if (pathHint) {
+    lines.push(
+      `The original file is still on disk at "${pathHint}". ` +
+        `Convert it to PNG before reading, e.g. on macOS: \`sips -s format png "${pathHint}" --out "${pathHint}.png"\`, ` +
+        `or with ImageMagick: \`convert "${pathHint}" "${pathHint}.png"\`, then read the converted file.`
+    )
+  } else {
+    lines.push(`Convert the image to one of the accepted formats before sending it.`)
+  }
+  return { type: 'text', text: lines.join(' ') }
+}
+
+/**
+ * Return a new content array where any ImageContent that's either oversized
+ * or in a format no configured provider accepts is replaced with an
+ * actionable placeholder TextContent. Content blocks that are already valid
+ * (or already text) pass through by reference so the caller can rely on
+ * cheap equality checks if nothing changed.
  */
 export function enforceImageSizeLimit(
   content: ReadonlyArray<TextContent | ImageContent>,
@@ -90,7 +151,19 @@ export function enforceImageSizeLimit(
   let mutated = false
   const next: (TextContent | ImageContent)[] = []
   for (const block of content) {
-    if (block.type === 'image' && typeof block.data === 'string' && block.data.length > MAX_IMAGE_BASE64_BYTES) {
+    if (block.type !== 'image' || typeof block.data !== 'string') {
+      next.push(block)
+      continue
+    }
+    const normalizedMime = block.mimeType?.toLowerCase().trim()
+    if (normalizedMime && !SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMime)) {
+      next.push(buildUnsupportedFormatPlaceholder({
+        label: opts.label,
+        mimeType: block.mimeType,
+        pathHint: opts.pathHint,
+      }))
+      mutated = true
+    } else if (block.data.length > MAX_IMAGE_BASE64_BYTES) {
       next.push(buildOversizedPlaceholder({
         label: opts.label,
         base64Length: block.data.length,
@@ -107,11 +180,12 @@ export function enforceImageSizeLimit(
 
 /**
  * Walk a message history and rewrite any UserMessage / ToolResultMessage that
- * carries an oversized image block. AssistantMessages cannot contain images
- * in pi-ai's type model so they're passed through untouched.
+ * carries an oversized or unsupported-format image block. AssistantMessages
+ * cannot contain images in pi-ai's type model so they're passed through
+ * untouched.
  *
  * Returns the same array reference when no message needed scrubbing; this
- * keeps prompt-cache hashes stable across calls when no image is oversized.
+ * keeps prompt-cache hashes stable across calls when nothing needed fixing.
  */
 export function scrubOversizedImages(messages: ReadonlyArray<Message>): Message[] {
   let mutated = false
