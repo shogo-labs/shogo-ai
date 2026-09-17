@@ -131,11 +131,13 @@ function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; 
         </View>
         <ChevronRight size={17} className="text-muted-foreground" />
       </View>
-      {hasStatus ? <View className="mt-4 flex-row flex-wrap gap-2">
-        {completed > 0 ? <StatusPill label={`${completed} completed`} tone="success" /> : null}
-        {pending > 0 ? <StatusPill label={`${pending} pending`} tone="primary" /> : null}
-        {failed > 0 ? <StatusPill label={`${failed} failed`} tone="danger" /> : null}
-      </View> : null}
+      <View className="mt-4 flex-row flex-wrap gap-2">
+        {hasStatus ? <>
+          {completed > 0 ? <StatusPill label={`${completed} completed`} tone="success" /> : null}
+          {pending > 0 ? <StatusPill label={`${pending} pending`} tone="primary" /> : null}
+          {failed > 0 ? <StatusPill label={`${failed} failed`} tone="danger" /> : null}
+        </> : <StatusPill label="No activity yet" tone="muted" />}
+      </View>
     </Pressable>
   )
 }
