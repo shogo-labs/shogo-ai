@@ -140,7 +140,7 @@ function useNativePhoneSheetKeyboardShift(visible: boolean, viewportHeight: numb
       frameSubscription.remove()
       hideSubscription.remove()
     }
-  }, [shift, viewportHeight, visible])
+  }, [enabled, shift, viewportHeight, visible])
 
   return shift
 }

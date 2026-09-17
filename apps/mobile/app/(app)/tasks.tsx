@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, Alert, Keyboard, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
 import { useProjectCollection, type IProject } from '../../contexts/domain'
@@ -104,6 +104,11 @@ export default function TasksScreen() {
       createSheetScrollRef.current?.scrollToEnd({ animated: false })
     })
   }, [])
+
+  const toggleProjectSearch = useCallback(() => {
+    if (projectSearchOpen) Keyboard.dismiss()
+    setProjectSearchOpen((open) => !open)
+  }, [projectSearchOpen])
 
   const load = useCallback(async () => {
     if (loadInFlight.current) return loadInFlight.current
@@ -375,7 +380,7 @@ export default function TasksScreen() {
         scroll
         scrollRef={createSheetScrollRef}
         onContentSizeChange={projectSearchOpen ? keepProjectSearchVisible : undefined}
-        keyboardBehavior="scroll"
+        keyboardBehavior={projectSearchOpen ? 'shift' : 'scroll'}
         maxHeightRatio={0.84}
         draggable
         animationType="slide"
@@ -428,13 +433,13 @@ export default function TasksScreen() {
               <View className="flex-row items-center gap-2.5">
                 <Text className="text-xs text-muted-foreground">Optional</Text>
                 <Pressable
-                  onPress={() => setProjectSearchOpen((open) => !open)}
+                  onPress={toggleProjectSearch}
                   accessibilityRole="button"
-                  accessibilityLabel={projectSearchOpen ? 'Close project search' : 'Search projects'}
-                  accessibilityHint={projectSearchOpen ? 'Hide project search' : 'Show project search'}
+                  accessibilityLabel="Search projects"
+                  accessibilityHint={projectSearchOpen ? 'Hide project search and dismiss the keyboard' : 'Show project search'}
                   className={`h-10 w-10 items-center justify-center rounded-2xl border ${projectSearchOpen ? 'border-primary bg-primary/10' : 'border-border bg-muted/70'}`}
                 >
-                  {projectSearchOpen ? <X size={18} className="text-primary" /> : <Search size={18} className="text-foreground" />}
+                  <Search size={18} className={projectSearchOpen ? 'text-primary' : 'text-foreground'} />
                 </Pressable>
               </View>
             </View>
