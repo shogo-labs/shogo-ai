@@ -44,12 +44,23 @@ export type LiveValidation = {
 }
 
 function visibleEntry(
-  entries: Array<{ id: string }>,
-  modelId: string,
+  entries: Array<{ id: string; provider?: string; kind?: string }>,
+  model: ModelEntry,
 ): boolean {
-  const entry = getMergedModelEntrySync(modelId)
-  if (!entry) return false
-  return entries.some((candidate) => candidate.id === entry.id || candidate.id === modelId)
+  return entries.some((candidate) => {
+    if (candidate.id === model.id) return true
+    // Cloud-forwarding mode: a cloud-connected desktop's visible-models list
+    // is sourced from the connected cloud's picker payload, which keys
+    // entries by an opaque DB id rather than the code-shipped catalog slug
+    // (e.g. `gpt-live-1`). That payload doesn't carry `apiModel`/aliases, so
+    // a locally-resolved slug entry can never id-match a cloud-sourced one.
+    // Unlike chat models — whose id always round-trips unchanged from a
+    // picker selection — Live model ids are caller-supplied slugs per the
+    // SDK contract, so fall back to kind+provider matching. Safe while each
+    // provider has at most one live model.
+    if (model.kind === 'live' && candidate.kind === 'live' && candidate.provider === model.provider) return true
+    return false
+  })
 }
 
 /** Validate a Live session before any audio or provider request is started. */
@@ -82,7 +93,7 @@ export async function validateLiveSessionStart(
   }
 
   const visible = await resolveVisibleModelsForWorkspace(tokenPayload.workspaceId, { includeLive: true })
-  if (!visibleEntry(visible.catalogModels, modelId)) {
+  if (!visibleEntry(visible.catalogModels, model)) {
     return {
       ok: false,
       status: 403,
@@ -119,7 +130,7 @@ export async function validateLiveSessionStart(
         message: `Backend model '${backendModelId}' must be a visible OpenAI chat model.`,
       }
     }
-    if (!visibleEntry(visible.catalogModels, backendModelId) ||
+    if (!visibleEntry(visible.catalogModels, backend) ||
         !await isModelVisibleForWorkspace(tokenPayload.workspaceId, backendModelId)) {
       return {
         ok: false,
