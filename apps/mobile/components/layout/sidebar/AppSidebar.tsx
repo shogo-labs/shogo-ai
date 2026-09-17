@@ -1263,6 +1263,32 @@ export const AppSidebar = observer(function AppSidebar({
                 />
               </Pressable>
             </View>
+            <View className="px-2 pt-3 pb-2">
+              <NavItem
+                icon={Home}
+                label="Home"
+                href="/(app)"
+                active={isHomePage}
+                collapsed={false}
+                onNavPress={onNavPress}
+              />
+              {features.marketplace && (
+                <NavItem
+                  icon={Store}
+                  label="Marketplace"
+                  href="/(app)/marketplace"
+                  active={isMarketplacePage}
+                  collapsed={false}
+                  onNavPress={onNavPress}
+                />
+              )}
+              <NavItem
+                icon={MessageSquarePlus}
+                label="New Chat"
+                collapsed={false}
+                onPress={handleNewChat}
+              />
+            </View>
             <ProjectTreeItem
               project={mobileProjectPanel}
               mobileProjectDetail
