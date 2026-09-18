@@ -511,7 +511,11 @@ describe('fetchCloudVisibleModels', () => {
       catalogModels: [{ id: 'a', provider: 'anthropic', displayName: 'A', tier: 'premium' }],
     }))
     const out = await fetchCloudVisibleModels()
-    expect(fetchCalls[0].url).toBe('https://cloud.test/api/platform/visible-models')
+    // Always requests the upstream's includeLive superset — see the function's
+    // doc comment: this is required so a cloud-connected desktop can ever
+    // resolve a Live/realtime model as visible (local-side filtering re-hides
+    // it for callers that didn't ask for it).
+    expect(fetchCalls[0].url).toBe('https://cloud.test/api/platform/visible-models?includeLive=true')
     const auth = new Headers(fetchCalls[0].init?.headers as any).get('authorization')
     expect(auth).toBe('Bearer shogo_sk_test')
     // Non-string catalog ids are filtered out.

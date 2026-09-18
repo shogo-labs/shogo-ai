@@ -951,16 +951,42 @@ app.get('/api/config', async (c) => {
 // AI through it), the catalog is sourced from that cloud so changes a cloud
 // super-admin makes to "Available Models" reflect here. Any failure falls
 // back to the local DB read below.
+//
+// `?includeLive=true` is an internal passthrough for `fetchCloudVisibleModels`
+// (a cloud-connected desktop syncing its picker from this cloud) — it is NOT
+// meant for browser chat-picker callers, who never set it and therefore still
+// get Live/realtime models filtered out here, same as before. Without honoring
+// this param, the desktop's synced payload could never contain a `kind: 'live'`
+// entry at all (this handler's default omits them), which made every Live
+// session on a cloud-connected desktop fail `model_not_visible` regardless of
+// entitlement — no amount of local-side id/kind matching could recover data
+// this response never included in the first place.
 app.get('/api/platform/visible-models', async (c) => {
+  const includeLive = c.req.query('includeLive') === 'true'
+
   try {
     const fromCloud = await fetchCloudVisibleModels()
-    if (fromCloud) return c.json(fromCloud)
+    if (fromCloud) {
+      // `fetchCloudVisibleModels` always requests the upstream's superset
+      // (see its doc comment) — re-apply this caller's own `includeLive`
+      // intent before returning, so an intermediate node forwarding to a
+      // further upstream cloud doesn't leak Live entries to a plain chat
+      // picker just because its own upstream fetch happened to include them.
+      return c.json({
+        ...fromCloud,
+        catalogModels: Array.isArray(fromCloud.catalogModels)
+          ? fromCloud.catalogModels.filter(
+              (entry: any) => includeLive || entry?.kind !== 'live',
+            )
+          : fromCloud.catalogModels,
+      })
+    }
   } catch {
     // unreachable cloud / parse error — fall through to local read
   }
 
   try {
-    const payload = await resolvePlatformVisibleModels()
+    const payload = await resolvePlatformVisibleModels({ includeLive })
     return c.json(payload)
   } catch (err: any) {
     // Omit catalogModels entirely so clients fall back to their bundled
