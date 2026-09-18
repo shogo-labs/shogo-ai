@@ -499,6 +499,17 @@ export function _resetAgentModelDefaultsCache(): void {
  *
  * Successful reads are cached for 30 minutes; failures are not cached, so a
  * transient outage doesn't pin an empty picker for the full TTL.
+ *
+ * Always requests the upstream's `includeLive=true` superset (chat models +
+ * Live/realtime models) regardless of what this call site needs — the single
+ * cache entry is shared by every local caller, and `resolvePlatformVisibleModelsForRequest`
+ * already re-filters `kind === 'live'` entries back out for callers that
+ * didn't ask for them (see its `.filter((entry) => options.includeLive ||
+ * entry.kind !== 'live')`). Without this, a cloud-connected desktop could
+ * never resolve a Live model as visible: the upstream's default (no query
+ * param) response — the one a browser chat picker consumes — never includes
+ * `kind: 'live'` entries, and no amount of local-side filtering can recover
+ * data the fetch never received in the first place.
  */
 export async function fetchCloudVisibleModels(): Promise<CloudVisibleModels | null> {
   if (!isLocalMode()) return null
@@ -517,7 +528,7 @@ export async function fetchCloudVisibleModels(): Promise<CloudVisibleModels | nu
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 4_000)
     try {
-      const resp = await fetchUpstream('/api/platform/visible-models', {
+      const resp = await fetchUpstream('/api/platform/visible-models?includeLive=true', {
         method: 'GET',
         headers: { accept: 'application/json' },
         signal: controller.signal,
