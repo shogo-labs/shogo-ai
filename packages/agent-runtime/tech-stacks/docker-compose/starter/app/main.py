@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, text
 
 app = FastAPI()
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://postgres:postgres@db:5432/app")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://postgres:postgres@db:5432/app")
 engine = create_engine(DATABASE_URL)
 
 

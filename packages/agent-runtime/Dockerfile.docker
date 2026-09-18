@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Shogo Technologies, Inc.
+#
+# =============================================================================
+# Docker-class runtime image — the `shogo-runtime` base image plus an in-guest
+# Docker Engine, for the Tier 2 `runtime.vmClass: "docker"` project class
+# (see packages/agent-runtime/tech-stacks/docker-compose/stack.json).
+# =============================================================================
+#
+# This is a THIN layer on top of the standard runtime image, not a fork of it:
+# the agent-runtime process (bun, permission-engine, PreviewManager, ...) is
+# unchanged, this just adds dockerd + docker compose so the agent can exec
+# `docker compose` inside the guest instead of running only a bare process.
+#
+# Build (on the metal host, or CI with the same OCIR creds used by
+# scripts/metal-agent/build-runtime-rootfs.sh):
+#
+#   DOCKER_CONFIG=/root/.docker-ocir docker build \
+#     --build-arg BASE_IMAGE=us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:staging-multiarch-latest \
+#     -f packages/agent-runtime/Dockerfile.docker \
+#     -t shogo-runtime:docker-class .
+#
+# Then feed the result into build-runtime-rootfs.sh the same way any other
+# runtime image is turned into a bootable ext4 (PULL=false RUNTIME_IMAGE=shogo-runtime:docker-class),
+# with fc-init additionally starting dockerd before exec'ing /entrypoint.sh
+# (see the METAL_GUEST_INIT docker-class addendum in host-bootstrap.sh notes).
+#
+# ---------------------------------------------------------------------------
+# Guest-kernel compatibility (Phase 0 spike, 2026-09-18, staging metal host
+# `latitude-dal-1` / vmlinux-6.1.102 — the exact kernel already deployed):
+#
+#   - overlay2 storage driver, cgroup v2 (cpuset/cpu/io/memory/hugetlb/pids),
+#     bridge + veth + IP forwarding, and a full `docker compose up` (build +
+#     bridge network + healthcheck + published ports) all work with ZERO
+#     kernel changes. No custom guest kernel build is needed for this class.
+#   - ONE catch: dockerd's default `iptables-nft` backend fails in-guest
+#     ("Failed to initialize nft: Protocol not supported") on this kernel.
+#     Fix is `update-alternatives --set iptables /usr/sbin/iptables-legacy`
+#     (below) — switches to the legacy ip_tables.ko-style netfilter API, which
+#     this kernel fully supports. Not root-caused further (nft init failing
+#     despite CONFIG_NF_TABLES=y in the public reference config for this
+#     kernel line — possibly a narrower gap in the specific compiled binary);
+#     empirically 100% reproducible and the workaround has no downside for a
+#     single-tenant guest that doesn't need nftables specifically.
+#   - Suspend/resume with LIVE containers was validated end-to-end using the
+#     real production mechanism (Pause -> full snapshot-to-disk -> kill
+#     process -> recreate tap -> fresh firecracker process -> LoadSnapshot
+#     resume_vm=true): a running FastAPI+Postgres compose stack kept serving
+#     DB-backed requests immediately after restore into a brand-new process.
+# ---------------------------------------------------------------------------
+
+ARG BASE_IMAGE=us-ashburn-1.ocir.io/idin4oltblww/shogo/shogo-runtime:staging-multiarch-latest
+FROM ${BASE_IMAGE}
+
+# docker-compose-plugin (v2) isn't packaged for this base's distro release yet,
+# so the CLI plugin is fetched as a static binary (same approach validated in
+# the Phase 0 spike). Pin a version rather than :latest for reproducibility.
+ARG COMPOSE_VERSION=v2.29.7
+
+# The base image runs as a non-root app user; irrelevant to how this image is
+# actually executed (it's exported flat into a Firecracker guest rootfs and
+# exec'd as PID 1 by the kernel, not run via `docker run`), but apt-get needs
+# root at BUILD time.
+USER root
+
+RUN apt-get update -qq \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+       docker.io docker-cli docker-buildx ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  # dockerd's nft-backed iptables fails on the guest CI kernel (see header
+  # comment) -- the legacy backend uses a netfilter API the kernel does
+  # support, with no functional downside for a single-tenant guest.
+  && update-alternatives --set iptables /usr/sbin/iptables-legacy \
+  && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy \
+  && mkdir -p /usr/local/lib/docker/cli-plugins \
+  && curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-$(dpkg --print-architecture | sed 's/amd64/x86_64/;s/arm64/aarch64/')" \
+       -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+  # userland-proxy's default path detection doesn't find Debian's docker-proxy
+  # in this minimal install; disabling it is also the recommended posture for
+  # a daemon with correct iptables DNAT (no functional loss, one less proxy
+  # process per published port).
+  && mkdir -p /etc/docker \
+  && printf '{\n  "iptables": true,\n  "userland-proxy": false\n}\n' > /etc/docker/daemon.json
