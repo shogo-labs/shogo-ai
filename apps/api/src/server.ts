@@ -508,6 +508,10 @@ const previewFrameStrip = async (c: any, next: any) => {
 }
 app.use('/api/preview/:projectId/render', previewFrameStrip)
 app.use('/api/preview/:projectId/render/*', previewFrameStrip)
+// Per-port public preview (Phase 3) is embedded the same way — apply the same
+// frame-header relaxation so it isn't blocked as SAMEORIGIN by default.
+app.use('/api/preview/:projectId/ports/:port/render', previewFrameStrip)
+app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
@@ -2169,11 +2173,19 @@ const previewPortRenderHandler = async (c: any) => {
 
     const resp = await fetch(targetUrl, init)
 
+    // Same hop-by-hop/framing stripping as `previewRenderHandler`, PLUS: this
+    // route (unlike the root proxy) sends a real `x-runtime-token` upstream on
+    // the OUTBOUND leg above. Defense-in-depth against a guest app that echoes
+    // request headers back (e.g. a debug/reflection endpoint) leaking that
+    // token to the anonymous public visitor — strip it (and `authorization`,
+    // just in case) from the response on the way out. Neither header should
+    // ever legitimately appear in a normal HTTP response.
     const outHeaders = new Headers()
     resp.headers.forEach((value, key) => {
       const k = key.toLowerCase()
       if (k === 'transfer-encoding' || k === 'connection' || k === 'set-cookie') return
       if (k === 'x-frame-options' || k === 'content-security-policy') return
+      if (k === 'x-runtime-token' || k === 'authorization') return
       outHeaders.set(key, value)
     })
     outHeaders.set('access-control-allow-origin', '*')
@@ -9068,7 +9080,12 @@ import {
 const ptyPodBridge = createPtyPodBridgeHandlers()
 
 // Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
-const PORT_TUNNEL_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/ports\/([0-9]+)\/tunnel$/
+// Port capture group mirrors `parsePortParam()` in
+// `packages/agent-runtime/src/port-bridge.ts` (no leading zeros, e.g. `"0443"`
+// or `"00"`, which `Number()` would otherwise silently normalize) — kept in
+// sync by hand rather than a cross-package import since apps/api doesn't
+// otherwise depend on agent-runtime.
+const PORT_TUNNEL_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/ports\/([1-9][0-9]{0,4})\/tunnel$/
 
 // Client-side TCP port tunnel (Phase 3, Tier 2 plan): desktop/CLI ↔ this API
 // ↔ the project's runtime's raw TCP port bridge. See lib/port-tunnel-bridge.ts.

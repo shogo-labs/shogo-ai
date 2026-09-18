@@ -133,21 +133,36 @@ export async function buildProjectEnv(
         env.TECH_STACK_ID = techStackFromSettings
       }
 
-      // Docker-capable ("Tier 2") project class. Nothing persists an explicit
-      // `settings.runtimeClass` today (no creation-flow write site), so this
-      // is DERIVED from the project's tech stack via the registry's
-      // `isDockerTechStack()` — the same source of truth `docker-compose`'s
-      // `stack.json` declares (`runtime.vmClass: 'docker'`). An explicit
-      // `settings.runtimeClass === 'docker'` is honored too, in case a future
-      // creation path (or a manual admin fix-up) sets it directly. Re-check
-      // the platform gate on every assignment (not just at creation) so
-      // flipping it off stops NEW assignments from requesting the
-      // docker-class VM pool without needing to touch every project row. A
-      // project that wants docker but is refused here silently gets a
-      // standard VM, where the `docker-compose` stack cannot actually run —
-      // that mismatch is a placement/gating bug to fix, not something this
-      // builder can repair, so it's logged loudly rather than swallowed.
-      const wantsDockerClass = settings?.runtimeClass === 'docker' || isDockerTechStack(techStackFromSettings)
+      // Docker-capable ("Tier 2") project class. This is DERIVED from the
+      // project's tech stack via the registry's `isDockerTechStack()` — the
+      // same source of truth `docker-compose`'s `stack.json` declares
+      // (`runtime.vmClass: 'docker'`) — and NOT from `settings.runtimeClass`
+      // alone. Nothing persists an explicit `settings.runtimeClass` today (no
+      // creation-flow write site), but if one is ever added, deriving from
+      // the tech stack registry rather than trusting a project-settings field
+      // directly keeps `minimumInstanceSize`/`SHOGO_EXPOSED_PORTS`/warm-pool
+      // placement consistent with what the assigned stack actually declares
+      // — an unchecked `settings.runtimeClass` override could otherwise grant
+      // a docker-class VM (and its bigger instance floor) to a stack that
+      // never asked for one. A `settings.runtimeClass === 'docker'` that
+      // disagrees with the tech stack is logged (possible misconfiguration)
+      // but does not grant docker class on its own. Re-check the platform
+      // gate on every assignment (not just at creation) so flipping it off
+      // stops NEW assignments from requesting the docker-class VM pool
+      // without needing to touch every project row. A project that wants
+      // docker but is refused here silently gets a standard VM, where the
+      // `docker-compose` stack cannot actually run — that mismatch is a
+      // placement/gating bug to fix, not something this builder can repair,
+      // so it's logged loudly rather than swallowed.
+      const stackIsDockerClass = isDockerTechStack(techStackFromSettings)
+      if (settings?.runtimeClass === 'docker' && !stackIsDockerClass) {
+        console.error(
+          `[${prefix}] project ${projectId} has settings.runtimeClass === 'docker' but its ` +
+            `tech stack (${techStackFromSettings ?? '?'}) is not registered as docker-capable — ` +
+            `ignoring the override and assigning a standard VM`,
+        )
+      }
+      const wantsDockerClass = stackIsDockerClass
       if (wantsDockerClass) {
         if (isDockerClassEnabled()) {
           env.SHOGO_RUNTIME_CLASS = 'docker'

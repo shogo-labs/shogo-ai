@@ -822,14 +822,42 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
   })
 
-  test('sets SHOGO_RUNTIME_CLASS=docker when requested AND the platform gate is on', async () => {
+  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack AND the platform gate is on', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { runtimeClass: 'docker', techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-docker')
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+  })
+
+  test('ignores settings.runtimeClass="docker" when the tech stack is NOT docker-capable, logging the mismatch', async () => {
+    // settings.runtimeClass alone must never grant the docker-class VM (and
+    // its bigger instance floor) — only the tech-stack registry's
+    // isDockerTechStack() can. See build-project-env.ts for the rationale.
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { runtimeClass: 'docker', techStackId: 'vite-react' },
+    }))
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    const env = await buildProjectEnv('proj-rc-mismatch')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+    expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(
+      'is not registered as docker-capable',
+    )
+    errorSpy.mockRestore()
+  })
+
+  test('ignores settings.runtimeClass="docker" when there is no tech stack at all', async () => {
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
       settings: { runtimeClass: 'docker' },
     }))
-    const env = await buildProjectEnv('proj-rc-docker')
-    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    const env = await buildProjectEnv('proj-rc-no-stack')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
   })
 
   test('derives SHOGO_RUNTIME_CLASS=docker from a docker-class tech stack even with no settings.runtimeClass', async () => {
@@ -877,7 +905,7 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     isDockerClassEnabledMock.mockImplementation(() => false)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
-      settings: { runtimeClass: 'docker' },
+      settings: { runtimeClass: 'docker', techStackId: 'docker-compose' },
     }))
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
     const env = await buildProjectEnv('proj-rc-gated-off')

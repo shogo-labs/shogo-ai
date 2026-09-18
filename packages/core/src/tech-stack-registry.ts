@@ -193,6 +193,8 @@ export function getMinimumInstanceSize(
  * preview — a project can toggle visibility on a declared port, but can
  * never expose a port its stack doesn't list.
  */
-export function getDeclaredPorts(techStackId: string | null | undefined): StackRegistryEntry['ports'] {
+export function getDeclaredPorts(
+  techStackId: string | null | undefined,
+): NonNullable<StackRegistryEntry['ports']> {
   return getStackEntry(techStackId)?.ports ?? []
 }
