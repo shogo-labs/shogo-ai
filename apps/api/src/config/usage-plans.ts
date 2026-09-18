@@ -178,7 +178,9 @@ export function getAlwaysOnAllowance(
   if (!PER_SEAT_ALWAYS_ON_PLANS.has(normalized)) return perSeat
   const safeSeats = Math.max(1, Math.floor(seats || 1))
   return perSeat * safeSeats
+}
 
+/**
  * Offset added to a plan's tier rank to compute its concurrent claimed
  * warm-pod cap: `cap = PLAN_RANK[tier] + CLAIMED_POD_CAP_BASE`. With the
  * default base of 2 this yields the linear ladder
