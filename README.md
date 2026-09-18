@@ -31,17 +31,71 @@ below.
 [![Frontend coverage](https://img.shields.io/badge/frontend%20coverage-67.82%25-orange)](./coverage/frontend-lcov.info)
 <!-- /coverage-badge:frontend -->
 
+## What Shogo Is
+
+You describe an agent in chat, and Shogo turns that description into a
+long-lived process: it connects to your tools, reads from your systems,
+takes actions, and checks in on a schedule via its heartbeat instead of
+waiting to be asked. Results — dashboards, metrics, status — render on a
+live canvas the agent builds for itself. Under the hood it's a Hono API
+plus Expo-based clients, TypeScript throughout, aimed at engineering, ops,
+and founder teams who want a working agent without assembling an
+orchestration stack first.
+
+## Key Features
+
+- **Chat-configured agents** — identity, behavior rules, skills, and
+  schedule live as Markdown workspace files (`AGENTS.md`, `SOUL.md`,
+  `HEARTBEAT.md`, `skills/`) that the agent runtime reads and acts on
+- **Heartbeat** — agents run proactively on a schedule, not only in
+  response to a message: monitor repos, triage tickets, send digests
+- **Integrations via Composio and MCP** — hundreds of tools (GitHub,
+  Slack, Stripe, Linear, Sentry, and more) over OAuth or API keys
+- **Channels** — connect and message through Slack, Telegram, and Discord
+- **Canvas** — the agent builds and previews its own React dashboards and
+  apps (metrics, charts, tables, status indicators) as it works
+- **Per-agent capabilities** — toggle web search, browser control, shell,
+  image generation, memory, channels, and integrations individually; each
+  toggle gates both the tool and the related system-prompt guidance
+- **Model router, memory, and checkpoints** — pluggable model routing,
+  persistent memory, session persistence, and project checkpoints for
+  recovering agent state
+- **Multi-platform clients** — Expo-based web, iOS, Android, and desktop
+  clients; an MIT-licensed `@shogo-ai/*` SDK; voice via ElevenLabs and
+  Twilio
+
+## How It Compares
+
+- **vs. n8n / Activepieces** — those are visual workflow-automation
+  tools with larger, more mature connector catalogs. Shogo has no visual
+  flow editor; its unit is an agent that exercises judgment on a
+  schedule, closer to n8n's intent than to an orchestration primitive,
+  but earlier-stage and narrower in integration breadth.
+- **vs. LangGraph / Dify / Flowise** — those are frameworks or builders
+  for composing custom LLM pipelines with fine-grained control over
+  orchestration. Shogo trades that flexibility for an opinionated runtime
+  plus hosted product that gets you to a running agent faster.
+- **vs. Retool / Appsmith** — those build internal tools by hand with a
+  visual editor. Shogo generates canvas apps from an agent's own work,
+  which is faster to a first result but gives you less direct control
+  over the UI.
+- **Honestly** — Shogo is materially less mature than any of the above,
+  with a smaller community and no one-command quickstart yet (see
+  [Local development](#local-development) below).
+
 ## Open Source Model
 
 Shogo uses a split-license model. AGPL-3.0-or-later guards the
 cloud-service surface a competitor would need to ship a hosted clone;
 everything else is MIT so adoption is friction-free.
 
-- AGPL-3.0-or-later: `apps/api/`, `packages/agent-runtime/`,
+- AGPL-3.0-or-later: `apps/api/`, `apps/metal-agent/`,
+  `packages/agent-runtime/`, `packages/canvas-runtime/`,
   `packages/shared-runtime/`
 - MIT: the `@shogo-ai/*` libraries, `apps/mobile/`, `apps/desktop/`,
   `packages/shared-app/`, `packages/shared-ui/`, `packages/ui-kit/`,
-  `packages/domain-stores/`, `templates/runtime-template/`
+  `packages/domain-stores/`
+- Apache-2.0: `templates/runtime-template/`
 - CC BY 4.0: `apps/docs/`, `docs/`
 - Proprietary: `terraform/`, `k8s/`, `deploy-examples/`,
   `.github/workflows/` (see `INFRASTRUCTURE-LICENSE.md`)
@@ -71,12 +125,14 @@ License is shown inline so the AGPL/MIT boundary is visible at a glance.
 | `packages/shogo-worker/` | MIT | `shogo-worker` self-host CLI |
 | `packages/model-catalog/` | MIT | Thin re-export shim (workspace-only) |
 | `packages/agent-runtime/` | AGPL | Agent gateway, tools, integrations |
+| `packages/canvas-runtime/` | AGPL | Canvas build/preview runtime |
 | `packages/shared-runtime/` | AGPL | Server-side glue (s3-sync, server framework) |
 | `packages/shared-app/` | MIT | Shared app/domain logic |
 | `packages/shared-ui/` | MIT | Shared UI components |
 | `packages/ui-kit/` | MIT | Theme and routing helpers |
 | `packages/domain-stores/` | MIT | Domain store layer |
-| `templates/runtime-template/` | MIT | Project template |
+| `apps/metal-agent/` | AGPL | Bare-metal Firecracker microVM node agent |
+| `templates/runtime-template/` | Apache-2.0 | Project template |
 
 ## Quick Start
 
@@ -186,7 +242,7 @@ re-export shims; see [`packages/sdk/MIGRATION.md`](./packages/sdk/MIGRATION.md).
 - [Pricing](https://shogo.ai/pricing) -- plans and features
 - [Blog](https://shogo.ai/blog) -- updates and tutorials
 - [Templates](https://shogo.ai/templates) -- pre-built agent templates
-- [Integrations](https://shogo.ai/integrations) -- 970+ app connections
+- [Integrations](https://shogo.ai/integrations) -- 250+ app connections
 
 ## Community
 
