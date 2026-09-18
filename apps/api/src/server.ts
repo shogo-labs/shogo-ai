@@ -311,8 +311,8 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
     if (Array.isArray(msg.parts)) {
       const contentParts: Array<
         | { type: 'text'; text: string }
-        | { type: 'image'; image: string; mimeType: string }
-        | { type: 'file'; data: string; mimeType: string }
+        | { type: 'image'; image: string; mediaType: string }
+        | { type: 'file'; data: string; mediaType: string }
       > = []
 
       for (const part of msg.parts) {
@@ -326,13 +326,13 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
             contentParts.push({
               type: 'image',
               image: parsed.base64Data,
-              mimeType: parsed.mimeType,
+              mediaType: parsed.mimeType,
             })
           } else {
             contentParts.push({
               type: 'file',
               data: parsed.base64Data,
-              mimeType: parsed.mimeType,
+              mediaType: parsed.mimeType,
             })
           }
         }

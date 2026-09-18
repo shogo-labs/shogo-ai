@@ -1606,7 +1606,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     resume: false,
     experimental_throttle: 120,
     onError: (err) => {
-      console.error("[ChatPanel] Stream error:", err)
+      // Stream failures are recoverable UI state: the retry affordance below
+      // handles them. React Native treats console.error as a development
+      // exception and opens LogBox over the conversation, so retain a visible
+      // diagnostic without turning an ordinary retryable failure into a red
+      // screen. Sentry still receives the full error immediately below.
+      console.warn("[ChatPanel] Stream error:", err)
 
       // Surface the transport-failure class in Sentry. This path (network
       // resets → "Connection interrupted. Please tap Retry to continue.") used

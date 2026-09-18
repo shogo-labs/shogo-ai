@@ -16,18 +16,6 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { File } from "lucide-react-native";
 import {
-  AudioModule,
-  RecordingPresets,
-  setAudioModeAsync,
-  useAudioRecorder,
-  useAudioRecorderState,
-} from "expo-audio";
-import {
-  deleteAsync,
-  readAsStringAsync,
-  EncodingType,
-} from "expo-file-system/legacy";
-import {
   RichNotesEditor,
   type RichNotesEditorHandle,
 } from "../../../components/notes/RichNotesEditor";
@@ -113,8 +101,6 @@ async function previewUrls(
 export default function NoteEditorScreen() {
   const router = useRouter();
   const { noteId } = useLocalSearchParams<{ noteId: string }>();
-  const fallbackRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const fallbackRecorderState = useAudioRecorderState(fallbackRecorder);
   const editorRef = useRef<RichNotesEditorHandle>(null);
   const [note, setNote] = useState<Note | null>(null);
   const [title, setTitle] = useState("");
@@ -125,16 +111,16 @@ export default function NoteEditorScreen() {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
   const [activeMenu, setActiveMenu] = useState<"format" | "size" | null>(null);
   const [fontSize, setFontSize] = useState("16");
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [bodyEditorFocused, setBodyEditorFocused] = useState(false);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
   const [destinationOpen, setDestinationOpen] = useState(false);
   const [editorHydrationKey, setEditorHydrationKey] = useState(0);
   const lastSavedSignature = useRef<string | null>(null);
   const noteRef = useRef<Note | null>(null);
-  const saveInFlight = useRef<Promise<void> | null>(null);
+  const saveInFlight = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -181,16 +167,8 @@ export default function NoteEditorScreen() {
       hideSubscription.remove();
     };
   }, []);
-  useEffect(
-    () => () => {
-      // Dictation recordings are deliberately ephemeral. Do not leave the
-      // microphone active if the user navigates away mid-recording.
-      if (fallbackRecorder.getStatus().isRecording)
-        void fallbackRecorder.stop().catch(() => {});
-    },
-    [fallbackRecorder],
-  );
   const dismissKeyboard = () => {
+    setBodyEditorFocused(false);
     Keyboard.dismiss();
     editorRef.current?.blur();
   };
@@ -203,68 +181,20 @@ export default function NoteEditorScreen() {
     Alert.alert("Voice-to-text", voiceInput.error);
     voiceInput.clearError();
   }, [voiceInput.error]);
-  const fallbackDictation = async () => {
-    if (!note || transcribing) return;
-    if (!fallbackRecorderState.isRecording) {
-      const permission = await AudioModule.requestRecordingPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert(
-          "Microphone access needed",
-          "Allow microphone access to dictate into your note.",
-        );
-        return;
-      }
-      await setAudioModeAsync({
-        playsInSilentMode: true,
-        allowsRecording: true,
-      });
-      await fallbackRecorder.prepareToRecordAsync();
-      fallbackRecorder.record();
-      return;
-    }
-    await fallbackRecorder.stop();
-    const sourceUri = fallbackRecorder.uri;
-    if (!sourceUri) return;
-    setTranscribing(true);
-    try {
-      const base64 = await readAsStringAsync(sourceUri, {
-        encoding: EncodingType.Base64,
-      });
-      const result = await notesApi.transcribeAudio(note.id, {
-        dataUrl: `data:audio/mp4;base64,${base64}`,
-      });
-      if (result.text)
-        editorRef.current?.command("insertTranscript", result.text);
-      else
-        Alert.alert(
-          "No speech detected",
-          "Try speaking a little closer to the microphone.",
-        );
-    } catch {
-      Alert.alert(
-        "Transcription failed",
-        "We could not transcribe this recording. Please try again.",
-      );
-    } finally {
-      await deleteAsync(sourceUri, { idempotent: true }).catch(() => {});
-      setTranscribing(false);
-    }
-  };
   const save = useCallback(async () => {
     if (saveInFlight.current) {
-      await saveInFlight.current;
-      return;
+      return saveInFlight.current;
     }
     const currentNote = noteRef.current;
-    if (!currentNote) return;
+    if (!currentNote) return false;
     const signature = JSON.stringify({
       title,
       document,
       text,
       pinned: currentNote.isPinned,
     });
-    if (signature === lastSavedSignature.current) return;
-    const request = (async () => {
+    if (signature === lastSavedSignature.current) return true;
+    const request = (async (): Promise<boolean> => {
       try {
         const updated = await notesApi.update(currentNote.id, {
           expectedVersion: currentNote.version,
@@ -276,6 +206,7 @@ export default function NoteEditorScreen() {
         lastSavedSignature.current = signature;
         noteRef.current = updated;
         setNote(updated);
+        return true;
       } catch (error: unknown) {
         if (
           typeof error === "object" &&
@@ -288,11 +219,12 @@ export default function NoteEditorScreen() {
             "Your local changes were kept. Reopen this note to resolve the conflict.",
           );
         else console.warn("[Notes] save failed", error);
+        return false;
       }
     })();
     saveInFlight.current = request;
     try {
-      await request;
+      return await request;
     } finally {
       if (saveInFlight.current === request) saveInFlight.current = null;
     }
@@ -534,7 +466,15 @@ export default function NoteEditorScreen() {
             setDocument(next);
             setText(nextText);
           }}
+          onFocusChange={setBodyEditorFocused}
         />
+        {keyboardVisible && bodyEditorFocused && !activeMenu ? (
+          <Pressable
+            accessibilityLabel="Dismiss keyboard"
+            style={styles.editorDismissOverlay}
+            onPress={dismissKeyboard}
+          />
+        ) : null}
         {note.assets
           ?.filter((asset) => asset.kind !== "image")
           .map((asset) => (
@@ -559,11 +499,11 @@ export default function NoteEditorScreen() {
               </Text>
             </View>
           ))}
-        {uploading || transcribing ? (
+        {uploading ? (
           <View style={styles.uploading}>
             <ActivityIndicator size="small" color={T.primary} />
             <Text style={styles.uploadingText}>
-              {transcribing ? "Transcribing…" : "Uploading…"}
+              Uploading…
             </Text>
           </View>
         ) : null}
@@ -715,24 +655,21 @@ export default function NoteEditorScreen() {
           <NotesDropdownIcon size={24} color={T.text} />
         </Pressable>
         <Pressable
-          disabled={transcribing}
           accessibilityLabel={
-            voiceInput.isRecording || fallbackRecorderState.isRecording
+            voiceInput.isRecording
               ? "Stop voice-to-text"
               : "Start voice-to-text"
           }
           style={styles.toolbarButton}
           onPress={() => {
             dismissKeyboard();
-            void (voiceInput.canRecord
-              ? voiceInput.toggleRecording()
-              : fallbackDictation());
+            void voiceInput.toggleRecording();
           }}
         >
           <NotesMicIcon
             size={24}
             color={
-              voiceInput.isRecording || fallbackRecorderState.isRecording
+              voiceInput.isRecording
                 ? T.destructive
                 : T.text
             }
@@ -746,14 +683,16 @@ export default function NoteEditorScreen() {
             style={styles.convertButton}
             onPress={() => {
               dismissKeyboard();
-              setDestinationOpen(true);
+              void save().then((saved) => {
+                if (saved) setDestinationOpen(true);
+              });
             }}
           >
             <Text style={styles.convertText}>Convert it to Task</Text>
           </Pressable>
         </View>
       ) : null}
-      {voiceInput.isRecording || fallbackRecorderState.isRecording ? (
+      {voiceInput.isRecording ? (
         <Text style={[styles.recordingText, { bottom: bottomStackHeight + 6 }]}>
           {voiceInput.liveTranscript ||
             "Listening… tap the microphone when you are done"}
@@ -764,12 +703,19 @@ export default function NoteEditorScreen() {
         noteTitle={title}
         visible={destinationOpen}
         onClose={() => setDestinationOpen(false)}
-        onSaved={(taskId) =>
+        onSaved={(task) => {
+          if (!task.projectId || !task.chatSessionId) {
+            router.replace({
+              pathname: "/(app)/activity" as any,
+              params: { taskId: task.id },
+            } as any);
+            return;
+          }
           router.replace({
-            pathname: "/(app)/activity" as any,
-            params: { taskId },
-          } as any)
-        }
+            pathname: "/(app)/projects/[id]" as any,
+            params: { id: task.projectId, chatSessionId: task.chatSessionId },
+          } as any);
+        }}
       />
     </KeyboardAvoidingView>
   );
@@ -818,6 +764,14 @@ const styles = {
     fontWeight: "400" as const,
   },
   editorArea: { flex: 1, paddingHorizontal: 24, paddingTop: 14 },
+  editorDismissOverlay: {
+    position: "absolute" as const,
+    top: 14,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 1,
+  },
   assetRow: {
     flexDirection: "row" as const,
     alignItems: "center" as const,

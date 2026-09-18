@@ -8,7 +8,6 @@ import {
   Pressable,
   ScrollView,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -16,13 +15,14 @@ import { Folder, Plus } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { api, createHttpClient, type AgentTask } from "../../lib/api";
 import { notesApi } from "../../lib/notes-api";
+import { getPinnedProjectIds } from "../../lib/project-prefs-store";
 import { NativePhoneSheet } from "../phone/NativePhoneSheet";
 import { NOTES_DESIGN_TOKENS as T } from "./notes-design-tokens";
 
 type Destination = {
-  projectId?: string;
-  newProjectName?: string;
+  projectId: string;
   name: string;
 };
 
@@ -37,16 +37,15 @@ export function NotesDestinationSheet({
   noteTitle: string;
   visible: boolean;
   onClose: () => void;
-  onSaved: (taskId: string) => void;
+  onSaved: (task: AgentTask) => void;
 }) {
   const projects = useProjectCollection();
   const workspace = useActiveWorkspace() as { id: string } | null;
   const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
   const [confirmation, setConfirmation] = useState<Destination | null>(null);
   const [saving, setSaving] = useState(false);
+  const http = useMemo(() => createHttpClient(), []);
   const allProjects = useMemo(
     () =>
       (projects?.all || []).filter(
@@ -55,18 +54,24 @@ export function NotesDestinationSheet({
       ),
     [projects?.all, workspace?.id],
   );
-  const pinned = allProjects.filter(
-    (project: any) => project.isPinned || project.pinned,
+  // Project pins are a device-local preference, shared with the sidebar and
+  // task picker. Projects themselves do not carry an `isPinned` field, so
+  // checking the project model silently put every pinned project in Recents.
+  const pinnedProjectIds = new Set(getPinnedProjectIds());
+  const pinned = allProjects.filter((project: any) =>
+    pinnedProjectIds.has(project.id),
   );
   const recent = allProjects.filter(
     (project: any) =>
       !pinned.some((candidate: any) => candidate.id === project.id),
   );
-  // The reference is a 402 × 874 frame with a 68%-tall sheet. NativePhoneSheet
-  // owns the safe-area padding, so the content reserves that space explicitly.
+  // The reference is a 402 × 874 frame with a 68%-tall sheet. The panel also
+  // contains its own grabber chrome and safe-area padding, neither of which is
+  // part of this child view. Account for both so the persistent create action
+  // is never clipped below the sheet viewport.
   const sheetContentHeight = Math.max(
-    420,
-    Math.round(height * 0.68) - Math.max(insets.bottom, 20),
+    360,
+    Math.round(height * 0.68) - Math.max(insets.bottom, 20) - 28,
   );
 
   const close = () => {
@@ -76,18 +81,34 @@ export function NotesDestinationSheet({
   };
   const reset = () => {
     setConfirmation(null);
-    setNewProjectOpen(false);
-    setNewProjectName("");
   };
   const choose = (project: any) =>
     setConfirmation({ projectId: project.id, name: project.name });
-  const chooseNew = () => {
-    const name = newProjectName.trim();
-    if (!name) {
-      setNewProjectOpen(true);
-      return;
+  const createNewProject = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      // The note conversion endpoint creates the project and a note-backed
+      // task transactionally. Starting that task then persists the note text
+      // as the project chat prompt and forwards image attachments as files.
+      const note = await notesApi.get(noteId);
+      const result = await notesApi.convertToTask(noteId, {
+        newProjectName: noteTitle.trim() || "New Project",
+        expectedNoteVersion: note.version,
+        idempotencyKey: `${noteId}:${note.version}:new-project`,
+      });
+      const startedTask = await api.startAgentTask(http, result.task.id);
+      reset();
+      onClose();
+      onSaved(startedTask);
+    } catch {
+      Alert.alert(
+        "Could not start new project agent",
+        "The note was kept. Please try again.",
+      );
+    } finally {
+      setSaving(false);
     }
-    setConfirmation({ newProjectName: name, name });
   };
   const save = async () => {
     if (!confirmation || !workspace?.id) return;
@@ -95,21 +116,23 @@ export function NotesDestinationSheet({
     try {
       const note = await notesApi.get(noteId);
       const result = await notesApi.convertToTask(noteId, {
-        ...(confirmation.projectId
-          ? { projectId: confirmation.projectId }
-          : { newProjectName: confirmation.newProjectName }),
+        projectId: confirmation.projectId,
         expectedNoteVersion: note.version,
-        idempotencyKey: `${noteId}:${note.version}:${confirmation.projectId || confirmation.newProjectName}`,
+        idempotencyKey: `${noteId}:${note.version}:${confirmation.projectId}`,
       });
+      // Notes-derived tasks use the same project-agent path as the Task tab.
+      // The server resolves the project's active chat before responding, so the
+      // caller can open the live response immediately.
+      const startedTask = await api.startAgentTask(http, result.task.id);
       // `close` intentionally ignores user dismissals while saving. Complete
       // the successful flow explicitly so the sheet cannot remain mounted.
       reset();
       onClose();
-      onSaved(result.task.id);
+      onSaved(startedTask);
     } catch {
       Alert.alert(
-        "Could not create task",
-        "Your note was not changed. Please try again.",
+        "Could not start project agent",
+        "The note was kept. Please try again.",
       );
     } finally {
       setSaving(false);
@@ -131,9 +154,6 @@ export function NotesDestinationSheet({
           {project.name}
         </Text>
       </View>
-      <Text style={styles.projectCount}>
-        {Number(project.taskCount || project.tasksCount || 0)}
-      </Text>
     </Pressable>
   );
 
@@ -168,27 +188,15 @@ export function NotesDestinationSheet({
             ) : null}
           </Section>
         </ScrollView>
-        <View style={styles.createArea}>
-          {newProjectOpen ? (
-            <TextInput
-              autoFocus
-              value={newProjectName}
-              onChangeText={setNewProjectName}
-              onSubmitEditing={chooseNew}
-              placeholder="New project name"
-              placeholderTextColor={T.placeholder}
-              style={styles.newProjectInput}
-            />
-          ) : null}
+        <View style={styles.createProjectFooter}>
           <Pressable
             accessibilityRole="button"
-            style={styles.createRow}
-            onPress={chooseNew}
+            accessibilityLabel="Create New Project"
+            style={styles.createProjectAction}
+            onPress={() => void createNewProject()}
           >
-            <View style={styles.projectIcon}>
-              <Plus size={22} color={T.text} strokeWidth={1.35} />
-            </View>
-            <Text style={styles.createText}>Create New Project</Text>
+            <Plus size={24} color={T.text} strokeWidth={1.5} />
+            <Text style={styles.createProjectActionText}>Create New Project</Text>
           </Pressable>
         </View>
         {confirmation ? (
@@ -264,12 +272,36 @@ const styles = {
     lineHeight: 16,
     fontWeight: "400" as const,
   },
-  list: { flex: 1 },
+  list: { flex: 1, minHeight: 0 },
   listContent: {
     paddingHorizontal: 24,
     paddingTop: 29,
     paddingBottom: 12,
     gap: 24,
+  },
+  createProjectFooter: {
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: T.border,
+  },
+  createProjectAction: {
+    height: 48,
+    borderWidth: 1,
+    borderColor: T.border,
+    borderRadius: 1000,
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    gap: 12,
+  },
+  createProjectActionText: {
+    color: T.text,
+    fontFamily: "Poppins",
+    fontSize: 16,
+    lineHeight: 16,
+    fontWeight: "400" as const,
   },
   section: { gap: 8 },
   sectionLabel: {
@@ -304,45 +336,11 @@ const styles = {
     lineHeight: 16,
     fontWeight: "400" as const,
   },
-  projectCount: {
-    color: "#969696",
-    fontFamily: "Poppins",
-    fontSize: 14,
-    lineHeight: 16,
-    fontWeight: "400" as const,
-  },
   empty: {
     paddingVertical: 16,
     color: T.secondaryText,
     fontFamily: "Poppins",
     fontSize: 14,
-  },
-  createArea: { paddingHorizontal: 24, paddingBottom: 20 },
-  newProjectInput: {
-    height: 44,
-    marginHorizontal: 18,
-    color: T.text,
-    fontFamily: "Poppins",
-    fontSize: 14,
-    borderBottomColor: T.elevated,
-    borderBottomWidth: 1,
-  },
-  createRow: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: T.border,
-    borderRadius: 1000,
-    flexDirection: "row" as const,
-    alignItems: "center" as const,
-    justifyContent: "center" as const,
-    paddingHorizontal: 6,
-  },
-  createText: {
-    color: T.text,
-    fontFamily: "Poppins",
-    fontSize: 14,
-    lineHeight: 16,
-    fontWeight: "400" as const,
   },
   confirmationLayer: {
     ...{

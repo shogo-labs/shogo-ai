@@ -1349,8 +1349,6 @@ export const AppSidebar = observer(function AppSidebar({
                 active={isHomePage}
                 collapsed={false}
                 onNavPress={onNavPress}
-                iconClassName="text-muted-foreground"
-                labelClassName="text-foreground"
               />
               {features.marketplace && (
                 <NavItem
@@ -1360,8 +1358,6 @@ export const AppSidebar = observer(function AppSidebar({
                   active={isMarketplacePage}
                   collapsed={false}
                   onNavPress={onNavPress}
-                  iconClassName="text-muted-foreground"
-                  labelClassName="text-foreground"
                 />
               )}
               <NavItem
@@ -1369,8 +1365,6 @@ export const AppSidebar = observer(function AppSidebar({
                 label="New Chat"
                 collapsed={false}
                 onPress={handleNewChat}
-                iconClassName="text-muted-foreground"
-                labelClassName="text-foreground"
               />
               <Pressable
                 onPress={closeMobileProject}

@@ -264,7 +264,7 @@ export default function AppLayout() {
   }
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
-  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage || isNotesPage)
+  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage)
 
   return (
     <DomainProvider>
@@ -272,7 +272,13 @@ export default function AppLayout() {
         isWide={isWide}
         nativeSheetDrawer={nativeSheetDrawer}
         canvas={isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas}
-        safeAreaEdges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
+        safeAreaEdges={
+          nativeEdgeToEdgeChrome
+            ? ['left', 'right']
+            : isNativeApp && !isIdeEmbed && isNotesPage
+              ? ['top', 'left', 'right']
+              : undefined
+        }
         sidebarWide={showSidebar ? <AppSidebar /> : null}
         sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
         sidebarOverlay={

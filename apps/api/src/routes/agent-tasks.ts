@@ -2,8 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono, type Context } from 'hono'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
+import convertHeic from 'heic-convert'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { prisma } from '../lib/prisma'
 import type { NotificationType } from '../lib/prisma'
+import { getS3Client } from '../lib/s3'
 import { projectChatRoutes } from './project-chat'
 import { createNotification } from '../services/notification.service'
 import { sendPushToUser } from '../lib/push-notifications'
@@ -261,23 +266,99 @@ function buildAgentTaskPrompt(task: { title: string; notes: string | null }) {
   ].join('')
 }
 
+type AgentTaskMessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'file'; url: string; mediaType: string; name: string }
+
+function localNoteAssetPath(storageKey: string): string {
+  return join(
+    process.env.SHOGO_DATA_DIR || '.data',
+    'notes',
+    storageKey.replace(/^(?:notes|local-notes)\//, ''),
+  )
+}
+
+async function noteAssetDataUrl(
+  storageKey: string,
+  mimeType: string,
+): Promise<{ url: string; mediaType: string }> {
+  const bucket = process.env.S3_NOTES_BUCKET || process.env.S3_WORKSPACES_BUCKET
+  let bytes: Buffer
+  if (!bucket || storageKey.startsWith('local-notes/')) {
+    bytes = await readFile(localNoteAssetPath(storageKey))
+  } else {
+    const response = await getS3Client().send(
+      new GetObjectCommand({ Bucket: bucket, Key: storageKey }),
+    )
+    if (!response.Body) throw new Error('Note image has no stored content')
+    const chunks: Buffer[] = []
+    for await (const chunk of response.Body as any) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+    bytes = Buffer.concat(chunks)
+  }
+  let mediaType = mimeType.toLowerCase()
+  // Agent providers do not consistently support HEIC/HEIF, despite iOS using
+  // it for camera-library images. Convert it before forwarding so a photo
+  // note behaves exactly like a PNG or JPEG note in the project agent.
+  if (mediaType === 'image/heic' || mediaType === 'image/heif') {
+    bytes = Buffer.from(await convertHeic({
+      buffer: bytes,
+      format: 'JPEG',
+      // Keep the resulting data URL below project-runtime request limits.
+      // A 55% JPEG remains legible for agent vision while avoiding a 5+ MB
+      // base64 payload from a typical iPhone HEIC original.
+      quality: 0.55,
+    }))
+    mediaType = 'image/jpeg'
+  }
+  return {
+    url: `data:${mediaType};base64,${bytes.toString('base64')}`,
+    mediaType,
+  }
+}
+
+async function buildAgentTaskParts(
+  task: { id: string; title: string; notes: string | null; sourceType: string },
+): Promise<{ prompt: string; parts: AgentTaskMessagePart[] }> {
+  const prompt = buildAgentTaskPrompt(task)
+  const parts: AgentTaskMessagePart[] = [{ type: 'text', text: prompt }]
+  if (task.sourceType !== 'note') return { prompt, parts }
+
+  const snapshot = await prisma.noteTaskSnapshot.findUnique({
+    where: { taskId: task.id },
+    include: { assets: true },
+  })
+  for (const asset of snapshot?.assets ?? []) {
+    if (!asset.mimeType.startsWith('image/')) continue
+    const image = await noteAssetDataUrl(asset.storageKey, asset.mimeType)
+    parts.push({
+      type: 'file',
+      url: image.url,
+      mediaType: image.mediaType,
+      name: asset.originalName,
+    })
+  }
+  return { prompt, parts }
+}
+
 async function persistAgentTaskPrompt(
   sessionId: string,
-  task: { title: string; notes: string | null },
+  task: { id: string; title: string; notes: string | null; sourceType: string },
 ) {
-  const prompt = buildAgentTaskPrompt(task)
+  const { prompt, parts } = await buildAgentTaskParts(task)
   const created = await prisma.chatMessage.create({
     data: {
       sessionId,
       role: 'user',
       content: prompt,
-      parts: JSON.stringify([{ type: 'text', text: prompt }]),
+      parts: JSON.stringify(parts),
       agent: 'technical',
     },
     select: { id: true, createdAt: true },
   })
 
-  return { prompt, promptMessageId: created.id, afterCreatedAt: created.createdAt }
+  return { prompt, parts, promptMessageId: created.id, afterCreatedAt: created.createdAt }
 }
 
 type TaskRouting = {
@@ -410,9 +491,9 @@ async function runAgentTask(
       : routed.task
 
     const promptState = preparedRouting?.promptState ?? await persistAgentTaskPrompt(sessionId, task)
-    const { prompt } = promptState
+    const { parts } = promptState
     const body = JSON.stringify({
-      messages: [{ role: 'user', parts: [{ type: 'text', text: prompt }] }],
+      messages: [{ role: 'user', parts }],
       chatSessionId: sessionId,
       userId: task.userId,
       // Let the runtime's Auto router choose from the server-provided model
@@ -618,9 +699,6 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (!userId) return unauthorized(c)
     const task = await loadTask(c.req.param('id'), userId)
     if (!task) return c.json({ error: { code: 'not_found', message: 'Task not found' } }, 404)
-    if (task.sourceType === 'note') {
-      return c.json({ error: { code: 'conflict', message: 'Notes-derived tasks cannot be started as agent tasks' } }, 409)
-    }
     if (task.status === 'queued' || task.status === 'running') return c.json({ ok: true, data: taskView(task) })
     if (task.status === 'completed' || task.status === 'cancelled') {
       return c.json({ error: { code: 'conflict', message: 'This task cannot be started again' } }, 409)

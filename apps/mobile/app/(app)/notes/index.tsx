@@ -24,6 +24,7 @@ import {
 import { useActiveWorkspace } from "../../../hooks/useActiveWorkspace";
 import { notesApi, type Note, type NoteFolder } from "../../../lib/notes-api";
 import { formatNoteUpdatedAt } from "../../../lib/note-display";
+import { NATIVE_PHONE_DOCK_COMPOSER_GAP } from "../../../lib/native-phone-layout";
 import { NOTES_DESIGN_TOKENS as T } from "../../../components/notes/notes-design-tokens";
 import { NotesCreateIcon } from "../../../components/notes/NotesCreateIcon";
 import { NotesSearchIcon } from "../../../components/notes/FigmaNotesIcons";
@@ -411,7 +412,9 @@ const styles = {
   },
   searchDock: {
     position: "absolute" as const,
-    bottom: 64,
+    // Keep this dock at the same 12pt resting gap as the Figma reference.
+    // MobileBottomNav occupies its own row below the screen content.
+    bottom: NATIVE_PHONE_DOCK_COMPOSER_GAP,
     left: 30,
     right: 30,
     height: 56,

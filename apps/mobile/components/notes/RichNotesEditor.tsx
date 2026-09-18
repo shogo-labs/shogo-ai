@@ -82,9 +82,8 @@ function setFontSize(size){prepareSelection(); document.execCommand('fontSize',f
 function insertImage(value){try{const data=JSON.parse(value||'{}'); if(!data.assetId||!data.url)return; const img=document.createElement('img'); img.dataset.assetId=data.assetId; img.src=data.url; img.alt=data.name||'Attachment'; img.contentEditable='false'; const selection=window.getSelection(); if(selection&&selection.rangeCount&&root.contains(selection.anchorNode)){const range=selection.getRangeAt(0); range.deleteContents(); range.insertNode(img); range.setStartAfter(img); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);}else root.appendChild(img); root.appendChild(document.createElement('p'));}catch{}}
 function insertTranscript(value){const text=(value||'').trim();if(!text)return;const paragraph=document.createElement('p');paragraph.textContent=text;root.appendChild(paragraph);const selection=window.getSelection();const range=document.createRange();range.selectNodeContents(paragraph);range.collapse(false);selection.removeAllRanges();selection.addRange(range);}
 window.__notesCommand=function(name,value){prepareSelection(); if(name==='setFontSize')setFontSize(value||'16'); else if(name==='insertImage')insertImage(value); else if(name==='insertTranscript')insertTranscript(value); else document.execCommand(name,false,value||null); root.focus(); emit();};
-function dismissWhenTappingCanvas(event){if(document.activeElement!==root)return;event.preventDefault();root.blur();}
 window.__notesLoadDocument=function(html){root.innerHTML=html||'<p></p>';root.classList.toggle('placeholder',!root.innerText.trim()&&!root.querySelector('img'));};
-root.addEventListener('input',emit); root.addEventListener('keyup',emit); root.addEventListener('focus',emit); root.addEventListener('pointerdown',dismissWhenTappingCanvas); root.addEventListener('touchstart',dismissWhenTappingCanvas,{passive:false}); document.addEventListener('selectionchange',rememberSelection); emit();
+root.addEventListener('input',emit); root.addEventListener('keyup',emit); root.addEventListener('focus',()=>{window.ReactNativeWebView.postMessage(JSON.stringify({type:'editorFocus'}));emit();}); root.addEventListener('blur',()=>window.ReactNativeWebView.postMessage(JSON.stringify({type:'editorBlur'}))); document.addEventListener('selectionchange',rememberSelection); emit();
 document.addEventListener('message',event=>{try{const m=JSON.parse(event.data); if(m.type==='command')window.__notesCommand(m.name,m.value); if(m.type==='focus')root.focus()}catch{}});
 </script></body></html>`;
 
@@ -95,9 +94,10 @@ export const RichNotesEditor = forwardRef<
     hydrationKey?: string;
     assetUrls?: Record<string, string>;
     onChange: (document: NoteNode, text: string) => void;
+    onFocusChange?: (focused: boolean) => void;
   }
 >(function RichNotesEditor(
-  { document, hydrationKey = "", assetUrls = {}, onChange },
+  { document, hydrationKey = "", assetUrls = {}, onChange, onFocusChange },
   ref,
 ) {
   const webRef = useRef<WebView>(null);
@@ -151,15 +151,24 @@ export const RichNotesEditor = forwardRef<
     try {
       const message = JSON.parse(event.nativeEvent.data) as {
         type: string;
-        document: NoteNode;
-        plainText: string;
+        document?: NoteNode;
+        plainText?: string;
       };
+      if (message.type === "editorFocus") {
+        onFocusChange?.(true);
+        return;
+      }
+      if (message.type === "editorBlur") {
+        onFocusChange?.(false);
+        return;
+      }
       if (message.type !== "content") return; // The WebView emits once while its inline document is booting. It is not a user edit and may be stale.
       if (!ignoredInitialMessage.current) {
         ignoredInitialMessage.current = true;
         return;
       }
-      onChange(message.document, message.plainText);
+      if (message.document && message.plainText !== undefined)
+        onChange(message.document, message.plainText);
     } catch {
       /* editor messages are isolated */
     }
@@ -180,6 +189,9 @@ export const RichNotesEditor = forwardRef<
         originWhitelist={["*"]}
         javaScriptEnabled
         scrollEnabled
+        accessible
+        accessibilityLabel="Note content editor"
+        accessibilityHint="Double tap to edit the body of this note"
         hideKeyboardAccessoryView
         containerStyle={{ flex: 1, backgroundColor: T.background }}
         style={{ flex: 1, backgroundColor: T.background }}
