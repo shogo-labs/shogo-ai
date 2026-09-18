@@ -38,6 +38,18 @@ export {
   type ShogoClient,
 } from './client.js'
 
+// Embedded chat (also available from @shogo-ai/sdk/chat)
+export {
+  ChatClient,
+  createChatClient,
+  createVisitorId,
+  type ChatClientConfig,
+  type ChatClientSnapshot,
+  type ChatStatus,
+  type ChatTransport,
+  type ChatVisitor,
+} from '@shogo-ai/chat'
+
 // Auth module
 export { ShogoAuth } from './auth/index.js'
 

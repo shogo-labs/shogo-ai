@@ -31,6 +31,7 @@ import {
   type TelephonyClient,
 } from '@shogo-ai/voice'
 import type { ShogoClientConfig } from './types.js'
+import { ChatClient } from '@shogo-ai/chat'
 
 export interface ShogoVoiceModule {
   /**
@@ -125,6 +126,9 @@ export interface ShogoClient<DB = unknown> {
    */
   voice: ShogoVoiceModule
 
+  /** Embedded chat client backed by a publishable key or app session. */
+  chat: ChatClient | null
+
   /**
    * Configure (or replace) the Shogo API key used by {@link ShogoClient.llm}.
    * Pass `null` to clear the provider (e.g. on sign-out). Useful when the key
@@ -151,6 +155,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
   db: DB
   llm: ShogoLlmProvider | null
   voice: ShogoVoiceModule
+  chat: ChatClient | null
   _http: HttpClient
 
   private shogoCloudUrl: string | undefined
@@ -208,6 +213,13 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
       live: this.buildLive(config.shogoApiKey),
       telephony: this.buildTelephony(config.shogoApiKey),
     }
+    this.chat = config.projectId
+      ? new ChatClient({
+          apiUrl: config.apiUrl,
+          projectId: config.projectId,
+          publishableKey: config.publishableKey,
+        })
+      : null
   }
 
   private buildLlm(

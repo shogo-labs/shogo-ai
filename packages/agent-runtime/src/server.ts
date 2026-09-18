@@ -16,6 +16,7 @@
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import {
@@ -1304,7 +1305,9 @@ WebChatAdapter.registerRoutes(app, () => {
   if (!agentGateway) return null
   const adapter = agentGateway.getChannel('webchat')
   return adapter && adapter.getStatus().connected ? adapter as any : null
-})
+}, () => agentGateway
+  ? (sessionId) => agentGateway!.getSessionHistory(`webchat:${sessionId}`)
+  : undefined, (sessionId) => agentGateway?.abortCurrentTurn(sessionId) ?? false)
 
 // /health, /ready, /pool/activity, /pool/assign are provided by createRuntimeApp()
 
@@ -1550,7 +1553,11 @@ app.post('/agent/channels/connect', async (c) => {
     }
 
     fileConfig.channels = fileConfig.channels || []
-    const channelEntry = { type, config: channelConfig, model: channelModel }
+    const effectiveChannelConfig = { ...channelConfig }
+    if (type === 'webchat' && !effectiveChannelConfig.widgetSecret) {
+      effectiveChannelConfig.widgetSecret = `wc_${randomUUID()}`
+    }
+    const channelEntry = { type, config: effectiveChannelConfig, model: channelModel }
     const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
     if (existing >= 0) {
       fileConfig.channels[existing] = channelEntry
@@ -1558,11 +1565,16 @@ app.post('/agent/channels/connect', async (c) => {
       fileConfig.channels.push(channelEntry)
     }
 
-    await agentGateway.connectChannel(type, channelConfig)
+    await agentGateway.connectChannel(type, effectiveChannelConfig)
 
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
 
-    return c.json({ ok: true, type, message: `${type} channel connected` })
+    return c.json({
+      ok: true,
+      type,
+      message: `${type} channel connected`,
+      ...(type === 'webchat' ? { widgetKey: effectiveChannelConfig.widgetSecret } : {}),
+    })
   } catch (error: any) {
     return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
   }

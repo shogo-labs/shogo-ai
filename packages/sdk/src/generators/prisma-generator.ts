@@ -25,6 +25,7 @@ import { generateDocsSiteScaffold, generateDocsTsConfig } from './docs-site-gene
 import { generateAdminRoutes } from './admin-routes-generator'
 import { generateShogoClient } from './shogo-client-generator'
 import { generateVoiceComponents } from './voice-components-generator'
+import { generateChatComponents } from './chat-components-generator'
 import { GENERATED_FILE_LICENSE_HEADER } from './generated-file-license-header'
 
 // ============================================================================
@@ -42,7 +43,7 @@ export interface OutputConfig {
    * the SDK client — used by generated pod apps to get the pod-native
    * runtime-token voice path without wiring up anything by hand.
    */
-  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes' | 'shogo-client' | 'voice-components')[]
+  generate: ('routes' | 'hooks' | 'types' | 'stores' | 'mst' | 'server' | 'db' | 'api-client' | 'auth' | 'docs' | 'admin-routes' | 'shogo-client' | 'voice-components' | 'chat-components')[]
   /** Generate per-model files (default: true) */
   perModel?: boolean
   /** File extension for generated files: 'ts' or 'tsx' (default: 'tsx') */
@@ -61,6 +62,7 @@ export interface OutputConfig {
    * unless `voice-components` is included in `generate`.
    */
   voiceComponents?: import('./voice-components-generator').VoiceComponentsGeneratorOptions
+  chatComponents?: import('./chat-components-generator').ChatComponentsGeneratorOptions
 }
 
 export interface GenerateOptions {
@@ -490,6 +492,20 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
             path: `${dir}/${f.fileName}`,
             content: f.code,
             skipIfExists: f.skipIfExists,
+          })
+        }
+      }
+
+      if (output.generate.includes('chat-components')) {
+        const chatFiles = generateChatComponents({
+          fileExtension: ext as 'ts' | 'tsx',
+          ...(output.chatComponents ?? {}),
+        })
+        for (const file of chatFiles) {
+          files.push({
+            path: `${dir}/components/shogo/${file.fileName}`,
+            content: file.code,
+            skipIfExists: file.skipIfExists,
           })
         }
       }

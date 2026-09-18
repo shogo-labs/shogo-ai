@@ -13,6 +13,18 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./chat": {
+      "types": "./dist/chat/index.d.ts",
+      "development": "./src/chat/index.ts",
+      "import": "./dist/chat/index.js",
+      "require": "./dist/chat/index.cjs"
+    },
+    "./chat/react": {
+      "types": "./dist/chat/react.d.ts",
+      "development": "./src/chat/react.tsx",
+      "import": "./dist/chat/react.js",
+      "require": "./dist/chat/react.cjs"
+    },
     "./db": {
       "types": "./dist/db/index.d.ts",
       "development": "./src/db/index.ts",
@@ -288,7 +300,8 @@
     "@shogo-ai/email": "workspace:*",
     "@shogo-ai/voice": "workspace:*",
     "@shogo-ai/cli": "workspace:*",
-    "@prisma/internals": "^7.3.0"
+    "@prisma/internals": "^7.3.0",
+    "@shogo-ai/chat": "workspace:*"
   },
   "devDependencies": {
     "@ai-sdk/react": "^3.0.99",

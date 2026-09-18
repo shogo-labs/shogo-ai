@@ -30,7 +30,10 @@
 import type { Context, Next } from "hono"
 import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
-import { resolveApiKey } from "../routes/api-keys"
+import {
+  resolveApiKey,
+  resolvePublishableApiKey,
+} from "../routes/api-keys"
 import { verifyRuntimeToken } from "../lib/runtime-token"
 
 /**
@@ -73,7 +76,11 @@ export interface AuthContext {
    * Code that must refuse runtime callers branches on
    * `via === 'runtimeToken'`, never on a userId string shape.
    */
-  via?: 'apiKey' | 'session' | 'tunnel' | 'runtimeToken'
+  via?: 'apiKey' | 'publishableKey' | 'session' | 'tunnel' | 'runtimeToken'
+  publishableKey?: {
+    projectId: string
+    allowedOrigins: string[]
+  }
   /**
    * True when the request was authenticated via tunnel headers
    * (x-tunnel-auth-user-id). The cloud proxy already verified workspace
@@ -92,6 +99,48 @@ declare module "hono" {
      */
     workspaceId?: string
   }
+}
+
+function isPublishableRoute(path: string): boolean {
+  return (
+    path === "/api/chat/turn" ||
+    /^\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat(?:\/|$)/.test(path)
+  )
+}
+
+function getPublishableRequestOrigin(c: Context): string | null {
+  const origin = c.req.header("origin")
+  if (!origin || origin === "null") return null
+
+  // The hosted iframe calls the API from Shogo's origin. The loader forwards
+  // the actual parent origin in this explicit header; only honor it when the
+  // network Origin is the same origin as this API.
+  const forwarded = c.req.header("x-shogo-embed-origin")
+  if (forwarded) {
+    try {
+      const requestOrigin = new URL(c.req.url).origin
+      if (origin === requestOrigin) {
+        return new URL(forwarded).origin
+      }
+    } catch {
+      return null
+    }
+  }
+  return origin
+}
+
+function isAllowedPublishableOrigin(
+  origin: string,
+  allowedOrigins: string[],
+): boolean {
+  if (allowedOrigins.includes("*")) return true
+  return allowedOrigins.some((allowed) => {
+    try {
+      return new URL(allowed).origin === origin
+    } catch {
+      return false
+    }
+  })
 }
 
 /**
@@ -119,7 +168,47 @@ export async function authMiddleware(c: Context, next: Next) {
     } catch {}
   }
 
-  // 2. Try runtime-token auth (pod → API, project-scoped capability).
+  // 2. Try browser-safe publishable-key auth. EventSource cannot set
+  // Authorization, so the webchat SSE route also accepts ?pk=.
+  const publishableKey =
+    authHeader?.startsWith("Bearer shogo_pk_")
+      ? authHeader.slice(7)
+      : c.req.query("pk")
+  if (publishableKey?.startsWith("shogo_pk_")) {
+    try {
+      const result = await resolvePublishableApiKey(publishableKey)
+      if (result) {
+        const origin = getPublishableRequestOrigin(c)
+        if (!origin || !isAllowedPublishableOrigin(origin, result.allowedOrigins)) {
+          return c.json(
+            { error: { code: "origin_not_allowed", message: "Publishable key is not valid for this origin" } },
+            403,
+          )
+        }
+        if (!isPublishableRoute(c.req.path)) {
+          return c.json(
+            { error: { code: "publishable_key_route_forbidden", message: "Publishable keys cannot access this route" } },
+            403,
+          )
+        }
+        c.set("auth", {
+          userId: result.userId,
+          workspaceId: result.workspaceId,
+          projectId: result.projectId,
+          isAuthenticated: true,
+          via: "publishableKey",
+          publishableKey: {
+            projectId: result.projectId,
+            allowedOrigins: result.allowedOrigins,
+          },
+        })
+        await next()
+        return
+      }
+    } catch {}
+  }
+
+  // 3. Try runtime-token auth (pod → API, project-scoped capability).
   //    Every Shogo-managed pod is started with env:
   //      PROJECT_ID           — the project this pod serves
   //      RUNTIME_AUTH_SECRET  — v1 token: `rt_v1_<projectId>_<hmac>`
@@ -570,6 +659,21 @@ export async function authorizeProject(
         status: 403,
         code: 'forbidden',
         message: 'Project is not in this API key\'s workspace',
+      }
+    }
+    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
+  }
+
+  if (authCtx.via === 'publishableKey') {
+    if (
+      authCtx.projectId !== project.id ||
+      authCtx.publishableKey?.projectId !== project.id
+    ) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'forbidden',
+        message: 'Project does not match this publishable key',
       }
     }
     return { ok: true, workspaceId: project.workspaceId, projectId: project.id }

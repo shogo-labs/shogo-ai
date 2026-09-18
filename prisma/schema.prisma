@@ -2065,6 +2065,10 @@ model ApiKey {
   keyPrefix   String
   workspaceId String
   userId      String
+  /// Project scope for browser-safe publishable keys.
+  projectId      String?
+  /// JSON array of allowed browser origins for publishable keys.
+  allowedOrigins Json?
   lastUsedAt  DateTime?
   expiresAt   DateTime?
   createdAt   DateTime  @default(now())
@@ -2088,6 +2092,7 @@ model ApiKey {
   @@index([workspaceId])
   @@index([userId])
   @@index([workspaceId, deviceId])
+  @@index([projectId, kind])
   @@map("api_keys")
 }
 

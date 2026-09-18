@@ -31,7 +31,9 @@ import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import {
   SHOGO_API_KEY_PREFIX,
+  SHOGO_PUBLISHABLE_KEY_PREFIX,
   generateApiKey,
+  generatePublishableApiKey,
   hashApiKey,
   mintDeviceApiKey,
 } from '../lib/api-keys-mint'
@@ -39,20 +41,93 @@ import {
 export function apiKeyRoutes() {
   const router = new Hono()
 
-  // POST /api-keys — Create a new "user" API key (manual, long-lived)
+  // POST /api-keys — Create a new API key (manual secret or publishable)
   router.post('/api-keys', async (c) => {
     const auth = c.get('auth') as any
     if (!auth?.userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
 
-    const body = await c.req.json<{ name?: string; workspaceId: string; expiresInDays?: number }>()
-    if (!body.workspaceId) {
+    const body = await c.req.json<{
+      name?: string
+      workspaceId?: string
+      expiresInDays?: number
+      kind?: 'user' | 'publishable'
+      projectId?: string
+      allowedOrigins?: string[] | string
+    }>().catch(() => ({} as any))
+
+    let workspaceId = body.workspaceId
+    if (body.kind === 'publishable') {
+      if (!body.projectId || typeof body.projectId !== 'string') {
+        return c.json({ error: { code: 'invalid_request', message: 'projectId is required for publishable keys' } }, 400)
+      }
+
+      const project = await prisma.project.findUnique({
+        where: { id: body.projectId },
+        select: { id: true, workspaceId: true },
+      })
+      if (!project) {
+        return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+      }
+      if (workspaceId && workspaceId !== project.workspaceId) {
+        return c.json({ error: { code: 'invalid_request', message: 'workspaceId does not own projectId' } }, 400)
+      }
+      workspaceId = project.workspaceId
+
+      const member = await prisma.member.findFirst({
+        where: { userId: auth.userId, workspaceId },
+      })
+      if (!member) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this project workspace' } }, 403)
+      }
+
+      const origins = Array.isArray(body.allowedOrigins)
+        ? body.allowedOrigins.filter((origin: unknown): origin is string => typeof origin === 'string')
+        : typeof body.allowedOrigins === 'string'
+          ? body.allowedOrigins.split(',').map((origin: string) => origin.trim()).filter(Boolean)
+          : ['*']
+      if (origins.some((origin: string) => origin !== '*' && !/^https?:\/\/[^/\s]+$/i.test(origin))) {
+        return c.json({ error: { code: 'invalid_request', message: 'allowedOrigins must contain valid http(s) origins or *' } }, 400)
+      }
+
+      const { fullKey, keyHash, keyPrefix } = await generatePublishableApiKey()
+      const apiKey = await prisma.apiKey.create({
+        data: {
+          name: body.name || 'Shogo Chat',
+          keyHash,
+          keyPrefix,
+          workspaceId,
+          userId: auth.userId,
+          projectId: body.projectId,
+          allowedOrigins: origins,
+          expiresAt: body.expiresInDays
+            ? new Date(Date.now() + body.expiresInDays * 24 * 60 * 60 * 1000)
+            : null,
+          kind: 'publishable',
+        },
+      })
+
+      return c.json({
+        id: apiKey.id,
+        name: apiKey.name,
+        key: fullKey,
+        keyPrefix,
+        workspaceId: apiKey.workspaceId,
+        projectId: apiKey.projectId,
+        allowedOrigins: apiKey.allowedOrigins,
+        expiresAt: apiKey.expiresAt,
+        createdAt: apiKey.createdAt,
+        kind: apiKey.kind,
+      })
+    }
+
+    if (!workspaceId) {
       return c.json({ error: { code: 'invalid_request', message: 'workspaceId is required' } }, 400)
     }
 
     const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: body.workspaceId },
+      where: { userId: auth.userId, workspaceId },
     })
     if (!member) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
@@ -69,7 +144,7 @@ export function apiKeyRoutes() {
         name: body.name || 'Shogo Local',
         keyHash,
         keyPrefix,
-        workspaceId: body.workspaceId,
+        workspaceId,
         userId: auth.userId,
         expiresAt,
         kind: 'user',
@@ -189,7 +264,9 @@ export function apiKeyRoutes() {
       where: {
         workspaceId,
         revokedAt: null,
-        ...(kindFilter === 'device' || kindFilter === 'user' ? { kind: kindFilter } : {}),
+        ...(kindFilter === 'device' || kindFilter === 'user' || kindFilter === 'publishable'
+          ? { kind: kindFilter }
+          : {}),
       },
       select: {
         id: true,
@@ -200,6 +277,8 @@ export function apiKeyRoutes() {
         createdAt: true,
         userId: true,
         kind: true,
+        projectId: true,
+        allowedOrigins: true,
         deviceId: true,
         deviceName: true,
         devicePlatform: true,
@@ -378,5 +457,66 @@ export async function resolveApiKey(
     userId: apiKey.userId,
     kind: apiKey.kind,
     deviceId: apiKey.deviceId,
+  }
+}
+
+/**
+ * Resolve a browser-safe, project-scoped publishable key.
+ *
+ * Publishable keys are intentionally separate from workspace secret keys.
+ * Callers must still enforce the route allowlist and project match after
+ * resolving this credential.
+ */
+export async function resolvePublishableApiKey(key: string): Promise<{
+  workspaceId: string
+  userId: string
+  projectId: string
+  allowedOrigins: string[]
+} | null> {
+  if (!key.startsWith(SHOGO_PUBLISHABLE_KEY_PREFIX)) return null
+
+  const keyHash = await hashApiKey(key)
+  const apiKey = await prisma.apiKey.findUnique({
+    where: { keyHash },
+    select: {
+      id: true,
+      workspaceId: true,
+      userId: true,
+      projectId: true,
+      allowedOrigins: true,
+      kind: true,
+      revokedAt: true,
+      expiresAt: true,
+    },
+  })
+
+  if (
+    !apiKey ||
+    apiKey.kind !== 'publishable' ||
+    !apiKey.projectId ||
+    apiKey.revokedAt ||
+    (apiKey.expiresAt && apiKey.expiresAt < new Date())
+  ) {
+    return null
+  }
+
+  const allowedOrigins = Array.isArray(apiKey.allowedOrigins)
+    ? apiKey.allowedOrigins.filter(
+        (origin): origin is string => typeof origin === 'string',
+      )
+    : []
+
+  prisma.apiKey
+    .update({
+      where: { id: apiKey.id },
+      data: { lastUsedAt: new Date() },
+    })
+    .catch(() => {})
+
+  return {
+    workspaceId: apiKey.workspaceId,
+    userId: apiKey.userId,
+    projectId: apiKey.projectId,
+    allowedOrigins,
   }
 }

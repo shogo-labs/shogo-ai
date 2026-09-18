@@ -600,7 +600,10 @@ app.use('/*', cors({
   origin: (origin, c) => {
     // Webchat widget requests come from external websites — allow any origin
     const reqPath = new URL(c.req.url).pathname
-    if (/\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(reqPath)) {
+    if (
+      /\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(reqPath) ||
+      reqPath.startsWith('/embed/v1/')
+    ) {
       return origin || '*'
     }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
@@ -618,6 +621,15 @@ app.use('/*', cors({
     return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
   },
   credentials: true,
+  allowHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Shogo-Embed-Origin',
+    'X-Shogo-Visitor-Id',
+    'X-WebChat-Widget-Key',
+    'X-WebChat-Session-Token',
+    'X-WebChat-Session',
+  ],
   exposeHeaders: ['Content-Disposition'],
 }))
 
@@ -658,7 +670,9 @@ app.use('/api/*', async (c, next) => {
   // middleware would reject them for missing Origin on form POSTs.
   if (
     path === '/api/voice/elevenlabs/webhook' ||
-    path.startsWith('/api/voice/twilio/status/')
+    path.startsWith('/api/voice/twilio/status/') ||
+    (path === '/api/chat/turn' &&
+      c.req.header('authorization')?.startsWith('Bearer shogo_pk_'))
   ) {
     return next()
   }
@@ -684,6 +698,16 @@ app.use('/api/*', rateLimiter('global', {
   windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,
   skipPrefixes: ['/api/ai/', '/api/v1/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
 }))
+app.use('/api/chat/turn', rateLimiter('publishable-chat', {
+  max: Number(process.env.RATE_LIMIT_PUBLISHABLE_CHAT_MAX) || 60,
+  windowMs: Number(process.env.RATE_LIMIT_PUBLISHABLE_CHAT_WINDOW_MS) || 60_000,
+  keyGenerator: (c) => {
+    const bearer = c.req.header('authorization') || 'anonymous'
+    const visitor = c.req.header('x-shogo-visitor-id') || 'no-visitor'
+    const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    return `${bearer.slice(0, 24)}:${visitor}:${ip}`
+  },
+}))
 
 function isWebchatProxyPath(path: string): boolean {
   return /^\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(path)
@@ -694,10 +718,13 @@ function isAllowedUnauthWebchatProxyPath(path: string): boolean {
   const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/agent\/channels\/webchat\/.*)$/)
   const relative = match?.[1] || ''
   return relative === '/agent/channels/webchat/widget.js' ||
+    relative === '/agent/channels/webchat/embed/index.html' ||
     relative === '/agent/channels/webchat/health' ||
     relative === '/agent/channels/webchat/config' ||
     relative === '/agent/channels/webchat/session' ||
+    relative === '/agent/channels/webchat/history' ||
     relative === '/agent/channels/webchat/message' ||
+    relative === '/agent/channels/webchat/stop' ||
     relative.startsWith('/agent/channels/webchat/events/')
 }
 
@@ -3164,13 +3191,28 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
 
   const isWebchatPath =
     path === '/agent/channels/webchat/widget.js' ||
+    path === '/agent/channels/webchat/embed/index.html' ||
     path === '/agent/channels/webchat/health' ||
     path === '/agent/channels/webchat/config' ||
     path === '/agent/channels/webchat/session' ||
+    path === '/agent/channels/webchat/history' ||
     path === '/agent/channels/webchat/message' ||
+    path === '/agent/channels/webchat/stop' ||
     path.startsWith('/agent/channels/webchat/events/')
   let authedUserId: string | null = null
   let authedWorkspaceId: string | null = null
+  const proxyAuth = c.get('auth')
+  const publishableWebchat =
+    proxyAuth?.via === 'publishableKey'
+  if (
+    publishableWebchat &&
+    proxyAuth.projectId !== projectId
+  ) {
+    return c.json(
+      { error: { code: 'forbidden', message: 'Project does not match this publishable key' } },
+      403,
+    )
+  }
   if (!isWebchatPath) {
     const userId = await getAuthUserId(c)
     if (!userId) {
@@ -3265,10 +3307,17 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
       if (chatSessionIdHeader) tunnelHeaders['x-chat-session-id'] = chatSessionIdHeader
       if (isWebchatPath) {
-        for (const h of ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const) {
+        for (const h of [
+          'origin',
+          'x-shogo-embed-origin',
+          'x-webchat-widget-key',
+          'x-webchat-session-token',
+          'x-webchat-session',
+        ] as const) {
           const v = c.req.header(h)
           if (v) tunnelHeaders[h] = v
         }
+        if (publishableWebchat) tunnelHeaders['x-webchat-pk-verified'] = '1'
       }
       const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
         ? undefined
@@ -3305,11 +3354,18 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (contentType) headers.set('content-type', contentType)
   if (accept) headers.set('accept', accept)
   if (isWebchatPath) {
-    const fwdHeaders = ['origin', 'x-webchat-widget-key', 'x-webchat-session-token', 'x-webchat-session'] as const
+    const fwdHeaders = [
+      'origin',
+      'x-shogo-embed-origin',
+      'x-webchat-widget-key',
+      'x-webchat-session-token',
+      'x-webchat-session',
+    ] as const
     for (const h of fwdHeaders) {
       const v = c.req.header(h)
       if (v) headers.set(h, v)
     }
+    if (publishableWebchat) headers.set('x-webchat-pk-verified', '1')
   }
   headers.set('x-runtime-token', runtimeToken)
 
@@ -8059,6 +8115,53 @@ app.use(
   }),
 )
 app.route('/api/v1', publicApi)
+
+// Hosted iframe assets for the script-tag embed. Keeping these assets on the
+// API origin lets the loader isolate React/native-web styles in an iframe
+// while the browser still sends the parent origin for publishable-key checks.
+app.get('/embed/v1/index.html', (c) => {
+  const apiOrigin = new URL(c.req.url).origin
+  return c.html(`<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body><link rel="stylesheet" href="${apiOrigin}/embed/v1/frame.css"><script type="module" src="${apiOrigin}/embed/v1/frame.js${new URL(c.req.url).search}"></script></body></html>`)
+})
+
+function readChatAsset(name: string): Buffer | null {
+  const candidates = [
+    resolve(process.cwd(), `packages/chat/dist/${name}`),
+    resolve(fileURLToPath(new URL(`../../../packages/chat/dist/${name}`, import.meta.url))),
+  ]
+  const assetPath = candidates.find((candidate) => existsSync(candidate))
+  return assetPath ? readFileSync(assetPath) : null
+}
+
+function serveChatAsset(c: any, name: string, contentType: string) {
+  const asset = readChatAsset(name)
+  if (!asset) {
+    return c.text(`Shogo chat asset ${name} is not built`, 503, {
+      'Content-Type': 'text/plain; charset=utf-8',
+    })
+  }
+  return new Response(new Uint8Array(asset), {
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=300',
+      'Access-Control-Allow-Origin': '*',
+    },
+  })
+}
+
+app.get('/embed/v1/chat.js', (c) => {
+  return serveChatAsset(c, 'embed.js', 'application/javascript; charset=utf-8')
+})
+
+app.get('/embed/v1/frame.js', (c) => {
+  return serveChatAsset(c, 'frame.js', 'application/javascript; charset=utf-8')
+})
+
+app.get('/embed/v1/frame.css', (c) => {
+  return serveChatAsset(c, 'frame.css', 'text/css; charset=utf-8')
+})
 
 // Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
 // Uses the same JWT auth as the AI proxy — no raw API keys in agent pods.
