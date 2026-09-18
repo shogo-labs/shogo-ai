@@ -202,6 +202,7 @@ export interface AgentTask {
   notes: string | null
   dueAt: string | null
   status: AgentTaskStatus
+  sourceType: string
   currentStep: string | null
   resultSummary: string | null
   errorMessage: string | null

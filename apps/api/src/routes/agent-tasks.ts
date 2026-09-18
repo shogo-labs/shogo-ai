@@ -33,6 +33,7 @@ type TaskWithProject = {
   notes: string | null
   dueAt: Date | null
   status: string
+  sourceType: string
   currentStep: string | null
   resultSummary: string | null
   errorMessage: string | null
@@ -130,6 +131,7 @@ function taskView(task: TaskWithProject) {
     notes: task.notes,
     dueAt: task.dueAt,
     status: task.status,
+    sourceType: task.sourceType,
     currentStep: task.currentStep,
     resultSummary: task.resultSummary,
     errorMessage: task.errorMessage,
@@ -616,6 +618,9 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (!userId) return unauthorized(c)
     const task = await loadTask(c.req.param('id'), userId)
     if (!task) return c.json({ error: { code: 'not_found', message: 'Task not found' } }, 404)
+    if (task.sourceType === 'note') {
+      return c.json({ error: { code: 'conflict', message: 'Notes-derived tasks cannot be started as agent tasks' } }, 409)
+    }
     if (task.status === 'queued' || task.status === 'running') return c.json({ ok: true, data: taskView(task) })
     if (task.status === 'completed' || task.status === 'cancelled') {
       return c.json({ error: { code: 'conflict', message: 'This task cannot be started again' } }, 409)

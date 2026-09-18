@@ -7,6 +7,7 @@ import { useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Activity, LayoutGrid, ListTodo, MessageCircle } from 'lucide-react-native'
 import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
+import { NotesTabIcon } from '../notes/FigmaNotesIcons'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../../lib/native-composer-keyboard'
@@ -39,8 +40,12 @@ function isHomePath(pathname: string) {
   return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
 }
 
+function isNotesPath(pathname: string) {
+  return pathname === '/notes' || pathname.startsWith('/notes/') || pathname === '/(app)/notes' || pathname.startsWith('/(app)/notes/')
+}
+
 function isBottomTabPath(pathname: string) {
-  return ['/tasks', '/activity', '/canvases'].some((path) =>
+  return ['/tasks', '/notes', '/activity', '/canvases'].some((path) =>
     pathname === path || pathname.endsWith(path) || pathname.includes(`(app)${path}`),
   )
 }
@@ -114,6 +119,7 @@ export function MobileBottomNav() {
 
   const active = useMemo(() => {
     if (pathname.includes('/tasks')) return 'tasks'
+    if (isNotesPath(pathname)) return 'notes'
     if (pathname.includes('/activity')) return 'activity'
     if (pathname.includes('/canvases')) return 'canvases'
     if (pathname.includes('/marketplace')) return 'none'
@@ -137,22 +143,31 @@ export function MobileBottomNav() {
     }
   }
 
+  const taskOrNotesItem = Platform.OS === 'web'
+    ? {
+        id: 'tasks',
+        label: 'Tasks',
+        Icon: ListTodo,
+        onPress: () => {
+          const context = currentProjectContext
+          router.push({
+            pathname: '/(app)/tasks' as any,
+            ...(context?.projectId
+              ? { params: { projectId: context.projectId, returnChatSessionId: context.chatSessionId } }
+              : {}),
+          } as any)
+        },
+      }
+    : {
+        id: 'notes',
+        label: 'Notes',
+        Icon: NotesTabIcon,
+        onPress: () => router.push('/(app)/notes' as any),
+      }
+
   const items = [
     { id: 'chat', label: 'Chat', Icon: MessageCircle, onPress: goChat },
-    {
-      id: 'tasks',
-      label: 'Tasks',
-      Icon: ListTodo,
-      onPress: () => {
-        const context = currentProjectContext
-        router.push({
-          pathname: '/(app)/tasks' as any,
-          ...(context?.projectId
-            ? { params: { projectId: context.projectId, returnChatSessionId: context.chatSessionId } }
-            : {}),
-        } as any)
-      },
-    },
+    taskOrNotesItem,
     {
       id: 'activity',
       label: 'Activity',
@@ -175,21 +190,23 @@ export function MobileBottomNav() {
           : {}),
       } as any),
     },
-  ] as const
+  ]
 
   return (
     <View
       className="bg-transparent pt-1"
       style={{
         position: 'relative',
-        marginTop: isProjectPath(pathname)
+        marginTop: isNotesPath(pathname)
+          ? 8
+          : isProjectPath(pathname)
           ? -(NATIVE_PHONE_DOCK_COMPOSER_GAP + NATIVE_PHONE_PROJECT_NAV_OVERLAP)
           : -(NATIVE_PHONE_DOCK_COMPOSER_GAP + 16),
         // Home is edge-to-edge in the root shell, while project chat is
         // already inside the shell's bottom safe area. Reserve the home
         // inset here so the composer and this capsule move up together and
         // match the project-chat dock position.
-        paddingBottom: isHomePath(pathname) ? insets.bottom + 8 : 8,
+        paddingBottom: isHomePath(pathname) || isNotesPath(pathname) ? insets.bottom + 8 : 8,
         paddingHorizontal: NATIVE_PHONE_GUTTER,
       }}
       testID="mobile-bottom-nav"
@@ -223,7 +240,11 @@ export function MobileBottomNav() {
               className={cn('flex-1 items-center justify-center rounded-full', selected && 'bg-muted')}
               style={{ height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT - NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2 }}
             >
-              <Icon size={23} color={selected ? (isDark ? '#ffffff' : '#111827') : (isDark ? '#a1a1aa' : '#6b7280')} strokeWidth={selected ? 2.2 : 1.9} />
+              {id === 'notes' ? (
+                <NotesTabIcon size={24} color={selected ? (isDark ? '#ffffff' : '#111827') : (isDark ? '#a1a1aa' : '#6b7280')} />
+              ) : (
+                <Icon size={23} color={selected ? (isDark ? '#ffffff' : '#111827') : (isDark ? '#a1a1aa' : '#6b7280')} strokeWidth={selected ? 2.2 : 1.9} />
+              )}
             </Pressable>
           )
         })}

@@ -85,6 +85,7 @@ export default function AppLayout() {
   const isAccountPage = pathname === '/account' || pathname === '/(app)/account'
   const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
   const isProjectChatsPage = pathname === '/project-chats' || pathname === '/(app)/project-chats'
+  const isNotesPage = pathname === '/notes' || pathname.startsWith('/notes/') || pathname === '/(app)/notes' || pathname.startsWith('/(app)/notes/')
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -156,7 +157,8 @@ export default function AppLayout() {
     isProfilePage ||
     isAccountPage ||
     isSearchPage ||
-    isProjectChatsPage
+    isProjectChatsPage ||
+    isNotesPage
   // Project chat has its own header, but it still uses the same native drawer
   // underneath. Keep horizontal drawer gestures enabled there so the sheet
   // can be opened and dismissed by swiping just like Home.
@@ -262,7 +264,7 @@ export default function AppLayout() {
   }
 
   const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
-  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage)
+  const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage || isNotesPage)
 
   return (
     <DomainProvider>

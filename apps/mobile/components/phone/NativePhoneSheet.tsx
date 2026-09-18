@@ -36,9 +36,8 @@ const NATIVE_PHONE_SHEET_SLIDE_IN_MS = 240
 const NATIVE_PHONE_SHEET_SLIDE_OUT_MS = 180
 const SHEET_CLOSE_HIT_SLOP = 8
 const NATIVE_PHONE_SHEET_DRAG_MIN_DISTANCE = 4
-const NATIVE_PHONE_SHEET_DRAG_COLLAPSED_VISIBLE_HEIGHT = 88
 const NATIVE_PHONE_SHEET_DRAG_PROJECTION_MS = 120
-const NATIVE_PHONE_SHEET_DRAG_CLOSE_MARGIN = 96
+const NATIVE_PHONE_SHEET_DRAG_CLOSE_THRESHOLD = 72
 const NATIVE_PHONE_SHEET_DRAG_SPRING = {
   stiffness: 300,
   damping: 32,
@@ -180,10 +179,14 @@ export interface NativePhoneSheetProps {
   maxHeightRatio?: number
   bodyMaxHeightRatio?: number
   animationType?: 'fade' | 'slide' | 'none'
-  grabber?: boolean | 'compact'
+  grabber?: boolean | 'compact' | ReactNode
+  /** Whether the panel chrome includes its standard outline. */
+  bordered?: boolean
   testID?: string
   density?: Density
   draggable?: boolean
+  /** Dismiss instead of snapping to an intermediate height after a downward drag. */
+  dragBehavior?: 'dismiss' | 'none'
   /** Keep the native drawer visible behind this sheet when it opens. */
   keepDrawerOpen?: boolean
   /** Choose between lifting the panel or letting a scrollable form handle the keyboard. */
@@ -214,9 +217,11 @@ export function NativePhoneSheet({
   bodyMaxHeightRatio,
   animationType = 'fade',
   grabber = true,
+  bordered = true,
   testID,
   density = PHONE_DENSITY,
   draggable = false,
+  dragBehavior = 'dismiss',
   keepDrawerOpen = false,
   keyboardBehavior = 'shift',
   scrollRef,
@@ -236,9 +241,9 @@ export function NativePhoneSheet({
   const dragStart = useRef(0)
   const dragBounds = useMemo(() => {
     const top = -Math.max(0, height - panelHeight - insets.top - SHEET_CLOSE_HIT_SLOP)
-    const collapsed = Math.max(0, panelHeight - NATIVE_PHONE_SHEET_DRAG_COLLAPSED_VISIBLE_HEIGHT)
-    return { top, collapsed }
+    return { top }
   }, [height, insets.top, panelHeight])
+  const canDrag = draggable && dragBehavior === 'dismiss'
 
   useEffect(() => {
     dragOffset.stopAnimation()
@@ -246,9 +251,9 @@ export function NativePhoneSheet({
   }, [dragOffset, visible])
 
   const panelGesture = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => draggable,
+    onStartShouldSetPanResponder: () => canDrag,
     onMoveShouldSetPanResponder: (_event, gesture) => (
-      draggable && Math.abs(gesture.dy) > NATIVE_PHONE_SHEET_DRAG_MIN_DISTANCE && Math.abs(gesture.dy) > Math.abs(gesture.dx)
+      canDrag && Math.abs(gesture.dy) > NATIVE_PHONE_SHEET_DRAG_MIN_DISTANCE && Math.abs(gesture.dy) > Math.abs(gesture.dx)
     ),
     onPanResponderGrant: () => {
       dragOffset.stopAnimation((value) => {
@@ -256,26 +261,16 @@ export function NativePhoneSheet({
       })
     },
     onPanResponderMove: (_event, gesture) => {
-      const next = Math.min(
-        dragBounds.collapsed,
-        Math.max(dragBounds.top, dragStart.current + gesture.dy),
-      )
+      const next = Math.max(dragBounds.top, dragStart.current + gesture.dy)
       dragOffset.setValue(next)
     },
     onPanResponderRelease: (_event, gesture) => {
       const projected = dragStart.current + gesture.dy + gesture.vy * NATIVE_PHONE_SHEET_DRAG_PROJECTION_MS
-      // Close before the collapsed stop so a deliberate, slow downward drag
-      // can dismiss the sheet without depending on release velocity.
-      const closeThreshold = Math.max(0, dragBounds.collapsed - Math.min(NATIVE_PHONE_SHEET_DRAG_CLOSE_MARGIN, panelHeight * 0.12))
-      if (projected > closeThreshold) {
+      if (projected > NATIVE_PHONE_SHEET_DRAG_CLOSE_THRESHOLD) {
         onClose()
         return
       }
-      const target = projected < dragBounds.top / 2
-        ? dragBounds.top
-        : projected > dragBounds.collapsed / 2
-          ? dragBounds.collapsed
-          : 0
+      const target = projected < dragBounds.top / 2 ? dragBounds.top : 0
       Animated.spring(dragOffset, {
         toValue: target,
         ...NATIVE_PHONE_SHEET_DRAG_SPRING,
@@ -287,7 +282,7 @@ export function NativePhoneSheet({
         ...NATIVE_PHONE_SHEET_DRAG_SPRING,
       }).start()
     },
-  }), [dragBounds, dragOffset, draggable, onClose, panelHeight])
+  }), [canDrag, dragBounds, dragOffset, onClose])
 
   useEffect(() => {
     if (!mounted || keepDrawerOpen) return
@@ -348,7 +343,7 @@ export function NativePhoneSheet({
         <Animated.View style={[styles.panelMotion, panelMotionStyle]}>
           <View
             testID={testID}
-            className="w-full rounded-t-3xl border border-border border-b-0 bg-card"
+            className={cn('w-full rounded-t-3xl bg-card', bordered ? 'border border-border border-b-0' : null)}
             style={[
               {
                 maxHeight: panelHeight,
@@ -358,14 +353,16 @@ export function NativePhoneSheet({
             ]}
           >
             {grabber ? (
-              <View {...(draggable ? panelGesture.panHandlers : {})} className="items-center pt-2 pb-1">
-                <View
-                  className={
-                    grabber === 'compact'
-                      ? 'h-1 w-10 rounded-full bg-muted-foreground/35'
-                      : 'h-1 w-11 rounded-full bg-muted-foreground/35'
-                  }
-                />
+              <View {...(canDrag ? panelGesture.panHandlers : {})} className="items-center pt-2 pb-1">
+                {typeof grabber === 'object' ? grabber : (
+                  <View
+                    className={
+                      grabber === 'compact'
+                        ? 'h-1 w-10 rounded-full bg-muted-foreground/35'
+                        : 'h-1 w-11 rounded-full bg-muted-foreground/35'
+                    }
+                  />
+                )}
               </View>
             ) : null}
             {hasHeader ? (

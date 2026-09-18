@@ -351,6 +351,27 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock.',
     writer: 'storage-recalculate-all',
   },
+  // --- Notes ----------------------------------------------------------------
+  {
+    key: 'NoteTranscriptionJob.assetId',
+    category: 'request_scoped',
+    reason: 'Created once with a user-uploaded, UUID-keyed NoteAsset; the worker only updates the claimed row and never creates jobs.',
+  },
+  {
+    key: 'NoteTaskSnapshot.taskId',
+    category: 'request_scoped',
+    reason: 'One immutable snapshot is created with the UUID-keyed AgentTask by the home-routed note conversion request.',
+  },
+  {
+    key: 'NoteTaskSnapshot.idempotencyKey',
+    category: 'request_scoped',
+    reason: 'The client-supplied conversion idempotency key is read before insert by the home-routed request, preventing retry duplicates.',
+  },
+  {
+    key: 'NoteTaskSnapshotAsset.(assetId,snapshotId)',
+    category: 'request_scoped',
+    reason: 'Immutable asset links are created only within the same home-routed conversion transaction as their UUID-keyed snapshot.',
+  },
   {
     key: 'TaskDependency.(blockingTaskId,dependentTaskId)',
     category: 'request_scoped',
