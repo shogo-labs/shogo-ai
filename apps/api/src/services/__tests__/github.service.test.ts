@@ -28,6 +28,7 @@ type Connection = {
   lastPullAt: Date | null
   lastPushAt: Date | null
   updatedAt: Date
+  project?: { id: string; workspaceId: string }
 }
 
 const connections = new Map<string, Connection>() // keyed by projectId
@@ -142,6 +143,17 @@ mock.module('../git.service', () => ({
   fetch: async (path: string) => { gitCalls.fetch.push(path) },
 }))
 
+// ─── agent-call.service mock (task-source webhooks) ─────────────────────────
+
+const agentCallCalls: Array<{ projectId: string; workspaceId: string; req: any }> = []
+let agentCallOutcome: { status: number; body: any } = { status: 200, body: { status: 'accepted' } }
+mock.module('../agent-call.service', () => ({
+  callProjectAgent: async (_c: any, projectId: string, workspaceId: string, req: any) => {
+    agentCallCalls.push({ projectId, workspaceId, req })
+    return agentCallOutcome
+  },
+}))
+
 // ─── fetch mock ──────────────────────────────────────────────────────────────
 
 type FetchHandler = (url: string, init?: any) => Promise<Response>
@@ -173,6 +185,7 @@ function seedConnection(o: Partial<Connection> & { projectId: string }): Connect
     lastPullAt: null,
     lastPushAt: null,
     updatedAt: new Date(),
+    project: { id: o.projectId, workspaceId: 'ws_test' },
     ...o,
   }
   connections.set(c.projectId, c)
@@ -193,6 +206,8 @@ beforeEach(() => {
   pullResult = { success: true }
   currentBranch = 'main'
   fetchHandler = async () => new Response('not stubbed', { status: 500 })
+  agentCallCalls.length = 0
+  agentCallOutcome = { status: 200, body: { status: 'accepted' } }
 })
 
 afterEach(() => {})
@@ -732,5 +747,274 @@ describe('getOAuthUser', () => {
   it('throws on non-2xx', async () => {
     fetchHandler = async () => new Response('forbidden', { status: 403 })
     await expect(svc.getOAuthUser('tok')).rejects.toThrow(/Failed to get user info/)
+  })
+})
+
+// ─── Task-source webhooks (issue pipeline, Phase 2) ─────────────────────────
+
+const FAKE_CTX = {} as any // callProjectAgent is mocked — it never touches `c`.
+
+describe('extractRunId / runIdMarker', () => {
+  it('round-trips a runId through the PR-body marker', () => {
+    const body = `Fixes #12.\n\n${svc.runIdMarker('run_abc123')}`
+    expect(svc.extractRunId(body)).toBe('run_abc123')
+  })
+
+  it('returns undefined for text with no marker, or no text at all', () => {
+    expect(svc.extractRunId('just a normal PR body')).toBeUndefined()
+    expect(svc.extractRunId(null)).toBeUndefined()
+    expect(svc.extractRunId(undefined)).toBeUndefined()
+  })
+
+  it('tolerates extra whitespace inside the comment', () => {
+    expect(svc.extractRunId('<!--   shogo:runId=run_xyz   -->')).toBe('run_xyz')
+  })
+})
+
+describe('isBotLogin / mentionsBot', () => {
+  afterEach(() => { delete process.env.GH_APP_SLUG })
+
+  it('matches the default shogo-ai[bot] login case-insensitively', () => {
+    expect(svc.isBotLogin('shogo-ai[bot]')).toBe(true)
+    expect(svc.isBotLogin('SHOGO-AI[BOT]')).toBe(true)
+    expect(svc.isBotLogin('some-human')).toBe(false)
+    expect(svc.isBotLogin(null)).toBe(false)
+    expect(svc.isBotLogin(undefined)).toBe(false)
+  })
+
+  it('respects GH_APP_SLUG for the bot login', () => {
+    process.env.GH_APP_SLUG = 'my-app'
+    expect(svc.isBotLogin('my-app[bot]')).toBe(true)
+    expect(svc.isBotLogin('shogo-ai[bot]')).toBe(false)
+  })
+
+  it('mentionsBot matches an @-mention with or without the [bot] suffix', () => {
+    expect(svc.mentionsBot('@shogo-ai please retry')).toBe(true)
+    expect(svc.mentionsBot('@shogo-ai[bot] please retry')).toBe(true)
+    expect(svc.mentionsBot('no mention here')).toBe(false)
+    expect(svc.mentionsBot(null)).toBe(false)
+  })
+
+  it('mentionsBot does not false-positive on a substring username', () => {
+    expect(svc.mentionsBot('@shogo-ai-impersonator hello')).toBe(false)
+  })
+})
+
+describe('handleIssueWebhook', () => {
+  it('wakes the connected project on action=opened, with no runId (fresh intake)', async () => {
+    seedConnection({ projectId: 'proj_intake', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueWebhook(FAKE_CTX, {
+      action: 'opened',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: { number: 5, title: 'Crash on login', body: 'Steps to repro...', html_url: 'https://github.com/acme/widgets/issues/5' },
+    })
+    expect(agentCallCalls).toHaveLength(1)
+    const call = agentCallCalls[0]!
+    expect(call.projectId).toBe('proj_intake')
+    expect(call.req.runId).toBeUndefined()
+    expect(call.req.wait).toBe(false)
+    expect(call.req.message).toContain('Crash on login')
+    expect(call.req.message).toContain('https://github.com/acme/widgets/issues/5')
+  })
+
+  it('ignores non-opened actions (labeled, assigned, closed, ...)', async () => {
+    seedConnection({ projectId: 'proj_intake', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueWebhook(FAKE_CTX, {
+      action: 'labeled',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: { number: 5, title: 'x', body: 'y', html_url: 'z' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+
+  it('is a no-op when no project is connected to the repo', async () => {
+    await svc.handleIssueWebhook(FAKE_CTX, {
+      action: 'opened',
+      installation: { id: 7 },
+      repository: { full_name: 'nobody/connected' },
+      issue: { number: 1, title: 'x', body: 'y', html_url: 'z' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+
+  it('never throws when callProjectAgent rejects — the webhook ack must still succeed', async () => {
+    seedConnection({ projectId: 'proj_intake', installationId: 7, repoFullName: 'acme/widgets' })
+    mock.module('../agent-call.service', () => ({
+      callProjectAgent: async () => { throw new Error('pod unreachable') },
+    }))
+    await expect(
+      svc.handleIssueWebhook(FAKE_CTX, {
+        action: 'opened',
+        installation: { id: 7 },
+        repository: { full_name: 'acme/widgets' },
+        issue: { number: 1, title: 'x', body: 'y', html_url: 'z' },
+      }),
+    ).resolves.toBeUndefined()
+    // Restore the recording mock for subsequent tests.
+    mock.module('../agent-call.service', () => ({
+      callProjectAgent: async (_c: any, projectId: string, workspaceId: string, req: any) => {
+        agentCallCalls.push({ projectId, workspaceId, req })
+        return agentCallOutcome
+      },
+    }))
+  })
+})
+
+describe('handleIssueCommentWebhook', () => {
+  const baseIssue = { number: 5, title: 'x', body: 'plain issue body', html_url: 'z' }
+
+  it('wakes the agent when the comment @-mentions the bot', async () => {
+    seedConnection({ projectId: 'proj_a', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: baseIssue,
+      comment: { user: { login: 'a-human' }, body: '@shogo-ai please go with option 3', html_url: 'c-url' },
+    })
+    expect(agentCallCalls).toHaveLength(1)
+    expect(agentCallCalls[0]!.req.message).toContain('option 3')
+  })
+
+  it('wakes the agent on a plain reply when the thread is bot-authored (no mention needed)', async () => {
+    seedConnection({ projectId: 'proj_a', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: { ...baseIssue, user: { login: 'shogo-ai[bot]' } },
+      comment: { user: { login: 'a-human' }, body: 'go with option 2', html_url: 'c-url' },
+    })
+    expect(agentCallCalls).toHaveLength(1)
+  })
+
+  it('ignores a comment with no mention on a human-authored thread', async () => {
+    seedConnection({ projectId: 'proj_a', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: { ...baseIssue, user: { login: 'some-human' } },
+      comment: { user: { login: 'another-human' }, body: 'just chatting, no mention', html_url: 'c-url' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+
+  it('never reacts to its own comments', async () => {
+    seedConnection({ projectId: 'proj_a', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: baseIssue,
+      comment: { user: { login: 'shogo-ai[bot]' }, body: '@shogo-ai self-mention', html_url: 'c-url' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+
+  it('ignores actions other than created (edited, deleted)', async () => {
+    seedConnection({ projectId: 'proj_a', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueCommentWebhook(FAKE_CTX, {
+      action: 'edited',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: baseIssue,
+      comment: { user: { login: 'a-human' }, body: '@shogo-ai edited', html_url: 'c-url' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+
+  it('recovers the runId from the issue body when the comment is on a bot-opened PR', async () => {
+    seedConnection({ projectId: 'proj_a', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handleIssueCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      issue: {
+        number: 9,
+        title: 'PR title',
+        body: `PR description\n\n${svc.runIdMarker('run_pr_1')}`,
+        pull_request: { url: 'https://api.github.com/.../pulls/9' },
+        user: { login: 'shogo-ai[bot]' },
+      },
+      comment: { user: { login: 'a-human' }, body: 'lgtm', html_url: 'c-url' },
+    })
+    expect(agentCallCalls).toHaveLength(1)
+    expect(agentCallCalls[0]!.req.runId).toBe('run_pr_1')
+    expect(agentCallCalls[0]!.req.message).toContain('New comment on PR #9')
+  })
+})
+
+describe('handlePullRequestReviewWebhook', () => {
+  const basePR = { number: 9, body: `desc\n\n${svc.runIdMarker('run_rev_1')}`, user: { login: 'shogo-ai[bot]' } }
+
+  it('wakes the agent for a submitted review on a bot-authored PR and recovers the runId', async () => {
+    seedConnection({ projectId: 'proj_r', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handlePullRequestReviewWebhook(FAKE_CTX, {
+      action: 'submitted',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      pull_request: basePR,
+      review: { user: { login: 'reviewer' }, state: 'changes_requested', body: 'fix the null check', html_url: 'r-url' },
+    })
+    expect(agentCallCalls).toHaveLength(1)
+    expect(agentCallCalls[0]!.req.runId).toBe('run_rev_1')
+    expect(agentCallCalls[0]!.req.message).toContain('changes_requested')
+  })
+
+  it('ignores a review on a human-authored PR that does not mention the bot', async () => {
+    seedConnection({ projectId: 'proj_r', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handlePullRequestReviewWebhook(FAKE_CTX, {
+      action: 'submitted',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      pull_request: { number: 9, body: 'desc', user: { login: 'some-human' } },
+      review: { user: { login: 'reviewer' }, state: 'approved', body: 'nice', html_url: 'r-url' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+
+  it('ignores non-submitted actions', async () => {
+    seedConnection({ projectId: 'proj_r', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handlePullRequestReviewWebhook(FAKE_CTX, {
+      action: 'dismissed',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      pull_request: basePR,
+      review: { user: { login: 'reviewer' }, state: 'approved', body: null, html_url: 'r-url' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
+  })
+})
+
+describe('handlePullRequestReviewCommentWebhook', () => {
+  const basePR = { number: 9, body: `desc\n\n${svc.runIdMarker('run_rc_1')}`, user: { login: 'shogo-ai[bot]' } }
+
+  it('wakes the agent for an inline comment on a bot-authored PR, including the file:line location', async () => {
+    seedConnection({ projectId: 'proj_rc', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handlePullRequestReviewCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      pull_request: basePR,
+      comment: { user: { login: 'reviewer' }, body: 'unused import', path: 'src/index.ts', line: 42, html_url: 'rc-url' },
+    })
+    expect(agentCallCalls).toHaveLength(1)
+    expect(agentCallCalls[0]!.req.runId).toBe('run_rc_1')
+    expect(agentCallCalls[0]!.req.message).toContain('src/index.ts:42')
+  })
+
+  it('ignores its own review comments', async () => {
+    seedConnection({ projectId: 'proj_rc', installationId: 7, repoFullName: 'acme/widgets' })
+    await svc.handlePullRequestReviewCommentWebhook(FAKE_CTX, {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { full_name: 'acme/widgets' },
+      pull_request: basePR,
+      comment: { user: { login: 'shogo-ai[bot]' }, body: 'self note', path: 'a.ts', html_url: 'rc-url' },
+    })
+    expect(agentCallCalls).toHaveLength(0)
   })
 })

@@ -96,6 +96,11 @@
     "test:channels:webchat": "bun test e2e/channels/webchat.integration.test.ts",
     "test:channels:webhook": "bun test e2e/channels/webhook.integration.test.ts",
     "test:channels:external": "bun test e2e/channels/external-channels.integration.test.ts",
+    "test:issue-pipeline:fixture": "cd e2e/issue-pipeline/fixtures/target-repo && bun test",
+    "test:issue-pipeline:l0": "bun test e2e/issue-pipeline/l0-solo.integration.test.ts",
+    "test:issue-pipeline:l1": "bun test e2e/issue-pipeline/l1-multi-project.integration.test.ts",
+    "test:issue-pipeline:l2": "bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts",
+    "test:issue-pipeline:l3": "bun test e2e/issue-pipeline/l3-prompt-amendment.integration.test.ts",
     "test:e2e:ez-mode-persistence": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/ez-mode-persistence.test.ts",
     "test:notetaker:e2e": "npx playwright test --config apps/desktop/e2e/playwright.config.ts",
     "postinstall": "bun scripts/postinstall.ts"

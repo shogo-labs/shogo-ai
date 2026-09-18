@@ -1,0 +1,10 @@
+{
+  "name": "issue-pipeline-fixture-target",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Tiny fixture repo with one planted bug, used by the e2e/issue-pipeline eval ladder (see docs/issue-pipeline/PLAN.md Phase 4). Not part of the shogo-ai workspace build.",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  }
+}

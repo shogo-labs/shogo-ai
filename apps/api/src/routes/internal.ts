@@ -1506,6 +1506,7 @@ function lifecycleErrorResponse(c: Context, err: unknown): Response {
       : anyErr.code === 'forbidden' ? 403
       : anyErr.code === 'not_found' ? 404
       : anyErr.code === 'instance_too_small' ? 402
+      : anyErr.code === 'paywall' ? 402
       : 400
     return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
   }
@@ -1723,69 +1724,21 @@ app.post('/projects/:projectId/agent-call', async (c) => {
   if (!body || typeof body.message !== 'string' || !body.message.trim()) {
     return c.json({ error: { code: 'bad_request', message: 'message is required' } }, 400)
   }
-  const wait = body.wait !== false
-  const timeoutMs = Math.min(
-    Math.max(typeof body.timeoutMs === 'number' ? body.timeoutMs : 5 * 60_000, 10_000),
-    20 * 60_000,
-  )
   const callerProjectId =
     typeof body.callerProjectId === 'string'
       ? body.callerProjectId
       : authz.identity.kind === 'project' ? authz.identity.projectId : undefined
 
-  const forwardBody = JSON.stringify({
+  const { callProjectAgent } = await import('../services/agent-call.service')
+  const outcome = await callProjectAgent(c, projectId, authz.workspaceId, {
     message: body.message,
     runId: typeof body.runId === 'string' ? body.runId : undefined,
     sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
-    wait,
+    wait: body.wait !== false,
+    timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
     callerProjectId,
   })
-
-  const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
-  const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })
-  if (!resolution.ok) return c.json(resolution.body, resolution.status)
-
-  const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
-  const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId: authz.workspaceId })
-
-  if (resolution.kind === 'tunnel') {
-    const { relayAgentProxyViaTunnel } = await import('../lib/tunnel-relay')
-    return relayAgentProxyViaTunnel({
-      c,
-      instanceId: resolution.instanceId,
-      workspaceId: resolution.workspaceId,
-      projectId,
-      agentPath: '/agent/pipeline/call',
-      cleanPath: '/agent/pipeline/call',
-      method: 'POST',
-      body: forwardBody,
-      headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
-    })
-  }
-
-  try {
-    const res = await fetch(`${resolution.url}/agent/pipeline/call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
-      body: forwardBody,
-      signal: AbortSignal.timeout(wait ? timeoutMs + 5_000 : 15_000),
-    })
-    const json = await res.json().catch(() => ({}))
-    return c.json(json, res.status as any)
-  } catch (err: any) {
-    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-    return c.json(
-      {
-        error: {
-          code: timedOut ? 'agent_call_timeout' : 'agent_call_failed',
-          message: timedOut
-            ? `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`
-            : (err?.message ?? 'Failed to reach the target runtime'),
-        },
-      },
-      timedOut ? 504 : 502,
-    )
-  }
+  return c.json(outcome.body, outcome.status as any)
 })
 
 export default app

@@ -1,0 +1,29 @@
+{
+  "id": "issue-pipeline",
+  "name": "Issue Pipeline (Harness)",
+  "description": "The anchor project for a self-assembling multi-agent issue pipeline: every incoming bug/feature/enhancement is reproduced, analysed into 5 options, planned, implemented, reviewed (security/scalability/DRY), gated, and shipped as a PR. Run `system_apply` once to spin up the other nine projects from shogo-system.yaml.",
+  "category": "development",
+  "icon": "GitPullRequest",
+  "tags": [
+    "issue-pipeline",
+    "multi-agent",
+    "self-assembling",
+    "code-review",
+    "github",
+    "jira"
+  ],
+  "settings": {
+    "activeMode": "none",
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-5",
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "techStack": "none"
+}

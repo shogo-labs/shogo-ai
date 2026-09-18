@@ -14,10 +14,16 @@ mock.module('@shogo/shared-runtime', () => ({
 type TierGateResult = { allowed: boolean; currentSize: string; requiredSize: string | null }
 let tierGateAnswer: TierGateResult = { allowed: true, currentSize: 'micro', requiredSize: null }
 const tierGateCalls: Array<{ workspaceId: string; techStackId: string | null | undefined }> = []
+let paidAnswer = true
+const paidCalls: string[] = []
 mock.module('../billing.service', () => ({
   canRunTechStackOnInstanceSize: async (workspaceId: string, techStackId: string | null | undefined) => {
     tierGateCalls.push({ workspaceId, techStackId })
     return tierGateAnswer
+  },
+  hasPaidSubscription: async (workspaceId: string) => {
+    paidCalls.push(workspaceId)
+    return paidAnswer
   },
 }))
 
@@ -124,6 +130,8 @@ beforeEach(() => {
   createIdCounter = 0
   tierGateAnswer = { allowed: true, currentSize: 'micro', requiredSize: null }
   tierGateCalls.length = 0
+  paidAnswer = true
+  paidCalls.length = 0
   beforeCreateAnswer = { ok: true }
   beforeCreateCalls.length = 0
 })
@@ -218,5 +226,56 @@ describe('configureProject — Docker-class minimum compute tier', () => {
       name: 'ProjectLifecycleError',
       code: 'not_found',
     })
+  })
+})
+
+describe('configureProject — heartbeat paywall', () => {
+  it('does not check billing when the patch has no agent block', async () => {
+    const p = seedProject({ workspaceId: 'ws_free' })
+    await configureProject(p.id, { name: 'Renamed' })
+    expect(paidCalls).toHaveLength(0)
+  })
+
+  it('does not check billing when heartbeatEnabled is not touched and was already disabled', async () => {
+    const p = seedProject({ workspaceId: 'ws_free' })
+    agentConfigs.set(p.id, { heartbeatEnabled: false, heartbeatInterval: 1800 })
+    await configureProject(p.id, { agent: { modelName: 'claude-haiku-4-5' } })
+    expect(paidCalls).toHaveLength(0)
+  })
+
+  it('blocks enabling the heartbeat on an unpaid workspace', async () => {
+    paidAnswer = false
+    const p = seedProject({ workspaceId: 'ws_free' })
+    await expect(
+      configureProject(p.id, { agent: { heartbeatEnabled: true } }),
+    ).rejects.toMatchObject({ name: 'ProjectLifecycleError', code: 'paywall' })
+    expect(paidCalls).toEqual(['ws_free'])
+    // AgentConfig must NOT have been persisted as enabled.
+    expect(agentConfigs.get(p.id)).toBeUndefined()
+  })
+
+  it('blocks patching other agent fields while the heartbeat is already enabled on an unpaid workspace', async () => {
+    paidAnswer = false
+    const p = seedProject({ workspaceId: 'ws_free' })
+    agentConfigs.set(p.id, { heartbeatEnabled: true, heartbeatInterval: 1800 })
+    await expect(
+      configureProject(p.id, { agent: { modelName: 'claude-haiku-4-5' } }),
+    ).rejects.toMatchObject({ name: 'ProjectLifecycleError', code: 'paywall' })
+  })
+
+  it('allows disabling the heartbeat on an unpaid workspace', async () => {
+    paidAnswer = false
+    const p = seedProject({ workspaceId: 'ws_free' })
+    agentConfigs.set(p.id, { heartbeatEnabled: true, heartbeatInterval: 1800 })
+    const result = await configureProject(p.id, { agent: { heartbeatEnabled: false } })
+    expect(result.agent?.heartbeatEnabled).toBe(false)
+  })
+
+  it('allows enabling the heartbeat on a paid workspace', async () => {
+    paidAnswer = true
+    const p = seedProject({ workspaceId: 'ws_paid' })
+    const result = await configureProject(p.id, { agent: { heartbeatEnabled: true, heartbeatInterval: 900 } })
+    expect(result.agent?.heartbeatEnabled).toBe(true)
+    expect(paidCalls).toEqual(['ws_paid'])
   })
 })
