@@ -73,6 +73,10 @@ const agentConfigs: any[] = []
 const chatSessions: any[] = []
 const chatMessages: any[] = []
 let projectIdCounter = 0
+// Docker-class tier gate test controls this; every other test leaves it at
+// the default ('micro', i.e. no compute add-on) since none of them import a
+// docker-compose bundle.
+let workspaceInstanceSize: string | undefined = undefined
 
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 mock.module('../lib/prisma', () => withPrismaExports({
@@ -82,7 +86,7 @@ mock.module('../lib/prisma', () => withPrismaExports({
     // from any active subscription/grant. These fixtures are standalone
     // free-tier workspaces: self billing, no sub, no grants.
     workspace: {
-      findUnique: async () => ({ parentWorkspaceId: null }),
+      findUnique: async () => ({ parentWorkspaceId: null, instanceSize: workspaceInstanceSize }),
     },
     subscription: {
       findFirst: async () => null,
@@ -178,6 +182,13 @@ mock.module('@shogo/shared-runtime', () => ({
   },
   isMacOSJunkName: (n: string) => n === '__MACOSX' || n.startsWith('._'),
   RUNTIME_CONFIG: {},
+  // `../services/billing.service` (real module, loaded for
+  // `hasAdvancedModelAccess` / `canRunTechStackOnInstanceSize`) and
+  // `../config/instance-sizes` both import real named exports from here.
+  isMobileTechStack: (techStackId: string | null | undefined) =>
+    techStackId === 'expo' || techStackId === 'react-native',
+  getMinimumInstanceSize: (techStackId: string | null | undefined) =>
+    techStackId === 'docker-compose' ? 'large' : null,
 }))
 
 // knative-project-manager: only used in k8s export branch. Lazy-imported by
@@ -213,6 +224,7 @@ beforeEach(() => {
   bundleThrows = false
   s3UploadResult = { errors: [], archiveSize: 0 }
   s3SyncReturnsNull = false
+  workspaceInstanceSize = undefined
 })
 
 // Imports AFTER mocks.
@@ -433,6 +445,33 @@ describe('runImport', () => {
     expect(projects.get(result.project.id)?.settings).toMatchObject({
       techStackId: 'python-data',
     })
+  })
+
+  test('Docker-class tier gate: blocks importing a docker-compose bundle when the workspace is below the required tier', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    workspaceInstanceSize = 'micro'
+    const bundle = JSON.parse(makeProjectJson())
+    bundle.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
+    const buf = zipSync({ 'project.json': strToU8(JSON.stringify(bundle)) })
+    const result = await runImport(buf, 'w-1', 'u-1', { includeChats: false, runBootstrap: false }, () => {})
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.status).toBe(402)
+    expect(result.error).toContain('large')
+    // No project row should have been created.
+    expect(projects.size).toBe(0)
+  })
+
+  test('Docker-class tier gate: allows importing a docker-compose bundle when the workspace meets the tier floor', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    workspaceInstanceSize = 'large'
+    const bundle = JSON.parse(makeProjectJson())
+    bundle.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
+    const buf = zipSync({ 'project.json': strToU8(JSON.stringify(bundle)) })
+    const result = await runImport(buf, 'w-1', 'u-1', { includeChats: false, runBootstrap: false }, () => {})
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(projects.get(result.project.id)?.settings).toMatchObject({ techStackId: 'docker-compose' })
   })
 
   test('unsupported bundle version emits non-fatal warning but still imports', async () => {

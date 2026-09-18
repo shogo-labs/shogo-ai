@@ -9,8 +9,9 @@
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
 import * as billingService from '../services/billing.service'
 import { getModelTier } from '@shogo/model-catalog'
+import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { getRuntimeManager } from '../lib/runtime/manager'
-import { normalizeProjectSettings } from '../lib/project-settings'
+import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -265,6 +266,33 @@ export const projectHooks: ProjectHooks = {
       input.settings = normalizeProjectSettings(input.settings)
     }
 
+    // Docker-class ("Tier 2") minimum compute tier. `getMinimumInstanceSize()`
+    // is a free, sync lookup that returns null for every non-Docker stack
+    // today, so this only reaches the DB (`canRunTechStackOnInstanceSize`)
+    // for a stack that actually declares a floor — ordinary project
+    // creation isn't slowed down. This is the creation-time half of the
+    // gate; `build-project-env.ts` re-checks at VM-assignment time as
+    // defense-in-depth in case a project's settings/workspace tier changes
+    // after creation.
+    const techStackId = (input.settings as Record<string, unknown> | null)?.techStackId as
+      | string
+      | undefined
+    if (getMinimumInstanceSize(techStackId)) {
+      const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
+        workspaceId,
+        techStackId,
+      )
+      if (!allowed) {
+        return {
+          ok: false,
+          error: {
+            code: 'instance_too_small',
+            message: `This stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
+          },
+        }
+      }
+    }
+
     return { ok: true, data: input }
   },
 
@@ -332,8 +360,8 @@ export const projectHooks: ProjectHooks = {
    * Super admins can update any project.
    */
   beforeUpdate: async (id, input, ctx) => {
-    // Mutate in place: the access-control branches below return `{ ok: true }`
-    // without `data`, and the route keeps its own `body` reference in that case.
+    // Mutate in place: the access-control branches below don't return
+    // `data`, and the route keeps its own `body` reference in that case.
     if (input?.settings !== undefined) {
       input.settings = normalizeProjectSettings(input.settings)
     }
@@ -346,33 +374,83 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    if (await isSuperAdmin(ctx)) return { ok: true }
-    if (ctx.tunnelAuthenticated) return { ok: true }
+    // `project` is fetched lazily below only for the non-admin/non-tunnel
+    // path, then reused (rather than re-queried) by the instance-tier gate
+    // further down if a workspaceId lookup is needed there too.
+    let project: any = null
+    let authorized = (await isSuperAdmin(ctx)) || !!ctx.tunnelAuthenticated
 
-    const project = await ctx.prisma.project.findUnique({
-      where: { id },
-      include: { workspace: { include: { members: true } } },
-    })
+    if (!authorized) {
+      project = await ctx.prisma.project.findUnique({
+        where: { id },
+        include: { workspace: { include: { members: true } } },
+      })
 
-    if (!project) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Project not found" },
+      if (!project) {
+        return {
+          ok: false,
+          error: { code: "not_found", message: "Project not found" },
+        }
+      }
+
+      const hasWorkspaceAccess = project.workspace.members.some((m: any) => m.userId === userId)
+      if (hasWorkspaceAccess) {
+        authorized = true
+      } else {
+        const projectMember = await ctx.prisma.member.findFirst({
+          where: { userId, projectId: id },
+        })
+        if (projectMember && projectMember.role !== 'viewer') authorized = true
       }
     }
 
-    const hasWorkspaceAccess = project.workspace.members.some((m: any) => m.userId === userId)
-    if (hasWorkspaceAccess) return { ok: true }
-
-    const projectMember = await ctx.prisma.member.findFirst({
-      where: { userId, projectId: id },
-    })
-    if (projectMember && projectMember.role !== 'viewer') return { ok: true }
-
-    return {
-      ok: false,
-      error: { code: "forbidden", message: "Access denied to this project" },
+    if (!authorized) {
+      return {
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this project" },
+      }
     }
+
+    // Docker-class ("Tier 2") minimum compute tier — same rationale as
+    // `beforeCreate`'s check. Only triggers a lookup when the PATCH is
+    // actually switching `techStackId` to a stack with a declared floor
+    // (`getMinimumInstanceSize()` is a free, sync check), and only blocks
+    // when the stack is actually CHANGING, so unrelated settings patches
+    // (e.g. toggling `canvasMode`) on an existing docker-compose project
+    // are never affected by this gate.
+    const incomingTechStackId = (input?.settings as Record<string, unknown> | null)?.techStackId as
+      | string
+      | undefined
+    if (incomingTechStackId && getMinimumInstanceSize(incomingTechStackId)) {
+      const existing =
+        project ??
+        (await ctx.prisma.project.findUnique({
+          where: { id },
+          select: { workspaceId: true, settings: true },
+        }))
+      if (existing) {
+        const currentTechStackId = parseProjectSettings(existing.settings)?.techStackId as
+          | string
+          | undefined
+        if (currentTechStackId !== incomingTechStackId) {
+          const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
+            existing.workspaceId,
+            incomingTechStackId,
+          )
+          if (!allowed) {
+            return {
+              ok: false,
+              error: {
+                code: "instance_too_small",
+                message: `Switching to this stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
+              },
+            }
+          }
+        }
+      }
+    }
+
+    return { ok: true }
   },
 
   /**

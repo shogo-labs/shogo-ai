@@ -176,6 +176,26 @@ export function applyDockerStackFloor(
 }
 
 /**
+ * True if `size` meets (or exceeds) `techStackId`'s declared
+ * `minimumInstanceSize` floor — i.e. `applyDockerStackFloor(size,
+ * techStackId) === size`, without needing a workspace lookup. A stack with
+ * no declared floor (every non-Docker stack today) always passes.
+ *
+ * Pure/sync — callers that need to check an actual WORKSPACE (not just a
+ * hypothetical size) should use `canRunTechStackOnInstanceSize()` in
+ * `services/billing.service.ts`, which resolves `workspace.instanceSize`
+ * and calls this.
+ */
+export function meetsMinimumInstanceSize(
+  size: InstanceSizeName,
+  techStackId: string | null | undefined,
+): boolean {
+  const floor = getMinimumInstanceSize(techStackId) as InstanceSizeName | null
+  if (!floor) return true
+  return INSTANCE_SIZE_ORDER.indexOf(size) >= INSTANCE_SIZE_ORDER.indexOf(floor)
+}
+
+/**
  * Mobile stacks need extra disk for `node_modules` plus Metro's bundle
  * cache. Even after picking `small` (4 GiB diskSizeLimit), Expo + RN +
  * three.js can consume more, so we lift the disk overlay specifically

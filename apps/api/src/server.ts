@@ -7701,6 +7701,64 @@ app.post('/api/webhooks/stripe', async (c) => {
             console.error('[Webhook] Failed to sync subscription event:', err.message)
           }
         }
+
+        // Instance/capacity add-on lifecycle. Identified by the
+        // `InstanceSubscription` row's `stripeSubscriptionId`, NOT
+        // `subscription.metadata` (the `wsId && metaPlanId` branch above
+        // never matches an instance sub — see `findInstanceSubscriptionByStripeId`'s
+        // doc comment for why). Keeps status/period/cancel-at-period-end
+        // fresh for renewals, `past_due`, portal-initiated pauses, etc. — a
+        // TIER change still arrives via `checkout.session.completed` below.
+        try {
+          const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
+          if (instanceSub) {
+            const now = Date.now()
+            const currentPeriodStart = subscription.current_period_start
+              ? subscription.current_period_start * 1000
+              : now
+            const currentPeriodEnd = subscription.current_period_end
+              ? subscription.current_period_end * 1000
+              : now + (30 * 24 * 60 * 60 * 1000)
+            await instanceService.syncInstanceSubscriptionStatus(
+              subscription.id,
+              subscription.status as any,
+              subscription.cancel_at_period_end ?? false,
+              new Date(currentPeriodStart),
+              new Date(currentPeriodEnd),
+            )
+            console.log('[Webhook] Instance subscription status synced:', {
+              workspaceId: instanceSub.workspaceId,
+              status: subscription.status,
+              cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
+            })
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to sync instance subscription status:', err.message)
+        }
+        break
+      }
+      case 'customer.subscription.deleted': {
+        // Instance/capacity add-on cancellation (immediate cancel, or the
+        // final event at period end for a `cancel_at_period_end` sub).
+        // `downgradeToMicro()` existed but had zero production callers
+        // before this — nothing synced a canceled instance add-on back to
+        // `workspace.instanceSize`, so a workspace that canceled kept
+        // running (and being billed floor-wise) at its old tier forever.
+        // Seat-plan cancellation is intentionally NOT handled here — that's
+        // a separate, pre-existing gap outside this change's scope.
+        const subscription = event.data.object as Stripe.Subscription
+        try {
+          const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
+          if (instanceSub) {
+            await instanceService.downgradeToMicro(instanceSub.workspaceId)
+            instanceService.applyInstanceToRuntime(instanceSub.workspaceId).catch((err) =>
+              console.error('[Webhook] Failed to apply micro downgrade to runtime:', err.message),
+            )
+            console.log('[Webhook] Instance subscription canceled, downgraded to micro:', instanceSub.workspaceId)
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to downgrade canceled instance subscription:', err.message)
+        }
         break
       }
       case 'checkout.session.completed': {

@@ -822,10 +822,11 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
   })
 
-  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack AND the platform gate is on', async () => {
+  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack, the platform gate is on, AND the workspace meets the tier floor', async () => {
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
+      workspace: { instanceSize: 'large' },
       settings: { runtimeClass: 'docker', techStackId: 'docker-compose' },
     }))
     const env = await buildProjectEnv('proj-rc-docker')
@@ -866,10 +867,53 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
+      workspace: { instanceSize: 'large' },
       settings: { techStackId: 'docker-compose' },
     }))
     const env = await buildProjectEnv('proj-rc-derived')
     expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+  })
+
+  test('allows docker-compose on a workspace above the minimum tier (xlarge)', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'xlarge' },
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-above-floor')
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+  })
+
+  test('refuses (falls back to standard) when the workspace instance size is below the stack\'s minimum, even with the platform gate on', async () => {
+    // The project-creation/stack-switch route should refuse this via
+    // canRunTechStackOnInstanceSize() before it ever gets here — this is the
+    // defense-in-depth check for when that upstream gate is bypassed (bug,
+    // manual DB edit, or a workspace downsized after the project was created).
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'micro' },
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    const env = await buildProjectEnv('proj-rc-too-small')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+    expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(
+      "below the stack's declared minimum",
+    )
+    errorSpy.mockRestore()
+  })
+
+  test('refuses docker-compose on "small" (still below the "large" floor)', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'small' },
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-still-too-small')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
   })
 
   test('does not derive docker class from an unrelated tech stack', async () => {

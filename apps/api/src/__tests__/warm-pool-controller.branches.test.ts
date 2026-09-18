@@ -103,6 +103,11 @@ mock.module('@shogo/shared-runtime', () => ({
     portRangeStart: 5100,
     portRangeEnd: 5200,
   },
+  // `../config/instance-sizes` (pulled in transitively via
+  // knative-project-manager) re-exports these — no fixture here uses a
+  // mobile or docker-class stack, so plain no-op stubs are correct.
+  isMobileTechStack: (_techStackId: string | null | undefined) => false,
+  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
 }))
 
 // ──────────────────────────────────────────────────────────────────

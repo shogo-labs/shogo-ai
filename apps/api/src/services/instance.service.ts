@@ -54,6 +54,44 @@ export async function getInstanceSubscription(workspaceId: string) {
   })
 }
 
+/**
+ * Look up an `InstanceSubscription` row by its Stripe subscription id.
+ *
+ * Used by the `customer.subscription.updated`/`.deleted` webhook handlers,
+ * which do NOT carry `workspaceId` in `subscription.metadata` the way the
+ * seat-plan path does — the instance/capacity Checkout Session only sets
+ * `metadata` on the SESSION (see `/api/billing/instance-checkout`), not
+ * `subscription_data.metadata`, so the Subscription object Stripe sends on
+ * later lifecycle events has no Shogo metadata at all. The
+ * `stripeSubscriptionId` persisted by `syncInstanceFromStripe` below is the
+ * only reliable link back to a workspace for those events.
+ */
+export async function findInstanceSubscriptionByStripeId(stripeSubscriptionId: string) {
+  return prisma.instanceSubscription.findUnique({
+    where: { stripeSubscriptionId },
+  })
+}
+
+/**
+ * Refresh status/period fields on an existing `InstanceSubscription` row
+ * without changing its `instanceSize` — used on `customer.subscription.updated`
+ * (e.g. `past_due`, `cancel_at_period_end` toggled, period renewed) where the
+ * tier itself hasn't changed. A tier CHANGE still goes through
+ * `syncInstanceFromStripe` via a fresh `checkout.session.completed`.
+ */
+export async function syncInstanceSubscriptionStatus(
+  stripeSubscriptionId: string,
+  status: SubscriptionStatus,
+  cancelAtPeriodEnd: boolean,
+  currentPeriodStart: Date,
+  currentPeriodEnd: Date,
+) {
+  await prisma.instanceSubscription.update({
+    where: { stripeSubscriptionId },
+    data: { status, cancelAtPeriodEnd, currentPeriodStart, currentPeriodEnd },
+  })
+}
+
 export async function syncInstanceFromStripe(
   workspaceId: string,
   stripeSubscriptionId: string,

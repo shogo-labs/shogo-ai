@@ -261,6 +261,19 @@ mock.module('@shogo/shared-runtime', () => ({
       shutdown: () => undefined,
     }
   },
+  // No test in this file installs a docker-compose listing — this just
+  // needs to exist as a real function so `installAgent`'s Docker-class
+  // instance-tier gate (a no-op for every techStackId used here) doesn't
+  // crash on an unmocked import. See marketplace-install.service.test.ts
+  // for the dedicated tier-gate test coverage.
+  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
+}))
+
+// `canRunTechStackOnInstanceSize` is only reached when
+// `getMinimumInstanceSize` above returns non-null, which it never does in
+// this file — still needs a real export so the module loads.
+mock.module('../services/billing.service', () => ({
+  canRunTechStackOnInstanceSize: async () => ({ allowed: true, currentSize: 'micro', requiredSize: null }),
 }))
 
 // ─── workspace.service mock (only hasWorkspaceAccess) ─────────────────

@@ -114,6 +114,10 @@ mock.module('@shogo/shared-runtime', () => ({
   createS3SyncForProject: () => null,
   isMacOSJunkName: (n: string) => n === '__MACOSX' || n.startsWith('._'),
   RUNTIME_CONFIG: {},
+  // No bundle in this file declares a docker-class stack, so this always
+  // short-circuits the runImport tier gate — still needs to be a real
+  // function so the route's import doesn't crash.
+  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
 }))
 
 mock.module('@shogo-ai/sdk/agent', () => ({
@@ -128,6 +132,7 @@ mock.module('../lib/runtime-token', () => ({ deriveRuntimeToken: () => 'tok' }))
 let billingProPlus = false
 mock.module('../services/billing.service', () => ({
   hasAdvancedModelAccess: async () => billingProPlus,
+  canRunTechStackOnInstanceSize: async () => ({ allowed: true, currentSize: 'micro', requiredSize: null }),
 }))
 
 beforeEach(() => {

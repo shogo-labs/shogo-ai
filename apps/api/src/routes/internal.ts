@@ -604,6 +604,13 @@ app.post('/agent-cost-metrics', async (c) => {
       loopDetected: body.loopDetected === true,
       escalated: body.escalated === true,
       responseEmpty: body.responseEmpty === true,
+      // Free-form correlation (e.g. `pipelineRunId` from `project_call`).
+      // Bounded so a runtime can't stuff arbitrary payloads into analytics.
+      metadata:
+        body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+          && JSON.stringify(body.metadata).length <= 4_096
+          ? (body.metadata as Record<string, unknown>)
+          : undefined,
     })
     return c.json({ ok: true })
   } catch (err: any) {
@@ -1426,6 +1433,358 @@ app.post('/billing/provision', async (c) => {
   } catch (err: any) {
     console.error('[Internal] billing/provision failed:', err?.message ?? err)
     return c.json({ error: 'provision failed' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Project lifecycle — create / attach / configure / call
+//
+// Backs the agent runtime's `project_*` and `system_apply` tools
+// (packages/agent-runtime/src/project-tools.ts). A runtime token is a
+// project- or workspace-scoped capability, so every route below resolves the
+// caller's workspace from its identity and refuses to touch projects outside
+// it. Cluster SA callers are unrestricted but must name the acting user.
+// ---------------------------------------------------------------------------
+
+/** Workspace the authenticated identity is allowed to act in (null for SA). */
+async function identityWorkspaceId(identity: InternalIdentity): Promise<string | null> {
+  if (identity.kind === 'workspace') return identity.workspaceId
+  if (identity.kind === 'project') {
+    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+    return (await resolveProjectWorkspaceId(identity.projectId)) ?? null
+  }
+  return null
+}
+
+/**
+ * Authorize a project-scoped lifecycle call: SA passes; a runtime token must
+ * belong to the same workspace as `projectId`. Returns the project's
+ * workspace id so the handler can reuse it.
+ */
+async function authorizeLifecycleProject(
+  c: Context,
+  projectId: string,
+): Promise<{ identity: InternalIdentity; workspaceId: string } | null> {
+  const identity = await authenticate(c)
+  if (!identity) return null
+  const project = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })) as { workspaceId: string } | null
+  if (!project) return null
+  if (identity.kind === 'sa') return { identity, workspaceId: project.workspaceId }
+  const scope = await identityWorkspaceId(identity)
+  if (scope !== project.workspaceId) {
+    logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'}`, projectId)
+    return null
+  }
+  return { identity, workspaceId: project.workspaceId }
+}
+
+/**
+ * Resolve the user a lifecycle write is attributed to. Prefer the explicit
+ * `userId` the runtime forwards from the chat request; fall back to the
+ * calling project's creator for heartbeat-triggered turns that have no user.
+ */
+async function resolveActingUserId(identity: InternalIdentity, requested: unknown): Promise<string | null> {
+  if (typeof requested === 'string' && requested.length > 0) return requested
+  if (identity.kind === 'project') {
+    const row = (await prisma.project.findUnique({
+      where: { id: identity.projectId },
+      select: { createdBy: true },
+    })) as { createdBy: string | null } | null
+    return row?.createdBy ?? null
+  }
+  return null
+}
+
+function lifecycleErrorResponse(c: Context, err: unknown): Response {
+  const anyErr = err as { name?: string; code?: string; message?: string }
+  if (anyErr?.name === 'ProjectLifecycleError') {
+    const status =
+      anyErr.code === 'unauthorized' ? 401
+      : anyErr.code === 'forbidden' ? 403
+      : anyErr.code === 'not_found' ? 404
+      : anyErr.code === 'instance_too_small' ? 402
+      : 400
+    return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
+  }
+  if (anyErr?.name === 'ProjectAttachmentError') {
+    const status =
+      anyErr.code === 'project_not_found' ? 404 : anyErr.code === 'self_attach' ? 400 : 409
+    return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
+  }
+  console.error('[Internal] project lifecycle error:', anyErr?.message ?? err)
+  return c.json({ error: { code: 'internal_error', message: 'Project lifecycle operation failed' } }, 500)
+}
+
+/**
+ * GET /api/internal/workspaces/:workspaceId/projects/graph
+ *
+ * Every project in the workspace with its attachment edges and agent config —
+ * the live state `system_apply` diffs a manifest against.
+ */
+app.get('/workspaces/:workspaceId/projects/graph', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const { listWorkspaceProjectsWithAttachments } = await import('../services/project-lifecycle.service')
+  return c.json({ workspaceId, projects: await listWorkspaceProjectsWithAttachments(workspaceId) })
+})
+
+/**
+ * POST /api/internal/workspaces/:workspaceId/projects
+ *   body: { name, description?, techStackId?, workingMode?, templateId?, settings?, userId? }
+ *
+ * Create a project on behalf of a user. Goes through the same hooks as the
+ * public generated route, so membership, tier normalization and AgentConfig
+ * seeding are identical.
+ */
+app.post('/workspaces/:workspaceId/projects', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const identity = await authenticate(c)
+  if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+  if (identity.kind !== 'sa') {
+    const scope = await identityWorkspaceId(identity)
+    if (scope !== workspaceId) {
+      logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} path=${workspaceId}`)
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+  }
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.name !== 'string') {
+    return c.json({ error: { code: 'bad_request', message: 'name is required' } }, 400)
+  }
+  const actingUserId = await resolveActingUserId(identity, body.userId)
+  if (!actingUserId) {
+    return c.json({ error: { code: 'bad_request', message: 'userId is required' } }, 400)
+  }
+
+  try {
+    const { createProjectInWorkspace } = await import('../services/project-lifecycle.service')
+    const project = await createProjectInWorkspace({
+      workspaceId,
+      actingUserId,
+      name: body.name,
+      description: typeof body.description === 'string' ? body.description : undefined,
+      techStackId: typeof body.techStackId === 'string' ? body.techStackId : undefined,
+      workingMode: body.workingMode === 'external' ? 'external' : body.workingMode === 'managed' ? 'managed' : undefined,
+      templateId: typeof body.templateId === 'string' ? body.templateId : undefined,
+      settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
+    })
+    return c.json({ ok: true, project }, 201)
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/** GET /api/internal/projects/:projectId/attachments — durable anchor → attached edges. */
+app.get('/projects/:projectId/attachments', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const { listAttachments } = await import('../services/project-attachment.service')
+  return c.json({ projectId, attachments: await listAttachments(projectId) })
+})
+
+/**
+ * POST /api/internal/projects/:projectId/attachments
+ *   body: { attachedProjectId, attachMode?: 'readwrite' | 'readonly' }
+ *
+ * Record a durable `ProjectAttachment` and re-sync the anchor's pinned
+ * workspace session. Unlike the public route this never restarts the anchor
+ * runtime — the caller usually IS the anchor runtime. It attempts a live
+ * mount through the workspace-runtime member path and reports `mounted`;
+ * when that isn't possible the attachment takes effect on the next start.
+ */
+app.post('/projects/:projectId/attachments', async (c) => {
+  const projectId = c.req.param('projectId')
+  const authz = await authorizeLifecycleProject(c, projectId)
+  if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.attachedProjectId !== 'string') {
+    return c.json({ error: { code: 'bad_request', message: 'attachedProjectId is required' } }, 400)
+  }
+  const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
+
+  try {
+    const svc = await import('../services/project-attachment.service')
+    const attachment = await svc.attachProjectToProject(projectId, body.attachedProjectId, attachMode)
+
+    let mounted = false
+    try {
+      const pinned = await svc.getOrCreatePinnedWorkspaceSession(projectId)
+      const attached = await getAttachedProjects(pinned.id)
+      const attachedIds = attached.map((row) => row.projectId)
+      const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
+      const target = (await prisma.project.findUnique({
+        where: { id: body.attachedProjectId },
+        select: { id: true, name: true, description: true },
+      })) as { id: string; name: string; description: string | null } | null
+      if (target) {
+        await workspaceRuntimeMemberCall(
+          authz.workspaceId,
+          attachedIds,
+          '/internal/workspace/members',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              id: target.id,
+              name: target.name,
+              description: target.description ?? undefined,
+              readonly: attachMode === 'readonly',
+            }),
+          },
+          {
+            readonlyProjectIds: readonlyIds,
+            hostRealPath: resolvePath(process.env.WORKSPACES_DIR || resolvePath(process.cwd(), 'workspaces'), target.id),
+          },
+        )
+        mounted = true
+      }
+    } catch (mountErr: any) {
+      console.warn(`[Internal] live mount of ${body.attachedProjectId} into ${projectId} skipped: ${mountErr?.message ?? mountErr}`)
+    }
+
+    return c.json({ ok: true, attachment, mounted }, 201)
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/** DELETE /api/internal/projects/:projectId/attachments/:attachedProjectId */
+app.delete('/projects/:projectId/attachments/:attachedProjectId', async (c) => {
+  const projectId = c.req.param('projectId')
+  const attachedProjectId = c.req.param('attachedProjectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const { detachProjectFromProject } = await import('../services/project-attachment.service')
+    const removed = await detachProjectFromProject(projectId, attachedProjectId)
+    return c.json({ ok: true, removed })
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/** GET /api/internal/projects/:projectId/config — agent-facing config snapshot. */
+app.get('/projects/:projectId/config', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const { readProjectConfig } = await import('../services/project-lifecycle.service')
+    return c.json({ ok: true, project: await readProjectConfig(projectId) })
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/**
+ * PATCH /api/internal/projects/:projectId/config
+ *   body: { name?, description?, settings?, slackEnabled?, agent?: { heartbeat*, model*, quietHours* } }
+ */
+app.patch('/projects/:projectId/config', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+  try {
+    const { configureProject } = await import('../services/project-lifecycle.service')
+    const project = await configureProject(projectId, {
+      name: typeof body.name === 'string' ? body.name : undefined,
+      description: typeof body.description === 'string' || body.description === null ? (body.description as string | null) : undefined,
+      settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
+      slackEnabled: typeof body.slackEnabled === 'boolean' ? body.slackEnabled : undefined,
+      agent: body.agent && typeof body.agent === 'object' ? (body.agent as any) : undefined,
+    })
+    return c.json({ ok: true, project })
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/**
+ * POST /api/internal/projects/:projectId/agent-call
+ *   body: { message, runId?, sessionId?, wait?, timeoutMs?, callerProjectId? }
+ *
+ * Invoke another project's agent from a runtime. Resolves the target the same
+ * way the public agent-proxy does (pinned Instance tunnel first, then cloud
+ * pod / host runtime) and forwards to the runtime's `/agent/pipeline/call`,
+ * which is guarded by the runtime token alone — workspace runtimes are never
+ * given a `WEBHOOK_TOKEN`, so the external `/agent/hooks/*` path can't be
+ * reused here. `wait=true` blocks for the reply (bounded by `timeoutMs`,
+ * default 5 min, max 20 min); otherwise the runtime acks with 202.
+ */
+app.post('/projects/:projectId/agent-call', async (c) => {
+  const projectId = c.req.param('projectId')
+  const authz = await authorizeLifecycleProject(c, projectId)
+  if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.message !== 'string' || !body.message.trim()) {
+    return c.json({ error: { code: 'bad_request', message: 'message is required' } }, 400)
+  }
+  const wait = body.wait !== false
+  const timeoutMs = Math.min(
+    Math.max(typeof body.timeoutMs === 'number' ? body.timeoutMs : 5 * 60_000, 10_000),
+    20 * 60_000,
+  )
+  const callerProjectId =
+    typeof body.callerProjectId === 'string'
+      ? body.callerProjectId
+      : authz.identity.kind === 'project' ? authz.identity.projectId : undefined
+
+  const forwardBody = JSON.stringify({
+    message: body.message,
+    runId: typeof body.runId === 'string' ? body.runId : undefined,
+    sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+    wait,
+    callerProjectId,
+  })
+
+  const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
+  const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })
+  if (!resolution.ok) return c.json(resolution.body, resolution.status)
+
+  const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+  const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId: authz.workspaceId })
+
+  if (resolution.kind === 'tunnel') {
+    const { relayAgentProxyViaTunnel } = await import('../lib/tunnel-relay')
+    return relayAgentProxyViaTunnel({
+      c,
+      instanceId: resolution.instanceId,
+      workspaceId: resolution.workspaceId,
+      projectId,
+      agentPath: '/agent/pipeline/call',
+      cleanPath: '/agent/pipeline/call',
+      method: 'POST',
+      body: forwardBody,
+      headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
+    })
+  }
+
+  try {
+    const res = await fetch(`${resolution.url}/agent/pipeline/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
+      body: forwardBody,
+      signal: AbortSignal.timeout(wait ? timeoutMs + 5_000 : 15_000),
+    })
+    const json = await res.json().catch(() => ({}))
+    return c.json(json, res.status as any)
+  } catch (err: any) {
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    return c.json(
+      {
+        error: {
+          code: timedOut ? 'agent_call_timeout' : 'agent_call_failed',
+          message: timedOut
+            ? `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`
+            : (err?.message ?? 'Failed to reach the target runtime'),
+        },
+      },
+      timedOut ? 504 : 502,
+    )
   }
 })
 

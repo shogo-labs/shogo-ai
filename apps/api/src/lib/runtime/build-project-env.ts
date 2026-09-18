@@ -9,7 +9,7 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { resolveAgentModelEnv } from './agent-model-defaults'
-import { INSTANCE_SIZES } from '../../config/instance-sizes'
+import { INSTANCE_SIZES, meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
@@ -164,14 +164,29 @@ export async function buildProjectEnv(
       }
       const wantsDockerClass = stackIsDockerClass
       if (wantsDockerClass) {
-        if (isDockerClassEnabled()) {
-          env.SHOGO_RUNTIME_CLASS = 'docker'
-        } else {
+        if (!isDockerClassEnabled()) {
           console.error(
             `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
               `${techStackFromSettings ?? '?'}) but the platform gate ` +
               `(runtime.docker_class_enabled) is off — assigning a standard VM`,
           )
+        } else if (!meetsMinimumInstanceSize(instanceSize as InstanceSizeName, techStackFromSettings)) {
+          // Defense-in-depth: the project-creation / stack-switch route
+          // should already have refused this via
+          // `billing.service.ts`'s `canRunTechStackOnInstanceSize()` — a
+          // workspace on `micro` should never be able to set
+          // `techStackId: 'docker-compose'` in the first place. If one
+          // slips through anyway (a bug, a manual DB edit, a workspace that
+          // was downsized after the fact), refuse the docker-class VM here
+          // too rather than silently handing out `large`-tier compute the
+          // workspace never paid for.
+          console.error(
+            `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
+              `${techStackFromSettings ?? '?'}) but workspace ${project.workspaceId ?? '?'} is on ` +
+              `instance size '${instanceSize}', below the stack's declared minimum — assigning a standard VM`,
+          )
+        } else {
+          env.SHOGO_RUNTIME_CLASS = 'docker'
         }
       }
 

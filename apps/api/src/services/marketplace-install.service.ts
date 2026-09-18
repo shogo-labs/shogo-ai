@@ -13,8 +13,9 @@ import {
 import {
   extractSnapshotToProject,
 } from './marketplace-snapshot-storage.service'
-import { createS3SyncForProject } from '@shogo/shared-runtime'
+import { createS3SyncForProject, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { trackEvent } from './loops.service'
+import { canRunTechStackOnInstanceSize } from './billing.service'
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -188,7 +189,29 @@ export async function installAgent(params: {
   }
 
   const srcProject = listing.project
-  const settingsJson = normalizeSettings(srcProject.settings)
+  const settingsJson = normalizeSettings(srcProject.settings) as Record<string, unknown>
+
+  // Docker-class ("Tier 2") minimum compute tier. A listing built on a
+  // stack like `docker-compose` carries `techStackId` straight through into
+  // the installed copy's settings (see below) — if the installing
+  // workspace can't afford that stack's declared floor, refuse the install
+  // outright rather than create a project that will silently fall back to
+  // a standard (non-Docker) VM at runtime. `getMinimumInstanceSize()` is a
+  // free, sync check that returns null for every non-Docker stack, so this
+  // doesn't add a query to the common (non-Docker) install path.
+  const techStackId = settingsJson?.techStackId as string | undefined
+  if (getMinimumInstanceSize(techStackId)) {
+    const { allowed, currentSize, requiredSize } = await canRunTechStackOnInstanceSize(
+      workspaceId,
+      techStackId,
+    )
+    if (!allowed) {
+      throw new Error(
+        `instance_too_small: this listing requires the ${requiredSize} compute tier or higher ` +
+          `(workspace is currently on ${currentSize})`,
+      )
+    }
+  }
 
   const newProject = await prisma.$transaction(async (tx) => {
     const project = await tx.project.create({

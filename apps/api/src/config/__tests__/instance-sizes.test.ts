@@ -19,6 +19,7 @@ const {
   INSTANCE_SIZE_ORDER,
   applyTechStackFloor,
   applyDockerStackFloor,
+  meetsMinimumInstanceSize,
   getInstanceDisplayPrice,
   getInstanceSizeSpec,
   getKubernetesResourceOverrides,
@@ -147,6 +148,35 @@ describe('applyDockerStackFloor', () => {
   it('does not downgrade a size already at/above the floor', () => {
     expect(applyDockerStackFloor('large', 'docker-compose')).toBe('large')
     expect(applyDockerStackFloor('xlarge', 'docker-compose')).toBe('xlarge')
+  })
+})
+
+describe('meetsMinimumInstanceSize', () => {
+  it('always true for a stack with no declared floor', () => {
+    for (const size of INSTANCE_SIZE_ORDER) {
+      expect(meetsMinimumInstanceSize(size, 'nextjs')).toBe(true)
+      expect(meetsMinimumInstanceSize(size, null)).toBe(true)
+      expect(meetsMinimumInstanceSize(size, undefined)).toBe(true)
+    }
+  })
+
+  it('false below the docker-compose floor (large)', () => {
+    expect(meetsMinimumInstanceSize('micro', 'docker-compose')).toBe(false)
+    expect(meetsMinimumInstanceSize('small', 'docker-compose')).toBe(false)
+    expect(meetsMinimumInstanceSize('medium', 'docker-compose')).toBe(false)
+  })
+
+  it('true at/above the docker-compose floor', () => {
+    expect(meetsMinimumInstanceSize('large', 'docker-compose')).toBe(true)
+    expect(meetsMinimumInstanceSize('xlarge', 'docker-compose')).toBe(true)
+  })
+
+  it('agrees with applyDockerStackFloor: meets iff the floor leaves the size unchanged', () => {
+    for (const size of INSTANCE_SIZE_ORDER) {
+      expect(meetsMinimumInstanceSize(size, 'docker-compose')).toBe(
+        applyDockerStackFloor(size, 'docker-compose') === size,
+      )
+    }
   })
 })
 

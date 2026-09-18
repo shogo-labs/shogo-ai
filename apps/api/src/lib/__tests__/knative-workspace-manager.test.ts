@@ -15,6 +15,10 @@ mock.module('@shogo/shared-runtime', () => ({
     componentLabel: 'runtime',
     containerName: 'runtime',
   },
+  // `../config/instance-sizes` re-exports these — no fixture here uses a
+  // mobile or docker-class stack, so plain no-op stubs are correct.
+  isMobileTechStack: (_techStackId: string | null | undefined) => false,
+  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
 }))
 
 // NOTE: `@shogo/model-catalog` is intentionally NOT mocked here. Under

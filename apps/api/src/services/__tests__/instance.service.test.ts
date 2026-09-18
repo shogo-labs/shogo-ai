@@ -9,6 +9,7 @@ interface PrismaState {
   instanceSub: any | null
   instanceSubUpsertCalls: Array<any>
   instanceSubDeleteCalls: Array<any>
+  instanceSubUpdateCalls: Array<any>
   project: any | null
   projects: Array<{ id: string; knativeServiceName: string | null }>
 }
@@ -19,6 +20,7 @@ const ps: PrismaState = {
   instanceSub: null,
   instanceSubUpsertCalls: [],
   instanceSubDeleteCalls: [],
+  instanceSubUpdateCalls: [],
   project: null,
   projects: [],
 }
@@ -56,6 +58,10 @@ mock.module('../../lib/prisma', () => ({
     },
     instanceSubscription: {
       findUnique: async (_args: any) => ps.instanceSub,
+      update: async (args: any) => {
+        ps.instanceSubUpdateCalls.push(args)
+        return { ...ps.instanceSub, ...args.data }
+      },
     },
     project: {
       findUnique: async (_args: any) => ps.project,
@@ -84,10 +90,12 @@ const {
   applyInstanceToRuntime,
   buildProjectResourceOverrides,
   downgradeToMicro,
+  findInstanceSubscriptionByStripeId,
   getInstanceForWorkspace,
   getInstanceSubscription,
   getProjectResourceOverrides,
   syncInstanceFromStripe,
+  syncInstanceSubscriptionStatus,
 } = await import('../instance.service')
 
 const origK8s = process.env.KUBERNETES_SERVICE_HOST
@@ -99,6 +107,7 @@ beforeEach(() => {
   ps.instanceSub = null
   ps.instanceSubUpsertCalls = []
   ps.instanceSubDeleteCalls = []
+  ps.instanceSubUpdateCalls = []
   ps.project = null
   ps.projects = []
   patchCalls = []
@@ -193,6 +202,42 @@ describe('downgradeToMicro', () => {
       { where: { id: 'ws-1' }, data: { instanceSize: 'micro' } },
     ])
     expect(ps.instanceSubDeleteCalls).toEqual([{ where: { workspaceId: 'ws-1' } }])
+  })
+})
+
+describe('findInstanceSubscriptionByStripeId', () => {
+  it('returns null when no matching subscription exists', async () => {
+    expect(await findInstanceSubscriptionByStripeId('sub_missing')).toBeNull()
+  })
+
+  it('returns the row when found — this is the ONLY link back to a workspace for subscription.updated/.deleted webhook events on an instance add-on, since Checkout only sets metadata on the SESSION, not subscription_data.metadata', async () => {
+    ps.instanceSub = { workspaceId: 'ws-1', stripeSubscriptionId: 'sub_123' }
+    expect(await findInstanceSubscriptionByStripeId('sub_123')).toEqual({
+      workspaceId: 'ws-1',
+      stripeSubscriptionId: 'sub_123',
+    })
+  })
+})
+
+describe('syncInstanceSubscriptionStatus', () => {
+  it('updates status/cancelAtPeriodEnd/period by stripeSubscriptionId, without touching instanceSize', async () => {
+    await syncInstanceSubscriptionStatus(
+      'sub_123',
+      'past_due' as any,
+      true,
+      new Date('2026-01-01'),
+      new Date('2026-02-01'),
+    )
+    expect(ps.instanceSubUpdateCalls).toHaveLength(1)
+    const u = ps.instanceSubUpdateCalls[0]
+    expect(u.where).toEqual({ stripeSubscriptionId: 'sub_123' })
+    expect(u.data).toEqual({
+      status: 'past_due',
+      cancelAtPeriodEnd: true,
+      currentPeriodStart: new Date('2026-01-01'),
+      currentPeriodEnd: new Date('2026-02-01'),
+    })
+    expect(u.data.instanceSize).toBeUndefined()
   })
 })
 
