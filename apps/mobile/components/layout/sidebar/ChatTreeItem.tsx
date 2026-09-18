@@ -43,6 +43,7 @@ export function ChatTreeItem({
   onToggleArchive,
   onRequestDelete,
   onMeasureHeight,
+  mobileProjectDetail,
 }: {
   session: any;
   active?: boolean;
@@ -54,6 +55,8 @@ export function ChatTreeItem({
   onToggleArchive: (sessionId: string, next: boolean) => void;
   onRequestDelete: (sessionId: string) => void;
   onMeasureHeight?: (height: number) => void;
+  /** Align detail-panel chat labels with the project name, after its folder icon. */
+  mobileProjectDetail?: boolean;
 }) {
   const isNative = Platform.OS !== "web";
   const density = densityFor(isNative);
@@ -130,7 +133,9 @@ export function ChatTreeItem({
       <View
         className={cn(
           "flex-row items-center rounded-md",
-          isNative ? `${density.rowMin} gap-2 px-2 py-1.5` : "gap-1 px-1 py-1",
+          isNative
+            ? `${density.rowMin} gap-2 px-2 py-1.5${mobileProjectDetail ? " pl-12" : ""}`
+            : "gap-1 px-1 py-1",
         )}
       >
         <TextInput
@@ -178,7 +183,9 @@ export function ChatTreeItem({
         aria-current={active ? "page" : undefined}
         className={cn(
           "group flex-row items-center rounded-md",
-          isNative ? `${density.rowMin} gap-2 px-2 py-2` : "gap-1 px-1 py-1.5",
+          isNative
+            ? `${density.rowMin} gap-2 px-2 py-2${mobileProjectDetail ? " pl-12" : ""}`
+            : "gap-1 px-1 py-1.5",
           active ? "bg-accent" : "active:bg-accent/50",
         )}
         {...(Platform.OS === "web"

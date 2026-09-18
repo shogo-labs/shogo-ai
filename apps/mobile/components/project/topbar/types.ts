@@ -118,6 +118,8 @@ export interface ProjectTopBarProps {
    */
   onCanvasPrewarm?: () => void;
   onOpenCodeWorkbench?: () => void;
+  /** Native phone only: open the shared drawer on this project's chat list. */
+  onOpenSidebar?: () => void;
   idePrimarySideBarPosition?: IdePrimarySideBarPosition;
   onIdePrimarySideBarPositionChange?: (
     position: IdePrimarySideBarPosition,

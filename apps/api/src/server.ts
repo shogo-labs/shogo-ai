@@ -45,6 +45,9 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { createAgentTaskRoutes, startAgentTaskWorker, stopAgentTaskWorker } from './routes/agent-tasks'
+import { startNotesTranscriptionWorker } from './jobs/notes-transcription'
+import { notesRoutes } from './routes/notes'
 import { slackAgentRoutes } from './routes/slack-agent'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -123,6 +126,7 @@ import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
+import { mobilePushRoutes } from './routes/mobile-push'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
@@ -316,8 +320,8 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
     if (Array.isArray(msg.parts)) {
       const contentParts: Array<
         | { type: 'text'; text: string }
-        | { type: 'image'; image: string; mimeType: string }
-        | { type: 'file'; data: string; mimeType: string }
+        | { type: 'image'; image: string; mediaType: string }
+        | { type: 'file'; data: string; mediaType: string }
       > = []
 
       for (const part of msg.parts) {
@@ -331,13 +335,13 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
             contentParts.push({
               type: 'image',
               image: parsed.base64Data,
-              mimeType: parsed.mimeType,
+              mediaType: parsed.mimeType,
             })
           } else {
             contentParts.push({
               type: 'file',
               data: parsed.base64Data,
-              mimeType: parsed.mimeType,
+              mediaType: parsed.mimeType,
             })
           }
         }
@@ -1507,6 +1511,7 @@ app.route('/api', cliAuthRoutes())
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
+app.route('/api', mobilePushRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder
@@ -1515,6 +1520,12 @@ app.route('/api', syncRoutes())
 // workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
+app.route('/api', notesRoutes())
+// Resume queued agent tasks after API restarts and keep dueAt-backed work
+// moving without relying on a request that happens to remain open.
+startAgentTaskWorker(getRuntimeManager())
+startNotesTranscriptionWorker()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -8794,7 +8805,9 @@ app.get('/api/notifications/unread-count', async (c) => {
   if (!userId) {
     return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
   }
-  const count = await getUnreadNotificationCount(userId)
+  const count = await getUnreadNotificationCount(userId, {
+    excludeMobileTaskNotifications: c.req.query('excludeMobileTaskNotifications') === 'true',
+  })
   return c.json({ ok: true, count }, 200)
 })
 
@@ -8866,6 +8879,7 @@ const DRAIN_POLL_MS = 1_000
 async function gracefulShutdown(signal: string) {
   if (isShuttingDown) return
   isShuttingDown = true
+  stopAgentTaskWorker()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain

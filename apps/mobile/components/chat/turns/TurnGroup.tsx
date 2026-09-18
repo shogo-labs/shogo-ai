@@ -176,11 +176,12 @@ export const TurnGroup = memo(
               isStreaming={turn.isStreaming}
             />
           )}
-          {!turn.isStreaming && !nativePhone && (
+          {!turn.isStreaming && (
             <TurnFooter
               messageId={turn.assistantMessage.id}
               text={extractTextContent(turn.assistantMessage)}
               completedAt={extractTurnTiming(turn.assistantMessage).completedAt}
+              className={nativePhone ? "mt-2 px-1" : undefined}
             />
           )}
         </View>

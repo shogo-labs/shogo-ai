@@ -16,6 +16,9 @@ import {
   BackHandler,
   useWindowDimensions,
   Platform,
+  Animated,
+  Easing,
+  StyleSheet,
 } from "react-native";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { useResolvedTheme } from "../../../contexts/theme";
@@ -34,9 +37,11 @@ import {
   Home,
   Search,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   PanelLeftClose,
   Plus,
+  MessageSquarePlus,
   Inbox,
   Store,
   Mic,
@@ -56,7 +61,6 @@ import {
   useDomainHttp,
 } from "../../../contexts/domain";
 import { useBillingData } from "@shogo/shared-app/hooks";
-import { NotificationBell } from "../../notifications/NotificationBell";
 import { api } from "../../../lib/api";
 import { trackPurchase } from "../../../lib/tracking";
 import {
@@ -80,6 +84,7 @@ import {
   nativeDrawerTopInset,
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
+import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
 import {
   effectiveSidebarProjectFilter,
   getPinnedProjectIds,
@@ -355,6 +360,15 @@ export const AppSidebar = observer(function AppSidebar({
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [mobileExpandedProjectId, setMobileExpandedProjectId] = useState<string | null>(null);
+  const [mobileProjectPanelId, setMobileProjectPanelId] = useState<string | null>(null);
+  const mobileProjectTransition = useRef(new Animated.Value(0)).current;
+  const mobileProjectCollapsedRef = useRef(false);
+  // A project row tap is an explicit drawer navigation intent. While that
+  // focused panel is open, the content route may still point at the previous
+  // project; the route-seeding effect must not immediately overwrite the
+  // user's selection with that stale route project.
+  const mobileProjectSelectionRef = useRef(false);
 
   const toggleProjectsExpanded = useCallback(() => {
     setProjectsExpanded((expanded) => !expanded);
@@ -438,6 +452,117 @@ export const AppSidebar = observer(function AppSidebar({
   const hiddenProjectCount =
     unpinnedProjects.length - visibleUnpinnedProjects.length;
 
+  const mobileProjectPanel = mobileProjectPanelId
+    ? workspaceProjects.find((project: any) => project.id === mobileProjectPanelId)
+    : undefined;
+  const mobileRouteProjectId = pathname.match(/\/projects\/([^/]+)/)?.[1]
+    ? decodeURIComponent(pathname.match(/\/projects\/([^/]+)/)![1])
+    : null;
+  const mobileRouteProject = mobileRouteProjectId
+    ? workspaceProjects.find((project: any) => project.id === mobileRouteProjectId)
+    : undefined;
+
+  const openMobileProject = useCallback((projectId: string) => {
+    mobileProjectCollapsedRef.current = false;
+    mobileProjectSelectionRef.current = true;
+    setMobileProjectPanelId(projectId);
+    setMobileExpandedProjectId(projectId);
+  }, []);
+
+  const closeMobileProject = useCallback(() => {
+    mobileProjectCollapsedRef.current = true;
+    setMobileExpandedProjectId(null);
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) return;
+
+    mobileProjectCollapsedRef.current = false;
+    setMobileExpandedProjectId(null);
+
+    // A project-chat edge swipe does not go through the sidebar event bus.
+    // Prepare that route's panel only while the drawer is closed so it is
+    // ready beneath the moving sheet without fighting an explicit collapse.
+    if (isNativeDrawer && mobileRouteProjectId) {
+      mobileProjectTransition.stopAnimation();
+      mobileProjectTransition.setValue(1);
+      setMobileProjectPanelId(mobileRouteProjectId);
+      return;
+    }
+
+    setMobileProjectPanelId(null);
+    mobileProjectTransition.setValue(0);
+  }, [isNativeDrawer, isOpen, mobileProjectTransition, mobileRouteProjectId]);
+
+  useEffect(() => {
+    if (!isNativeDrawer) {
+      mobileProjectCollapsedRef.current = false;
+      return;
+    }
+
+    if (!isOpen) {
+      mobileProjectCollapsedRef.current = false;
+      mobileProjectSelectionRef.current = false;
+      return;
+    }
+
+    // The route project is used to seed the focused panel when the shared
+    // drawer opens (including an edge-swipe). Do not run this on every state
+    // update while the drawer is already open: collapsing the focused panel
+    // with its chevron must be allowed to settle back to the normal sidebar.
+    if (
+      mobileProjectCollapsedRef.current ||
+      mobileProjectSelectionRef.current ||
+      !mobileRouteProjectId ||
+      !mobileRouteProject
+    ) return;
+    // If the route project was not loaded in the first open frame, allow the
+    // effect to seed it once the project data arrives during that same open.
+    if (mobileProjectPanelId === mobileRouteProjectId && mobileExpandedProjectId === mobileRouteProjectId) return;
+    mobileProjectTransition.stopAnimation();
+    mobileProjectTransition.setValue(1);
+    setMobileProjectPanelId(mobileRouteProjectId);
+    setMobileExpandedProjectId(mobileRouteProjectId);
+  }, [isNativeDrawer, isOpen, mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition, mobileRouteProject, mobileRouteProjectId]);
+
+  useEffect(() => {
+    return projectSidebarEvents.subscribeOpenProject((projectId) => {
+      // This panel is the drawer's first frame when opened from project chat;
+      // skip the internal crossfade so the drawer itself owns the motion.
+      mobileProjectCollapsedRef.current = false;
+      mobileProjectSelectionRef.current = false;
+      mobileProjectTransition.stopAnimation();
+      mobileProjectTransition.setValue(1);
+      setMobileProjectPanelId(projectId);
+      setMobileExpandedProjectId(projectId);
+    });
+  }, [mobileProjectTransition]);
+
+  useEffect(() => {
+    const expanded = mobileExpandedProjectId !== null;
+    if (expanded) {
+      if (!mobileProjectPanelId) return;
+      // Focused project panels are prepared before the drawer starts moving.
+      // Snap the internal layer to its final state so the drawer animation is
+      // the only opening motion; otherwise the base sidebar briefly fades in.
+      mobileProjectTransition.stopAnimation();
+      mobileProjectTransition.setValue(1);
+      return;
+    }
+    // When the drawer is closed, keep a route-backed project panel prepared
+    // underneath it for the next open. Only animate back to the base sidebar
+    // when the user explicitly collapses the panel while the drawer is open.
+    if (!mobileProjectPanelId || !isOpen) return;
+    Animated.timing(mobileProjectTransition, {
+      toValue: 0,
+      duration: 440,
+      easing: Easing.inOut(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished && !expanded) setMobileProjectPanelId(null);
+    });
+  }, [isOpen, mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition]);
+
   const [collapsed, setCollapsed] = useState(false);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } =
@@ -469,6 +594,7 @@ export const AppSidebar = observer(function AppSidebar({
   }, [isOpen]);
 
   const closeNativeDrawer = useCallback(() => {
+    setMobileExpandedProjectId(null);
     onClose?.();
   }, [onClose]);
 
@@ -540,15 +666,41 @@ export const AppSidebar = observer(function AppSidebar({
   }, [signOut, posthog]);
 
   const onNavPress = useCallback(() => {
-    if (!isWide) onClose?.();
-  }, [isWide, onClose]);
+    if (!isWide) closeNativeDrawer();
+  }, [closeNativeDrawer, isWide]);
+
+  const handleNewChat = useCallback(async () => {
+    if (!user?.id || !activeWorkspaceId) return;
+
+    try {
+      const project = await actions.createProject(
+        'Untitled',
+        activeWorkspaceId,
+        undefined,
+        user.id,
+      );
+      if (!project?.id) return;
+
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: {
+          id: project.id,
+          newChat: '1',
+          newChatNonce: String(Date.now()),
+        },
+      } as any);
+      onNavPress();
+    } catch (err) {
+      console.error('[AppSidebar] Failed to create new chat project:', err);
+    }
+  }, [actions, activeWorkspaceId, onNavPress, router, user?.id]);
 
   const prevPathnameRef = useRef(pathname);
   useEffect(() => {
     if (prevPathnameRef.current === pathname) return;
     prevPathnameRef.current = pathname;
-    if (isOpen && isNativeDrawer) onClose?.();
-  }, [isNativeDrawer, isOpen, onClose, pathname]);
+    if (isOpen && isNativeDrawer) closeNativeDrawer();
+  }, [closeNativeDrawer, isNativeDrawer, isOpen, pathname]);
 
   const handleSearchPress = useCallback(() => {
     if (isNativeDrawer) {
@@ -691,6 +843,12 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
+          <NavItem
+            icon={MessageSquarePlus}
+            label="New Chat"
+            collapsed={collapsed}
+            onPress={handleNewChat}
+          />
           {!isNativeDrawer && (
             <NavItem
               icon={Search}
@@ -754,6 +912,9 @@ export const AppSidebar = observer(function AppSidebar({
                     isPinned
                     onTogglePin={handleToggleProjectPin}
                     mobileProjectFirstTapShowsChats={isNativeDrawer}
+                    onMobileProjectExpand={
+                      isNativeDrawer ? openMobileProject : undefined
+                    }
                   />
                 ))}
             </View>
@@ -933,6 +1094,9 @@ export const AppSidebar = observer(function AppSidebar({
                     isPinned={pinnedProjectIds.has(project.id)}
                     onTogglePin={handleToggleProjectPin}
                     mobileProjectFirstTapShowsChats={isNativeDrawer}
+                    onMobileProjectExpand={
+                      isNativeDrawer ? openMobileProject : undefined
+                    }
                   />
                 ))}
                 {!collapsed &&
@@ -1059,13 +1223,6 @@ export const AppSidebar = observer(function AppSidebar({
           </View>
 
           {!collapsed && (
-            <NotificationBell
-              size={isNativeDrawer ? drawerDensity.icon.lg : 18}
-              onPress={onNavPress}
-            />
-          )}
-
-          {!collapsed && (
             <Pressable
               onPress={() => setInboxOpen(true)}
               className={cn(
@@ -1122,8 +1279,119 @@ export const AppSidebar = observer(function AppSidebar({
 
   if (isNativeDrawer) {
     return (
-      <View style={{ flex: 1, backgroundColor: nativeDrawerCanvas }}>
-        {sidebarContent}
+      <View
+        style={{ flex: 1, position: "relative", backgroundColor: nativeDrawerCanvas }}
+      >
+        <Animated.View
+          style={{
+            flex: 1,
+            opacity: mobileProjectTransition.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0],
+            }),
+          }}
+          pointerEvents={mobileExpandedProjectId ? "none" : "auto"}
+        >
+          {sidebarContent}
+        </Animated.View>
+        {mobileProjectPanel && (
+          <Animated.View
+            style={[
+              StyleSheet.absoluteFillObject,
+              {
+                backgroundColor: nativeDrawerCanvas,
+                opacity: mobileProjectTransition.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 1],
+                }),
+                transform: [
+                  {
+                    translateX: mobileProjectTransition.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [28, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+            pointerEvents={mobileExpandedProjectId ? "auto" : "none"}
+          >
+            <View style={{ height: drawerTopInset }} />
+            <View className="h-16 flex-row items-center justify-between px-3">
+              <Pressable
+                onPress={() => {
+                  router.push("/(app)" as any);
+                  onNavPress();
+                }}
+                role="link"
+                accessibilityLabel="Shogo Home"
+                className="flex-row items-center"
+              >
+                <ShogoWordmark className="h-8 w-[136px]" />
+              </Pressable>
+              <Pressable
+                onPress={handleSearchPress}
+                accessibilityLabel="Search"
+                className={cn("rounded-md active:bg-muted", drawerDensity.hit)}
+              >
+                <Search
+                  size={drawerDensity.icon.lg}
+                  color={iconChrome.color}
+                  strokeWidth={iconChrome.strokeWidth}
+                />
+              </Pressable>
+            </View>
+            <View className="px-0 pt-3 pb-2">
+              <NavItem
+                icon={Home}
+                label="Home"
+                href="/(app)"
+                active={isHomePage}
+                collapsed={false}
+                onNavPress={onNavPress}
+              />
+              {features.marketplace && (
+                <NavItem
+                  icon={Store}
+                  label="Marketplace"
+                  href="/(app)/marketplace"
+                  active={isMarketplacePage}
+                  collapsed={false}
+                  onNavPress={onNavPress}
+                />
+              )}
+              <NavItem
+                icon={MessageSquarePlus}
+                label="New Chat"
+                collapsed={false}
+                onPress={handleNewChat}
+              />
+              <Pressable
+                onPress={closeMobileProject}
+                accessibilityLabel="See all projects"
+                accessibilityHint="Return to the full project list"
+                className="flex-row items-center gap-3 rounded-md px-3 py-2 active:bg-accent/50"
+              >
+                <ChevronLeft
+                  size={drawerDensity.icon.nav}
+                  className="text-muted-foreground shrink-0"
+                />
+                <Text
+                  className={`${drawerDensity.text.body} flex-1 text-foreground`}
+                  numberOfLines={1}
+                >
+                  See All Projects
+                </Text>
+              </Pressable>
+            </View>
+            <ProjectTreeItem
+              key={mobileProjectPanel.id}
+              project={mobileProjectPanel}
+              mobileProjectDetail
+              onNavPress={onNavPress}
+            />
+          </Animated.View>
+        )}
       </View>
     );
   }

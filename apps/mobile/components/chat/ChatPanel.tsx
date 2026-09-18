@@ -85,10 +85,15 @@ import { probeChatTurnStatus, shouldAttachLiveStream, type ChatTurnStatus } from
 import { decideRetryAction, lastAssistantHasResumableWork } from "./retry-triage"
 import { decideStallRecovery, computeRecoveryBackoff } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
+import {
+  runResumeStreamSingleFlight,
+  type ResumeStreamFlightRef,
+} from "./resume-stream-single-flight"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import { hasAcceptedAiConsent, acceptAiConsent, revokeAiConsent, AI_PROVIDERS } from "../../lib/ai-consent"
+import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
 
 import { isPhoneLayout,
   useNativePhoneWindow } from "../../lib/native-phone-layout"
@@ -163,11 +168,6 @@ import {
 } from "./ChatContext"
 import { useIdeBridge } from "./ideBridge"
 
-// Stable empty array we hand to the chat context's `messages` field.
-// See the long comment near `contextValue` below — we intentionally do
-// not plumb the live message list through context, so this constant
-// satisfies the type without flipping per token.
-const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 import { TurnList } from "./turns"
 import {
   MessageEditProvider,
@@ -213,6 +213,35 @@ import {
 // ============================================================
 // Types
 // ============================================================
+
+// Stable empty array we hand to the chat context's `messages` field.
+// See the long comment near `contextValue` below — we intentionally do
+// not plumb the live message list through context, so this constant
+// satisfies the type without flipping per token.
+const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
+const DELEGATED_TASK_PROMPT_PREFIX = "This is a delegated task from the user's task list:"
+const DELEGATED_TASK_POLL_INTERVAL_MS = 1_000
+const DELEGATED_TASK_MAX_WAIT_MS = 5 * 60 * 1_000
+
+function messageTimestamp(value: unknown): number {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === "number") return value
+  const parsed = Date.parse(String(value ?? ""))
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function latestDelegatedTaskPromptIndex(messages: readonly any[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (
+      message?.role === "user" &&
+      extractTextContent(message).trim().startsWith(DELEGATED_TASK_PROMPT_PREFIX)
+    ) {
+      return index
+    }
+  }
+  return -1
+}
 
 type SubagentProgressEvent =
   | { type: "subagent-start"; agentId: string; agentType: string; timestamp: number }
@@ -993,6 +1022,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const composerKeyboardPad = useNativeComposerDockPad({
     enabled: Platform.OS !== "web" && isNativePhoneLayout,
     restPad: restComposerPad,
+    safeAreaBottom: insets.bottom,
     iosKeyboardAvoiding: iosComposerAvoiding,
     onOpenChange: setNativeKeyboardOpen,
   })
@@ -1114,6 +1144,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
   const currentSessionId = chatSessionId ?? null
+
+  // Native push notifications are still useful when another project is open,
+  // or when the app is backgrounded. Suppress only the notification for the
+  // exact chat currently visible in the foreground.
+  useEffect(() => {
+    if (!isActive || !currentSessionId || !projectId) return
+    setActiveChatNotificationContext({ sessionId: currentSessionId, projectId })
+    return () => setActiveChatNotificationContext(null)
+  }, [currentSessionId, isActive, projectId])
+
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
@@ -1566,7 +1606,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     resume: false,
     experimental_throttle: 120,
     onError: (err) => {
-      console.error("[ChatPanel] Stream error:", err)
+      // Stream failures are recoverable UI state: the retry affordance below
+      // handles them. React Native treats console.error as a development
+      // exception and opens LogBox over the conversation, so retain a visible
+      // diagnostic without turning an ordinary retryable failure into a red
+      // screen. Sentry still receives the full error immediately below.
+      console.warn("[ChatPanel] Stream error:", err)
 
       // Surface the transport-failure class in Sentry. This path (network
       // resets → "Connection interrupted. Please tap Retry to continue.") used
@@ -2509,10 +2554,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
   })
 
+  // All resume paths share a single-flight guard. The history-load probe and
+  // delegated-task reconciliation can finish at the same time when the app is
+  // reopened, and the stall detector can overlap either of them. AI SDK's
+  // Chat object only supports one active `resumeStream()` request per session;
+  // concurrent calls race while cleaning up `activeResponse` and can throw
+  // "Cannot read property 'state' of undefined" from its `onFinish` path.
+  // User-initiated Retry remains outside the automatic circuit breaker, but it
+  // reuses an already-running resume instead of starting a second one.
+  const resumeStreamInFlightRef = useRef<ResumeStreamFlightRef<void>>({ current: null })
+  const resumeStreamSingleFlight = useCallback(() => {
+    return runResumeStreamSingleFlight(resumeStreamInFlightRef.current, currentSessionId, resumeStream)
+  }, [currentSessionId, resumeStream])
+
   // Circuit breaker for the *automatic* resume paths (Effect 1's post-load
-  // live-turn probe and `attemptStallRecovery`'s stall detector below) — as
-  // opposed to the user-initiated `handleRetry` tap, which always honors the
-  // user's explicit request and is intentionally NOT gated here.
+  // live-turn probe and `attemptStallRecovery`'s stall detector below).
   //
   // Both automatic paths are individually guarded against re-firing for the
   // *same* turn, but a real-world log showed a ~45min storm of `resumeStream()`
@@ -2536,6 +2592,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
+        return
+      }
+      // A second probe can resolve before the first `resumeStream()` updates
+      // the AI SDK status. Do not count or start that duplicate attempt.
+      if (resumeStreamInFlightRef.current.current?.sessionId === currentSessionId) {
         return
       }
       const { timestamps, tripped } = recordAutoResumeAttempt(
@@ -2566,9 +2627,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
         return
       }
-      void resumeStream()
+      void resumeStreamSingleFlight()
     },
-    [resumeStream, projectId],
+    [currentSessionId, projectId, resumeStreamSingleFlight],
   )
   // A session switch means the user navigated away from whatever was
   // looping — give the (new) session a clean breaker rather than carrying a
@@ -2949,6 +3010,128 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
+
+  // A task started from the Tasks tab runs its turn on the server before this
+  // screen mounts. The first history-load probe can therefore legitimately
+  // see `unknown` while the worker is still preparing the runtime. Keep the
+  // task chat attached during that hand-off so the user sees the same live
+  // response as a normal chat send instead of only seeing it after reopening
+  // the project.
+  const delegatedTaskPromptIndex = useMemo(
+    () => latestDelegatedTaskPromptIndex(messages),
+    [messages],
+  )
+  const delegatedTaskHasResponse = useMemo(
+    () => delegatedTaskPromptIndex >= 0 && messages.some((message: any, index) => index > delegatedTaskPromptIndex && message.role === 'assistant'),
+    [delegatedTaskPromptIndex, messages],
+  )
+
+  useEffect(() => {
+    if (
+      !isActive ||
+      !currentSessionId ||
+      !sessionMessages ||
+      delegatedTaskPromptIndex < 0 ||
+      delegatedTaskHasResponse ||
+      isStreaming
+    ) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const startedAt = Date.now()
+
+    const refreshPersistedTaskResponse = async () => {
+      if (cancelled || isStreamingRef.current) return
+      await sessionMessages.loadPage(
+        { sessionId: currentSessionId, agent: 'technical' },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (cancelled || isStreamingRef.current) return
+
+      const loaded = [...sessionMessages.all].sort(
+        (a: any, b: any) => messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
+      )
+      const promptIndex = latestDelegatedTaskPromptIndex(loaded)
+      if (promptIndex < 0 || !loaded.some((message: any, index) => index > promptIndex && message.role === 'assistant')) return
+
+      const aiMessages = loaded.map((message: any) => {
+        const next: any = {
+          id: message.id,
+          role: message.role as 'user' | 'assistant',
+          content: message.content ?? extractTextContent(message),
+          createdAt: message.createdAt,
+        }
+        if (message.parts) {
+          try {
+            next.parts = JSON.parse(message.parts)
+          } catch {
+            // Keep the text content when an older message has malformed parts.
+          }
+        }
+        return next
+      })
+      cachedMessagesRef.current = aiMessages
+      sessionMessageCache.set(currentSessionId, aiMessages)
+      setMessages(aiMessages)
+    }
+
+    const poll = async () => {
+      if (cancelled || isStreamingRef.current) return
+      try {
+        const turnUrl = buildChatTurnUrl(
+          API_URL!,
+          projectId,
+          localAgentUrl,
+          currentSessionId,
+          chatWorkspaceId,
+        )
+        const turnStatus = await probeChatTurnStatus({
+          url: turnUrl,
+          fetch: expoFetch,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          credentials: Platform.OS === 'web' ? 'include' : undefined,
+        })
+        if (cancelled || isStreamingRef.current) return
+
+        if (shouldAttachLiveStream(turnStatus)) {
+          guardedAutoResumeStream('live-turn-probe')
+          return
+        }
+
+        // The worker may have completed between probes. Reconcile persisted
+        // history as well as the live turn status so a fast response is still
+        // shown without navigating away and back.
+        await refreshPersistedTaskResponse()
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[ChatPanel] delegated task reconciliation failed', error)
+        }
+      }
+      if (!cancelled && Date.now() - startedAt < DELEGATED_TASK_MAX_WAIT_MS && !isStreamingRef.current) {
+        timer = setTimeout(() => void poll(), DELEGATED_TASK_POLL_INTERVAL_MS)
+      }
+    }
+
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [
+    isActive,
+    currentSessionId,
+    sessionMessages,
+    delegatedTaskPromptIndex,
+    delegatedTaskHasResponse,
+    isStreaming,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    guardedAutoResumeStream,
+    setMessages,
+  ])
 
   // Detect when the AI SDK stream ends but we never observed a
   // `data-turn-complete` marker. The fetch wrapper auto-resumes through
@@ -4863,7 +5046,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (action === "reconnect") {
         // Agent is still running and buffering frames — reattach. The rendered
         // messages (including completed tool calls) stay exactly as they are.
-        void resumeStream()
+        void resumeStreamSingleFlight()
         return
       }
 
@@ -4888,7 +5071,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [
     messages,
     sendMessageInternal,
-    resumeStream,
+    resumeStreamSingleFlight,
     currentSessionId,
     projectId,
     localAgentUrl,
@@ -5802,7 +5985,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Render collapsed state
   if (isCollapsed) {
     return (
-      <View className={cn("flex-row flex-1", className)}>
+      <View
+        className={cn("flex-row flex-1", className)}
+        style={{ flex: 1, minHeight: 0 }}
+      >
         {children && (
           <TodoStateStoreContext.Provider value={todoStateStore}>
             <ChatContextProvider value={contextValue}>
@@ -5814,6 +6000,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       </View>
     )
   }
+
+  const ChatSurface = isNativePhoneLayout ? View : KeyboardAvoidingView
 
   return (
     <TodoStateStoreContext.Provider value={todoStateStore}>
@@ -5853,25 +6041,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         onSendMessage={(text) => handleInputSubmit(text)}
       />
       <ChangesDockPanel />
-      <View className={cn("flex-row flex-1", className)}>
+      <View
+        className={cn(isNativePhoneLayout ? "flex-col flex-1" : "flex-row flex-1", className)}
+        style={{ flex: 1, minHeight: 0 }}
+      >
         {/* Main content area */}
         {children && (
           <View className="flex-1 min-w-0 overflow-hidden">{children}</View>
         )}
 
         {/* Chat Panel — full width on mobile (no resize handle) */}
-        <KeyboardAvoidingView
-          behavior={
-            isNativePhoneLayout
-              ? undefined
-              : Platform.OS === "ios"
-                ? "padding"
-                : "height"
-          }
+        <ChatSurface
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
           className="flex-1 flex-col bg-background"
-          keyboardVerticalOffset={
-            isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50
-          }
+          style={{ flex: 1, minHeight: 0 }}
+          keyboardVerticalOffset={isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50}
         >
           {/* Messages with Turn Grouping */}
           <View
@@ -5886,7 +6070,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             className="flex-1"
             style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
-              isPhoneViewport ? "px-2 pt-2 pb-36" : "p-2 pb-[40px]",
+              isPhoneViewport ? "px-4 pt-2 pb-36" : "p-2 pb-[40px]",
               "max-w-3xl w-full self-center",
             )}
             contentContainerStyle={
@@ -6061,7 +6245,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           <ProjectComposerDock
             columnWidth={nativePhoneColumnWidth}
             keyboardPad={composerKeyboardPad}
-            applyKeyboardPad={isPhoneViewport}
+            keyboardOpen={nativeKeyboardOpen}
+            restPad={restComposerPad}
+            applyKeyboardPad={isPhoneViewport || isNativePhoneLayout}
             native={isNative}
           >
             <ChatDock availableHeight={messagesAreaHeight} />
@@ -6119,7 +6305,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
               ideContext={ideBridge.context}
               ideFileSearch={ideBridge.listFiles}
               onOpenIdeFile={ideBridge.openFile}
-              keyboardOpen={nativeKeyboardOpen}
             />
           </ProjectComposerDock>
           ) : (
@@ -6133,7 +6318,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               }
             />
           )}
-        </KeyboardAvoidingView>
+        </ChatSurface>
       </View>
     </ChatContextProvider>
     </FileChangeStoreContext.Provider>

@@ -11,6 +11,7 @@
  */
 import { Platform, StyleSheet, useWindowDimensions, type ViewStyle } from 'react-native'
 import { useResolvedTheme } from '../contexts/theme'
+import { SURFACE_COLORS } from './surface-tokens'
 
 /** Matches Android `sw600dp` smallest-width bucket for “tablet” layouts. */
 const ANDROID_TABLET_MIN_SHORTEST_EDGE = 600
@@ -77,13 +78,16 @@ export const NATIVE_PHONE_CARD_GAP = 12
  * Native ChatGPT canvas (`nativeChatGptSurfaces` in the Gluestack provider).
  * Use for style props where NativeWind `bg-background` is not applied.
  */
-export const NATIVE_PHONE_CANVAS = { dark: '#000000', light: '#ffffff' } as const
+export const NATIVE_PHONE_CANVAS = {
+  dark: SURFACE_COLORS.dark.surface,
+  light: SURFACE_COLORS.light.surface,
+} as const
 /**
- * Dark home sheet fill. Same OLED black as the rest of native chrome; kept as
- * its own token so the home drawer can stay on a static canvas without
- * duplicating the hex.
+ * Home canvas alias kept separate so the home drawer can stay on a static
+ * canvas without duplicating the shared surface token.
  */
-export const NATIVE_PHONE_HOME_CANVAS = NATIVE_PHONE_CANVAS.dark
+/** Home intentionally keeps the original OLED-black native canvas. */
+export const NATIVE_PHONE_HOME_CANVAS = '#000000'
 
 /**
  * ChatGPT iOS icon ink, sampled from App Store screenshots.
@@ -116,12 +120,13 @@ export function useNativePhoneIconChrome(): { color: string; strokeWidth: number
 }
 
 /**
- * Dark bottom sheets on OLED black. Apple's elevated
- * `secondarySystemBackground` / systemGray6 (`#1C1C1E`) — one step above
- * `#000`, cooler than `bg-card` (`#212121`), so the sheet sits in the same
- * black family instead of a muddy mid-grey. Light sheets keep `bg-card`.
+ * Bottom sheets use the Figma surface-container token so they remain one
+ * deliberate elevation above the app canvas in both color schemes.
  */
-export const NATIVE_PHONE_SHEET_CANVAS = { dark: '#1C1C1E', light: '#ffffff' } as const
+export const NATIVE_PHONE_SHEET_CANVAS = {
+  dark: SURFACE_COLORS.dark.container,
+  light: SURFACE_COLORS.light.container,
+} as const
 export const NATIVE_PHONE_SHEET_BORDER = {
   dark: 'rgba(255,255,255,0.10)',
   light: 'rgba(0,0,0,0.08)',
@@ -135,6 +140,18 @@ export const NATIVE_PHONE_SHEET_BACKDROP = {
 export const NATIVE_PHONE_SHEET_MAX_HEIGHT_RATIO = 0.78;
 export const NATIVE_PHONE_SHEET_COMPACT_RATIO = 0.72;
 export const NATIVE_PHONE_SHEET_BODY_RATIO = 0.62;
+/** Supplemental lift for bottom sheets while the native keyboard is visible. */
+export const NATIVE_PHONE_SHEET_KEYBOARD_GAP = 8;
+export const NATIVE_PHONE_SHEET_KEYBOARD_MAX_LIFT = 72;
+
+export function nativePhoneSheetKeyboardLift(overlap: number): number {
+  if (overlap <= 0) return 0;
+  return Math.min(
+    overlap + NATIVE_PHONE_SHEET_KEYBOARD_GAP,
+    NATIVE_PHONE_SHEET_KEYBOARD_MAX_LIFT,
+  );
+}
+
 /** Tall sheet so Account can host a settings tab without a push. */
 export const NATIVE_PHONE_ACCOUNT_SETTINGS_SHEET_RATIO = 0.92;
 export const NATIVE_PHONE_ACCOUNT_SETTINGS_BODY_RATIO = 0.78;
@@ -171,6 +188,13 @@ export const NATIVE_PHONE_DOCK_FADE = 80
 export const NATIVE_PHONE_DOCK_FADE_LOCATIONS = [0, 0.42, 1] as const
 /** Gap between ChatDock banners (errors, plans, approvals) and the composer pill. */
 export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
+/**
+ * Resting prominent-composer capsule.
+ * Home bottom nav uses the same outer size so the two bars share width/height.
+ */
+export const NATIVE_PHONE_COMPOSER_PILL_HEIGHT = 45
+/** Inner inset matching composer toolbar `py-1`. */
+export const NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET = 4
 /**
  * Native blocking question/permission cards stay in the composer column, so
  * they must leave room for messages above and the pill below. Cap the
@@ -214,11 +238,11 @@ export function nativePhoneDockStatusMaxHeight(windowHeight?: number): number {
 
 export const NATIVE_PHONE_DOCK_GLASS = {
   dark: {
-    fill: 'rgba(44,44,46,0.94)',
+    fill: 'rgba(53,52,52,0.94)',
     border: 'rgba(255,255,255,0.14)',
   },
   light: {
-    fill: 'rgba(255,255,255,0.94)',
+    fill: 'rgba(229,226,225,0.94)',
     border: 'rgba(0,0,0,0.08)',
   },
 } as const

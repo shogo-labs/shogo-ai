@@ -2481,9 +2481,10 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = rawStopSessionKey
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
-  // Also cancel every running subagent spawned via AgentManager. The main turn
-  // signal does not reach these instances because each has its own AbortController.
-  const cancelledSubagents = agentGateway.agentManager.cancelAll()
+  // The main turn signal does not reach subagents because each has its own
+  // AbortController. Scope their cancellation to this chat: a project runtime
+  // may serve multiple concurrent chat sessions.
+  const cancelledSubagents = agentGateway.agentManager.cancelForSession(stopSessionKey)
 
   // We deliberately do NOT call `streamBufferStore.abort(stopSessionKey)` here.
   // The agent loop, the `createUIMessageStream` execute callback, and the

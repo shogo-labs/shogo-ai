@@ -55,6 +55,10 @@ model User {
   accounts             Account[]
   members              Member[]
   notifications        Notification[]
+  agentTasks            AgentTask[]
+  noteFolders           NoteFolder[]
+  notes                 Note[]
+  noteAssets            NoteAsset[]
   starredProjects      StarredProject[]
   signupAttribution    SignupAttribution?
   apiKeys              ApiKey[]
@@ -63,6 +67,7 @@ model User {
   affiliate            Affiliate?
   affiliateAttribution AffiliateAttribution?
   projectAuthSignIns   ProjectAuthSignIn[]
+  mobilePushSubscriptions MobilePushSubscription[]
   slackUserLinks       SlackUserLink[]
 
   @@index([createdAt])
@@ -170,6 +175,11 @@ model Workspace {
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
+  agentTasks             AgentTask[]
+  noteFolders            NoteFolder[]
+  notes                  Note[]
+  noteAssets             NoteAsset[]
+  noteTranscriptionJobs  NoteTranscriptionJob[]
   apiKeys                ApiKey[]
   instances              Instance[]
   meetings               Meeting[]
@@ -332,6 +342,7 @@ model Project {
   attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
   attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
+  agentTasks             AgentTask[]
 
   @@index([workspaceId])
   @@index([folderId])
@@ -882,6 +893,185 @@ model Notification {
   @@map("notifications")
 }
 
+model AgentTask {
+  id             String          @id @default(uuid())
+  userId         String
+  workspaceId    String
+  projectId      String?
+  chatSessionId  String?
+  title          String
+  notes          String?
+  dueAt          DateTime?
+  status         AgentTaskStatus @default(draft)
+  sourceType     String          @default("legacy")
+  currentStep    String?
+  resultSummary  String?
+  errorMessage   String?
+  queuedAt       DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
+  noteSnapshot NoteTaskSnapshot?
+
+  @@index([userId, status])
+  @@index([workspaceId, status])
+  @@index([projectId, status])
+  @@index([chatSessionId])
+  @@map("agent_tasks")
+}
+
+model NoteFolder {
+  id          String    @id @default(uuid())
+  workspaceId String
+  ownerId     String
+  parentId    String?
+  name        String
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner     User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  parent    NoteFolder? @relation("NoteFolderHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  NoteFolder[] @relation("NoteFolderHierarchy")
+  notes     Note[]
+
+  @@index([workspaceId, ownerId, parentId, deletedAt])
+  @@index([ownerId, updatedAt])
+  @@map("note_folders")
+}
+
+model Note {
+  id          String    @id @default(uuid())
+  workspaceId String
+  ownerId     String
+  folderId    String?
+  title       String    @default("")
+  contentJson Json
+  plainText   String    @default("")
+  preview     String    @default("")
+  isPinned    Boolean   @default(false)
+  version     Int       @default(1)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner     User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  folder    NoteFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  assets    NoteAsset[]
+  snapshots NoteTaskSnapshot[]
+
+  @@index([workspaceId, ownerId, folderId, deletedAt])
+  @@index([ownerId, updatedAt])
+  @@index([ownerId, isPinned, updatedAt])
+  @@map("notes")
+}
+
+model NoteAsset {
+  id                  String    @id @default(uuid())
+  workspaceId         String
+  ownerId             String
+  noteId              String
+  kind                String
+  storageKey          String
+  originalName        String
+  mimeType            String
+  sizeBytes           BigInt
+  sha256              String
+  width               Int?
+  height              Int?
+  durationMs          Int?
+  transcriptionStatus String    @default("not_applicable")
+  transcriptText      String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  workspace Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner     User                     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  note      Note                     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  snapshotLinks    NoteTaskSnapshotAsset[]
+  transcriptionJob NoteTranscriptionJob?
+
+  @@index([workspaceId, ownerId, noteId, deletedAt])
+  @@index([ownerId, updatedAt])
+  @@map("note_assets")
+}
+
+model NoteTranscriptionJob {
+  id           String    @id @default(uuid())
+  assetId      String    @unique
+  workspaceId  String
+  status       String    @default("queued")
+  attemptCount Int       @default(0)
+  error        String?
+  nextRetryAt  DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  asset     NoteAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, nextRetryAt])
+  @@index([assetId, status])
+  @@map("note_transcription_jobs")
+}
+
+model NoteTaskSnapshot {
+  id             String   @id @default(uuid())
+  taskId         String   @unique
+  noteId         String?
+  sourceVersion  Int
+  title          String
+  contentJson    Json
+  plainText      String
+  idempotencyKey String   @unique
+  createdAt      DateTime @default(now())
+
+  task   AgentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  note   Note?     @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  assets NoteTaskSnapshotAsset[]
+
+  @@index([noteId, createdAt])
+  @@map("note_task_snapshots")
+}
+
+model NoteTaskSnapshotAsset {
+  id           String @id @default(uuid())
+  snapshotId   String
+  assetId      String?
+  storageKey   String
+  originalName String
+  mimeType     String
+  sizeBytes    BigInt
+
+  snapshot NoteTaskSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  asset    NoteAsset?        @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@unique([snapshotId, assetId])
+  @@index([assetId])
+  @@map("note_task_snapshot_assets")
+}
+
+enum AgentTaskStatus {
+  draft
+  queued
+  running
+  completed
+  failed
+  cancelled
+}
+
 enum NotificationType {
   invitation_pending
   invitation_accepted
@@ -901,6 +1091,9 @@ enum NotificationType {
   // Fires when a bring-your-own custom domain finishes DNS + SSL
   // validation and goes live (written by the poll-custom-domains cron).
   custom_domain_live
+  agent_task_started
+  agent_task_completed
+  agent_task_failed
 }
 
 // =============================================================================
@@ -1186,6 +1379,7 @@ model ChatSession {
   attachedProjects ChatSessionProject[]
   messages         ChatMessage[]
   toolCallLogs     ToolCallLog[]
+  agentTasks       AgentTask[]
   plans            Plan[]
 
   @@index([contextType, contextId])
@@ -2176,6 +2370,20 @@ model PushSubscription {
   @@unique([instanceId, pushToken])
   @@index([instanceId])
   @@map("push_subscriptions")
+}
+
+model MobilePushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  pushToken String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("mobile_push_subscriptions")
 }
 
 // =============================================================================

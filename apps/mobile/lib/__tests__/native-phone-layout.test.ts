@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { nativeContentWidth, nativePhoneCanvas, nativePhoneDockBlockingBodyMaxHeight, nativePhoneDockStatusMaxHeight, nativePhoneDockFadeColors, nativePhoneDockGlassStyle, nativePhoneFillStyle, nativePhoneIconColor, nativePhoneSheetPanelStyle, nativePhoneSheetBackdropStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, hexToRgbChannels, phoneChromeEnabled, NATIVE_PHONE_CANVAS, NATIVE_PHONE_DOCK_COMPOSER_GAP, NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT, NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT, NATIVE_PHONE_DOCK_FADE, NATIVE_PHONE_DOCK_GLASS, NATIVE_PHONE_HEADER_ICON_SIZE, NATIVE_PHONE_HOME_CANVAS, NATIVE_PHONE_ICON, NATIVE_PHONE_ICON_STROKE, NATIVE_PHONE_SHEET_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH, WEB_WIDE_MIN_WIDTH } from '../native-phone-layout'
+import { nativeContentWidth, nativePhoneCanvas, nativePhoneDockBlockingBodyMaxHeight, nativePhoneDockStatusMaxHeight, nativePhoneDockFadeColors, nativePhoneDockGlassStyle, nativePhoneFillStyle, nativePhoneIconColor, nativePhoneSheetKeyboardLift, nativePhoneSheetPanelStyle, nativePhoneSheetBackdropStyle, nativeSettingsPaneFill, nativeSettingsPaneRootStyle, nativeSettingsPaneStyle, nativeSkillsActionWidths, nativeEqualChipWidths, nativeGridChipWidth, nativeTwoColumnCardWidth, hexToRgbChannels, phoneChromeEnabled, NATIVE_PHONE_CANVAS, NATIVE_PHONE_DOCK_COMPOSER_GAP, NATIVE_PHONE_DOCK_BLOCKING_MAX_HEIGHT, NATIVE_PHONE_DOCK_BLOCKING_MIN_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MAX_HEIGHT, NATIVE_PHONE_DOCK_STATUS_MIN_HEIGHT, NATIVE_PHONE_DOCK_FADE, NATIVE_PHONE_DOCK_GLASS, NATIVE_PHONE_HEADER_ICON_SIZE, NATIVE_PHONE_HOME_CANVAS, NATIVE_PHONE_ICON, NATIVE_PHONE_ICON_STROKE, NATIVE_PHONE_SHEET_CANVAS, NATIVE_PHONE_GUTTER, NATIVE_WIND_SPACE_4, isPhoneLayout, WEB_PHONE_MAX_WIDTH, WEB_WIDE_MIN_WIDTH } from '../native-phone-layout'
 
 describe('isPhoneLayout', () => {
   test('treats a narrow web viewport as phone chrome', () => {
@@ -108,12 +108,11 @@ describe('nativePhoneCanvas', () => {
   test('matches the ChatGPT light and dark canvases', () => {
     expect(nativePhoneCanvas(true)).toBe(NATIVE_PHONE_CANVAS.dark)
     expect(nativePhoneCanvas(false)).toBe(NATIVE_PHONE_CANVAS.light)
-    expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#000000', light: '#ffffff' })
+    expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#141313', light: '#F5FBF5' })
   })
 
-  test('dark home uses OLED black', () => {
+  test('dark home keeps the original black canvas', () => {
     expect(NATIVE_PHONE_HOME_CANVAS).toBe('#000000')
-    expect(NATIVE_PHONE_HOME_CANVAS).toBe(NATIVE_PHONE_CANVAS.dark)
   })
 })
 
@@ -146,10 +145,10 @@ describe('phoneChromeEnabled', () => {
 describe('nativePhoneDockFadeColors', () => {
   test('fades list rows out as they enter the dock, then the pills stay readable', () => {
     expect(NATIVE_PHONE_DOCK_FADE).toBe(80)
-    expect(nativePhoneDockFadeColors(true)[0]).toBe('rgba(0,0,0,0)')
-    expect(nativePhoneDockFadeColors(true)[2]).toBe('rgba(0,0,0,0.94)')
-    expect(nativePhoneDockFadeColors(false)[0]).toBe('rgba(255,255,255,0)')
-    expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(255,255,255,0.94)')
+    expect(nativePhoneDockFadeColors(true)[0]).toBe('rgba(20,19,19,0)')
+    expect(nativePhoneDockFadeColors(true)[2]).toBe('rgba(20,19,19,0.94)')
+    expect(nativePhoneDockFadeColors(false)[0]).toBe('rgba(245,251,245,0)')
+    expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(245,251,245,0.94)')
     expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(0,0,0,0)')
     expect(NATIVE_PHONE_DOCK_COMPOSER_GAP).toBe(12)
   })
@@ -183,13 +182,21 @@ describe('nativePhoneDockGlassStyle', () => {
 })
 
 describe('nativePhoneSheetPanelStyle', () => {
-  test('dark sheets use Apple elevated gray without a background dimmer', () => {
-    expect(NATIVE_PHONE_SHEET_CANVAS.dark).toBe('#1C1C1E')
+  test('dark sheets use the Figma container surface without a background dimmer', () => {
+    expect(NATIVE_PHONE_SHEET_CANVAS.dark).toBe('#201F1F')
     expect(nativePhoneSheetPanelStyle(true)).toEqual({
-      backgroundColor: '#1C1C1E',
+      backgroundColor: '#201F1F',
       borderColor: 'rgba(255,255,255,0.10)',
     })
     expect(nativePhoneSheetPanelStyle(false)).toBeUndefined()
     expect(nativePhoneSheetBackdropStyle(true).backgroundColor).toBe('transparent')
+  })
+})
+
+describe('nativePhoneSheetKeyboardLift', () => {
+  test('adds only a small capped lift on top of native keyboard resizing', () => {
+    expect(nativePhoneSheetKeyboardLift(0)).toBe(0)
+    expect(nativePhoneSheetKeyboardLift(24)).toBe(32)
+    expect(nativePhoneSheetKeyboardLift(400)).toBe(72)
   })
 })
