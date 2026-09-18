@@ -70,6 +70,8 @@ import {
   commitBuildOutputAsync,
   cleanupStagingOutput,
 } from './build-output-commit'
+import { emitBuildLine } from './preview-manager'
+import { previewBuildLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 
 /**
  * Staging directory name owned exclusively by `CanvasBuildManager`.
@@ -171,6 +173,20 @@ export class CanvasBuildManager {
   private pendingBuild = false
   private buildCount = 0
   private _started = false
+  /**
+   * Same `<workspaceRoot>/.shogo/logs/build.log` that PreviewManager's
+   * `expo-export-stdout`/`-stderr` boot-seed build writes to (see
+   * `runtime-log-paths.ts`). Before this was wired up, every build this
+   * manager ran was invisible outside a plain `console.log`/`console.error`
+   * on the runtime process's own stdout — which for Shogo Desktop isn't
+   * captured anywhere a user or the Output tab can see. That silence is
+   * exactly what let a broken `postcss.config.mjs` fail 100% of canvas
+   * rebuilds for days on a real project (a stale `@tailwindcss/postcss`
+   * plugin reference left over from a Vite-stack file, incompatible with
+   * the project's actual Tailwind v3 + NativeWind setup) with zero visible
+   * signal — `dist/` just silently stopped advancing.
+   */
+  private buildLogPath: string
 
   constructor(
     workspaceDir: string,
@@ -179,6 +195,7 @@ export class CanvasBuildManager {
     this.workspaceDir = workspaceDir
     this.outDir = join(workspaceDir, 'dist')
     this.callbacks = callbacks
+    this.buildLogPath = previewBuildLogPath(workspaceDir)
   }
 
   async start(): Promise<void> {
@@ -366,6 +383,11 @@ export class CanvasBuildManager {
     // problem to clean up.
     cleanupStagingOutput(this.workspaceDir, CANVAS_STAGING_DIR)
 
+    // `.shogo/logs/` may not exist yet on a brand-new workspace — mkdir -p
+    // before the first emitBuildLine() write of this run. Cheap/idempotent,
+    // mirrors the call PreviewManager makes before its own build-log writes.
+    ensureRuntimeLogDir(this.workspaceDir)
+
     const isWindows = process.platform === 'win32'
     // Route through bundled `bun` when the system has no `node` on PATH
     // — the .bin shim's `#!/usr/bin/env node` shebang otherwise exits
@@ -402,7 +424,16 @@ export class CanvasBuildManager {
         let stderr = ''
         let stdout = ''
         proc.stderr?.on('data', (chunk: Buffer) => {
-          stderr += chunk.toString()
+          const text = chunk.toString()
+          stderr += text
+          // Stream every line into build.log as it arrives (mirrors
+          // PreviewManager's `[expo-export-stderr]` lines) so an in-flight
+          // build is visible in the Output tab, not just the final
+          // success/failure summary emitted below.
+          for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (line) emitBuildLine(this.buildLogPath, '[canvas-build-stderr]', line, 'stderr')
+          }
         })
         proc.stdout?.on('data', (chunk: Buffer) => {
           // Vite/rollup emit the friendly-error block on stdout, with
@@ -410,7 +441,12 @@ export class CanvasBuildManager {
           // (and sometimes empty). Capturing both is the difference
           // between "error during build: undefined" and a usable
           // diagnostic.
-          stdout += chunk.toString()
+          const text = chunk.toString()
+          stdout += text
+          for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (line) emitBuildLine(this.buildLogPath, '[canvas-build-stdout]', line, 'stdout')
+          }
         })
 
         proc.on('close', (code) => {
@@ -438,13 +474,15 @@ export class CanvasBuildManager {
       // next rebuild will retry.
       const committed = await commitBuildOutputAsync(this.workspaceDir, CANVAS_STAGING_DIR)
       if (!committed) {
-        console.warn(
-          `${LOG_PREFIX} Build succeeded but commit into dist/ failed — previous build remains live`,
-        )
+        const commitFailMsg = 'Build succeeded but commit into dist/ failed — previous build remains live'
+        console.warn(`${LOG_PREFIX} ${commitFailMsg}`)
+        emitBuildLine(this.buildLogPath, LOG_PREFIX, commitFailMsg, 'stderr')
       }
 
       this.buildCount++
-      console.log(`${LOG_PREFIX} Build #${this.buildCount} (${bundler.kind}) complete → ${this.outDir}`)
+      const successMsg = `Build #${this.buildCount} (${bundler.kind}) complete → ${this.outDir}`
+      console.log(`${LOG_PREFIX} ${successMsg}`)
+      emitBuildLine(this.buildLogPath, LOG_PREFIX, successMsg, 'stdout')
       this.callbacks.onBuildComplete()
     } catch (err: any) {
       // Failed build: drop the partial staging output so it doesn't
@@ -454,7 +492,16 @@ export class CanvasBuildManager {
       // Slice generously — see ERROR_SLICE_LIMIT comment. The 200-char
       // cap dropped vite/rollup's actual error frame, which is what
       // made cross-arch native binding failures unreadable in main.log.
-      console.error(`${LOG_PREFIX} Build error:`, message.slice(0, ERROR_SLICE_LIMIT))
+      const slicedMessage = message.slice(0, ERROR_SLICE_LIMIT)
+      console.error(`${LOG_PREFIX} Build error:`, slicedMessage)
+      // This is the fix for the "canvas silently stops rebuilding" class of
+      // bug: previously this error only ever reached `console.error` above,
+      // which on Shogo Desktop isn't captured anywhere a user or the
+      // Output tab can see — a broken build failed forever with zero
+      // visible signal. Route it into build.log with level='error' (via
+      // the 'stderr' stream) so it lights up the Output tab's unseen-error
+      // red dot exactly like a failed Vite/expo-export build already does.
+      emitBuildLine(this.buildLogPath, LOG_PREFIX, `Build error: ${slicedMessage}`, 'stderr')
       this.callbacks.onBuildError(message)
     } finally {
       this.building = false
