@@ -39,18 +39,13 @@ export function mobilePushRoutes() {
 
     const existing = await prisma.mobilePushSubscription.findUnique({
       where: { pushToken },
-      select: { id: true, userId: true },
+      select: { id: true },
     })
-    if (existing && existing.userId !== userId) {
-      return c.json({
-        error: { code: 'conflict', message: 'This push token is already registered to another account' },
-      }, 409)
-    }
 
     if (existing) {
       const subscription = await prisma.mobilePushSubscription.update({
         where: { id: existing.id },
-        data: { platform },
+        data: { userId, platform },
         select: { id: true },
       })
       return c.json({ ok: true, id: subscription.id })
@@ -69,16 +64,12 @@ export function mobilePushRoutes() {
       if (!isUniqueConstraintError(error)) throw error
       const raced = await prisma.mobilePushSubscription.findUnique({
         where: { pushToken },
-        select: { id: true, userId: true },
+        select: { id: true },
       })
-      if (!raced || raced.userId !== userId) {
-        return c.json({
-          error: { code: 'conflict', message: 'This push token is already registered to another account' },
-        }, 409)
-      }
+      if (!raced) throw error
       subscription = await prisma.mobilePushSubscription.update({
         where: { id: raced.id },
-        data: { platform },
+        data: { userId, platform },
         select: { id: true },
       })
     }

@@ -212,6 +212,8 @@ function AppleContinueButton({
 }
 
 const LOGIN_HERO_BREAKPOINT = 768
+/** Responsive web viewports at or below this width use the native phone surface. */
+const LOGIN_PHONE_WEB_MAX_WIDTH = LOGIN_HERO_BREAKPOINT - 1
 
 /** Native-landing typewriter lines. The hero text scales down to stay on one line. */
 const NATIVE_LANDING_HERO_PHRASES = [
@@ -245,6 +247,9 @@ function openExternalUrl(url: string) {
 
 const CONSENT_ONE_LINE_STYLE = { fontSize: 11, lineHeight: 14, textAlign: 'center' } as const
 const CONSENT_WRAPPED_STYLE = {
+  fontSize: 11,
+  lineHeight: 14,
+  textAlign: 'center',
   flexWrap: 'wrap',
 } as const
 const CONSENT_LINK_STYLE = { fontWeight: '600' } as const
@@ -257,7 +262,7 @@ function ConsentNotice({ singleLine = false }: { singleLine?: boolean } = {}) {
   const linkStyle = singleLine ? CONSENT_LINK_STYLE : CONSENT_LINK_UNDERLINED_STYLE
   return (
     <Text
-      className={singleLine ? 'text-muted-foreground mt-1' : 'text-xs text-muted-foreground mt-1'}
+      className="text-muted-foreground mt-1"
       numberOfLines={singleLine ? 1 : undefined}
       adjustsFontSizeToFit={singleLine}
       minimumFontScale={singleLine ? 0.7 : undefined}
@@ -1070,10 +1075,7 @@ function CompactWebLoginPanel({
         pointerEvents="none"
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: scrimColor, zIndex: 1 }}
       />
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: 'transparent', zIndex: 2 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      <KeyboardAvoidingView style={{ flex: 1, backgroundColor: 'transparent', zIndex: 2 }}>
         <ScrollView
           ref={scrollRef}
           style={{ flex: 1, backgroundColor: 'transparent' }}
@@ -1084,14 +1086,7 @@ function CompactWebLoginPanel({
           <Card className="w-full max-w-md self-center border-border bg-card shadow-lg">
             <CardContent className="p-6">
               <View className="items-center mb-6">
-                {Platform.OS === 'web' && (
-                  <Image
-                    source={require('../../../../apps/mobile/assets/shogo-logo.svg')}
-                    style={{ width: 80, height: 80, marginBottom: 16 }}
-                    resizeMode="contain"
-                  />
-                )}
-                <Text className="text-2xl font-bold text-foreground">Shogo</Text>
+                <ShogoWordmark colorScheme={scheme} className="h-11 w-44" />
                 <Text className="text-sm text-muted-foreground mt-1">
                   Sign in to your account or create a new one
                 </Text>
@@ -1298,10 +1293,11 @@ export function LoginScreen(props: LoginScreenProps) {
   const { width } = useWindowDimensions()
   const isWeb = Platform.OS === 'web'
   const isDesktopWeb = isWeb && width >= LOGIN_HERO_BREAKPOINT
+  const isPhoneWeb = isWeb && width <= LOGIN_PHONE_WEB_MAX_WIDTH
   const scheme = props.colorScheme ?? 'light'
   const heroArtwork = resolveLoginHeroArtwork(scheme, props)
 
-  if (!isWeb) {
+  if (!isWeb || isPhoneWeb) {
     return <NativeMobileLoginPanel {...props} heroSource={heroArtwork} />
   }
 
@@ -1367,27 +1363,18 @@ export function LoginScreen(props: LoginScreenProps) {
               life
             </Text>
           </Text>
-          <View
+          <Image
+            source={loginHeroWordmarkWhite}
             style={{
-              backgroundColor: '#FB8C00',
-              borderRadius: 10,
-              paddingVertical: 4,
-              paddingHorizontal: 4,
-              alignItems: 'center',
-              justifyContent: 'center',
+              width: 122,
+              height: 36,
               shadowColor: '#000',
-              shadowOffset: { width: 0, height: 6 },
-              shadowOpacity: 0.22,
-              shadowRadius: 12,
-              elevation: 6,
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.35,
+              shadowRadius: 6,
             }}
-          >
-            <Image
-              source={loginHeroWordmarkWhite}
-              style={{ width: 122, height: 36 }}
-              resizeMode="contain"
-            />
-          </View>
+            resizeMode="contain"
+          />
         </View>
       </View>
     </View>

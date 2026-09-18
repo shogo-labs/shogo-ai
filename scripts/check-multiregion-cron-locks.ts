@@ -172,6 +172,13 @@ interface HomeRegionPartitioned {
  */
 const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
   {
+    fn: 'runAgentTaskDispatch',
+    file: 'apps/api/src/jobs/run-agent-task-dispatch.ts',
+    reason:
+      'Each region dispatches only AgentTask rows whose workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps queued claims, stale-lease updates, and runtime writes in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runGrantMonthlyRefill',
     file: 'apps/api/src/jobs/grant-monthly-refill.ts',
     reason:
@@ -350,27 +357,6 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock.',
     writer: 'storage-recalculate-all',
-  },
-  // --- Notes ----------------------------------------------------------------
-  {
-    key: 'NoteTranscriptionJob.assetId',
-    category: 'request_scoped',
-    reason: 'Created once with a user-uploaded, UUID-keyed NoteAsset; the worker only updates the claimed row and never creates jobs.',
-  },
-  {
-    key: 'NoteTaskSnapshot.taskId',
-    category: 'request_scoped',
-    reason: 'One immutable snapshot is created with the UUID-keyed AgentTask by the home-routed note conversion request.',
-  },
-  {
-    key: 'NoteTaskSnapshot.idempotencyKey',
-    category: 'request_scoped',
-    reason: 'The client-supplied conversion idempotency key is read before insert by the home-routed request, preventing retry duplicates.',
-  },
-  {
-    key: 'NoteTaskSnapshotAsset.(assetId,snapshotId)',
-    category: 'request_scoped',
-    reason: 'Immutable asset links are created only within the same home-routed conversion transaction as their UUID-keyed snapshot.',
   },
   {
     key: 'TaskDependency.(blockingTaskId,dependentTaskId)',

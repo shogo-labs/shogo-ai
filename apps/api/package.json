@@ -56,7 +56,6 @@
     "nodemailer": "^8.0.3",
     "pg": "^8.13.1",
     "prisma-adapter-bun-sqlite": "^0.7.1",
-    "heic-convert": "^2.1.0",
     "stripe": "^20.2.0",
     "tar": "^7.4.3",
     "zod": "^4.3.6"

@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Keyboard, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
+import { observer } from 'mobx-react-lite'
 import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
 import { useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
@@ -70,7 +71,7 @@ function StatusBadge({ status }: { status: AgentTaskStatus }) {
   )
 }
 
-export default function TasksScreen() {
+const TasksScreen = observer(function TasksScreen() {
   const router = useRouter()
   const http = useMemo(() => createHttpClient(), [])
   const workspace = useActiveWorkspace()
@@ -99,6 +100,11 @@ export default function TasksScreen() {
   const taskListRef = useRef<ScrollView>(null)
   const createSheetScrollRef = useRef<ScrollView>(null)
   const projectSearchScrollFrame = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!workspace?.id) return
+    void projects.loadAll({ workspaceId: workspace.id }).catch(() => undefined)
+  }, [projects, workspace?.id])
 
   const keepProjectSearchVisible = useCallback(() => {
     if (projectSearchScrollFrame.current !== null) return
@@ -370,7 +376,7 @@ export default function TasksScreen() {
           {activeTasks.map(renderTask)}
           {finishedTasks.length > 0 ? <View className="mb-3 mt-3 flex-row items-center justify-between px-4"><Text className="text-[13px] font-semibold uppercase tracking-wider text-muted-foreground">History</Text><Text className="text-[13px] text-muted-foreground">{finishedTasks.length}</Text></View> : null}
           {finishedTasks.map(renderTask)}
-          {tasks.length === 0 ? <PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="No tasks yet" message="Create a note from Home or a project, then start the agent when you are ready." action={<Pressable onPress={() => { resetCreate(); setShowCreate(true) }} className="rounded-lg bg-primary px-4 py-2"><Text className="font-semibold text-primary-foreground">Create task</Text></Pressable>} /> : null}
+          {tasks.length === 0 ? <PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="No tasks yet" message="Create a task from Home or a project, then start the agent when you are ready." action={<Pressable onPress={() => { resetCreate(); setShowCreate(true) }} className="rounded-lg bg-primary px-4 py-2"><Text className="font-semibold text-primary-foreground">Create task</Text></Pressable>} /> : null}
         </ScrollView>
       )}
 
@@ -503,4 +509,6 @@ export default function TasksScreen() {
       </NativePhoneSheet>
     </View>
   )
-}
+})
+
+export default TasksScreen

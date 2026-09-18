@@ -644,7 +644,10 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             )}
             style={
               useProminentComposer
-                ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX, height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT }
+                ? {
+                    zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                    ...(Platform.OS !== "web" ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT } : {}),
+                  }
                 : undefined
             }
             pointerEvents={useProminentComposer ? "box-none" : undefined}

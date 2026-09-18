@@ -125,24 +125,11 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
   // Agent tasks are mutated through /api/agent-tasks/:id. Resolve the task's
   // workspace before the home-region router decides where the mutation runs.
   'agent-tasks': directWs('agentTask'),
-  // Notes use dedicated hand-written routes, so include them explicitly in
-  // home-region resolution rather than relying on generated-resource coverage.
-  notes: directWs('note'),
-  'note-folders': directWs('noteFolder'),
-  'note-assets': directWs('noteAsset'),
-  'note-transcription-jobs': directWs('noteTranscriptionJob'),
-  'note-task-snapshots': async (id) => {
-    const snapshot = await db.noteTaskSnapshot.findUnique({
-      where: { id },
-      select: { task: { select: { workspaceId: true } } },
-    })
-    return snapshot?.task?.workspaceId ?? null
-  },
 }
 
 // Custom chain lookups above resolve these models without going through
 // `directWs`/`viaProject`, so record them explicitly for the coverage guard.
-for (const m of ['chatSession', 'chatMessage', 'toolCallLog', 'noteTaskSnapshot']) {
+for (const m of ['chatSession', 'chatMessage', 'toolCallLog']) {
   workspaceResolvedModels.add(m)
 }
 

@@ -45,13 +45,6 @@
         }
       ],
       "expo-document-picker",
-      [
-        "expo-audio",
-        {
-          "microphonePermission": "Shogo uses your microphone to transcribe dictated text into your private Notes workspace."
-        }
-      ],
-      "expo-sqlite",
       "expo-secure-store",
       "expo-web-browser",
       "expo-localization",
@@ -67,7 +60,7 @@
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "Shogo uses your microphone for chat dictation and to transcribe dictated text into your private Notes workspace.",
+          "microphonePermission": "Shogo uses your microphone to record your voice when you tap the mic button in chat, so the AI can transcribe what you say into a prompt — for example, asking \"summarize my last meeting notes.\" Audio is processed only to generate the transcript and is not stored.",
           "speechRecognitionPermission": "Shogo uses Apple's on-device speech recognition to convert your dictated voice into text in the chat input — for example, when you say \"create a new task for tomorrow,\" it appears as text you can edit before sending."
         }
       ],

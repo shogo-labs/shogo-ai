@@ -1085,7 +1085,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (parsedBody.agentMode) {
         // Local LLM models are user-configured and are not cloud-tiered. Do
         // not replace Auto/local routing with the cloud Claude fallback.
-        const localLlmConfigured = Boolean(process.env.LOCAL_LLM_BASE_URL)
+        const localLlmConfigured = process.env.SHOGO_LOCAL_MODE === 'true'
         if (!localLlmConfigured) {
           const resolved = resolveModelId(parsedBody.agentMode)
           const tier = getModelTier(resolved)

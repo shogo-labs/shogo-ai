@@ -265,11 +265,7 @@ export default observer(function ActivityScreen() {
     }
   }, [load]))
 
-  // A task created from a note is a planning record, not a running agent turn.
-  // Keep it out of agent activity/status metrics so draft notes are not
-  // incorrectly reported as completed work.
-  const agentTasks = useMemo(() => tasks.filter((task) => task.sourceType !== 'note'), [tasks])
-  const noteDrafts = useMemo(() => tasks.filter((task) => task.sourceType === 'note'), [tasks])
+  const agentTasks = tasks
   const active = useMemo(() => agentTasks.filter((task) => task.status === 'queued' || task.status === 'running'), [agentTasks])
   const failedOrCancelled = useMemo(() => agentTasks.filter((task) => task.status === 'failed' || task.status === 'cancelled'), [agentTasks])
   const projectList = projects.all
@@ -399,7 +395,7 @@ export default observer(function ActivityScreen() {
             {failedOrCancelled.map((task) => <Pressable key={task.id} onPress={() => openTaskChat(task)} accessibilityLabel={`Open ${task.title} activity`} className="mx-4 mt-3 rounded-2xl border border-destructive bg-destructive/5 p-4 active:bg-destructive/10"><View className="flex-row items-start gap-3"><View className="h-10 w-10 items-center justify-center rounded-xl bg-destructive/10"><XCircle size={19} className="text-destructive" /></View><View className="flex-1"><View className="flex-row items-start gap-2"><Text className="flex-1 font-semibold text-foreground">{task.title}</Text><ChevronRight size={17} className="text-destructive" /></View><Text className="mt-1 text-xs text-muted-foreground">{task.projectName || 'Home'} · {taskStatusLabel(task.status)}</Text><Text className="mt-3 text-sm leading-5 text-foreground" numberOfLines={3}>{readableAgentTaskError(task.errorMessage, 'This task did not complete.')}</Text></View></View></Pressable>)}
           </> : null}
 
-          {agentTasks.length === 0 && noteDrafts.length === 0 && projectActivity.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Create a project or start a task to see activity here." /></View> : null}
+          {agentTasks.length === 0 && projectActivity.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Create a project or start a task to see activity here." /></View> : null}
         </ScrollView>
       )}
     </View>

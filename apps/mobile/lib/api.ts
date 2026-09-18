@@ -202,7 +202,6 @@ export interface AgentTask {
   notes: string | null
   dueAt: string | null
   status: AgentTaskStatus
-  sourceType: string
   currentStep: string | null
   resultSummary: string | null
   errorMessage: string | null
@@ -518,14 +517,6 @@ export const api = {
 
   async deleteAgentTask(http: HttpClient, taskId: string) {
     await http.delete<{ ok?: boolean }>(`/api/agent-tasks/${encodeURIComponent(taskId)}`)
-  },
-
-  async listProjectFiles(http: HttpClient, projectId: string) {
-    const res = await http.get<{
-      ok?: boolean
-      files?: Array<{ path: string; name: string; type: 'file' | 'directory'; extension?: string; size?: number }>
-    }>(`/api/projects/${encodeURIComponent(projectId)}/files`)
-    return res.data?.files ?? []
   },
 
   async setUsageBasedPricing(

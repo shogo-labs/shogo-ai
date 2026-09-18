@@ -91,6 +91,7 @@ mock.module('../routes/api-keys', () => ({
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(async () => {}),
+  sendPushToUser: mock(async () => {}),
 }))
 
 // The viewing user must match the user that owns the machine (the API key

@@ -526,7 +526,7 @@ export const AppSidebar = observer(function AppSidebar({
   }, [isNativeDrawer, isOpen, mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition, mobileRouteProject, mobileRouteProjectId]);
 
   useEffect(() => {
-    return projectSidebarEvents.subscribeOpenProject((projectId) => {
+    const unsubscribe = projectSidebarEvents.subscribeOpenProject((projectId) => {
       // This panel is the drawer's first frame when opened from project chat;
       // skip the internal crossfade so the drawer itself owns the motion.
       mobileProjectCollapsedRef.current = false;
@@ -536,6 +536,9 @@ export const AppSidebar = observer(function AppSidebar({
       setMobileProjectPanelId(projectId);
       setMobileExpandedProjectId(projectId);
     });
+    return () => {
+      unsubscribe();
+    };
   }, [mobileProjectTransition]);
 
   useEffect(() => {
@@ -843,12 +846,14 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
-          <NavItem
-            icon={MessageSquarePlus}
-            label="New Chat"
-            collapsed={collapsed}
-            onPress={handleNewChat}
-          />
+          {isNativeDrawer && (
+            <NavItem
+              icon={MessageSquarePlus}
+              label="New Chat"
+              collapsed={collapsed}
+              onPress={handleNewChat}
+            />
+          )}
           {!isNativeDrawer && (
             <NavItem
               icon={Search}

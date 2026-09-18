@@ -14,7 +14,6 @@ type Task = {
   notes: string | null
   dueAt: Date | null
   status: 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
-  sourceType: string
   currentStep: string | null
   resultSummary: string | null
   errorMessage: string | null
@@ -41,7 +40,6 @@ function resetTask() {
     notes: null,
     dueAt: futureDueAt,
     status: 'draft',
-    sourceType: 'legacy',
     currentStep: null,
     resultSummary: null,
     errorMessage: null,
@@ -142,8 +140,7 @@ describe('agent task routes', () => {
     expect(task.chatSessionId).toBe('session-1')
   })
 
-  test('allows a note-derived task to start in its selected project chat', async () => {
-    task.sourceType = 'note'
+  test('allows a task to start in its selected project chat', async () => {
     const app = makeApp()
     const response = await app.request('/api/agent-tasks/task-1/start', { method: 'POST' })
     expect(response.status).toBe(202)

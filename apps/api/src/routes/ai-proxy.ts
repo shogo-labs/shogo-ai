@@ -245,7 +245,7 @@ export function resolveModel(model: string): ModelConfig | null {
   // of Shogo's static catalog (for example `qwen2.5:3b`). When the local LLM
   // is configured, route unknown ids to the OpenAI-compatible local endpoint
   // instead of rejecting them as unsupported cloud models.
-  if (process.env.LOCAL_LLM_BASE_URL) {
+  if (isLocalDev && process.env.LOCAL_LLM_BASE_URL) {
     return {
       provider: 'local',
       apiModel: model,
@@ -329,11 +329,11 @@ export function resolveModelApiKey(modelConfig: ModelConfig): string | null {
 /**
  * Resolve 'basic' / 'advanced' agent modes to actual model names.
  *
- * When LOCAL_LLM_BASE_URL is set: use admin-configured local models.
+ * When local mode and LOCAL_LLM_BASE_URL are set: use admin-configured local models.
  * Otherwise: use defaults from the shared model catalog.
  */
 function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boolean } {
-  const localBaseUrl = process.env.LOCAL_LLM_BASE_URL
+  const localBaseUrl = isLocalDev ? process.env.LOCAL_LLM_BASE_URL : undefined
   if (localBaseUrl) {
     if (model === 'basic') {
       return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }

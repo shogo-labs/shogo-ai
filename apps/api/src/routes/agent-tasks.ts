@@ -2,18 +2,16 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono, type Context } from 'hono'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
-import convertHeic from 'heic-convert'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { prisma } from '../lib/prisma'
 import type { NotificationType } from '../lib/prisma'
-import { getS3Client } from '../lib/s3'
 import { projectChatRoutes } from './project-chat'
 import { createNotification } from '../services/notification.service'
 import { sendPushToUser } from '../lib/push-notifications'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 
 type RuntimeManager = Parameters<typeof projectChatRoutes>[0]['runtimeManager']
+export type AgentTaskRuntimeManager = RuntimeManager
+const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 const TASK_STATUSES = new Set(['draft', 'queued', 'running', 'completed', 'failed', 'cancelled'])
 const runningTaskControllers = new Map<string, AbortController>()
@@ -22,11 +20,8 @@ const runningTaskControllers = new Map<string, AbortController>()
 // process-local. The dispatcher keeps queued work moving after an API restart
 // and marks abandoned running work as retryable instead of leaving Activity
 // stuck forever.
-const TASK_DISPATCH_INTERVAL_MS = 5_000
 const TASK_HEARTBEAT_INTERVAL_MS = 10_000
 const TASK_STALE_AFTER_MS = 60_000
-const TASK_DISPATCH_BATCH_SIZE = 10
-let taskDispatcherTimer: ReturnType<typeof setInterval> | null = null
 
 type TaskWithProject = {
   id: string
@@ -38,7 +33,6 @@ type TaskWithProject = {
   notes: string | null
   dueAt: Date | null
   status: string
-  sourceType: string
   currentStep: string | null
   resultSummary: string | null
   errorMessage: string | null
@@ -136,7 +130,6 @@ function taskView(task: TaskWithProject) {
     notes: task.notes,
     dueAt: task.dueAt,
     status: task.status,
-    sourceType: task.sourceType,
     currentStep: task.currentStep,
     resultSummary: task.resultSummary,
     errorMessage: task.errorMessage,
@@ -172,7 +165,7 @@ async function notifyTask(
     title: task.title,
     message,
     metadata: { taskId: task.id, projectId: task.projectId },
-    actionUrl: `/(app)/tasks?taskId=${encodeURIComponent(task.id)}`,
+    actionUrl: `/tasks?taskId=${encodeURIComponent(task.id)}`,
     dedupeKey: `${task.id}:${type}`,
   })
 
@@ -190,7 +183,7 @@ async function notifyTask(
         sessionId: task.chatSessionId,
         projectId: task.projectId,
         notificationType: type,
-        actionUrl: `/(app)/tasks?taskId=${encodeURIComponent(task.id)}`,
+        actionUrl: `/tasks?taskId=${encodeURIComponent(task.id)}`,
       },
     })
   }
@@ -266,87 +259,12 @@ function buildAgentTaskPrompt(task: { title: string; notes: string | null }) {
   ].join('')
 }
 
-type AgentTaskMessagePart =
-  | { type: 'text'; text: string }
-  | { type: 'file'; url: string; mediaType: string; name: string }
-
-function localNoteAssetPath(storageKey: string): string {
-  return join(
-    process.env.SHOGO_DATA_DIR || '.data',
-    'notes',
-    storageKey.replace(/^(?:notes|local-notes)\//, ''),
-  )
-}
-
-async function noteAssetDataUrl(
-  storageKey: string,
-  mimeType: string,
-): Promise<{ url: string; mediaType: string }> {
-  const bucket = process.env.S3_NOTES_BUCKET || process.env.S3_WORKSPACES_BUCKET
-  let bytes: Buffer
-  if (!bucket || storageKey.startsWith('local-notes/')) {
-    bytes = await readFile(localNoteAssetPath(storageKey))
-  } else {
-    const response = await getS3Client().send(
-      new GetObjectCommand({ Bucket: bucket, Key: storageKey }),
-    )
-    if (!response.Body) throw new Error('Note image has no stored content')
-    const chunks: Buffer[] = []
-    for await (const chunk of response.Body as any) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-    }
-    bytes = Buffer.concat(chunks)
-  }
-  let mediaType = mimeType.toLowerCase()
-  // Agent providers do not consistently support HEIC/HEIF, despite iOS using
-  // it for camera-library images. Convert it before forwarding so a photo
-  // note behaves exactly like a PNG or JPEG note in the project agent.
-  if (mediaType === 'image/heic' || mediaType === 'image/heif') {
-    bytes = Buffer.from(await convertHeic({
-      buffer: bytes,
-      format: 'JPEG',
-      // Keep the resulting data URL below project-runtime request limits.
-      // A 55% JPEG remains legible for agent vision while avoiding a 5+ MB
-      // base64 payload from a typical iPhone HEIC original.
-      quality: 0.55,
-    }))
-    mediaType = 'image/jpeg'
-  }
-  return {
-    url: `data:${mediaType};base64,${bytes.toString('base64')}`,
-    mediaType,
-  }
-}
-
-async function buildAgentTaskParts(
-  task: { id: string; title: string; notes: string | null; sourceType: string },
-): Promise<{ prompt: string; parts: AgentTaskMessagePart[] }> {
-  const prompt = buildAgentTaskPrompt(task)
-  const parts: AgentTaskMessagePart[] = [{ type: 'text', text: prompt }]
-  if (task.sourceType !== 'note') return { prompt, parts }
-
-  const snapshot = await prisma.noteTaskSnapshot.findUnique({
-    where: { taskId: task.id },
-    include: { assets: true },
-  })
-  for (const asset of snapshot?.assets ?? []) {
-    if (!asset.mimeType.startsWith('image/')) continue
-    const image = await noteAssetDataUrl(asset.storageKey, asset.mimeType)
-    parts.push({
-      type: 'file',
-      url: image.url,
-      mediaType: image.mediaType,
-      name: asset.originalName,
-    })
-  }
-  return { prompt, parts }
-}
-
 async function persistAgentTaskPrompt(
   sessionId: string,
-  task: { id: string; title: string; notes: string | null; sourceType: string },
+  task: { title: string; notes: string | null },
 ) {
-  const { prompt, parts } = await buildAgentTaskParts(task)
+  const prompt = buildAgentTaskPrompt(task)
+  const parts = [{ type: 'text', text: prompt }]
   const created = await prisma.chatMessage.create({
     data: {
       sessionId,
@@ -364,7 +282,6 @@ async function persistAgentTaskPrompt(
 type TaskRouting = {
   projectId: string
   sessionId: string
-  promptState?: Awaited<ReturnType<typeof persistAgentTaskPrompt>>
 }
 
 /**
@@ -392,8 +309,10 @@ async function ensureProjectChat(task: {
         tier: 'starter',
         status: 'draft',
         accessLevel: 'anyone',
-        schemas: [],
-        settings: { activeMode: 'canvas', techStackId: 'react-app' },
+        schemas: (isLocalMode ? '[]' : []) as any,
+        settings: isLocalMode
+          ? JSON.stringify({ activeMode: 'canvas', techStackId: 'react-app' })
+          : { activeMode: 'canvas', techStackId: 'react-app' },
       },
       select: { id: true },
     })
@@ -409,23 +328,6 @@ async function ensureProjectChat(task: {
     if (existingSession?.contextType !== 'project' || existingSession.contextId !== projectId) {
       sessionId = null
     }
-  }
-
-  if (!sessionId && task.projectId) {
-    // A tagged task belongs in the project's existing conversation. The
-    // project sidebar opens this first chat, so creating a second session here
-    // would make the task appear to disappear when the user opens the project
-    // normally. Keep the task's prompt and response in that same thread.
-    const firstProjectSession = await prisma.chatSession.findFirst({
-      where: {
-        contextType: 'project',
-        contextId: projectId,
-        isArchived: false,
-      },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: { id: true },
-    })
-    sessionId = firstProjectSession?.id ?? null
   }
 
   if (!sessionId) {
@@ -490,7 +392,7 @@ async function runAgentTask(
       ? { ...task, projectId: preparedRouting.projectId }
       : routed.task
 
-    const promptState = preparedRouting?.promptState ?? await persistAgentTaskPrompt(sessionId, task)
+    const promptState = await persistAgentTaskPrompt(sessionId, task)
     const { parts } = promptState
     const body = JSON.stringify({
       messages: [{ role: 'user', parts }],
@@ -583,16 +485,20 @@ async function runAgentTask(
   }
 }
 
-async function dispatchQueuedTasks(runtimeManager?: RuntimeManager): Promise<void> {
+export async function dispatchQueuedTasks(runtimeManager?: RuntimeManager): Promise<void> {
   const now = new Date()
   const staleBefore = new Date(now.getTime() - TASK_STALE_AFTER_MS)
+  const homeFilter = homeRegionWorkspaceWhere()
+  const workspaceFilter = homeFilter ? { workspace: homeFilter } : {}
 
   // A live worker refreshes updatedAt. A task that has not been refreshed for
   // the lease window was interrupted by a crashed/restarted API process. Mark
   // it failed so the user can retry it explicitly; silently replaying the
-  // prompt could create duplicate work in the project chat.
+  // prompt could create duplicate work in the project chat. In multi-region
+  // mode, each replica only touches tasks owned by its workspace's home
+  // region, so logical replication cannot produce duplicate execution.
   const abandoned = await prisma.agentTask.updateMany({
-    where: { status: 'running', updatedAt: { lt: staleBefore } },
+    where: { status: 'running', updatedAt: { lt: staleBefore }, ...workspaceFilter },
     data: {
       status: 'failed',
       currentStep: null,
@@ -607,9 +513,10 @@ async function dispatchQueuedTasks(runtimeManager?: RuntimeManager): Promise<voi
     where: {
       status: 'queued',
       OR: [{ dueAt: null }, { dueAt: { lte: now } }],
+      ...workspaceFilter,
     },
     orderBy: [{ queuedAt: 'asc' }, { createdAt: 'asc' }],
-    take: TASK_DISPATCH_BATCH_SIZE,
+    take: 10,
     select: { id: true },
   })
 
@@ -618,27 +525,6 @@ async function dispatchQueuedTasks(runtimeManager?: RuntimeManager): Promise<voi
     // API instances can safely observe the same queue without duplicating work.
     void runAgentTask(task.id, runtimeManager)
   }
-}
-
-/** Start the database-backed task dispatcher once during API startup. */
-export function startAgentTaskWorker(runtimeManager?: RuntimeManager): () => void {
-  if (taskDispatcherTimer) return stopAgentTaskWorker
-
-  const tick = () => {
-    void dispatchQueuedTasks(runtimeManager).catch((error) => {
-      console.error('[AgentTask] Dispatcher tick failed:', error)
-    })
-  }
-  tick()
-  taskDispatcherTimer = setInterval(tick, TASK_DISPATCH_INTERVAL_MS)
-  ;(taskDispatcherTimer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
-
-  return stopAgentTaskWorker
-}
-
-export function stopAgentTaskWorker(): void {
-  if (taskDispatcherTimer) clearInterval(taskDispatcherTimer)
-  taskDispatcherTimer = null
 }
 
 export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager } = {}) {
@@ -702,6 +588,18 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (task.status === 'queued' || task.status === 'running') return c.json({ ok: true, data: taskView(task) })
     if (task.status === 'completed' || task.status === 'cancelled') {
       return c.json({ error: { code: 'conflict', message: 'This task cannot be started again' } }, 409)
+    }
+    const member = await prisma.member.findFirst({
+      where: { userId, workspaceId: task.workspaceId },
+      select: { id: true },
+    })
+    if (!member) return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    if (task.projectId) {
+      const project = await prisma.project.findFirst({
+        where: { id: task.projectId, workspaceId: task.workspaceId },
+        select: { id: true },
+      })
+      if (!project) return c.json({ error: { code: 'conflict', message: 'Task project is no longer available' } }, 409)
     }
     // Claim the task before creating a project/session so two rapid Start
     // Agent taps cannot create duplicate project chats or workers.

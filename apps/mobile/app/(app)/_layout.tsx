@@ -85,7 +85,6 @@ export default function AppLayout() {
   const isAccountPage = pathname === '/account' || pathname === '/(app)/account'
   const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
   const isProjectChatsPage = pathname === '/project-chats' || pathname === '/(app)/project-chats'
-  const isNotesPage = pathname === '/notes' || pathname.startsWith('/notes/') || pathname === '/(app)/notes' || pathname.startsWith('/(app)/notes/')
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -157,8 +156,7 @@ export default function AppLayout() {
     isProfilePage ||
     isAccountPage ||
     isSearchPage ||
-    isProjectChatsPage ||
-    isNotesPage
+    isProjectChatsPage
   // Project chat has its own header, but it still uses the same native drawer
   // underneath. Keep horizontal drawer gestures enabled there so the sheet
   // can be opened and dismissed by swiping just like Home.
@@ -275,9 +273,7 @@ export default function AppLayout() {
         safeAreaEdges={
           nativeEdgeToEdgeChrome
             ? ['left', 'right']
-            : isNativeApp && !isIdeEmbed && isNotesPage
-              ? ['top', 'left', 'right']
-              : undefined
+            : undefined
         }
         sidebarWide={showSidebar ? <AppSidebar /> : null}
         sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
@@ -293,7 +289,7 @@ export default function AppLayout() {
             <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
           ) : null
         }
-        bottomNav={<MobileBottomNav />}
+        bottomNav={isNativeApp && !isIdeEmbed ? <MobileBottomNav /> : null}
         drawer={drawer}
       >
         {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
