@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:
 mock.module('@shogo/shared-runtime', () => ({
   isMobileTechStack: (id: string | null | undefined) =>
     !!id && (id.startsWith('expo') || id === 'react-native'),
+  isDockerTechStack: (_id: any) => false,
+  getMinimumInstanceSize: (_id: any) => null,
 }))
 
 // ─── prisma + s3 mocks ─────────────────────────────────────────────────────

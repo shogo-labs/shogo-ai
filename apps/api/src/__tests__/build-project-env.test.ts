@@ -111,6 +111,11 @@ mock.module('../services/billing.service', () => ({
   hasAdvancedModelAccess: async () => true,
 }))
 
+const isDockerClassEnabledMock = mock(() => false)
+mock.module('../lib/runtime-class-setting', () => ({
+  isDockerClassEnabled: isDockerClassEnabledMock,
+}))
+
 const { buildProjectEnv } = await import('../lib/runtime/build-project-env')
 
 // ─── lifecycle ─────────────────────────────────────────────────────────────
@@ -171,6 +176,8 @@ beforeEach(() => {
   getPreviewUrlMock.mockImplementation(
     (projectId: string) => `https://${projectId}.preview.staging.shogo.ai`,
   )
+  isDockerClassEnabledMock.mockReset()
+  isDockerClassEnabledMock.mockImplementation(() => false)
 })
 
 afterEach(() => {
@@ -791,6 +798,53 @@ describe('buildProjectEnv — always-on (instance tier)', () => {
     }))
     const env = await buildProjectEnv('proj-bogus')
     expect(env.SHOGO_ALWAYS_ON).toBeUndefined()
+  })
+})
+
+// ─── Docker-capable ("Tier 2") project class ──────────────────────────────
+
+describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () => {
+  test('omits SHOGO_RUNTIME_CLASS when settings.runtimeClass is not "docker"', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { runtimeClass: 'standard' },
+    }))
+    const env = await buildProjectEnv('proj-rc-standard')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+  })
+
+  test('omits SHOGO_RUNTIME_CLASS when settings has no runtimeClass at all', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: {},
+    }))
+    const env = await buildProjectEnv('proj-rc-unset')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+  })
+
+  test('sets SHOGO_RUNTIME_CLASS=docker when requested AND the platform gate is on', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { runtimeClass: 'docker' },
+    }))
+    const env = await buildProjectEnv('proj-rc-docker')
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+  })
+
+  test('refuses (falls back to standard) when requested but the platform gate is off, logging loudly', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => false)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { runtimeClass: 'docker' },
+    }))
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    const env = await buildProjectEnv('proj-rc-gated-off')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+    expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(
+      'runtime.docker_class_enabled',
+    )
+    errorSpy.mockRestore()
   })
 })
 

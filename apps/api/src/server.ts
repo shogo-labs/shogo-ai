@@ -125,6 +125,7 @@ import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
+import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -5978,6 +5979,44 @@ app.put('/api/admin/settings/sandbox-exec', async (c) => {
   }
 })
 
+// GET /api/admin/settings/docker-class - Read the Docker-capable ("Tier 2") project class gate
+app.get('/api/admin/settings/docker-class', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: DOCKER_CLASS_SETTING_KEY } })
+    return c.json({ enabled: row ? row.value === 'true' : null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/docker-class - Set/clear the Docker-capable project class gate.
+// `enabled: true` allows new/existing projects to request the docker-compose
+// stack's `vmClass: 'docker'`; `enabled: false`/`null` refuses it platform-wide
+// (falls back to `DOCKER_CLASS_ENABLED` env, then off). See runtime-class-setting.ts
+// for why this defaults to off.
+app.put('/api/admin/settings/docker-class', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const { enabled } = body as { enabled: boolean | null }
+
+    if (enabled === null) {
+      await prisma.platformSetting.deleteMany({ where: { key: DOCKER_CLASS_SETTING_KEY } })
+    } else {
+      await prisma.platformSetting.upsert({
+        where: { key: DOCKER_CLASS_SETTING_KEY },
+        create: { key: DOCKER_CLASS_SETTING_KEY, value: String(enabled), updatedBy: userId },
+        update: { value: String(enabled), updatedBy: userId },
+      })
+    }
+    setDockerClassOverride(enabled)
+    return c.json({ ok: true, enabled })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // PUT /api/admin/settings/agent-models - Update agent mode model overrides
 app.put('/api/admin/settings/agent-models', async (c) => {
   try {
@@ -8742,6 +8781,8 @@ await (async () => {
 
 // Load the super-admin sandbox-exec override (see apps/api/src/lib/sandbox-exec-setting.ts).
 await loadSandboxExecOverride()
+// Load the Docker-capable project class gate (see apps/api/src/lib/runtime-class-setting.ts).
+await loadDockerClassOverride()
 
 // Self-provision in-process AI proxy credentials so the API server can reach
 // its own AI proxy for server-initiated LLM surfaces (title generation, in-app

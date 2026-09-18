@@ -800,6 +800,44 @@ export interface TechStackMeta {
      * number is only relevant to internal `/api/*` proxying.
      */
     templateApiPort?: number
+    /**
+     * Which metal VM class this stack requires. `'docker'` selects the
+     * Docker-capable microVM class (dockerd + a persistent data volume;
+     * see `apps/metal-agent`'s class plumbing). Omitted / `'standard'` is
+     * the default project VM every other stack uses. Purely a request —
+     * the platform gate (`runtime.docker_class_enabled`) can still refuse
+     * it, and callers must not assume it is honoured.
+     */
+    vmClass?: 'standard' | 'docker'
+    /**
+     * Smallest `InstanceSizeName` (see `apps/api/src/config/instance-sizes.ts`)
+     * this stack should run at. Unlike the mobile floor, this floor IS
+     * billed — a Docker-class project needs real CPU/RAM for
+     * `dockerd` + the compose stack, not just headroom.
+     */
+    minimumInstanceSize?: 'micro' | 'small' | 'medium' | 'large' | 'xlarge'
+    /**
+     * One-time setup command run after `seedTechStack()` places the
+     * stack's files (e.g. `docker compose pull`). Analogous to Cursor's
+     * `environment.json#install` — runs once, its output (pulled images /
+     * installed deps) is expected to survive into the next snapshot rather
+     * than being repeated on every resume.
+     */
+    installCommand?: string
+    /**
+     * Ports the stack's services expose, seeded into
+     * `Project.settings.exposedPorts` on project creation. `protocol: 'tcp'`
+     * ports are only reachable via the client-side tunnel (arbitrary bytes,
+     * e.g. Postgres); `'http'` ports may additionally opt into the public
+     * per-port preview. `defaultVisibility` is the initial toggle state,
+     * always user-editable afterward.
+     */
+    ports?: Array<{
+      port: number
+      label?: string
+      protocol: 'http' | 'tcp'
+      defaultVisibility: 'tunnel' | 'preview'
+    }>
   }
   capabilities?: {
     webEnabled?: boolean
@@ -866,7 +904,10 @@ export function listTechStacks(): TechStackMeta[] {
  * entry shouldn't take the runtime down for an unrelated bundling bug.
  */
 export function validateTechStackRegistry(
-  registry: Record<string, { target: string; seedsOwnTemplate?: boolean }>,
+  registry: Record<
+    string,
+    { target: string; seedsOwnTemplate?: boolean; vmClass?: string; minimumInstanceSize?: string }
+  >,
 ): Array<{ stackId: string; reason: string }> {
   const mismatches: Array<{ stackId: string; reason: string }> = []
   const onDisk = listTechStacks()
@@ -891,6 +932,24 @@ export function validateTechStackRegistry(
       mismatches.push({
         stackId: meta.id,
         reason: `seedsOwnTemplate mismatch: stack.json=${diskSeeds} registry=${regSeeds}`,
+      })
+    }
+    // Same default-falsy normalisation as seedsOwnTemplate: an omitted
+    // vmClass means 'standard' on both sides.
+    const diskVmClass = meta.runtime?.vmClass ?? 'standard'
+    const regVmClass = reg.vmClass ?? 'standard'
+    if (diskVmClass !== regVmClass) {
+      mismatches.push({
+        stackId: meta.id,
+        reason: `vmClass mismatch: stack.json="${diskVmClass}" registry="${regVmClass}"`,
+      })
+    }
+    const diskFloor = meta.runtime?.minimumInstanceSize
+    const regFloor = reg.minimumInstanceSize
+    if ((diskFloor ?? null) !== (regFloor ?? null)) {
+      mismatches.push({
+        stackId: meta.id,
+        reason: `minimumInstanceSize mismatch: stack.json=${diskFloor ?? 'unset'} registry=${regFloor ?? 'unset'}`,
       })
     }
   }

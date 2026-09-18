@@ -1,0 +1,62 @@
+{
+  "id": "docker-compose",
+  "name": "Docker Compose",
+  "description": "Multi-service backends (Postgres, Redis, MinIO, custom APIs, workers) orchestrated with `docker compose`. Requires the Docker-capable project class — not available on every plan/host.",
+  "tags": ["docker", "compose", "postgres", "redis", "backend", "multi-service"],
+  "target": "data",
+  "seedsOwnTemplate": true,
+  "runtime": {
+    "devServer": "compose",
+    "vmClass": "docker",
+    "minimumInstanceSize": "large",
+    "installCommand": "docker compose pull",
+    "templateApiPort": 3001,
+    "ports": [
+      { "port": 8000, "label": "app", "protocol": "http", "defaultVisibility": "preview" },
+      { "port": 5432, "label": "postgres", "protocol": "tcp", "defaultVisibility": "tunnel" }
+    ]
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "heartbeatEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "quickCommands": [
+    {
+      "id": "compose-up",
+      "label": "Compose Up",
+      "description": "Build and start every service in the background",
+      "command": "docker compose up -d --build",
+      "category": "server",
+      "timeout": 600000
+    },
+    {
+      "id": "compose-ps",
+      "label": "Compose Status",
+      "description": "Show the state of every service",
+      "command": "docker compose ps",
+      "category": "server",
+      "timeout": 30000
+    },
+    {
+      "id": "compose-logs",
+      "label": "Compose Logs",
+      "description": "Tail logs for every service",
+      "command": "docker compose logs -f --tail=200",
+      "category": "server",
+      "timeout": 60000
+    },
+    {
+      "id": "compose-down",
+      "label": "Compose Down",
+      "description": "Stop and remove every service's containers",
+      "command": "docker compose down",
+      "category": "server",
+      "timeout": 120000
+    }
+  ]
+}

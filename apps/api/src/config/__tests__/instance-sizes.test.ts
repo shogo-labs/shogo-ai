@@ -4,10 +4,13 @@
 import { describe, expect, it, mock } from 'bun:test'
 
 const mobileTechStackIds = new Set(['expo', 'react-native'])
+const minimumInstanceSizeByStack: Record<string, string> = { 'docker-compose': 'large' }
 
 mock.module('@shogo/shared-runtime', () => ({
   isMobileTechStack: (id: string | null | undefined) =>
     typeof id === 'string' && mobileTechStackIds.has(id),
+  getMinimumInstanceSize: (id: string | null | undefined) =>
+    (typeof id === 'string' && minimumInstanceSizeByStack[id]) || null,
 }))
 
 const {
@@ -15,6 +18,7 @@ const {
   INSTANCE_SIZES,
   INSTANCE_SIZE_ORDER,
   applyTechStackFloor,
+  applyDockerStackFloor,
   getInstanceDisplayPrice,
   getInstanceSizeSpec,
   getKubernetesResourceOverrides,
@@ -124,6 +128,25 @@ describe('applyTechStackFloor', () => {
     expect(applyTechStackFloor('medium', 'expo')).toBe('medium')
     expect(applyTechStackFloor('large', 'expo')).toBe('large')
     expect(applyTechStackFloor('xlarge', 'expo')).toBe('xlarge')
+  })
+})
+
+describe('applyDockerStackFloor', () => {
+  it('returns the input size unchanged for a stack with no declared floor', () => {
+    expect(applyDockerStackFloor('micro', 'nextjs')).toBe('micro')
+    expect(applyDockerStackFloor('small', null)).toBe('small')
+    expect(applyDockerStackFloor('medium', undefined)).toBe('medium')
+  })
+
+  it('lifts a too-small size up to the docker-compose stack floor (large)', () => {
+    expect(applyDockerStackFloor('micro', 'docker-compose')).toBe('large')
+    expect(applyDockerStackFloor('small', 'docker-compose')).toBe('large')
+    expect(applyDockerStackFloor('medium', 'docker-compose')).toBe('large')
+  })
+
+  it('does not downgrade a size already at/above the floor', () => {
+    expect(applyDockerStackFloor('large', 'docker-compose')).toBe('large')
+    expect(applyDockerStackFloor('xlarge', 'docker-compose')).toBe('xlarge')
   })
 })
 

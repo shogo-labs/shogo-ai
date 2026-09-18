@@ -57,6 +57,7 @@ const STACK_MARKERS: Record<string, string | null> = {
   // Hono/Prisma backend; `app.json` is the unambiguous client marker.
   'react-native': 'app.json',
   'python-data': 'requirements.txt',
+  'docker-compose': 'docker-compose.yml',
   'unity-game': null, // Empty starter (Unity assets are managed by Unity).
   none: null, // Bare workspace by definition.
 }
@@ -202,6 +203,10 @@ describe.skipIf(!HEAVY)('per-stack install + build smoke (RUN_HEAVY=1)', () => {
     // it builds native iOS/Android via Xcode/Gradle. Heavy build smoke
     // only covers stacks that emit a web bundle.
     if (entry.id === 'react-native') continue
+    // docker-compose has no package.json/bun toolchain at all — its
+    // "build" is `docker compose build`, which needs a dockerd this test
+    // runner does not have. Not covered by this bun-specific smoke test.
+    if (entry.id === 'docker-compose') continue
     const hasStarter = !!STACK_MARKERS[stackId]
     if (!hasStarter) continue
 

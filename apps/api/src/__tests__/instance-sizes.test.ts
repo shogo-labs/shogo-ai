@@ -11,6 +11,7 @@ const isMobileTechStackShared = mock((id: string | null | undefined): boolean =>
 })
 mock.module('@shogo/shared-runtime', () => ({
   isMobileTechStack: isMobileTechStackShared,
+  getMinimumInstanceSize: () => null,
 }))
 
 const {

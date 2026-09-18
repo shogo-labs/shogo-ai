@@ -12,6 +12,7 @@ import { resolveAgentModelEnv } from './agent-model-defaults'
 import { INSTANCE_SIZES } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
+import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
 
 /**
@@ -129,6 +130,27 @@ export async function buildProjectEnv(
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings
+      }
+
+      // Docker-capable ("Tier 2") project class. `settings.runtimeClass` is
+      // the persisted intent (set at project creation / stack switch — see
+      // `apps/api/src/lib/runtime-class-setting.ts` for the full contract);
+      // re-check the platform gate on every assignment (not just at
+      // creation) so flipping it off stops NEW assignments from requesting
+      // the docker-class VM pool without needing to touch every project row.
+      // A project that requested docker but is refused here silently gets a
+      // standard VM, where the `docker-compose` stack cannot actually run —
+      // that mismatch is a placement/gating bug to fix, not something this
+      // builder can repair, so it's logged loudly rather than swallowed.
+      if (settings?.runtimeClass === 'docker') {
+        if (isDockerClassEnabled()) {
+          env.SHOGO_RUNTIME_CLASS = 'docker'
+        } else {
+          console.error(
+            `[${prefix}] project ${projectId} has settings.runtimeClass=docker but the ` +
+              `platform gate (runtime.docker_class_enabled) is off — assigning a standard VM`,
+          )
+        }
       }
 
       const { getProjectOwnerUserId } = await import('../project-user-context')

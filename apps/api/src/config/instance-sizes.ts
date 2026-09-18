@@ -10,7 +10,10 @@
  * of limits (burstable cap). Paid sizes keep min-scale 1 for zero cold starts.
  */
 
-import { isMobileTechStack as isMobileTechStackShared } from '@shogo/shared-runtime'
+import {
+  isMobileTechStack as isMobileTechStackShared,
+  getMinimumInstanceSize,
+} from '@shogo/shared-runtime'
 
 export const INSTANCE_MARKUP = 1.0
 
@@ -147,6 +150,29 @@ export function applyTechStackFloor(
   const currentIdx = INSTANCE_SIZE_ORDER.indexOf(size)
   const floorIdx = INSTANCE_SIZE_ORDER.indexOf(MOBILE_TECH_STACK_FLOOR)
   return currentIdx >= floorIdx ? size : MOBILE_TECH_STACK_FLOOR
+}
+
+/**
+ * Docker-class stacks (`docker-compose`, `TechStackMeta.runtime.vmClass ===
+ * 'docker'`) declare their own floor via `runtime.minimumInstanceSize`
+ * (mirrored in the tech-stack registry as `minimumInstanceSize`) — unlike
+ * `MOBILE_TECH_STACK_FLOOR`, this floor IS billed: dockerd + a real compose
+ * stack need genuine CPU/RAM, not just free headroom. Callers on the
+ * project-creation / instance-size-change path should apply this AFTER
+ * `applyTechStackFloor` and before persisting/charging the size, and should
+ * gate acceptance of the stack itself on `isDockerClassEnabled()`
+ * (`apps/api/src/lib/runtime-class-setting.ts`) — this function only computes
+ * the size, it does not check the platform gate.
+ */
+export function applyDockerStackFloor(
+  size: InstanceSizeName,
+  techStackId: string | null | undefined,
+): InstanceSizeName {
+  const floor = getMinimumInstanceSize(techStackId) as InstanceSizeName | null
+  if (!floor) return size
+  const currentIdx = INSTANCE_SIZE_ORDER.indexOf(size)
+  const floorIdx = INSTANCE_SIZE_ORDER.indexOf(floor)
+  return currentIdx >= floorIdx ? size : floor
 }
 
 /**

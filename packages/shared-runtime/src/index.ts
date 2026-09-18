@@ -163,6 +163,8 @@ export {
   isMobileTechStack,
   usesMetroBundler,
   stackSeedsItself,
+  isDockerTechStack,
+  getMinimumInstanceSize,
   type StackTarget,
   type StackRegistryEntry,
 } from './tech-stack-registry'
