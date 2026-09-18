@@ -18,7 +18,7 @@ import { prisma } from '../lib/prisma'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
-import { canRunTechStackOnInstanceSize } from './billing.service'
+import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing.service'
 
 export type ProjectLifecycleErrorCode =
   | 'unauthorized'
@@ -27,6 +27,7 @@ export type ProjectLifecycleErrorCode =
   | 'not_found'
   | 'invalid_working_mode'
   | 'instance_too_small'
+  | 'paywall'
 
 export class ProjectLifecycleError extends Error {
   constructor(public code: ProjectLifecycleErrorCode, message: string) {
@@ -248,6 +249,17 @@ export async function configureProject(
     })) as { heartbeatEnabled: boolean; heartbeatInterval: number } | null
     const enabledAfter = a.heartbeatEnabled ?? currentAgent?.heartbeatEnabled ?? false
     const intervalAfter = a.heartbeatInterval ?? currentAgent?.heartbeatInterval ?? 1800
+
+    // Mirror the public PATCH /api/projects/:id/heartbeat paywall: enabling
+    // (or leaving enabled while patching other fields) requires a paid
+    // workspace. Only gate on a rising or steady-enabled edge — disabling
+    // must always be allowed regardless of plan.
+    if (enabledAfter && !(await hasPaidSubscription(existing.workspaceId))) {
+      throw new ProjectLifecycleError(
+        'paywall',
+        'Heartbeats require a paid plan. Please upgrade to enable scheduled heartbeats.',
+      )
+    }
     if (a.heartbeatEnabled !== undefined || a.heartbeatInterval !== undefined) {
       agentData.nextHeartbeatAt = enabledAfter ? new Date(Date.now() + intervalAfter * 1000) : null
     }
