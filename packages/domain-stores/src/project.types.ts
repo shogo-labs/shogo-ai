@@ -50,6 +50,7 @@ export interface ProjectType {
   lastMessageAt?: Date
   workingMode: string
   runtimeEnabled: boolean
+  slackEnabled: boolean
   trustLevel: string
   preferredInstanceId?: string
   preferredInstancePolicy: string
@@ -85,6 +86,7 @@ export interface ProjectCreateInput {
   lastMessageAt?: Date
   workingMode?: string
   runtimeEnabled?: boolean
+  slackEnabled?: boolean
   trustLevel?: string
   preferredInstanceId?: string
   preferredInstancePolicy?: string
@@ -120,6 +122,7 @@ export interface ProjectUpdateInput {
   lastMessageAt?: Date
   workingMode?: string
   runtimeEnabled?: boolean
+  slackEnabled?: boolean
   trustLevel?: string
   preferredInstanceId?: string
   preferredInstancePolicy?: string

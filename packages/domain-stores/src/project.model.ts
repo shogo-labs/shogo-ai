@@ -56,6 +56,7 @@ export const ProjectModel = types
     lastMessageAt: types.optional(types.number, 0),
     workingMode: types.optional(types.string, "managed"),
     runtimeEnabled: types.optional(types.boolean, true),
+    slackEnabled: types.optional(types.boolean, true),
     trustLevel: types.optional(types.string, "trusted"),
     preferredInstanceId: types.optional(types.string, ""),
     preferredInstancePolicy: types.optional(types.string, "pinned"),
