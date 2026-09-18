@@ -39,6 +39,13 @@ export interface CacheEntry {
   lastAccessAt: number
   rootfsIdentity: string
   /**
+   * VM class this snapshot was taken from (Phase 1 docker project class).
+   * Absent = 'standard'. See the matching field on SnapshotMeta.
+   */
+  vmClass?: 'standard' | 'docker'
+  /** Absolute path of the second data-drive file (docker class), if any. */
+  dataDrive?: string
+  /**
    * ETag of the durable source backup this snapshot's workspace descends from,
    * persisted so a local resume across a node-agent restart keeps the lineage
    * that gates the write-side anti-clobber guard (see pool.saveBackupToStore).

@@ -50,3 +50,18 @@ export function normalizeProjectSettings(raw: unknown): unknown {
   if (typeof raw !== 'string') return raw
   return parseProjectSettings(raw) ?? raw
 }
+
+/**
+ * Encode a `settings` object for a Prisma write, matching whichever
+ * encoding the active DB expects (see module doc). Cloud/Postgres wants a
+ * bare object (stored as jsonb); local/SQLite wants the pre-stringified
+ * form (mirrors `jsonField` in `routes/local-projects.ts`, which predates
+ * this module and encodes the same rule inline).
+ */
+export function encodeProjectSettingsForWrite(value: Record<string, unknown>): unknown {
+  const dbUrl = process.env.SHOGO_APP_DATABASE_URL ?? process.env.DATABASE_URL
+  if (process.env.SHOGO_LOCAL_MODE === 'true' || dbUrl?.startsWith('file:')) {
+    return JSON.stringify(value)
+  }
+  return value
+}

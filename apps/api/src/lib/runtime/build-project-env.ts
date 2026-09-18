@@ -14,6 +14,7 @@ import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
+import { isDockerTechStack, getDeclaredPorts } from '@shogo/shared-runtime'
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was
@@ -132,25 +133,45 @@ export async function buildProjectEnv(
         env.TECH_STACK_ID = techStackFromSettings
       }
 
-      // Docker-capable ("Tier 2") project class. `settings.runtimeClass` is
-      // the persisted intent (set at project creation / stack switch — see
-      // `apps/api/src/lib/runtime-class-setting.ts` for the full contract);
-      // re-check the platform gate on every assignment (not just at
-      // creation) so flipping it off stops NEW assignments from requesting
-      // the docker-class VM pool without needing to touch every project row.
-      // A project that requested docker but is refused here silently gets a
+      // Docker-capable ("Tier 2") project class. Nothing persists an explicit
+      // `settings.runtimeClass` today (no creation-flow write site), so this
+      // is DERIVED from the project's tech stack via the registry's
+      // `isDockerTechStack()` — the same source of truth `docker-compose`'s
+      // `stack.json` declares (`runtime.vmClass: 'docker'`). An explicit
+      // `settings.runtimeClass === 'docker'` is honored too, in case a future
+      // creation path (or a manual admin fix-up) sets it directly. Re-check
+      // the platform gate on every assignment (not just at creation) so
+      // flipping it off stops NEW assignments from requesting the
+      // docker-class VM pool without needing to touch every project row. A
+      // project that wants docker but is refused here silently gets a
       // standard VM, where the `docker-compose` stack cannot actually run —
       // that mismatch is a placement/gating bug to fix, not something this
       // builder can repair, so it's logged loudly rather than swallowed.
-      if (settings?.runtimeClass === 'docker') {
+      const wantsDockerClass = settings?.runtimeClass === 'docker' || isDockerTechStack(techStackFromSettings)
+      if (wantsDockerClass) {
         if (isDockerClassEnabled()) {
           env.SHOGO_RUNTIME_CLASS = 'docker'
         } else {
           console.error(
-            `[${prefix}] project ${projectId} has settings.runtimeClass=docker but the ` +
-              `platform gate (runtime.docker_class_enabled) is off — assigning a standard VM`,
+            `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
+              `${techStackFromSettings ?? '?'}) but the platform gate ` +
+              `(runtime.docker_class_enabled) is off — assigning a standard VM`,
           )
         }
+      }
+
+      // Exposed-ports allowlist (Phase 3: client-side tunnel + public per-port
+      // preview). This is the guest-side defense-in-depth check — `apps/api`
+      // already refuses to open a tunnel/preview for a port the project's
+      // tech stack doesn't declare (see `project-ports.ts`), but the runtime
+      // enforces the SAME allowlist itself so a bug or a forged upstream call
+      // can't be used to reach an arbitrary guest-local port (e.g. something
+      // an attacker got listening via a shell tool). Comma-separated, empty
+      // when the stack declares no ports (the default for every non-Docker
+      // stack today).
+      const declaredPorts = getDeclaredPorts(techStackFromSettings)
+      if (declaredPorts.length > 0) {
+        env.SHOGO_EXPOSED_PORTS = declaredPorts.map((p) => p.port).join(',')
       }
 
       const { getProjectOwnerUserId } = await import('../project-user-context')

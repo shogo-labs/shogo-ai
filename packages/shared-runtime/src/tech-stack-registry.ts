@@ -21,6 +21,7 @@ export {
   stackSeedsItself,
   isDockerTechStack,
   getMinimumInstanceSize,
+  getDeclaredPorts,
   type StackTarget,
   type StackRegistryEntry,
 } from '@shogo-ai/sdk/tech-stack-registry'

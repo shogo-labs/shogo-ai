@@ -338,3 +338,86 @@ describe('preview-router worker — metal previews via the API render proxy', ()
     expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/render/assets/app.js`)
   })
 })
+
+// Per-port public preview (Phase 3, Tier 2 plan): `{port}--{projectId}.preview.<base>`.
+// Docker-class projects only ever run on metal, so this path always proxies
+// through the API's per-port render endpoint — never the Knative anchor.
+describe('preview-router worker — per-port public preview', () => {
+  test('a ready project proxies a document navigation via the port-render endpoint', async () => {
+    installFetch((url) =>
+      url.includes('/wake')
+        ? { status: 200, body: '{"ready":true}' }
+        : { status: 200, body: '<html>app on 8000</html>', headers: { 'x-shogo-runtime': '1' } },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://8000--p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<html>app on 8000</html>')
+    expect(calls).toHaveLength(2)
+    expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/wake`)
+    expect(calls[1].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/ports/8000/render/`)
+    // Never resolveOverride'd to a Kourier anchor — no Knative fallback for ports.
+    expect(calls.some((c) => c.cf?.resolveOverride)).toBe(false)
+  })
+
+  test('sub-resource requests preserve path + query against the port-render endpoint', async () => {
+    installFetch((url) =>
+      url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 200, body: 'ok' },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://8000--p1.preview.shogo.ai/assets/app.js?v=2', {
+      headers: { Accept: '*/*' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(calls[1].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/ports/8000/render/assets/app.js?v=2`)
+  })
+
+  test('a not-ready project shows the loading interstitial instead of proxying', async () => {
+    installFetch((url) => (url.includes('/wake') ? { status: 200, body: '{"ready":false}' } : { status: 200, body: 'unreachable' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://8000--p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Waking things up')
+    // Only the wake call ran — never proxied to the (not-ready) port-render endpoint.
+    expect(calls).toHaveLength(1)
+  })
+
+  test('the API rejecting the port (undeclared / tunnel-only / not http) surfaces as the loading interstitial on a document nav', async () => {
+    installFetch((url) =>
+      url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 404, body: 'not found' },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://9999--p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    // Unmarked 404 from the API is an infra-shaped error → interstitial on a doc nav.
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('Waking things up')
+  })
+
+  test('the API rejecting the port on a sub-resource GET passes the raw status through (no interstitial)', async () => {
+    installFetch((url) => (url.includes('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 404, body: 'nope' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN })
+    const req = new Request('https://9999--p1.preview.shogo.ai/assets/app.js', { headers: { Accept: '*/*' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(404)
+    expect(await res.text()).toBe('nope')
+  })
+
+  test('without API_WAKE_ORIGIN configured, a port host fails closed rather than falling back to Knative', async () => {
+    installFetch(() => ({ status: 200, body: 'should not be called' }))
+    const env = makeEnv({}) // no API origin
+    const req = new Request('https://8000--p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(502)
+    expect(calls).toHaveLength(0)
+  })
+})

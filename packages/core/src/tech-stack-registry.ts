@@ -73,6 +73,21 @@ export interface StackRegistryEntry {
    * bump — see `applyDockerStackFloor`.
    */
   minimumInstanceSize?: 'micro' | 'small' | 'medium' | 'large' | 'xlarge'
+  /**
+   * Ports the stack's services expose, mirroring
+   * `TechStackMeta.runtime.ports` (see `workspace-defaults.ts`) for the same
+   * reason `vmClass`/`minimumInstanceSize` are mirrored: apps/api can't read
+   * `stack.json` at runtime, but needs this to validate `PATCH .../ports/:port`
+   * (a project can only toggle visibility on a port its stack actually
+   * declares — never an arbitrary guest port) and to seed
+   * `Project.settings.exposedPorts` defaults.
+   */
+  ports?: Array<{
+    port: number
+    label?: string
+    protocol: 'http' | 'tcp'
+    defaultVisibility: 'tunnel' | 'preview'
+  }>
 }
 
 /**
@@ -108,6 +123,10 @@ export const TECH_STACK_REGISTRY: Record<string, StackRegistryEntry> = {
     seedsOwnTemplate: true,
     vmClass: 'docker',
     minimumInstanceSize: 'large',
+    ports: [
+      { port: 8000, label: 'app', protocol: 'http', defaultVisibility: 'preview' },
+      { port: 5432, label: 'postgres', protocol: 'tcp', defaultVisibility: 'tunnel' },
+    ],
   },
 
   // Native (full game engines)
@@ -166,4 +185,14 @@ export function getMinimumInstanceSize(
   techStackId: string | null | undefined,
 ): StackRegistryEntry['minimumInstanceSize'] | null {
   return getStackEntry(techStackId)?.minimumInstanceSize ?? null
+}
+
+/**
+ * The stack's declared ports (empty array if it declares none). This is the
+ * ONLY allowlist for both the client-side tunnel and the public per-port
+ * preview — a project can toggle visibility on a declared port, but can
+ * never expose a port its stack doesn't list.
+ */
+export function getDeclaredPorts(techStackId: string | null | undefined): StackRegistryEntry['ports'] {
+  return getStackEntry(techStackId)?.ports ?? []
 }

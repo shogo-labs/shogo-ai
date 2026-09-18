@@ -227,6 +227,15 @@ export interface MetalHostRegistration {
    * predating this field. */
   rootfsSha?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
+  /**
+   * Per-VM-class capacity (Phase 1 docker project class). Absent on older
+   * agents — treated as "standard only" (the historical, only class). This is
+   * the ONLY place a host declares it can run a non-standard class; candidate
+   * selection in `candidates()` uses it to prefer (never hard-require, since a
+   * host that lacks a class still fails closed to 'standard' rather than
+   * erroring) hosts that actually support the class a project's env requests.
+   */
+  classes?: Array<{ vmClass: string; supported: boolean; poolSize: number; available: number }>
   load: {
     available: number
     assigned: number
@@ -644,7 +653,32 @@ export class MetalWarmPoolController {
         const env = await buildEnv()
         let lastErr: unknown
 
-        for (const host of cands) {
+        // Class-aware placement (Phase 1 docker project class): a docker-class
+        // assign (env.SHOGO_RUNTIME_CLASS === 'docker') should land on a host
+        // that actually advertises docker support, not on whichever standard
+        // host sorted first by load. This is a PREFERENCE, not a requirement —
+        // if no docker-capable host is live at all we still fall through to a
+        // standard host, where the agent's own pool.assign() fails closed to
+        // 'standard' (loud console.error) rather than erroring the request.
+        // That fail-closed behavior is what makes this reorder safe to be
+        // best-effort. The one thing this must NEVER do is move the project's
+        // sticky host out of first place — it is the one holding the durable
+        // snapshot/data drive, and losing stickiness for a class preference
+        // is exactly how a project ends up split across two hosts.
+        const stickyHostId = placedHostId ?? this.projectHost.get(projectId)
+        const wantClass = env.SHOGO_RUNTIME_CLASS === 'docker' ? 'docker' : 'standard'
+        const orderedCands =
+          wantClass === 'standard'
+            ? cands
+            : [...cands].sort((a, b) => {
+                const aSticky = a.hostId === stickyHostId ? 1 : 0
+                const bSticky = b.hostId === stickyHostId ? 1 : 0
+                if (aSticky !== bSticky) return bSticky - aSticky
+                const supports = (h: HostEntry) => h.classes?.some((c) => c.vmClass === wantClass && c.supported) ?? false
+                return (supports(b) ? 1 : 0) - (supports(a) ? 1 : 0)
+              })
+
+        for (const host of orderedCands) {
           try {
             const res = await this.assignOnHost(host, projectId, env, bind)
             this.projectHost.set(projectId, host.hostId)

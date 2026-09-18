@@ -21,7 +21,8 @@
 import { spawn, type Subprocess } from 'bun'
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
-import { config } from './config'
+import { classConfig, config, type VmClass } from './config'
+import { DataDriveProvisioner } from './data-drive'
 import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
 import { pidAlive } from './live-registry'
@@ -41,13 +42,19 @@ import { RootfsProvisioner, type CowUsage } from './rootfs'
 import { digHoles } from './sparsify'
 
 export interface FcVmConfig {
-  /** Guest-visible RAM ceiling (MiB). */
+  /** Guest-visible RAM ceiling (MiB). Overrides the class default when set. */
   memoryMB?: number
   cpus?: number
   /** Pool VMs idle at this smaller footprint via balloon; deflated on assign. */
   poolMemoryMB?: number
   /** Extra kernel cmdline fragment. */
   extraBootArgs?: string
+  /**
+   * Which golden rootfs/kernel/sizing to boot from (see config.ts
+   * classConfig). Defaults to 'standard' — every call site that doesn't pass
+   * this gets byte-identical behavior to before VM classes existed.
+   */
+  vmClass?: VmClass
 }
 
 export interface FcVmHandle {
@@ -63,6 +70,10 @@ export interface FcVmHandle {
   serialLog: string
   vcpus: number
   memoryMB: number
+  /** VM class this handle was booted as. Absent on old/adopted callers = 'standard'. */
+  vmClass: VmClass
+  /** Second virtio-blk drive backing path (docker class only). */
+  dataDrive?: string
 }
 
 export interface FcSnapshot {
@@ -78,6 +89,10 @@ export interface FcSnapshot {
   bytesState: number
   /** Actual allocated NVMe bytes of the per-VM rootfs (CoW-aware). */
   bytesRootfs: number
+  /** VM class this snapshot was taken from. Absent = 'standard'. */
+  vmClass?: VmClass
+  /** Second data-drive backing path (docker class), carried through suspend/resume. */
+  dataDrive?: string
 }
 
 /**
@@ -133,11 +148,13 @@ export class FirecrackerVMManager {
   private tapOrphanStrikes = new Map<number, number>()
   private uplink = defaultUplink()
   private rootfs: RootfsProvisioner
+  private dataDrives: DataDriveProvisioner
 
   constructor(private cfg = config) {
     mkdirSync(this.cfg.runDir, { recursive: true })
     mkdirSync(this.cfg.snapDir, { recursive: true })
     this.rootfs = new RootfsProvisioner(this.cfg)
+    this.dataDrives = new DataDriveProvisioner(this.cfg)
   }
 
   private baseBootArgs(net: VmNet, extra?: string): string {
@@ -374,18 +391,25 @@ export class FirecrackerVMManager {
   }
 
   async startVM(cfg: FcVmConfig = {}): Promise<FcVmHandle> {
+    const vmClass: VmClass = cfg.vmClass ?? 'standard'
+    const cc = classConfig(this.cfg, vmClass)
+
     const n = this.nextVmIndex()
     const id = `fcvm-${n}-${Date.now().toString(36)}`
     const net = deriveNet(n, this.cfg.tapCidrBase)
-    const vcpus = cfg.cpus ?? this.cfg.vcpus
-    const memoryMB = cfg.memoryMB ?? this.cfg.memMiB
+    const vcpus = cfg.cpus ?? cc.vcpus
+    const memoryMB = cfg.memoryMB ?? cc.memMiB
 
     const socketPath = join(this.cfg.runDir, `${id}.sock`)
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 
-    // Per-VM writable rootfs off the golden image (full copy / reflink CoW /
-    // dm-snapshot depending on METAL_ROOTFS_COW).
-    const rootfs = this.rootfs.provision(id)
+    // Per-VM writable rootfs off the class's golden image (full copy / reflink
+    // CoW / dm-snapshot depending on METAL_ROOTFS_COW). dm mode is restricted
+    // to 'standard' by isVmClassSupported()/callers, so it never reaches here
+    // with a non-default base — provision() always uses cfg.baseRootfs in dm
+    // mode regardless of what's passed.
+    const rootfs = this.rootfs.provision(id, cc.baseRootfs)
+    let dataDrive: string | undefined
     // From here on any throw must NOT leak the FC process / tap / rootfs: a
     // partial boot (socket never appears, an FC API call fails, guest never
     // starts) otherwise leaves a live `firecracker` child untracked by the pool
@@ -397,8 +421,12 @@ export class FirecrackerVMManager {
       await this.waitForSocket(socketPath)
       const api = new FcApi(socketPath)
 
-      await api.bootSource(this.cfg.kernel, this.baseBootArgs(net, cfg.extraBootArgs))
+      await api.bootSource(cc.kernel, this.baseBootArgs(net, cfg.extraBootArgs))
       await api.rootDrive(rootfs, false)
+      if (cc.dataDriveMiB > 0) {
+        dataDrive = this.dataDrives.provision(id, cc.dataDriveMiB)
+        await api.dataDrive(dataDrive)
+      }
       // Enable balloon statistics pre-boot when reclaim is on — they can't be
       // turned on after InstanceStart, and snapshotVM() polls them to size the
       // pre-snapshot reclaim.
@@ -419,12 +447,15 @@ export class FirecrackerVMManager {
         serialLog,
         vcpus,
         memoryMB,
+        vmClass,
+        dataDrive,
       }
     } catch (err) {
       this.killProc(id)
       try { teardownTap(net) } catch { /* ignore */ }
       try { rmSync(socketPath, { force: true }) } catch { /* ignore */ }
       try { this.rootfs.release(rootfs) } catch { /* ignore */ }
+      try { if (dataDrive) this.dataDrives.release(dataDrive) } catch { /* ignore */ }
       throw err
     }
   }
@@ -434,6 +465,23 @@ export class FirecrackerVMManager {
     teardownTap(handle.net)
     rmSync(handle.socketPath, { force: true })
     this.rootfs.release(handle.rootfs)
+    if (handle.dataDrive) this.dataDrives.release(handle.dataDrive)
+  }
+
+  /** Tear down an orphaned/evicted data-drive file directly by path (GC path). */
+  releaseDataDrive(dataDrivePath: string): void {
+    this.dataDrives.release(dataDrivePath)
+  }
+
+  /**
+   * Provision a fresh, empty, formatted data-drive file — used when a
+   * durable-store resume needs a docker-class data volume that was never
+   * pushed off-box (see data-drive.ts). Not tied to a running VM's lifecycle
+   * the way `startVM`'s provisioning is; the caller attaches the returned path
+   * as the snapshot's `dataDrive` before restoreVM.
+   */
+  provisionFreshDataDrive(id: string, sizeMiB: number): string {
+    return this.dataDrives.provision(id, sizeMiB)
   }
 
   /**
@@ -703,6 +751,11 @@ export class FirecrackerVMManager {
       // resolves to. full/reflink resolve to the image file itself, so this is
       // correct for every mode and keeps GC cache accounting honest.
       bytesRootfs: allocatedBytes(this.rootfs.durableArtifact(handle.rootfs).path),
+      vmClass: handle.vmClass,
+      // The data-drive file is left in place (same "suspend keeps everything
+      // but the FC process" contract as the rootfs/tap) — just carry its path
+      // forward so restoreVM() can rebuild the same handle shape.
+      dataDrive: handle.dataDrive,
     }
   }
 
@@ -727,6 +780,13 @@ export class FirecrackerVMManager {
     // Ensure the rootfs backing path baked into the vmstate is live again
     // (dm-snapshot: rebuild the device from the persisted CoW store).
     this.rootfs.prepareRestore(snap.rootfs)
+    // The data drive is a plain file that suspend never touched — it should
+    // simply still be there. A missing file (evicted/corrupted local state)
+    // must fail loudly here rather than let LoadSnapshot bake a dangling
+    // block-device path into a "successfully" restored guest.
+    if (snap.dataDrive && !this.dataDrives.exists(snap.dataDrive)) {
+      throw new Error(`data-drive backing file missing on restore: ${snap.dataDrive}`)
+    }
 
     // A partial restore (bad socket / LoadSnapshot failure) must not leak the
     // FC child. Kill it + drop the fresh socket + tap, but LEAVE snap.rootfs
@@ -761,6 +821,8 @@ export class FirecrackerVMManager {
         serialLog,
         vcpus: snap.vcpus,
         memoryMB: snap.memoryMB,
+        vmClass: snap.vmClass ?? 'standard',
+        dataDrive: snap.dataDrive,
       }
     } catch (err) {
       this.killProc(id)

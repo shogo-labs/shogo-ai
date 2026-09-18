@@ -832,6 +832,47 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
   })
 
+  test('derives SHOGO_RUNTIME_CLASS=docker from a docker-class tech stack even with no settings.runtimeClass', async () => {
+    // Nothing persists settings.runtimeClass today — the docker-compose stack
+    // itself (registry vmClass: 'docker') is the real source of truth.
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-derived')
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+  })
+
+  test('does not derive docker class from an unrelated tech stack', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { techStackId: 'vite-react' },
+    }))
+    const env = await buildProjectEnv('proj-rc-not-derived')
+    expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+  })
+
+  test('sets SHOGO_EXPOSED_PORTS from the tech stack declared ports', async () => {
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-ports')
+    expect(env.SHOGO_EXPOSED_PORTS).toBe('8000,5432')
+  })
+
+  test('omits SHOGO_EXPOSED_PORTS for a stack that declares no ports', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      settings: { techStackId: 'vite-react' },
+    }))
+    const env = await buildProjectEnv('proj-rc-no-ports')
+    expect(env.SHOGO_EXPOSED_PORTS).toBeUndefined()
+  })
+
   test('refuses (falls back to standard) when requested but the platform gate is off, logging loudly', async () => {
     isDockerClassEnabledMock.mockImplementation(() => false)
     findUniqueProjectMock.mockImplementation(async () => ({

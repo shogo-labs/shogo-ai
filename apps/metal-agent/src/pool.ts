@@ -26,7 +26,7 @@ import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
 import { Semaphore, Singleflight } from './concurrency'
 import { HydrateProxy } from './hydrate-proxy'
-import { config } from './config'
+import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
@@ -354,6 +354,18 @@ function publishedSubdomainFromEnv(env: Record<string, string>): string | undefi
   return published && subdomain ? subdomain : undefined
 }
 
+/**
+ * Which VM class an assign/resume env is requesting (Phase 1 docker project
+ * class). Mirrors the same `SHOGO_RUNTIME_CLASS` key the API's
+ * build-project-env.ts injects (gated by the runtime.docker_class_enabled
+ * platform setting) and permission-engine.ts reads in-guest. Missing/unknown
+ * env → 'standard', so every existing caller that never heard of VM classes
+ * keeps getting exactly the VM it always got.
+ */
+function vmClassFromEnv(env: Record<string, string> | undefined): VmClass {
+  return env?.SHOGO_RUNTIME_CLASS === 'docker' ? 'docker' : 'standard'
+}
+
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
     const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -408,13 +420,29 @@ export class MetalWarmPool {
    */
   readonly hydrateProxy: HydrateProxy
 
+  /**
+   * Per-VM-class golden-rootfs identity, computed once at startup. Every
+   * class validates snapshot/resume freshness against ITS OWN identity, not
+   * the standard one — a docker-class snapshot compared against
+   * `rootfsIds.standard` would either always look stale (different image,
+   * different size/mtime) or, worse, coincidentally look fresh and thaw the
+   * wrong guest userspace. `rootfsId` (singular) is kept as an alias for
+   * `rootfsIds.standard` — every pre-existing call site that only ever knew
+   * about one rootfs still gets the exact same value.
+   */
+  private rootfsIds: Record<VmClass, string>
+
   constructor(
     private mgr = new FirecrackerVMManager(),
     private cfg = config,
     store?: SnapshotStore,
   ) {
     this.store = store ?? createSnapshotStore(cfg)
-    this.rootfsId = computeRootfsIdentity(cfg)
+    this.rootfsIds = {
+      standard: computeRootfsIdentity(cfg),
+      docker: computeRootfsIdentity(cfg, classConfig(cfg, 'docker').baseRootfs),
+    }
+    this.rootfsId = this.rootfsIds.standard
     this.index = new CacheIndex(cfg.snapDir)
     this.live = new LiveRegistry(cfg.runDir)
     this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
@@ -493,11 +521,11 @@ export class MetalWarmPool {
     throw new Error(`VM ${handle.id} never became healthy`)
   }
 
-  private async bootOne(pool = true): Promise<PooledVm> {
-    const handle = await this.mgr.startVM({
-      memoryMB: this.cfg.memMiB,
-      cpus: this.cfg.vcpus,
-    })
+  private async bootOne(pool = true, vmClass: VmClass = 'standard'): Promise<PooledVm> {
+    // No memoryMB/cpus override here — startVM resolves both from the class's
+    // own config (classConfig in config.ts), so a docker-class VM gets its own
+    // sizing rather than the standard fleet's.
+    const handle = await this.mgr.startVM({ vmClass })
     // startVM self-cleans a partial boot; a VM that boots but never becomes
     // healthy is our responsibility to stop, or its FC process leaks (never
     // enters `available`/`assigned`, so nothing else would ever kill it).
@@ -535,9 +563,22 @@ export class MetalWarmPool {
    * each boot until the target is met, swallowing individual failures (a single
    * bad boot must not abort warm-up; the deficit is retried on the next
    * reconcile). Only ever invoked via the single-flight guard in reconcile().
+   *
+   * Fills EVERY supported class to its own target independently (the standard
+   * pool at `cfg.poolSize`, plus the docker pool at `cfg.dockerClass.poolSize`
+   * when this host is configured for it). A host that hasn't opted into the
+   * docker class (no METAL_DOCKER_ROOTFS) fills exactly the one pool it always
+   * did — this loop is a no-op superset of the old single-class behavior.
    */
   private async fillPool(): Promise<void> {
-    let remaining = this.cfg.poolSize - this.available.length
+    await Promise.all(VM_CLASSES.map((vmClass) => this.fillClassPool(vmClass)))
+  }
+
+  private async fillClassPool(vmClass: VmClass): Promise<void> {
+    if (!isVmClassSupported(this.cfg, vmClass)) return
+    const target = classConfig(this.cfg, vmClass).poolSize
+    const current = this.available.filter((v) => v.handle.vmClass === vmClass).length
+    let remaining = target - current
     if (remaining <= 0) return
     const workers = Math.min(remaining, Math.max(1, this.cfg.poolBootConcurrency))
     const worker = async (): Promise<void> => {
@@ -546,10 +587,10 @@ export class MetalWarmPool {
       while (remaining > 0) {
         remaining--
         try {
-          const vm = await this.bootOne()
+          const vm = await this.bootOne(true, vmClass)
           this.available.push(vm)
         } catch (err: any) {
-          console.error('[pool] warm boot failed (retry on demand):', err?.message ?? err)
+          console.error(`[pool] warm boot failed (class=${vmClass}, retry on demand):`, err?.message ?? err)
         }
       }
     }
@@ -606,6 +647,11 @@ export class MetalWarmPool {
     return existingTapIndices()
   }
 
+  /** Current golden-rootfs identity for `vmClass` (see `rootfsIds`). */
+  private classRootfsIdentity(vmClass: VmClass): string {
+    return this.rootfsIds[vmClass] ?? this.rootfsIds.standard
+  }
+
   /**
    * Re-adopt microVMs that survived a node-agent restart (rolling deploy). For
    * each entry in the durable live registry, verify the firecracker pid is still
@@ -659,6 +705,8 @@ export class MetalWarmPool {
         serialLog: e.serialLog,
         vcpus: e.vcpus,
         memoryMB: e.memoryMB,
+        vmClass: e.vmClass ?? 'standard',
+        dataDrive: e.dataDrive,
       }
       this.mgr.adoptVM(handle)
       this.assigned.set(e.projectId, {
@@ -722,6 +770,8 @@ export class MetalWarmPool {
       rootfs: a.handle.rootfs,
       vcpus: a.handle.vcpus,
       memoryMB: a.handle.memoryMB,
+      vmClass: a.handle.vmClass,
+      dataDrive: a.handle.dataDrive,
       assignedAt: a.assignedAt,
       lastTouchedAt: a.lastTouchedAt,
       restoredFrom: a.restoredFrom,
@@ -764,6 +814,8 @@ export class MetalWarmPool {
         bytesMem: e.bytesMem,
         bytesState: e.bytesState,
         bytesRootfs: e.bytesRootfs,
+        vmClass: e.vmClass,
+        dataDrive: e.dataDrive,
       }
       this.suspended.set(e.projectId, {
         projectId: e.projectId,
@@ -781,8 +833,8 @@ export class MetalWarmPool {
     return n
   }
 
-  private claim(): PooledVm | null {
-    const idx = this.available.findIndex((v) => v.ready)
+  private claim(vmClass: VmClass = 'standard'): PooledVm | null {
+    const idx = this.available.findIndex((v) => v.ready && v.handle.vmClass === vmClass)
     if (idx === -1) return null
     const [vm] = this.available.splice(idx, 1)
     // Replace in background.
@@ -980,8 +1032,24 @@ export class MetalWarmPool {
     env: Record<string, string> = {},
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
   ): Promise<AssignedVm> {
-    let vm = this.claim()
-    if (!vm) vm = await this.heavy.run(() => this.bootOne(false))
+    let vmClass = vmClassFromEnv(env)
+    if (vmClass !== 'standard' && !isVmClassSupported(this.cfg, vmClass)) {
+      // Fail closed to 'standard' rather than boot a docker-class VM off a
+      // nonexistent/wrong image (see classConfig's own fallback for the same
+      // reasoning). The control plane is expected to only route to hosts that
+      // advertise the class (metal-warm-pool-controller candidate filtering) —
+      // reaching here means either a routing bug or a host whose docker rootfs
+      // was unset/removed after being advertised. Loud, not silent: a project
+      // that NEEDS docker tooling failing its shell commands is much harder to
+      // debug than a log line here.
+      console.error(
+        `[pool] project ${projectId} requested vmClass=${vmClass} but this host does not support it ` +
+          `(METAL_DOCKER_ROOTFS unset or rootfsCow=dm) — falling back to a standard VM`,
+      )
+      vmClass = 'standard'
+    }
+    let vm = this.claim(vmClass)
+    if (!vm) vm = await this.heavy.run(() => this.bootOne(false, vmClass))
 
     // The claimed/booted VM is now off the pool and not yet in `assigned`. If
     // the guest /pool/assign call fails or times out we must stop it, or its FC
@@ -2002,7 +2070,7 @@ export class MetalWarmPool {
         snapshot,
         suspendedAt: now,
         lastAccessAt,
-        rootfsIdentity: this.rootfsId,
+        rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
         repoEtag: this.trustedRepoEtag(a),
@@ -2047,8 +2115,13 @@ export class MetalWarmPool {
           rootfsPath: snapshot.rootfs,
           rootfsArtifactPath: this.mgr.restoreRootfsArtifactPath(snapshot.rootfs),
           rootfsMode: durable.mode,
-          baseIdentity: this.rootfsId,
-          rootfsIdentity: this.rootfsId,
+          baseIdentity: this.classRootfsIdentity(a.handle.vmClass),
+          rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
+          vmClass: a.handle.vmClass,
+          // Not durably persisted (see data-drive.ts header) — recorded only so
+          // a cross-host/cold resume can provision a FRESH empty drive of the
+          // right size instead of failing outright when the file isn't local.
+          dataDriveMiB: a.handle.dataDrive ? classConfig(this.cfg, a.handle.vmClass).dataDriveMiB : undefined,
           backupEtag: a.backupParentEtag,
           dataEtag: this.trustedDataEtag(a),
           repoEtag: this.trustedRepoEtag(a),
@@ -2070,6 +2143,7 @@ export class MetalWarmPool {
   }
 
   private writeIndex(s: SuspendedVm): void {
+    const vmClass = s.snapshot.vmClass ?? 'standard'
     const e: CacheEntry = {
       projectId: s.projectId,
       vmId: s.snapshot.vmId,
@@ -2085,7 +2159,9 @@ export class MetalWarmPool {
       createdAt: s.snapshot.createdAt,
       suspendedAt: s.suspendedAt,
       lastAccessAt: s.lastAccessAt,
-      rootfsIdentity: this.rootfsId,
+      rootfsIdentity: this.classRootfsIdentity(vmClass),
+      vmClass,
+      dataDrive: s.snapshot.dataDrive,
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
       repoEtag: s.repoEtag,
@@ -2110,7 +2186,7 @@ export class MetalWarmPool {
    * deploy that ships this gate doesn't cold-boot the whole cache at once.
    */
   private localSnapshotIsStale(s: SuspendedVm): boolean {
-    return !!s.rootfsIdentity && s.rootfsIdentity !== this.rootfsId
+    return !!s.rootfsIdentity && s.rootfsIdentity !== this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')
   }
 
   /**
@@ -2134,7 +2210,8 @@ export class MetalWarmPool {
     // identity-gated) / cold boot, which brings the project up on new guest code.
     if (s && this.localSnapshotIsStale(s)) {
       console.log(
-        `[pool] local snapshot for ${projectId} is stale (rootfs ${s.rootfsIdentity} != ${this.rootfsId}) — evicting and cold-booting for fresh guest code`,
+        `[pool] local snapshot for ${projectId} is stale (rootfs ${s.rootfsIdentity} != ` +
+          `${this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')}) — evicting and cold-booting for fresh guest code`,
       )
       this.evictLocal(projectId)
       s = undefined
@@ -2145,12 +2222,31 @@ export class MetalWarmPool {
         metrics.inc(M.resumeColdMiss)
         return null
       }
-      const pulled = await this.heavy.run(() => this.store.pull(projectId, this.cfg.snapDir, this.rootfsId))
+      // The durable store has no local entry to read a class off of yet, so the
+      // freshness check validates against whatever class THIS open/resume call
+      // was told to expect (env.SHOGO_RUNTIME_CLASS, same source of truth the
+      // control plane used at the original assign). A caller that omits env
+      // (e.g. a bare POST /resume) defaults to 'standard' and, for a genuinely
+      // docker-class project, degrades safely to an unnecessary cold boot
+      // rather than any risk of restoring against the wrong golden image.
+      const requestedClass = vmClassFromEnv(env)
+      const pulled = await this.heavy.run(() =>
+        this.store.pull(projectId, this.cfg.snapDir, this.classRootfsIdentity(requestedClass)),
+      )
       if (!pulled) {
         metrics.inc(M.resumeColdMiss)
         return null // absent or stale → cold boot
       }
       await assertArtifacts(pulled.files)
+      const vmClass = pulled.meta.vmClass ?? requestedClass
+      // The data drive's CONTENTS are never pushed to the durable store (see
+      // data-drive.ts) — a cross-host / cache-miss resume of a docker-class
+      // project provisions a FRESH, empty drive of the recorded size rather
+      // than fail the whole resume over a file that was never going to be here.
+      const dataDrive =
+        pulled.meta.dataDriveMiB && pulled.meta.dataDriveMiB > 0
+          ? this.mgr.provisionFreshDataDrive(`restored-${projectId}-${Date.now().toString(36)}`, pulled.meta.dataDriveMiB)
+          : undefined
       const snapshot: FcSnapshot = {
         vmId: `restored-${projectId}`,
         snapshotPath: pulled.files.vmstate,
@@ -2165,6 +2261,8 @@ export class MetalWarmPool {
         bytesMem: pulled.meta.bytesMem,
         bytesState: pulled.meta.bytesState,
         bytesRootfs: allocatedBytes(pulled.files.rootfs),
+        vmClass,
+        dataDrive,
       }
       s = {
         projectId,
@@ -2669,7 +2767,7 @@ export class MetalWarmPool {
       // Must be durably backed & fresh before we drop the only local copy.
       if (this.store.kind === 'none') return false
       const head = await this.store.head(projectId)
-      if (!head || head.rootfsIdentity !== this.rootfsId) return false
+      if (!head || head.rootfsIdentity !== this.classRootfsIdentity(head.vmClass ?? 'standard')) return false
     }
 
     this.deleteLocalArtifacts(s.snapshot)
@@ -2696,6 +2794,13 @@ export class MetalWarmPool {
       this.mgr.releaseRootfs(snap.rootfs)
     } catch {
       /* ignore */
+    }
+    if (snap.dataDrive) {
+      try {
+        this.mgr.releaseDataDrive(snap.dataDrive)
+      } catch {
+        /* ignore */
+      }
     }
     // Release the /30 as well. A suspended VM keeps its tap so it can restore
     // onto the same device cheaply, which means dropping the snapshot is the
@@ -2729,9 +2834,13 @@ export class MetalWarmPool {
    */
   reclaimOrphans(): number {
     const protectedPaths = new Set<string>()
-    for (const vm of this.available) protectedPaths.add(vm.handle.rootfs)
+    for (const vm of this.available) {
+      protectedPaths.add(vm.handle.rootfs)
+      if (vm.handle.dataDrive) protectedPaths.add(vm.handle.dataDrive)
+    }
     for (const a of this.assigned.values()) {
       protectedPaths.add(a.handle.rootfs)
+      if (a.handle.dataDrive) protectedPaths.add(a.handle.dataDrive)
       // A suspend-in-flight writes vmstate/mem to deterministic paths derived
       // from the handle id BEFORE the project lands in `suspended`. Protect
       // those prospective artifacts so a concurrent sweep can't delete a
@@ -2747,6 +2856,7 @@ export class MetalWarmPool {
       protectedPaths.add(s.snapshot.snapshotPath)
       protectedPaths.add(s.snapshot.memFilePath)
       protectedPaths.add(s.snapshot.rootfs)
+      if (s.snapshot.dataDrive) protectedPaths.add(s.snapshot.dataDrive)
     }
 
     // A cold boot creates a VM's rootfs/CoW, then boots + configures it, and
@@ -2760,7 +2870,11 @@ export class MetalWarmPool {
     // boot+assign, regardless of which map does or doesn't reference it.
     const cutoff = Date.now() - ORPHAN_GRACE_MS
     let removed = 0
-    const sweepDir = (dir: string, match: (name: string) => boolean, isRootfs = false): void => {
+    const sweepDir = (
+      dir: string,
+      match: (name: string) => boolean,
+      kind: 'plain' | 'rootfs' | 'dataDrive' = 'plain',
+    ): void => {
       let names: string[] = []
       try {
         names = readdirSync(dir)
@@ -2779,7 +2893,7 @@ export class MetalWarmPool {
         // live CoW, which then broke both the durable push ("rootfs
         // missing/empty") and the local resume ("dm CoW store missing") and
         // forced a cold boot. The device check closes that gap definitively.
-        if (isRootfs && this.cfg.rootfsCow === 'dm') {
+        if (kind === 'rootfs' && this.cfg.rootfsCow === 'dm') {
           const vmId = name.replace(/\.cow$/, '')
           if (protectedPaths.has(`/dev/mapper/mvm-${vmId}`)) continue
           if (this.mgr.rootfsDeviceMapped(vmId)) continue
@@ -2791,7 +2905,8 @@ export class MetalWarmPool {
           continue // vanished under us — nothing to reclaim
         }
         try {
-          if (isRootfs) this.mgr.releaseRootfs(full)
+          if (kind === 'rootfs') this.mgr.releaseRootfs(full)
+          else if (kind === 'dataDrive') this.mgr.releaseDataDrive(full)
           else rmSync(full, { force: true })
           removed++
         } catch {
@@ -2801,8 +2916,11 @@ export class MetalWarmPool {
     }
 
     sweepDir(this.cfg.snapDir, (n) => n.endsWith('.vmstate') || n.endsWith('.mem'))
-    sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), true)
-    if (this.cfg.rootfsCow === 'dm') sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), true)
+    sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), 'rootfs')
+    // Docker-class second data drive — no shared base, so it's always a plain
+    // file regardless of rootfsCow mode (see data-drive.ts).
+    sweepDir(this.cfg.runDir, (n) => n.endsWith('.data.ext4'), 'dataDrive')
+    if (this.cfg.rootfsCow === 'dm') sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), 'rootfs')
     return removed
   }
 
@@ -3084,6 +3202,16 @@ export class MetalWarmPool {
       disk: this.disk(),
       cache: { localCount: this.suspended.size, localBytes: this.cacheBytes() },
       available: this.available.length,
+      // Per-class warm-pool breakdown (Phase 1 docker project class). A host
+      // that hasn't opted into the docker class simply reports poolSize:0,
+      // supported:false — the control plane's candidate filtering uses this to
+      // never route a docker-class assign here.
+      classes: VM_CLASSES.map((vmClass) => ({
+        vmClass,
+        supported: isVmClassSupported(this.cfg, vmClass),
+        poolSize: classConfig(this.cfg, vmClass).poolSize,
+        available: this.available.filter((v) => v.handle.vmClass === vmClass).length,
+      })),
       // Assigned (running) set decomposed by why each VM is live, so the raw
       // count can be read as app-users + agent-turns + idle-tail.
       liveness,
@@ -3093,6 +3221,7 @@ export class MetalWarmPool {
         projectId: a.projectId,
         url: a.handle.agentUrl,
         vmId: a.handle.id,
+        vmClass: a.handle.vmClass,
         idleMs: now - a.lastTouchedAt,
         // What reapIdle actually compares against idleSuspendMs. Diverges from
         // idleMs by however much routing polls / fail-open have touched the VM.

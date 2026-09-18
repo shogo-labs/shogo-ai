@@ -140,7 +140,18 @@ const server = Bun.serve({
         // concurrent burst). A stale/cold miss falls through to a fresh assign.
         const r = await pool.open(runtimeKey, env ?? {}, workspaceId ? { workspaceId, attachedProjectIds } : undefined)
         const url = await fwd.ensure(runtimeKey, r.handle.guestIp)
-        return Response.json({ url, mode: r.mode, source: r.source, readyMs: r.readyMs, reused: r.reused })
+        // vmClass reflects what was ACTUALLY booted, which may be 'standard'
+        // even for a docker-class request if this host doesn't support the
+        // class (pool.assign() fails closed and logs loudly) — the control
+        // plane can use a mismatch here to flag a routing bug.
+        return Response.json({
+          url,
+          mode: r.mode,
+          source: r.source,
+          readyMs: r.readyMs,
+          reused: r.reused,
+          vmClass: r.handle.vmClass,
+        })
       }
 
       if (path === '/gc' && req.method === 'POST') {

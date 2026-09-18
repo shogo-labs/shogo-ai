@@ -96,8 +96,16 @@ import { techStackRoutes } from './routes/tech-stacks'
 import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
-import { apiKeyRoutes } from './routes/api-keys'
+import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { cliAuthRoutes } from './routes/cli-auth'
+import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
+import {
+  resolveExposedPorts,
+  isDeclaredPort,
+  getDeclaredPort,
+  withPortVisibility,
+  type PortVisibility,
+} from './lib/project-ports'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import {
   fetchCloudVisibleModels,
@@ -2091,6 +2099,94 @@ app.all('/api/preview/:projectId/render', previewRenderHandler)
 app.all('/api/preview/:projectId/render/*', previewRenderHandler)
 
 // -----------------------------------------------------------------------------
+// Per-port preview render proxy (Phase 3, Tier 2 docker project class plan).
+// -----------------------------------------------------------------------------
+// Sibling of `previewRenderHandler` above for the `{port}--{projectId}.preview.<base>`
+// hostname (see preview-router Worker) — same anonymous-by-UUID trust model, but
+// scoped to ONE declared port instead of the runtime root, and gated by that
+// port's current visibility (`project-ports.ts`): only a declared `protocol:
+// 'http'` port whose visibility is `'preview'` is reachable here. Unlike the
+// root proxy, the target route on the runtime (`/agent/ports/:port/http/*`)
+// sits behind the runtime's own auth, so this forwards `x-runtime-token` —
+// the anonymity boundary is enforced HERE (by the visibility gate), not by
+// the runtime, which has no way to know a request came through the public
+// preview surface vs. the authenticated tunnel.
+const previewPortRenderHandler = async (c: any) => {
+  const projectId = c.req.param('projectId')
+  const port = Number(c.req.param('port'))
+  try {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid port' } }, 400)
+    }
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, workspaceId: true, settings: true },
+    })
+    if (!project) return c.json({ error: { code: 'not_found' } }, 404)
+    if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+
+    const settings = parseProjectSettings(project.settings)
+    const techStackId = settings?.techStackId as string | undefined
+    const exposed = resolveExposedPorts(techStackId, settings).find((p) => p.port === port)
+    if (!exposed || exposed.protocol !== 'http' || exposed.visibility !== 'preview') {
+      return c.json({ error: { code: 'not_found', message: 'Port is not publicly previewable' } }, 404)
+    }
+
+    const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+    let target: string
+    try {
+      const resolved = await resolveProjectPodUrl(projectId, {
+        logTag: 'preview/port-render',
+        metalWaitMs: 8000,
+        metalRetryDelayMs: 1000,
+      })
+      target = resolved.url
+    } catch (err: any) {
+      console.warn(`[preview/port-render] ${projectId}:${port} not ready:`, err?.message || err)
+      return c.json({ error: { code: 'pod_starting', message: 'preview backend starting' } }, 503, {
+        'Cache-Control': 'no-store',
+      })
+    }
+
+    const prefix = `/api/preview/${projectId}/ports/${port}/render`
+    const rawPath = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : ''
+    const path = rawPath || '/'
+    const search = new URL(c.req.url).search
+    const targetUrl = `${target.replace(/\/+$/, '')}/agent/ports/${port}/http${path}${search}`
+
+    const headers = new Headers()
+    for (const h of [
+      'content-type', 'accept', 'accept-encoding', 'accept-language',
+      'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
+    ]) {
+      const v = c.req.header(h)
+      if (v) headers.set(h, v)
+    }
+    headers.set('x-runtime-token', await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId }))
+    const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') init.body = await c.req.arrayBuffer()
+
+    const resp = await fetch(targetUrl, init)
+
+    const outHeaders = new Headers()
+    resp.headers.forEach((value, key) => {
+      const k = key.toLowerCase()
+      if (k === 'transfer-encoding' || k === 'connection' || k === 'set-cookie') return
+      if (k === 'x-frame-options' || k === 'content-security-policy') return
+      outHeaders.set(key, value)
+    })
+    outHeaders.set('access-control-allow-origin', '*')
+    return new Response(resp.body, { status: resp.status, headers: outHeaders })
+  } catch (err: any) {
+    console.error('[preview/port-render]', err?.message || err)
+    return c.json({ error: { code: 'proxy_error', message: 'preview proxy failed' } }, 502)
+  }
+}
+app.all('/api/preview/:projectId/ports/:port/render', previewPortRenderHandler)
+app.all('/api/preview/:projectId/ports/:port/render/*', previewPortRenderHandler)
+
+// -----------------------------------------------------------------------------
 // Published API proxy — serves a metal-backed published site's `/api/*` via the API.
 // -----------------------------------------------------------------------------
 // For a SERVER-BACKED published app on the metal substrate, the subdomain-router
@@ -3518,6 +3614,117 @@ app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
 
   return c.json({ ok: true })
 })
+
+// =============================================================================
+// Exposed ports (Phase 3, Tier 2 docker project class plan)
+//
+// A project's tech stack declares a fixed set of ports (see
+// `lib/project-ports.ts`'s module doc for the full trust-model writeup); this
+// surface only lets the caller toggle a declared port's `visibility` between
+// 'tunnel' (default — reachable only via the authenticated client-side WS
+// tunnel below) and 'preview' (also reachable via the public per-port preview
+// URL, http-protocol ports only). It can never add a port the stack doesn't
+// list.
+// =============================================================================
+
+app.get('/api/projects/:projectId/ports', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { settings: true },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  const settings = parseProjectSettings(project.settings)
+  const techStackId = settings?.techStackId as string | undefined
+  return c.json({ ports: await withPreviewUrls(projectId, resolveExposedPorts(techStackId, settings)) })
+})
+
+app.patch('/api/projects/:projectId/ports/:port', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const port = Number(c.req.param('port'))
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return c.json({ error: { code: 'invalid_request', message: 'Invalid port' } }, 400)
+  }
+
+  const body = await c.req
+    .json<{ visibility?: string }>()
+    .catch(() => ({}) as { visibility?: string })
+  if (body.visibility !== 'tunnel' && body.visibility !== 'preview') {
+    return c.json(
+      { error: { code: 'invalid_request', message: "visibility must be 'tunnel' or 'preview'" } },
+      400,
+    )
+  }
+  const visibility: PortVisibility = body.visibility
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { settings: true },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  const settings = parseProjectSettings(project.settings)
+  const techStackId = settings?.techStackId as string | undefined
+  const declared = getDeclaredPort(techStackId, port)
+  if (!declared) {
+    return c.json({ error: { code: 'not_found', message: 'Port is not declared by this project\'s tech stack' } }, 404)
+  }
+  // Public preview only makes sense for a full HTTP surface — a raw TCP port
+  // (e.g. postgres) has no HTTP semantics to serve at a preview URL, and
+  // exposing it unauthenticated would defeat whatever auth that protocol has.
+  if (visibility === 'preview' && declared.protocol !== 'http') {
+    return c.json(
+      { error: { code: 'invalid_request', message: 'Only http ports can be made publicly previewable' } },
+      400,
+    )
+  }
+
+  const nextExposedPorts = withPortVisibility(settings, port, visibility)
+  const nextSettings = { ...(settings ?? {}), exposedPorts: nextExposedPorts }
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { settings: encodeProjectSettingsForWrite(nextSettings) as any },
+  })
+
+  return c.json({ ports: await withPreviewUrls(projectId, resolveExposedPorts(techStackId, nextSettings)) })
+})
+
+/** Annotate each `preview`-visibility http port with its public preview URL. */
+async function withPreviewUrls(
+  projectId: string,
+  ports: ReturnType<typeof resolveExposedPorts>,
+): Promise<Array<ReturnType<typeof resolveExposedPorts>[number] & { previewUrl?: string }>> {
+  if (!ports.some((p) => p.visibility === 'preview')) return ports
+  const { getPortPreviewUrl } = await import('./lib/knative-project-manager')
+  return ports.map((p) =>
+    p.visibility === 'preview' && p.protocol === 'http'
+      ? { ...p, previewUrl: getPortPreviewUrl(projectId, p.port) }
+      : p,
+  )
+}
 
 // =============================================================================
 // Files routes - Project file listing and reading
@@ -8860,6 +9067,53 @@ import {
 } from './lib/pty-pod-bridge'
 const ptyPodBridge = createPtyPodBridgeHandlers()
 
+// Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
+const PORT_TUNNEL_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/ports\/([0-9]+)\/tunnel$/
+
+// Client-side TCP port tunnel (Phase 3, Tier 2 plan): desktop/CLI ↔ this API
+// ↔ the project's runtime's raw TCP port bridge. See lib/port-tunnel-bridge.ts.
+import {
+  buildPortTunnelBridgeData,
+  createPortTunnelBridgeHandlers,
+  isPortTunnelBridgeData,
+  type PortTunnelBridgeData,
+} from './lib/port-tunnel-bridge'
+const portTunnelBridge = createPortTunnelBridgeHandlers()
+
+/**
+ * Authenticate a port-tunnel WS upgrade request against `project.workspaceId`.
+ * Unlike the PTY WS route (browser-only, reached via same-origin cookies that
+ * the WS handshake carries automatically), the port tunnel's primary caller
+ * is the desktop app / CLI dialing cross-origin with the `ws` library —
+ * which, unlike a browser `WebSocket`, CAN set arbitrary headers on the
+ * upgrade request. So this accepts the same two credential shapes
+ * `authMiddleware` does for a normal HTTP call: a `shogo_sk_*` API key
+ * (workspace-scoped) or a Better Auth session cookie (membership-scoped) —
+ * just resolved directly here since a WS upgrade never reaches Hono.
+ */
+async function authenticatePortTunnelWs(
+  req: Request,
+  projectId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const authHeader = req.headers.get('authorization') ?? ''
+  if (authHeader.startsWith('Bearer shogo_sk_')) {
+    const result = await resolveApiKey(authHeader.slice(7)).catch(() => null)
+    return !!result && result.workspaceId === workspaceId
+  }
+
+  try {
+    const session = await auth.api.getSession({ headers: req.headers })
+    if (session?.user?.id) {
+      const grantedWorkspaceId = await verifyProjectAccess(session.user.id, projectId)
+      return grantedWorkspaceId === workspaceId
+    }
+  } catch (err: any) {
+    console.warn('[PortTunnelWs] session auth failed:', err?.message ?? err)
+  }
+  return false
+}
+
 export default {
   port: API_PORT,
   hostname: "0.0.0.0",
@@ -8927,6 +9181,49 @@ export default {
           return new Response('Runtime unavailable', { status: 503 })
         }
       }
+      // Client-side TCP port tunnel: bridged to the per-project runtime's
+      // guest-local port bridge (see lib/port-tunnel-bridge.ts). Any port the
+      // project's tech stack declares can be tunneled — visibility only
+      // gates the SEPARATE public preview surface, not this authenticated path.
+      const portTunnelMatch = PORT_TUNNEL_WS_PATH_RE.exec(url.pathname)
+      if (portTunnelMatch) {
+        const [, projectId, portStr] = portTunnelMatch
+        const port = Number(portStr)
+        if (!isSafeProjectId(projectId) || !Number.isInteger(port) || port < 1 || port > 65535) {
+          return new Response('Invalid id', { status: 400 })
+        }
+        try {
+          const project = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { workspaceId: true, settings: true },
+          })
+          if (!project) return new Response('Project not found', { status: 404 })
+
+          const authed = await authenticatePortTunnelWs(req, projectId, project.workspaceId)
+          if (!authed) return new Response('Unauthorized', { status: 401 })
+
+          const settings = parseProjectSettings(project.settings)
+          const techStackId = settings?.techStackId as string | undefined
+          if (!isDeclaredPort(techStackId, port)) {
+            return new Response('Port is not declared by this project\'s tech stack', { status: 404 })
+          }
+
+          const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+          const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+          const resolved = await resolveProjectPodUrl(projectId, { logTag: 'PortTunnel' })
+          const data: PortTunnelBridgeData = buildPortTunnelBridgeData({
+            podUrl: resolved.url,
+            port,
+            runtimeToken: await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId }),
+          })
+          const upgraded = server.upgrade(req, { data })
+          if (upgraded) return undefined
+          return new Response('Port tunnel WebSocket upgrade failed', { status: 500 })
+        } catch (err: any) {
+          console.error('[PortTunnel] WS runtime-resolve failed:', err?.message ?? err)
+          return new Response('Runtime unavailable', { status: 503 })
+        }
+      }
     }
     return app.fetch(req, server)
   },
@@ -8934,16 +9231,19 @@ export default {
     open(ws: any) {
       if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
+      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
       if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
+      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
       if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
+      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },

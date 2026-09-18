@@ -101,6 +101,23 @@ export class FcApi {
   }
 
   /**
+   * A second, non-root virtio-blk drive — used by the docker-class VM's
+   * writable data volume (/var/lib/docker, see data-drive.ts). Must be added
+   * before InstanceStart, same as rootDrive. The guest's own init is
+   * responsible for mounting `/dev/vdb` (the rootfs drive is `/dev/vda`,
+   * `root=/dev/vda` in the boot args); this call only attaches the block
+   * device, it does not format or mount it.
+   */
+  dataDrive(pathOnHost: string, driveId = 'data', readOnly = false) {
+    return this.put(`/drives/${driveId}`, {
+      drive_id: driveId,
+      path_on_host: pathOnHost,
+      is_root_device: false,
+      is_read_only: readOnly,
+    })
+  }
+
+  /**
    * Configure vCPUs + RAM and (optionally) install the balloon device.
    * `statsIntervalS > 0` enables balloon statistics so pre-snapshot reclaim can
    * poll the guest's available/actual sizes — this MUST be set pre-boot, FC

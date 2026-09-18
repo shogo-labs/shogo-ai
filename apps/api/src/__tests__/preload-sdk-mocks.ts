@@ -184,6 +184,14 @@ mock.module('@shogo/shared-runtime', () => ({
   // minimumInstanceSize: 'large'). Used by apps/api/src/config/instance-sizes.ts.
   isDockerTechStack: (stack?: any) => stack === 'docker-compose',
   getMinimumInstanceSize: (stack?: any) => (stack === 'docker-compose' ? 'large' : null),
+  // Keep in sync with the `docker-compose` registry entry's `ports` array.
+  getDeclaredPorts: (stack?: any) =>
+    stack === 'docker-compose'
+      ? [
+          { port: 8000, label: 'app', protocol: 'http', defaultVisibility: 'preview' },
+          { port: 5432, label: 'postgres', protocol: 'tcp', defaultVisibility: 'tunnel' },
+        ]
+      : [],
   diagnosticsRoutes: () => ({}),
   createS3SyncForProject: (_projectId?: string, _opts?: any) => ({
     syncProjectArchive: async () => ({ ok: true }),
