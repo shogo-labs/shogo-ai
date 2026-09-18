@@ -955,9 +955,11 @@ export class AgentGateway {
       const projectId = this.projectId
       const workspaceId = process.env.WORKSPACE_ID || null
       if (!workspaceId) return // local-only test runs without a workspace
+      const pipelineRunId = this.currentPipelineRunId()
       void postCostMetric({
         workspaceId,
         projectId: projectId || undefined,
+        ...(pipelineRunId ? { metadata: { pipelineRunId } } : {}),
         agentRunId: data.agentRunId,
         agentType: data.agentType,
         model: data.model,
@@ -1750,6 +1752,52 @@ export class AgentGateway {
 
   async processWebhookMessage(text: string): Promise<string> {
     return this.agentTurn(text, 'webhook')
+  }
+
+  /**
+   * Pipeline runs currently executing in this gateway, keyed by session.
+   * `project_call` threads a `runId` across project hops; while a run's turn
+   * is in flight every sub-agent cost metric emitted here is stamped with
+   * `metadata.pipelineRunId` so an issue can be traced across projects.
+   */
+  private activePipelineRuns = new Map<string, string>()
+
+  /**
+   * The pipeline run to stamp on a cost metric emitted right now. Cost
+   * metrics carry no session id, so this is unambiguous only when a single
+   * run is active; with concurrent runs we skip the stamp rather than guess.
+   */
+  private currentPipelineRunId(): string | undefined {
+    if (this.activePipelineRuns.size !== 1) return undefined
+    return this.activePipelineRuns.values().next().value
+  }
+
+  /**
+   * Run one agent turn on behalf of another project (`project_call`).
+   * Each run gets its own session (`run:<runId>`) so the callee's transcript
+   * for that run is isolated and replayable.
+   */
+  async processPipelineCall(opts: {
+    message: string
+    runId?: string
+    sessionId?: string
+    callerProjectId?: string
+  }): Promise<{ reply: string; sessionId: string; runId?: string }> {
+    const runId = opts.runId?.trim() || undefined
+    const sessionId = opts.sessionId?.trim() || (runId ? `run:${runId}` : 'pipeline')
+    const header = [
+      runId ? `[pipeline runId=${runId}]` : null,
+      opts.callerProjectId ? `[from project ${opts.callerProjectId}]` : null,
+    ].filter(Boolean).join(' ')
+    const prompt = header ? `${header}\n${opts.message}` : opts.message
+
+    if (runId) this.activePipelineRuns.set(sessionId, runId)
+    try {
+      const reply = await this.agentTurn(prompt, sessionId)
+      return { reply, sessionId, runId }
+    } finally {
+      this.activePipelineRuns.delete(sessionId)
+    }
   }
 
   private buildSlashContext(sessionId: string): SlashCommandContext {

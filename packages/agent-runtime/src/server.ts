@@ -3419,6 +3419,50 @@ app.post('/agent/hooks/wake', async (c) => {
   }
 })
 
+/**
+ * POST /agent/pipeline/call
+ *   body: { message, runId?, sessionId?, wait?, callerProjectId? }
+ *
+ * Project-to-project invocation used by the `project_call` tool. The API's
+ * `POST /api/internal/projects/:id/agent-call` forwards here after resolving
+ * this runtime. Auth is the framework's `/agent/*` runtime-token guard alone
+ * (like `/agent/heartbeat/trigger`) — deliberately NOT `WEBHOOK_TOKEN`, which
+ * workspace runtimes are never given. `wait=true` (default) returns the
+ * reply; `wait=false` acks with 202 and runs the turn in the background.
+ */
+app.post('/agent/pipeline/call', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const body = await c.req.json().catch(() => null)
+  const message = body?.message
+  if (!message || typeof message !== 'string') {
+    return c.json({ error: 'message (string) is required' }, 400)
+  }
+  const opts = {
+    message,
+    runId: typeof body.runId === 'string' ? body.runId : undefined,
+    sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+    callerProjectId: typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined,
+  }
+
+  if (body.wait === false) {
+    agentGateway.processPipelineCall(opts).then(
+      (r: { reply: string; sessionId: string; runId?: string }) =>
+        console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
+      (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
+    )
+    return c.json({ status: 'accepted', runId: opts.runId, sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline') }, 202)
+  }
+
+  try {
+    const result = await agentGateway.processPipelineCall(opts)
+    return c.json({ status: 'completed', ...result })
+  } catch (err: any) {
+    return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
+  }
+})
+
 app.post('/agent/hooks/agent', async (c) => {
   if (!verifyWebhookAuth(c)) {
     return c.json({ error: 'Unauthorized' }, 401)

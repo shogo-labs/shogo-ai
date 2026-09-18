@@ -35,6 +35,8 @@ const CORE_GATEWAY_TOOLS = new Set([
   'heartbeat_configure', 'heartbeat_status',
   'search_integrations', 'connect', 'disconnect',
   'quick_action',
+  'project_list', 'project_create', 'project_attach', 'project_detach',
+  'project_configure', 'project_call', 'system_apply',
 ])
 
 // ---------------------------------------------------------------------------

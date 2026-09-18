@@ -68,6 +68,8 @@ export interface AgentCostMetricPayload {
   loopDetected?: boolean
   escalated?: boolean
   responseEmpty?: boolean
+  /** Free-form correlation, e.g. `{ pipelineRunId }` for cross-project pipeline runs. */
+  metadata?: Record<string, unknown>
 }
 
 /**
@@ -385,6 +387,212 @@ export async function publishProject(
     method: 'POST',
     body: JSON.stringify(opts),
     parse: (j) => j as PublishResult,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Project lifecycle wrappers — back the `project_*` / `system_apply` tools
+// (project-tools.ts). Routes live in apps/api/src/routes/internal.ts under
+// the "Project lifecycle" section. Same CheckpointCallResult envelope.
+// ---------------------------------------------------------------------------
+
+async function lifecycleFetch<T>(
+  path: string,
+  init: RequestInit & { parse?: (json: any) => T; timeoutMs?: number },
+): Promise<CheckpointCallResult<T>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  const { parse, timeoutMs, ...rest } = init
+  try {
+    const res = await fetch(`${apiUrl}${path}`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(timeoutMs ?? 20_000),
+      ...rest,
+    })
+    const json = (await res.json().catch(() => null)) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
+  } catch (err: any) {
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    return { ok: false, status: 0, error: err?.message ?? String(err), code: timedOut ? 'timeout' : undefined }
+  }
+}
+
+export interface ProjectSummary {
+  id: string
+  name: string
+  description: string | null
+  workingMode: string
+  settings: unknown
+  createdAt?: string
+}
+
+export interface CreateProjectRequest {
+  name: string
+  description?: string
+  techStackId?: string
+  workingMode?: 'managed' | 'external'
+  templateId?: string
+  settings?: Record<string, unknown>
+  /** Acting user — forwarded from ToolContext.userId when present. */
+  userId?: string
+}
+
+export async function createProject(
+  workspaceId: string,
+  req: CreateProjectRequest,
+): Promise<CheckpointCallResult<ProjectSummary>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/projects`, {
+    method: 'POST',
+    body: JSON.stringify(req),
+    parse: (j) => j?.project as ProjectSummary,
+    timeoutMs: 30_000,
+  })
+}
+
+export interface ProjectGraphNode {
+  id: string
+  name: string
+  description: string | null
+  workingMode: string
+  settings: unknown
+  attachments: Array<{ attachedProjectId: string; attachMode: 'readwrite' | 'readonly' }>
+  agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string } | null
+}
+
+export async function getWorkspaceProjectGraph(
+  workspaceId: string,
+): Promise<CheckpointCallResult<ProjectGraphNode[]>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/projects/graph`, {
+    method: 'GET',
+    parse: (j) => (j?.projects ?? []) as ProjectGraphNode[],
+  })
+}
+
+export interface AttachmentRow {
+  id: string
+  attachedProjectId: string
+  attachedProjectName: string | null
+  attachMode: 'readwrite' | 'readonly'
+}
+
+export async function listProjectAttachments(projectId: string): Promise<CheckpointCallResult<AttachmentRow[]>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/attachments`, {
+    method: 'GET',
+    parse: (j) => (j?.attachments ?? []) as AttachmentRow[],
+  })
+}
+
+export async function attachProject(
+  anchorProjectId: string,
+  attachedProjectId: string,
+  attachMode: 'readwrite' | 'readonly' = 'readwrite',
+): Promise<CheckpointCallResult<{ attachment: AttachmentRow; mounted: boolean }>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(anchorProjectId)}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify({ attachedProjectId, attachMode }),
+    parse: (j) => ({ attachment: j?.attachment as AttachmentRow, mounted: j?.mounted === true }),
+    timeoutMs: 60_000,
+  })
+}
+
+export async function detachProject(
+  anchorProjectId: string,
+  attachedProjectId: string,
+): Promise<CheckpointCallResult<{ removed: boolean }>> {
+  return lifecycleFetch(
+    `/api/internal/projects/${encodeURIComponent(anchorProjectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
+    { method: 'DELETE', parse: (j) => ({ removed: j?.removed === true }) },
+  )
+}
+
+export interface ProjectConfigPatch {
+  name?: string
+  description?: string | null
+  settings?: Record<string, unknown>
+  slackEnabled?: boolean
+  agent?: {
+    heartbeatEnabled?: boolean
+    heartbeatInterval?: number
+    modelProvider?: string
+    modelName?: string
+    quietHoursStart?: string | null
+    quietHoursEnd?: string | null
+    quietHoursTimezone?: string | null
+  }
+}
+
+export interface ProjectConfigSnapshot {
+  id: string
+  name: string
+  description: string | null
+  settings: unknown
+  slackEnabled: boolean
+  agent: {
+    heartbeatEnabled: boolean
+    heartbeatInterval: number
+    modelProvider: string
+    modelName: string
+    quietHoursStart: string | null
+    quietHoursEnd: string | null
+    quietHoursTimezone: string | null
+    nextHeartbeatAt: string | null
+  } | null
+}
+
+export async function getProjectConfig(projectId: string): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/config`, {
+    method: 'GET',
+    parse: (j) => j?.project as ProjectConfigSnapshot,
+  })
+}
+
+export async function configureProject(
+  projectId: string,
+  patch: ProjectConfigPatch,
+): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    parse: (j) => j?.project as ProjectConfigSnapshot,
+  })
+}
+
+export interface AgentCallRequest {
+  message: string
+  /** Pipeline correlation id, threaded into the callee's AgentCostMetric.metadata. */
+  runId?: string
+  /** Callee session key. Defaults to `run:<runId>` when a runId is given. */
+  sessionId?: string
+  /** Block for the reply (default true). */
+  wait?: boolean
+  /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
+  timeoutMs?: number
+  callerProjectId?: string
+}
+
+export interface AgentCallResult {
+  status: 'completed' | 'accepted'
+  reply?: string
+  runId?: string
+  sessionId?: string
+}
+
+export async function callProjectAgent(
+  targetProjectId: string,
+  req: AgentCallRequest,
+): Promise<CheckpointCallResult<AgentCallResult>> {
+  const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 5 * 60_000, 10_000), 20 * 60_000)
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(targetProjectId)}/agent-call`, {
+    method: 'POST',
+    body: JSON.stringify({ ...req, timeoutMs }),
+    parse: (j) => j as AgentCallResult,
+    // The API adds its own 5s grace on top of the runtime's wait budget.
+    timeoutMs: req.wait === false ? 20_000 : timeoutMs + 10_000,
   })
 }
 

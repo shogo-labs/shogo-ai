@@ -16,6 +16,7 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
+import { createProjectTools } from './project-tools'
 import { isSearchEnabled } from './search-flag'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
@@ -5611,6 +5612,14 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   // BETA: per-chat git worktrees — cross-chat awareness tool
   tools.push(createWorktreeListTool(ctx))
+
+  // Project lifecycle: compose multi-project systems (project-tools.ts).
+  // Creating/attaching/calling projects is a `system`-category mutation.
+  {
+    const projectTools = createProjectTools(ctx)
+    tools.push(...projectTools.readonly)
+    for (const t of projectTools.mutating) tools.push(g(t, 'system'))
+  }
 
   if (process.env.WORKSPACE_RUNTIME === 'true') {
     tools.push(createListProjectsTool(ctx))
