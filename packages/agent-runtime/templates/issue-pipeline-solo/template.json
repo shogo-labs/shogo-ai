@@ -1,0 +1,29 @@
+{
+  "id": "issue-pipeline-solo",
+  "name": "Issue Pipeline (Solo)",
+  "description": "The full issue-pipeline in one project: a coordinator plus nine custom subagents (analyst, planner, implementer, security, scalability, dry, done-gate, retrospective) that reproduce, analyse into 5 options, plan, implement, review, gate, and ship a PR — with the same in-the-wild prompt-evolution loop as the multi-project system. Good for small teams, or as the seed a bigger system later splits from (see templates/issue-pipeline/).",
+  "category": "development",
+  "icon": "GitPullRequest",
+  "tags": [
+    "issue-pipeline",
+    "multi-agent",
+    "code-review",
+    "github",
+    "jira",
+    "solo"
+  ],
+  "settings": {
+    "activeMode": "none",
+    "heartbeatInterval": 1800,
+    "heartbeatEnabled": true,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-6",
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "techStack": "react-app"
+}

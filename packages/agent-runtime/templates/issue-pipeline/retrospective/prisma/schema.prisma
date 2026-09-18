@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Findings contract storage — see ../findings.schema.json for the shape every
+// Finding row mirrors, and .shogo/skills/{record-finding,amend-prompt}/SKILL.md
+// for how rows are written and mined for recurrence.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Finding {
+  id           String    @id // matches findings.schema.json's `id`, not auto-generated — reviewers mint it
+  runId        String    @map("run_id")
+  reviewer     String // "security" | "scalability" | "dry"
+  category     String
+  severity     String // "blocker" | "major" | "minor" | "nit"
+  summary      String
+  detail       String?
+  filePath     String?   @map("file_path")
+  line         Int?
+  suggestedFix String?   @map("suggested_fix")
+  planGap      Boolean?  @map("plan_gap")
+  accepted     Boolean?
+  resolution   String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  resolvedAt   DateTime? @map("resolved_at")
+
+  @@index([reviewer, category])
+  @@index([runId])
+  @@index([accepted])
+  @@map("findings")
+}
+
+model PromptAmendment {
+  id           String   @id @default(cuid())
+  targetKey    String   @map("target_key") // manifest key: "planner" | "implementer" | "security" | "scalability" | "dry"
+  reviewer     String? // set when the amendment blames a reviewer's own noisy category
+  category     String
+  reason       String // "plan_gap" | "implementation_gap" | "reviewer_false_positive"
+  summary      String // the exact bullet text appended to the target's `## Learned`
+  findingIds   String   @map("finding_ids") // comma-separated Finding.id values cited (SQLite has no native string array)
+  runIds       String   @map("run_ids") // comma-separated runId values, for the checkpoint/commit message
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([targetKey])
+  @@map("prompt_amendments")
+}
