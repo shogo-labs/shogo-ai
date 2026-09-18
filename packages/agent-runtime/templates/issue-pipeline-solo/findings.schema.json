@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://shogo.ai/schemas/issue-pipeline/finding.json",
+  "title": "Finding",
+  "description": "One structured piece of reviewer feedback (security / scalability / dry) about a run's implementation, plus the lifecycle fields that let the retrospective project mine it for recurring signal. Emitted by a reviewer as the reply to project_call, and separately reported to Retrospective (record-finding) and updated by Done Gate (update-finding) once judged.",
+  "type": "object",
+  "required": ["id", "runId", "reviewer", "category", "severity", "summary", "planGap", "accepted", "createdAt"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable id for this finding, e.g. `${runId}:${reviewer}:${category}:${n}`. Lets Done Gate and Retrospective reference the same finding across calls."
+    },
+    "runId": {
+      "type": "string",
+      "description": "The pipeline run this finding belongs to. Threaded through every project_call hop for this issue."
+    },
+    "reviewer": {
+      "type": "string",
+      "enum": ["security", "scalability", "dry"],
+      "description": "Which reviewer project emitted this finding."
+    },
+    "category": {
+      "type": "string",
+      "description": "Short, stable, machine-groupable tag — not a free-text summary. Examples: `sql-injection`, `missing-authz-check`, `secret-in-code`, `n-plus-one-query`, `unbounded-loop`, `missing-index`, `duplicated-validation`, `duplicated-helper`, `copy-pasted-branch`. Retrospective groups by (reviewer, category) to detect recurrence — invent new categories sparingly; reuse an existing one when the same class of issue recurs."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["blocker", "major", "minor", "nit"],
+      "description": "blocker fails Done Gate outright. major/minor/nit are judgment calls for Done Gate."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One sentence, human-readable."
+    },
+    "detail": {
+      "type": "string",
+      "description": "Evidence: what you looked at, why it's a problem, the concrete risk."
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "suggestedFix": {
+      "type": "string",
+      "description": "Concrete, actionable — a diff sketch or the exact change, not \"be more careful\"."
+    },
+    "planGap": {
+      "type": ["boolean", "null"],
+      "description": "true: the plan (from Planner) never anticipated this class of issue — Planner's prompt is the fix target. false: the plan covered it (explicitly or via a stated best practice) but Implementer diverged — Implementer's prompt is the fix target. null: not yet judged (set by Done Gate when it resolves the finding)."
+    },
+    "accepted": {
+      "type": ["boolean", "null"],
+      "description": "Set by Done Gate. true: legitimate and fixed (or explicitly acknowledged and tracked). false: dismissed as not applicable / false positive / out of scope for this run. null: pending Done Gate's judgment."
+    },
+    "resolution": {
+      "type": "string",
+      "description": "One line: what changed, or why it was dismissed. Required once accepted is non-null."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolvedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  }
+}
