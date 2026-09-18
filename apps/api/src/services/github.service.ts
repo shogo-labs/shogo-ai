@@ -23,6 +23,7 @@
 
 import { execSync } from 'child_process';
 import { sign } from 'jsonwebtoken';
+import type { Context } from 'hono';
 import { prisma } from '../lib/prisma';
 import * as gitService from './git.service';
 
@@ -597,6 +598,199 @@ export async function handlePushWebhook(
       updatedAt: new Date(),
     },
   });
+}
+
+// =============================================================================
+// Task-source webhooks (issue pipeline): issue/comment/review -> agent
+//
+// A connected repo doubles as a task source (see docs/issue-pipeline/PLAN.md
+// Phase 2). These events wake the connected project's agent the same way a
+// sibling project would via `project_call` — through `agent-call.service.ts`,
+// which resolves the project's runtime pod and posts to its
+// `/agent/pipeline/call`. `wait: false` so the webhook ack to GitHub is fast;
+// the agent turn runs in the runtime's background.
+// =============================================================================
+
+/**
+ * Marker embedded in a PR body so later webhook events on that PR (reviews,
+ * review comments, issue comments) can recover the pipeline `runId` that
+ * opened it. Whichever agent opens the PR should append
+ * `runIdMarker(runId)` to the body (e.g. via `gh pr create --body`).
+ */
+const RUN_ID_MARKER_RE = /<!--\s*shogo:runId=([a-zA-Z0-9_-]+)\s*-->/;
+
+export function extractRunId(text: string | null | undefined): string | undefined {
+  if (!text) return undefined;
+  return RUN_ID_MARKER_RE.exec(text)?.[1] ?? undefined;
+}
+
+export function runIdMarker(runId: string): string {
+  return `<!-- shogo:runId=${runId} -->`;
+}
+
+/** The GitHub App's own bot identity, e.g. `shogo-ai[bot]`. */
+function botLogin(): string {
+  return `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`;
+}
+
+/** True when `login` is the GitHub App's own bot user (never react to our own comments). */
+export function isBotLogin(login: string | null | undefined): boolean {
+  return !!login && login.toLowerCase() === botLogin().toLowerCase();
+}
+
+/** True when `text` @-mentions the bot, e.g. "@shogo-ai please retry this". */
+export function mentionsBot(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const slug = (process.env.GH_APP_SLUG || 'shogo-ai').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Negative lookahead instead of `\b`: `\b` sits at the `-` in "shogo-ai",
+  // so "@shogo-ai-impersonator" would otherwise still match "@shogo-ai".
+  return new RegExp(`@${slug}(\\[bot\\])?(?![\\w-])`, 'i').test(text);
+}
+
+/**
+ * Resolve the Shogo project connected to a repo. `installationId` narrows
+ * the match when provided but isn't required — `repoFullName` is unique in
+ * practice for a single GitHub App.
+ */
+async function findConnectionByRepo(repoFullName: string, installationId?: number) {
+  return prisma.gitHubConnection.findFirst({
+    where: { repoFullName, ...(installationId ? { installationId } : {}) },
+    include: { project: { select: { id: true, workspaceId: true } } },
+  });
+}
+
+/**
+ * Look up the connected project and, if found, fire a fire-and-forget
+ * `project_call`-style wake. Never throws — a failure to reach the runtime
+ * must not fail the webhook ack to GitHub.
+ */
+async function wakeConnectedProjectAgent(
+  c: Context,
+  repoFullName: string,
+  installationId: number | undefined,
+  opts: { message: string; runId?: string },
+): Promise<void> {
+  try {
+    const connection = await findConnectionByRepo(repoFullName, installationId);
+    if (!connection) {
+      console.log(`[GitHub] No project connected to ${repoFullName}; ignoring task-source webhook event`);
+      return;
+    }
+    const { callProjectAgent } = await import('./agent-call.service');
+    const outcome = await callProjectAgent(c, connection.project.id, connection.project.workspaceId, {
+      message: opts.message,
+      runId: opts.runId,
+      wait: false,
+    });
+    if (outcome.status >= 400) {
+      console.warn(
+        `[GitHub] Failed to wake agent for ${repoFullName} (project ${connection.project.id}): ` +
+          `${outcome.status} ${JSON.stringify(outcome.body)}`,
+      );
+    }
+  } catch (err: any) {
+    console.error(`[GitHub] wakeConnectedProjectAgent failed for ${repoFullName}:`, err?.message ?? err);
+  }
+}
+
+/**
+ * `issues` webhook — a new item entering the pipeline. Only `opened` wakes
+ * the agent; labels/assignment/etc. are noise for intake.
+ */
+export async function handleIssueWebhook(c: Context, payload: any): Promise<void> {
+  if (payload?.action !== 'opened') return;
+  const repoFullName = payload.repository?.full_name;
+  const issue = payload.issue;
+  if (!repoFullName || !issue) return;
+  const message = [
+    `[GitHub] New issue #${issue.number} opened in ${repoFullName}: "${issue.title}"`,
+    '',
+    issue.body || '(no description)',
+    '',
+    `URL: ${issue.html_url}`,
+  ].join('\n');
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message });
+}
+
+/**
+ * `issue_comment` webhook — fires for comments on both issues and PRs
+ * (GitHub represents a PR as an `issue` with a `pull_request` stub). Wakes
+ * the agent only when the comment mentions the bot or the thread is
+ * bot-authored (the human-in-the-loop reply to the pipeline's own comment).
+ */
+export async function handleIssueCommentWebhook(c: Context, payload: any): Promise<void> {
+  if (payload?.action !== 'created') return;
+  const repoFullName = payload.repository?.full_name;
+  const comment = payload.comment;
+  const issue = payload.issue;
+  if (!repoFullName || !comment || !issue) return;
+  if (isBotLogin(comment.user?.login)) return; // never react to our own comments
+  const botAuthoredThread = isBotLogin(issue.user?.login);
+  if (!mentionsBot(comment.body) && !botAuthoredThread) return;
+
+  const isPR = !!issue.pull_request;
+  const runId = extractRunId(issue.body) ?? extractRunId(comment.body);
+  const message = [
+    `[GitHub] New comment on ${isPR ? 'PR' : 'issue'} #${issue.number} (${repoFullName}) by @${comment.user?.login}:`,
+    '',
+    comment.body,
+    '',
+    `URL: ${comment.html_url}`,
+  ].join('\n');
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
+}
+
+/**
+ * `pull_request_review` webhook — a submitted review (approve / request
+ * changes / comment). Wakes the agent only when the review body mentions
+ * the bot or the PR is bot-authored (a reviewer reacting to the pipeline's
+ * own PR — this is the "react to human comments" leg of the pipeline).
+ */
+export async function handlePullRequestReviewWebhook(c: Context, payload: any): Promise<void> {
+  if (payload?.action !== 'submitted') return;
+  const repoFullName = payload.repository?.full_name;
+  const review = payload.review;
+  const pr = payload.pull_request;
+  if (!repoFullName || !review || !pr) return;
+  if (isBotLogin(review.user?.login)) return;
+  const botAuthored = isBotLogin(pr.user?.login);
+  if (!mentionsBot(review.body) && !botAuthored) return;
+
+  const runId = extractRunId(pr.body);
+  const message = [
+    `[GitHub] PR review "${review.state}" on #${pr.number} (${repoFullName}) by @${review.user?.login}:`,
+    '',
+    review.body || '(no comment)',
+    '',
+    `URL: ${review.html_url}`,
+  ].join('\n');
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
+}
+
+/**
+ * `pull_request_review_comment` webhook — an inline review comment on a
+ * diff line. Same bot filter as `pull_request_review`.
+ */
+export async function handlePullRequestReviewCommentWebhook(c: Context, payload: any): Promise<void> {
+  if (payload?.action !== 'created') return;
+  const repoFullName = payload.repository?.full_name;
+  const comment = payload.comment;
+  const pr = payload.pull_request;
+  if (!repoFullName || !comment || !pr) return;
+  if (isBotLogin(comment.user?.login)) return;
+  const botAuthored = isBotLogin(pr.user?.login);
+  if (!mentionsBot(comment.body) && !botAuthored) return;
+
+  const runId = extractRunId(pr.body);
+  const location = comment.path ? `${comment.path}${comment.line ? ':' + comment.line : ''}` : '(unknown location)';
+  const message = [
+    `[GitHub] Review comment on #${pr.number} (${repoFullName}) by @${comment.user?.login} on ${location}:`,
+    '',
+    comment.body,
+    '',
+    `URL: ${comment.html_url}`,
+  ].join('\n');
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
 }
 
 // =============================================================================
