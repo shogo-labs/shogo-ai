@@ -14,6 +14,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { CanvasBuildManager } from '../canvas-build-manager'
+import { flushAllLogWrites, __resetLogWriterForTest } from '../runtime-log-writer'
+import { previewBuildLogPath } from '../runtime-log-paths'
+import {
+  __resetRuntimeLogDispatcherForTest,
+  getRuntimeLogsSnapshot,
+} from '../runtime-log-dispatcher'
 
 const TMP = join(tmpdir(), 'test-canvas-build-manager')
 const IS_WINDOWS = process.platform === 'win32'
@@ -477,5 +483,75 @@ describe('CanvasBuildManager error reporting', () => {
     // user-visible failure mode pre-fix.
     expect(reportedError!).not.toBe('undefined')
     expect(reportedError!).toContain('Build exited with code 1')
+  })
+})
+
+/**
+ * Regression coverage for the "canvas silently stops rebuilding" incident:
+ * a real project's every `expo export` failed (broken `postcss.config.mjs`
+ * left over from a Vite-stack file, incompatible with its actual Tailwind
+ * v3 + NativeWind setup) for days with zero visible signal, because build
+ * failures only ever reached a bare `console.error` — nothing captured
+ * anywhere a user or the Output tab could see. `dist/` just silently froze.
+ *
+ * Fix: route build outcomes through the same `emitBuildLine` path
+ * PreviewManager already uses for its `expo-export-stdout`/`-stderr`
+ * lines, so a broken build now (a) lands in `.shogo/logs/build.log` and
+ * (b) dispatches through `recordBuildEntry` with `level: 'error'`, which
+ * is what lights up the Output tab's unseen-error red dot.
+ */
+describe('CanvasBuildManager build-log visibility', () => {
+  beforeEach(() => {
+    freshWorkspace()
+    __resetRuntimeLogDispatcherForTest()
+    __resetLogWriterForTest()
+  })
+  afterEach(() => {
+    rmSync(TMP, { recursive: true, force: true })
+    __resetRuntimeLogDispatcherForTest()
+    __resetLogWriterForTest()
+  })
+
+  test('a failed build is written to build.log with level=error (was previously invisible)', async () => {
+    const binDir = join(TMP, 'node_modules', '.bin')
+    mkdirSync(binDir, { recursive: true })
+    writeShim(binDir, 'expo', { exitCode: 1 })
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: () => {},
+    })
+    await mgr.start()
+
+    const buildLogPath = previewBuildLogPath(TMP)
+    await flushAllLogWrites(buildLogPath)
+    const onDisk = readFileSync(buildLogPath, 'utf-8')
+    expect(onDisk).toContain('Build error:')
+    expect(onDisk).toContain('Build exited with code 1')
+
+    const entries = getRuntimeLogsSnapshot({ sources: ['build'] })
+    const errorEntry = entries.find((e) => e.text.includes('Build error:'))
+    expect(errorEntry).toBeDefined()
+    expect(errorEntry!.level).toBe('error')
+  })
+
+  test('a successful build is also written to build.log (level=info)', async () => {
+    freshWorkspace({ withExpo: true, stagingPayload: '<html>visible-success</html>' })
+
+    const mgr = new CanvasBuildManager(TMP, {
+      onBuildComplete: () => {},
+      onBuildError: () => {},
+    })
+    await mgr.start()
+
+    const buildLogPath = previewBuildLogPath(TMP)
+    await flushAllLogWrites(buildLogPath)
+    const onDisk = readFileSync(buildLogPath, 'utf-8')
+    expect(onDisk).toContain('Build #1 (expo) complete')
+
+    const entries = getRuntimeLogsSnapshot({ sources: ['build'] })
+    const successEntry = entries.find((e) => e.text.includes('Build #1 (expo) complete'))
+    expect(successEntry).toBeDefined()
+    expect(successEntry!.level).toBe('info')
   })
 })
