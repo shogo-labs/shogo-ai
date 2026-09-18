@@ -36,6 +36,54 @@ function readAgentVersion(): string {
   }
 }
 
+/**
+ * A VM class selects which golden rootfs/kernel/sizing a microVM boots with.
+ * 'standard' is every VM today (unchanged). 'docker' is the Tier 2
+ * Docker-capable class validated in the Phase 0 spike
+ * (docs/runbooks/docker-project-class-phase0-spike.md) — same kernel, a
+ * layered rootfs with dockerd + compose, and a second persistent data drive
+ * for /var/lib/docker.
+ */
+export type VmClass = 'standard' | 'docker'
+
+export interface VmClassConfig {
+  vmClass: VmClass
+  kernel: string
+  baseRootfs: string
+  vcpus: number
+  memMiB: number
+  /** Warm-pool target for this class specifically (0 = never pre-boot). */
+  poolSize: number
+  /**
+   * Size (MiB) of the second virtio-blk drive mounted at /var/lib/docker in
+   * the guest. 0 = no second drive (the class runs off the rootfs alone).
+   */
+  dataDriveMiB: number
+}
+
+/**
+ * Docker-class overrides. Unset METAL_DOCKER_ROOTFS is the "this host does not
+ * support the docker class" signal (see `isVmClassSupported`) — every other
+ * docker.* setting falls back to the standard value so a host that HAS opted
+ * in only needs to set the rootfs + pool size to get going.
+ *
+ * Kernel intentionally defaults to the SAME kernel as standard: the Phase 0
+ * spike found the stock CI kernel (vmlinux-6.1.102) needs zero changes for
+ * dockerd (overlay2, cgroup v2, bridge/veth, iptables-legacy all work) — only
+ * the rootfs differs.
+ */
+const dockerClass: VmClassConfig = {
+  vmClass: 'docker',
+  kernel: env('METAL_DOCKER_KERNEL', env('METAL_KERNEL', `${WORK}/img/vmlinux`)),
+  baseRootfs: env('METAL_DOCKER_ROOTFS', ''),
+  vcpus: parseInt(env('METAL_DOCKER_VCPUS', env('METAL_VCPUS', '2')), 10),
+  memMiB: parseInt(env('METAL_DOCKER_MEM_MIB', env('METAL_MEM_MIB', '1024')), 10),
+  poolSize: parseInt(env('METAL_DOCKER_POOL_SIZE', '0'), 10),
+  // 20 GiB default — enough for a handful of compose services' image layers +
+  // volumes without paying that cost on every non-docker VM's rootfs CoW.
+  dataDriveMiB: parseInt(env('METAL_DOCKER_DATA_DRIVE_MIB', '20480'), 10),
+}
+
 export const config = {
   work: WORK,
   fcBin: env('METAL_FC_BIN', `${WORK}/bin/firecracker`),
@@ -431,6 +479,9 @@ export const config = {
    * before it would restart again (no boot-time restart storm).
    */
   selfUpdateSettleMs: parseInt(env('METAL_SELF_UPDATE_SETTLE_MS', '20000'), 10),
+
+  // --- Phase 1 (Tier 2 docker project class): VM classes --------------------
+  dockerClass,
 } as const
 
 export type MetalConfig = typeof config
@@ -438,3 +489,51 @@ export type MetalConfig = typeof config
 export function homeExpand(p: string): string {
   return p.startsWith('~') ? p.replace('~', homedir()) : p
 }
+
+/**
+ * True iff this host is configured to run VMs of `vmClass`. Standard is
+ * always supported. Docker requires an explicit `METAL_DOCKER_ROOTFS` (the
+ * layered image built from `packages/agent-runtime/Dockerfile.docker`) — a
+ * host with no docker rootfs configured must never advertise or boot the
+ * class, however `SHOGO_RUNTIME_CLASS=docker` shows up in an assign env.
+ *
+ * Also refuses the class under `rootfsCow=dm`: dm-snapshot mode shares one
+ * loop-mounted golden base across every VM (see rootfs.ts), and making that
+ * per-class-safe (a base loop + CoW sizing per golden image, not just per VM)
+ * is deferred — see "Phase 1: per-project data volume durability" in the
+ * docker project class plan. Booting a differently-sized docker image
+ * against the standard-class dm base would either fail outright or, worse,
+ * quietly attach the wrong content; refusing is the fail-safe choice until dm
+ * mode is made class-aware.
+ */
+export function isVmClassSupported(cfg: MetalConfig, vmClass: VmClass): boolean {
+  if (vmClass === 'standard') return true
+  if (cfg.rootfsCow === 'dm') return false
+  return cfg.dockerClass.baseRootfs.length > 0 && cfg.dockerClass.poolSize >= 0
+}
+
+/** Resolve the effective per-class VM configuration for a boot/spawn. */
+export function classConfig(cfg: MetalConfig, vmClass: VmClass): VmClassConfig {
+  if (vmClass === 'docker') {
+    return {
+      ...cfg.dockerClass,
+      // Never boot off an empty rootfs path even if a caller ignores
+      // isVmClassSupported() — fall back to the standard image so a
+      // misconfigured host degrades to "acts like a standard VM" rather than
+      // handing Firecracker a rootfs path that doesn't exist.
+      baseRootfs: cfg.dockerClass.baseRootfs || cfg.baseRootfs,
+      kernel: cfg.dockerClass.kernel || cfg.kernel,
+    }
+  }
+  return {
+    vmClass: 'standard',
+    kernel: cfg.kernel,
+    baseRootfs: cfg.baseRootfs,
+    vcpus: cfg.vcpus,
+    memMiB: cfg.memMiB,
+    poolSize: cfg.poolSize,
+    dataDriveMiB: 0,
+  }
+}
+
+export const VM_CLASSES: VmClass[] = ['standard', 'docker']

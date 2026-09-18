@@ -253,12 +253,25 @@ resource "cloudflare_worker_script" "preview_router" {
       return ANCHORS[DEFAULT_REGION] || Object.values(ANCHORS)[0];
     }
 
-    // {projectId}.preview.<base> -> projectId. The projectId is the first DNS
-    // label (a UUID with no dots), which the `*.preview.<base>` route captures.
-    function projectIdFromHost(hostname) {
+    // {projectId}.preview.<base> -> { projectId, port: null }, OR
+    // {port}--{projectId}.preview.<base> -> { projectId, port }. Both forms
+    // share the first DNS label (which the `*.preview.<base>` route
+    // captures); the per-port docker-project-class preview (Phase 3, Tier 2
+    // plan) prefixes it with an all-digits port + '--'. projectId is always a
+    // UUID (hyphens only, never a leading digit run followed by '--'), so
+    // this split is unambiguous.
+    function hostInfo(hostname) {
       var dot = hostname.indexOf('.');
-      if (dot <= 0) return null;
-      return hostname.slice(0, dot);
+      if (dot <= 0) return { projectId: null, port: null };
+      var label = hostname.slice(0, dot);
+      var sep = label.indexOf('--');
+      if (sep > 0) {
+        var portStr = label.slice(0, sep);
+        if (/^[0-9]+$/.test(portStr)) {
+          return { projectId: label.slice(sep + 2), port: parseInt(portStr, 10) };
+        }
+      }
+      return { projectId: label, port: null };
     }
 
     // A top-level HTML navigation (not an asset, /api/* call, or control path).
@@ -349,6 +362,24 @@ resource "cloudflare_worker_script" "preview_router" {
       return fetch(target, init);
     }
 
+    // Per-port public preview (Phase 3, Tier 2 plan): sibling of
+    // proxyToApiRender scoped to one declared port. Docker-class projects only
+    // ever run on metal, so — unlike the bare-projectId host — there is no
+    // Knative anchor fallback for this path; the API's port-render endpoint
+    // re-validates the port is declared AND currently `visibility: 'preview'`
+    // before proxying anywhere.
+    async function proxyToApiPortRender(request, env, projectId, port, url) {
+      const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
+      const target = base + '/api/preview/' + projectId + '/ports/' + port + '/render' + url.pathname + url.search;
+      const headers = new Headers(request.headers);
+      headers.delete('host');
+      const init = { method: request.method, headers: headers, redirect: 'manual' };
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        init.body = await request.arrayBuffer();
+      }
+      return fetch(target, init);
+    }
+
     function wakeJsonResponse(ready) {
       return new Response(JSON.stringify({ ready: !!ready }), {
         status: 200,
@@ -423,16 +454,37 @@ resource "cloudflare_worker_script" "preview_router" {
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
-        const projectId = projectIdFromHost(url.hostname);
+        const info = hostInfo(url.hostname);
+        const projectId = info.projectId;
+        const port = info.port;
         const isDoc = isDocumentRequest(request, url);
 
         // Wake control endpoint, polled by the loading page below. Also records
         // the metal marker so the reload lands on the fast path. Always available
-        // (returns {ready:false} when no API origin is configured).
+        // (returns {ready:false} when no API origin is configured). Keyed by
+        // projectId only — readiness is a property of the project's runtime,
+        // not of any one exposed port.
         if (url.pathname === '/__shogo/wake' || url.pathname === '/__shogo/ready') {
           const w = await previewWake(env, projectId, 8000);
           if (w.url) await setMetalMark(env, projectId);
           return wakeJsonResponse(w.ready);
+        }
+
+        // ---- Per-port public preview (metal-only; docker project class) ------
+        // A `{port}--{projectId}` host always means the docker project class,
+        // which only ever runs on metal — there is no Knative anchor fallback
+        // to fall through to, so this branch owns the whole response.
+        if (port !== null) {
+          if (!env.API_WAKE_ORIGIN || !projectId) {
+            return new Response('Preview not available', { status: 502 });
+          }
+          const w = await previewWake(env, projectId, 8000);
+          if (!w.ready && isDoc) return shogoLoadingResponse(url.hostname);
+          const resp = await proxyToApiPortRender(request, env, projectId, port, url);
+          if (isDoc && INFRA_ERROR_STATUSES[resp.status] && !isRuntimeResponse(resp)) {
+            return shogoLoadingResponse(url.hostname);
+          }
+          return resp;
         }
 
         // ---- Metal (via API render proxy) ------------------------------------

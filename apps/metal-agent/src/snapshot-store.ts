@@ -52,6 +52,21 @@ export interface SnapshotMeta {
   /** Host rootfs identity at snapshot time; restore is only valid on a match. */
   rootfsIdentity: string
   /**
+   * VM class this snapshot was taken from (Phase 1 docker project class).
+   * Absent = 'standard' (every snapshot before this field existed). Restore
+   * must validate `rootfsIdentity` against THIS class's current golden image,
+   * not the standard one — see `classRootfsIdentity` in pool.ts.
+   */
+  vmClass?: 'standard' | 'docker'
+  /**
+   * Size (MiB) of the second data-drive this VM was booted with, if any. The
+   * drive's CONTENTS are never pushed to the durable store (see
+   * data-drive.ts) — this is recorded only so a durable-store restore on a
+   * cache miss can provision a fresh, empty drive of the right size rather
+   * than fail outright or silently boot without one.
+   */
+  dataDriveMiB?: number
+  /**
    * ETag of the durable source backup (`{projectId}/project-src.tar.gz`) that
    * was current when this snapshot was taken — the workspace frozen inside it
    * descends from that backup. Carried back into AssignedVm.backupParentEtag on
@@ -131,11 +146,17 @@ export interface SnapshotStore {
   pullBase(identity: string, destPath: string): Promise<boolean>
 }
 
-/** Cheap, allocation-free rootfs identity: size + mtime of the golden image. */
-export function computeRootfsIdentity(cfg: MetalConfig): string {
-  if (cfg.rootfsIdentity) return cfg.rootfsIdentity
+/**
+ * Cheap, allocation-free rootfs identity: size + mtime of the golden image.
+ * `baseRootfsOverride` computes the identity of a DIFFERENT golden image (a
+ * VM class's rootfs, e.g. the docker-class image) instead of the standard
+ * `cfg.baseRootfs` — see `classRootfsIdentity` in pool.ts, which is what
+ * every snapshot/resume path actually calls.
+ */
+export function computeRootfsIdentity(cfg: MetalConfig, baseRootfsOverride?: string): string {
+  if (cfg.rootfsIdentity && !baseRootfsOverride) return cfg.rootfsIdentity
   try {
-    const s = statSync(cfg.baseRootfs)
+    const s = statSync(baseRootfsOverride || cfg.baseRootfs)
     return `sz${s.size}-mt${Math.round(s.mtimeMs)}`
   } catch {
     return 'unknown'

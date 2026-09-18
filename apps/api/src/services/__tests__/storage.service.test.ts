@@ -25,6 +25,8 @@ const ps: PrismaState = {
 
 mock.module('@shogo/shared-runtime', () => ({
   isMobileTechStack: (_: unknown) => false,
+  isDockerTechStack: (_: unknown) => false,
+  getMinimumInstanceSize: (_: unknown) => null,
 }))
 
 mock.module('../../lib/prisma', () => ({

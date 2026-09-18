@@ -41,6 +41,14 @@ function payload(pool: MetalWarmPool) {
     // visible without SSHing in to cat ROOTFS_SHA.
     rootfsSha: getRootfsSha() ?? undefined,
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
+    // Per-VM-class capacity (Phase 1 docker project class). `classes` is the
+    // ONLY place a host declares it can run a non-standard class — the control
+    // plane's candidate filtering must never route a class to a host that
+    // doesn't advertise `supported:true` here, however an assign env is
+    // shaped (see metal-warm-pool-controller.ts). `capacity` above is kept
+    // exactly as before for any consumer that hasn't been updated to read
+    // per-class data yet — it always mirrors the 'standard' entry.
+    classes: s.classes,
     load: {
       available: s.available,
       assigned: s.assigned.length,

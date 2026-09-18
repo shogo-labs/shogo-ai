@@ -129,18 +129,44 @@ jobs:
           REGIONS: "us-ashburn-1 eu-frankfurt-1"
         run: "$GITHUB_WORKSPACE/.github/scripts/check-node-disk-parity.sh"
 
+      # The staging plan includes Kubernetes resources. Provision the same
+      # OKE kubeconfig used by the manual plan so the kubernetes/helm
+      # providers never fall back to the runner's empty default config.
+      - name: Configure kubectl for OKE
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          oci ce cluster create-kubeconfig \
+            --cluster-id "${{ vars.OKE_CLUSTER_OCID }}" \
+            --file "$HOME/.kube/config" \
+            --region "${{ vars.OCI_REGION }}" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          chmod 600 "$HOME/.kube/config"
+
       - name: terraform plan
         id: plan
         env:
           TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
           TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
           TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
           TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
           TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
           # SigNoz Cloud ingestion key for the k8s-infra collector. Without it
           # the signoz module skips its otelInsecure=false + signozApiKey set
           # blocks, so the agent ships cleartext gRPC to the TLS-only :443 ingest

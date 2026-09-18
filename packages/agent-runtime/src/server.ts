@@ -111,6 +111,14 @@ import {
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
+import {
+  parsePortParam,
+  proxyPortHttp,
+  buildPortBridgeWsData,
+  isPortBridgeWsData,
+  createPortBridgeWsHandlers,
+  type PortBridgeWsData,
+} from './port-bridge'
 import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
@@ -4892,6 +4900,31 @@ app.all('/api/*', async (c) => {
 })
 
 // =============================================================================
+// Port bridge HTTP proxy — `/agent/ports/:port/http/*` (Phase 3, Tier 2 plan)
+//
+// Reverse-proxies to a guest-local port the project's tech stack declares
+// (`SHOGO_EXPOSED_PORTS`) — used by the public per-port preview render path
+// in apps/api. Under `/agent/*` so it's covered by the existing runtime-auth
+// middleware for free; see port-bridge.ts for the allowlist rationale.
+// =============================================================================
+const handlePortHttpProxy = async (c: any) => {
+  const port = parsePortParam(c.req.param('port'))
+  if (port == null) return c.json({ error: 'invalid port' }, 400)
+  const url = new URL(c.req.url)
+  const prefix = `/agent/ports/${c.req.param('port')}/http`
+  const restPath = url.pathname.slice(prefix.length) || '/'
+  return proxyPortHttp(port, {
+    method: c.req.method,
+    restPath,
+    search: url.search,
+    headers: c.req.raw.headers,
+    body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : null,
+  })
+}
+app.all('/agent/ports/:port/http', handlePortHttpProxy)
+app.all('/agent/ports/:port/http/*', handlePortHttpProxy)
+
+// =============================================================================
 // Workspace per-project preview routes — `/p/<projectId>/…`
 //
 // Registered ONLY in workspace-runtime mode. Multiplexes N attached
@@ -6608,7 +6641,29 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
 // Match a path like `/terminal/sessions/<id>/ws`; the id segment is opaque
 // (no slashes) and is whatever PtySessionManager.create() assigned.
 const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
+// Raw TCP port-bridge upgrade (Phase 3, Tier 2 plan) — see port-bridge.ts.
+const PORT_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/ws$/
+const portBridgeWs = createPortBridgeWsHandlers()
 let healthPerfReported = false
+
+/**
+ * Same fast-path byte-compare `checkRuntimeAuth` uses in
+ * shared-runtime/server-framework.ts, duplicated here because a WS upgrade
+ * never reaches Hono (Bun.serve owns the upgrade decision), so this has to
+ * run before `app.fetch()`. Deliberately skips that function's slow-path
+ * (API round-trip token/preview-JWT validation): the ONLY caller of the port
+ * bridge WS is apps/api's port-tunnel-bridge, which always dials with a
+ * freshly-derived project runtime token, never a stale or rotated one — so
+ * the byte-compare fast path is the whole contract here, not an optimization
+ * over a slower path we're skipping.
+ */
+function isAuthedForPortBridge(req: Request): boolean {
+  const runtimeSecret = process.env.RUNTIME_AUTH_SECRET
+  if (!runtimeSecret) return process.env.NODE_ENV !== 'production'
+  const authHeader = req.headers.get('authorization') || ''
+  const tokenHeader = req.headers.get('x-runtime-token') || ''
+  return authHeader === `Bearer ${runtimeSecret}` || tokenHeader === runtimeSecret
+}
 
 if (process.env.SHOGO_PERF_LOG === '1') {
   logTiming('server-export-evaluated')
@@ -6672,12 +6727,33 @@ export default {
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 500 })
     }
+    const portWsMatch = upgrade === 'websocket' ? PORT_WS_PATH_RE.exec(url.pathname) : null
+    if (portWsMatch) {
+      if (!isAuthedForPortBridge(req)) {
+        return new Response('Unauthorized', { status: 401 })
+      }
+      const port = parsePortParam(portWsMatch[1])
+      if (port == null) return new Response('Invalid port', { status: 400 })
+      const data: PortBridgeWsData = buildPortBridgeWsData(port)
+      const upgraded = server.upgrade(req, { data })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
     return app.fetch(req)
   },
   websocket: {
-    open: ptyWs.open,
-    message: ptyWs.message,
-    close: ptyWs.close,
+    open(ws: any) {
+      if (isPortBridgeWsData(ws.data)) portBridgeWs.open(ws)
+      else ptyWs.open(ws)
+    },
+    message(ws: any, msg: any) {
+      if (isPortBridgeWsData(ws.data)) portBridgeWs.message(ws, msg)
+      else ptyWs.message(ws, msg)
+    },
+    close(ws: any, code?: number, reason?: string) {
+      if (isPortBridgeWsData(ws.data)) portBridgeWs.close(ws)
+      else ptyWs.close(ws, code, reason)
+    },
   },
   idleTimeout: 0,
   // Durable-backup hydration (`POST /pool/hydrate`) streams a full project

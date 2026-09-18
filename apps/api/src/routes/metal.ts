@@ -69,6 +69,17 @@ export function metalRoutes(): Hono {
         memMiB: Number(body.capacity?.memMiB ?? 0),
         vcpus: Number(body.capacity?.vcpus ?? 0),
       },
+      // Per-VM-class capacity (Phase 1 docker project class). Absent on older
+      // agents — candidates() then treats the host as standard-only, which is
+      // the correct fail-closed default (never route docker there).
+      classes: Array.isArray(body.classes)
+        ? body.classes.map((c: any) => ({
+            vmClass: String(c?.vmClass ?? 'standard'),
+            supported: Boolean(c?.supported),
+            poolSize: Number(c?.poolSize ?? 0),
+            available: Number(c?.available ?? 0),
+          }))
+        : undefined,
       load: {
         available: Number(body.load?.available ?? 0),
         assigned: Number(body.load?.assigned ?? 0),

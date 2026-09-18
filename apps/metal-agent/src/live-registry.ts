@@ -45,6 +45,10 @@ export interface LiveVmEntry {
   rootfs: string
   vcpus: number
   memoryMB: number
+  /** VM class this handle was booted as (Phase 1 docker project class). Absent = 'standard'. */
+  vmClass?: 'standard' | 'docker'
+  /** Second data-drive backing path (docker class), if any. */
+  dataDrive?: string
   assignedAt: number
   lastTouchedAt: number
   /** Snapshot files this VM was restored from (protected from orphan reclaim). */

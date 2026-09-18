@@ -88,6 +88,34 @@ SCIM provisioning, and custom design systems.
 Annual billing on every paid plan saves about 17% versus monthly.
 :::
 
+## Compute (instance size)
+
+Your **plan** (above) controls AI usage windows, model access, and
+collaboration features. **Compute** is a separate add-on that controls how
+much CPU, RAM, and disk your workspace's projects get to run on — you can
+be on any plan and add more compute if a project needs it.
+
+| Tier   | CPU  | RAM  | Disk   | Always-on |
+|--------|------|------|--------|-----------|
+| Micro  | 0.5  | 2 GB | 1 GB   | No (default, free) |
+| Small  | 1    | 4 GB | 5 GB   | Yes |
+| Medium | 2    | 8 GB | 20 GB  | Yes |
+| Large  | 4    | 16 GB| 100 GB | Yes |
+| XLarge | 8    | 32 GB| 200 GB | Yes |
+
+Every workspace starts on **Micro** at no extra cost. Upgrade from
+**Settings > Billing > Compute** at any time — the change applies to your
+running projects automatically (existing project sessions pick up the new
+resources on their next restart).
+
+:::info Docker Compose projects require Large
+Projects built on the **Docker Compose** tech stack run a real Docker
+daemon plus your compose services, which need more than the default
+headroom. These projects require your workspace to be on the **Large**
+compute tier or higher — you'll be prompted to upgrade if you try to create
+one on a smaller tier.
+:::
+
 ## Managing your subscription
 
 1. Go to **Settings** in the sidebar and open the **Billing** tab.
@@ -96,6 +124,7 @@ Annual billing on every paid plan saves about 17% versus monthly.
    - See your usage history (both in-window usage and overage)
    - Add or remove seats (Pro & Business)
    - Upgrade or downgrade your plan
+   - Upgrade or downgrade your compute tier
    - Manage your payment method via Stripe
    - Enable overage and set a hard cap to control spending
    - Redeem a license key
