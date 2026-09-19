@@ -15,6 +15,7 @@ import { agentTaskEvents } from '../../lib/agent-task-events'
 import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
+import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
 
 type ProjectActivityGroup = {
   id: string
@@ -160,7 +161,7 @@ function EmptyActivityCard({ title, message }: { title: string; message: string 
 
 const PROJECT_REFRESH_INTERVAL_MS = 30_000
 
-export default observer(function ActivityScreen() {
+const TeamActivityScreen = observer(function TeamActivityScreen() {
   const router = useRouter()
   const http = useMemo(() => createHttpClient(), [])
   const workspace = useActiveWorkspace()
@@ -400,4 +401,9 @@ export default observer(function ActivityScreen() {
       )}
     </View>
   )
+})
+
+export default observer(function ActivityScreenRoute() {
+  const workspace = useActiveWorkspace()
+  return workspace?.kind === 'personal' ? <PersonalActivityScreen /> : <TeamActivityScreen />
 })

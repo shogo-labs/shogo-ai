@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
   isWorkspaceRuntimeMode,
+  workspaceKind,
   workspaceRuntimeId,
   workspaceAttachedProjectIds,
   workspaceProjectsManifest,
@@ -16,6 +17,14 @@ import {
   isAttachedProjectId,
   parseWorkspacePreviewUrls,
 } from '../workspace-runtime-mode'
+
+describe('workspaceKind', () => {
+  it('recognizes personal mode and defaults safely to team', () => {
+    expect(workspaceKind({ WORKSPACE_KIND: 'personal' } as any)).toBe('personal')
+    expect(workspaceKind({ WORKSPACE_KIND: 'team' } as any)).toBe('team')
+    expect(workspaceKind({} as any)).toBe('team')
+  })
+})
 
 describe('isWorkspaceRuntimeMode', () => {
   it('is true only when WORKSPACE_RUNTIME=true', () => {

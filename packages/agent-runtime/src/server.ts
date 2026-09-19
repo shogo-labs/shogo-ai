@@ -77,6 +77,7 @@ import {
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
+  seedPersonalCompanionTemplate,
   seedLSPConfig,
   seedRuntimeTemplate,
   ensureWorkspaceDeps,
@@ -126,6 +127,7 @@ import { initTrustResolver, refreshTrust } from './trust-resolver'
 import {
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
+  workspaceKind,
   workspaceProjectsManifest,
   renderWorkspaceManifestMarkdown,
   shouldSkipManagedSeeding,
@@ -1015,6 +1017,9 @@ function ensureWorkspaceFiles(): void {
     seedWorkspaceDefaults(WORKSPACE_DIR)
     if (IS_WORKSPACE_RUNTIME) {
       writeWorkspaceManifest(WORKSPACE_DIR)
+      if (workspaceKind() === 'personal') {
+        seedPersonalCompanionTemplate(WORKSPACE_DIR)
+      }
     }
     workspaceStatus.templateSeeded = true
     logTiming(

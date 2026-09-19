@@ -422,6 +422,160 @@ async function lifecycleFetch<T>(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Personal workspace wrappers — profile, goals, and activity primitives.
+// ---------------------------------------------------------------------------
+
+export interface PersonalProfile {
+  id: string
+  workspaceId: string
+  name: string
+  avatarUrl: string | null
+  tagline: string | null
+  personality: string | null
+  statusText: string | null
+  statusUpdatedAt: string | null
+}
+
+export interface PersonalGoal {
+  id: string
+  workspaceId: string
+  title: string
+  why: string | null
+  status: 'active' | 'paused' | 'done'
+  plan: unknown
+  deliverables: unknown
+  nextCheckInAt: string | null
+  lastProgressAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersonalGoalEvent {
+  id: string
+  goalId: string
+  kind: 'progress' | 'blocker' | 'approval' | 'note' | 'deliverable'
+  message: string
+  metadata: unknown
+  createdAt: string
+}
+
+export interface PersonalGoalCreateRequest {
+  title: string
+  why?: string | null
+  status?: PersonalGoal['status']
+  plan?: unknown
+  deliverables?: unknown
+  nextCheckInAt?: string | null
+}
+
+export interface PersonalGoalUpdateRequest {
+  title?: string
+  why?: string | null
+  status?: PersonalGoal['status']
+  plan?: unknown
+  deliverables?: unknown
+  nextCheckInAt?: string | null
+  lastProgressAt?: string | null
+}
+
+async function personalFetch<T>(
+  path: string,
+  init: RequestInit & { parse?: (json: any) => T } = {},
+): Promise<CheckpointCallResult<T>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  const { parse, ...rest } = init
+  try {
+    const res = await fetch(`${apiUrl}${path}`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(20_000),
+      ...rest,
+    })
+    const json = await res.json().catch(() => null) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+export async function getAgentProfile(workspaceId: string): Promise<CheckpointCallResult<PersonalProfile>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`, {
+    method: 'GET',
+    parse: (j) => j?.profile as PersonalProfile,
+  })
+}
+
+export async function setAgentProfile(
+  workspaceId: string,
+  changes: Partial<Pick<PersonalProfile, 'name' | 'avatarUrl' | 'tagline' | 'personality' | 'statusText'>>,
+): Promise<CheckpointCallResult<PersonalProfile>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`, {
+    method: 'PATCH',
+    body: JSON.stringify(changes),
+    parse: (j) => j?.profile as PersonalProfile,
+  })
+}
+
+export async function listGoals(
+  workspaceId: string,
+  status?: PersonalGoal['status'],
+): Promise<CheckpointCallResult<PersonalGoal[]>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals${query}`, {
+    method: 'GET',
+    parse: (j) => (j?.goals ?? []) as PersonalGoal[],
+  })
+}
+
+export async function getGoal(
+  workspaceId: string,
+  goalId: string,
+): Promise<CheckpointCallResult<PersonalGoal & { events?: PersonalGoalEvent[] }>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}`,
+    { method: 'GET', parse: (j) => j?.goal as PersonalGoal & { events?: PersonalGoalEvent[] } },
+  )
+}
+
+export async function createGoal(
+  workspaceId: string,
+  input: PersonalGoalCreateRequest,
+): Promise<CheckpointCallResult<PersonalGoal>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => j?.goal as PersonalGoal,
+  })
+}
+
+export async function updateGoal(
+  workspaceId: string,
+  goalId: string,
+  input: PersonalGoalUpdateRequest,
+): Promise<CheckpointCallResult<PersonalGoal>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}`,
+    { method: 'PATCH', body: JSON.stringify(input), parse: (j) => j?.goal as PersonalGoal },
+  )
+}
+
+export async function logGoalEvent(
+  workspaceId: string,
+  goalId: string,
+  input: { kind: PersonalGoalEvent['kind']; message: string; metadata?: unknown },
+): Promise<CheckpointCallResult<PersonalGoalEvent>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}/events`,
+    { method: 'POST', body: JSON.stringify(input), parse: (j) => j?.event as PersonalGoalEvent },
+  )
+}
+
 export interface ProjectSummary {
   id: string
   name: string
@@ -438,6 +592,7 @@ export interface CreateProjectRequest {
   workingMode?: 'managed' | 'external'
   templateId?: string
   settings?: Record<string, unknown>
+  hidden?: boolean
   /** Acting user — forwarded from ToolContext.userId when present. */
   userId?: string
 }

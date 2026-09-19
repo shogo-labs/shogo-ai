@@ -57,6 +57,7 @@ import { techStackDisplayName } from '../../lib/tech-stack-catalog'
 import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
+import { PersonalHomeScreen } from '../../components/personal/PersonalHomeScreen'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -856,6 +857,10 @@ const HomeScreen = observer(function HomeScreen() {
         </View>
       </SafeAreaView>
     )
+  }
+
+  if (currentWorkspace?.kind === 'personal') {
+    return <PersonalHomeScreen />
   }
 
   const greeting = (

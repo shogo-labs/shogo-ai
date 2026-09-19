@@ -45,6 +45,51 @@ export interface AdminScopeDef {
   description: string
 }
 
+export type PersonalGoalStatus = 'active' | 'paused' | 'done'
+export type PersonalGoalEventKind = 'progress' | 'blocker' | 'approval' | 'note' | 'deliverable'
+
+export interface PersonalAgentProfile {
+  id: string
+  workspaceId: string
+  name: string
+  avatarUrl: string | null
+  tagline: string | null
+  personality: string | null
+  statusText: string | null
+  statusUpdatedAt: string | null
+}
+
+export interface PersonalGoal {
+  id: string
+  workspaceId: string
+  title: string
+  why: string | null
+  status: PersonalGoalStatus
+  plan: unknown
+  deliverables: unknown
+  nextCheckInAt: string | null
+  lastProgressAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersonalWorkspaceActivity {
+  type: 'goal_event' | 'agent_task'
+  id: string
+  goalId?: string | null
+  goalTitle?: string
+  kind?: PersonalGoalEventKind
+  message?: string
+  title?: string
+  status?: string
+  currentStep?: string | null
+  resultSummary?: string | null
+  errorMessage?: string | null
+  createdAt: string
+  updatedAt?: string
+  completedAt?: string | null
+}
+
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {
   userId: string
@@ -1300,6 +1345,46 @@ export const api = {
     )
     if (!res.data?.session) throw new Error('createWorkspaceSession: no session returned')
     return res.data.session
+  },
+
+  /** Return the stable primary chat for a personal workspace. */
+  async getPrimaryWorkspaceSession(
+    http: HttpClient,
+    workspaceId: string,
+  ): Promise<{ id: string; workspaceId: string; isPrimary?: boolean }> {
+    const res = await http.get<{
+      sessions?: Array<{ id: string; workspaceId: string; isPrimary?: boolean }>
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`)
+    const primary = res.data?.sessions?.find((session) => session.isPrimary)
+    if (!primary) throw new Error('getPrimaryWorkspaceSession: no primary session returned')
+    return primary
+  },
+
+  async getAgentProfile(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ profile?: PersonalAgentProfile }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`,
+    )
+    if (!res.data?.profile) throw new Error('getAgentProfile: no profile returned')
+    return res.data.profile
+  },
+
+  async listWorkspaceGoals(
+    http: HttpClient,
+    workspaceId: string,
+    status?: PersonalGoalStatus,
+  ) {
+    const query = status ? `?status=${encodeURIComponent(status)}` : ''
+    const res = await http.get<{ goals?: PersonalGoal[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/goals${query}`,
+    )
+    return res.data?.goals ?? []
+  },
+
+  async listWorkspaceActivity(http: HttpClient, workspaceId: string, limit = 100) {
+    const res = await http.get<{ activity?: PersonalWorkspaceActivity[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/activity?limit=${Math.min(Math.max(limit, 1), 200)}`,
+    )
+    return res.data?.activity ?? []
   },
 
   /** Attach a project to an existing workspace session. */

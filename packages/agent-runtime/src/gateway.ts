@@ -91,6 +91,7 @@ import {
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
+import { workspaceKind } from './workspace-runtime-mode'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
@@ -121,6 +122,21 @@ Example: if a user says "review all my pending changes and commit them", registe
 - prompt: "Please review all pending changes and commit them" (faithful to what the user said)
 
 Constraints: max 10 quick actions, labels must be unique. To view or edit existing actions, read/edit \`.shogo/quick-actions.json\` directly.`
+
+const PERSONAL_COMPANION_GUIDE = `## Personal Companion Mode
+
+This is a personal, chat-first workspace. The conversation is the interface:
+use the profile and goal tools to keep the companion identity and long-running
+work visible, and communicate in concise user-facing language.
+
+- Do not use shell, builder, canvas, code-analysis, team, or subagent tools.
+- For a real software artifact, create a goal, then use \`project_create\` and
+  \`project_call\` to delegate it. Personal-workspace builder projects are
+  hidden from the user's project list.
+- When delegation returns a preview or published URL, save it as a goal
+  deliverable and share the URL with the user.
+- Do not expose internal project ids or builder mechanics unless the user asks.
+`
 
 function isComposioTool(name: string): boolean {
   return /^[A-Z]+_/.test(name)
@@ -354,6 +370,8 @@ export function describeTurnFailure(
 export type VisualMode = 'canvas' | 'app' | 'none'
 
 export interface GatewayConfig {
+  /** Runtime capability profile; personal removes builder/shell tools. */
+  capabilityProfile?: 'personal'
   heartbeatInterval: number
   heartbeatEnabled: boolean
   quietHours: { start: string; end: string; timezone: string }
@@ -827,15 +845,18 @@ export class AgentGateway {
   }
 
   private loadConfig(): GatewayConfig {
+    const personalWorkspace = workspaceKind() === 'personal'
     const defaults: GatewayConfig = {
+      capabilityProfile: personalWorkspace ? 'personal' : undefined,
       heartbeatInterval: 1800,
       heartbeatEnabled: false,
       quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
       maxSessionMessages: 30,
-      activeMode: 'canvas',
-      allowedModes: ['canvas', 'none'],
+      activeMode: personalWorkspace ? 'none' : 'canvas',
+      allowedModes: personalWorkspace ? ['none'] : ['canvas', 'none'],
+      shellEnabled: personalWorkspace ? false : undefined,
       mainSessionIds: ['chat'],
     }
     // BETA: per-chat git worktrees default. The warm-pool controller injects
@@ -850,6 +871,15 @@ export class AgentGateway {
         return {
           ...defaults,
           ...raw,
+          // Workspace kind is API-issued runtime state, not user-editable
+          // config. Personal workspaces must not regain builder tools by
+          // patching config.json.
+          capabilityProfile: personalWorkspace
+            ? 'personal'
+            : raw.capabilityProfile,
+          activeMode: personalWorkspace ? 'none' : raw.activeMode ?? defaults.activeMode,
+          allowedModes: personalWorkspace ? ['none'] : raw.allowedModes ?? defaults.allowedModes,
+          shellEnabled: personalWorkspace ? false : raw.shellEnabled,
           heartbeatInterval: raw.heartbeat?.intervalMs
             ? Math.round(raw.heartbeat.intervalMs / 1000)
             : raw.heartbeatInterval ?? defaults.heartbeatInterval,
@@ -3558,6 +3588,7 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     parts.push(OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
@@ -3600,6 +3631,7 @@ export class AgentGateway {
     }
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
@@ -3713,6 +3745,9 @@ export class AgentGateway {
 
     // 2. General coding guide (always the same)
     pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.capabilityProfile === 'personal') {
+      pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
+    }
 
     // 2b. Shogo SDK guide — when/how to reach for @shogo-ai/sdk in user apps.
     // Toggleable so projects that don't ship a Shogo app (pure-chat agents,

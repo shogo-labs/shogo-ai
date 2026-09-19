@@ -5,10 +5,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Keyboard, Platform, Pressable, View } from 'react-native'
 import { useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Activity, LayoutGrid, ListTodo, MessageCircle } from 'lucide-react-native'
+import { Activity, LayoutGrid, ListTodo, MessageCircle, Target } from 'lucide-react-native'
 import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../../lib/native-composer-keyboard'
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
@@ -39,7 +40,7 @@ function isHomePath(pathname: string) {
 }
 
 function isBottomTabPath(pathname: string) {
-  return ['/tasks', '/activity', '/canvases'].some((path) =>
+  return ['/tasks', '/activity', '/canvases', '/goals'].some((path) =>
     pathname === path || pathname.endsWith(path) || pathname.includes(`(app)${path}`),
   )
 }
@@ -59,6 +60,7 @@ function isHiddenPath(pathname: string) {
 export function MobileBottomNav() {
   const router = useRouter()
   const pathname = usePathname()
+  const workspace = useActiveWorkspace()
   const params = useLocalSearchParams<{
     id?: string
     chatSessionId?: string
@@ -112,6 +114,7 @@ export function MobileBottomNav() {
 
   const active = useMemo(() => {
     if (pathname.includes('/tasks')) return 'tasks'
+    if (pathname.includes('/goals')) return 'goals'
     if (pathname.includes('/activity')) return 'activity'
     if (pathname.includes('/canvases')) return 'canvases'
     if (pathname.includes('/marketplace')) return 'none'
@@ -122,7 +125,7 @@ export function MobileBottomNav() {
   if (isHiddenPath(pathname) || keyboardOpen) return null
 
   const goChat = () => {
-    if (currentProjectContext?.projectId) {
+    if (workspace?.kind !== 'personal' && currentProjectContext?.projectId) {
       router.replace({
         pathname: '/(app)/projects/[id]' as any,
         params: {
@@ -150,10 +153,8 @@ export function MobileBottomNav() {
     },
   }
 
-  const items = [
-    { id: 'chat', label: 'Chat', Icon: MessageCircle, onPress: goChat },
-    taskItem,
-    {
+  const chatItem = { id: 'chat', label: 'Chat', Icon: MessageCircle, onPress: goChat }
+  const activityItem = {
       id: 'activity',
       label: 'Activity',
       Icon: Activity,
@@ -163,7 +164,22 @@ export function MobileBottomNav() {
           ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
           : {}),
       } as any),
-    },
+    }
+  const items = workspace?.kind === 'personal'
+    ? [
+        chatItem,
+        {
+          id: 'goals',
+          label: 'Goals',
+          Icon: Target,
+          onPress: () => router.push('/(app)/goals' as any),
+        },
+        activityItem,
+      ]
+    : [
+    chatItem,
+    taskItem,
+    activityItem,
     {
       id: 'canvases',
       label: 'Canvases',

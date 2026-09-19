@@ -35,6 +35,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
   Home,
+  Activity,
+  Target,
   Search,
   ChevronDown,
   ChevronLeft,
@@ -836,7 +838,7 @@ export const AppSidebar = observer(function AppSidebar({
             collapsed={collapsed}
             onNavPress={onNavPress}
           />
-          {features.marketplace && (
+          {features.marketplace && currentWorkspace?.kind !== "personal" && (
             <NavItem
               icon={Store}
               label="Marketplace"
@@ -846,7 +848,7 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
-          {isNativeDrawer && (
+          {isNativeDrawer && currentWorkspace?.kind !== "personal" && (
             <NavItem
               icon={MessageSquarePlus}
               label="New Chat"
@@ -873,9 +875,30 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
+          {currentWorkspace?.kind === "personal" && (
+            <>
+              <NavItem
+                icon={Target}
+                label="Goals"
+                href="/(app)/goals"
+                active={pathname.includes("/goals")}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+              <NavItem
+                icon={Activity}
+                label="Activity"
+                href="/(app)/activity"
+                active={pathname.includes("/activity")}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            </>
+          )}
         </View>
 
         {/* PROJECTS tree — each project expands to show its chats */}
+        {currentWorkspace?.kind !== "personal" && (
         <View className={cn("px-2", isNativeDrawer ? "mt-5" : "mt-4")}>
           {!collapsed && pinnedProjects.length > 0 && (
             <View className="mb-2">
@@ -1140,6 +1163,7 @@ export const AppSidebar = observer(function AppSidebar({
               </>
             ))}
         </View>
+        )}
       </ScrollView>
 
       {/* ── Bottom Section ── */}

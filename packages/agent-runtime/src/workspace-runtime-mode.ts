@@ -41,6 +41,11 @@ export function workspaceRuntimeId(env: NodeJS.ProcessEnv = process.env): string
   return env.WORKSPACE_ID || null
 }
 
+/** Workspace product mode, defaulting to the team experience for compatibility. */
+export function workspaceKind(env: NodeJS.ProcessEnv = process.env): 'personal' | 'team' {
+  return env.WORKSPACE_KIND === 'personal' ? 'personal' : 'team'
+}
+
 /**
  * Attached project ids for a workspace runtime, parsed from the
  * comma-separated `WORKSPACE_PROJECT_IDS` env (set by build-workspace-env.ts).

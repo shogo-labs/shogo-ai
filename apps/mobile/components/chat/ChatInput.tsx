@@ -358,6 +358,8 @@ export interface ChatInputProps {
   onSendQueuedMessageNow?: (messageId: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
+  /** Personal companion composer hides plan/ask and model controls. */
+  personalMode?: boolean
   dualPlan?: boolean
   onDualPlanChange?: (enabled: boolean) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
@@ -436,6 +438,7 @@ function ChatInputImpl({
   onSendQueuedMessageNow,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
+  personalMode = false,
   dualPlan = false,
   onDualPlanChange,
   contextUsage,
@@ -1770,7 +1773,7 @@ function ChatInputImpl({
                 return
               }
             }
-            if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
+            if (!personalMode && Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
               e.preventDefault()
               cycleInteractionMode()
               return
@@ -1868,22 +1871,24 @@ function ChatInputImpl({
                   onAttach={handlePlusAttach}
                   attachDisabled={pendingFiles.length >= MAX_FILES}
                 >
-                  <ComposerPlusSection
-                    id="mode"
-                    label="Mode"
-                    value={currentInteractionConfig.label}
-                    Icon={currentInteractionConfig.Icon}
-                  >
-                    <ComposerPlusModeList
-                      modes={INTERACTION_MODES}
-                      selectedId={interactionMode}
-                      onSelect={handleInteractionModeChange}
-                      dualPlan={dualPlan}
-                      onDualPlanChange={onDualPlanChange}
-                      dualPlanDisabled={disabled}
-                      dualPlanTestId="dual-plan-toggle"
-                    />
-                  </ComposerPlusSection>
+                  {!personalMode ? (
+                    <ComposerPlusSection
+                      id="mode"
+                      label="Mode"
+                      value={currentInteractionConfig.label}
+                      Icon={currentInteractionConfig.Icon}
+                    >
+                      <ComposerPlusModeList
+                        modes={INTERACTION_MODES}
+                        selectedId={interactionMode}
+                        onSelect={handleInteractionModeChange}
+                        dualPlan={dualPlan}
+                        onDualPlanChange={onDualPlanChange}
+                        dualPlanDisabled={disabled}
+                        dualPlanTestId="dual-plan-toggle"
+                      />
+                    </ComposerPlusSection>
+                  ) : null}
                   <ComposerPlusSection
                     id="environment"
                     label="Environment"
@@ -1930,6 +1935,8 @@ function ChatInputImpl({
                 </ComposerPlusSheet>
               </>
             ) : (
+              <>
+            {!personalMode ? (
               <>
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
@@ -2075,6 +2082,8 @@ function ChatInputImpl({
                 </View>
               </PopoverContent>
             </Popover>
+              </>
+            ) : null}
 
             {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
                 per-device preference: once on, every plan generated in Plan
@@ -2178,7 +2187,7 @@ function ChatInputImpl({
             )}
 
             {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-            <ComposerModelPicker{...composerModelPickerProps({currentModelId,
+            {!personalMode ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
               effectiveIsPro,
               disabled,
               nativeSheet: isPhoneChrome,
@@ -2204,7 +2213,7 @@ function ChatInputImpl({
               label: isPhoneChrome ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId),
               menuWidth:nativeModelMenuWidth,
               onSelect:handleModelChange})}
-            />
+            /> : null}
 
           </View>
 

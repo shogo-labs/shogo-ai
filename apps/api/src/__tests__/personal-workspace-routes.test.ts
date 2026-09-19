@@ -21,12 +21,16 @@ mock.module('../services/workspace.service', () => ({
 }))
 
 mock.module('../services/personal-workspace.service', () => ({
+  createGoal: async () => ({ id: 'goal-1', title: 'Habit tracker', status: 'active' }),
+  createGoalEvent: async () => ({ id: 'event-1', kind: 'progress', message: 'Started' }),
   getOrCreateAgentProfile: async () => profile,
   updateAgentProfile: async (_workspaceId: string, changes: Record<string, unknown>) => ({
     ...profile,
     ...changes,
   }),
+  updateGoal: async () => ({ id: 'goal-1', title: 'Habit tracker', status: 'active' }),
   isGoalStatus: (value: unknown) => ['active', 'paused', 'done'].includes(String(value)),
+  isGoalEventKind: (value: unknown) => ['progress', 'blocker', 'approval', 'note', 'deliverable'].includes(String(value)),
   getGoal: async (_workspaceId: string, goalId: string) =>
     goalId === 'goal-1' ? { id: 'goal-1', title: 'Habit tracker', events: [], agentTasks: [] } : null,
   listGoals: async () => [{ id: 'goal-1', title: 'Habit tracker', status: 'active' }],

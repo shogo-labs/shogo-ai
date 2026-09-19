@@ -35,9 +35,11 @@ import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } 
 import {
   createGoal,
   createGoalEvent,
+  getGoal,
   getOrCreateAgentProfile,
   isGoalEventKind,
   isGoalStatus,
+  listGoals,
   updateAgentProfile,
   updateGoal,
 } from '../services/personal-workspace.service'
@@ -660,6 +662,24 @@ app.patch('/workspaces/:workspaceId/agent-profile', async (c) => {
   }
 
   return c.json({ profile: await updateAgentProfile(workspaceId, changes) })
+})
+
+app.get('/workspaces/:workspaceId/goals', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const rawStatus = c.req.query('status')
+  if (rawStatus !== undefined && !isGoalStatus(rawStatus)) {
+    return c.json({ error: { code: 'invalid_status', message: 'Unknown goal status' } }, 400)
+  }
+  return c.json({ goals: await listGoals(workspaceId, rawStatus as any) })
+})
+
+app.get('/workspaces/:workspaceId/goals/:goalId', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const goal = await getGoal(workspaceId, c.req.param('goalId'))
+  if (!goal) return c.json({ error: { code: 'not_found', message: 'Goal not found' } }, 404)
+  return c.json({ goal })
 })
 
 app.post('/workspaces/:workspaceId/goals', async (c) => {

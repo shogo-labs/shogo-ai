@@ -397,6 +397,10 @@ export interface ChatPanelProps {
   onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void
   compactValue?: string
   onCompactValueChange?: (value: string) => void
+  /** Personal-shell composer prefill; stages text without sending it. */
+  prefillRequest?: RestoreDraftRequest | null
+  /** Hides model and interaction-mode controls for the companion shell. */
+  personalMode?: boolean
   onChatError?: (error: Error | null) => void
   injectMessage?: string | null
   onActiveToolCall?: (toolName: string | null) => void
@@ -796,6 +800,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onCompactSubmit,
   compactValue,
   onCompactValueChange,
+  prefillRequest,
+  personalMode = false,
   onChatError,
   injectMessage,
   onActiveToolCall,
@@ -1222,6 +1228,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     interactionModeRef.current = interactionMode
   }, [interactionMode])
+
+  useEffect(() => {
+    if (!personalMode) return
+    interactionModeRef.current = "agent"
+    setInteractionMode("agent")
+  }, [personalMode])
 
   const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
     interactionModeRef.current = mode
@@ -6296,7 +6308,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               contextBreakdown={contextBreakdown}
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
-              restoreDraftRequest={restoreDraftRequest}
+              restoreDraftRequest={prefillRequest ?? restoreDraftRequest}
+              personalMode={personalMode}
               projectId={projectId}
               projects={projectMentionOptions}
               chatSessionId={currentSessionId}
