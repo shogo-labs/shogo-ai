@@ -1191,6 +1191,7 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     const projects = await prisma.project.findMany({
       where: {
         workspaceId,
+        hidden: false,
         ...(slackOnly ? { slackEnabled: true } : {}),
         ...(workspaceMember ? {} : { members: { some: { userId } } }),
       },

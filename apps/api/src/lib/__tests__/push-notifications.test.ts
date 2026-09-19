@@ -7,16 +7,32 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 
 let findManyImpl: (args: { where: { instanceId: string } }) => Promise<Array<{ pushToken: string }>> =
   async () => []
+let mobileFindManyImpl: () => Promise<Array<{ pushToken: string }>> = async () => []
+let instanceDeleteManyImpl: (args: any) => Promise<unknown> = async () => ({ count: 0 })
+let mobileDeleteManyImpl: (args: any) => Promise<unknown> = async () => ({ count: 0 })
+let instanceDeleteManyArgs: any = null
+let mobileDeleteManyArgs: any = null
 
 mock.module('../prisma', () => ({
   prisma: {
     pushSubscription: {
       findMany: (args: any) => findManyImpl(args),
+      deleteMany: (args: any) => {
+        instanceDeleteManyArgs = args
+        return instanceDeleteManyImpl(args)
+      },
+    },
+    mobilePushSubscription: {
+      findMany: () => mobileFindManyImpl(),
+      deleteMany: (args: any) => {
+        mobileDeleteManyArgs = args
+        return mobileDeleteManyImpl(args)
+      },
     },
   },
 }))
 
-const { sendPushToInstance } = await import('../push-notifications')
+const { sendPushToInstance, sendPushToUser } = await import('../push-notifications')
 
 let fetchSpy: ReturnType<typeof spyOn>
 let errorSpy: ReturnType<typeof spyOn>
@@ -33,6 +49,11 @@ beforeEach(() => {
   })
   errorSpy = spyOn(console, 'error').mockImplementation(() => {})
   findManyImpl = async () => []
+  mobileFindManyImpl = async () => []
+  instanceDeleteManyImpl = async () => ({ count: 0 })
+  mobileDeleteManyImpl = async () => ({ count: 0 })
+  instanceDeleteManyArgs = null
+  mobileDeleteManyArgs = null
 })
 
 afterEach(() => {
@@ -120,5 +141,70 @@ describe('sendPushToInstance', () => {
     })
     const body = JSON.parse(lastFetchArgs[1].body)
     expect(body[0].data.instanceId).toBe('canonical-id')
+  })
+
+  it('removes invalid desktop tokens from the desktop subscription table', async () => {
+    findManyImpl = async () => [{ pushToken: 'dead-desktop-token' }]
+    fetchSpy.mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ status: 'error', details: { error: 'DeviceNotRegistered' } }],
+    }), { status: 200 }))
+
+    await sendPushToInstance('instance-1', { type: 'wake' })
+
+    expect(instanceDeleteManyArgs).toEqual({ where: { pushToken: { in: ['dead-desktop-token'] } } })
+    expect(mobileDeleteManyArgs).toBeNull()
+  })
+})
+
+describe('sendPushToUser', () => {
+  it('sends a completion notification to every registered mobile device', async () => {
+    mobileFindManyImpl = async () => [
+      { pushToken: 'ExponentPushToken[user-a]' },
+      { pushToken: 'ExponentPushToken[user-b]' },
+    ]
+
+    await sendPushToUser('user-1', {
+      title: 'Research task',
+      body: 'The agent completed this task.',
+      data: { taskId: 'task-1', notificationType: 'agent_task_completed' },
+    })
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(lastFetchArgs[1].body)
+    expect(body).toEqual([
+      {
+        to: 'ExponentPushToken[user-a]',
+        title: 'Research task',
+        body: 'The agent completed this task.',
+        data: {
+          taskId: 'task-1',
+          notificationType: 'agent_task_completed',
+          type: 'chat-complete',
+        },
+        priority: 'high',
+        channelId: 'chat-complete',
+      },
+      {
+        to: 'ExponentPushToken[user-b]',
+        title: 'Research task',
+        body: 'The agent completed this task.',
+        data: {
+          taskId: 'task-1',
+          notificationType: 'agent_task_completed',
+          type: 'chat-complete',
+        },
+        priority: 'high',
+        channelId: 'chat-complete',
+      },
+    ])
+  })
+
+  it('does not call Expo when the user has no registered mobile device', async () => {
+    await sendPushToUser('user-1', {
+      title: 'Research task',
+      body: 'The agent completed this task.',
+    })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

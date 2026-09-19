@@ -172,6 +172,13 @@ interface HomeRegionPartitioned {
  */
 const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
   {
+    fn: 'runAgentTaskDispatch',
+    file: 'apps/api/src/jobs/run-agent-task-dispatch.ts',
+    reason:
+      'Each region dispatches only AgentTask rows whose workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps queued claims, stale-lease updates, and runtime writes in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runGrantMonthlyRefill',
     file: 'apps/api/src/jobs/grant-monthly-refill.ts',
     reason:
@@ -228,6 +235,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Workspace slug from createPersonalWorkspace/createPaidWorkspace, single-source per workspace creation; suffix uses deterministic user prefix or nanoid.',
   },
   {
+    key: 'WorkspaceAgentProfile.workspaceId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One profile belongs to one workspace; personal signup creation and runtime profile updates are scoped to that workspace and use an upsert.',
+  },
+  {
     key: 'Project.publishedSubdomain',
     category: 'request_scoped',
     reason:
@@ -261,6 +274,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       'Mobile star-toggle; double-tap during failover is the race window. P2 — needs idempotent upsert in the route.',
+  },
+  {
+    key: 'MobilePushSubscription.pushToken',
+    category: 'single_tenant_upsert',
+    reason:
+      'The authenticated mobile registration route upserts one globally unique Expo token and transfers ownership when a signed-in account re-registers the same device.',
   },
   {
     key: 'BillingAccount.workspaceId',

@@ -70,6 +70,33 @@ export async function createWorkspaceSession(
 }
 
 /**
+ * Return the stable main chat for a workspace, creating it once. This is a
+ * universal workspace primitive — any workspace runtime can have a primary
+ * session — but today only personal workspaces auto-create one eagerly (see
+ * `routes/workspace-chat.ts`); team workspaces let users create/select
+ * sessions explicitly.
+ */
+export async function getOrCreatePrimaryWorkspaceSession(workspaceId: string) {
+  const existing = await prisma.chatSession.findFirst({
+    where: { workspaceId, contextType: 'workspace', isPrimary: true } as any,
+    orderBy: { createdAt: 'asc' },
+    include: { attachedProjects: true } as any,
+  })
+  if (existing) return existing as any
+
+  return prisma.chatSession.create({
+    data: {
+      contextType: 'workspace',
+      workspaceId,
+      isPrimary: true,
+      name: 'Chat',
+      inferredName: 'Chat',
+    } as any,
+    include: { attachedProjects: true } as any,
+  }) as any
+}
+
+/**
  * Attach a project to an existing workspace session. Idempotent: a
  * repeat attach updates the attachMode rather than failing on the
  * unique (sessionId, projectId) constraint.

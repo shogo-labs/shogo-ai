@@ -121,35 +121,35 @@ describe('native drawer insets', () => {
 
 describe('nativeDrawerSheetCanvas', () => {
   test('dark sheet stays on the closed canvas for the whole swipe', () => {
-    expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
-    expect(nativeDrawerSheetCanvas(0.5, true)).toBe('#000000')
-    expect(nativeDrawerSheetCanvas(1, true)).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(0, true)).toBe('#121212')
+    expect(nativeDrawerSheetCanvas(0.5, true)).toBe('#121212')
+    expect(nativeDrawerSheetCanvas(1, true)).toBe('#121212')
   })
 
-  test('dark home stays OLED black instead of lifting to grey', () => {
+  test('dark home stays on the shared web surface instead of lifting to grey', () => {
     expect(nativeDrawerSheetCanvas(0, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
     expect(nativeDrawerSheetCanvas(0.5, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
     expect(nativeDrawerSheetCanvas(1, true, NATIVE_PHONE_HOME_CANVAS)).toBe(NATIVE_PHONE_HOME_CANVAS)
-    expect(nativeDrawerSheetCanvas(0, true)).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(0, true)).toBe('#121212')
   })
 
   test('an explicit open canvas still lerps with drawer progress', () => {
-    expect(nativeDrawerSheetCanvas(0, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(0, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)).toBe('#121212')
     expect(nativeDrawerSheetCanvas(1, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)).toBe(
       NATIVE_DRAWER_SHEET_OPEN_CANVAS,
     )
     const mid = nativeDrawerSheetCanvas(0.5, true, undefined, NATIVE_DRAWER_SHEET_OPEN_CANVAS)
-    expect(mid).not.toBe('#000000')
+    expect(mid).not.toBe('#121212')
     expect(mid).not.toBe(NATIVE_DRAWER_SHEET_OPEN_CANVAS)
   })
 
   test('settings and other pages stay on the closed canvas when the drawer opens', () => {
-    expect(nativeDrawerSheetCanvas(0, true, undefined, '#000000')).toBe('#000000')
-    expect(nativeDrawerSheetCanvas(0.5, true, undefined, '#000000')).toBe('#000000')
-    expect(nativeDrawerSheetCanvas(1, true, undefined, '#000000')).toBe('#000000')
+    expect(nativeDrawerSheetCanvas(0, true, undefined, '#121212')).toBe('#121212')
+    expect(nativeDrawerSheetCanvas(0.5, true, undefined, '#121212')).toBe('#121212')
+    expect(nativeDrawerSheetCanvas(1, true, undefined, '#121212')).toBe('#121212')
   })
 
-  test('light sheet stays white', () => {
+  test('light sheet stays on the shared web surface', () => {
     expect(nativeDrawerSheetCanvas(0, false)).toBe(NATIVE_PHONE_CANVAS.light)
     expect(nativeDrawerSheetCanvas(1, false)).toBe(NATIVE_PHONE_CANVAS.light)
     expect(nativeDrawerSheetCanvas(0.4, false)).toBe(NATIVE_PHONE_CANVAS.light)
@@ -184,7 +184,7 @@ describe('native drawer sheet layers', () => {
     expect(style).not.toHaveProperty('transform')
   })
 
-  test('home black stays a single static canvas', () => {
+  test('home surface stays a single static canvas', () => {
     expect(nativeDrawerSheetEnds(true, NATIVE_PHONE_HOME_CANVAS)).toEqual({
       closed: NATIVE_PHONE_HOME_CANVAS,
       open: NATIVE_PHONE_HOME_CANVAS,

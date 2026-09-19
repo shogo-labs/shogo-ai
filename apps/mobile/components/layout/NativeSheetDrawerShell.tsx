@@ -3,7 +3,7 @@
 
 import type { ReactNode } from 'react'
 import { Animated, Platform, View } from 'react-native'
-import { SafeAreaView, type Edge } from 'react-native-safe-area-context'
+import { SafeAreaView, type Edge, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 
 export interface NativeSheetDrawerShellProps {
@@ -15,6 +15,7 @@ export interface NativeSheetDrawerShellProps {
   sidebarSheet: ReactNode
   sidebarOverlay?: ReactNode
   header: ReactNode | null
+  bottomNav?: ReactNode | null
   children: ReactNode
   drawer: ReturnType<typeof useNativeSheetDrawer>
 }
@@ -32,22 +33,25 @@ export function NativeSheetDrawerShell({
   sidebarSheet,
   sidebarOverlay,
   header,
+  bottomNav = null,
   children,
   drawer,
 }: NativeSheetDrawerShellProps) {
-  const {
-    drawerOpen,
-    sheetSwipeHandlers,
-    sheetStyle,
-    sheetClipStyle,
-    sheetFill,
-    sheetCompositing,
-    underlayStyle,
-  } = drawer
+  const { drawerOpen, sheetSwipeHandlers, sheetStyle, sheetClipStyle, sheetFill, sheetCompositing, underlayStyle } =
+    drawer
+  const insets = useSafeAreaInsets()
   const frameFill = nativeSheetDrawer ? (sheetFill ?? canvas) : canvas
   const flattenSheet = nativeSheetDrawer && (drawerOpen || sheetCompositing)
-  const frameOverflow =
-    nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
+  const frameOverflow = nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
+  const safeAreaAppliesTop = safeAreaEdges === undefined || safeAreaEdges.includes('top')
+  const safeAreaAppliesBottom = safeAreaEdges === undefined || safeAreaEdges.includes('bottom')
+  const fullHeightUnderlayStyle = nativeSheetDrawer
+    ? [
+        underlayStyle,
+        safeAreaAppliesTop ? { top: -insets.top } : undefined,
+        safeAreaAppliesBottom ? { bottom: -insets.bottom } : undefined,
+      ]
+    : underlayStyle
 
   return (
     <SafeAreaView
@@ -70,7 +74,7 @@ export function NativeSheetDrawerShell({
               pointerEvents={drawerOpen ? 'auto' : 'none'}
               accessibilityElementsHidden={!drawerOpen}
               importantForAccessibility={drawerOpen ? 'auto' : 'no-hide-descendants'}
-              style={underlayStyle}
+              style={fullHeightUnderlayStyle}
             >
               {sidebarSheet}
             </View>
@@ -92,6 +96,7 @@ export function NativeSheetDrawerShell({
               >
                 {header}
                 <View className="flex-1">{children}</View>
+                {bottomNav}
               </View>
             </Animated.View>
           </Animated.View>

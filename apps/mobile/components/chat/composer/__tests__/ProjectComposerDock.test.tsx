@@ -25,7 +25,7 @@ describe("ProjectComposerDock", () => {
     )
     const dock = container.querySelector('[data-rn-shim="project-composer-dock"]') as HTMLElement
     expect(dock).toBeTruthy()
-    expect(dock.style.width).toBe("390px")
+    expect(dock.style.width).toBe("358px")
   })
 
   test("centers the web composer with the transcript column", () => {

@@ -96,6 +96,7 @@ mock.module('../routes/remote-audit', () => ({
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(() => Promise.resolve()),
+  sendPushToUser: mock(() => Promise.resolve()),
 }))
 
 // Real `closeSession` calls `consumeUsage` to charge the workspace at

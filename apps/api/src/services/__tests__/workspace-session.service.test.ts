@@ -8,6 +8,7 @@ interface State {
   projectsInWorkspace: Set<string>
   // chatSession.findUnique result for getSessionWorkspaceId
   sessionRow: { contextType?: string; workspaceId?: string | null } | null
+  primarySession: any
   createCalls: any[]
   upsertCalls: any[]
   deleteManyCount: number
@@ -17,6 +18,7 @@ interface State {
 const s: State = {
   projectsInWorkspace: new Set(),
   sessionRow: null,
+  primarySession: null,
   createCalls: [],
   upsertCalls: [],
   deleteManyCount: 0,
@@ -40,6 +42,7 @@ mock.module('../../lib/prisma', () => ({
         }
       },
       findUnique: async (_args: any) => s.sessionRow,
+      findFirst: async (_args: any) => s.primarySession,
     },
     chatSessionProject: {
       upsert: async (args: any) => {
@@ -67,6 +70,7 @@ const svc = await import('../workspace-session.service')
 beforeEach(() => {
   s.projectsInWorkspace = new Set()
   s.sessionRow = null
+  s.primarySession = null
   s.createCalls = []
   s.upsertCalls = []
   s.deleteManyCount = 0
@@ -101,6 +105,26 @@ describe('createWorkspaceSession', () => {
     s.projectsInWorkspace = new Set(['p1'])
     const res = await svc.createWorkspaceSession('ws-1', { attachProjectIds: ['p1', 'p1'] })
     expect(res.attached).toHaveLength(1)
+  })
+})
+
+describe('getOrCreatePrimaryWorkspaceSession', () => {
+  it('creates the stable primary chat when one does not exist', async () => {
+    const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-personal')
+    expect(session.isPrimary).toBe(true)
+    expect(s.createCalls[0].data).toMatchObject({
+      workspaceId: 'ws-personal',
+      contextType: 'workspace',
+      name: 'Chat',
+      isPrimary: true,
+    })
+  })
+
+  it('reuses the existing primary chat', async () => {
+    s.primarySession = { id: 'sess-primary', isPrimary: true }
+    const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-personal')
+    expect(session.id).toBe('sess-primary')
+    expect(s.createCalls).toHaveLength(0)
   })
 })
 

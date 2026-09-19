@@ -44,6 +44,8 @@ const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 const TEMPLATE_SRC = join(REPO_ROOT, 'templates', 'runtime-template')
 const PKG_DIST = resolve(__dirname, '..', 'dist')
 const TEMPLATE_DEST = join(PKG_DIST, 'runtime-template')
+const PERSONAL_TEMPLATE_SRC = join(REPO_ROOT, 'packages', 'agent-runtime', 'templates', 'personal-companion')
+const PERSONAL_TEMPLATE_DEST = join(PKG_DIST, 'personal-companion')
 
 // Same skip list `seedRuntimeTemplate()` applies at runtime — keeping
 // it identical means a self-hosted operator's bundled tree is byte-
@@ -88,6 +90,16 @@ async function main(): Promise<void> {
   })
 
   console.log(`[copy-runtime-template-to-dist] copied ${TEMPLATE_SRC} → ${TEMPLATE_DEST}`)
+
+  if (existsSync(PERSONAL_TEMPLATE_DEST)) {
+    rmSync(PERSONAL_TEMPLATE_DEST, { recursive: true, force: true })
+  }
+  if (existsSync(PERSONAL_TEMPLATE_SRC)) {
+    cpSync(PERSONAL_TEMPLATE_SRC, PERSONAL_TEMPLATE_DEST, { recursive: true })
+    console.log(`[copy-runtime-template-to-dist] copied ${PERSONAL_TEMPLATE_SRC} → ${PERSONAL_TEMPLATE_DEST}`)
+  } else {
+    console.warn(`[copy-runtime-template-to-dist] personal companion template not found at ${PERSONAL_TEMPLATE_SRC}`)
+  }
 
   // The source template pins `@shogo-ai/sdk` as `workspace:*`, which a pod
   // can't resolve. Rewrite the bundled copy's `package.json` to a concrete

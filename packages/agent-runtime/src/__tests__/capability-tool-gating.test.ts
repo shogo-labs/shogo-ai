@@ -32,6 +32,11 @@ function makeCtx(config: GatewayConfig): ToolContext {
   }
 }
 
+function personalNames(config: GatewayConfig): Set<string> {
+  const ctx = { ...makeCtx(config), workspaceId: 'workspace-1' }
+  return new Set(filterDisabledCapabilityTools(createTools(ctx), config).map(t => t.name))
+}
+
 function names(config: GatewayConfig): Set<string> {
   const ctx = makeCtx(config)
   const filtered = filterDisabledCapabilityTools(createTools(ctx), config)
@@ -114,6 +119,44 @@ describe('filterDisabledCapabilityTools', () => {
     }))
     for (const t of ['read_file', 'write_file', 'edit_file', 'agent_spawn', 'skill', 'todo_write']) {
       expect(n.has(t)).toBe(true)
+    }
+  })
+
+  test('personal profile removes builder/shell/team tools but keeps delegation and goals', () => {
+    const n = personalNames(makeConfig({ capabilityProfile: 'personal', gitWorktreesEnabled: true }))
+    for (const tool of [
+      'exec',
+      'terminal_exec',
+      'checkpoint',
+      'publish',
+      'create_plan',
+      'project_attach',
+      'project_detach',
+      'system_apply',
+      'agent_spawn',
+      'team_create',
+      'task_create',
+      'list_projects',
+    ]) {
+      expect(n.has(tool)).toBe(false)
+    }
+    for (const tool of [
+      'read_file',
+      'write_file',
+      'edit_file',
+      'project_list',
+      'project_create',
+      'project_configure',
+      'project_call',
+      'agent_profile_get',
+      'agent_profile_set',
+      'goal_create',
+      'goal_update',
+      'goal_log',
+      'goal_list',
+      'set_status',
+    ]) {
+      expect(n.has(tool)).toBe(true)
     }
   })
 })

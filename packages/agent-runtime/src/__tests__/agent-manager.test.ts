@@ -356,6 +356,24 @@ describe('AgentManager — spawn failure path', () => {
     await Promise.all(m.listInstances().map((i) => m.getInstance(i.id)!.promise.catch(() => {})))
     expect(m.cancelAll()).toEqual([])
   })
+
+  it('cancelForSession() leaves other chat sessions running', async () => {
+    const resolvers: Array<(v: any) => void> = []
+    runSubagentImpl = () => new Promise<any>((resolve) => { resolvers.push(resolve) })
+    const m = new AgentManager({ maxConcurrentInstances: 3 })
+    m.register(baseCfg())
+    const first = m.spawn('custom', 'first', { sessionId: 'session-a' } as any, tools)
+    const second = m.spawn('custom', 'second', { sessionId: 'session-b' } as any, tools)
+    expect(first.ok && second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+
+    expect(m.cancelForSession('session-a')).toEqual([first.instanceId])
+    expect(m.getInstance(first.instanceId)?.status).toBe('cancelled')
+    expect(m.getInstance(second.instanceId)?.status).toBe('running')
+
+    resolvers.forEach((resolve) => resolve(Promise.reject(new Error('abort'))))
+    await Promise.all(m.listInstances().map((instance) => m.getInstance(instance.id)!.promise.catch(() => {})))
+  })
 })
 
 describe('AgentManager — accessors', () => {

@@ -102,6 +102,8 @@
     "test:issue-pipeline:l2": "bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts",
     "test:issue-pipeline:l3": "bun test e2e/issue-pipeline/l3-prompt-amendment.integration.test.ts",
     "test:e2e:ez-mode-persistence": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/ez-mode-persistence.test.ts",
+    "test:e2e:personal-shell-goal-flow": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/personal-shell-goal-flow.test.ts",
+    "test:e2e:personal-shell-hidden-project": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/personal-shell-hidden-project.test.ts",
     "test:notetaker:e2e": "npx playwright test --config apps/desktop/e2e/playwright.config.ts",
     "postinstall": "bun scripts/postinstall.ts"
   },
@@ -144,6 +146,7 @@
     "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
     "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch",
     "react-native-iap@12.16.4": "patches/react-native-iap@12.16.4.patch",
-    "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch"
+    "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch",
+    "expo@54.0.33": "patches/expo@54.0.33.patch"
   }
 }

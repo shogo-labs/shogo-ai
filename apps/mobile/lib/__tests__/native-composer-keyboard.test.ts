@@ -18,10 +18,11 @@ import {
 import { WEB_WIDE_MIN_WIDTH } from '../native-phone-layout'
 
 describe('nativeComposerKeyboardPad', () => {
-  test('uses the larger of keyboard height and screenY overlap, plus a gap', () => {
+  test('uses the visible keyboard top edge, plus a gap', () => {
     expect(nativeComposerKeyboardPad(undefined, 874)).toBe(NATIVE_COMPOSER_KEYBOARD_GAP)
     expect(nativeComposerKeyboardPad({ height: 336, screenY: 538 }, 874)).toBe(336 + NATIVE_COMPOSER_KEYBOARD_GAP)
     expect(nativeComposerKeyboardPad({ height: 300, screenY: 520 }, 874)).toBe(354 + NATIVE_COMPOSER_KEYBOARD_GAP)
+    expect(nativeComposerKeyboardPad({ height: 420, screenY: 600 }, 874)).toBe(274 + NATIVE_COMPOSER_KEYBOARD_GAP)
     expect(nativeComposerKeyboardPad({ height: 0, screenY: 874 }, 874)).toBe(NATIVE_COMPOSER_KEYBOARD_GAP)
   })
 
@@ -121,7 +122,8 @@ describe('nativeComposerDockBottomPad', () => {
       keyboardOpen: true,
       overlap: 336,
       restPad: 34,
+      safeAreaBottom: 34,
       iosKeyboardAvoiding: false,
-    })).toBe(336 + NATIVE_COMPOSER_KEYBOARD_GAP)
+    })).toBe(302 + NATIVE_COMPOSER_KEYBOARD_GAP)
   })
 })

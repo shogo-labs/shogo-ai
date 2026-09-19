@@ -86,7 +86,7 @@ export function AccountMenu({
     <>
       <View
         className={cn(
-          "rounded bg-primary/20 items-center justify-center",
+          "rounded-full bg-primary/20 items-center justify-center",
           isNative ? density.hitSize : "h-7 w-7",
         )}
       >
@@ -106,7 +106,7 @@ export function AccountMenu({
               "text-foreground",
               isNative ? `${density.text.body} font-medium` : "text-sm",
             )}
-            numberOfLines={1}
+            numberOfLines={isNative ? 2 : 1}
             ellipsizeMode="tail"
           >
             {currentWorkspace?.name || "Workspace"}

@@ -26,12 +26,13 @@ import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { stampModelProvider } from '../lib/stamp-model-provider'
-import { hasWorkspaceAccess } from '../services/workspace.service'
+import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import {
   attachProject,
   createWorkspaceSession,
   detachProject,
+  getOrCreatePrimaryWorkspaceSession,
   getAttachedProjects,
   listWorkspaceSessions,
   WorkspaceSessionError,
@@ -165,17 +166,21 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
    * Auth guard shared by every route: returns the userId or sends the
    * 401/403 response (caller returns it directly).
    */
-  async function authorize(c: any): Promise<{ userId: string } | { res: Response }> {
+  async function authorize(c: any): Promise<{ userId: string; kind: WorkspaceKind } | { res: Response }> {
     const workspaceId = c.req.param('workspaceId')
     const userId = await resolveUserId(c)
     if (!userId) {
       return { res: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401) }
     }
-    const ok = await hasWorkspaceAccess(workspaceId, userId)
-    if (!ok) {
+    // Loaded together (one round-trip pair via Promise.all) since most
+    // callers that need auth also end up needing `kind` a few lines later
+    // (see `resolveOr501`'s `precomputedKind` param) — avoids a second
+    // `getWorkspaceKind` query in the same request.
+    const { hasAccess, kind } = await loadWorkspaceContext(workspaceId, userId)
+    if (!hasAccess) {
       return { res: c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403) }
     }
-    return { userId }
+    return { userId, kind }
   }
 
   /**
@@ -189,13 +194,29 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     attachedProjectIds: string[],
     logTag: string,
     extra?: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] },
+    /**
+     * Pass `auth.kind` when the caller already ran `authorize(c)` for this
+     * request — `loadWorkspaceContext` fetched it there, so re-querying it
+     * here would just be a second round trip for the same answer.
+     */
+    precomputedKind?: WorkspaceKind,
   ): Promise<{ url: string; mode: string } | { res: Response }> {
+    let workspaceKind: WorkspaceKind | undefined = precomputedKind
+    if (!workspaceKind) {
+      try {
+        workspaceKind = await getWorkspaceKind(workspaceId)
+      } catch {
+        // The resolver can still return the normal feature-gate response when
+        // the kind lookup is unavailable.
+      }
+    }
     try {
       const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
         attachedProjectIds,
         logTag,
         runtimeManager,
         alwaysEnabled: config.alwaysEnabled,
+        workspaceKind,
         ...extra,
       })
       return { url: resolved.url, mode: resolved.mode }
@@ -248,7 +269,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/sessions', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
-    const sessions = await listWorkspaceSessions(c.req.param('workspaceId'))
+    const workspaceId = c.req.param('workspaceId')
+    const kind = await getWorkspaceKind(workspaceId)
+    if (kind === 'personal') {
+      await getOrCreatePrimaryWorkspaceSession(workspaceId)
+    }
+    const sessions = await listWorkspaceSessions(workspaceId)
     return c.json({ sessions })
   })
 
@@ -636,7 +662,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const billingProjectId: string | null = attachedProjectIds[0] ?? null
 
     // Resolve the workspace runtime (501 when SHOGO_WORKSPACE_RUNTIME off).
-    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceChat', runtimeExtra)
+    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceChat', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
     let podUrl = runtimeRes.url
 
@@ -848,6 +874,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
               { id: billingProjectId, workspaceId },
               {
                 chatSessionId: sessionId,
+                userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
+                projectName: 'Workspace project',
                 resume: async (fromSeq) => {
                   try {
                     return await fetchFromWorkspaceRuntime(
@@ -979,7 +1007,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     } catch (err) {
       return mapSessionError(c, err)
     }
-    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceResume', runtimeExtra)
+    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceResume', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
 
     const runtimePath =
@@ -1028,7 +1056,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     } catch (err) {
       return mapSessionError(c, err)
     }
-    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceTurn', runtimeExtra)
+    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceTurn', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
     try {
       const response = await fetchFromWorkspaceRuntime(
@@ -1077,7 +1105,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         /* noop */
       }
     }
-    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceStop', runtimeExtra)
+    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceStop', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
     try {
       const response = await fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, '/agent/stop', {

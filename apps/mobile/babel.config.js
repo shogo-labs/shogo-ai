@@ -6,6 +6,10 @@ module.exports = function (api) {
       'nativewind/babel',
     ],
     plugins: [
+      // @xterm/xterm ships static class blocks. Metro's mobile Babel
+      // preset does not transpile them by default, so its import could
+      // abort the bundle before Expo Router registers the application.
+      '@babel/plugin-transform-class-static-block',
       [
         'module-resolver',
         {

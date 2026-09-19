@@ -19,6 +19,7 @@ import {
   PROMINENT_COMPOSER_LINE_HEIGHT,
   PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
   PROMINENT_COMPOSER_MIN_HEIGHT,
+  PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
   ProminentAnimatedTextInput,
 } from "../useProminentComposerExpansion";
 
@@ -142,7 +143,11 @@ export const ProminentComposerField = forwardRef<
             position: "absolute",
             left: 4,
             right: 4,
-            top: stacked ? 0 : 1,
+            top: stacked
+              ? 0
+              : Platform.OS === "web"
+                ? 1
+                : PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
             height: PROMINENT_COMPOSER_MIN_HEIGHT,
             fontSize: PROMINENT_COMPOSER_FONT_SIZE,
             lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,

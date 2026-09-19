@@ -19,6 +19,8 @@ export interface PlatformConfig {
     marketplace: boolean
     ezMode: boolean
     phoneChannel: boolean
+    /** Companion-shell rollout kill switch — see the API's `/api/config` handler. */
+    personalShell: boolean
   }
 }
 
@@ -34,6 +36,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     marketplace: true,
     ezMode: true,
     phoneChannel: true,
+    personalShell: true,
   },
 }
 
@@ -49,6 +52,7 @@ const LOCAL_CONFIG: PlatformConfig = {
     marketplace: false,
     ezMode: true,
     phoneChannel: false,
+    personalShell: true,
   },
 }
 

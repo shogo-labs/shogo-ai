@@ -16,7 +16,7 @@
 import React, { useState, useRef, useCallback, forwardRef, useEffect, useMemo } from "react"
 import { View, Text, TextInput, Pressable, Image, ScrollView, Platform, Animated } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { NATIVE_PHONE_ICON_STROKE,
+import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT, NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
 import {
   Popover,
@@ -62,6 +62,7 @@ import {
   PROMINENT_COMPOSER_PADDING_BOTTOM,
   PROMINENT_COMPOSER_PADDING_HORIZONTAL,
   PROMINENT_COMPOSER_PADDING_TOP,
+  PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
   nextProminentComposerHeight,
@@ -474,10 +475,18 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             useProminentComposer
               ? {
                   overflow: "hidden" as const,
-                  borderTopLeftRadius: PROMINENT_COMPOSER_RADIUS,
-                  borderTopRightRadius: PROMINENT_COMPOSER_RADIUS,
-                  borderBottomLeftRadius: PROMINENT_COMPOSER_RADIUS,
-                  borderBottomRightRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderTopLeftRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
+                  borderTopRightRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
+                  borderBottomLeftRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
+                  borderBottomRightRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
                   borderColor: keyboardBorderColor,
                   backgroundColor: chatgptComposer.fill,
@@ -627,13 +636,20 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             className={cn(
               "flex-row items-center justify-between",
               useProminentComposer
-                ? "min-h-[48px] py-1 pl-2.5 pr-1.5 overflow-hidden"
+                ? "py-1 pl-2.5 pr-1.5 overflow-hidden"
                 : useCurrentNativeSizing
                   ? "min-h-12 px-2 py-1"
                   : "p-1.5",
               !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
             )}
-            style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
+            style={
+              useProminentComposer
+                ? {
+                    zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                    ...(Platform.OS !== "web" ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT } : {}),
+                  }
+                : undefined
+            }
             pointerEvents={useProminentComposer ? "box-none" : undefined}
           >
             {/* Left side buttons */}

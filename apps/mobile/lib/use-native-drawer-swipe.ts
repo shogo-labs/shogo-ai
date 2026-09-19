@@ -12,13 +12,9 @@
  * a static fill so swipe frames do not lerp a second color.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Animated,
-  Keyboard,
-  PanResponder,
-  type GestureResponderHandlers,
-} from 'react-native'
+import { Animated, Keyboard, PanResponder, type GestureResponderHandlers } from 'react-native'
 import { hexToRgbChannels, isNativePlatform, nativePhoneCanvas } from './native-phone-layout'
+import { SURFACE_COLORS } from './surface-tokens'
 
 const OPEN_RATIO = 0.32
 const OPEN_VELOCITY = 0.7
@@ -34,9 +30,12 @@ export const NATIVE_DRAWER_SHEET_SHADOW_COLOR = '#000000'
 export const NATIVE_DRAWER_SHEET_SHADOW_OPACITY = 0.12
 export const NATIVE_DRAWER_SHEET_SHADOW_RADIUS = 8
 export const NATIVE_DRAWER_SHEET_ELEVATION = 4
-export const NATIVE_DRAWER_SHEET_SHADOW_OFFSET = { width: -1, height: 0 } as const
+export const NATIVE_DRAWER_SHEET_SHADOW_OFFSET = {
+  width: -1,
+  height: 0,
+} as const
 /** Opt-in open-sheet fill. Callers that omit `openCanvas` keep the closed canvas. */
-export const NATIVE_DRAWER_SHEET_OPEN_CANVAS = '#3A3A3C'
+export const NATIVE_DRAWER_SHEET_OPEN_CANVAS = SURFACE_COLORS.dark.containerHighest
 export const NATIVE_DRAWER_MIN_TOP_INSET = 56
 export const NATIVE_DRAWER_MIN_SIDE_INSET = 4
 export const NATIVE_DRAWER_MIN_FOOTER_INSET = 12
@@ -87,11 +86,7 @@ function rgbToHex(r: number, g: number, b: number): string {
   return `#${to(r)}${to(g)}${to(b)}`
 }
 
-function nativeDrawerOpenCanvas(
-  isDark: boolean,
-  closed: string,
-  openCanvas?: string,
-): string {
+function nativeDrawerOpenCanvas(isDark: boolean, closed: string, openCanvas?: string): string {
   if (!isDark) return nativePhoneCanvas(false)
   return openCanvas ?? closed
 }
@@ -210,10 +205,7 @@ export function useNativeDrawerSheetStyle(
     () => nativeDrawerOuterSheetStyle(sheetTranslateX, sheetShadow, sheetElevation),
     [sheetElevation, sheetShadow, sheetTranslateX],
   )
-  const sheetClipStyle = useMemo(
-    () => nativeDrawerClipSheetStyle(sheetRadius, sheetCanvas),
-    [sheetCanvas, sheetRadius],
-  )
+  const sheetClipStyle = useMemo(() => nativeDrawerClipSheetStyle(sheetRadius, sheetCanvas), [sheetCanvas, sheetRadius])
   return { sheetStyle, sheetClipStyle, sheetFill: closed }
 }
 
@@ -248,22 +240,14 @@ export function nativeDrawerShouldCaptureSwipe({
  * close drag only needs the same ~32% travel as an open drag — not a trip all
  * the way back below 0.32.
  */
-export function nativeDrawerShouldSettleOpen(
-  progress: number,
-  vx: number,
-  start = 0,
-): boolean {
+export function nativeDrawerShouldSettleOpen(progress: number, vx: number, start = 0): boolean {
   if (vx > OPEN_VELOCITY) return true
   if (vx < -OPEN_VELOCITY) return false
   if (start >= 0.5) return progress > 1 - OPEN_RATIO
   return progress > OPEN_RATIO
 }
 
-export function snapNativeDrawer(
-  drawerProgress: Animated.Value,
-  open: boolean,
-  onSettled?: (open: boolean) => void,
-) {
+export function snapNativeDrawer(drawerProgress: Animated.Value, open: boolean, onSettled?: (open: boolean) => void) {
   Animated.spring(drawerProgress, {
     toValue: open ? 1 : 0,
     ...SETTLE_SPRING,
@@ -298,7 +282,7 @@ export function useNativeSheetDrawer({
   isDark: boolean
   swipeEnabled: boolean
   overlayOpenWithoutSnap?: boolean
-  /** Dark closed-sheet fill. Home passes OLED black; other screens omit this. */
+  /** Dark closed-sheet fill. Home passes the shared web surface; other screens omit this. */
   closedCanvas?: string
   /** Dark open-sheet fill. Omit to keep the closed canvas for the whole swipe. */
   openCanvas?: string
@@ -359,10 +343,7 @@ export function useNativeSheetDrawer({
     closedCanvas,
     openCanvas,
   )
-  const underlayStyle = useMemo(
-    () => nativeDrawerUnderlayStyle(drawerWidth, isDark),
-    [drawerWidth, isDark],
-  )
+  const underlayStyle = useMemo(() => nativeDrawerUnderlayStyle(drawerWidth, isDark), [drawerWidth, isDark])
 
   return {
     drawerOpen,
@@ -426,15 +407,27 @@ export function useNativeDrawerSheetSwipe({
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_evt, gesture) => {
-          drawerProgress.setValue(
-            nativeDrawerProgressFromDelta(startProgressRef.current, gesture.dx, widthRef.current),
-          )
+          drawerProgress.setValue(nativeDrawerProgressFromDelta(startProgressRef.current, gesture.dx, widthRef.current))
         },
         onPanResponderRelease: (_evt, gesture) => {
-          settleSheet(drawerProgress, startProgressRef.current, gesture.dx, gesture.vx, widthRef.current, onOpenChangeRef.current)
+          settleSheet(
+            drawerProgress,
+            startProgressRef.current,
+            gesture.dx,
+            gesture.vx,
+            widthRef.current,
+            onOpenChangeRef.current,
+          )
         },
         onPanResponderTerminate: (_evt, gesture) => {
-          settleSheet(drawerProgress, startProgressRef.current, gesture.dx, 0, widthRef.current, onOpenChangeRef.current)
+          settleSheet(
+            drawerProgress,
+            startProgressRef.current,
+            gesture.dx,
+            0,
+            widthRef.current,
+            onOpenChangeRef.current,
+          )
         },
       }),
     [drawerProgress],

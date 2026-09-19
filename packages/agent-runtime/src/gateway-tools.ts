@@ -17,7 +17,10 @@ import { execSync } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
+import { createWorkspaceAgentTools } from './workspace-agent-tools'
+import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
+import { disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
@@ -357,8 +360,23 @@ export function textResult(data: any): AgentToolResult<any> {
   }
 }
 
+/**
+ * Resolve the current workspace id: prefer the runtime's `RuntimeIdentity`
+ * (env-derived — `WORKSPACE_ID`, set by `buildWorkspaceEnv` server-side),
+ * falling back to `ctx.workspaceId` for callers that construct
+ * `ToolContext` directly (tests, and some internal call paths that don't
+ * go through a full runtime boot). This was previously re-derived inline
+ * as `process.env.WORKSPACE_ID || ctx.workspaceId` at every call site;
+ * consolidated here — and in `resolveRuntimeIdentity()`
+ * (`workspace-runtime-mode.ts`), the single source for "which runtime is
+ * this" — so there is one place to change the precedence.
+ */
+function resolveWorkspaceId(ctx: ToolContext): string | undefined {
+  return resolveRuntimeIdentity().workspaceId || ctx.workspaceId
+}
+
 function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
-  return process.env.WORKSPACE_RUNTIME === 'true' && Boolean(process.env.WORKSPACE_ID || ctx.workspaceId)
+  return resolveRuntimeIdentity().mode === 'workspace' && Boolean(resolveWorkspaceId(ctx))
 }
 
 async function workspaceMetaFetch(
@@ -367,7 +385,7 @@ async function workspaceMetaFetch(
   init: RequestInit = {},
 ): Promise<any> {
   const apiUrl = deriveApiUrl()
-  const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+  const workspaceId = resolveWorkspaceId(ctx)
   if (!apiUrl || !workspaceId) throw new Error('Workspace runtime API is not configured')
   const headers = new Headers(getInternalHeaders())
   headers.set('Content-Type', 'application/json')
@@ -397,7 +415,7 @@ function createListProjectsTool(ctx: ToolContext): AgentTool {
     parameters: Type.Object({}),
     execute: async () => {
       if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
-      const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+      const workspaceId = resolveWorkspaceId(ctx)
       const qs = new URLSearchParams({
         ...(ctx.userId ? { userId: ctx.userId } : {}),
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
@@ -422,7 +440,7 @@ function createMountProjectTool(ctx: ToolContext): AgentTool {
     }),
     execute: async (_toolCallId, params: any) => {
       if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
-      const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+      const workspaceId = resolveWorkspaceId(ctx)
       return textResult(await workspaceMetaFetch(
         ctx,
         `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members`,
@@ -451,7 +469,7 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
     }),
     execute: async (_toolCallId, params: any) => {
       if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
-      const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+      const workspaceId = resolveWorkspaceId(ctx)
       return textResult(await workspaceMetaFetch(
         ctx,
         `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members/${encodeURIComponent(params.projectId)}`,
@@ -3256,7 +3274,7 @@ function createSearchHistoryTool(ctx: ToolContext): AgentTool {
       const scope = params.scope ?? (workspaceMetaToolEnabled(ctx) ? 'workspace' : 'project')
       if (scope === 'workspace' && workspaceMetaToolEnabled(ctx)) {
         try {
-          const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+          const workspaceId = resolveWorkspaceId(ctx)
           const qs = new URLSearchParams({
             query: params.query,
             kind: params.kind || 'all',
@@ -3323,7 +3341,7 @@ function createReadHistoryTool(ctx: ToolContext): AgentTool {
       const scope = params.scope ?? (workspaceMetaToolEnabled(ctx) ? 'workspace' : 'project')
       if (scope === 'workspace' && workspaceMetaToolEnabled(ctx)) {
         try {
-          const workspaceId = process.env.WORKSPACE_ID || ctx.workspaceId
+          const workspaceId = resolveWorkspaceId(ctx)
           const qs = new URLSearchParams({
             kind: params.kind,
             id: params.id,
@@ -4255,7 +4273,7 @@ async function connectViaComposio(
   }
   if (!isComposioInitialized()) {
     const userId = ctx.userId || process.env.USER_ID || 'default'
-    const workspaceId = process.env.WORKSPACE_ID || 'default'
+    const workspaceId = resolveWorkspaceId(ctx) || 'default'
     const scopeEnv = process.env.COMPOSIO_USER_SCOPE
     const scope: 'workspace' | 'project' =
       scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
@@ -5621,6 +5639,12 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     for (const t of projectTools.mutating) tools.push(g(t, 'system'))
   }
 
+  // Workspace runtimes expose universal profile/goal primitives. Project
+  // runtimes omit them so the existing builder tool contract is unchanged.
+  if (resolveWorkspaceId(ctx)) {
+    tools.push(...createWorkspaceAgentTools(ctx))
+  }
+
   if (process.env.WORKSPACE_RUNTIME === 'true') {
     tools.push(createListProjectsTool(ctx))
     tools.push(createMountProjectTool(ctx))
@@ -6032,6 +6056,17 @@ export function createModeUnavailableTool(
   }
 }
 
+/**
+ * Feature-flag tool groups (web/shell/heartbeat/messaging/integrations
+ * toggles in `filterDisabledCapabilityTools` below). Every name here must
+ * stay a subset of `ALL_TOOL_NAMES` (skills may reference these names/groups
+ * as tool dependencies — see `resolveToolNames` and `skills.ts`).
+ *
+ * This is deliberately NOT the same map as capability-profiles.ts's
+ * `PROFILE_TOOL_GROUPS`, which also covers privileged/internal tools
+ * (`checkpoint`, `agent_spawn`, `system_apply`, ...) that must NOT be
+ * individually resolvable via a skill's declared tool list.
+ */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
@@ -6100,6 +6135,9 @@ export function filterDisabledCapabilityTools(
   config: import('./gateway').GatewayConfig,
 ): AgentTool[] {
   const disabled = new Set<string>()
+  if (config.capabilityProfile === 'personal') {
+    for (const name of disabledToolNamesForProfile('personal')) disabled.add(name)
+  }
   if (config.webEnabled === false) for (const n of TOOL_GROUP_MAP.web) disabled.add(n)
   if (config.browserEnabled === false) disabled.add('browser')
   if (config.shellEnabled === false) for (const n of TOOL_GROUP_MAP.shell) disabled.add(n)

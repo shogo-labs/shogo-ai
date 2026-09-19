@@ -976,6 +976,7 @@ export function localProjectsRoutes(): Hono {
     const projects = await prisma.project.findMany({
       where: {
         workingMode: 'external',
+        hidden: false,
         workspace: { members: { some: { userId: auth.userId } } },
       },
       include: { projectFolders: true },

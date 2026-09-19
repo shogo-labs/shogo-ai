@@ -31,11 +31,14 @@ export function nativeComposerKeyboardOverlap(
 ): number {
   if (!endCoordinates) return 0
   const fromHeight = Math.max(0, endCoordinates.height ?? 0)
-  const fromScreenY =
-    typeof endCoordinates.screenY === 'number'
-      ? Math.max(0, viewportHeight - endCoordinates.screenY)
-      : 0
-  return Math.max(fromHeight, fromScreenY)
+  // `screenY` is the keyboard's actual visible top edge. Prefer it when
+  // available so accessory/suggestion-frame heights cannot create a larger
+  // visual gap above the keyboard. Older platforms may omit it, so retain
+  // the reported height as the fallback.
+  if (typeof endCoordinates.screenY === 'number' && endCoordinates.screenY > 0) {
+    return Math.max(0, viewportHeight - endCoordinates.screenY)
+  }
+  return fromHeight
 }
 
 export function nativeComposerKeyboardPad(
@@ -84,11 +87,17 @@ export function nativeComposerDockBottomPad(opts: {
   keyboardOpen: boolean
   overlap: number
   restPad: number
+  /** Bottom safe-area already occupied by the iOS keyboard frame. */
+  safeAreaBottom?: number
   iosKeyboardAvoiding: boolean
 }): number {
   if (!opts.keyboardOpen) return opts.restPad
   if (opts.iosKeyboardAvoiding) return NATIVE_COMPOSER_KEYBOARD_GAP
-  return opts.overlap + NATIVE_COMPOSER_KEYBOARD_GAP
+  // iOS includes the home-indicator area in the keyboard frame overlap. The
+  // Project chat surface is not SafeAreaView-backed, so moving by the full
+  // overlap double-counts that inset and leaves a visible ~34pt extra gap.
+  const keyboardOverlap = Math.max(0, opts.overlap - (opts.safeAreaBottom ?? 0))
+  return keyboardOverlap + NATIVE_COMPOSER_KEYBOARD_GAP
 }
 
 /**

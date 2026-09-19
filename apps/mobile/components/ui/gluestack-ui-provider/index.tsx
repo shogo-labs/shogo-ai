@@ -7,8 +7,6 @@ import { OverlayProvider } from '@gluestack-ui/core/overlay/creator';
 import { ToastProvider } from '@gluestack-ui/core/toast/creator';
 import { useColorScheme, vars } from 'nativewind';
 import { useAccentTheme, getAccentVars } from '../../../contexts/accent-theme';
-import { CHATGPT_PHONE_SURFACE_VARS } from '../../../lib/chatgpt-phone-surfaces';
-import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout';
 
 export type ModeType = 'light' | 'dark' | 'system';
 
@@ -22,7 +20,6 @@ export function GluestackUIProvider({
 }) {
   const { colorScheme, setColorScheme } = useColorScheme();
   const { accent } = useAccentTheme();
-  const isNativePhone = useIsNativePhoneLayout();
 
   useEffect(() => {
     setColorScheme(mode);
@@ -39,7 +36,6 @@ export function GluestackUIProvider({
     <View
       style={[
         config[colorScheme!],
-        isNativePhone ? CHATGPT_PHONE_SURFACE_VARS[resolvedMode] : null,
         accentOverrides,
         { flex: 1, height: '100%', width: '100%' },
         props.style,

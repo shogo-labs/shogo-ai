@@ -75,6 +75,7 @@ export function NativeProjectActionsSheet({
       title="Project actions"
       animationType="slide"
       testID="native-project-actions-sheet"
+      keepDrawerOpen
     >
       <View
         accessibilityLabel={`Project actions for ${projectName}`}

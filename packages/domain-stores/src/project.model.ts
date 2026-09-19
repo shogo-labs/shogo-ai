@@ -27,6 +27,7 @@ export const ProjectModel = types
   .model("Project", {
     id: types.identifier,
     name: types.string,
+    hidden: types.optional(types.boolean, false),
     description: types.optional(types.string, ""),
     workspaceId: types.string,
     tier: types.optional(types.enumeration("ProjectTier", ["starter", "pro", "enterprise", "internal"]), "starter"),
@@ -56,6 +57,7 @@ export const ProjectModel = types
     lastMessageAt: types.optional(types.number, 0),
     workingMode: types.optional(types.string, "managed"),
     runtimeEnabled: types.optional(types.boolean, true),
+    slackEnabled: types.optional(types.boolean, true),
     trustLevel: types.optional(types.string, "trusted"),
     preferredInstanceId: types.optional(types.string, ""),
     preferredInstancePolicy: types.optional(types.string, "pinned"),

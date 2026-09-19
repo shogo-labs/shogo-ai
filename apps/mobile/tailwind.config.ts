@@ -48,6 +48,7 @@ module.exports = {
           1: 'rgb(var(--color-surface-1) / <alpha-value>)',
           2: 'rgb(var(--color-surface-2) / <alpha-value>)',
           3: 'rgb(var(--color-surface-3) / <alpha-value>)',
+          4: 'rgb(var(--color-surface-4) / <alpha-value>)',
         },
         sidebar: {
           DEFAULT: 'rgb(var(--color-sidebar) / <alpha-value>)',

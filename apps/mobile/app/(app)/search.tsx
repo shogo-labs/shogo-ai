@@ -34,8 +34,8 @@ import {
 } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { LinearGradient } from 'expo-linear-gradient'
 import { CHATGPT_COMPOSER } from "../../lib/composer-phone"
+import { NativePhoneBottomFade } from '../../components/phone/NativePhoneBottomFade'
 import {
   PhoneListEmpty,
   PhoneListRow,
@@ -43,10 +43,8 @@ import {
 import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
 import {
   nativePhoneCanvas,
-  nativePhoneDockFadeColors,
   nativePhoneDockGlassStyle,
   NATIVE_PHONE_DOCK_FADE,
-  NATIVE_PHONE_DOCK_FADE_LOCATIONS,
   NATIVE_PHONE_GUTTER,
   useNativePhoneIconChrome,
 } from '../../lib/native-phone-layout';
@@ -270,7 +268,6 @@ export default observer(function SearchPage() {
 
   if (!isSupportedPlatform) return null
 
-  const dockFadeColors = nativePhoneDockFadeColors(isDark, pageBg)
   const dockGlass = nativePhoneDockGlassStyle(isDark)
 
   const renderRow = ({ item }: { item: SearchRow }) => {
@@ -389,11 +386,9 @@ export default observer(function SearchPage() {
           testID="search-native-dock"
           style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
         >
-          <LinearGradient
-            pointerEvents="none"
-            colors={[...dockFadeColors]}
-            locations={[...NATIVE_PHONE_DOCK_FADE_LOCATIONS]}
-            style={{ height: NATIVE_PHONE_DOCK_FADE + SEARCH_DOCK_PAD_TOP + SEARCH_DOCK_ROW }}
+          <NativePhoneBottomFade
+            isDark={isDark}
+            height={NATIVE_PHONE_DOCK_FADE + SEARCH_DOCK_PAD_TOP + SEARCH_DOCK_ROW}
           />
           <View
             pointerEvents="box-none"

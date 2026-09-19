@@ -325,6 +325,11 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
+      // A stream has one terminal transition. In particular, Expo's native
+      // stream bridge reports (rather than silently ignores) `close()` after
+      // `error()`. Keep the terminal state ourselves so the cleanup path
+      // never asks the bridge to close an already-errored stream.
+      let streamErrored = false
       let lastSeq = 0
       let turnCompleted = false
       let cancelled = false
@@ -575,16 +580,20 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // clean-EOF give-up closes silently and defers to the watchdog, as
           // before.
           if (lastTransportError) {
+            streamErrored = true
             try { controller.error(lastTransportError) } catch { /* already errored */ }
             return
           }
         }
       } catch (err: any) {
         warn(`durable body errored: ${err?.message || err}`)
+        streamErrored = true
         try { controller.error(err) } catch { /* already errored */ }
         return
       } finally {
-        try { controller.close() } catch { /* already closed */ }
+        if (!streamErrored) {
+          try { controller.close() } catch { /* already closed */ }
+        }
       }
     },
     cancel() {

@@ -25,6 +25,13 @@ config.watchFolders = [
 
 config.resolver.unstable_enablePackageExports = true
 config.resolver.useWatchman = false
+// Bun keeps workspace packages in the repository-level node_modules store.
+// List both locations explicitly so Metro resolves NativeWind and React Native
+// from the same dependency graph in local simulator builds.
+config.resolver.nodeModulesPaths = [
+  path.resolve(__dirname, 'node_modules'),
+  path.resolve(monorepoRoot, 'node_modules'),
+]
 
 // HMR opt-in for monorepo workspace packages.
 //

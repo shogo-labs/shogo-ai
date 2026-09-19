@@ -53,7 +53,10 @@ async function accessible(workspaceId: string, userId?: string | null): Promise<
 }
 
 async function projectIds(workspaceId: string): Promise<string[]> {
-  const projects = await (prisma as any).project.findMany({ where: { workspaceId }, select: { id: true } })
+  const projects = await (prisma as any).project.findMany({
+    where: { workspaceId, hidden: false },
+    select: { id: true },
+  })
   return projects.map((project: any) => project.id)
 }
 

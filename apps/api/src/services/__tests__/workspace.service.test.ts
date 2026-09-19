@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 
 interface State {
   txWorkspaceCreate: any
+  txWorkspaceProfileCreateCalls: any[]
   txMemberCreate: any
   findManyMembers: any[]
   findFirstMember: any | null
@@ -18,6 +19,7 @@ interface State {
 
 const s: State = {
   txWorkspaceCreate: null,
+  txWorkspaceProfileCreateCalls: [],
   txMemberCreate: null,
   findManyMembers: [],
   findFirstMember: null,
@@ -34,6 +36,12 @@ const tx = {
     create: async (args: any) => {
       s.txWorkspaceCreateCalls.push(args)
       return s.txWorkspaceCreate ?? { id: 'ws-new', ...args.data }
+    },
+  },
+  workspaceAgentProfile: {
+    create: async (args: any) => {
+      s.txWorkspaceProfileCreateCalls.push(args)
+      return { id: 'profile-new', ...args.data }
     },
   },
   member: {
@@ -79,6 +87,7 @@ const {
 
 beforeEach(() => {
   s.txWorkspaceCreate = null
+  s.txWorkspaceProfileCreateCalls = []
   s.txMemberCreate = null
   s.findManyMembers = []
   s.findFirstMember = null
@@ -99,6 +108,11 @@ describe('createPersonalWorkspace', () => {
     await createPersonalWorkspace('12ab-34cd-XXXX', 'Alice')
     expect(s.txWorkspaceCreateCalls[0].data.slug).toBe('user-12ab34c-personal')
     expect(s.txWorkspaceCreateCalls[0].data.name).toBe('Alice Personal')
+    expect(s.txWorkspaceCreateCalls[0].data.kind).toBe('personal')
+    expect(s.txWorkspaceProfileCreateCalls[0].data).toMatchObject({
+      workspaceId: 'ws-1',
+      name: 'Shogo',
+    })
   })
 
   it("falls back to 'User Personal' when userName is empty", async () => {

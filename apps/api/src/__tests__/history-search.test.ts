@@ -24,25 +24,44 @@ const plan = {
   project: { id: 'project-1', name: 'App' },
 }
 
+const allProjects = [
+  { id: 'project-1', name: 'App', hidden: false },
+  { id: 'project-hidden', name: 'Hidden Builder Delegate', hidden: true },
+]
+const projectFindManyCalls: any[] = []
+
 mock.module('../lib/prisma', () => ({
   prisma: {
     member: { findFirst: async () => ({ id: 'member-1' }) },
-    project: { findMany: async () => [{ id: 'project-1' }] },
+    project: {
+      findMany: async (args: any) => {
+        projectFindManyCalls.push(args)
+        const hiddenFilter = args?.where?.hidden
+        return allProjects.filter((p) => (hiddenFilter === undefined ? true : p.hidden === hiddenFilter))
+      },
+    },
     chatSession: {
       findMany: async () => [chat],
       findFirst: async () => chat,
     },
     plan: { findMany: async () => [plan], findFirst: async () => plan },
+    workspace: { findUnique: async () => ({ name: 'Acme', slug: 'acme', description: null }) },
   },
 }))
 
 const { searchWorkspaceHistory, renderWorkspaceTranscript } = await import('../lib/history-search')
-const { enrichChatReferences } = await import('../lib/chat-references')
+const { enrichChatReferences, enrichWorkspaceReferences } = await import('../lib/chat-references')
 
 describe('workspace history search', () => {
   test('searches chats and plans in one workspace', async () => {
     const result = await searchWorkspaceHistory({ workspaceId: 'workspace-1', userId: 'user-1', query: 'history' })
     expect(result.results.map((item) => item.kind)).toEqual(['chat', 'plan'])
+  })
+
+  test('excludes hidden projects when resolving the workspace project scope', async () => {
+    projectFindManyCalls.length = 0
+    await searchWorkspaceHistory({ workspaceId: 'workspace-1', userId: 'user-1', query: 'history' })
+    expect(projectFindManyCalls[0]?.where).toMatchObject({ workspaceId: 'workspace-1', hidden: false })
   })
 
   test('renders a bounded transcript and enriches references', async () => {
@@ -57,5 +76,12 @@ describe('workspace history search', () => {
     expect(await enrichChatReferences(body, 'user-1', 'project-1', 'workspace-1')).toBe(true)
     expect(body.references[0].transcript).toContain('SQLite')
     expect(body.references[1].content).toContain('# Search')
+  })
+
+  test('workspace reference summaries never list hidden project names', async () => {
+    const body = { references: [{ type: 'workspace', id: 'workspace-1', label: '@workspace:Acme' }] }
+    expect(await enrichWorkspaceReferences(body, 'user-1')).toBe(true)
+    expect(body.references[0].summary).toContain('App')
+    expect(body.references[0].summary).not.toContain('Hidden Builder Delegate')
   })
 })

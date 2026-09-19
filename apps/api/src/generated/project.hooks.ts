@@ -114,7 +114,7 @@ export const projectHooks: ProjectHooks = {
       return {
         ok: true,
         data: {
-          where: { workspaceId },
+          where: { workspaceId, hidden: false },
           include: { workspace: true, folder: true },
         },
       }
@@ -125,7 +125,7 @@ export const projectHooks: ProjectHooks = {
       return {
         ok: true,
         data: {
-          where: {},
+          where: { hidden: false },
           include: { workspace: true, folder: true },
         },
       }
@@ -136,6 +136,7 @@ export const projectHooks: ProjectHooks = {
       ok: true,
       data: {
         where: {
+          hidden: false,
           OR: [
             { workspace: { members: { some: { userId } } } },
             { members: { some: { userId } } },

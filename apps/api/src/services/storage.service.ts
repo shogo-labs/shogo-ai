@@ -42,8 +42,13 @@ export async function getStorageUsage(workspaceId: string): Promise<StorageBreak
   const limitBytes = INSTANCE_SIZES[size].storageLimitBytes
   const totalBytes = workspace.storageUsage ? Number(workspace.storageUsage.totalBytes) : 0
 
+  // `hidden: false` — this feeds `projects[].projectName` in the UI storage
+  // breakdown, so hidden (companion builder-delegate) project names must not
+  // leak here. `calculateWorkspaceStorageUsage` below deliberately does NOT
+  // filter hidden projects: hidden projects still consume real S3 bytes and
+  // must still count against the workspace's storage quota.
   const projects = await prisma.project.findMany({
-    where: { workspaceId },
+    where: { workspaceId, hidden: false },
     select: { id: true, name: true },
   })
 
@@ -71,6 +76,9 @@ export async function calculateWorkspaceStorageUsage(workspaceId: string): Promi
   projectCount: number
   perProject: Array<{ projectId: string; bytes: number }>
 }> {
+  // Intentionally includes hidden projects: this computes the actual S3
+  // bytes backing the workspace's storage quota, and hidden projects
+  // consume real storage regardless of whether they're user-visible.
   const projects = await prisma.project.findMany({
     where: { workspaceId },
     select: { id: true },

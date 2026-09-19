@@ -21,6 +21,7 @@ export type ProjectCategory = 'app' | 'website' | 'tool' | 'game'
 export interface ProjectType {
   id: string
   name: string
+  hidden: boolean
   description?: string
   workspaceId: string
   tier: ProjectTier
@@ -50,6 +51,7 @@ export interface ProjectType {
   lastMessageAt?: Date
   workingMode: string
   runtimeEnabled: boolean
+  slackEnabled: boolean
   trustLevel: string
   preferredInstanceId?: string
   preferredInstancePolicy: string
@@ -58,6 +60,7 @@ export interface ProjectType {
 
 export interface ProjectCreateInput {
   name: string
+  hidden?: boolean
   description?: string
   workspaceId: string
   tier?: ProjectTier
@@ -85,6 +88,7 @@ export interface ProjectCreateInput {
   lastMessageAt?: Date
   workingMode?: string
   runtimeEnabled?: boolean
+  slackEnabled?: boolean
   trustLevel?: string
   preferredInstanceId?: string
   preferredInstancePolicy?: string
@@ -93,6 +97,7 @@ export interface ProjectCreateInput {
 
 export interface ProjectUpdateInput {
   name?: string
+  hidden?: boolean
   description?: string
   workspaceId?: string
   tier?: ProjectTier
@@ -120,6 +125,7 @@ export interface ProjectUpdateInput {
   lastMessageAt?: Date
   workingMode?: string
   runtimeEnabled?: boolean
+  slackEnabled?: boolean
   trustLevel?: string
   preferredInstanceId?: string
   preferredInstancePolicy?: string

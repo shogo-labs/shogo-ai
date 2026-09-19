@@ -411,7 +411,7 @@ export const ChatSessionCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["project","workspace","attachedProjects","messages","toolCallLogs","plans"]
+const relationFields = ["project","workspace","attachedProjects","messages","toolCallLogs","agentTasks","plans"]
 
 /**
  * Transform API response for MST compatibility:

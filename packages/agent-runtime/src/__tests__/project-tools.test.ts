@@ -307,6 +307,24 @@ describe('project_call', () => {
     expect(out.runId).toBe('run_fixed')
   })
 
+  test('surfaces URLs from a delegated reply as deliverables', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = {
+      ok: true,
+      status: 200,
+      data: { status: 'completed', reply: 'Preview: https://demo.shogo.one. Published: https://app.example.com/path', sessionId: 'run:abc' },
+    }
+    const ctx = baseCtx({ config: { ...baseCtx().config, capabilityProfile: 'personal' } as any })
+    const out = await run(createProjectCallTool(ctx), { project: 'proj-2', message: 'build it' })
+    expect(out.deliverables).toEqual([
+      { type: 'url', label: 'Worker', href: 'https://demo.shogo.one', projectId: 'proj-2' },
+      { type: 'url', label: 'Worker', href: 'https://app.example.com/path', projectId: 'proj-2' },
+    ])
+  })
+
   test('adds a hint when the call times out', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },

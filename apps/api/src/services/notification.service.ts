@@ -131,10 +131,27 @@ export async function notifyWorkspaceBillingAdmins(
   return created
 }
 
-/** Count a user's unread (readAt IS NULL) notifications. */
-export async function getUnreadNotificationCount(userId: string): Promise<number> {
+const MOBILE_TASK_NOTIFICATION_TYPES = [
+  'agent_task_started',
+  'agent_task_completed',
+  'agent_task_failed',
+] as const
+
+/** Count a user's unread notifications, optionally excluding native task events. */
+export async function getUnreadNotificationCount(
+  userId: string,
+  options: { excludeMobileTaskNotifications?: boolean } = {},
+): Promise<number> {
   try {
-    return await prisma.notification.count({ where: { userId, readAt: null } })
+    return await prisma.notification.count({
+      where: {
+        userId,
+        readAt: null,
+        ...(options.excludeMobileTaskNotifications
+          ? { type: { notIn: MOBILE_TASK_NOTIFICATION_TYPES } }
+          : {}),
+      },
+    })
   } catch (err) {
     console.error('[notifications] getUnreadNotificationCount failed:', (err as Error)?.message ?? err)
     return 0

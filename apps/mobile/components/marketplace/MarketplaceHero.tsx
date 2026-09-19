@@ -35,14 +35,21 @@ export function MarketplaceHero({
   children,
   compact,
 }: MarketplaceHeroProps) {
+  const isNative = Platform.OS !== 'web'
   const titleStyle: any =
-    Platform.OS === 'web'
+    !isNative
       ? {
           fontFamily: 'Skema Pro Display, ui-serif, Georgia, serif',
           letterSpacing: -0.6,
           lineHeight: compact ? 36 : 44,
         }
-      : { lineHeight: compact ? 32 : 40 }
+      : { lineHeight: compact ? 30 : 36 }
+  const titleClass = isNative
+    ? compact ? 'text-2xl' : 'text-3xl'
+    : compact ? 'text-3xl' : 'text-4xl'
+  const contentClass = isNative
+    ? `px-4 ${compact ? 'pt-5 pb-5' : 'pt-7 pb-6'} flex-col gap-3`
+    : `px-5 ${compact ? 'pt-6 pb-5' : 'pt-10 pb-8'} flex-row items-end gap-4`
 
   return (
     <View
@@ -61,14 +68,14 @@ export function MarketplaceHero({
           top: 0,
           left: 0,
           right: 0,
-          height: 120,
+          height: isNative ? 88 : 120,
           backgroundColor: `${accent}1f`,
         }}
       />
       <View
-        className={`px-5 ${compact ? 'pt-6 pb-5' : 'pt-10 pb-8'} flex-row items-end gap-4`}
+        className={contentClass}
       >
-        <View className="flex-1 min-w-0">
+        <View className={isNative ? 'w-full' : 'flex-1 min-w-0'}>
           {eyebrow && (
             <Text
               className="text-xs font-bold text-foreground/70 mb-2"
@@ -78,7 +85,7 @@ export function MarketplaceHero({
             </Text>
           )}
           <Text
-            className={`font-bold text-foreground ${compact ? 'text-3xl' : 'text-4xl'}`}
+            className={`font-bold text-foreground ${titleClass}`}
             style={titleStyle}
             numberOfLines={2}
           >

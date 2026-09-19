@@ -31,6 +31,7 @@ describe('buildWorkspaceEnv', () => {
     const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], seams as any)
     expect(env.WORKSPACE_ID).toBe('ws-1')
     expect(env.WORKSPACE_RUNTIME).toBe('true')
+    expect(env.WORKSPACE_KIND).toBe('team')
     expect(env.WORKSPACE_PROJECT_IDS).toBe('p1,p2')
     expect(env.AGENT_NAME).toBe('My WS')
 
@@ -39,6 +40,21 @@ describe('buildWorkspaceEnv', () => {
       { id: 'p1', name: 'alpha-api' },
       { id: 'p2', name: 'beta-web' },
     ])
+  })
+
+  it('emits the personal workspace kind and profile name', async () => {
+    const env = await buildWorkspaceEnv('ws-personal', [], {
+      ...seams,
+      _loadWorkspace: async () => ({
+        name: 'User Personal',
+        kind: 'personal',
+        profileName: 'Shogo',
+        composioScope: 'workspace',
+      }),
+    } as any)
+
+    expect(env.WORKSPACE_KIND).toBe('personal')
+    expect(env.AGENT_NAME).toBe('Shogo')
   })
 
   it('mints a per-project token map and a back-compat default token', async () => {

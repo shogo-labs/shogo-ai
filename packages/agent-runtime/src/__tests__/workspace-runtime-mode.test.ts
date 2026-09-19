@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
   isWorkspaceRuntimeMode,
+  workspaceKind,
   workspaceRuntimeId,
   workspaceAttachedProjectIds,
   workspaceProjectsManifest,
@@ -15,7 +16,44 @@ import {
   buildWorkspacePreviewPath,
   isAttachedProjectId,
   parseWorkspacePreviewUrls,
+  resolveRuntimeIdentity,
 } from '../workspace-runtime-mode'
+
+describe('resolveRuntimeIdentity', () => {
+  it('resolves a workspace-mode personal identity', () => {
+    expect(
+      resolveRuntimeIdentity({
+        WORKSPACE_RUNTIME: 'true',
+        WORKSPACE_ID: 'ws-1',
+        WORKSPACE_KIND: 'personal',
+      } as any),
+    ).toEqual({ mode: 'workspace', workspaceId: 'ws-1', projectId: null, kind: 'personal' })
+  })
+
+  it('resolves a single-project team identity', () => {
+    expect(resolveRuntimeIdentity({ PROJECT_ID: 'proj-1' } as any)).toEqual({
+      mode: 'project',
+      workspaceId: null,
+      projectId: 'proj-1',
+      kind: 'team',
+    })
+  })
+
+  it('workspaceId is populated whenever WORKSPACE_ID is set, even outside workspace mode', () => {
+    // Mirrors the historical `process.env.WORKSPACE_ID || ctx.workspaceId`
+    // precedence in gateway-tools.ts's resolveWorkspaceId, which never
+    // gated on WORKSPACE_RUNTIME.
+    expect(resolveRuntimeIdentity({ WORKSPACE_ID: 'ws-2' } as any).workspaceId).toBe('ws-2')
+  })
+})
+
+describe('workspaceKind', () => {
+  it('recognizes personal mode and defaults safely to team', () => {
+    expect(workspaceKind({ WORKSPACE_KIND: 'personal' } as any)).toBe('personal')
+    expect(workspaceKind({ WORKSPACE_KIND: 'team' } as any)).toBe('team')
+    expect(workspaceKind({} as any)).toBe('team')
+  })
+})
 
 describe('isWorkspaceRuntimeMode', () => {
   it('is true only when WORKSPACE_RUNTIME=true', () => {

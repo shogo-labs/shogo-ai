@@ -136,6 +136,7 @@ export function ProjectTopBar({
   onCanvasOpenInNewTab,
   onCanvasPrewarm,
   onOpenCodeWorkbench,
+  onOpenSidebar,
   idePrimarySideBarPosition = 'left',
   onIdePrimarySideBarPositionChange,
   ideEmbed = false,
@@ -341,7 +342,7 @@ export function ProjectTopBar({
         <NativePhoneHeader
           projectName={projectName}
           projectMenu={projectMenu}
-          onBack={handleBack}
+          onOpenSidebar={onOpenSidebar}
           showTrustBadge={showTrustBadge}
           trustLevel={trustLevel}
           onToggleTrust={onToggleTrust}

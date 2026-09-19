@@ -121,12 +121,16 @@ if (Platform.OS !== 'web') {
     ;(global as any).EventSource = RNEventSource
   }
 
-  const setupPolyfills = async () => {
-    const { polyfillGlobal } = await import(
+  const setupPolyfills = () => {
+    // Metro converts native dynamic imports into async-require calls. In this
+    // monorepo that turns the React Native internal into a store-relative
+    // path which cannot be resolved after a clean bundle. A guarded require
+    // preserves the native-only loading behavior without the broken rewrite.
+    const { polyfillGlobal } = require(
       'react-native/Libraries/Utilities/PolyfillFunctions'
     )
 
-    const { TextEncoderStream, TextDecoderStream } = await import(
+    const { TextEncoderStream, TextDecoderStream } = require(
       '@stardazed/streams-text-encoding'
     )
 
