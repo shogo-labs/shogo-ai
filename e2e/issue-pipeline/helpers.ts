@@ -231,10 +231,35 @@ export async function checkoutPullRequest(env: PipelineEnv, pr: GhPullRequest): 
   return tmp
 }
 
+const TEST_FILE_RE = /\.(test|spec)\.[jt]sx?$/
+
+/**
+ * Checks out the PR's *base* branch, but keeps the PR's new/changed test
+ * file(s) instead of the base's — i.e. "the regression test running against
+ * the pre-fix implementation". A plain `git checkout <baseRefName>` (the
+ * original implementation) can never make the caller's "the base branch
+ * still reproduces the bug" assertion meaningful: the base branch predates
+ * the PR entirely, so a regression test the PR itself introduces doesn't
+ * exist there yet to fail — `runAllTests(baseDir)` would just silently run
+ * whatever tests already existed pre-PR and trivially pass. Found live
+ * running `l1-multi-project.integration.test.ts`: the implementer's new
+ * regression tests (added to `slugify.test.ts`) always vacuously "passed on
+ * base" for exactly this reason, an eval-harness bug, not a pipeline one —
+ * masked in every prior manual/human-reviewed run (L4) because a human
+ * reads the diff instead of running this exact comparison.
+ *
+ * Only non-test files are reverted to the base version; test files are left
+ * as introduced by the PR so they execute against the old implementation.
+ */
 export async function checkoutBaseBranch(env: PipelineEnv, pr: GhPullRequest): Promise<string> {
   const tmp = mkdtempSync(join(tmpdir(), `issue-pipeline-base-${pr.number}-`))
   await runOk('gh', ['repo', 'clone', env.githubTestRepo, tmp, '--', '-q'])
-  await runOk('git', ['checkout', '-q', pr.baseRefName], tmp)
+  await runOk('git', ['fetch', '-q', 'origin', pr.headRefName], tmp)
+  await runOk('git', ['checkout', '-q', pr.headRefName], tmp)
+  const nonTestFiles = pr.files.map((f) => f.path).filter((p) => !TEST_FILE_RE.test(p))
+  if (nonTestFiles.length > 0) {
+    await runOk('git', ['checkout', pr.baseRefName, '--', ...nonTestFiles], tmp)
+  }
   return tmp
 }
 
