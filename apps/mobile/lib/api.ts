@@ -45,50 +45,26 @@ export interface AdminScopeDef {
   description: string
 }
 
-export type PersonalGoalStatus = 'active' | 'paused' | 'done'
-export type PersonalGoalEventKind = 'progress' | 'blocker' | 'approval' | 'note' | 'deliverable'
+// Aliased (not retyped) from `@shogo/shared-app`, the single definition of
+// the universal workspace-agent primitives shared with any other client
+// (web, desktop) that grows a companion surface. See that package's
+// `workspace-agent/types.ts` for the field-level docs. Kept under their
+// original `Personal*` names here so the many existing mobile call sites
+// (`PersonalGoalsScreen`, `PersonalHomeScreen`, `PersonalActivityScreen`, …)
+// don't need to change.
+import type {
+  GoalStatus as SharedGoalStatus,
+  GoalEventKind as SharedGoalEventKind,
+  WorkspaceAgentProfile as SharedWorkspaceAgentProfile,
+  Goal as SharedGoal,
+  WorkspaceActivityItem as SharedWorkspaceActivityItem,
+} from '@shogo/shared-app'
 
-export interface PersonalAgentProfile {
-  id: string
-  workspaceId: string
-  name: string
-  avatarUrl: string | null
-  tagline: string | null
-  personality: string | null
-  statusText: string | null
-  statusUpdatedAt: string | null
-}
-
-export interface PersonalGoal {
-  id: string
-  workspaceId: string
-  title: string
-  why: string | null
-  status: PersonalGoalStatus
-  plan: unknown
-  deliverables: unknown
-  nextCheckInAt: string | null
-  lastProgressAt: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-export interface PersonalWorkspaceActivity {
-  type: 'goal_event' | 'agent_task'
-  id: string
-  goalId?: string | null
-  goalTitle?: string
-  kind?: PersonalGoalEventKind
-  message?: string
-  title?: string
-  status?: string
-  currentStep?: string | null
-  resultSummary?: string | null
-  errorMessage?: string | null
-  createdAt: string
-  updatedAt?: string
-  completedAt?: string | null
-}
+export type PersonalGoalStatus = SharedGoalStatus
+export type PersonalGoalEventKind = SharedGoalEventKind
+export type PersonalAgentProfile = SharedWorkspaceAgentProfile
+export type PersonalGoal = SharedGoal
+export type PersonalWorkspaceActivity = SharedWorkspaceActivityItem
 
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {

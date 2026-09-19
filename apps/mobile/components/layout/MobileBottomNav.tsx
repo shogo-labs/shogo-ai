@@ -10,6 +10,7 @@ import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
+import { setLastProjectContext, useLastProjectContext } from '../../hooks/useLastProjectContext'
 import type { BottomTabId } from '@shogo/shared-app'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../../lib/native-composer-keyboard'
 import {
@@ -20,8 +21,6 @@ import {
   NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_HOME_CANVAS,
 } from '../../lib/native-phone-layout'
-
-let lastProjectContext: { projectId: string; chatSessionId?: string } | null = null
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
@@ -72,6 +71,7 @@ export function MobileBottomNav() {
   const insets = useSafeAreaInsets()
   const isDark = useResolvedTheme() === 'dark'
   const [keyboardOpen, setKeyboardOpen] = useState(false)
+  const lastProjectContext = useLastProjectContext()
 
   const routeProjectId = firstParam(params.id)
   const tabProjectId = firstParam(params.returnProjectId) ?? firstParam(params.projectId)
@@ -81,16 +81,16 @@ export function MobileBottomNav() {
 
   useEffect(() => {
     if (activeProjectId && isProjectPath(pathname)) {
-      lastProjectContext = { projectId: activeProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
+      setLastProjectContext({ projectId: activeProjectId, ...(chatSessionId ? { chatSessionId } : {}) })
     } else if (tabProjectId && isBottomTabPath(pathname)) {
       // Keep the context alive even if the app layout remounts while moving
       // between bottom tabs. The params are passed by the tab buttons below.
-      lastProjectContext = { projectId: tabProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
+      setLastProjectContext({ projectId: tabProjectId, ...(chatSessionId ? { chatSessionId } : {}) })
     } else if (isHomePath(pathname)) {
       // Re-entering Home intentionally resets the context. The other bottom
       // tabs preserve the last project context while opened from a project,
       // so Chat can return to that project.
-      lastProjectContext = null
+      setLastProjectContext(null)
     }
   }, [activeProjectId, chatSessionId, pathname, tabProjectId])
 

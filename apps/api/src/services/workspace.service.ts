@@ -275,3 +275,28 @@ export async function getWorkspaceKind(workspaceId: string): Promise<WorkspaceKi
   });
   return normalizeWorkspaceKind((workspace as { kind?: string } | null)?.kind);
 }
+
+export interface WorkspaceContext {
+  hasAccess: boolean;
+  kind: WorkspaceKind;
+}
+
+/**
+ * Combines the two checks almost every workspace-scoped route needs before
+ * doing real work: "does this user have access?" and "what kind of
+ * workspace is this?" — fetched concurrently so callers pay for one
+ * round-trip pair instead of two sequential ones. Previously duplicated as
+ * separate `hasWorkspaceAccess()` + `getWorkspaceKind()` calls in
+ * `workspace-chat.ts`'s `authorize()`/`resolveOr501()` and
+ * `workspace-agent.ts`'s `sessionAuthorize()`.
+ */
+export async function loadWorkspaceContext(
+  workspaceId: string,
+  userId: string,
+): Promise<WorkspaceContext> {
+  const [hasAccess, kind] = await Promise.all([
+    hasWorkspaceAccess(workspaceId, userId),
+    getWorkspaceKind(workspaceId),
+  ]);
+  return { hasAccess, kind };
+}
