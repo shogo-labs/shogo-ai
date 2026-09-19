@@ -171,6 +171,58 @@ export async function createGoalEvent(
   return event
 }
 
+export type GoalApprovalDecision = 'approved' | 'declined'
+
+/**
+ * Mark an `approval`-kind goal event as resolved by stamping
+ * `metadata.resolvedAt`/`metadata.decision`. There is deliberately no
+ * separate "resolved" column on `GoalEvent` — events are an append-only
+ * log, and `metadata` already exists for exactly this kind of event-
+ * specific detail. `isApprovalPending` (below) is the read-side match:
+ * an approval event with no `metadata.resolvedAt` is still open.
+ *
+ * Returns null when the event doesn't exist, isn't scoped to this
+ * workspace/goal, or isn't an `approval` event (resolving a non-approval
+ * event is a no-op by design — there's nothing to approve).
+ */
+export async function resolveGoalEventApproval(
+  workspaceId: string,
+  goalId: string,
+  eventId: string,
+  decision: GoalApprovalDecision,
+) {
+  const event = await prisma.goalEvent.findFirst({
+    where: { id: eventId, goalId, goal: { workspaceId } },
+  })
+  if (!event || event.kind !== 'approval') return null
+
+  const existingMetadata =
+    event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
+      ? (event.metadata as Record<string, unknown>)
+      : {}
+
+  return prisma.goalEvent.update({
+    where: { id: eventId },
+    data: {
+      metadata: {
+        ...existingMetadata,
+        decision,
+        resolvedAt: new Date().toISOString(),
+      } as any,
+    },
+  })
+}
+
+/** An `approval` event with no recorded decision yet — surfaced as "Needs your OK". */
+export function isApprovalPending(event: { kind: string; metadata?: unknown }): boolean {
+  if (event.kind !== 'approval') return false
+  const metadata =
+    event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
+      ? (event.metadata as Record<string, unknown>)
+      : null
+  return !metadata?.resolvedAt
+}
+
 export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
   const [events, tasks] = await Promise.all([
     prisma.goalEvent.findMany({

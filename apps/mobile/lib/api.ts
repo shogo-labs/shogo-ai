@@ -58,6 +58,10 @@ import type {
   WorkspaceAgentProfile as SharedWorkspaceAgentProfile,
   Goal as SharedGoal,
   WorkspaceActivityItem as SharedWorkspaceActivityItem,
+  GoalEventRecord as SharedGoalEventRecord,
+  GoalPlanStep as SharedGoalPlanStep,
+  GoalDeliverable as SharedGoalDeliverable,
+  AgentTaskSummary as SharedAgentTaskSummary,
 } from '@shogo/shared-app'
 
 export type PersonalGoalStatus = SharedGoalStatus
@@ -65,6 +69,10 @@ export type PersonalGoalEventKind = SharedGoalEventKind
 export type PersonalAgentProfile = SharedWorkspaceAgentProfile
 export type PersonalGoal = SharedGoal
 export type PersonalWorkspaceActivity = SharedWorkspaceActivityItem
+export type PersonalGoalEvent = SharedGoalEventRecord
+export type PersonalGoalPlanStep = SharedGoalPlanStep
+export type PersonalGoalDeliverable = SharedGoalDeliverable
+export type PersonalAgentTaskSummary = SharedAgentTaskSummary
 
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {
@@ -1344,6 +1352,20 @@ export const api = {
     return res.data.profile
   },
 
+  /** Update the companion's own profile fields (name/avatar/tagline/personality/statusText). */
+  async updateAgentProfile(
+    http: HttpClient,
+    workspaceId: string,
+    changes: Partial<Pick<PersonalAgentProfile, 'name' | 'avatarUrl' | 'tagline' | 'personality' | 'statusText'>>,
+  ) {
+    const res = await http.patch<{ profile?: PersonalAgentProfile }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`,
+      changes,
+    )
+    if (!res.data?.profile) throw new Error('updateAgentProfile: no profile returned')
+    return res.data.profile
+  },
+
   async listWorkspaceGoals(
     http: HttpClient,
     workspaceId: string,
@@ -1354,6 +1376,34 @@ export const api = {
       `/api/workspaces/${encodeURIComponent(workspaceId)}/goals${query}`,
     )
     return res.data?.goals ?? []
+  },
+
+  /** A single goal with its recent-first event timeline and linked agent tasks. */
+  async getGoal(
+    http: HttpClient,
+    workspaceId: string,
+    goalId: string,
+  ): Promise<(PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }) | null> {
+    const res = await http.get<{
+      goal?: PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}`)
+    return res.data?.goal ?? null
+  },
+
+  /** Record the user's decision on a pending "Needs your OK" approval event. */
+  async resolveGoalApproval(
+    http: HttpClient,
+    workspaceId: string,
+    goalId: string,
+    eventId: string,
+    decision: 'approved' | 'declined',
+  ) {
+    const res = await http.post<{ event?: PersonalGoalEvent }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}/events/${encodeURIComponent(eventId)}/resolve`,
+      { decision },
+    )
+    if (!res.data?.event) throw new Error('resolveGoalApproval: no event returned')
+    return res.data.event
   },
 
   async listWorkspaceActivity(http: HttpClient, workspaceId: string, limit = 100) {

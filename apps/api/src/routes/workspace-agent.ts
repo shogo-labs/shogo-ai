@@ -30,8 +30,10 @@ import {
   listGoalEvents,
   listGoals,
   listWorkspaceActivity,
+  resolveGoalEventApproval,
   updateAgentProfile,
   updateGoal,
+  type GoalApprovalDecision,
 } from '../services/workspace-agent.service'
 
 export interface WorkspaceAgentAuthContext {
@@ -193,6 +195,32 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     })
     if (!event) return c.json({ error: { code: 'not_found', message: 'Goal not found' } }, 404)
     return c.json({ event }, 201)
+  })
+
+  // Record the user's decision on a pending "Needs your OK" approval event.
+  // Only meaningful for `kind: 'approval'` events — see
+  // `resolveGoalEventApproval`'s doc comment for why this is a metadata
+  // stamp rather than a dedicated column.
+  router.post('/workspaces/:workspaceId/goals/:goalId/events/:eventId/resolve', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const decision = body?.decision
+    if (decision !== 'approved' && decision !== 'declined') {
+      return c.json({
+        error: { code: 'invalid_body', message: "decision must be 'approved' or 'declined'" },
+      }, 400)
+    }
+    const event = await resolveGoalEventApproval(
+      auth.workspaceId,
+      c.req.param('goalId'),
+      c.req.param('eventId'),
+      decision as GoalApprovalDecision,
+    )
+    if (!event) {
+      return c.json({ error: { code: 'not_found', message: 'Pending approval not found' } }, 404)
+    }
+    return c.json({ event })
   })
 
   router.get('/workspaces/:workspaceId/activity', async (c) => {

@@ -934,19 +934,34 @@ app.get('/api/config', async (c) => {
     marketplace: true,
     ezMode: true,
     phoneChannel: !localMode,
+    // Companion-shell rollout kill switch: personal workspaces render the
+    // simplified Muse/Grok-style companion shell (see `workspaceExperience`)
+    // whenever this is true. Defaults on; a super-admin can flip it off
+    // instance-wide without a deploy if the rollout needs to pause.
+    personalShell: true,
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
   let overrides: Record<string, boolean> = {}
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['feature.marketplace', 'feature.ez_mode', 'feature.phone_channel'] } },
+      where: {
+        key: {
+          in: [
+            'feature.marketplace',
+            'feature.ez_mode',
+            'feature.phone_channel',
+            'feature.personal_shell',
+          ],
+        },
+      },
     })
     for (const row of rows) {
       const bool = row.value === 'true'
       if (row.key === 'feature.marketplace') overrides.marketplace = bool
       if (row.key === 'feature.ez_mode') overrides.ezMode = bool
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
+      if (row.key === 'feature.personal_shell') overrides.personalShell = bool
     }
   } catch (err) {
     console.error('[config] Failed to load feature flag overrides:', err)
@@ -6433,6 +6448,7 @@ const FEATURE_FLAG_KEYS = {
   marketplace: 'feature.marketplace',
   ezMode: 'feature.ez_mode',
   phoneChannel: 'feature.phone_channel',
+  personalShell: 'feature.personal_shell',
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
@@ -6447,6 +6463,7 @@ app.get('/api/admin/settings/features', async (c) => {
       marketplace: null,
       ezMode: null,
       phoneChannel: null,
+      personalShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -6490,6 +6507,7 @@ app.put('/api/admin/settings/features', async (c) => {
       marketplace: null,
       ezMode: null,
       phoneChannel: null,
+      personalShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'

@@ -36,6 +36,15 @@ mock.module('../services/workspace-agent.service', () => ({
   listGoals: async () => [{ id: 'goal-1', title: 'Habit tracker', status: 'active' }],
   listGoalEvents: async () => [{ id: 'event-1', kind: 'progress', message: 'Started' }],
   listWorkspaceActivity: async () => [{ type: 'goal_event', id: 'event-1' }],
+  resolveGoalEventApproval: async (
+    _workspaceId: string,
+    goalId: string,
+    eventId: string,
+    decision: 'approved' | 'declined',
+  ) =>
+    goalId === 'goal-1' && eventId === 'event-approval-1'
+      ? { id: eventId, kind: 'approval', metadata: { decision, resolvedAt: '2026-01-01T00:00:00.000Z' } }
+      : null,
 }))
 
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../routes/workspace-agent')
@@ -96,6 +105,43 @@ describe('workspace agent routes (session-authorized mount)', () => {
       body: JSON.stringify({ kind: 'progress', message: 'Started' }),
     })
     expect(createEvent.status).toBe(201)
+  })
+
+  test('resolves a pending approval event', async () => {
+    const resolved = await appFor('user-1').request(
+      '/api/workspaces/workspace-1/goals/goal-1/events/event-approval-1/resolve',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      },
+    )
+    expect(resolved.status).toBe(200)
+    expect(await resolved.json()).toMatchObject({ event: { metadata: { decision: 'approved' } } })
+  })
+
+  test('rejects an invalid decision value', async () => {
+    const res = await appFor('user-1').request(
+      '/api/workspaces/workspace-1/goals/goal-1/events/event-approval-1/resolve',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'maybe' }),
+      },
+    )
+    expect(res.status).toBe(400)
+  })
+
+  test('404s resolving an event that does not exist', async () => {
+    const res = await appFor('user-1').request(
+      '/api/workspaces/workspace-1/goals/goal-1/events/does-not-exist/resolve',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      },
+    )
+    expect(res.status).toBe(404)
   })
 })
 

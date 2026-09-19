@@ -860,7 +860,11 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
-  if (workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion') {
+  // `features.personalShell` is an instance-wide kill switch (default on):
+  // a super-admin can fall back every personal workspace to the standard
+  // builder home without a deploy if the companion-shell rollout needs to
+  // pause. See the API's `/api/config` handler and `(admin)/general.tsx`.
+  if (features.personalShell && workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion') {
     return <PersonalHomeScreen />
   }
 

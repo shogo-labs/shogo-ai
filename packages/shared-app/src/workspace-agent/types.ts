@@ -44,6 +44,63 @@ export interface Goal {
   updatedAt: string
 }
 
+/**
+ * `Goal.plan` is a free-form `Json` column (the agent decides its own plan
+ * shape via `goal_create`/`goal_update`) — this is the shape the agent's
+ * tool description asks for and the mobile Goal Detail screen renders. Any
+ * other shape simply renders no steps rather than throwing.
+ */
+export interface GoalPlanStep {
+  title: string
+  done?: boolean
+  detail?: string
+}
+
+/** Same free-form-`Json` situation as `GoalPlanStep`, for `Goal.deliverables`. */
+export interface GoalDeliverable {
+  type?: 'url' | 'file' | 'project'
+  title?: string
+  url?: string
+  projectId?: string
+  description?: string
+}
+
+/** Best-effort parse of `Goal.plan` into a step list; unknown shapes yield []. */
+export function parseGoalPlan(plan: unknown): GoalPlanStep[] {
+  if (!Array.isArray(plan)) return []
+  const steps: GoalPlanStep[] = []
+  for (const entry of plan) {
+    if (typeof entry === 'string') {
+      steps.push({ title: entry })
+    } else if (entry && typeof entry === 'object' && typeof (entry as any).title === 'string') {
+      steps.push({
+        title: (entry as any).title,
+        done: (entry as any).done === true,
+        detail: typeof (entry as any).detail === 'string' ? (entry as any).detail : undefined,
+      })
+    }
+  }
+  return steps
+}
+
+/** Best-effort parse of `Goal.deliverables` into artifact cards; unknown shapes yield []. */
+export function parseGoalDeliverables(deliverables: unknown): GoalDeliverable[] {
+  if (!Array.isArray(deliverables)) return []
+  const items: GoalDeliverable[] = []
+  for (const entry of deliverables) {
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    items.push({
+      type: e.type === 'file' || e.type === 'project' ? e.type : 'url',
+      title: typeof e.title === 'string' ? e.title : undefined,
+      url: typeof e.url === 'string' ? e.url : undefined,
+      projectId: typeof e.projectId === 'string' ? e.projectId : undefined,
+      description: typeof e.description === 'string' ? e.description : undefined,
+    })
+  }
+  return items
+}
+
 export interface WorkspaceActivityItem {
   type: 'goal_event' | 'agent_task'
   id: string
@@ -56,7 +113,61 @@ export interface WorkspaceActivityItem {
   currentStep?: string | null
   resultSummary?: string | null
   errorMessage?: string | null
+  /**
+   * Free-form per-event detail. For `kind: 'approval'` goal events, an
+   * unresolved approval has no `metadata.resolvedAt` — see
+   * `isApprovalPending` in the API's `workspace-agent.service.ts` (the
+   * read-side match for the approval-resolution write in the same file).
+   */
+  metadata?: { resolvedAt?: string; decision?: 'approved' | 'declined'; [key: string]: unknown } | null
   createdAt: string
   updatedAt?: string
   completedAt?: string | null
+}
+
+/**
+ * An `approval` goal-event item with no recorded decision yet — the
+ * client-side twin of the API's `isApprovalPending` (`workspace-agent.service.ts`).
+ * Kept as one function here so "Needs your OK" filtering can't drift between
+ * the Goals screen and the Activity screen.
+ */
+export function isApprovalPending(item: Pick<WorkspaceActivityItem, 'type' | 'kind' | 'metadata'>): boolean {
+  return item.type === 'goal_event' && item.kind === 'approval' && !item.metadata?.resolvedAt
+}
+
+/**
+ * The raw shape of a single `GoalEvent` row, as returned nested under
+ * `Goal.events` by `GET /workspaces/:id/goals/:goalId` (the Goal Detail
+ * screen's timeline). This is distinct from `WorkspaceActivityItem`, which
+ * is the flattened cross-goal feed used by `/activity` — it has no `type`
+ * discriminant or `goalTitle` because it's always scoped to one goal.
+ */
+export interface GoalEventRecord {
+  id: string
+  goalId: string
+  kind: GoalEventKind
+  message: string
+  metadata?: { resolvedAt?: string; decision?: 'approved' | 'declined'; [key: string]: unknown } | null
+  createdAt: string
+}
+
+/** `isApprovalPending` for a goal-detail-scoped `GoalEventRecord` rather than a flattened activity item. */
+export function isGoalEventApprovalPending(event: Pick<GoalEventRecord, 'kind' | 'metadata'>): boolean {
+  return event.kind === 'approval' && !event.metadata?.resolvedAt
+}
+
+/**
+ * The (loose) subset of `AgentTask` fields the Goal Detail screen renders,
+ * as nested under `Goal.agentTasks` by `GET /workspaces/:id/goals/:goalId`.
+ */
+export interface AgentTaskSummary {
+  id: string
+  goalId?: string | null
+  title: string
+  status: string
+  currentStep?: string | null
+  resultSummary?: string | null
+  errorMessage?: string | null
+  createdAt: string
+  updatedAt: string
 }

@@ -8,14 +8,13 @@ import type { PersonalAgentProfile } from '../../lib/api'
 
 interface PersonalAgentHeaderProps {
   profile: PersonalAgentProfile
-  onAvatarPress: () => void
-  onActivityPress: () => void
+  /** Opens the profile action sheet (change avatar, rename, personality, memory, activity). */
+  onProfilePress: () => void
 }
 
 export function PersonalAgentHeader({
   profile,
-  onAvatarPress,
-  onActivityPress,
+  onProfilePress,
 }: PersonalAgentHeaderProps) {
   const initial = profile.name.trim().charAt(0).toUpperCase() || 'S'
   const insets = useSafeAreaInsets()
@@ -27,13 +26,13 @@ export function PersonalAgentHeader({
       className="w-full border-b border-border/60 bg-background/95 px-4 pb-3 pt-3"
       style={needsOverlayClearance ? { paddingTop: insets.top + 58 } : undefined}
     >
-      <View className="mx-auto w-full max-w-2xl flex-row items-center gap-3">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Change ${profile.name}'s avatar`}
-          onPress={onAvatarPress}
-          className="h-12 w-12 overflow-hidden rounded-full border border-border bg-muted active:opacity-80"
-        >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${profile.name} profile and settings`}
+        onPress={onProfilePress}
+        className="mx-auto w-full max-w-2xl flex-row items-center gap-3 active:opacity-80"
+      >
+        <View className="h-12 w-12 overflow-hidden rounded-full border border-border bg-muted">
           {profile.avatarUrl ? (
             <Image source={{ uri: profile.avatarUrl }} className="h-full w-full" />
           ) : (
@@ -41,13 +40,8 @@ export function PersonalAgentHeader({
               <Text className="text-lg font-semibold text-primary">{initial}</Text>
             </View>
           )}
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="View companion activity"
-          onPress={onActivityPress}
-          className="min-w-0 flex-1 active:opacity-70"
-        >
+        </View>
+        <View className="min-w-0 flex-1">
           <View className="flex-row items-center gap-1.5">
             <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
               {profile.name}
@@ -57,13 +51,13 @@ export function PersonalAgentHeader({
           <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={2}>
             {profile.statusText || profile.tagline || 'Ready when you are'}
           </Text>
-        </Pressable>
+        </View>
         <ChevronRight size={17} className="text-muted-foreground" />
-      </View>
+      </Pressable>
       <View className="mx-auto mt-2 w-full max-w-2xl flex-row items-center gap-1.5">
         <Sparkles size={13} className="text-primary" />
         <Text className="text-[11px] text-muted-foreground">
-          Tap the avatar to change how I look
+          Tap to change my avatar, name, personality, or see what I remember
         </Text>
       </View>
     </View>

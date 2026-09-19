@@ -6,4 +6,14 @@ export type {
   WorkspaceAgentProfile,
   Goal,
   WorkspaceActivityItem,
+  GoalPlanStep,
+  GoalDeliverable,
+  GoalEventRecord,
+  AgentTaskSummary,
+} from './types'
+export {
+  isApprovalPending,
+  parseGoalPlan,
+  parseGoalDeliverables,
+  isGoalEventApprovalPending,
 } from './types'
