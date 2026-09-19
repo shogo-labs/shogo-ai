@@ -99,6 +99,7 @@ model Verification {
 model Workspace {
   id          String   @id @default(uuid())
   name        String
+  kind        String   @default("team")
   slug        String   @unique
   description String?
   ssoSettings String?
@@ -116,13 +117,69 @@ model Workspace {
   usageEvents     UsageEvent[]
   starredProjects StarredProject[]
   agentTasks      AgentTask[]
+  agentProfile    WorkspaceAgentProfile?
+  goals           Goal[]
 
   @@map("workspaces")
+}
+
+model WorkspaceAgentProfile {
+  id              String   @id @default(uuid())
+  workspaceId     String   @unique
+  name            String   @default("Shogo")
+  avatarUrl       String?
+  tagline         String?
+  personality     String?
+  statusText      String?
+  statusUpdatedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("workspace_agent_profiles")
+}
+
+model Goal {
+  id             String   @id @default(uuid())
+  workspaceId    String
+  title          String
+  why            String?
+  status         String   @default("active")
+  plan           String   @default("[]")
+  deliverables   String   @default("[]")
+  nextCheckInAt  DateTime?
+  lastProgressAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  events     GoalEvent[]
+  agentTasks AgentTask[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, updatedAt])
+  @@map("goals")
+}
+
+model GoalEvent {
+  id        String   @id @default(uuid())
+  goalId    String
+  kind      String
+  message   String
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId, createdAt])
+  @@map("goal_events")
 }
 
 model Project {
   id                 String   @id @default(uuid())
   name               String
+  hidden             Boolean  @default(false)
   description        String?
   workspaceId        String
   tier               String   @default("starter")
@@ -164,6 +221,7 @@ model Project {
   agentTasks       AgentTask[]
 
   @@index([workspaceId])
+  @@index([workspaceId, hidden])
   @@index([folderId])
   @@map("projects")
 }
@@ -402,6 +460,7 @@ model AgentTask {
   id             String   @id @default(uuid())
   userId         String
   workspaceId    String
+  goalId         String?
   projectId      String?
   chatSessionId  String?
   title          String
@@ -419,11 +478,13 @@ model AgentTask {
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  goal        Goal?        @relation(fields: [goalId], references: [id], onDelete: SetNull)
   project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
   chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
   @@index([workspaceId, status])
+  @@index([goalId, status])
   @@index([projectId, status])
   @@index([chatSessionId])
   @@index([status, dueAt])
@@ -517,6 +578,7 @@ model ChatSession {
   inferredName        String
   contextType         String
   contextId           String?
+  isPrimary           Boolean  @default(false)
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int      @default(0)

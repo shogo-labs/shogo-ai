@@ -235,6 +235,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Workspace slug from createPersonalWorkspace/createPaidWorkspace, single-source per workspace creation; suffix uses deterministic user prefix or nanoid.',
   },
   {
+    key: 'WorkspaceAgentProfile.workspaceId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One profile belongs to one workspace; personal signup creation and runtime profile updates are scoped to that workspace and use an upsert.',
+  },
+  {
     key: 'Project.publishedSubdomain',
     category: 'request_scoped',
     reason:

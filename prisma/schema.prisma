@@ -128,9 +128,29 @@ model Verification {
 // STUDIO-CORE (Multi-tenancy & Project Management)
 // =============================================================================
 
+enum WorkspaceKind {
+  personal
+  team
+}
+
+enum GoalStatus {
+  active
+  paused
+  done
+}
+
+enum GoalEventKind {
+  progress
+  blocker
+  approval
+  note
+  deliverable
+}
+
 model Workspace {
   id            String       @id @default(uuid())
   name          String
+  kind          WorkspaceKind @default(team)
   slug          String       @unique
   description   String?
   ssoSettings   Json?
@@ -189,11 +209,66 @@ model Workspace {
   chatSessions           ChatSession[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
+  agentProfile           WorkspaceAgentProfile?
+  goals                  Goal[]
 
   @@index([createdAt])
   @@index([homeRegion])
   @@index([parentWorkspaceId])
   @@map("workspaces")
+}
+
+model WorkspaceAgentProfile {
+  id              String    @id @default(uuid())
+  workspaceId     String    @unique
+  name            String    @default("Shogo")
+  avatarUrl       String?
+  tagline         String?
+  personality     String?
+  statusText      String?
+  statusUpdatedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("workspace_agent_profiles")
+}
+
+model Goal {
+  id             String     @id @default(uuid())
+  workspaceId    String
+  title          String
+  why            String?
+  status         GoalStatus @default(active)
+  plan           Json       @default("[]")
+  deliverables   Json       @default("[]")
+  nextCheckInAt  DateTime?
+  lastProgressAt DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  events     GoalEvent[]
+  agentTasks AgentTask[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, updatedAt])
+  @@map("goals")
+}
+
+model GoalEvent {
+  id        String        @id @default(uuid())
+  goalId    String
+  kind      GoalEventKind
+  message   String
+  metadata  Json?
+  createdAt DateTime      @default(now())
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId, createdAt])
+  @@map("goal_events")
 }
 
 enum InstanceSize {
@@ -207,6 +282,7 @@ enum InstanceSize {
 model Project {
   id                 String           @id @default(uuid())
   name               String
+  hidden             Boolean          @default(false)
   description        String?
   workspaceId        String
   tier               ProjectTier      @default(starter)
@@ -338,6 +414,7 @@ model Project {
   agentTasks             AgentTask[]
 
   @@index([workspaceId])
+  @@index([workspaceId, hidden])
   @@index([folderId])
   @@index([preferredInstanceId])
   @@index([createdAt])
@@ -890,6 +967,7 @@ model AgentTask {
   id             String          @id @default(uuid())
   userId         String
   workspaceId    String
+  goalId         String?
   projectId      String?
   chatSessionId  String?
   title          String
@@ -907,11 +985,13 @@ model AgentTask {
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  goal        Goal?        @relation(fields: [goalId], references: [id], onDelete: SetNull)
   project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
   chatSession ChatSession? @relation(fields: [chatSessionId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
   @@index([workspaceId, status])
+  @@index([goalId, status])
   @@index([projectId, status])
   @@index([chatSessionId])
   @@index([status, dueAt])
@@ -1214,6 +1294,7 @@ model ChatSession {
   cachedMessageCount  Int         @default(0)
   contextUsageTokens  Int         @default(0)
   contextWindowTokens Int         @default(0)
+  isPrimary           Boolean     @default(false)
   isPinned            Boolean     @default(false)
   isArchived          Boolean     @default(false)
   createdAt           DateTime    @default(now())

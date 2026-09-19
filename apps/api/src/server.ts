@@ -45,6 +45,7 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { personalWorkspaceRoutes } from './routes/personal-workspace'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { slackAgentRoutes } from './routes/slack-agent'
@@ -1519,6 +1520,7 @@ app.route('/api', syncRoutes())
 // workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+app.route('/api', personalWorkspaceRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.

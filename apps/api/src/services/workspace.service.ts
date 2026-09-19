@@ -58,9 +58,18 @@ export async function createPersonalWorkspace(
       data: {
         name: workspaceName,
         slug,
+        kind: 'personal',
         // Pin write-ownership to the region that created the workspace so all
         // workspace-scoped writes stay single-writer (replication-safe).
         ...workspaceHomeRegionField(),
+      },
+    });
+
+    await tx.workspaceAgentProfile.create({
+      data: {
+        workspaceId: workspace.id,
+        name: 'Shogo',
+        tagline: 'Your personal AI companion',
       },
     });
 

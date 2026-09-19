@@ -27,6 +27,7 @@ export const ProjectModel = types
   .model("Project", {
     id: types.identifier,
     name: types.string,
+    hidden: types.optional(types.boolean, false),
     description: types.optional(types.string, ""),
     workspaceId: types.string,
     tier: types.optional(types.enumeration("ProjectTier", ["starter", "pro", "enterprise", "internal"]), "starter"),

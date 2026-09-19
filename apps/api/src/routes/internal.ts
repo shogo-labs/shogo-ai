@@ -32,6 +32,15 @@ import { getRuntimeManager } from '../lib/runtime/manager'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { resolve as resolvePath } from 'path'
 import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
+import {
+  createGoal,
+  createGoalEvent,
+  getOrCreateAgentProfile,
+  isGoalEventKind,
+  isGoalStatus,
+  updateAgentProfile,
+  updateGoal,
+} from '../services/personal-workspace.service'
 
 const app = new Hono()
 
@@ -617,6 +626,105 @@ app.post('/agent-cost-metrics', async (c) => {
     console.error('[Internal] Failed to record agent cost metric:', err.message)
     return c.json({ error: 'Failed to record metric' }, 500)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Personal workspace profile and goals
+// ---------------------------------------------------------------------------
+
+app.get('/workspaces/:workspaceId/agent-profile', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  return c.json({ profile: await getOrCreateAgentProfile(workspaceId) })
+})
+
+app.patch('/workspaces/:workspaceId/agent-profile', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object') {
+    return c.json({ error: { code: 'invalid_body', message: 'Request body must be an object' } }, 400)
+  }
+
+  const changes: Parameters<typeof updateAgentProfile>[1] = {}
+  for (const key of ['name', 'avatarUrl', 'tagline', 'personality', 'statusText'] as const) {
+    if (!(key in body)) continue
+    const value = body[key]
+    if (value !== null && typeof value !== 'string') {
+      return c.json({ error: { code: 'invalid_field', message: `${key} must be a string or null` } }, 400)
+    }
+    if (key === 'name' && typeof value !== 'string') {
+      return c.json({ error: { code: 'invalid_field', message: 'name must be a string' } }, 400)
+    }
+    changes[key] = value as never
+  }
+
+  return c.json({ profile: await updateAgentProfile(workspaceId, changes) })
+})
+
+app.post('/workspaces/:workspaceId/goals', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body.title !== 'string' || !body.title.trim()) {
+    return c.json({ error: { code: 'invalid_body', message: 'title is required' } }, 400)
+  }
+  if (body.status !== undefined && !isGoalStatus(body.status)) {
+    return c.json({ error: { code: 'invalid_status', message: 'Unknown goal status' } }, 400)
+  }
+
+  const goal = await createGoal(workspaceId, {
+    title: body.title.trim(),
+    why: typeof body.why === 'string' ? body.why : null,
+    status: body.status as any,
+    plan: body.plan,
+    deliverables: body.deliverables,
+    nextCheckInAt: typeof body.nextCheckInAt === 'string' ? new Date(body.nextCheckInAt) : null,
+  })
+  return c.json({ goal }, 201)
+})
+
+app.patch('/workspaces/:workspaceId/goals/:goalId', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object') {
+    return c.json({ error: { code: 'invalid_body', message: 'Request body must be an object' } }, 400)
+  }
+  if (body.status !== undefined && !isGoalStatus(body.status)) {
+    return c.json({ error: { code: 'invalid_status', message: 'Unknown goal status' } }, 400)
+  }
+
+  const goal = await updateGoal(workspaceId, c.req.param('goalId'), {
+    title: typeof body.title === 'string' ? body.title.trim() : undefined,
+    why: typeof body.why === 'string' || body.why === null ? body.why : undefined,
+    status: body.status as any,
+    plan: body.plan,
+    deliverables: body.deliverables,
+    nextCheckInAt: typeof body.nextCheckInAt === 'string' ? new Date(body.nextCheckInAt) : undefined,
+    lastProgressAt: typeof body.lastProgressAt === 'string' ? new Date(body.lastProgressAt) : undefined,
+  })
+  if (!goal) return c.json({ error: { code: 'not_found', message: 'Goal not found' } }, 404)
+  return c.json({ goal })
+})
+
+app.post('/workspaces/:workspaceId/goals/:goalId/events', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || !isGoalEventKind(body.kind) || typeof body.message !== 'string' || !body.message.trim()) {
+    return c.json({
+      error: { code: 'invalid_body', message: 'kind and message are required' },
+    }, 400)
+  }
+
+  const event = await createGoalEvent(workspaceId, c.req.param('goalId'), {
+    kind: body.kind,
+    message: body.message.trim(),
+    metadata: body.metadata,
+  })
+  if (!event) return c.json({ error: { code: 'not_found', message: 'Goal not found' } }, 404)
+  return c.json({ event }, 201)
 })
 
 // ---------------------------------------------------------------------------
@@ -1534,7 +1642,7 @@ app.get('/workspaces/:workspaceId/projects/graph', async (c) => {
 
 /**
  * POST /api/internal/workspaces/:workspaceId/projects
- *   body: { name, description?, techStackId?, workingMode?, templateId?, settings?, userId? }
+ *   body: { name, description?, techStackId?, workingMode?, templateId?, settings?, hidden?, userId? }
  *
  * Create a project on behalf of a user. Goes through the same hooks as the
  * public generated route, so membership, tier normalization and AgentConfig
@@ -1571,6 +1679,7 @@ app.post('/workspaces/:workspaceId/projects', async (c) => {
       techStackId: typeof body.techStackId === 'string' ? body.techStackId : undefined,
       workingMode: body.workingMode === 'external' ? 'external' : body.workingMode === 'managed' ? 'managed' : undefined,
       templateId: typeof body.templateId === 'string' ? body.templateId : undefined,
+      hidden: body.hidden === true,
       settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
     })
     return c.json({ ok: true, project }, 201)

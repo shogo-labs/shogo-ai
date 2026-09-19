@@ -32,6 +32,7 @@ import {
   attachProject,
   createWorkspaceSession,
   detachProject,
+  getOrCreatePrimaryWorkspaceSession,
   getAttachedProjects,
   listWorkspaceSessions,
   WorkspaceSessionError,
@@ -190,12 +191,24 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     logTag: string,
     extra?: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] },
   ): Promise<{ url: string; mode: string } | { res: Response }> {
+    let workspaceKind: 'personal' | 'team' | undefined
+    try {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { kind: true } as any,
+      })
+      workspaceKind = workspace?.kind === 'personal' ? 'personal' : 'team'
+    } catch {
+      // The resolver can still return the normal feature-gate response when
+      // the kind lookup is unavailable.
+    }
     try {
       const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
         attachedProjectIds,
         logTag,
         runtimeManager,
         alwaysEnabled: config.alwaysEnabled,
+        workspaceKind,
         ...extra,
       })
       return { url: resolved.url, mode: resolved.mode }
@@ -248,7 +261,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/sessions', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
-    const sessions = await listWorkspaceSessions(c.req.param('workspaceId'))
+    const workspaceId = c.req.param('workspaceId')
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { kind: true } as any,
+    })
+    if (workspace?.kind === 'personal') {
+      await getOrCreatePrimaryWorkspaceSession(workspaceId)
+    }
+    const sessions = await listWorkspaceSessions(workspaceId)
     return c.json({ sessions })
   })
 
