@@ -117,7 +117,9 @@ describe('L1: the multi-project pipeline fixes the same bug as L0', () => {
   )
 
   test('a second system_apply against the live workspace reports an empty diff', async () => {
-    const res = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+    // The webhook channel's real inbound route is `/agent/channels/webhook/incoming`
+    // (see channels/webhook.ts) — verified live while running this exact test.
+    const res = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
       method: 'POST',
       body: JSON.stringify({
         message:

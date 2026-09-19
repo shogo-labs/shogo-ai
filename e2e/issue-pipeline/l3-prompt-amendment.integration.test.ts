@@ -68,7 +68,7 @@ describe('L3: three recurring accepted security findings amend the planner promp
       const category = 'missing-authz-check'
 
       for (const runId of runIds) {
-        const res = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+        const res = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
           method: 'POST',
           body: JSON.stringify({
             message: [
@@ -93,7 +93,7 @@ describe('L3: three recurring accepted security findings amend the planner promp
       }
 
       // Trigger the sweep directly rather than waiting for HEARTBEAT.md's cadence.
-      const sweepRes = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+      const sweepRes = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
         method: 'POST',
         body: JSON.stringify({
           message: `Run your amend-prompt skill's amendment sweep now for the (security, ${category}) group. Report which project you amended and the runIds you cited.`,

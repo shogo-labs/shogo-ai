@@ -81,7 +81,7 @@ describe('L2, half 2: a fresh, un-templated project writes this manifest from pr
       getPipelineEnv() // validates GITHUB_TEST_REPO up front so a typo fails fast, not 30 minutes in
 
       const plan = readFileSync(PLAN_PATH, 'utf-8')
-      const res = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+      const res = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
         method: 'POST',
         body: JSON.stringify({
           message: [
@@ -100,7 +100,7 @@ describe('L2, half 2: a fresh, un-templated project writes this manifest from pr
       // between this test process and the (possibly remote) project pod.
       const manifestYaml = await waitUntil(
         async () => {
-          const r = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+          const r = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
             method: 'POST',
             body: JSON.stringify({ message: 'Print the exact, current contents of shogo-system.yaml and nothing else.' }),
           })
