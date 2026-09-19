@@ -2,20 +2,27 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, AppState, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { AppState, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { ChevronRight, CircleAlert, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
+import { ChevronRight, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useNotificationCollection, useProjectCollection } from '../../contexts/domain'
 import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { api, createHttpClient, type AgentTask } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
 import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
+import {
+  ActivityCard,
+  ActivityEmptyCard,
+  ActivityErrorBanner,
+  ActivityLoadingState,
+} from '../../components/activity/ActivityFeedPrimitives'
 
 type ProjectActivityGroup = {
   id: string
@@ -140,22 +147,6 @@ function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; 
         </> : <StatusPill label="No activity yet" tone="muted" />}
       </View>
     </Pressable>
-  )
-}
-
-function EmptyActivityCard({ title, message }: { title: string; message: string }) {
-  return (
-    <View className="mx-4 mt-3 rounded-2xl border border-dashed border-border bg-card/60 px-4 py-5">
-      <View className="flex-row items-center gap-3">
-        <View className="h-9 w-9 items-center justify-center rounded-xl bg-muted">
-          <CircleAlert size={18} className="text-muted-foreground" />
-        </View>
-        <View className="flex-1">
-          <Text className="text-base font-medium text-foreground">{title}</Text>
-          <Text className="mt-1 text-xs leading-5 text-muted-foreground">{message}</Text>
-        </View>
-      </View>
-    </View>
   )
 }
 
@@ -348,15 +339,14 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
   return (
     <View className="flex-1 bg-background">
       {error ? (
-        <View className="mx-4 mt-3 flex-row items-start gap-2 rounded-2xl border border-destructive bg-destructive/10 px-3 py-3">
-          <CircleAlert size={18} className="mt-0.5 text-destructive" />
-          <Text className="flex-1 text-sm leading-5 text-destructive">{readableAgentTaskError(error, 'We could not refresh activity.')}</Text>
-          <Pressable onPress={() => { setError(null); setRefreshing(true); void load(true) }} accessibilityLabel="Try loading activity again" className="rounded-lg px-2 py-1 active:bg-destructive/10">
-            <Text className="text-sm font-semibold text-destructive">Try again</Text>
-          </Pressable>
+        <View className="mx-4 mt-3">
+          <ActivityErrorBanner
+            message={readableAgentTaskError(error, 'We could not refresh activity.')}
+            onRetry={() => { setError(null); setRefreshing(true); void load(true) }}
+          />
         </View>
       ) : null}
-      {loading ? <View className="flex-1 items-center justify-center"><ActivityIndicator /></View> : (
+      {loading ? <ActivityLoadingState /> : (
         <ScrollView
           className="flex-1"
           contentContainerClassName="pb-32"
@@ -373,27 +363,48 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
           </View>
 
           <SectionHeader title="Running now" count={active.length} subtitle="Live agent work across the workspace" />
-          {active.length === 0 ? <EmptyActivityCard title="No agents are currently working" message="When you start an agent, its live progress will appear here." /> : active.map((task) => (
-            <Pressable key={task.id} onPress={() => openTaskChat(task)} className="mx-4 mt-3 rounded-2xl border border-primary bg-primary/5 p-4 active:bg-primary/10">
-              <View className="flex-row items-start gap-3">
-                <View className="h-10 w-10 items-center justify-center rounded-xl bg-primary/10"><Clock3 size={19} className="text-primary" /></View>
-                <View className="flex-1">
-                  <View className="flex-row items-start gap-2"><Text className="flex-1 font-semibold text-foreground" numberOfLines={2}>{task.title}</Text><ChevronRight size={17} className="mt-0.5 text-primary" /></View>
-                  <Text className="mt-1 text-xs text-muted-foreground">{task.projectName || 'Home'} · {taskStatusLabel(task.status)} · {elapsed(task)}</Text>
-                  <View className="mt-3 rounded-xl bg-background/70 px-3 py-2.5"><Text className="text-sm leading-5 text-foreground" numberOfLines={2}>{task.currentStep || 'Waiting for the agent…'}</Text></View>
-                </View>
-              </View>
-            </Pressable>
+          {active.length === 0 ? (
+            <View className="mx-4 mt-3">
+              <ActivityEmptyCard title="No agents are currently working" message="When you start an agent, its live progress will appear here." />
+            </View>
+          ) : active.map((task) => (
+            <View key={task.id} className="mx-4 mt-3">
+              <ActivityCard
+                tone="primary"
+                icon={<Clock3 size={19} className="text-primary" />}
+                title={task.title}
+                subtitle={`${task.projectName || 'Home'} · ${taskStatusLabel(task.status)} · ${elapsed(task)}`}
+                message={<View className="rounded-xl bg-background/70 px-3 py-2.5"><Text className="text-sm leading-5 text-foreground" numberOfLines={2}>{task.currentStep || 'Waiting for the agent…'}</Text></View>}
+                trailing={<ChevronRight size={17} className="mt-0.5 text-primary" />}
+                onPress={() => openTaskChat(task)}
+              />
+            </View>
           ))}
 
           <SectionHeader title="Workspace projects" count={projectActivity.length} subtitle="Monitor every project in this workspace" />
-          {projectActivity.length === 0 ? <EmptyActivityCard title="No projects in this workspace yet" message="Projects created in this network space will appear here with their current status." /> : projectActivity.map((group) => (
+          {projectActivity.length === 0 ? (
+            <View className="mx-4 mt-3">
+              <ActivityEmptyCard title="No projects in this workspace yet" message="Projects created in this network space will appear here with their current status." />
+            </View>
+          ) : projectActivity.map((group) => (
             <ProjectActivityCard key={group.id} group={group} onPress={() => openProject(group)} />
           ))}
 
           {failedOrCancelled.length > 0 ? <>
             <SectionHeader title="Needs attention" count={failedOrCancelled.length} />
-            {failedOrCancelled.map((task) => <Pressable key={task.id} onPress={() => openTaskChat(task)} accessibilityLabel={`Open ${task.title} activity`} className="mx-4 mt-3 rounded-2xl border border-destructive bg-destructive/5 p-4 active:bg-destructive/10"><View className="flex-row items-start gap-3"><View className="h-10 w-10 items-center justify-center rounded-xl bg-destructive/10"><XCircle size={19} className="text-destructive" /></View><View className="flex-1"><View className="flex-row items-start gap-2"><Text className="flex-1 font-semibold text-foreground">{task.title}</Text><ChevronRight size={17} className="text-destructive" /></View><Text className="mt-1 text-xs text-muted-foreground">{task.projectName || 'Home'} · {taskStatusLabel(task.status)}</Text><Text className="mt-3 text-sm leading-5 text-foreground" numberOfLines={3}>{readableAgentTaskError(task.errorMessage, 'This task did not complete.')}</Text></View></View></Pressable>)}
+            {failedOrCancelled.map((task) => (
+              <View key={task.id} className="mx-4 mt-3">
+                <ActivityCard
+                  tone="destructive"
+                  icon={<XCircle size={19} className="text-destructive" />}
+                  title={task.title}
+                  subtitle={`${task.projectName || 'Home'} · ${taskStatusLabel(task.status)}`}
+                  message={<Text className="text-sm leading-5 text-foreground" numberOfLines={3}>{readableAgentTaskError(task.errorMessage, 'This task did not complete.')}</Text>}
+                  onPress={() => openTaskChat(task)}
+                  accessibilityLabel={`Open ${task.title} activity`}
+                />
+              </View>
+            ))}
           </> : null}
 
           {agentTasks.length === 0 && projectActivity.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Create a project or start a task to see activity here." /></View> : null}
@@ -404,6 +415,6 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
 })
 
 export default observer(function ActivityScreenRoute() {
-  const workspace = useActiveWorkspace()
-  return workspace?.kind === 'personal' ? <PersonalActivityScreen /> : <TeamActivityScreen />
+  const experience = useWorkspaceExperience()
+  return experience.homeScreen === 'companion' ? <PersonalActivityScreen /> : <TeamActivityScreen />
 })

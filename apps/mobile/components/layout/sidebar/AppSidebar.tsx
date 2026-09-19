@@ -108,6 +108,7 @@ import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
+import { workspaceExperience } from "@shogo/shared-app";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -344,6 +345,7 @@ export const AppSidebar = observer(function AppSidebar({
   }
 
   const activeWorkspaceId = currentWorkspace?.id ?? selectedWorkspaceId;
+  const experience = workspaceExperience(currentWorkspace?.kind);
 
   const billingData = useBillingData(
     features.billing ? currentWorkspace?.id : undefined,
@@ -838,7 +840,7 @@ export const AppSidebar = observer(function AppSidebar({
             collapsed={collapsed}
             onNavPress={onNavPress}
           />
-          {features.marketplace && currentWorkspace?.kind !== "personal" && (
+          {features.marketplace && experience.showMarketplace && (
             <NavItem
               icon={Store}
               label="Marketplace"
@@ -848,7 +850,7 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
-          {isNativeDrawer && currentWorkspace?.kind !== "personal" && (
+          {isNativeDrawer && experience.showNewChat && (
             <NavItem
               icon={MessageSquarePlus}
               label="New Chat"
@@ -875,7 +877,7 @@ export const AppSidebar = observer(function AppSidebar({
               onNavPress={onNavPress}
             />
           )}
-          {currentWorkspace?.kind === "personal" && (
+          {experience.showGoalsNav && (
             <>
               <NavItem
                 icon={Target}
@@ -898,7 +900,7 @@ export const AppSidebar = observer(function AppSidebar({
         </View>
 
         {/* PROJECTS tree — each project expands to show its chats */}
-        {currentWorkspace?.kind !== "personal" && (
+        {experience.showProjectsTree && (
         <View className={cn("px-2", isNativeDrawer ? "mt-5" : "mt-4")}>
           {!collapsed && pinnedProjects.length > 0 && (
             <View className="mb-2">

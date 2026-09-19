@@ -40,6 +40,7 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { workspaceExperience } from '@shogo/shared-app'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
@@ -859,7 +860,7 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
-  if (currentWorkspace?.kind === 'personal') {
+  if (workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion') {
     return <PersonalHomeScreen />
   }
 

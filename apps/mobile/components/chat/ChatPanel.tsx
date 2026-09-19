@@ -209,6 +209,10 @@ import {
   buildFixPrompt,
   type FixInAgentPayload,
 } from "../project/panels/ide/agentFixProvider"
+import { workspaceExperience, type WorkspaceExperienceComposer } from "@shogo/shared-app"
+
+/** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
+const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer = workspaceExperience("team").composer
 
 // ============================================================
 // Types
@@ -399,8 +403,21 @@ export interface ChatPanelProps {
   onCompactValueChange?: (value: string) => void
   /** Personal-shell composer prefill; stages text without sending it. */
   prefillRequest?: RestoreDraftRequest | null
-  /** Hides model and interaction-mode controls for the companion shell. */
-  personalMode?: boolean
+  /**
+   * Called once `prefillRequest` has actually been applied to the composer,
+   * with the nonce that was consumed. Callers should clear their
+   * `prefillRequest` state here (see `ChatInput`'s `onDraftRestored`) rather
+   * than on a fixed-delay timer, which can race the composer's own restore
+   * effect.
+   */
+  onPrefillConsumed?: (nonce: number) => void
+  /**
+   * Composer capability descriptor (`workspaceExperience(kind).composer`).
+   * Defaults to the full team composer (model picker + interaction modes,
+   * no forced mode). Pass `workspaceExperience('personal').composer` for
+   * the companion shell rather than a bespoke boolean.
+   */
+  composer?: WorkspaceExperienceComposer
   onChatError?: (error: Error | null) => void
   injectMessage?: string | null
   onActiveToolCall?: (toolName: string | null) => void
@@ -801,7 +818,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   compactValue,
   onCompactValueChange,
   prefillRequest,
-  personalMode = false,
+  onPrefillConsumed,
+  composer: composerProp,
   onChatError,
   injectMessage,
   onActiveToolCall,
@@ -822,6 +840,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   ideMode = false,
   enrichMessage,
 }: ChatPanelProps) {
+  const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
   const chatDockStore = useChatDockStore()
   const { width: windowWidth, height: windowHeight,
     isPhone: isNativePhoneLayout } = useNativePhoneWindow()
@@ -1209,6 +1228,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   useEffect(() => {
+    // A forced mode (e.g. the personal companion shell always forcing
+    // "agent") wins outright — loading/restoring a persisted preference here
+    // would just be immediately overridden by the forced-mode effect below,
+    // and doing so on every mount is a wasted async round trip at best.
+    if (composer.forcedMode) return
     if (initialInteractionMode) {
       setInteractionMode(initialInteractionMode)
       void saveInteractionModePreference(initialInteractionMode)
@@ -1219,7 +1243,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setInteractionMode(stored)
       }
     })
-  }, [initialInteractionMode])
+  }, [initialInteractionMode, composer.forcedMode])
 
   // Mirror interactionMode in a ref so callbacks (sendMessageInternal, queue
   // processor) always observe the latest value even when fired in the same
@@ -1230,10 +1254,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [interactionMode])
 
   useEffect(() => {
-    if (!personalMode) return
-    interactionModeRef.current = "agent"
-    setInteractionMode("agent")
-  }, [personalMode])
+    if (!composer.forcedMode) return
+    interactionModeRef.current = composer.forcedMode
+    setInteractionMode(composer.forcedMode)
+  }, [composer.forcedMode])
 
   const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
     interactionModeRef.current = mode
@@ -1258,6 +1282,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
   )
 
   const [restoreDraftRequest, setRestoreDraftRequest] = useState<RestoreDraftRequest | null>(null)
+
+  // Stable identity: an inline arrow here would be a new prop value on every
+  // ChatPanel render, re-running ChatInput's restore effect (which depends on
+  // `onDraftRestored`) every render rather than only when a request is
+  // actually consumed.
+  const handleDraftRestored = useCallback((nonce: number) => {
+    if (prefillRequest?.nonce === nonce) onPrefillConsumed?.(nonce)
+    else if (restoreDraftRequest?.nonce === nonce) setRestoreDraftRequest(null)
+  }, [prefillRequest?.nonce, restoreDraftRequest?.nonce, onPrefillConsumed])
 
   // Bridge for EZ Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
@@ -1566,6 +1599,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const chatWorkspaceId =
     chatScope === "workspace" && workspaceId ? workspaceId : undefined
 
+  // Stable identity across renders: this is a dep of `useChatTransportConfig`'s
+  // internal `useMemo`, so an inline arrow here would rebuild `transportConfig`
+  // (and therefore `chatTransport`/`useChat`'s transport) on every ChatPanel
+  // render instead of only when one of the other transport inputs changes.
+  const getClientTurnId = useCallback(() => pendingClientTurnIdRef.current, [])
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
@@ -1582,7 +1621,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // POST by tens of seconds on a cold turn (system-prompt build +
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
-    getClientTurnId: () => pendingClientTurnIdRef.current,
+    getClientTurnId,
   })
   const chatTransport = useMemo(
     () =>transportConfig ? new DefaultChatTransport(transportConfig) : undefined,
@@ -6309,7 +6348,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               quickActions={quickActions}
               onQuickActionClick={handleQuickActionClick}
               restoreDraftRequest={prefillRequest ?? restoreDraftRequest}
-              personalMode={personalMode}
+              onDraftRestored={handleDraftRestored}
+              composer={composer}
               projectId={projectId}
               projects={projectMentionOptions}
               chatSessionId={currentSessionId}

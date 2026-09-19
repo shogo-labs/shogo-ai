@@ -2,13 +2,19 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { CheckCircle2, CircleAlert, Clock3, Sparkles } from 'lucide-react-native'
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, type PersonalWorkspaceActivity } from '../../lib/api'
+import {
+  ActivityCard,
+  ActivityEmptyCard,
+  ActivityErrorBanner,
+  ActivityLoadingState,
+} from '../activity/ActivityFeedPrimitives'
 
 function activityIcon(item: PersonalWorkspaceActivity) {
   if (item.type === 'goal_event' && item.kind === 'blocker') return <CircleAlert size={17} className="text-destructive" />
@@ -54,36 +60,31 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
         A quiet record of what your companion is doing and learning.
       </Text>
 
+      {error ? (
+        <View className="mt-6">
+          <ActivityErrorBanner message={error} onRetry={() => void load(true)} />
+        </View>
+      ) : null}
+
       {loading ? (
-        <View className="items-center py-14"><ActivityIndicator /></View>
-      ) : error ? (
-        <Text className="mt-8 text-center text-sm text-destructive">{error}</Text>
-      ) : items.length === 0 ? (
-        <View className="mt-8 rounded-2xl border border-dashed border-border px-5 py-8">
-          <Text className="text-center text-base font-medium text-foreground">Nothing here yet</Text>
-          <Text className="mt-2 text-center text-sm leading-5 text-muted-foreground">
-            Progress updates and completed work will appear here.
-          </Text>
+        <ActivityLoadingState />
+      ) : !error && items.length === 0 ? (
+        <View className="mt-8">
+          <ActivityEmptyCard
+            title="Nothing here yet"
+            message="Progress updates and completed work will appear here."
+          />
         </View>
       ) : (
         <View className="mt-6 gap-3">
           {items.map((item) => (
-            <View key={`${item.type}-${item.id}`} className="rounded-2xl border border-border bg-card p-4">
-              <View className="flex-row items-start gap-3">
-                <View className="h-8 w-8 items-center justify-center rounded-full bg-muted">
-                  {activityIcon(item)}
-                </View>
-                <View className="min-w-0 flex-1">
-                  <Text className="text-sm font-semibold text-foreground">
-                    {item.type === 'goal_event' ? item.goalTitle || 'Goal update' : item.title || 'Agent task'}
-                  </Text>
-                  <Text className="mt-1 text-sm leading-5 text-muted-foreground">
-                    {item.message || item.resultSummary || item.currentStep || item.errorMessage || readableStatus(item.status)}
-                  </Text>
-                  <Text className="mt-2 text-xs text-muted-foreground">{formatDate(item.createdAt)}</Text>
-                </View>
-              </View>
-            </View>
+            <ActivityCard
+              key={`${item.type}-${item.id}`}
+              icon={activityIcon(item)}
+              title={item.type === 'goal_event' ? item.goalTitle || 'Goal update' : item.title || 'Agent task'}
+              message={item.message || item.resultSummary || item.currentStep || item.errorMessage || readableStatus(item.status)}
+              footer={formatDate(item.createdAt)}
+            />
           ))}
         </View>
       )}

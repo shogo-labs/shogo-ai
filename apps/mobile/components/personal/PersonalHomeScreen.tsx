@@ -8,6 +8,7 @@ import { observer } from 'mobx-react-lite'
 import { useAuth } from '../../contexts/auth'
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import {
   api,
   type PersonalAgentProfile,
@@ -21,6 +22,7 @@ export const PersonalHomeScreen = observer(function PersonalHomeScreen() {
   const { user } = useAuth()
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
+  const experience = useWorkspaceExperience()
   const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [prefillRequest, setPrefillRequest] = useState<RestoreDraftRequest | null>(null)
@@ -46,16 +48,18 @@ export const PersonalHomeScreen = observer(function PersonalHomeScreen() {
   }, [loadPersonalShell])
 
   const handleAvatarPress = useCallback(() => {
-    const nonce = Date.now()
     setPrefillRequest({
-      nonce,
+      nonce: Date.now(),
       content: 'I want to change your avatar to ',
     })
-    // Let ChatInput consume the controlled draft, then return control to
-    // ChatPanel so its normal inline-edit draft restoration remains intact.
-    setTimeout(() => {
-      setPrefillRequest((current) => (current?.nonce === nonce ? null : current))
-    }, 100)
+  }, [])
+
+  // Return control to ChatPanel's own draft restoration once ChatInput has
+  // actually applied our prefill — not on a fixed-delay timer, which could
+  // clear the request before ChatInput read it (dropped prefill) or after
+  // ChatInput moved on to something else (clobbering unrelated state).
+  const handlePrefillConsumed = useCallback((nonce: number) => {
+    setPrefillRequest((current) => (current?.nonce === nonce ? null : current))
   }, [])
 
   if (!workspace?.id || !profile || !sessionId) {
@@ -95,8 +99,9 @@ export const PersonalHomeScreen = observer(function PersonalHomeScreen() {
           chatScope="workspace"
           chatSessionId={sessionId}
           onChatSessionChange={setSessionId}
-          personalMode
+          composer={experience.composer}
           prefillRequest={prefillRequest}
+          onPrefillConsumed={handlePrefillConsumed}
           className="flex-1"
           isActive
         />

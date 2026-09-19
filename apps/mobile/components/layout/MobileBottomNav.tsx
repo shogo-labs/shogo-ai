@@ -9,7 +9,8 @@ import { Activity, LayoutGrid, ListTodo, MessageCircle, Target } from 'lucide-re
 import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
+import type { BottomTabId } from '@shogo/shared-app'
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from '../../lib/native-composer-keyboard'
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
@@ -60,7 +61,7 @@ function isHiddenPath(pathname: string) {
 export function MobileBottomNav() {
   const router = useRouter()
   const pathname = usePathname()
-  const workspace = useActiveWorkspace()
+  const experience = useWorkspaceExperience()
   const params = useLocalSearchParams<{
     id?: string
     chatSessionId?: string
@@ -125,7 +126,7 @@ export function MobileBottomNav() {
   if (isHiddenPath(pathname) || keyboardOpen) return null
 
   const goChat = () => {
-    if (workspace?.kind !== 'personal' && currentProjectContext?.projectId) {
+    if (experience.chatReturnsToProjectContext && currentProjectContext?.projectId) {
       router.replace({
         pathname: '/(app)/projects/[id]' as any,
         params: {
@@ -155,43 +156,46 @@ export function MobileBottomNav() {
 
   const chatItem = { id: 'chat', label: 'Chat', Icon: MessageCircle, onPress: goChat }
   const activityItem = {
-      id: 'activity',
-      label: 'Activity',
-      Icon: Activity,
-      onPress: () => router.push({
-        pathname: '/(app)/activity' as any,
-        ...(currentProjectContext?.projectId
-          ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
-          : {}),
-      } as any),
-    }
-  const items = workspace?.kind === 'personal'
-    ? [
-        chatItem,
-        {
-          id: 'goals',
-          label: 'Goals',
-          Icon: Target,
-          onPress: () => router.push('/(app)/goals' as any),
-        },
-        activityItem,
-      ]
-    : [
-    chatItem,
-    taskItem,
-    activityItem,
-    {
-      id: 'canvases',
-      label: 'Canvases',
-      Icon: LayoutGrid,
-      onPress: () => router.push({
-        pathname: '/(app)/canvases' as any,
-        ...(currentProjectContext?.projectId
-          ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
-          : {}),
-      } as any),
-    },
-  ]
+    id: 'activity',
+    label: 'Activity',
+    Icon: Activity,
+    onPress: () => router.push({
+      pathname: '/(app)/activity' as any,
+      ...(currentProjectContext?.projectId
+        ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
+        : {}),
+    } as any),
+  }
+  const goalsItem = {
+    id: 'goals',
+    label: 'Goals',
+    Icon: Target,
+    onPress: () => router.push('/(app)/goals' as any),
+  }
+  const canvasesItem = {
+    id: 'canvases',
+    label: 'Canvases',
+    Icon: LayoutGrid,
+    onPress: () => router.push({
+      pathname: '/(app)/canvases' as any,
+      ...(currentProjectContext?.projectId
+        ? { params: { returnProjectId: currentProjectContext.projectId, returnChatSessionId: currentProjectContext.chatSessionId } }
+        : {}),
+    } as any),
+  }
+
+  // The team vs. personal tab set (and order) is owned by the experience
+  // descriptor (`bottomTabs`); this map just supplies the onPress/icon for
+  // whichever ids it lists, so adding a workspace-experience tab elsewhere
+  // doesn't require touching this component's branching logic.
+  const tabsById: Record<BottomTabId, { id: string; label: string; Icon: typeof MessageCircle; onPress: () => void }> = {
+    chat: chatItem,
+    tasks: taskItem,
+    activity: activityItem,
+    canvases: canvasesItem,
+    goals: goalsItem,
+  }
+  const items = experience.bottomTabs.map((id) => tabsById[id])
 
   return (
     <View

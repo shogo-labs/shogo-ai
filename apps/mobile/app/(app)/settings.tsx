@@ -623,9 +623,9 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   )
   const isOwner = currentUserMember?.role === 'owner'
 
-  const isPersonalWorkspace =
-    currentWorkspace?.slug?.includes('personal') ||
-    currentWorkspace?.name?.toLowerCase().includes('personal')
+  // `kind` (not a slug/name heuristic) is the source of truth — a team
+  // workspace named e.g. "My Personal Brand" must stay deletable.
+  const isPersonalWorkspace = currentWorkspace?.kind === 'personal'
 
   const wsAll = Array.isArray(workspaces.all) ? workspaces.all : []
   const canDelete = isOwner && wsAll.length > 1 && !isPersonalWorkspace

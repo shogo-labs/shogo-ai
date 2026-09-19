@@ -45,6 +45,10 @@ import { DockChip } from "./dock/DockChip"
 import { DockChipRail } from "./dock/DockChipRail"
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
 import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel"
+import { workspaceExperience, type WorkspaceExperienceComposer } from "@shogo/shared-app"
+
+/** Full composer (model picker + interaction modes, no forced mode) — the default for any caller that doesn't pass `composer`. */
+const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer = workspaceExperience("team").composer
 import {
   Plus,
   Square,
@@ -358,8 +362,13 @@ export interface ChatInputProps {
   onSendQueuedMessageNow?: (messageId: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
-  /** Personal companion composer hides plan/ask and model controls. */
-  personalMode?: boolean
+  /**
+   * Composer capability descriptor (`workspaceExperience(kind).composer`).
+   * Defaults to the full composer (model picker + interaction modes shown).
+   * Pass `workspaceExperience('personal').composer` to hide plan/ask and
+   * model controls for the companion shell.
+   */
+  composer?: WorkspaceExperienceComposer
   dualPlan?: boolean
   onDualPlanChange?: (enabled: boolean) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
@@ -368,6 +377,14 @@ export interface ChatInputProps {
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
+  /**
+   * Called synchronously once `restoreDraftRequest` has been applied to the
+   * input (draft text + files staged), with the nonce that was consumed.
+   * Callers should clear their `restoreDraftRequest` state here rather than
+   * on a timer — a fixed-delay `setTimeout` races this effect and can clear
+   * (or fail to clear) the request at the wrong time.
+   */
+  onDraftRestored?: (nonce: number) => void
   /**
    * Current project id. Enables the "@" menu's Files section (file
    * references are scoped to this project's agent workspace).
@@ -438,7 +455,7 @@ function ChatInputImpl({
   onSendQueuedMessageNow,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
-  personalMode = false,
+  composer: composerProp,
   dualPlan = false,
   onDualPlanChange,
   contextUsage,
@@ -446,6 +463,7 @@ function ChatInputImpl({
   quickActions = [],
   onQuickActionClick,
   restoreDraftRequest,
+  onDraftRestored,
   projectId,
   projects = [],
   chatSessionId,
@@ -458,6 +476,7 @@ function ChatInputImpl({
   highlighted = false,
   flush = false,
 }: ChatInputProps) {
+  const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
   const { isNative,
@@ -627,7 +646,8 @@ function ChatInputImpl({
     setViewingPastedId(null)
     setFileError(null)
     setTimeout(() => textInputRef.current?.focus(), 0)
-  }, [restoreDraftRequest, cancelPendingTextChangeFlush])
+    onDraftRestored?.(restoreDraftRequest.nonce)
+  }, [restoreDraftRequest, cancelPendingTextChangeFlush, onDraftRestored])
 
   const [showSkillPicker, setShowSkillPicker] = useState(false)
   const [filterText, setFilterText] = useState("")
@@ -1773,7 +1793,7 @@ function ChatInputImpl({
                 return
               }
             }
-            if (!personalMode && Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
+            if (composer.showInteractionModes && Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
               e.preventDefault()
               cycleInteractionMode()
               return
@@ -1871,7 +1891,7 @@ function ChatInputImpl({
                   onAttach={handlePlusAttach}
                   attachDisabled={pendingFiles.length >= MAX_FILES}
                 >
-                  {!personalMode ? (
+                  {composer.showInteractionModes ? (
                     <ComposerPlusSection
                       id="mode"
                       label="Mode"
@@ -1936,7 +1956,7 @@ function ChatInputImpl({
               </>
             ) : (
               <>
-            {!personalMode ? (
+            {composer.showInteractionModes ? (
               <>
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
@@ -2187,7 +2207,7 @@ function ChatInputImpl({
             )}
 
             {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-            {!personalMode ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
+            {composer.showModelPicker ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
               effectiveIsPro,
               disabled,
               nativeSheet: isPhoneChrome,
