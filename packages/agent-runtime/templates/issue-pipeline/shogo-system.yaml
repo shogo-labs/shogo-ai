@@ -16,7 +16,7 @@ projects:
     description: "Front door: task-source adapters (GitHub/Jira/built-in), reproduction, and reply routing. Owns the actual repo checkout."
     techStackId: react-app
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
       heartbeat:
         enabled: true
         interval: 1800
@@ -260,7 +260,7 @@ projects:
     name: Issue Pipeline — Analyst
     description: Root-cause analysis and 5 solution options for a human to pick from.
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -340,7 +340,7 @@ projects:
     name: Issue Pipeline — Planner
     description: Turns the picked option into a concrete implementation plan with regression/integration tests.
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -415,7 +415,7 @@ projects:
     name: Issue Pipeline — Implementer
     description: Executes the plan, loops with reviewers and Done Gate, opens the PR.
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -503,7 +503,7 @@ projects:
     name: Issue Pipeline — Security
     description: Fast, read-only security review — structured findings only.
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -639,7 +639,7 @@ projects:
     name: Issue Pipeline — Scalability
     description: Fast, read-only scalability review — structured findings only.
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -771,7 +771,7 @@ projects:
     name: Issue Pipeline — Dry
     description: Fast, read-only DRY review — structured findings only.
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -902,7 +902,7 @@ projects:
     name: Issue Pipeline — Done Gate
     description: "Capable-model judge: is it done, and what is the verdict on every finding."
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
       heartbeat:
         enabled: false
     attachments:
@@ -1048,7 +1048,7 @@ projects:
     description: Findings database and the in-the-wild prompt-evolution loop.
     techStackId: react-app
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
       heartbeat:
         enabled: true
         interval: 3600
@@ -1306,7 +1306,7 @@ projects:
     name: Issue Pipeline — Harness
     description: "Anchor project: owns shogo-system.yaml and runs system_apply. Does not analyse, plan, or write code."
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
       heartbeat:
         enabled: true
         interval: 3600
