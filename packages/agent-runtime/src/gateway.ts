@@ -651,40 +651,6 @@ export class AgentGateway {
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
     this.skillServerManager = new SkillServerManager({ workspaceDir })
 
-    // Auto-register custom subagent types from `.shogo/agents/<name>.md` so
-    // `agent_spawn({ type: "<name>" })` resolves them without the coordinator
-    // having to fall back to `general-purpose` or manually re-declare them via
-    // `agent_create` on every session. This was previously dead wiring —
-    // `loadCustomAgents()` existed and `.shogo/agents/*.md` files were the
-    // documented source of truth (see subagent.ts's own header comment), but
-    // nothing ever called it at startup, so every project relying on custom
-    // `.shogo/agents/` types (e.g. the issue-pipeline-solo template) silently
-    // got "Unknown agent type" for every one of them. `persist=false`: these
-    // come from disk and should reflect the current file content on every
-    // boot, not fork into a separate DB-persisted copy that can drift from it.
-    try {
-      const customAgents = loadCustomAgents(workspaceDir)
-      for (const def of customAgents) {
-        const result = this.agentManager.register({
-          name: def.name,
-          description: def.description,
-          systemPrompt: def.systemPrompt,
-          toolNames: def.tools,
-          disallowedTools: def.disallowedTools,
-          model: def.model,
-          maxTurns: def.maxTurns,
-        })
-        if (!result.ok) {
-          console.warn(`[AgentGateway] Failed to register custom agent type "${def.name}": ${result.error}`)
-        }
-      }
-      if (customAgents.length > 0) {
-        console.log(`[AgentGateway] Loaded ${customAgents.length} custom agent type(s) from .shogo/agents/: ${customAgents.map(a => a.name).join(', ')}`)
-      }
-    } catch (err: any) {
-      console.warn(`[AgentGateway] Failed to load custom agent types: ${err?.message ?? err}`)
-    }
-
     // Apply admin-configured agent model overrides from injected env vars
     const envOverrides: Record<string, string> = {}
     if (process.env.AGENT_BASIC_MODEL) envOverrides.basic = process.env.AGENT_BASIC_MODEL
@@ -979,6 +945,46 @@ export class AgentGateway {
     if (this.sessionPersistence) {
       this.agentManager.attachPersistence(this.sessionPersistence)
       this.teamManager = new TeamManager(this.sessionPersistence)
+    }
+
+    // Auto-register custom subagent types from `.shogo/agents/<name>.md` so
+    // `agent_spawn({ type: "<name>" })` resolves them without the coordinator
+    // having to fall back to `general-purpose` or manually re-declare them via
+    // `agent_create` on every session. This was previously dead wiring —
+    // `loadCustomAgents()` existed and `.shogo/agents/*.md` files were the
+    // documented source of truth (see subagent.ts's own header comment), but
+    // nothing ever called it at startup, so every project relying on custom
+    // `.shogo/agents/` types (e.g. the issue-pipeline-solo template) silently
+    // got "Unknown agent type" for every one of them.
+    //
+    // MUST run after `attachPersistence()` above, not in the constructor:
+    // `attachPersistence()` does `this.registry.clear()` then hydrates from
+    // the DB, so anything registered before it (e.g. in the constructor) gets
+    // silently wiped the moment `start()` reaches this point. `persist=false`:
+    // these come from disk and should reflect the current file content on
+    // every boot, not fork into a separate DB-persisted copy that can drift
+    // from it.
+    try {
+      const customAgents = loadCustomAgents(this.workspaceDir)
+      for (const def of customAgents) {
+        const result = this.agentManager.register({
+          name: def.name,
+          description: def.description,
+          systemPrompt: def.systemPrompt,
+          toolNames: def.tools,
+          disallowedTools: def.disallowedTools,
+          model: def.model,
+          maxTurns: def.maxTurns,
+        })
+        if (!result.ok) {
+          console.warn(`[AgentGateway] Failed to register custom agent type "${def.name}": ${result.error}`)
+        }
+      }
+      if (customAgents.length > 0) {
+        console.log(`[AgentGateway] Loaded ${customAgents.length} custom agent type(s) from .shogo/agents/: ${customAgents.map(a => a.name).join(', ')}`)
+      }
+    } catch (err: any) {
+      console.warn(`[AgentGateway] Failed to load custom agent types: ${err?.message ?? err}`)
     }
 
     // Phase 2.1 — forward sub-agent cost metrics (with quality signals) to the
