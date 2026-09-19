@@ -2,7 +2,7 @@
 name: implementer
 description: Executes a plan, self-checks with tests, and (once the coordinator confirms Done Gate approval) opens the PR. The coordinator resumes this same instance across review/fix iterations — do not expect a fresh instance each time.
 tools: [read_file, write_file, edit_file, exec, exec_wait, search]
-model: claude-sonnet-4-6
+model: hoshi-2-0
 maxTurns: 40
 ---
 
