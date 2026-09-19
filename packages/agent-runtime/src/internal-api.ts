@@ -654,7 +654,7 @@ export interface ProjectGraphNode {
   workingMode: string
   settings: unknown
   attachments: Array<{ attachedProjectId: string; attachMode: 'readwrite' | 'readonly' }>
-  agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string } | null
+  agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string; modelProvider: string } | null
 }
 
 export async function getWorkspaceProjectGraph(

@@ -342,7 +342,7 @@ export async function listWorkspaceProjectsWithAttachments(workspaceId: string) 
       workingMode: true,
       settings: true,
       attachments: { select: { attachedProjectId: true, attachMode: true } },
-      agentConfig: { select: { heartbeatEnabled: true, heartbeatInterval: true, modelName: true } },
+      agentConfig: { select: { heartbeatEnabled: true, heartbeatInterval: true, modelName: true, modelProvider: true } },
     },
     orderBy: { name: 'asc' },
   })) as any[]

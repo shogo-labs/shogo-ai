@@ -36,6 +36,20 @@ interface ModuleSpec {
   description: string
   techStackId?: string
   model: string
+  /**
+   * Explicit provider for `model`, e.g. `'custom'` for a Hoshi 2.0
+   * (deepseek-flash) admin model. Required whenever `model` isn't a stock
+   * Anthropic model id/alias: `AgentConfig.modelProvider` defaults to
+   * `'anthropic'` in `configureProject`'s create branch (see
+   * `apps/api/src/services/project-lifecycle.service.ts`), and nothing else
+   * infers it from `model` for this code path — leaving it unset silently
+   * misroutes every turn to Anthropic's API with an unknown model id, which
+   * apparently falls back to a default Anthropic model rather than erroring
+   * (found live: all 9 non-anchor stage projects ran on `claude-sonnet-4-6`
+   * for a full L1 run despite `model: 'hoshi-2-0'` here, because this field
+   * didn't exist yet).
+   */
+  provider?: string
   heartbeat: boolean
   heartbeatInterval?: number
   /** Manifest keys this module attaches to (read-write or read-only), for on-disk file access. */
@@ -58,6 +72,7 @@ const MODULES: ModuleSpec[] = [
     description: 'Front door: task-source adapters (GitHub/Jira/built-in), reproduction, and reply routing. Owns the actual repo checkout.',
     techStackId: 'react-app',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: true,
     heartbeatInterval: 1800,
   },
@@ -66,6 +81,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Analyst',
     description: 'Root-cause analysis and 5 solution options for a human to pick from.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readonly' }],
   },
@@ -74,6 +90,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Planner',
     description: 'Turns the picked option into a concrete implementation plan with regression/integration tests.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readonly' }],
   },
@@ -82,6 +99,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Implementer',
     description: 'Executes the plan, loops with reviewers and Done Gate, opens the PR.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readwrite' }],
   },
@@ -90,6 +108,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Security',
     description: 'Fast, read-only security review — structured findings only.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readonly' }],
     needsFindingsSchema: true,
@@ -99,6 +118,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Scalability',
     description: 'Fast, read-only scalability review — structured findings only.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readonly' }],
     needsFindingsSchema: true,
@@ -108,6 +128,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Dry',
     description: 'Fast, read-only DRY review — structured findings only.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readonly' }],
     needsFindingsSchema: true,
@@ -117,6 +138,7 @@ const MODULES: ModuleSpec[] = [
     name: 'Issue Pipeline — Done Gate',
     description: 'Capable-model judge: is it done, and what is the verdict on every finding.',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: false,
     attachments: [{ project: 'intake', mode: 'readonly' }],
     needsFindingsSchema: true,
@@ -127,6 +149,7 @@ const MODULES: ModuleSpec[] = [
     description: 'Findings database and the in-the-wild prompt-evolution loop.',
     techStackId: 'react-app',
     model: 'hoshi-2-0',
+    provider: 'custom',
     heartbeat: true,
     heartbeatInterval: 3600,
     attachments: [
@@ -182,6 +205,7 @@ export function buildManifest(): unknown {
       ...(m.techStackId ? { techStackId: m.techStackId } : {}),
       agent: {
         model: m.model,
+        ...(m.provider ? { provider: m.provider } : {}),
         heartbeat: {
           enabled: m.heartbeat,
           ...(m.heartbeatInterval ? { interval: m.heartbeatInterval } : {}),
@@ -200,7 +224,7 @@ export function buildManifest(): unknown {
     key: ANCHOR_KEY,
     name: ANCHOR_NAME,
     description: 'Anchor project: owns shogo-system.yaml and runs system_apply. Does not analyse, plan, or write code.',
-    agent: { model: 'hoshi-2-0', heartbeat: { enabled: true, interval: 3600 } },
+    agent: { model: 'hoshi-2-0', provider: 'custom', heartbeat: { enabled: true, interval: 3600 } },
     attachments: MODULES.map((m) => ({ project: m.key, mode: 'readwrite' as AttachMode })),
     files: {},
   })
