@@ -2,7 +2,7 @@
 name: scalability
 description: Fast, read-only scalability review of a diff. Spawn with the diff and the plan for context. Returns a JSON findings array.
 tools: [read_file, search, exec]
-model: claude-haiku-4-5
+model: hoshi-2-0
 maxTurns: 10
 ---
 
