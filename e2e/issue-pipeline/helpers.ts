@@ -246,9 +246,19 @@ export async function checkoutBaseBranch(env: PipelineEnv, pr: GhPullRequest): P
  * ("1. ...", "2. ...", ... or "Option 1:" etc.) — this counts top-level
  * numbered entries 1-9 at the start of a line, which tolerates either style
  * without being so loose it double-counts sub-bullets.
+ *
+ * Tolerates the markdown decoration the model actually produces live —
+ * e.g. `**Option 1 — Combine both boundary strips...**` (bold heading, em
+ * dash separator, no `.`/`)`/`:` right after the digit) — which the
+ * original digit-immediately-followed-by-`[.):]`-only pattern missed
+ * entirely, silently counting 0 options on every real pipeline run and
+ * hanging the eval's `waitUntil` in a five-options poll loop until the
+ * (hour-long) timeout. Leading `*`/`_`/`#`/`-`/`>` markdown noise before
+ * "Option N" and `.`, `)`, `:`, `-`, or an em/en dash after the digit are
+ * all accepted.
  */
 export function countNumberedOptions(commentBody: string): number {
-  const matches = commentBody.match(/^\s*(?:option\s*)?[1-9][.):]\s+\S/gim)
+  const matches = commentBody.match(/^\s*[*_#>~`\s-]*(?:options?\s*)?[1-9]\s*[.):—–-]?\s+\S/gim)
   return matches ? matches.length : 0
 }
 

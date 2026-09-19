@@ -51,6 +51,41 @@ describe('countNumberedOptions', () => {
   test('returns 0 for a body with no numbered list', () => {
     expect(countNumberedOptions('just some prose')).toBe(0)
   })
+
+  // Regression: the multi-project L1 eval's real analyst output formats
+  // each option as a bold markdown heading with an em dash separator
+  // ("**Option 1 — Combine both...**"), not "Option 1:" or "1.". The
+  // original pattern required the digit to be immediately followed by
+  // `.`/`)`/`:` with no markdown noise beforehand, so it silently matched
+  // 0 options on every real (non-hand-written) pipeline comment, hanging
+  // l1-multi-project.integration.test.ts's five-options `waitUntil` until
+  // its hour-long timeout with no indication why.
+  test('tolerates bold markdown headings with an em dash separator (real analyst output)', () => {
+    const body = [
+      '## Root Cause',
+      '',
+      '**Option 1 — Combine both boundary strips into one regex (smallest change)**',
+      'Merge the existing leading-strip with a trailing-strip into a single alternation.',
+      '',
+      '---',
+      '',
+      '**Option 2 — Keep two explicit replace calls**',
+      'Retain the existing leading strip and add a symmetric trailing strip.',
+      '',
+      '---',
+      '',
+      '**Option 3 — Single anchored regex with both strips in one pass**',
+      '',
+      '---',
+      '',
+      '**Option 4 — Lookahead/lookbehind anchored replacement**',
+      '',
+      '---',
+      '',
+      '**Option 5 — Extract a `trimHyphens` helper**',
+    ].join('\n')
+    expect(countNumberedOptions(body)).toBe(5)
+  })
 })
 
 describe('botComments', () => {
