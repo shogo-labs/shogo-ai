@@ -37,6 +37,7 @@ import {
   Home,
   Activity,
   Target,
+  MessagesSquare,
   Search,
   ChevronDown,
   ChevronLeft,
@@ -896,6 +897,16 @@ export const AppSidebar = observer(function AppSidebar({
                 onNavPress={onNavPress}
               />
             </>
+          )}
+          {experience.showSideChatsNav && (
+            <NavItem
+              icon={MessagesSquare}
+              label="Side chats"
+              href="/(app)/side-chats"
+              active={pathname.includes("/side-chats")}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
           )}
         </View>
 

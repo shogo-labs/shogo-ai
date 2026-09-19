@@ -100,6 +100,7 @@ export const PersonalHomeScreen = observer(function PersonalHomeScreen() {
     agentName: profile.name,
     onPrefill: prefill,
     onOpenActivity: () => router.push('/(app)/activity' as any),
+    onOpenSideChats: () => router.push('/(app)/side-chats' as any),
   })
 
   return (

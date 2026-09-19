@@ -49,6 +49,14 @@ export interface WorkspaceExperience {
   showNewChat: boolean
   /** Sidebar: show Goals/Activity nav items. */
   showGoalsNav: boolean
+  /**
+   * Sidebar / profile sheet: show a "Side chats" entry — secondary
+   * workspace-scoped chat sessions (`ChatSession.isPrimary === false`)
+   * for exploring a tangent without polluting the goal-tracking primary
+   * thread. Personal-only: team workspaces already expose every chat
+   * session through the projects tree.
+   */
+  showSideChatsNav: boolean
   /** Bottom tab bar item ids, in display order. */
   bottomTabs: BottomTabId[]
   /**
@@ -79,6 +87,7 @@ export function workspaceExperience(
     showMarketplace: !isPersonal,
     showNewChat: !isPersonal,
     showGoalsNav: isPersonal,
+    showSideChatsNav: isPersonal,
     bottomTabs: isPersonal
       ? ['chat', 'goals', 'activity']
       : ['chat', 'tasks', 'activity', 'canvases'],

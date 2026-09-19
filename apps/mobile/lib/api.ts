@@ -1336,12 +1336,34 @@ export const api = {
     http: HttpClient,
     workspaceId: string,
   ): Promise<{ id: string; workspaceId: string; isPrimary?: boolean }> {
-    const res = await http.get<{
-      sessions?: Array<{ id: string; workspaceId: string; isPrimary?: boolean }>
-    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`)
-    const primary = res.data?.sessions?.find((session) => session.isPrimary)
+    const sessions = await api.listWorkspaceSessions(http, workspaceId)
+    const primary = sessions.find((session) => session.isPrimary)
     if (!primary) throw new Error('getPrimaryWorkspaceSession: no primary session returned')
     return primary
+  },
+
+  /**
+   * List every workspace-scoped chat session (primary + "side chats").
+   * Personal workspaces get their primary session auto-created server-side
+   * on first list (see `routes/workspace-chat.ts`), so this always returns
+   * at least one session for a personal workspace.
+   */
+  async listWorkspaceSessions(
+    http: HttpClient,
+    workspaceId: string,
+  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
+    const res = await http.get<{
+      sessions?: Array<{
+        id: string
+        workspaceId: string
+        isPrimary?: boolean
+        name?: string | null
+        inferredName?: string | null
+        createdAt?: string
+        lastActiveAt?: string
+      }>
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`)
+    return res.data?.sessions ?? []
   },
 
   async getAgentProfile(http: HttpClient, workspaceId: string) {

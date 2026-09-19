@@ -10,7 +10,7 @@
  */
 import type { ComponentType } from 'react'
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native'
-import { Activity, Image as ImageIcon, PenLine, Sparkles, X } from 'lucide-react-native'
+import { Activity, Image as ImageIcon, MessagesSquare, PenLine, Sparkles, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
 type ProfileActionIcon = ComponentType<{ size?: number; className?: string }>
@@ -27,6 +27,7 @@ export function buildDefaultProfileActions(opts: {
   agentName: string
   onPrefill: (content: string) => void
   onOpenActivity: () => void
+  onOpenSideChats?: () => void
 }): ProfileActionSheetAction[] {
   return [
     {
@@ -64,6 +65,17 @@ export function buildDefaultProfileActions(opts: {
       Icon: Activity,
       onPress: opts.onOpenActivity,
     },
+    ...(opts.onOpenSideChats
+      ? [
+          {
+            id: 'side-chats',
+            label: 'Side chats',
+            hint: 'Explore a tangent without derailing the main conversation',
+            Icon: MessagesSquare,
+            onPress: opts.onOpenSideChats,
+          },
+        ]
+      : []),
   ]
 }
 
