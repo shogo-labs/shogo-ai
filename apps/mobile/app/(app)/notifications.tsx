@@ -17,6 +17,7 @@ import {
   Bell,
   CheckCheck,
   CheckCircle2,
+  Clock3,
   AlertTriangle,
   Receipt,
   Gauge,
@@ -28,6 +29,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useNotificationCollection, useDomainActions } from '../../contexts/domain'
 import { notificationEvents } from '../../lib/notification-events'
+import { filterNotificationsForPlatform } from '../../lib/notification-policy'
 
 /** Type → icon + accent color (Tailwind text class) for the row glyph. */
 function visualForType(type: string): { Icon: React.ElementType; color: string } {
@@ -50,6 +52,12 @@ function visualForType(type: string): { Icon: React.ElementType; color: string }
       return { Icon: Users, color: 'text-primary' }
     case 'workspace_updated':
       return { Icon: Building2, color: 'text-muted-foreground' }
+    case 'agent_task_started':
+      return { Icon: Clock3, color: 'text-primary' }
+    case 'agent_task_completed':
+      return { Icon: CheckCircle2, color: 'text-emerald-600' }
+    case 'agent_task_failed':
+      return { Icon: AlertTriangle, color: 'text-destructive' }
     default:
       return { Icon: Bell, color: 'text-muted-foreground' }
   }
@@ -93,7 +101,7 @@ export default observer(function NotificationsScreen() {
   }, [load])
 
   // Newest first.
-  const items = notifications.all
+  const items = filterNotificationsForPlatform(notifications.all, Platform.OS)
     .slice()
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   const unread = items.filter((n) => !n.readAt)

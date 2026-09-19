@@ -71,3 +71,10 @@ export {
   type GitCommitDetailFile,
   type UseGitGraphOptions,
 } from './useGitGraph'
+export {
+  workspaceExperience,
+  type WorkspaceExperience,
+  type WorkspaceExperienceKind,
+  type WorkspaceExperienceComposer,
+  type BottomTabId,
+} from './useWorkspaceExperience'

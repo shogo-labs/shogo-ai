@@ -299,6 +299,34 @@ describe('computeSystemDiff', () => {
     })
   })
 
+  test('regression: a spec.agent.provider matching live.agent.modelProvider produces no op (idempotent), a mismatch does', () => {
+    // `agentPatch` used to set `patch.modelProvider = a.provider` whenever
+    // `a.provider` was defined, with no comparison against the live value
+    // (unlike `model`, which is compared) — every apply against an
+    // already-configured project with an explicit `provider` (e.g. `'custom'`
+    // for a non-Anthropic admin model) reported a spurious configure op
+    // forever, breaking the "second apply is an empty diff" idempotency
+    // guarantee. Found live running the issue-pipeline multi-project eval
+    // after adding `provider: 'custom'` to every module so Hoshi 2.0 stages
+    // stop silently falling back to a default Anthropic model.
+    const manifestFor = (provider: string) =>
+      parseSystemManifest({
+        version: 1,
+        name: 'm',
+        projects: [{ key: 'a', name: 'A', agent: { model: 'hoshi-2-0', provider, heartbeat: { enabled: false } } }],
+      }).manifest!
+    const liveProjects = [
+      live({ id: 'id-a', name: 'A', agent: { heartbeatEnabled: false, heartbeatInterval: 1800, modelName: 'hoshi-2-0', modelProvider: 'custom' } }),
+    ]
+
+    const matching = computeSystemDiff(manifestFor('custom'), liveProjects, null, { callerProjectId: 'caller-1' })
+    expect(matching.configure).toHaveLength(0)
+
+    const mismatched = computeSystemDiff(manifestFor('anthropic'), liveProjects, null, { callerProjectId: 'caller-1' })
+    expect(mismatched.configure).toHaveLength(1)
+    expect(mismatched.configure[0].patch).toEqual({ agent: { modelProvider: 'anthropic' } })
+  })
+
   test('surfaces channels/integrations as manual steps, never as ops', () => {
     const manifest = parseSystemManifest({
       version: 1,

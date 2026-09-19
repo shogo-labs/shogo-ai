@@ -102,6 +102,7 @@ describe('issue-pipeline (multi-project) manifest', () => {
               heartbeatEnabled: spec.agent.heartbeat?.enabled ?? false,
               heartbeatInterval: spec.agent.heartbeat?.interval ?? 3600,
               modelName: spec.agent.model ?? 'claude-sonnet-4-6',
+              modelProvider: spec.agent.provider ?? 'anthropic',
             }
           : null,
       }

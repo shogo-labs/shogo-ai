@@ -17,7 +17,7 @@
     "heartbeatInterval": 3600,
     "heartbeatEnabled": true,
     "modelProvider": "anthropic",
-    "modelName": "claude-sonnet-4-5",
+    "modelName": "hoshi-2-0",
     "webEnabled": true,
     "browserEnabled": false,
     "shellEnabled": true,

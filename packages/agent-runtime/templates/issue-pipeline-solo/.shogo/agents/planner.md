@@ -2,7 +2,7 @@
 name: planner
 description: Turns a picked analysis option into a concrete implementation plan with regression/integration tests. Spawn with the picked option, the analyst's full output, and the original issue.
 tools: [read_file, search, exec]
-model: claude-sonnet-4-6
+model: hoshi-2-0
 maxTurns: 15
 ---
 

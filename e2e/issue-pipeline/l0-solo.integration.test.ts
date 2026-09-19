@@ -23,7 +23,7 @@
  *   2. `gh` authenticated with write access to that repo (issues + PRs).
  *
  * Run:
- *   GITHUB_TEST_REPO=<owner>/<repo> bun test e2e/issue-pipeline/l0-solo.integration.test.ts
+ *   GITHUB_TEST_REPO=<owner>/<repo> bun test ./e2e/issue-pipeline/l0-solo.integration.test.ts
  *
  * This test issues real LLM turns across a multi-stage agent pipeline; a
  * full run can take many minutes. Default timeout is 30 minutes

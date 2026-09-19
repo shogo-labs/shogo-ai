@@ -31,6 +31,7 @@ import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { isMetalEligibleProject } from "../lib/metal-eligibility"
+import { sendPushToUser } from "../lib/push-notifications"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -52,6 +53,8 @@ export interface ProjectChatRoutesConfig {
    * Local runtime manager (used in non-K8s environments).
    */
   runtimeManager?: IRuntimeManager
+  /** Used only by the internal agent-task dispatcher to avoid duplicate pushes. */
+  suppressCompletionPush?: boolean
 }
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
@@ -133,6 +136,12 @@ export async function trackUsageFromStream(
      * the wrong session. See project-chat-session-id-split.test.ts.
      */
     chatSessionId?: string | null
+    /** Authenticated user who should receive a background completion push. */
+    userId?: string
+    /** Human-readable project label used in the push title. */
+    projectName?: string
+    /** A delegated task sends its own terminal notification. */
+    suppressCompletionPush?: boolean
   } = {},
 ) {
   const decoder = new TextDecoder()
@@ -742,6 +751,20 @@ export async function trackUsageFromStream(
           `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`
         )
 
+        if (
+          observedTurnComplete &&
+          turnCompleteStatus === 'completed' &&
+          options.userId &&
+          !options.suppressCompletionPush
+        ) {
+          const preview = accumulatedText.replace(/\s+/g, ' ').trim().slice(0, 180)
+          void sendPushToUser(options.userId, {
+            title: `${options.projectName || 'Project'} response ready`,
+            body: preview || 'The agent finished responding.',
+            data: { sessionId: chatSessionId, projectId: project.id },
+          })
+        }
+
         const now = new Date()
         // Bump the session's lastActiveAt so the chat history sidebar
         // buckets reflect the most recent message rather than the
@@ -848,7 +871,7 @@ export async function trackUsageFromStream(
 // =============================================================================
 
 export function projectChatRoutes(config: ProjectChatRoutesConfig) {
-  const { runtimeManager } = config
+  const { runtimeManager, suppressCompletionPush = false } = config
   const router = new Hono()
 
   /**
@@ -1060,12 +1083,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // Enforce model tier for free/basic-plan workspaces (server-side guard)
       if (parsedBody.agentMode) {
-        const resolved = resolveModelId(parsedBody.agentMode)
-        const tier = getModelTier(resolved)
-        if (tier !== 'economy') {
-          const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
-          if (!hasAdvanced) {
-            parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+        // Local LLM models are user-configured and are not cloud-tiered. Do
+        // not replace Auto/local routing with the cloud Claude fallback.
+        const localLlmConfigured = process.env.SHOGO_LOCAL_MODE === 'true'
+        if (!localLlmConfigured) {
+          const resolved = resolveModelId(parsedBody.agentMode)
+          const tier = getModelTier(resolved)
+          if (tier !== 'economy') {
+            const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
+            if (!hasAdvanced) {
+              parsedBody.agentMode = 'claude-haiku-4-5-20251001'
+            }
           }
         }
         // Resolve the model's native provider from the registry and stamp it on
@@ -1296,7 +1324,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // keeps the agent running in memory so the client can resume the stream.
       // trackUsageFromStream also needs the full stream for billing/persistence.
       const clientSignal = c.req.raw.signal
-      const fetchSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      const fetchTimeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      // Normal chat requests intentionally survive a client disconnect so the
+      // runtime can be resumed. Delegated tasks opt into cancellation by
+      // sending X-Agent-Task-Id; their AbortController must reach the runtime.
+      const fetchSignal = c.req.header('X-Agent-Task-Id')
+        ? AbortSignal.any([clientSignal, fetchTimeoutSignal])
+        : fetchTimeoutSignal
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         // Check if client already disconnected before retrying
@@ -1494,6 +1528,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // pass it through so closeSession + persistence key on the
             // same id and never diverge from billing.
             chatSessionId: incomingChatSessionId,
+            userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
+            projectName: project.name,
+            // Delegated task completion is announced by agent-tasks with a
+            // task-specific deep link. This is an internal router option, not
+            // a client-controlled request-body or header flag.
+            suppressCompletionPush,
             // Server-side auto-resume hook. When the original POST stream
             // EOFs before `data-turn-complete`, the tracker reconnects
             // here to drain the rest of the turn from the runtime's
@@ -1863,6 +1903,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const response = await fetchFromRuntime(projectId, "/agent/stop", {
         method: "POST",
         body: body || "{}",
+        // Internal callers use a bounded AbortSignal so a stopped runtime
+        // cannot hold a user-facing task cancellation request open forever.
+        signal: c.req.raw.signal,
       })
 
       const result = await response.json()

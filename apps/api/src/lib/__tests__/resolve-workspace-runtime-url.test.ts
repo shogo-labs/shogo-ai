@@ -22,8 +22,28 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       resolveWorkspaceRuntimeUrl('ws-1', {
         attachedProjectIds: ['p1'],
         _isEnabled: () => false,
+        _loadWorkspaceKind: async () => 'team',
       }),
     ).rejects.toBeInstanceOf(WorkspaceRuntimeNotEnabledError)
+  })
+
+  it('allows personal workspaces through when the global flag is off', async () => {
+    const res = await resolveWorkspaceRuntimeUrl('ws-personal', {
+      attachedProjectIds: [],
+      workspaceKind: 'personal',
+      _isEnabled: () => false,
+      _isKubernetes: () => false,
+      _isMetalEnabled: () => false,
+      _hostStart: async () => ({
+        projectId: 'ws-personal',
+        port: 37000,
+        agentPort: 38000,
+        status: 'running' as const,
+        url: 'http://localhost:37000',
+        startedAt: Date.now(),
+      }),
+    })
+    expect(res).toMatchObject({ mode: 'host', url: 'http://localhost:38000' })
   })
 
   it('routes K8s when isKubernetes()', async () => {

@@ -29,6 +29,7 @@ export const WorkspaceModel = types
   .model("Workspace", {
     id: types.identifier,
     name: types.string,
+    kind: types.optional(types.enumeration("WorkspaceKind", ["personal", "team"]), "team"),
     slug: types.string,
     description: types.optional(types.string, ""),
     ssoSettings: types.optional(types.frozen(), {}),

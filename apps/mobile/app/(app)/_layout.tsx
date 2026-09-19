@@ -32,11 +32,16 @@ import { AppSidebar } from '../../components/layout/AppSidebar'
 import { AppHeader } from '../../components/layout/AppHeader'
 import { RecordingIndicator } from '../../components/meetings/RecordingIndicator'
 import { useNotificationClickRouter } from '../../lib/notifications/useNotificationClickRouter'
+import { useMobilePushRegistration } from '../../lib/notifications/mobile-push-registration'
+import { useNotifyOnTurnComplete } from '../../lib/notifications/preferences'
 import { mark as csMark } from '../../lib/cold-start-timing'
 import { nativePhoneCanvas, NATIVE_PHONE_HOME_CANVAS,
   WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe';
+import { useNativePhoneSheetOpen } from '../../lib/native-phone-sheet-lock'
 import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell"
+import { MobileBottomNav } from '../../components/layout/MobileBottomNav'
+import { projectSidebarEvents } from '../../lib/project-sidebar-events'
 
 csMark('app:layout:module-load')
 
@@ -62,6 +67,7 @@ export default function AppLayout() {
   const { width } = useWindowDimensions()
   const isNativeApp = Platform.OS !== 'web'
   const isDark = useResolvedTheme() === 'dark'
+  const phoneSheetOpen = useNativePhoneSheetOpen()
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= WEB_WIDE_MIN_WIDTH
   const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
@@ -83,6 +89,8 @@ export default function AppLayout() {
   usePostHogIdentify()
   const posthog = usePostHogSafe()
   useNotificationClickRouter()
+  const [notifyOnTurnComplete] = useNotifyOnTurnComplete()
+  useMobilePushRegistration(user?.id ?? null, notifyOnTurnComplete)
 
   useEffect(() => {
     if (isAuthenticated && posthog) {
@@ -149,7 +157,10 @@ export default function AppLayout() {
     isAccountPage ||
     isSearchPage ||
     isProjectChatsPage
-  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !suppressNarrowAppHeader
+  // Project chat has its own header, but it still uses the same native drawer
+  // underneath. Keep horizontal drawer gestures enabled there so the sheet
+  // can be opened and dismissed by swiping just like Home.
+  const nativeDrawerSwipe = !isWide && !isIdeEmbed && !phoneSheetOpen && (!suppressNarrowAppHeader || isProjectDetail)
   const nativeSheetDrawer = !isWide && !isIdeEmbed
   const drawer = useNativeSheetDrawer({
     windowWidth: width,
@@ -157,7 +168,34 @@ export default function AppLayout() {
     swipeEnabled: nativeDrawerSwipe,
     closedCanvas: isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : undefined,
   });
-  const { drawerOpen, closeDrawer, toggleDrawer, resetDrawer } = drawer
+  const { drawerOpen, closeDrawer, toggleDrawer, openDrawer, resetDrawer } = drawer
+
+  useEffect(() => {
+    if (phoneSheetOpen && drawerOpen) closeDrawer()
+  }, [closeDrawer, drawerOpen, phoneSheetOpen])
+
+  useEffect(() => {
+    let pendingFrame: number | null = null
+    const unsubscribe = projectSidebarEvents.subscribeOpenProject(() => {
+      if (isWide || isIdeEmbed) return
+      if (drawerOpen) {
+        closeDrawer()
+        return
+      }
+      // Let the sidebar commit its focused-project state before the drawer
+      // animation starts. Otherwise the default sidebar renders for the first
+      // frame and then crossfades into the project panel.
+      if (pendingFrame !== null) cancelAnimationFrame(pendingFrame)
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = null
+        openDrawer()
+      })
+    })
+    return () => {
+      if (pendingFrame !== null) cancelAnimationFrame(pendingFrame)
+      unsubscribe()
+    }
+  }, [closeDrawer, drawerOpen, isIdeEmbed, isWide, openDrawer])
 
   useEffect(() => {
     if (!isWide && !isAccountPage) return
@@ -232,7 +270,11 @@ export default function AppLayout() {
         isWide={isWide}
         nativeSheetDrawer={nativeSheetDrawer}
         canvas={isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas}
-        safeAreaEdges={nativeEdgeToEdgeChrome ? ['left', 'right'] : undefined}
+        safeAreaEdges={
+          nativeEdgeToEdgeChrome
+            ? ['left', 'right']
+            : undefined
+        }
         sidebarWide={showSidebar ? <AppSidebar /> : null}
         sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
         sidebarOverlay={
@@ -247,6 +289,7 @@ export default function AppLayout() {
             <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
           ) : null
         }
+        bottomNav={isNativeApp && !isIdeEmbed ? <MobileBottomNav /> : null}
         drawer={drawer}
       >
         {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}

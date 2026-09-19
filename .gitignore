@@ -237,6 +237,10 @@ apps/*/coverage/
 # Agent-local state (never commit)
 .shogo/
 config.json
+# ...except the persona template's own config.json (modelProvider/modelName/
+# heartbeat defaults for seedPersonalCompanionTemplate) — that's committed
+# source, not agent-local runtime state. See workspace-defaults.ts.
+!packages/agent-runtime/templates/**/config.json
 apps/mobile/dist.stale-*/
 .github/pr-*.md
 

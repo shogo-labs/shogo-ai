@@ -41,6 +41,45 @@ export function workspaceRuntimeId(env: NodeJS.ProcessEnv = process.env): string
   return env.WORKSPACE_ID || null
 }
 
+/** Workspace product mode, defaulting to the team experience for compatibility. */
+export function workspaceKind(env: NodeJS.ProcessEnv = process.env): 'personal' | 'team' {
+  return env.WORKSPACE_KIND === 'personal' ? 'personal' : 'team'
+}
+
+/**
+ * Everything about "which runtime is this, and what can it do" derived from
+ * boot-time env in one place. Before this existed, `gateway-tools.ts` alone
+ * re-derived `process.env.WORKSPACE_ID || ctx.workspaceId` at 8+ call sites
+ * and inlined `process.env.WORKSPACE_RUNTIME === 'true'` as its own
+ * registration check; `gateway.ts` separately called `workspaceKind()` for
+ * the capability profile. None of these disagreed, but each was a place a
+ * future change could accidentally diverge from the others.
+ */
+export interface RuntimeIdentity {
+  /** 'workspace' for a merged-root multi-project runtime, 'project' for a single-project runtime. */
+  mode: 'project' | 'workspace'
+  /** Set whenever `WORKSPACE_ID` is present, regardless of `mode` — mirrors the historical `resolveWorkspaceId` fallback precedence. */
+  workspaceId: string | null
+  projectId: string | null
+  kind: 'personal' | 'team'
+}
+
+/**
+ * Resolve the runtime's identity from env. Pure function of `env` (defaults
+ * to `process.env`), so it is cheap to call per-tool-invocation rather than
+ * caching a snapshot — these env vars are fixed at pod boot and never change
+ * during the process lifetime, but a pure function keeps this unit-testable
+ * without process-global mutation.
+ */
+export function resolveRuntimeIdentity(env: NodeJS.ProcessEnv = process.env): RuntimeIdentity {
+  return {
+    mode: isWorkspaceRuntimeMode(env) ? 'workspace' : 'project',
+    workspaceId: env.WORKSPACE_ID || null,
+    projectId: env.PROJECT_ID || null,
+    kind: workspaceKind(env),
+  }
+}
+
 /**
  * Attached project ids for a workspace runtime, parsed from the
  * comma-separated `WORKSPACE_PROJECT_IDS` env (set by build-workspace-env.ts).

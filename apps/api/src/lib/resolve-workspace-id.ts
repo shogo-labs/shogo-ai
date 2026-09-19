@@ -122,6 +122,9 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
   'api-keys': directWs('apiKey'),
   instances: directWs('instance'),
   meetings: directWs('meeting'),
+  // Agent tasks are mutated through /api/agent-tasks/:id. Resolve the task's
+  // workspace before the home-region router decides where the mutation runs.
+  'agent-tasks': directWs('agentTask'),
 }
 
 // Custom chain lookups above resolve these models without going through

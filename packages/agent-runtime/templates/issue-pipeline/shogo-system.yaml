@@ -16,7 +16,8 @@ projects:
     description: "Front door: task-source adapters (GitHub/Jira/built-in), reproduction, and reply routing. Owns the actual repo checkout."
     techStackId: react-app
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: true
         interval: 1800
@@ -184,8 +185,9 @@ projects:
         4. No state found for the runId (stale, or a mention with no prior run) → treat as a fresh item if it looks like a new request; otherwise reply that you don't have context for that runId and ask the human to open a new item.
 
         ### Implementer reports the PR is ready (`project_call` FROM implementer, wait:false)
-        1. Post the PR link to the task source thread for the original item, embedding the same `runId` marker.
-        2. `memory_write` stage → `"awaiting_review"`.
+        1. **Verify the marker before posting anything**: `exec({ command: "gh pr view <url> --json body --jq .body" })` and confirm the output contains `<!-- shogo:runId=<runId> -->`. `implementer`'s own instructions tell it to embed this, but don't trust it blindly — a PR missing the marker is untraceable to every later webhook (reviews, review comments, this exact routing table) and silently strands the run. If it's missing, `project_call({ project: "Issue Pipeline — Implementer", message: "The PR body is missing the runId marker — gh pr edit <url> --body \"$(gh pr view <url> --json body --jq .body)\n\n<!-- shogo:runId=<runId> -->\" to add it, then confirm.", runId, wait: true })` and re-verify before continuing.
+        2. Post the PR link to the task source thread for the original item, embedding the same `runId` marker.
+        3. `memory_write` stage → `"awaiting_review"`.
 
         ### Done Gate reports terminal failure (implementer exhausted retries)
         1. Post a comment explaining the stall (what Done Gate rejected, how many attempts) and ask a human to weigh in directly on the PR/branch.
@@ -260,7 +262,8 @@ projects:
     name: Issue Pipeline — Analyst
     description: Root-cause analysis and 5 solution options for a human to pick from.
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -340,7 +343,8 @@ projects:
     name: Issue Pipeline — Planner
     description: Turns the picked option into a concrete implementation plan with regression/integration tests.
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -415,7 +419,8 @@ projects:
     name: Issue Pipeline — Implementer
     description: Executes the plan, loops with reviewers and Done Gate, opens the PR.
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -503,7 +508,8 @@ projects:
     name: Issue Pipeline — Security
     description: Fast, read-only security review — structured findings only.
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -639,7 +645,8 @@ projects:
     name: Issue Pipeline — Scalability
     description: Fast, read-only scalability review — structured findings only.
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -771,7 +778,8 @@ projects:
     name: Issue Pipeline — Dry
     description: Fast, read-only DRY review — structured findings only.
     agent:
-      model: claude-haiku-4-5
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -902,7 +910,8 @@ projects:
     name: Issue Pipeline — Done Gate
     description: "Capable-model judge: is it done, and what is the verdict on every finding."
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: false
     attachments:
@@ -1048,7 +1057,8 @@ projects:
     description: Findings database and the in-the-wild prompt-evolution loop.
     techStackId: react-app
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: true
         interval: 3600
@@ -1306,7 +1316,8 @@ projects:
     name: Issue Pipeline — Harness
     description: "Anchor project: owns shogo-system.yaml and runs system_apply. Does not analyse, plan, or write code."
     agent:
-      model: claude-sonnet-4-6
+      model: hoshi-2-0
+      provider: custom
       heartbeat:
         enabled: true
         interval: 3600

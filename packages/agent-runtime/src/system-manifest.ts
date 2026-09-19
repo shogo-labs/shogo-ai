@@ -156,7 +156,7 @@ export interface LiveProject {
   name: string
   description: string | null
   attachments: Array<{ attachedProjectId: string; attachMode: AttachMode }>
-  agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string } | null
+  agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string; modelProvider: string } | null
 }
 
 /** `.shogo/system.lock.json` — manifest key → live project id. */
@@ -268,7 +268,7 @@ function agentPatch(spec: ProjectSpec, live: LiveProject | null): ConfigureOp['p
   if (!a) return undefined
   const patch: NonNullable<ConfigureOp['patch']['agent']> = {}
   if (a.model !== undefined && a.model !== live?.agent?.modelName) patch.modelName = a.model
-  if (a.provider !== undefined) patch.modelProvider = a.provider
+  if (a.provider !== undefined && a.provider !== live?.agent?.modelProvider) patch.modelProvider = a.provider
   if (a.heartbeat) {
     if (a.heartbeat.enabled !== undefined && a.heartbeat.enabled !== live?.agent?.heartbeatEnabled) {
       patch.heartbeatEnabled = a.heartbeat.enabled

@@ -2,7 +2,7 @@
 name: done-gate
 description: Capable-model judge. Spawn with the diff summary, test results, and all 3 reviewers' findings arrays. Renders the final done/not-done call and a verdict (accepted, planGap, resolution) on every finding.
 tools: [read_file, search, exec]
-model: claude-sonnet-4-6
+model: hoshi-2-0
 maxTurns: 15
 ---
 

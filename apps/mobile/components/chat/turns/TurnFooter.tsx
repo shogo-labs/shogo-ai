@@ -15,15 +15,16 @@
  */
 
 import { memo, useCallback, useEffect, useState } from "react"
-import { View, Text, Pressable } from "react-native"
+import { Platform, Share as NativeShare, View, Text, Pressable } from "react-native"
 import * as Clipboard from "expo-clipboard"
-import { Copy, Check, ThumbsUp, ThumbsDown, GitFork, Loader2 } from "lucide-react-native"
+import { Copy, Check, Share2, ThumbsUp, ThumbsDown, GitFork, Loader2 } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useTurnFooterContext } from "./TurnFooterContext"
 import { formatRelativeTime } from "./turnShaping"
 
 /** How often the relative-time label re-renders to stay fresh. */
 const RELATIVE_TIME_TICK_MS = 30_000
+const ACTION_ICON_SIZE = 16
 
 /**
  * Ticking "2m ago" label. Re-renders on an interval instead of a
@@ -76,10 +77,33 @@ function CopyAction({ text }: { text: string }) {
       accessibilityLabel={copied ? "Copied" : "Copy message"}
     >
       {copied ? (
-        <Check className="h-3.5 w-3.5 text-green-500" />
+        <Check size={ACTION_ICON_SIZE} className="text-green-500" />
       ) : (
-        <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+        <Copy size={ACTION_ICON_SIZE} className="text-muted-foreground" />
       )}
+    </Pressable>
+  )
+}
+
+function ShareAction({ text }: { text: string }) {
+  const handleShare = useCallback(async () => {
+    if (!text) return
+    try {
+      await NativeShare.share({ message: text })
+    } catch {
+      // The user can dismiss the native share sheet without an error state.
+    }
+  }, [text])
+
+  return (
+    <Pressable
+      testID="turn-footer-share"
+      onPress={handleShare}
+      disabled={!text}
+      className={cn("items-center justify-center rounded-lg p-1 hover:bg-muted/40", !text && "opacity-40")}
+      accessibilityLabel="Share message"
+    >
+      <Share2 size={ACTION_ICON_SIZE} className="text-muted-foreground" />
     </Pressable>
   )
 }
@@ -129,6 +153,7 @@ export const TurnFooter = memo(function TurnFooter({
     <View className={cn("flex-row items-center justify-between pl-3 pr-1", className)}>
       <View className="flex-row items-center gap-0.5">
         <CopyAction text={text} />
+        {Platform.OS !== "web" ? <ShareAction text={text} /> : null}
 
         <Pressable
           testID="turn-footer-thumb-up"
@@ -141,8 +166,8 @@ export const TurnFooter = memo(function TurnFooter({
           accessibilityLabel={currentThumb === "up" ? "Remove like" : "Like response"}
         >
           <ThumbsUp
+            size={ACTION_ICON_SIZE}
             className={cn(
-              "h-3.5 w-3.5",
               currentThumb === "up" ? "text-primary" : "text-muted-foreground",
             )}
             fill={currentThumb === "up" ? "currentColor" : "none"}
@@ -160,8 +185,8 @@ export const TurnFooter = memo(function TurnFooter({
           accessibilityLabel={currentThumb === "down" ? "Remove dislike" : "Dislike response"}
         >
           <ThumbsDown
+            size={ACTION_ICON_SIZE}
             className={cn(
-              "h-3.5 w-3.5",
               currentThumb === "down" ? "text-destructive" : "text-muted-foreground",
             )}
             fill={currentThumb === "down" ? "currentColor" : "none"}
@@ -179,9 +204,9 @@ export const TurnFooter = memo(function TurnFooter({
           accessibilityLabel="Fork conversation from here"
         >
           {forking ? (
-            <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />
+            <Loader2 size={ACTION_ICON_SIZE} className="text-muted-foreground animate-spin" />
           ) : (
-            <GitFork className="h-3.5 w-3.5 text-muted-foreground" />
+            <GitFork size={ACTION_ICON_SIZE} className="text-muted-foreground" />
           )}
         </Pressable>
       </View>

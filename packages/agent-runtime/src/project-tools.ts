@@ -203,6 +203,7 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
         description: p.description,
         techStackId: p.techStackId,
         templateId: p.templateId,
+        hidden: ctx.config.capabilityProfile === 'personal',
         userId: ctx.userId,
       })
       if (!created.ok || !created.data) {
@@ -392,13 +393,29 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
             : undefined,
         })
       }
+      const reply = res.data.reply ?? null
+      const urls = reply
+        ? [...reply.matchAll(/https?:\/\/[^\s<>"')\]]+/g)]
+            .map((match) => match[0].replace(/[.,;!?]+$/, ''))
+            .filter((url) => url.length > 0)
+        : []
       return textResult({
         ok: true,
         project: { id: target.id, name: target.name },
         runId,
         status: res.data.status,
         sessionId: res.data.sessionId,
-        reply: res.data.reply ?? null,
+        reply,
+        ...(urls.length > 0
+          ? {
+              deliverables: urls.map((href) => ({
+                type: 'url',
+                label: target.name,
+                href,
+                projectId: target.id,
+              })),
+            }
+          : {}),
       })
     },
   }

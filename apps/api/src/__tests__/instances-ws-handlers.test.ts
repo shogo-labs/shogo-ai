@@ -60,6 +60,7 @@ mock.module('../lib/tunnel-redis', () => ({
 
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: async () => ({ sent: false }),
+  sendPushToUser: async () => ({ sent: false }),
 }))
 
 mock.module('../lib/proxy-billing-session', () => ({
@@ -73,7 +74,7 @@ mock.module('../lib/proxy-billing-session', () => ({
 }))
 
 mock.module('../lib/chat-usage-tracker', () => ({
-  trackChatStreamForBilling: () => {},
+  trackChatStreamForBilling: async () => {},
 }))
 
 mock.module('../routes/remote-audit', () => ({

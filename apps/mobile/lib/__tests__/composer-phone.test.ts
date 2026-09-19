@@ -33,7 +33,7 @@ describe('composerKeyboardProps', () => {
 })
 
 describe('native composer send control', () => {
-  test('is a 44pt tap target, larger than the web chip', () => {
+  test('is a 40pt tap target, larger than the web chip', () => {
     expect(composerSendChrome(true)).toEqual({
       sizeClassName: NATIVE_COMPOSER_SEND_CLASS,
       iconSize: NATIVE_COMPOSER_SEND_ICON,
@@ -42,7 +42,7 @@ describe('native composer send control', () => {
       sizeClassName: WEB_COMPOSER_SEND_CLASS,
       iconSize: WEB_COMPOSER_SEND_ICON,
     })
-    expect(NATIVE_COMPOSER_SEND_CLASS).toBe('h-11 w-11')
+    expect(NATIVE_COMPOSER_SEND_CLASS).toBe('h-10 w-10')
     expect(NATIVE_COMPOSER_MIC_IDLE_CLASS).toContain('h-11 w-11')
     expect(NATIVE_COMPOSER_MIC_IDLE_CLASS).toContain('border')
   })

@@ -16,6 +16,11 @@ const store = {
   // best-effort mount (id/name/description of the attached project).
   projects: new Map<string, { workspaceId: string; createdBy?: string | null; id?: string; name?: string; description?: string | null }>(),
 
+  // prisma.member.findFirst — resolveActingUserId's workspace-token fallback
+  // (a merged-root runtime has no calling *project* to inherit createdBy
+  // from, so it falls back to the workspace's owner instead).
+  members: [] as Array<{ workspaceId: string; userId: string; role: string; createdAt: string }>,
+
   // project-lifecycle.service
   createProjectResult: null as any,
   createProjectThrow: null as null | Error,
@@ -92,6 +97,14 @@ mock.module('../../lib/prisma', () => ({
         return { id: where.id, ...row }
       },
     },
+    member: {
+      findFirst: async ({ where }: { where: { workspaceId: string; role: string } }) => {
+        const candidates = store.members
+          .filter((m) => m.workspaceId === where.workspaceId && m.role === where.role)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        return candidates[0] ?? null
+      },
+    },
   },
 }))
 
@@ -166,6 +179,7 @@ beforeEach(() => {
   store.workspaceVerify = null
   store.resolvedWorkspaceId = null
   store.projects = new Map()
+  store.members = []
   store.createProjectResult = { id: 'proj-new', name: 'New', description: null, workspaceId: 'ws-1', workingMode: 'managed', settings: null }
   store.createProjectThrow = null
   store.createProjectCalledWith = null
@@ -295,6 +309,42 @@ describe('POST /workspaces/:workspaceId/projects', () => {
     })
     expect(res.status).toBe(201)
     expect(store.createProjectCalledWith).toMatchObject({ actingUserId: 'creator-1' })
+  })
+
+  // Regression: a merged-root (universal workspace) runtime authenticates
+  // with a *workspace* token, not a project token — `system_apply` /
+  // `project_create` from e.g. a multi-project pipeline's harness anchor
+  // hits this path. There is no calling project to inherit `createdBy`
+  // from, so before this fallback existed every such create 400'd with
+  // "userId is required", permanently breaking the harness's own
+  // `system_apply` tool. See resolveActingUserId in ../internal.ts.
+  test('201 for a workspace token falling back to the workspace owner', async () => {
+    store.podIdentity = null
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.members = [
+      { workspaceId: 'ws-1', userId: 'member-later', role: 'owner', createdAt: '2026-01-02T00:00:00.000Z' },
+      { workspaceId: 'ws-1', userId: 'owner-1', role: 'owner', createdAt: '2026-01-01T00:00:00.000Z' },
+      { workspaceId: 'ws-OTHER', userId: 'owner-other', role: 'owner', createdAt: '2026-01-01T00:00:00.000Z' },
+    ]
+    const res = await app.request('/workspaces/ws-1/projects', {
+      method: 'POST',
+      headers: { ...JSON_H, 'x-runtime-token': 'wt' },
+      body: JSON.stringify({ name: 'X' }),
+    })
+    expect(res.status).toBe(201)
+    expect(store.createProjectCalledWith).toMatchObject({ actingUserId: 'owner-1' })
+  })
+
+  test('400 for a workspace token when the workspace has no owner member', async () => {
+    store.podIdentity = null
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.members = []
+    const res = await app.request('/workspaces/ws-1/projects', {
+      method: 'POST',
+      headers: { ...JSON_H, 'x-runtime-token': 'wt' },
+      body: JSON.stringify({ name: 'X' }),
+    })
+    expect(res.status).toBe(400)
   })
 
   test('402 when the lifecycle service rejects with instance_too_small', async () => {

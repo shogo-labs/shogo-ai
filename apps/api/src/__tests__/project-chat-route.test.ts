@@ -464,6 +464,7 @@ describe('POST /projects/:projectId/chat/stop', () => {
     }))
     expect(res.status).toBe(200)
     expect((await res.json() as any).stopped).toBe(true)
+    expect(lastFetchInit?.body).toBe(JSON.stringify({ reason: 'user' }))
   })
 
   test('500 when runtime resolution fails', async () => {

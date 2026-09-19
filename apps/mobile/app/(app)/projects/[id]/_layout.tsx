@@ -50,6 +50,7 @@ import { authClient } from '../../../../lib/auth-client'
 import { API_URL, api } from '../../../../lib/api'
 import { openWebAppSession } from '../../../../lib/openWebAppSession'
 import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-session-events'
+import { projectSidebarEvents } from '../../../../lib/project-sidebar-events'
 import { workspaceProjectFilter } from '../../../../lib/project-load'
 import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
 import { resolveActiveWorkspaceId } from '../../../../lib/workspace-store'
@@ -287,6 +288,8 @@ export default observer(function ProjectLayout() {
      * precedence over the saved last-tab init. See {@link defaultTabForProject}.
      */
     tab?: string
+    /** When '1', a Canvases card explicitly requests the native Canvas view. */
+    openCanvas?: string
     /**
      * Bumped by the sidebar when re-selecting the SAME tab on an already-open
      * project, so the apply effect re-fires even though `tab` is unchanged.
@@ -413,6 +416,7 @@ export default observer(function ProjectLayout() {
   // loading state rather than the legacy empty/project-tab chat, so there is no
   // async swap/re-mount race. On failure we fall through to the legacy chat.
   const [pinnedResolveFailed, setPinnedResolveFailed] = useState(false)
+  const [chatViewportHeight, setChatViewportHeight] = useState(0)
   // Tracks whether we've already promoted the pinned session to the active
   // chat for the current project, so we only force it once (the user can
   // switch tabs afterwards).
@@ -1571,8 +1575,11 @@ export default observer(function ProjectLayout() {
     ) {
       return
     }
-    const token = `${projectId}:${requested}:${params.tabNonce ?? ''}`
+    const token = `${projectId}:${requested}:${params.tabNonce ?? ''}:${params.openCanvas ?? ''}`
     if (appliedTabIntentRef.current === token) return
+    if (requested === 'canvas' && params.openCanvas === '1') {
+      userRequestedCanvasRef.current = true
+    }
     // A leftover `?tab=chat-fullscreen` from opening this project while it
     // was still chat-only must not override a Canvas click this session on
     // web/desktop. Native phone always honors Chat as the landing tab, even
@@ -2736,10 +2743,6 @@ export default observer(function ProjectLayout() {
     />
   )
 
-  const nativePhoneChatViewportHeight = nativePhone
-      ? Math.max(0, height - insets.top - insets.bottom - 24)
-      : undefined
-
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
@@ -2753,8 +2756,12 @@ export default observer(function ProjectLayout() {
             style={
               !isActive
                 ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 }
-                : nativePhoneChatViewportHeight
-                  ? { height: nativePhoneChatViewportHeight }
+                : nativePhone
+                  ? {
+                    flex: 1,
+                    minHeight: 0,
+                    ...(chatViewportHeight > 0 ? { height: chatViewportHeight } : {}),
+                    }
                   : undefined
             }
             pointerEvents={isActive ? 'auto' : 'none'}
@@ -2926,6 +2933,9 @@ export default observer(function ProjectLayout() {
       Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
+    onOpenSidebar: Platform.OS !== 'web'
+      ? () => projectSidebarEvents.requestOpenProject(projectId!)
+      : undefined,
     idePrimarySideBarPosition,
     onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,
     ideEmbed: isIdeChatEmbed,
@@ -3208,6 +3218,15 @@ export default observer(function ProjectLayout() {
             ref={splitRowRef}
             collapsable={phoneLayout && !isWide ? false : undefined}
             style={phoneLayout && !isWide ? { width, flex: 1 } : undefined}
+            onLayout={(event) => {
+              const nextHeight = event.nativeEvent?.layout?.height
+              if (typeof nextHeight === 'number' && nextHeight > 0) {
+                setChatViewportHeight((current) => {
+                  const rounded = Math.round(nextHeight)
+                  return current === rounded ? current : rounded
+                })
+              }
+            }}
           >
             {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
             {(() => {

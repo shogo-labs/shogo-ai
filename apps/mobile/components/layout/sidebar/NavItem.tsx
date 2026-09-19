@@ -20,6 +20,9 @@ interface NavItemProps {
   onPress?: () => void;
   shortcut?: string;
   onNavPress?: () => void;
+  /** Optional native overrides for focused project-sidebar navigation. */
+  iconClassName?: string;
+  labelClassName?: string;
 }
 
 export function NavItem({
@@ -32,6 +35,8 @@ export function NavItem({
   onPress,
   shortcut,
   onNavPress,
+  iconClassName,
+  labelClassName,
 }: NavItemProps) {
   const router = useRouter();
   const isNative = Platform.OS !== "web";
@@ -67,9 +72,10 @@ export function NavItem({
     >
       <Icon
         size={isNative ? density.icon.nav : 12}
-        color={isNative ? iconChrome.color : undefined}
+        color={isNative && !iconClassName ? iconChrome.color : undefined}
         strokeWidth={isNative ? iconChrome.strokeWidth : undefined}
         className={cn(
+          iconClassName,
           !isNative && (active ? "text-foreground" : "text-muted-foreground"),
         )}
       />
@@ -77,7 +83,7 @@ export function NavItem({
         <Text
           className={cn(
             isNative ? `${density.text.body} flex-1` : "text-xs flex-1",
-            active ? "text-foreground" : "text-muted-foreground",
+            labelClassName ?? (active ? "text-foreground" : "text-muted-foreground"),
           )}
           numberOfLines={1}
         >

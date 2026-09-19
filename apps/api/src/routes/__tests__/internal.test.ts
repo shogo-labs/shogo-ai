@@ -39,6 +39,9 @@ const store = {
   publishResult: null as any,
   publishThrow: null as null | Error,
   publishCalledWith: null as any,
+  workspaceMember: null as null | { id: string },
+  workspaceProjects: [] as Array<{ id: string; name: string; description: string | null; createdBy: string | null; hidden?: boolean }>,
+  projectFindManyCalledWith: null as any,
 }
 
 mock.module('../../lib/k8s-auth', () => ({
@@ -86,6 +89,19 @@ mock.module('../../lib/prisma', () => ({
         if (store.prismaProjectFindUniqueThrow) throw store.prismaProjectFindUniqueThrow
         return store.prismaProjectFindUnique
       },
+      findMany: async (args: any) => {
+        store.projectFindManyCalledWith = args
+        // Mimic Prisma: apply the `hidden` filter the route passes in so the
+        // test can assert hidden projects never reach the response, exactly
+        // as a real hidden:false where-clause would filter them at the DB.
+        const hiddenFilter = args?.where?.hidden
+        return store.workspaceProjects.filter((p) =>
+          hiddenFilter === undefined ? true : Boolean(p.hidden) === hiddenFilter,
+        )
+      },
+    },
+    member: {
+      findFirst: async () => store.workspaceMember,
     },
     agentConfig: {
       updateMany: async () => {
@@ -172,6 +188,9 @@ beforeEach(() => {
   store.publishResult = null
   store.publishThrow = null
   store.publishCalledWith = null
+  store.workspaceMember = { id: 'member-1' }
+  store.workspaceProjects = []
+  store.projectFindManyCalledWith = null
   delete process.env.SHOGO_LOCAL_MODE
 })
 
@@ -179,6 +198,22 @@ afterEach(() => { delete process.env.SHOGO_LOCAL_MODE })
 
 const SA = { Authorization: 'Bearer sa-token' }
 const JSON_H = { 'content-type': 'application/json' }
+
+// ─── GET /workspaces/:workspaceId/projects ──────────────────────────────────
+
+describe('GET /workspaces/:workspaceId/projects', () => {
+  test('excludes hidden projects from the accessible catalog', async () => {
+    store.workspaceProjects = [
+      { id: 'proj-visible', name: 'Visible', description: null, createdBy: 'user-1', hidden: false },
+      { id: 'proj-hidden', name: 'Hidden Builder Delegate', description: null, createdBy: 'user-1', hidden: true },
+    ]
+    const res = await app.request('/workspaces/ws-1/projects?userId=user-1', { headers: SA })
+    expect(res.status).toBe(200)
+    const json = await res.json() as { projects: Array<{ id: string }> }
+    expect(json.projects.map((p) => p.id)).toEqual(['proj-visible'])
+    expect(store.projectFindManyCalledWith?.where).toMatchObject({ workspaceId: 'ws-1', hidden: false })
+  })
+})
 
 // ─── GET /pod-config/:projectId ─────────────────────────────────────────────
 
