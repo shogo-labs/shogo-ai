@@ -40,8 +40,9 @@ Read it with `memory_search({ query: "run:" })` or `memory_read({ key: "run:<run
 4. No state found for the runId (stale, or a mention with no prior run) → treat as a fresh item if it looks like a new request; otherwise reply that you don't have context for that runId and ask the human to open a new item.
 
 ### Implementer reports the PR is ready (`project_call` FROM implementer, wait:false)
-1. Post the PR link to the task source thread for the original item, embedding the same `runId` marker.
-2. `memory_write` stage → `"awaiting_review"`.
+1. **Verify the marker before posting anything**: `exec({ command: "gh pr view <url> --json body --jq .body" })` and confirm the output contains `<!-- shogo:runId=<runId> -->`. `implementer`'s own instructions tell it to embed this, but don't trust it blindly — a PR missing the marker is untraceable to every later webhook (reviews, review comments, this exact routing table) and silently strands the run. If it's missing, `project_call({ project: "Issue Pipeline — Implementer", message: "The PR body is missing the runId marker — gh pr edit <url> --body \"$(gh pr view <url> --json body --jq .body)\n\n<!-- shogo:runId=<runId> -->\" to add it, then confirm.", runId, wait: true })` and re-verify before continuing.
+2. Post the PR link to the task source thread for the original item, embedding the same `runId` marker.
+3. `memory_write` stage → `"awaiting_review"`.
 
 ### Done Gate reports terminal failure (implementer exhausted retries)
 1. Post a comment explaining the stall (what Done Gate rejected, how many attempts) and ask a human to weigh in directly on the PR/branch.
