@@ -172,9 +172,14 @@ describe('seedWorkspaceDefaults', () => {
     expect(wd.seedPersonalCompanionTemplate(dir)).toBe(true)
     expect(readFileSync(join(dir, 'AGENTS.md'), 'utf-8')).toContain('# Personal Companion')
     expect(readFileSync(join(dir, 'HEARTBEAT.md'), 'utf-8')).toContain('goal_list')
+    // Policy (capabilityProfile/shellEnabled/activeMode/allowedModes) is
+    // deliberately NOT written into config.json — `gateway.ts loadConfig()`
+    // forces it from `capability-profiles.ts` based on `WORKSPACE_KIND`, so
+    // a second copy here would just be a driftable duplicate.
     const config = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'))
-    expect(config.capabilityProfile).toBe('personal')
-    expect(config.shellEnabled).toBe(false)
+    expect(config.capabilityProfile).toBeUndefined()
+    expect(config.shellEnabled).toBeUndefined()
+    expect(config.heartbeatEnabled).toBe(true)
 
     writeFileSync(join(dir, 'AGENTS.md'), 'custom identity')
     expect(wd.seedPersonalCompanionTemplate(dir)).toBe(false)

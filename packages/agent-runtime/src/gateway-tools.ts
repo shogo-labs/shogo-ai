@@ -17,8 +17,9 @@ import { execSync } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
-import { createPersonalTools } from './personal-tools'
+import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { isSearchEnabled } from './search-flag'
+import { disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
@@ -5625,7 +5626,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   // Workspace runtimes expose universal profile/goal primitives. Project
   // runtimes omit them so the existing builder tool contract is unchanged.
   if (ctx.workspaceId || process.env.WORKSPACE_ID) {
-    tools.push(...createPersonalTools(ctx))
+    tools.push(...createWorkspaceAgentTools(ctx))
   }
 
   if (process.env.WORKSPACE_RUNTIME === 'true') {
@@ -6039,6 +6040,17 @@ export function createModeUnavailableTool(
   }
 }
 
+/**
+ * Feature-flag tool groups (web/shell/heartbeat/messaging/integrations
+ * toggles in `filterDisabledCapabilityTools` below). Every name here must
+ * stay a subset of `ALL_TOOL_NAMES` (skills may reference these names/groups
+ * as tool dependencies — see `resolveToolNames` and `skills.ts`).
+ *
+ * This is deliberately NOT the same map as capability-profiles.ts's
+ * `PROFILE_TOOL_GROUPS`, which also covers privileged/internal tools
+ * (`checkpoint`, `agent_spawn`, `system_apply`, ...) that must NOT be
+ * individually resolvable via a skill's declared tool list.
+ */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
@@ -6068,52 +6080,6 @@ export const ALL_TOOL_NAMES = [
   'transcribe_audio',
   'quick_action',
 ] as const
-
-/**
- * Tools intentionally unavailable to the personal companion. The agent can
- * still delegate real software work through the project lifecycle tools that
- * remain enabled (`project_create`, `project_call`, `project_list`, and
- * `project_configure`); it cannot edit/run builder code in its own runtime.
- */
-export const PERSONAL_DISABLED_TOOL_NAMES = new Set([
-  ...TOOL_GROUP_MAP.shell,
-  'exec_list',
-  'impact_radius',
-  'detect_changes',
-  'review_context',
-  'read_lints',
-  'server_sync',
-  'checkpoint',
-  'publish',
-  'create_plan',
-  'update_plan',
-  'project_attach',
-  'project_detach',
-  'system_apply',
-  'list_projects',
-  'mount_project',
-  'unmount_project',
-  'preview_project',
-  'agent_create',
-  'agent_spawn',
-  'agent_status',
-  'agent_cancel',
-  'agent_result',
-  'agent_list',
-  'team_create',
-  'team_delete',
-  'task_create',
-  'task_get',
-  'task_list',
-  'task_update',
-  'send_team_message',
-  // These names are used by optional canvas tool packs.
-  'canvas_create',
-  'canvas_update',
-  'canvas_delete',
-  'canvas_publish',
-  'canvas_preview',
-])
 
 /**
  * Resolve a list of tool references (group names or individual names)
@@ -6154,7 +6120,7 @@ export function filterDisabledCapabilityTools(
 ): AgentTool[] {
   const disabled = new Set<string>()
   if (config.capabilityProfile === 'personal') {
-    for (const name of PERSONAL_DISABLED_TOOL_NAMES) disabled.add(name)
+    for (const name of disabledToolNamesForProfile('personal')) disabled.add(name)
   }
   if (config.webEnabled === false) for (const n of TOOL_GROUP_MAP.web) disabled.add(n)
   if (config.browserEnabled === false) disabled.add('browser')

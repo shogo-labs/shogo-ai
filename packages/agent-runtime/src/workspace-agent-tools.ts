@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+/**
+ * Universal workspace-agent tools: read/update the agent identity profile
+ * and manage goals. Despite the history (these started as "personal
+ * workspace" tools), they are pushed for EVERY workspace runtime in
+ * `gateway-tools.ts createTools()` — a team workspace's agent can track
+ * goals too. Personal workspaces are simply the first product surface that
+ * renders them (see `apps/mobile/components/personal/PersonalGoalsScreen.tsx`).
+ */
+
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { ToolContext } from './gateway-tools'
@@ -179,7 +188,17 @@ export function createSetStatusTool(ctx: ToolContext): AgentTool {
   }
 }
 
-export function createPersonalTools(ctx: ToolContext): AgentTool[] {
+export const WORKSPACE_AGENT_TOOL_NAMES = [
+  'agent_profile_get',
+  'agent_profile_set',
+  'goal_create',
+  'goal_update',
+  'goal_log',
+  'goal_list',
+  'set_status',
+] as const
+
+export function createWorkspaceAgentTools(ctx: ToolContext): AgentTool[] {
   return [
     createAgentProfileGetTool(ctx),
     createAgentProfileSetTool(ctx),

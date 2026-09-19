@@ -26,7 +26,7 @@ import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { stampModelProvider } from '../lib/stamp-model-provider'
-import { hasWorkspaceAccess } from '../services/workspace.service'
+import { getWorkspaceKind, hasWorkspaceAccess } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import {
   attachProject,
@@ -193,11 +193,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   ): Promise<{ url: string; mode: string } | { res: Response }> {
     let workspaceKind: 'personal' | 'team' | undefined
     try {
-      const workspace = await prisma.workspace.findUnique({
-        where: { id: workspaceId },
-        select: { kind: true } as any,
-      })
-      workspaceKind = workspace?.kind === 'personal' ? 'personal' : 'team'
+      workspaceKind = await getWorkspaceKind(workspaceId)
     } catch {
       // The resolver can still return the normal feature-gate response when
       // the kind lookup is unavailable.
@@ -262,11 +258,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
     const workspaceId = c.req.param('workspaceId')
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: { kind: true } as any,
-    })
-    if (workspace?.kind === 'personal') {
+    const kind = await getWorkspaceKind(workspaceId)
+    if (kind === 'personal') {
       await getOrCreatePrimaryWorkspaceSession(workspaceId)
     }
     const sessions = await listWorkspaceSessions(workspaceId)

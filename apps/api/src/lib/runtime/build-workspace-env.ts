@@ -151,7 +151,8 @@ export async function buildWorkspaceEnv(
         } | null
       })
     const ws = await loadWorkspace(workspaceId)
-    env.WORKSPACE_KIND = ws?.kind === 'personal' ? 'personal' : 'team'
+    const { normalizeWorkspaceKind } = await import('../../services/workspace.service')
+    env.WORKSPACE_KIND = normalizeWorkspaceKind(ws?.kind)
     const profileName = ws?.profileName || ws?.agentProfile?.name
     if (profileName || ws?.name) env.AGENT_NAME = profileName || ws.name!
     // Workspace sessions prefer workspace-scoped Composio connections so

@@ -92,6 +92,7 @@ import {
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { workspaceKind } from './workspace-runtime-mode'
+import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
@@ -370,8 +371,11 @@ export function describeTurnFailure(
 export type VisualMode = 'canvas' | 'app' | 'none'
 
 export interface GatewayConfig {
-  /** Runtime capability profile; personal removes builder/shell tools. */
-  capabilityProfile?: 'personal'
+  /**
+   * Runtime capability profile; personal removes builder/shell tools.
+   * Undefined behaves like `'team'` (see `capability-profiles.ts`).
+   */
+  capabilityProfile?: CapabilityProfileName
   heartbeatInterval: number
   heartbeatEnabled: boolean
   quietHours: { start: string; end: string; timezone: string }
@@ -845,20 +849,24 @@ export class AgentGateway {
   }
 
   private loadConfig(): GatewayConfig {
-    const personalWorkspace = workspaceKind() === 'personal'
-    const defaults: GatewayConfig = {
-      capabilityProfile: personalWorkspace ? 'personal' : undefined,
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
-      channels: [],
-      model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
-      maxSessionMessages: 30,
-      activeMode: personalWorkspace ? 'none' : 'canvas',
-      allowedModes: personalWorkspace ? ['none'] : ['canvas', 'none'],
-      shellEnabled: personalWorkspace ? false : undefined,
-      mainSessionIds: ['chat'],
-    }
+    const profileName: CapabilityProfileName = workspaceKind() === 'personal' ? 'personal' : 'team'
+    const teamDefaults = CAPABILITY_PROFILES.team
+    const defaults: GatewayConfig = applyCapabilityProfile(
+      {
+        capabilityProfile: undefined,
+        heartbeatInterval: 1800,
+        heartbeatEnabled: false,
+        quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+        channels: [],
+        model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+        maxSessionMessages: 30,
+        activeMode: teamDefaults.activeMode,
+        allowedModes: teamDefaults.allowedModes,
+        shellEnabled: undefined,
+        mainSessionIds: ['chat'],
+      },
+      profileName,
+    )
     // BETA: per-chat git worktrees default. The warm-pool controller injects
     // SHOGO_GIT_WORKTREES=1 at assignment when the project setting is on, so it
     // acts as the boot default. An explicit value in config.json (written by
@@ -868,25 +876,27 @@ export class AgentGateway {
     if (configPath) {
       try {
         const raw = JSON.parse(readFileSync(configPath, 'utf-8'))
-        return {
-          ...defaults,
-          ...raw,
-          // Workspace kind is API-issued runtime state, not user-editable
-          // config. Personal workspaces must not regain builder tools by
-          // patching config.json.
-          capabilityProfile: personalWorkspace
-            ? 'personal'
-            : raw.capabilityProfile,
-          activeMode: personalWorkspace ? 'none' : raw.activeMode ?? defaults.activeMode,
-          allowedModes: personalWorkspace ? ['none'] : raw.allowedModes ?? defaults.allowedModes,
-          shellEnabled: personalWorkspace ? false : raw.shellEnabled,
-          heartbeatInterval: raw.heartbeat?.intervalMs
-            ? Math.round(raw.heartbeat.intervalMs / 1000)
-            : raw.heartbeatInterval ?? defaults.heartbeatInterval,
-          heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
-          channels: Array.isArray(raw.channels) ? raw.channels : [],
-          gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
-        }
+        // Workspace kind is API-issued runtime state, not user-editable
+        // config. `applyCapabilityProfile` re-forces the profile's
+        // mode/shell policy AFTER the config.json merge, so personal
+        // workspaces can never regain builder tools by patching config.json.
+        return applyCapabilityProfile(
+          {
+            ...defaults,
+            ...raw,
+            capabilityProfile: raw.capabilityProfile,
+            activeMode: raw.activeMode ?? defaults.activeMode,
+            allowedModes: raw.allowedModes ?? defaults.allowedModes,
+            shellEnabled: raw.shellEnabled,
+            heartbeatInterval: raw.heartbeat?.intervalMs
+              ? Math.round(raw.heartbeat.intervalMs / 1000)
+              : raw.heartbeatInterval ?? defaults.heartbeatInterval,
+            heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
+            channels: Array.isArray(raw.channels) ? raw.channels : [],
+            gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
+          },
+          profileName,
+        )
       } catch (error: any) {
         console.error('[AgentGateway] Failed to parse config.json:', error.message)
       }

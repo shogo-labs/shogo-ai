@@ -10,7 +10,7 @@ import {
   createGoalListTool,
   createGoalUpdateTool,
   createSetStatusTool,
-} from '../personal-tools'
+} from '../workspace-agent-tools'
 
 const calls: Array<{ name: string; args: unknown[] }> = []
 
@@ -39,7 +39,7 @@ mock.module('../internal-api', () => ({
 }))
 
 const ctx: any = {
-  workspaceDir: '/tmp/personal-tools',
+  workspaceDir: '/tmp/workspace-agent-tools',
   workspaceId: 'workspace-1',
   projectId: 'project-1',
   channels: new Map(),

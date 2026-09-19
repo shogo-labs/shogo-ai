@@ -341,6 +341,12 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
   try {
     pristineConfig = JSON.stringify(config) === JSON.stringify(JSON.parse(DEFAULT_WORKSPACE_FILES['config.json']))
   } catch { /* malformed defaults are impossible, but do not block boot */ }
+  // Policy (capabilityProfile / activeMode / allowedModes / shellEnabled) is
+  // NOT written here. `gateway.ts loadConfig()` forces those four fields
+  // from `capability-profiles.ts`'s personal profile based on the
+  // `WORKSPACE_KIND` env var — writing them into config.json would just be
+  // a second, driftable copy of the same policy (see the "Runtime policy
+  // defined three times" finding in the companion-shell plan).
   const merged = {
     ...config,
     ...(pristineConfig ? templateConfig : {}),
@@ -348,10 +354,6 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
       provider: templateConfig.modelProvider ?? 'anthropic',
       name: templateConfig.modelName ?? 'claude-sonnet-4-5',
     },
-    capabilityProfile: 'personal',
-    shellEnabled: false,
-    activeMode: 'none',
-    allowedModes: ['none'],
   }
   if (JSON.stringify(config) !== JSON.stringify(merged)) {
     writeFileSync(configPath, JSON.stringify(merged, null, 2) + '\n', 'utf-8')

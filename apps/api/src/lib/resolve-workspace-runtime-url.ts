@@ -225,12 +225,8 @@ export async function resolveWorkspaceRuntimeUrl(
   if (!opts.alwaysEnabled && !workspaceKind && !isEnabled()) {
     try {
       const loadKind = opts._loadWorkspaceKind ?? (async (id: string) => {
-        const { prisma } = await import('./prisma')
-        const workspace = await prisma.workspace.findUnique({
-          where: { id },
-          select: { kind: true } as any,
-        })
-        return workspace?.kind === 'personal' ? 'personal' : 'team'
+        const { getWorkspaceKind } = await import('../services/workspace.service')
+        return getWorkspaceKind(id)
       })
       workspaceKind = (await loadKind(workspaceId)) ?? 'team'
     } catch {
