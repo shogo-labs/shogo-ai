@@ -5632,11 +5632,14 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   tools.push(createWorktreeListTool(ctx))
 
   // Project lifecycle: compose multi-project systems (project-tools.ts).
-  // Creating/attaching/calling projects is a `system`-category mutation.
+  // Creating/attaching/calling projects is a `project`-category mutation —
+  // NOT `system` (that category is PermissionEngine's unconditional,
+  // all-modes hard-block for OS-level actions; see types.ts's doc comment
+  // on `PermissionCategory`).
   {
     const projectTools = createProjectTools(ctx)
     tools.push(...projectTools.readonly)
-    for (const t of projectTools.mutating) tools.push(g(t, 'system'))
+    for (const t of projectTools.mutating) tools.push(g(t, 'project'))
   }
 
   // Workspace runtimes expose universal profile/goal primitives. Project

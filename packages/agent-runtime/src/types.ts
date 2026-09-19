@@ -114,6 +114,17 @@ export type PermissionCategory =
   | 'network'
   | 'mcp'
   | 'system'
+  // Multi-project composition (project_create/attach/detach/configure/call,
+  // system_apply — see project-tools.ts). Deliberately distinct from
+  // 'system': these tools only ever create/attach/configure/message *other
+  // Shogo projects* (platform-internal API calls), never touch the host OS
+  // or files outside a project's own workspace, so they don't belong in
+  // 'system''s unconditional, all-modes hard-block (PermissionEngine's
+  // `checkHardBlocked` — see the module doc there: that bucket is for
+  // OS-level actions like sudo/shutdown/protected paths). Falls through to
+  // each mode's default handling (ask in strict, allow in balanced/full
+  // autonomy) like 'network'/'mcp' do.
+  | 'project'
 
 export interface SecurityPreference {
   mode: SecurityMode
