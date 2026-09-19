@@ -771,6 +771,17 @@ app.use(
     ) {
       return next()
     }
+    // GitHub App webhook (routes/github.ts, verified with HMAC-SHA256 over
+    // `GH_APP_WEBHOOK_SECRET` inside the handler via `verifyWebhookSignature`)
+    // — GitHub's delivery has no Shogo session/API-key, so this blanket
+    // `requireAuth` 401'd every real installation/push/issues/issue_comment/
+    // pull_request_review webhook before the handler's own signature check
+    // ever ran. This is the ONLY inbound trigger for the issue-pipeline's
+    // "webhook wakes the pipeline" step (docs/issue-pipeline/PLAN.md Phase 2)
+    // — found live connecting a project's GitHub App for the first time
+    // (issue-pipeline multi-project eval, L1) and hand-delivering a
+    // synthetic `issues` event, since GitHub itself can't reach localhost.
+    if (path === '/api/github/webhook') return next()
     return requireAuth(c, next)
   }
 )
