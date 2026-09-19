@@ -306,6 +306,28 @@ export async function connectRepository(options: ConnectRepoOptions): Promise<{
   // Add remote
   await gitService.addRemote(workspacePath, 'origin', remoteUrl);
 
+  // If the remote repo already has real content on its default branch,
+  // treat it as authoritative and reset the local checkout onto it. Before
+  // this fetch+reset, connecting a project to an EXISTING non-empty repo
+  // left the project's own placeholder scaffold commit in place with no
+  // shared history with the remote — every subsequent `pullFromGitHub`
+  // (`git pull --rebase`) then failed with "fatal: refusing to merge
+  // unrelated histories" / "divergent branches", so the project never
+  // actually had the connected repo's content on disk. `connect` had no
+  // regression test exercising a non-empty remote because no prior
+  // eval/manual run had ever connected a project to a pre-populated repo —
+  // found live connecting `intake` to the issue-pipeline's disposable
+  // fixture repo (multi-project L1 eval), which is deliberately
+  // force-pushed with real fixture content before each run, exactly like a
+  // user connecting Shogo to their existing repo would be.
+  await gitService.fetch(workspacePath, { remote: 'origin' });
+  if (gitService.remoteBranchExists(workspacePath, 'origin', repo.default_branch)) {
+    const resetResult = await gitService.resetHardToRemote(workspacePath, 'origin', repo.default_branch);
+    if (!resetResult.success) {
+      console.warn(`[GitHub] Failed to reset workspace onto origin/${repo.default_branch}:`, resetResult.error);
+    }
+  }
+
   // Create or update GitHubConnection record
   const connection = await prisma.gitHubConnection.upsert({
     where: { projectId },
