@@ -31,6 +31,7 @@ import {
   listGoals,
   listWorkspaceActivity,
   resolveGoalEventApproval,
+  saveAgentAvatar,
   updateAgentProfile,
   updateGoal,
   type GoalApprovalDecision,
@@ -104,6 +105,26 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     }
 
     return c.json({ profile: await updateAgentProfile(auth.workspaceId, changes) })
+  })
+
+  /**
+   * Upload a new agent avatar image (raw PNG/JPEG bytes) and set it as the
+   * profile's `avatarUrl` in one call. Mirrors `POST /projects/:id/thumbnail`
+   * in `routes/thumbnail.ts`. The agent runtime hits this via
+   * `uploadAgentAvatar` in `internal-api.ts` when `agent_profile_set` is
+   * called with `avatarImagePath` instead of a raw `avatarUrl`.
+   */
+  router.post('/workspaces/:workspaceId/agent-avatar', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const body = await c.req.arrayBuffer()
+    if (!body || body.byteLength === 0) {
+      return c.json({ error: { code: 'empty_body', message: 'No image data' } }, 400)
+    }
+
+    const avatarUrl = await saveAgentAvatar(auth.workspaceId, Buffer.from(body))
+    return c.json({ profile: await updateAgentProfile(auth.workspaceId, { avatarUrl }) })
   })
 
   router.get('/workspaces/:workspaceId/goals', async (c) => {

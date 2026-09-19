@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, mock, test } from 'bun:test'
+import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { afterAll, describe, expect, mock, test } from 'bun:test'
 import * as realInternalApi from '../internal-api'
 import {
   createAgentProfileSetTool,
@@ -19,6 +21,10 @@ mock.module('../internal-api', () => ({
   setAgentProfile: async (...args: unknown[]) => {
     calls.push({ name: 'setAgentProfile', args })
     return { ok: true, status: 200, data: { statusText: 'Working', name: 'Shogo' } }
+  },
+  uploadAgentAvatar: async (...args: unknown[]) => {
+    calls.push({ name: 'uploadAgentAvatar', args })
+    return { ok: true, status: 200, data: { avatarUrl: 'https://artifacts.example.com/avatars/workspace-1.png' } }
   },
   createGoal: async (...args: unknown[]) => {
     calls.push({ name: 'createGoal', args })
@@ -38,8 +44,13 @@ mock.module('../internal-api', () => ({
   },
 }))
 
+const WORKSPACE_DIR = join('/tmp', `workspace-agent-tools-${Date.now()}`)
+mkdirSync(join(WORKSPACE_DIR, 'images'), { recursive: true })
+writeFileSync(join(WORKSPACE_DIR, 'images', 'avatar.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+afterAll(() => rmSync(WORKSPACE_DIR, { recursive: true, force: true }))
+
 const ctx: any = {
-  workspaceDir: '/tmp/workspace-agent-tools',
+  workspaceDir: WORKSPACE_DIR,
   workspaceId: 'workspace-1',
   projectId: 'project-1',
   channels: new Map(),
@@ -78,5 +89,44 @@ describe('personal runtime tools', () => {
     const result = await execute(createGoalListTool(ctx), { status: 'active' })
     expect(result.goals).toEqual([{ id: 'goal-1', status: 'active' }])
     expect(calls[0]).toEqual({ name: 'listGoals', args: ['workspace-1', 'active'] })
+  })
+})
+
+describe('agent_profile_set avatarImagePath', () => {
+  test('uploads a generated workspace image and skips a redundant setAgentProfile call', async () => {
+    calls.length = 0
+    const result = await execute(createAgentProfileSetTool(ctx), { avatarImagePath: 'images/avatar.png' })
+    expect(calls.map((call) => call.name)).toEqual(['uploadAgentAvatar'])
+    expect(calls[0]?.args[0]).toBe('workspace-1')
+    expect(result.profile.avatarUrl).toBe('https://artifacts.example.com/avatars/workspace-1.png')
+  })
+
+  test('uploads the avatar and also applies other profile fields in one call', async () => {
+    calls.length = 0
+    await execute(createAgentProfileSetTool(ctx), { avatarImagePath: 'images/avatar.png', name: 'Nova' })
+    expect(calls.map((call) => call.name)).toEqual(['uploadAgentAvatar', 'setAgentProfile'])
+    expect(calls[1]?.args[1]).toEqual({ name: 'Nova' })
+  })
+
+  test('errors when the referenced image does not exist', async () => {
+    calls.length = 0
+    const result = await execute(createAgentProfileSetTool(ctx), { avatarImagePath: 'images/missing.png' })
+    expect(calls).toHaveLength(0)
+    expect(result.code).toBe('not_found')
+  })
+
+  test('rejects a path outside the workspace', async () => {
+    calls.length = 0
+    const result = await execute(createAgentProfileSetTool(ctx), { avatarImagePath: '../outside.png' })
+    expect(calls).toHaveLength(0)
+    expect(result.code).toBe('invalid_path')
+  })
+
+  test('falls back to a plain avatarUrl when no avatarImagePath is given', async () => {
+    calls.length = 0
+    await execute(createAgentProfileSetTool(ctx), { avatarUrl: 'https://example.com/a.png' })
+    expect(calls).toEqual([
+      { name: 'setAgentProfile', args: ['workspace-1', { avatarUrl: 'https://example.com/a.png' }] },
+    ])
   })
 })

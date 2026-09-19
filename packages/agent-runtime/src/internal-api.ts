@@ -576,6 +576,44 @@ export async function logGoalEvent(
   )
 }
 
+/**
+ * Upload raw image bytes as the agent's avatar and return the updated
+ * profile. Unlike the other wrappers here this sends a binary body, so it
+ * can't go through `personalFetch` (which always sets
+ * `Content-Type: application/json`). Used by `agent_profile_set` in
+ * `workspace-agent-tools.ts` when called with `avatarImagePath` — the
+ * generated image never leaves this pod as a raw filesystem path, it's
+ * uploaded to durable storage and the resulting URL becomes `avatarUrl`.
+ */
+export async function uploadAgentAvatar(
+  workspaceId: string,
+  imageBuffer: Buffer,
+  contentType = 'image/png',
+): Promise<CheckpointCallResult<PersonalProfile>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-avatar`,
+      {
+        method: 'POST',
+        headers: { ...getInternalHeaders(), 'Content-Type': contentType },
+        body: imageBuffer as unknown as BodyInit,
+        signal: AbortSignal.timeout(30_000),
+      },
+    )
+    const json = (await res.json().catch(() => null)) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: json?.profile as PersonalProfile }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
 export interface ProjectSummary {
   id: string
   name: string

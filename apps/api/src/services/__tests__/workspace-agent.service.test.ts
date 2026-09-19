@@ -13,6 +13,26 @@ const s: State = {
   updateCalls: [],
 }
 
+interface S3State {
+  putCalls: any[]
+  failSend: boolean
+}
+
+const s3State: S3State = { putCalls: [], failSend: false }
+
+mock.module('../../lib/s3', () => ({
+  getArtifactS3Client: () => ({
+    send: async (command: any) => {
+      if (s3State.failSend) throw new Error('s3 unavailable')
+      s3State.putCalls.push(command.input)
+      return {}
+    },
+  }),
+  getArtifactBucket: () => 'artifacts-bucket',
+  buildArtifactKey: (...parts: string[]) => `artifacts/${parts.join('/')}`,
+  getArtifactPresignedReadUrl: async (key: string) => `https://artifacts.example.com/${key}`,
+}))
+
 mock.module('../../lib/prisma', () => ({
   prisma: {
     goalEvent: {
@@ -31,9 +51,11 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
-const { resolveGoalEventApproval, isApprovalPending } = await import('../workspace-agent.service')
+const { resolveGoalEventApproval, isApprovalPending, saveAgentAvatar } = await import('../workspace-agent.service')
 
 beforeEach(() => {
+  s3State.putCalls = []
+  s3State.failSend = false
   s.events = {
     'event-approval': { id: 'event-approval', goalId: 'goal-1', kind: 'approval', metadata: null },
     'event-progress': { id: 'event-progress', goalId: 'goal-1', kind: 'progress', metadata: null },
@@ -69,6 +91,25 @@ describe('resolveGoalEventApproval', () => {
   it('returns null when the event does not exist or belongs to a different goal', async () => {
     expect(await resolveGoalEventApproval('workspace-1', 'goal-1', 'does-not-exist', 'approved')).toBeNull()
     expect(await resolveGoalEventApproval('workspace-1', 'goal-2', 'event-approval', 'approved')).toBeNull()
+  })
+})
+
+describe('saveAgentAvatar', () => {
+  it('uploads to artifact S3 keyed by workspace id and returns a presigned URL', async () => {
+    const url = await saveAgentAvatar('workspace-1', Buffer.from([1, 2, 3]))
+    expect(url).toBe('https://artifacts.example.com/artifacts/avatars/workspace-1.png')
+    expect(s3State.putCalls).toHaveLength(1)
+    expect(s3State.putCalls[0]).toMatchObject({
+      Bucket: 'artifacts-bucket',
+      Key: 'artifacts/avatars/workspace-1.png',
+      ContentType: 'image/png',
+    })
+  })
+
+  it('falls back to a base64 data URL when S3 is unreachable', async () => {
+    s3State.failSend = true
+    const url = await saveAgentAvatar('workspace-1', Buffer.from('hi'))
+    expect(url).toBe(`data:image/png;base64,${Buffer.from('hi').toString('base64')}`)
   })
 })
 

@@ -79,7 +79,10 @@ export const starredProjectHooks: StarredProjectHooks = {
     return {
       ok: true,
       data: {
-        where: { userId: currentUserId },
+        // `project.hidden: false` — a starred row for a project that was
+        // (or became) hidden, e.g. a companion builder-delegate, must not
+        // surface in the user-facing starred list.
+        where: { userId: currentUserId, project: { hidden: false } },
       },
     }
   },

@@ -10,10 +10,13 @@
  * renders them (see `apps/mobile/components/personal/PersonalGoalsScreen.tsx`).
  */
 
+import { existsSync, readFileSync } from 'fs'
+import { extname } from 'path'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
+import { assertWithinWorkspace } from './permission-engine'
 import {
   createGoal as apiCreateGoal,
   getAgentProfile,
@@ -21,7 +24,15 @@ import {
   logGoalEvent,
   setAgentProfile,
   updateGoal as apiUpdateGoal,
+  uploadAgentAvatar,
 } from './internal-api'
+
+const AVATAR_IMAGE_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+}
 
 function workspaceIdOf(ctx: ToolContext): string | null {
   return ctx.workspaceId || process.env.WORKSPACE_ID || null
@@ -61,10 +72,21 @@ export function createAgentProfileSetTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_profile_set',
     label: 'Update Agent Profile',
-    description: 'Update the companion identity. Use this for a chosen avatar URL, name, tagline, personality, or status text.',
+    description:
+      'Update the companion identity: name, tagline, personality, or status text. For a new avatar, ' +
+      'generate the image first with generate_image and pass its workspace path as avatarImagePath — ' +
+      'this uploads the image to durable storage and sets the resulting URL for you. Only use the raw ' +
+      'avatarUrl field for an already-public URL (e.g. one the user gave you directly).',
     parameters: Type.Object({
       name: Type.Optional(Type.String()),
       avatarUrl: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      avatarImagePath: Type.Optional(
+        Type.String({
+          description:
+            'Workspace-relative path to a generated image, e.g. "images/avatar.png" from generate_image. ' +
+            'Uploaded to durable storage and used as the avatar; takes precedence over avatarUrl.',
+        }),
+      ),
       tagline: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       personality: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       statusText: Type.Optional(Type.Union([Type.String(), Type.Null()])),
@@ -72,7 +94,43 @@ export function createAgentProfileSetTool(ctx: ToolContext): AgentTool {
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const result = await setAgentProfile(workspaceId, params as any)
+
+      const { avatarImagePath, ...rest } = params as { avatarImagePath?: string; [key: string]: unknown }
+
+      if (avatarImagePath) {
+        let resolvedPath: string
+        try {
+          resolvedPath = assertWithinWorkspace(ctx.workspaceDir, avatarImagePath)
+        } catch {
+          return textResult({ error: `Invalid avatarImagePath: ${avatarImagePath}`, code: 'invalid_path' })
+        }
+        if (!existsSync(resolvedPath)) {
+          return textResult({
+            error: `Image not found at ${avatarImagePath}. Generate it first with generate_image.`,
+            code: 'not_found',
+          })
+        }
+
+        const buffer = readFileSync(resolvedPath)
+        const contentType = AVATAR_IMAGE_MIME_TYPES[extname(resolvedPath).toLowerCase()] || 'image/png'
+        const uploadResult = await uploadAgentAvatar(workspaceId, buffer, contentType)
+        if (!uploadResult.ok || !uploadResult.data) {
+          return apiError(uploadResult, 'Could not upload the avatar image')
+        }
+
+        // The avatar is already set server-side by the upload. Only make a
+        // second call if there are other profile fields to change too.
+        const { avatarUrl: _ignoredAvatarUrl, ...otherChanges } = rest
+        if (Object.keys(otherChanges).length === 0) {
+          return textResult({ ok: true, profile: uploadResult.data })
+        }
+        const result = await setAgentProfile(workspaceId, otherChanges as any)
+        return result.ok && result.data
+          ? textResult({ ok: true, profile: result.data })
+          : apiError(result, 'Could not update the agent profile')
+      }
+
+      const result = await setAgentProfile(workspaceId, rest as any)
       return result.ok && result.data ? textResult({ ok: true, profile: result.data }) : apiError(result, 'Could not update the agent profile')
     },
   }

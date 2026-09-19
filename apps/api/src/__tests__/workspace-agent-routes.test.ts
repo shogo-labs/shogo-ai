@@ -24,6 +24,8 @@ mock.module('../services/workspace-agent.service', () => ({
   createGoal: async () => ({ id: 'goal-1', title: 'Habit tracker', status: 'active' }),
   createGoalEvent: async () => ({ id: 'event-1', kind: 'progress', message: 'Started' }),
   getOrCreateAgentProfile: async () => profile,
+  saveAgentAvatar: async (workspaceId: string, buffer: Buffer) =>
+    buffer.byteLength > 0 ? `https://artifacts.example.com/avatars/${workspaceId}.png` : null,
   updateAgentProfile: async (_workspaceId: string, changes: Record<string, unknown>) => ({
     ...profile,
     ...changes,
@@ -75,6 +77,28 @@ describe('workspace agent routes (session-authorized mount)', () => {
     expect(await patchResponse.json()).toMatchObject({
       profile: { statusText: 'Planning your next step' },
     })
+  })
+
+  test('uploads an avatar image and sets it on the profile', async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4])
+    const res = await appFor('user-1').request('/api/workspaces/workspace-1/agent-avatar', {
+      method: 'POST',
+      headers: { 'content-type': 'image/png' },
+      body: bytes,
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      profile: { avatarUrl: 'https://artifacts.example.com/avatars/workspace-1.png' },
+    })
+  })
+
+  test('rejects an empty avatar upload body', async () => {
+    const res = await appFor('user-1').request('/api/workspaces/workspace-1/agent-avatar', {
+      method: 'POST',
+      headers: { 'content-type': 'image/png' },
+      body: new Uint8Array([]),
+    })
+    expect(res.status).toBe(400)
   })
 
   test('lists goals, goal details, and activity', async () => {

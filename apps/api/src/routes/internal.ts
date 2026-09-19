@@ -509,6 +509,17 @@ app.route(
 // Workspace meta-agent membership
 // ---------------------------------------------------------------------------
 
+/**
+ * User-facing project catalog for this workspace: what `list_projects`
+ * returns to the agent for chat display, and what the mount/unmount member
+ * endpoints below use to authorize attaching a project to a session.
+ * Excludes `hidden` projects (personal-companion builder delegates, or any
+ * workspace's explicitly-hidden projects) — those are resolved by id only
+ * (`project_call`), never surfaced in a list a user or chat transcript can
+ * read. `list_projects`/`mount_project`/`unmount_project` are themselves
+ * disabled for the `personal` capability profile (see
+ * `capability-profiles.ts`), so this only affects team workspaces today.
+ */
 async function accessibleWorkspaceProjects(workspaceId: string, userId: string) {
   const workspaceMember = await prisma.member.findFirst({
     where: { workspaceId, userId },
@@ -517,6 +528,7 @@ async function accessibleWorkspaceProjects(workspaceId: string, userId: string) 
   return prisma.project.findMany({
     where: {
       workspaceId,
+      hidden: false,
       ...(workspaceMember ? {} : { members: { some: { userId } } }),
     },
     select: { id: true, name: true, description: true, createdBy: true },
