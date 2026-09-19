@@ -29,7 +29,7 @@
  *
  * Run:
  *   AGENT_URL=http://localhost:6201 PLANNER_PROJECT_ID=<uuid> \
- *     bun test e2e/issue-pipeline/l3-prompt-amendment.integration.test.ts
+ *     bun test ./e2e/issue-pipeline/l3-prompt-amendment.integration.test.ts
  */
 import { beforeAll, describe, expect, test } from 'bun:test'
 import {

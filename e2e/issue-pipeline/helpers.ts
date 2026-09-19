@@ -29,6 +29,22 @@
  *   PIPELINE_TIMEOUT_MS — Max wait for a full pipeline run (default 1800000
  *                         = 30 min; these are real multi-turn capable-model
  *                         agent runs, not chat replies).
+ *
+ * IMPORTANT — always invoke `bun test` with a `./`-rooted path to this
+ * directory's files (e.g. `bun test ./e2e/issue-pipeline/l1-....test.ts`,
+ * exactly as the `test:issue-pipeline:*` package.json scripts do), never a
+ * bare relative path (`bun test e2e/issue-pipeline/...`). In this monorepo,
+ * a bare path puts Bun's test runner into "filter mode", which scans the
+ * whole repo tree and (on macOS/Bun <1.4 with the fd-scanner fix) can leak
+ * enough directory file descriptors to push every subsequent piped
+ * `Bun.spawn`/`child_process.spawn` (i.e. every `gh` call `run()` below
+ * makes) past Darwin's `OPEN_MAX`. The child still runs and genuinely
+ * creates the issue/PR — `gh` exits 0 — but stdout/stderr silently come
+ * back empty, which then fails these tests' output parsing 100% of the
+ * time with no indication it was ever an infra issue and not a real `gh`
+ * failure. See https://github.com/oven-sh/bun/issues/24690 and
+ * https://github.com/oven-sh/bun/issues/32067. The `./`-rooted path avoids
+ * filter-mode scanning entirely.
  */
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'

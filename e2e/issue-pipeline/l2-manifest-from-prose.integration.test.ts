@@ -34,11 +34,11 @@
  *      because it is a very long (many-turn) run.
  *
  * Run:
- *   bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
+ *   bun test ./e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
  *     # runs half 1 only (no env needed)
  *
  *   AGENT_URL=http://localhost:6200 GITHUB_TEST_REPO=<owner>/<repo> \
- *     bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
+ *     bun test ./e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
  *     # runs both halves
  */
 import { describe, expect, test } from 'bun:test'

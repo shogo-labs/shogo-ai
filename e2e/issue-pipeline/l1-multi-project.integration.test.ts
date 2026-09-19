@@ -34,7 +34,7 @@
  *
  * Run:
  *   GITHUB_TEST_REPO=<owner>/<repo> AGENT_URL=http://localhost:6200 \
- *     bun test e2e/issue-pipeline/l1-multi-project.integration.test.ts
+ *     bun test ./e2e/issue-pipeline/l1-multi-project.integration.test.ts
  */
 import { beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
