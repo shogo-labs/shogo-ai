@@ -1375,6 +1375,12 @@ async function authorizeLifecycleProject(
  * Resolve the user a lifecycle write is attributed to. Prefer the explicit
  * `userId` the runtime forwards from the chat request; fall back to the
  * calling project's creator for heartbeat-triggered turns that have no user.
+ *
+ * A merged-root (universal workspace) runtime authenticates with a workspace
+ * token, so there is no calling project to inherit from — attribute the write
+ * to the workspace's owner instead. Without this every `system_apply` /
+ * `project_create` from such a runtime 400s with `userId is required`, which
+ * breaks the `harness` anchor and any other multi-project assembly.
  */
 async function resolveActingUserId(identity: InternalIdentity, requested: unknown): Promise<string | null> {
   if (typeof requested === 'string' && requested.length > 0) return requested
@@ -1384,6 +1390,14 @@ async function resolveActingUserId(identity: InternalIdentity, requested: unknow
       select: { createdBy: true },
     })) as { createdBy: string | null } | null
     return row?.createdBy ?? null
+  }
+  if (identity.kind === 'workspace') {
+    const owner = await prisma.member.findFirst({
+      where: { workspaceId: identity.workspaceId, role: 'owner' },
+      select: { userId: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    return owner?.userId ?? null
   }
   return null
 }
