@@ -124,6 +124,18 @@ export async function trackUsageFromStream(
      */
     resume?: (fromSeq: number) => Promise<Response | null>
     /**
+     * Backoff delays (ms) between resume attempts when `resume()` returns
+     * null / throws. Defaults to a short escalating sequence — this
+     * covers the window where the runtime is mid-restart (see
+     * WorkerRuntimeManager's circuit breaker self-heal in
+     * packages/shogo-worker/src/lib/runtime-manager.ts): the FIRST resume
+     * attempt can hit a dead connection while the pod is still coming
+     * back up, but a fresh attempt a moment later reattaches to the same
+     * buffered turn successfully. Exposed for tests to shrink to `[0]`
+     * so they don't sleep in real time.
+     */
+    resumeRetryDelaysMs?: number[]
+    /**
      * Resolved chat-session id from the route handler. Takes precedence
      * over `requestBody.chatSessionId`. When the route handler reads
      * `X-Chat-Session-Id` from the request headers, it must pass that
@@ -603,12 +615,34 @@ export async function trackUsageFromStream(
     console.log(
       `[ProjectChat] EOF without turn-complete for session ${chatSessionId} (lastObservedSeq=${lastObservedSeq}) — server-side resume from buffer`
     )
+    // Retry a null/thrown resume a few times with short backoff before
+    // falling back to partial persistence. Covers the runtime restarting
+    // mid-turn (WorkerRuntimeManager respawn or circuit-breaker auto-heal,
+    // see packages/shogo-worker/src/lib/runtime-manager.ts) — the FIRST
+    // attempt can land on a dead connection while the pod is still coming
+    // back up, but the buffer itself survives the restart, so a fresh
+    // attempt moments later reattaches successfully.
+    const RESUME_RETRY_DELAYS_MS = options.resumeRetryDelaysMs ?? [300, 800, 1500]
     let resumeRes: Response | null = null
-    try {
-      resumeRes = await options.resume(0)
-    } catch (err: any) {
+    for (let resumeAttempt = 0; resumeAttempt <= RESUME_RETRY_DELAYS_MS.length; resumeAttempt++) {
+      try {
+        resumeRes = await options.resume(0)
+      } catch (err: any) {
+        resumeRes = null
+        console.warn(`[ProjectChat] Resume fetch threw: ${err?.message || err}`)
+      }
+      if (resumeRes) break
+      if (resumeAttempt < RESUME_RETRY_DELAYS_MS.length) {
+        const delay = RESUME_RETRY_DELAYS_MS[resumeAttempt]
+        console.log(
+          `[ProjectChat] Resume attempt ${resumeAttempt + 1} failed for session ${chatSessionId} — ` +
+            `retrying in ${delay}ms (runtime is likely mid-restart)`
+        )
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
+    if (!resumeRes) {
       resumeOutcome = 'failed'
-      console.warn(`[ProjectChat] Resume fetch threw: ${err?.message || err}`)
     }
 
     if (resumeRes) {
@@ -1720,7 +1754,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       ].filter(Boolean).join(" ")
       const isTransient =
         error?.name === "TimeoutError" || error?.name === "AbortError" ||
-        /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket|fetch failed|timeout|timed out|not ready|starting|did not become ready|unavailable|connection pool|reach database|too many connections/i.test(errHaystack)
+        // "cannot ensureRunning" / "circuit breaker" / "resetFailure" cover
+        // WorkerRuntimeManager's circuit breaker (packages/shogo-worker/src/lib/runtime-manager.ts).
+        // A tripped breaker now auto-heals on a cooldown (see breakerCooldownMs),
+        // but until that cooldown elapses this must still read as "runtime is
+        // temporarily down, retry" — never a hard failure the client gives up on.
+        /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|connection refused|connection closed|connection reset|unable to connect|typo in the url|failed to (open|connect)|FailedToOpenSocket|ConnectionRefused|ConnectionClosed|socket|fetch failed|timeout|timed out|not ready|starting|did not become ready|unavailable|connection pool|reach database|too many connections|circuit breaker|cannot ensureRunning|resetFailure/i.test(errHaystack)
       if (isTransient) {
         return c.json(
           { error: { code: "pod_starting", message: "Project runtime is starting up. Please retry in a few seconds.", retryable: true } },
