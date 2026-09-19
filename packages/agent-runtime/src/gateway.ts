@@ -2132,14 +2132,23 @@ export class AgentGateway {
       }
     } else {
       const effectiveAlias = modelAlias
-      // Honor the API server's native provider hint when present (it's paired
-      // with the model override); otherwise infer from the id as before. This
-      // routes a DB model addressed by an opaque UUID to its real provider
-      // (anthropic → native passthrough) instead of falling back to `custom`
-      // and the lossy OpenAI-compat conversion path. For every id the catalog
-      // already classifies the way inference does, the hint is a no-op.
-      provider = session.modelProvider ?? inferProviderFromModel(effectiveAlias, this.config.model.provider)
+      // Resolve the alias to a concrete model id BEFORE inferring its
+      // provider. `inferProviderFromModel` special-cases the literal
+      // strings 'basic'/'advanced' to 'anthropic' (its historical default
+      // for those UI-facing aliases) — but `effectiveAlias` here can BE one
+      // of those literals whenever the caller left `session.modelOverride`
+      // unresolved (every heartbeat/channel/webhook-driven turn: see
+      // "Apply channel-configured model" above, which sets modelOverride to
+      // 'basic' and clears modelProvider). Inferring from the raw alias
+      // then ignores whatever admin-configured model 'basic' actually
+      // resolves to — if that's a non-Anthropic model (e.g. Hoshi 2.0,
+      // provider 'custom'/deepseek), every such turn 404s with "model:
+      // deepseek-flash" against the Anthropic endpoint. Found live running
+      // the issue-pipeline harness's webhook-channel turn after pinning the
+      // whole pipeline to Hoshi 2.0. Honor the API server's native provider
+      // hint when present; otherwise infer from the RESOLVED id.
       modelId = resolveModelAlias(effectiveAlias)
+      provider = session.modelProvider ?? inferProviderFromModel(modelId, this.config.model.provider)
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 
