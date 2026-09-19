@@ -26,7 +26,8 @@ import {
   Animated,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { NATIVE_PHONE_ICON_STROKE,
+import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+  NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
 import {
   Popover,
@@ -44,6 +45,10 @@ import { DockChip } from "./dock/DockChip"
 import { DockChipRail } from "./dock/DockChipRail"
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
 import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel"
+import { workspaceExperience, type WorkspaceExperienceComposer } from "@shogo/shared-app"
+
+/** Full composer (model picker + interaction modes, no forced mode) — the default for any caller that doesn't pass `composer`. */
+const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer = workspaceExperience("team").composer
 import {
   Plus,
   Square,
@@ -82,6 +87,7 @@ import {
   PROMINENT_COMPOSER_PADDING_HORIZONTAL,
   PROMINENT_COMPOSER_PADDING_TOP,
   PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
+  PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
   nextProminentComposerHeight,
@@ -356,6 +362,13 @@ export interface ChatInputProps {
   onSendQueuedMessageNow?: (messageId: string) => void
   interactionMode?: InteractionMode
   onInteractionModeChange?: (mode: InteractionMode) => void
+  /**
+   * Composer capability descriptor (`workspaceExperience(kind).composer`).
+   * Defaults to the full composer (model picker + interaction modes shown).
+   * Pass `workspaceExperience('personal').composer` to hide plan/ask and
+   * model controls for the companion shell.
+   */
+  composer?: WorkspaceExperienceComposer
   dualPlan?: boolean
   onDualPlanChange?: (enabled: boolean) => void
   contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
@@ -364,6 +377,14 @@ export interface ChatInputProps {
   quickActions?: { label: string; prompt: string }[]
   onQuickActionClick?: (prompt: string) => void
   restoreDraftRequest?: RestoreDraftRequest | null
+  /**
+   * Called synchronously once `restoreDraftRequest` has been applied to the
+   * input (draft text + files staged), with the nonce that was consumed.
+   * Callers should clear their `restoreDraftRequest` state here rather than
+   * on a timer — a fixed-delay `setTimeout` races this effect and can clear
+   * (or fail to clear) the request at the wrong time.
+   */
+  onDraftRestored?: (nonce: number) => void
   /**
    * Current project id. Enables the "@" menu's Files section (file
    * references are scoped to this project's agent workspace).
@@ -396,8 +417,6 @@ export interface ChatInputProps {
    * over this prop.
    */
   highlighted?: boolean
-  /** Removes the idle bottom breathing room while the native keyboard is open. */
-  keyboardOpen?: boolean
   /**
    * Strip the outer wrapper's horizontal padding so the visible
    * input box sits flush against its parent's left/right edges.
@@ -436,6 +455,7 @@ function ChatInputImpl({
   onSendQueuedMessageNow,
   interactionMode: controlledInteractionMode,
   onInteractionModeChange,
+  composer: composerProp,
   dualPlan = false,
   onDualPlanChange,
   contextUsage,
@@ -443,6 +463,7 @@ function ChatInputImpl({
   quickActions = [],
   onQuickActionClick,
   restoreDraftRequest,
+  onDraftRestored,
   projectId,
   projects = [],
   chatSessionId,
@@ -453,9 +474,9 @@ function ChatInputImpl({
   onOpenIdeFile,
   dimWhenDisabled = true,
   highlighted = false,
-  keyboardOpen = false,
   flush = false,
 }: ChatInputProps) {
+  const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
   const { features } = usePlatformConfig()
   const effectiveIsPro = features.billing ? isPro : true
   const { isNative,
@@ -625,7 +646,8 @@ function ChatInputImpl({
     setViewingPastedId(null)
     setFileError(null)
     setTimeout(() => textInputRef.current?.focus(), 0)
-  }, [restoreDraftRequest, cancelPendingTextChangeFlush])
+    onDraftRestored?.(restoreDraftRequest.nonce)
+  }, [restoreDraftRequest, cancelPendingTextChangeFlush, onDraftRestored])
 
   const [showSkillPicker, setShowSkillPicker] = useState(false)
   const [filterText, setFilterText] = useState("")
@@ -1292,10 +1314,12 @@ function ChatInputImpl({
   }, [])
       return (
         <View className={cn(
-      flush
+        flush
         ? "pb-3"
         : useProminentComposer
-          ? cn("px-3 pt-0", !keyboardOpen && "pb-2")
+          ? isNative
+            ? "pt-0"
+            : "px-3 pb-2 pt-0"
           : isNative
             ? "px-2 pb-4 pt-0"
             : "p-3 pt-0",
@@ -1554,7 +1578,9 @@ function ChatInputImpl({
           style={
             useProminentComposer
               ? {
-                  borderRadius: PROMINENT_COMPOSER_RADIUS,
+                  borderRadius: isNative
+                    ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                    : PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
                   borderColor: chatgptComposer.border,
                   backgroundColor: chatgptComposer.fill,
@@ -1767,7 +1793,7 @@ function ChatInputImpl({
                 return
               }
             }
-            if (Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
+            if (composer.showInteractionModes && Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
               e.preventDefault()
               cycleInteractionMode()
               return
@@ -1817,13 +1843,20 @@ function ChatInputImpl({
           className={cn(
             "flex-row items-center justify-between",
             useProminentComposer
-              ? "min-h-[48px] py-1 pl-2.5 pr-1.5 overflow-hidden"
+              ? "py-1 pl-2.5 pr-1.5 overflow-hidden"
               : isNative
                 ? "min-h-12 px-2 py-1"
                 : "p-1.5",
             !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
           )}
-          style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX } : undefined}
+          style={
+            useProminentComposer
+              ? {
+                  zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                  ...(isNative ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT } : {}),
+                }
+              : undefined
+          }
           pointerEvents={useProminentComposer ? "box-none" : undefined}
         >
           {/* Left side buttons */}
@@ -1858,22 +1891,24 @@ function ChatInputImpl({
                   onAttach={handlePlusAttach}
                   attachDisabled={pendingFiles.length >= MAX_FILES}
                 >
-                  <ComposerPlusSection
-                    id="mode"
-                    label="Mode"
-                    value={currentInteractionConfig.label}
-                    Icon={currentInteractionConfig.Icon}
-                  >
-                    <ComposerPlusModeList
-                      modes={INTERACTION_MODES}
-                      selectedId={interactionMode}
-                      onSelect={handleInteractionModeChange}
-                      dualPlan={dualPlan}
-                      onDualPlanChange={onDualPlanChange}
-                      dualPlanDisabled={disabled}
-                      dualPlanTestId="dual-plan-toggle"
-                    />
-                  </ComposerPlusSection>
+                  {composer.showInteractionModes ? (
+                    <ComposerPlusSection
+                      id="mode"
+                      label="Mode"
+                      value={currentInteractionConfig.label}
+                      Icon={currentInteractionConfig.Icon}
+                    >
+                      <ComposerPlusModeList
+                        modes={INTERACTION_MODES}
+                        selectedId={interactionMode}
+                        onSelect={handleInteractionModeChange}
+                        dualPlan={dualPlan}
+                        onDualPlanChange={onDualPlanChange}
+                        dualPlanDisabled={disabled}
+                        dualPlanTestId="dual-plan-toggle"
+                      />
+                    </ComposerPlusSection>
+                  ) : null}
                   <ComposerPlusSection
                     id="environment"
                     label="Environment"
@@ -1920,6 +1955,8 @@ function ChatInputImpl({
                 </ComposerPlusSheet>
               </>
             ) : (
+              <>
+            {composer.showInteractionModes ? (
               <>
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
@@ -2065,6 +2102,8 @@ function ChatInputImpl({
                 </View>
               </PopoverContent>
             </Popover>
+              </>
+            ) : null}
 
             {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
                 per-device preference: once on, every plan generated in Plan
@@ -2168,7 +2207,7 @@ function ChatInputImpl({
             )}
 
             {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-            <ComposerModelPicker{...composerModelPickerProps({currentModelId,
+            {composer.showModelPicker ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
               effectiveIsPro,
               disabled,
               nativeSheet: isPhoneChrome,
@@ -2194,7 +2233,7 @@ function ChatInputImpl({
               label: isPhoneChrome ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId),
               menuWidth:nativeModelMenuWidth,
               onSelect:handleModelChange})}
-            />
+            /> : null}
 
           </View>
 

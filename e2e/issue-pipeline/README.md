@@ -68,26 +68,26 @@ cd e2e/issue-pipeline/fixtures/target-repo && bun test
 
 ```bash
 # Pure logic, no live infra — runs in normal CI:
-bun test e2e/issue-pipeline/helpers.test.ts
+bun test ./e2e/issue-pipeline/helpers.test.ts
 
 # L2 also has a no-live-infra half (schema validity of the checked-in manifest):
-bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
+bun test ./e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
 
 # L0 — single project against a disposable repo:
 GITHUB_TEST_REPO=<owner>/<repo> \
-  bun test e2e/issue-pipeline/l0-solo.integration.test.ts
+  bun test ./e2e/issue-pipeline/l0-solo.integration.test.ts
 
 # L1 — full manifest, plus idempotency check against the anchor's agent:
 GITHUB_TEST_REPO=<owner>/<repo> AGENT_URL=http://localhost:6200 \
-  bun test e2e/issue-pipeline/l1-multi-project.integration.test.ts
+  bun test ./e2e/issue-pipeline/l1-multi-project.integration.test.ts
 
 # L2, both halves — a fresh project builds the manifest from prose alone:
 AGENT_URL=http://localhost:6200 GITHUB_TEST_REPO=<owner>/<repo> \
-  bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
+  bun test ./e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
 
 # L3 — seed three findings, verify exactly one ## Learned amendment:
 AGENT_URL=http://localhost:6201 PLANNER_PROJECT_ID=<uuid> \
-  bun test e2e/issue-pipeline/l3-prompt-amendment.integration.test.ts
+  bun test ./e2e/issue-pipeline/l3-prompt-amendment.integration.test.ts
 ```
 
 Or via the `package.json` scripts: `test:issue-pipeline:fixture`,

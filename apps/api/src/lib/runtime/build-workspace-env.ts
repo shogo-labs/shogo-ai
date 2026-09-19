@@ -11,7 +11,7 @@
  * dir of symlinks to the real `workspaces/<id>` project dirs; in cloud
  * it's the pod volume that holds only the attached projects). It carries:
  *
- *   - WORKSPACE_ID / WORKSPACE_RUNTIME — mode markers the agent-runtime
+ *   - WORKSPACE_ID / WORKSPACE_RUNTIME / WORKSPACE_KIND — mode markers the agent-runtime
  *     boot reads to switch into merged-root mode.
  *   - WORKSPACE_PROJECT_IDS — comma-separated attached project ids, so
  *     the runtime knows which subfolders to mount / sync / preview.
@@ -68,7 +68,13 @@ export interface BuildWorkspaceEnvOpts {
    * builder resolves prisma / owner lookup / token mint lazily, exactly
    * like `buildProjectEnv`.
    */
-  _loadWorkspace?: (workspaceId: string) => Promise<{ name?: string | null; composioScope?: string | null } | null>
+  _loadWorkspace?: (workspaceId: string) => Promise<{
+    name?: string | null
+    kind?: string | null
+    profileName?: string | null
+    agentProfile?: { name?: string | null } | null
+    composioScope?: string | null
+  } | null>
   _loadProjectWorkspaceIds?: (projectIds: string[]) => Promise<Map<string, string>>
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
@@ -131,11 +137,24 @@ export async function buildWorkspaceEnv(
         const { prisma } = await import('../prisma')
         return (await prisma.workspace.findUnique({
           where: { id },
-          select: { name: true, composioScope: true } as any,
-        })) as { name?: string | null; composioScope?: string | null } | null
+          select: {
+            name: true,
+            kind: true,
+            composioScope: true,
+            agentProfile: { select: { name: true } },
+          } as any,
+        })) as {
+          name?: string | null
+          kind?: string | null
+          composioScope?: string | null
+          agentProfile?: { name?: string | null } | null
+        } | null
       })
     const ws = await loadWorkspace(workspaceId)
-    if (ws?.name) env.AGENT_NAME = ws.name
+    const { normalizeWorkspaceKind } = await import('../../services/workspace.service')
+    env.WORKSPACE_KIND = normalizeWorkspaceKind(ws?.kind)
+    const profileName = ws?.profileName || ws?.agentProfile?.name
+    if (profileName || ws?.name) env.AGENT_NAME = profileName || ws.name!
     // Workspace sessions prefer workspace-scoped Composio connections so
     // one OAuth is shared across all attached projects.
     const scope = ws?.composioScope

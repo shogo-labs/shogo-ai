@@ -1933,6 +1933,23 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         workspaceId,
         extraEnv: {
           ...runtimeEnv,
+          // WorkerRuntimeManager.buildEnv() defaults PROJECT_ID to the
+          // *registry key* it was called with (`slot.projectId`), which for
+          // this spawn is `key` = `ws:proj:<anchorProjectId>` — an internal
+          // map key, not a real project id (it exists so an anchor-keyed
+          // runtime and a legacy single-project runtime for the same
+          // project can coexist in the registry without colliding). Without
+          // this override, every internal API call the runtime makes with
+          // `projectId: process.env.PROJECT_ID` (cost metrics, heartbeat
+          // sync, checkpoints, ...) sends that composite string instead of
+          // a real project id, which `resolveProjectWorkspaceId()` can't
+          // resolve — every one of those calls 401s
+          // (`workspace_token_mismatch ... projectWorkspace=none`), so
+          // e.g. sub-agent runs silently never get an AgentCostMetric row.
+          // `extraEnv` is applied after the base env (see `buildEnv()`), so
+          // this wins over the wrong default the same way `runtimeEnv`'s own
+          // `RUNTIME_AUTH_SECRET` already overrides the base's.
+          ...(spec.anchorProjectId ? { PROJECT_ID: spec.anchorProjectId } : {}),
           ...(spec.openAttemptId ? { SHOGO_OPEN_ID: spec.openAttemptId } : {}),
           ...(PERF_LOG_ENABLED ? { SHOGO_PERF_LOG: '1' } : {}),
         },

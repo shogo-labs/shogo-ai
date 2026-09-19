@@ -34,11 +34,11 @@
  *      because it is a very long (many-turn) run.
  *
  * Run:
- *   bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
+ *   bun test ./e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
  *     # runs half 1 only (no env needed)
  *
  *   AGENT_URL=http://localhost:6200 GITHUB_TEST_REPO=<owner>/<repo> \
- *     bun test e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
+ *     bun test ./e2e/issue-pipeline/l2-manifest-from-prose.integration.test.ts
  *     # runs both halves
  */
 import { describe, expect, test } from 'bun:test'
@@ -81,7 +81,7 @@ describe('L2, half 2: a fresh, un-templated project writes this manifest from pr
       getPipelineEnv() // validates GITHUB_TEST_REPO up front so a typo fails fast, not 30 minutes in
 
       const plan = readFileSync(PLAN_PATH, 'utf-8')
-      const res = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+      const res = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
         method: 'POST',
         body: JSON.stringify({
           message: [
@@ -100,7 +100,7 @@ describe('L2, half 2: a fresh, un-templated project writes this manifest from pr
       // between this test process and the (possibly remote) project pod.
       const manifestYaml = await waitUntil(
         async () => {
-          const r = await agentFetch(agentEnv, '/agent/channels/webhook/message', {
+          const r = await agentFetch(agentEnv, '/agent/channels/webhook/incoming', {
             method: 'POST',
             body: JSON.stringify({ message: 'Print the exact, current contents of shogo-system.yaml and nothing else.' }),
           })

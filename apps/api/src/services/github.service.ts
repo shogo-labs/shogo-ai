@@ -306,6 +306,28 @@ export async function connectRepository(options: ConnectRepoOptions): Promise<{
   // Add remote
   await gitService.addRemote(workspacePath, 'origin', remoteUrl);
 
+  // If the remote repo already has real content on its default branch,
+  // treat it as authoritative and reset the local checkout onto it. Before
+  // this fetch+reset, connecting a project to an EXISTING non-empty repo
+  // left the project's own placeholder scaffold commit in place with no
+  // shared history with the remote — every subsequent `pullFromGitHub`
+  // (`git pull --rebase`) then failed with "fatal: refusing to merge
+  // unrelated histories" / "divergent branches", so the project never
+  // actually had the connected repo's content on disk. `connect` had no
+  // regression test exercising a non-empty remote because no prior
+  // eval/manual run had ever connected a project to a pre-populated repo —
+  // found live connecting `intake` to the issue-pipeline's disposable
+  // fixture repo (multi-project L1 eval), which is deliberately
+  // force-pushed with real fixture content before each run, exactly like a
+  // user connecting Shogo to their existing repo would be.
+  await gitService.fetch(workspacePath, { remote: 'origin' });
+  if (gitService.remoteBranchExists(workspacePath, 'origin', repo.default_branch)) {
+    const resetResult = await gitService.resetHardToRemote(workspacePath, 'origin', repo.default_branch);
+    if (!resetResult.success) {
+      console.warn(`[GitHub] Failed to reset workspace onto origin/${repo.default_branch}:`, resetResult.error);
+    }
+  }
+
   // Create or update GitHubConnection record
   const connection = await prisma.gitHubConnection.upsert({
     where: { projectId },
@@ -715,8 +737,17 @@ export async function handleIssueWebhook(c: Context, payload: any): Promise<void
 /**
  * `issue_comment` webhook — fires for comments on both issues and PRs
  * (GitHub represents a PR as an `issue` with a `pull_request` stub). Wakes
- * the agent only when the comment mentions the bot or the thread is
- * bot-authored (the human-in-the-loop reply to the pipeline's own comment).
+ * the agent when the comment mentions the bot, the thread itself was
+ * opened by the bot, or — the common human-in-the-loop case — this
+ * issue/PR already carries a tracked `runId` (the pipeline embeds
+ * `runIdMarker(runId)` in the body once it starts tracking a run; see
+ * `extractRunId`/`task-source-github-issues/SKILL.md`). That last check is
+ * the one that actually matters in practice: a human reporter, not the
+ * bot, opens the issue, so `botAuthoredThread` alone almost never fires,
+ * and a plain "Go with option 2." reply never @-mentions anyone — without
+ * the runId check this handler silently drops every human pick/approval
+ * reply, permanently stalling the run at `awaiting_pick` with no error
+ * anywhere (found live running the L1 multi-project eval).
  */
 export async function handleIssueCommentWebhook(c: Context, payload: any): Promise<void> {
   if (payload?.action !== 'created') return;
@@ -725,11 +756,12 @@ export async function handleIssueCommentWebhook(c: Context, payload: any): Promi
   const issue = payload.issue;
   if (!repoFullName || !comment || !issue) return;
   if (isBotLogin(comment.user?.login)) return; // never react to our own comments
-  const botAuthoredThread = isBotLogin(issue.user?.login);
-  if (!mentionsBot(comment.body) && !botAuthoredThread) return;
 
   const isPR = !!issue.pull_request;
   const runId = extractRunId(issue.body) ?? extractRunId(comment.body);
+  const botAuthoredThread = isBotLogin(issue.user?.login);
+  if (!mentionsBot(comment.body) && !botAuthoredThread && !runId) return;
+
   const message = [
     `[GitHub] New comment on ${isPR ? 'PR' : 'issue'} #${issue.number} (${repoFullName}) by @${comment.user?.login}:`,
     '',
@@ -753,10 +785,16 @@ export async function handlePullRequestReviewWebhook(c: Context, payload: any): 
   const pr = payload.pull_request;
   if (!repoFullName || !review || !pr) return;
   if (isBotLogin(review.user?.login)) return;
-  const botAuthored = isBotLogin(pr.user?.login);
-  if (!mentionsBot(review.body) && !botAuthored) return;
 
+  // Same runId fallback as handleIssueCommentWebhook, for setups where the
+  // PR-opening identity doesn't literally match `botLogin()` (e.g. `gh`
+  // authenticated as a personal account rather than the GitHub App's own
+  // installation token, as in local/eval runs) — `botAuthored` alone would
+  // otherwise never fire and a plain "LGTM" review would be dropped.
   const runId = extractRunId(pr.body);
+  const botAuthored = isBotLogin(pr.user?.login);
+  if (!mentionsBot(review.body) && !botAuthored && !runId) return;
+
   const message = [
     `[GitHub] PR review "${review.state}" on #${pr.number} (${repoFullName}) by @${review.user?.login}:`,
     '',
@@ -778,10 +816,10 @@ export async function handlePullRequestReviewCommentWebhook(c: Context, payload:
   const pr = payload.pull_request;
   if (!repoFullName || !comment || !pr) return;
   if (isBotLogin(comment.user?.login)) return;
-  const botAuthored = isBotLogin(pr.user?.login);
-  if (!mentionsBot(comment.body) && !botAuthored) return;
 
   const runId = extractRunId(pr.body);
+  const botAuthored = isBotLogin(pr.user?.login);
+  if (!mentionsBot(comment.body) && !botAuthored && !runId) return;
   const location = comment.path ? `${comment.path}${comment.line ? ':' + comment.line : ''}` : '(unknown location)';
   const message = [
     `[GitHub] Review comment on #${pr.number} (${repoFullName}) by @${comment.user?.login} on ${location}:`,

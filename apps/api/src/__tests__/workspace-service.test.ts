@@ -102,10 +102,16 @@ const memberTable = {
   },
 }
 
+const workspaceAgentProfileTable = {
+  create: async (args: any) => ({ id: 'profile_1', ...args.data }),
+}
+
 const prismaStub: any = {
   workspace: workspaceTable,
   member: memberTable,
-  $transaction: async (fn: any) => fn({ workspace: workspaceTable, member: memberTable }),
+  workspaceAgentProfile: workspaceAgentProfileTable,
+  $transaction: async (fn: any) =>
+    fn({ workspace: workspaceTable, member: memberTable, workspaceAgentProfile: workspaceAgentProfileTable }),
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: prismaStub }))

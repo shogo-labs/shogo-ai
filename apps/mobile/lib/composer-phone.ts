@@ -5,6 +5,7 @@ import { Camera, FolderOpen, Image as ImageIcon } from 'lucide-react-native'
 import { Platform, type TextInputProps } from 'react-native'
 import type { NativeAttachAction } from './native-attachment-picker'
 import { NATIVE_PHONE_ICON } from './native-phone-layout'
+import { SURFACE_COLORS } from './surface-tokens'
 
 /** Multiline composer input behavior: Return inserts a newline on native. */
 export function composerKeyboardProps(
@@ -18,14 +19,14 @@ export function composerKeyboardProps(
 
 export const COMPOSER_KEYBOARD_PROPS = composerKeyboardProps()
 
-/** Native send control — 44pt tap target, larger than the web 20px chip. */
-export const NATIVE_COMPOSER_SEND_CLASS = "h-11 w-11"
-export const NATIVE_COMPOSER_SEND_ICON = 22
+/** Native send control — 40pt tap target, larger than the web 20px chip. */
+export const NATIVE_COMPOSER_SEND_CLASS = "h-10 w-10"
+export const NATIVE_COMPOSER_SEND_ICON = 20
 export const WEB_COMPOSER_SEND_CLASS = "h-5 w-5"
 export const WEB_COMPOSER_SEND_ICON = 12
-/** Native idle mic: same 44pt target, keep the quiet chip chrome. */
+/** Native idle mic: retain a 44pt target and keep the quiet chip chrome. */
 export const NATIVE_COMPOSER_MIC_IDLE_CLASS =
-  `${NATIVE_COMPOSER_SEND_CLASS} border border-border/45 bg-muted/30`
+  "h-11 w-11 border border-border/45 bg-muted/30"
 
 export function composerSendChrome(phone: boolean): {
   sizeClassName: string
@@ -39,24 +40,24 @@ export function composerSendChrome(phone: boolean): {
 /** Shared ChatGPT-style composer colors used by both composer variants. */
 export const CHATGPT_COMPOSER = {
   light: {
-    fill: '#ffffff',
-    border: '#e5e5e5',
-    borderFocus: '#cfcfcf',
+    fill: SURFACE_COLORS.light.container,
+    border: SURFACE_COLORS.light.containerHighest,
+    borderFocus: '#E27927',
     text: NATIVE_PHONE_ICON.light,
-    placeholder: '#8e8e8e',
+    placeholder: '#71717A',
     icon: NATIVE_PHONE_ICON.light,
-    sendFill: NATIVE_PHONE_ICON.light,
-    sendIcon: '#ffffff',
+    sendFill: '#E27927',
+    sendIcon: '#FFFFFF',
   },
   dark: {
-    fill: '#212121',
-    border: 'rgba(255,255,255,0.08)',
-    borderFocus: 'rgba(255,255,255,0.16)',
+    fill: SURFACE_COLORS.dark.container,
+    border: SURFACE_COLORS.dark.containerHighest,
+    borderFocus: '#F09050',
     text: NATIVE_PHONE_ICON.dark,
-    placeholder: '#8e8e8e',
+    placeholder: '#A3A3A3',
     icon: NATIVE_PHONE_ICON.dark,
-    sendFill: '#ffffff',
-    sendIcon: NATIVE_PHONE_ICON.light,
+    sendFill: '#F09050',
+    sendIcon: '#FFFFFF',
   },
 } as const
 

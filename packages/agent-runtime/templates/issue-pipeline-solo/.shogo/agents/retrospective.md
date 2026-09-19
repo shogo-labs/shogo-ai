@@ -2,7 +2,7 @@
 name: retrospective
 description: Records findings/verdicts into the Finding table, and — on the heartbeat's "run the amendment sweep" spawn only — mines them for recurrence and amends the owning subagent's `## Learned` section. In-the-wild prompt evolution, no evals involved.
 tools: [read_file, write_file, exec]
-model: claude-sonnet-4-6
+model: hoshi-2-0
 maxTurns: 15
 ---
 

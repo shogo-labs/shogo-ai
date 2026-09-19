@@ -27,7 +27,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { inferProviderFromModel } from '@shogo/model-catalog'
+import { inferProviderFromModel, resolveModelId, setAgentModeOverrides, getAgentModeOverrides } from '@shogo/model-catalog'
 // Same module specifier the gateway imports its resolver from.
 import { resolveModel } from '../pi-adapter'
 import { SessionManager } from '../session-manager'
@@ -38,10 +38,15 @@ const OPUS_UUID = '11111111-1111-4111-8111-111111111111'
 
 /**
  * Mirror of the gateway's non-auto provider decision. Keep in lockstep with
- * `processChatMessageStream` in `gateway.ts`.
+ * `processChatMessageStream` in `gateway.ts` — provider is inferred from the
+ * *resolved* model id, not the raw alias (fixed after a live-only 404: a
+ * webhook/heartbeat turn left with the literal alias `'basic'` and no
+ * provider hint infers `'anthropic'` from the alias string itself, ignoring
+ * whatever model `'basic'` actually resolves to admin-side).
  */
 function resolveProvider(modelAlias: string, hint: string | undefined, configProvider = 'anthropic'): string {
-  return hint ?? inferProviderFromModel(modelAlias, configProvider)
+  const resolvedId = resolveModelId(modelAlias)
+  return hint ?? inferProviderFromModel(resolvedId, configProvider)
 }
 
 describe('gateway provider-hint routing', () => {
@@ -76,6 +81,28 @@ describe('gateway provider-hint routing', () => {
     expect(resolveProvider(OPUS_UUID, 'custom')).toBe(
       inferProviderFromModel(OPUS_UUID, 'anthropic'),
     )
+  })
+
+  test('regression: a channel turn left on the literal `basic` alias infers the ADMIN-configured model\'s provider, not `anthropic`', () => {
+    // Every heartbeat/channel/webhook-driven turn (gateway.ts's "Apply
+    // channel-configured model" block) sets `session.modelOverride = 'basic'`
+    // and clears `modelProvider` — so this is the exact alias/hint pair those
+    // turns reach `resolveProvider` with. Once an admin points 'basic' at a
+    // Hoshi-style custom/deepseek-backed model (a bare, catalog-unknown DB
+    // UUID), the OLD gateway logic inferred the provider from the literal
+    // string 'basic' itself — which `inferProviderFromModel` hardcodes to
+    // 'anthropic' — and sent the turn to the Anthropic Messages endpoint with
+    // a deepseek model name, 404ing ("model: deepseek-flash"). Reproduced
+    // live running the issue-pipeline harness's webhook channel.
+    const CUSTOM_UUID = '22222222-2222-4222-8222-222222222222'
+    const prior = getAgentModeOverrides()
+    setAgentModeOverrides({ basic: CUSTOM_UUID })
+    try {
+      expect(resolveProvider('basic', undefined)).toBe('custom')
+      expect(resolveProvider('basic', undefined)).not.toBe('anthropic')
+    } finally {
+      setAgentModeOverrides(prior)
+    }
   })
 
   test('the provider hint survives a session serialize → restore round-trip', async () => {

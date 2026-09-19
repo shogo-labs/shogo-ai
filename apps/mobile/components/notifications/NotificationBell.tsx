@@ -11,7 +11,7 @@
  * full list.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Pressable, View, Text, useWindowDimensions } from 'react-native'
+import { Platform, Pressable, View, Text, useWindowDimensions } from 'react-native'
 import { useRouter, useFocusEffect } from 'expo-router'
 import { Bell } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -42,7 +42,9 @@ export function NotificationBell({
   const refresh = useCallback(async () => {
     if (!http) return
     try {
-      const next = await api.getUnreadNotificationCount(http)
+      const next = await api.getUnreadNotificationCount(http, {
+        excludeMobileTaskNotifications: Platform.OS === 'web',
+      })
       if (mounted.current) setCount(next)
     } catch (e) {
       // Non-fatal: the badge just keeps its last value.

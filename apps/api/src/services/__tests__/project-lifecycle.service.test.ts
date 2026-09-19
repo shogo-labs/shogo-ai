@@ -57,6 +57,9 @@ const agentConfigs = new Map<string, Record<string, unknown>>()
 let createIdCounter = 0
 
 const prismaStub = {
+  workspace: {
+    findUnique: async () => ({ kind: 'team' }),
+  },
   project: {
     create: async ({ data }: { data: Record<string, unknown> }) => {
       const id = `proj_${++createIdCounter}`

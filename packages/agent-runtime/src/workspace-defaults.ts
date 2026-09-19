@@ -284,6 +284,84 @@ export function seedWorkspaceDefaults(dir: string): void {
   }
 }
 
+function getPersonalCompanionTemplatePath(): string | null {
+  let execAdjacent: string | null = null
+  try {
+    if (process.execPath) execAdjacent = join(dirname(process.execPath), 'personal-companion')
+  } catch { /* execPath unavailable */ }
+  const candidates = [
+    ...(execAdjacent ? [execAdjacent] : []),
+    join(__dirname, '..', 'templates', 'personal-companion'),
+    join(__dirname, '..', '..', '..', 'templates', 'personal-companion'),
+    join(__dirname, 'templates', 'personal-companion'),
+    '/app/templates/personal-companion',
+    '/opt/shogo/templates/personal-companion',
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, 'AGENTS.md')) && existsSync(join(candidate, 'config.json'))) {
+      return candidate
+    }
+  }
+  return null
+}
+
+/**
+ * Seed the personal companion persona without copying a builder app scaffold.
+ * Generic defaults are replaced only when they are still pristine; user edits
+ * survive warm-pool reboots.
+ */
+export function seedPersonalCompanionTemplate(dir: string): boolean {
+  const templatePath = getPersonalCompanionTemplatePath()
+  if (!templatePath) {
+    console.error('[workspace-defaults] personal-companion template not found')
+    return false
+  }
+
+  mkdirSync(dir, { recursive: true })
+  let changed = false
+  for (const filename of ['AGENTS.md', 'HEARTBEAT.md']) {
+    const destination = join(dir, filename)
+    const current = existsSync(destination) ? readFileSync(destination, 'utf-8') : null
+    const pristine = DEFAULT_WORKSPACE_FILES[filename]
+    if (current === null || current === pristine || (filename === 'HEARTBEAT.md' && current.trim() === '')) {
+      copyFileSync(join(templatePath, filename), destination)
+      changed = true
+    }
+  }
+
+  const configPath = join(dir, 'config.json')
+  let config: Record<string, any> = {}
+  try {
+    if (existsSync(configPath)) config = JSON.parse(readFileSync(configPath, 'utf-8'))
+  } catch {
+    config = {}
+  }
+  const templateConfig = JSON.parse(readFileSync(join(templatePath, 'config.json'), 'utf-8')) as Record<string, any>
+  let pristineConfig = false
+  try {
+    pristineConfig = JSON.stringify(config) === JSON.stringify(JSON.parse(DEFAULT_WORKSPACE_FILES['config.json']))
+  } catch { /* malformed defaults are impossible, but do not block boot */ }
+  // Policy (capabilityProfile / activeMode / allowedModes / shellEnabled) is
+  // NOT written here. `gateway.ts loadConfig()` forces those four fields
+  // from `capability-profiles.ts`'s personal profile based on the
+  // `WORKSPACE_KIND` env var — writing them into config.json would just be
+  // a second, driftable copy of the same policy (see the "Runtime policy
+  // defined three times" finding in the companion-shell plan).
+  const merged = {
+    ...config,
+    ...(pristineConfig ? templateConfig : {}),
+    model: config.model ?? {
+      provider: templateConfig.modelProvider ?? 'anthropic',
+      name: templateConfig.modelName ?? 'claude-sonnet-4-5',
+    },
+  }
+  if (JSON.stringify(config) !== JSON.stringify(merged)) {
+    writeFileSync(configPath, JSON.stringify(merged, null, 2) + '\n', 'utf-8')
+    changed = true
+  }
+  return changed
+}
+
 /**
  * Force-write all default workspace files (overwrites existing).
  * Used by eval runner to reset workspace between tests.

@@ -56,7 +56,10 @@ mock.module('../../lib/prisma', () => ({
       },
       count: async ({ where }: any) =>
         db.notifications.filter(
-          (n) => n.userId === where.userId && (where.readAt === null ? n.readAt === null : true),
+          (n) =>
+            n.userId === where.userId &&
+            (where.readAt === null ? n.readAt === null : true) &&
+            (!where.type?.notIn || !where.type.notIn.includes(n.type)),
         ).length,
     },
     member: {
@@ -187,5 +190,14 @@ describe('getUnreadNotificationCount', () => {
     expect(await svc.getUnreadNotificationCount('u1')).toBe(2)
     expect(await svc.getUnreadNotificationCount('u2')).toBe(1)
     expect(await svc.getUnreadNotificationCount('nobody')).toBe(0)
+  })
+
+  it('can exclude native task notifications for web clients', async () => {
+    await svc.createNotification({ userId: 'u1', type: 'agent_task_started' as any, title: 'started', message: 'started' })
+    await svc.createNotification({ userId: 'u1', type: 'agent_task_completed' as any, title: 'completed', message: 'completed' })
+    await svc.createNotification({ userId: 'u1', type: 'workspace_updated' as any, title: 'updated', message: 'updated' })
+
+    expect(await svc.getUnreadNotificationCount('u1', { excludeMobileTaskNotifications: true })).toBe(1)
+    expect(await svc.getUnreadNotificationCount('u1')).toBe(3)
   })
 })

@@ -90,6 +90,10 @@ export interface ResolveWorkspaceRuntimeOpts {
    * workspace runtime without requiring the UI feature flag.
    */
   alwaysEnabled?: boolean
+  /** Personal workspaces use the workspace runtime even before the global flag. */
+  workspaceKind?: 'personal' | 'team'
+  /** Test seam for resolving the workspace kind when the feature flag is off. */
+  _loadWorkspaceKind?: (workspaceId: string) => Promise<'personal' | 'team' | null>
   /** Test-only override for the K8s mode probe. */
   _isKubernetes?: () => boolean
   /** Test-only override for the metal mode probe. */
@@ -217,7 +221,19 @@ export async function resolveWorkspaceRuntimeUrl(
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
   }
-  if (!opts.alwaysEnabled && !isEnabled()) {
+  let workspaceKind = opts.workspaceKind
+  if (!opts.alwaysEnabled && !workspaceKind && !isEnabled()) {
+    try {
+      const loadKind = opts._loadWorkspaceKind ?? (async (id: string) => {
+        const { getWorkspaceKind } = await import('../services/workspace.service')
+        return getWorkspaceKind(id)
+      })
+      workspaceKind = (await loadKind(workspaceId)) ?? 'team'
+    } catch {
+      workspaceKind = 'team'
+    }
+  }
+  if (!opts.alwaysEnabled && workspaceKind !== 'personal' && !isEnabled()) {
     throw new WorkspaceRuntimeNotEnabledError(workspaceId)
   }
 

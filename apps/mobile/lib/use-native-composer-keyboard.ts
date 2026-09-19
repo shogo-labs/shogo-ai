@@ -70,11 +70,13 @@ export function useNativeComposerKeyboard(
 export function useNativeComposerDockPad({
   enabled,
   restPad,
+  safeAreaBottom = 0,
   iosKeyboardAvoiding,
   onOpenChange,
 }: {
   enabled: boolean
   restPad: number
+  safeAreaBottom?: number
   iosKeyboardAvoiding: boolean
   onOpenChange?: (open: boolean) => void
 }): Animated.Value {
@@ -99,6 +101,7 @@ export function useNativeComposerDockPad({
         keyboardOpen,
         overlap,
         restPad: rest,
+        safeAreaBottom,
         iosKeyboardAvoiding: avoidingRef.current,
       }),
       duration: nativeComposerKeyboardDuration(event.duration),

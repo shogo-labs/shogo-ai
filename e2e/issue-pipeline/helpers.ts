@@ -29,6 +29,22 @@
  *   PIPELINE_TIMEOUT_MS — Max wait for a full pipeline run (default 1800000
  *                         = 30 min; these are real multi-turn capable-model
  *                         agent runs, not chat replies).
+ *
+ * IMPORTANT — always invoke `bun test` with a `./`-rooted path to this
+ * directory's files (e.g. `bun test ./e2e/issue-pipeline/l1-....test.ts`,
+ * exactly as the `test:issue-pipeline:*` package.json scripts do), never a
+ * bare relative path (`bun test e2e/issue-pipeline/...`). In this monorepo,
+ * a bare path puts Bun's test runner into "filter mode", which scans the
+ * whole repo tree and (on macOS/Bun <1.4 with the fd-scanner fix) can leak
+ * enough directory file descriptors to push every subsequent piped
+ * `Bun.spawn`/`child_process.spawn` (i.e. every `gh` call `run()` below
+ * makes) past Darwin's `OPEN_MAX`. The child still runs and genuinely
+ * creates the issue/PR — `gh` exits 0 — but stdout/stderr silently come
+ * back empty, which then fails these tests' output parsing 100% of the
+ * time with no indication it was ever an infra issue and not a real `gh`
+ * failure. See https://github.com/oven-sh/bun/issues/24690 and
+ * https://github.com/oven-sh/bun/issues/32067. The `./`-rooted path avoids
+ * filter-mode scanning entirely.
  */
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -215,10 +231,35 @@ export async function checkoutPullRequest(env: PipelineEnv, pr: GhPullRequest): 
   return tmp
 }
 
+const TEST_FILE_RE = /\.(test|spec)\.[jt]sx?$/
+
+/**
+ * Checks out the PR's *base* branch, but keeps the PR's new/changed test
+ * file(s) instead of the base's — i.e. "the regression test running against
+ * the pre-fix implementation". A plain `git checkout <baseRefName>` (the
+ * original implementation) can never make the caller's "the base branch
+ * still reproduces the bug" assertion meaningful: the base branch predates
+ * the PR entirely, so a regression test the PR itself introduces doesn't
+ * exist there yet to fail — `runAllTests(baseDir)` would just silently run
+ * whatever tests already existed pre-PR and trivially pass. Found live
+ * running `l1-multi-project.integration.test.ts`: the implementer's new
+ * regression tests (added to `slugify.test.ts`) always vacuously "passed on
+ * base" for exactly this reason, an eval-harness bug, not a pipeline one —
+ * masked in every prior manual/human-reviewed run (L4) because a human
+ * reads the diff instead of running this exact comparison.
+ *
+ * Only non-test files are reverted to the base version; test files are left
+ * as introduced by the PR so they execute against the old implementation.
+ */
 export async function checkoutBaseBranch(env: PipelineEnv, pr: GhPullRequest): Promise<string> {
   const tmp = mkdtempSync(join(tmpdir(), `issue-pipeline-base-${pr.number}-`))
   await runOk('gh', ['repo', 'clone', env.githubTestRepo, tmp, '--', '-q'])
-  await runOk('git', ['checkout', '-q', pr.baseRefName], tmp)
+  await runOk('git', ['fetch', '-q', 'origin', pr.headRefName], tmp)
+  await runOk('git', ['checkout', '-q', pr.headRefName], tmp)
+  const nonTestFiles = pr.files.map((f) => f.path).filter((p) => !TEST_FILE_RE.test(p))
+  if (nonTestFiles.length > 0) {
+    await runOk('git', ['checkout', pr.baseRefName, '--', ...nonTestFiles], tmp)
+  }
   return tmp
 }
 
@@ -230,9 +271,19 @@ export async function checkoutBaseBranch(env: PipelineEnv, pr: GhPullRequest): P
  * ("1. ...", "2. ...", ... or "Option 1:" etc.) — this counts top-level
  * numbered entries 1-9 at the start of a line, which tolerates either style
  * without being so loose it double-counts sub-bullets.
+ *
+ * Tolerates the markdown decoration the model actually produces live —
+ * e.g. `**Option 1 — Combine both boundary strips...**` (bold heading, em
+ * dash separator, no `.`/`)`/`:` right after the digit) — which the
+ * original digit-immediately-followed-by-`[.):]`-only pattern missed
+ * entirely, silently counting 0 options on every real pipeline run and
+ * hanging the eval's `waitUntil` in a five-options poll loop until the
+ * (hour-long) timeout. Leading `*`/`_`/`#`/`-`/`>` markdown noise before
+ * "Option N" and `.`, `)`, `:`, `-`, or an em/en dash after the digit are
+ * all accepted.
  */
 export function countNumberedOptions(commentBody: string): number {
-  const matches = commentBody.match(/^\s*(?:option\s*)?[1-9][.):]\s+\S/gim)
+  const matches = commentBody.match(/^\s*[*_#>~`\s-]*(?:options?\s*)?[1-9]\s*[.):—–-]?\s+\S/gim)
   return matches ? matches.length : 0
 }
 

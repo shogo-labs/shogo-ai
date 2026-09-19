@@ -55,6 +55,7 @@ const EXEMPT: Record<string, string> = {
   budgetAlert: 'Mutated via /api/workspaces/:id/... budget routes — resolved by path workspaceId.',
   customDomain: 'Mutated via /api/projects/:projectId/domains — resolved by path projectId.',
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',
+  goal: 'Mutated via /api/workspaces/:workspaceId/goals — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',
   instanceSubscription: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   inviteLink: 'Mutated via /api/workspaces/:id/invite-links — resolved by path workspaceId.',
   liveSessionMeter: 'Counter table written from the signed live-session token workspaceId — not URL-resolvable, same shape as voiceCallMeter.',
@@ -73,6 +74,7 @@ const EXEMPT: Record<string, string> = {
   subagentModelOverride: 'Mutated via workspace/project-scoped routes — resolved by path params.',
   voiceCallMeter: 'Counter table written via project-scoped voice routes — resolved by path projectId.',
   voiceProjectConfig: 'Mutated via /api/projects/:projectId/voice — resolved by path projectId.',
+  workspaceAgentProfile: 'Mutated via /api/workspaces/:workspaceId/agent-profile — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler); single-tenant upsert (see check-multiregion-cron-locks.ts).',
   workspaceModelVisibility: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
 }
 

@@ -58,9 +58,18 @@ export async function createPersonalWorkspace(
       data: {
         name: workspaceName,
         slug,
+        kind: 'personal',
         // Pin write-ownership to the region that created the workspace so all
         // workspace-scoped writes stay single-writer (replication-safe).
         ...workspaceHomeRegionField(),
+      },
+    });
+
+    await tx.workspaceAgentProfile.create({
+      data: {
+        workspaceId: workspace.id,
+        name: 'Shogo',
+        tagline: 'Your personal AI companion',
       },
     });
 
@@ -232,4 +241,62 @@ export async function hasWorkspaceAccess(
   });
 
   return !!member;
+}
+
+export type WorkspaceKind = 'personal' | 'team';
+
+/**
+ * Normalize a raw `Workspace.kind` column value (or an already-loaded
+ * workspace's `kind` field) to the `WorkspaceKind` union, defaulting to
+ * `'team'` for anything unrecognized (missing workspace, null, legacy
+ * rows). This is the one place that decides what counts as "personal" —
+ * every kind-derived query/env-builder should call this on its raw value
+ * instead of re-writing the `=== 'personal' ? 'personal' : 'team'` check.
+ */
+export function normalizeWorkspaceKind(rawKind: string | null | undefined): WorkspaceKind {
+  return rawKind === 'personal' ? 'personal' : 'team';
+}
+
+/**
+ * Single source of truth for "is this workspace personal or team?" when
+ * nothing else about the workspace is needed. Several call sites (chat
+ * session routing, workspace-runtime resolution) each used to run their
+ * own `prisma.workspace.findUnique({ select: { kind: true } })`.
+ *
+ * Callers that already load the workspace for other fields (e.g. the
+ * runtime env builder, which also needs the agent profile name) should
+ * fetch `kind` in that same query and pass it through
+ * `normalizeWorkspaceKind` instead of issuing a second round-trip here.
+ */
+export async function getWorkspaceKind(workspaceId: string): Promise<WorkspaceKind> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { kind: true } as any,
+  });
+  return normalizeWorkspaceKind((workspace as { kind?: string } | null)?.kind);
+}
+
+export interface WorkspaceContext {
+  hasAccess: boolean;
+  kind: WorkspaceKind;
+}
+
+/**
+ * Combines the two checks almost every workspace-scoped route needs before
+ * doing real work: "does this user have access?" and "what kind of
+ * workspace is this?" — fetched concurrently so callers pay for one
+ * round-trip pair instead of two sequential ones. Previously duplicated as
+ * separate `hasWorkspaceAccess()` + `getWorkspaceKind()` calls in
+ * `workspace-chat.ts`'s `authorize()`/`resolveOr501()` and
+ * `workspace-agent.ts`'s `sessionAuthorize()`.
+ */
+export async function loadWorkspaceContext(
+  workspaceId: string,
+  userId: string,
+): Promise<WorkspaceContext> {
+  const [hasAccess, kind] = await Promise.all([
+    hasWorkspaceAccess(workspaceId, userId),
+    getWorkspaceKind(workspaceId),
+  ]);
+  return { hasAccess, kind };
 }

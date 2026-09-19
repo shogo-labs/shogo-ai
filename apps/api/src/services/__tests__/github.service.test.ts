@@ -141,6 +141,11 @@ mock.module('../git.service', () => ({
     return pullResult
   },
   fetch: async (path: string) => { gitCalls.fetch.push(path) },
+  // Added alongside connectRepository's fetch+reset-onto-non-empty-remote
+  // path; default to "remote branch doesn't exist" so existing tests keep
+  // exercising the pre-reset behavior unless a test overrides this.
+  remoteBranchExists: () => false,
+  resetHardToRemote: async () => ({ success: true }),
 }))
 
 // ─── agent-call.service mock (task-source webhooks) ─────────────────────────

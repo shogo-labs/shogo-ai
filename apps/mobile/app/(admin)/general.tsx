@@ -764,6 +764,11 @@ const FEATURE_FLAG_DEFINITIONS: Array<{
     label: 'Phone Channel',
     hint: "Twilio + ElevenLabs PSTN calls. When off, the Phone (Voice) section inside a project's Channels tab is hidden.",
   },
+  {
+    key: 'personalShell',
+    label: 'Personal Companion Shell',
+    hint: 'Simplified Muse/Grok-style chat home for personal workspaces (goals, activity, avatar chat). When off, personal workspaces fall back to the standard builder home.',
+  },
 ]
 
 function FeatureFlagsCard() {
@@ -771,11 +776,13 @@ function FeatureFlagsCard() {
     marketplace: null,
     ezMode: null,
     phoneChannel: null,
+    personalShell: null,
   })
   const [effective, setEffective] = useState<Record<keyof FeatureFlagOverrides, boolean | null>>({
     marketplace: null,
     ezMode: null,
     phoneChannel: null,
+    personalShell: null,
   })
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -793,6 +800,7 @@ function FeatureFlagsCard() {
           marketplace: cfg.features?.marketplace ?? null,
           ezMode: cfg.features?.ezMode ?? null,
           phoneChannel: cfg.features?.phoneChannel ?? null,
+          personalShell: cfg.features?.personalShell ?? null,
         })
       })
       .catch((err) => console.error('[FeatureFlags] load failed:', err))
@@ -813,6 +821,7 @@ function FeatureFlagsCard() {
           marketplace: cfg.features?.marketplace ?? null,
           ezMode: cfg.features?.ezMode ?? null,
           phoneChannel: cfg.features?.phoneChannel ?? null,
+          personalShell: cfg.features?.personalShell ?? null,
         })
       } catch {}
       setSaveStatus('saved')

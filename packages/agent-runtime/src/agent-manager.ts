@@ -86,6 +86,8 @@ const MAX_RECENT_ACTIVITY = 30
 export interface ManagedInstance {
   id: string
   type: string
+  /** Chat session that spawned this instance; used for scoped cancellation. */
+  sessionId?: string
   status: 'running' | 'completed' | 'failed' | 'cancelled'
   startedAt: number
   completedAt?: number
@@ -456,6 +458,7 @@ export class AgentManager {
     const instance: ManagedInstance = {
       id: instanceId,
       type,
+      sessionId: parentCtx.sessionId,
       status: 'running',
       startedAt: startTime,
       promise,
@@ -493,6 +496,20 @@ export class AgentManager {
       inst.status = 'cancelled'
       inst.completedAt = Date.now()
       try { dropScreencastChannel(id) } catch {}
+      cancelled.push(id)
+    }
+    return cancelled
+  }
+
+  /**
+   * Cancel only the subagents owned by one chat session. A project runtime can
+   * host multiple chats, so using cancelAll() for a single chat's Stop action
+   * can interrupt unrelated user work.
+   */
+  cancelForSession(sessionId: string): string[] {
+    const cancelled: string[] = []
+    for (const [id, inst] of this.instances) {
+      if (inst.sessionId !== sessionId || !this.cancel(id)) continue
       cancelled.push(id)
     }
     return cancelled
