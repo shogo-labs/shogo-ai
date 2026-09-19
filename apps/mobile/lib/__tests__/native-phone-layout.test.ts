@@ -105,22 +105,22 @@ describe('native gutter tokens', () => {
 })
 
 describe('nativePhoneCanvas', () => {
-  test('matches the ChatGPT light and dark canvases', () => {
+  test('matches the shared web light and dark canvases', () => {
     expect(nativePhoneCanvas(true)).toBe(NATIVE_PHONE_CANVAS.dark)
     expect(nativePhoneCanvas(false)).toBe(NATIVE_PHONE_CANVAS.light)
-    expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#141313', light: '#F5FBF5' })
+    expect(NATIVE_PHONE_CANVAS).toEqual({ dark: '#121212', light: '#FFFFFF' })
   })
 
-  test('dark home keeps the original black canvas', () => {
-    expect(NATIVE_PHONE_HOME_CANVAS).toBe('#000000')
+  test('dark home uses the shared web canvas', () => {
+    expect(NATIVE_PHONE_HOME_CANVAS).toBe('#121212')
   })
 })
 
 describe('nativePhoneIconColor', () => {
-  test('matches ChatGPT iOS icon ink in both themes', () => {
+  test('matches the shared web foreground in both themes', () => {
     expect(nativePhoneIconColor(true)).toBe(NATIVE_PHONE_ICON.dark)
     expect(nativePhoneIconColor(false)).toBe(NATIVE_PHONE_ICON.light)
-    expect(NATIVE_PHONE_ICON).toEqual({ dark: '#F4F4F4', light: '#0D0D0D' })
+    expect(NATIVE_PHONE_ICON).toEqual({ dark: '#DEDEDE', light: '#0A0A0A' })
     expect(NATIVE_PHONE_ICON_STROKE).toBe(1.75)
     expect(NATIVE_PHONE_HEADER_ICON_SIZE).toBe(28)
   })
@@ -145,11 +145,11 @@ describe('phoneChromeEnabled', () => {
 describe('nativePhoneDockFadeColors', () => {
   test('fades list rows out as they enter the dock, then the pills stay readable', () => {
     expect(NATIVE_PHONE_DOCK_FADE).toBe(80)
-    expect(nativePhoneDockFadeColors(true)[0]).toBe('rgba(20,19,19,0)')
-    expect(nativePhoneDockFadeColors(true)[2]).toBe('rgba(20,19,19,0.94)')
-    expect(nativePhoneDockFadeColors(false)[0]).toBe('rgba(245,251,245,0)')
-    expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(245,251,245,0.94)')
-    expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(0,0,0,0)')
+    expect(nativePhoneDockFadeColors(true)[0]).toBe('rgba(18,18,18,0)')
+    expect(nativePhoneDockFadeColors(true)[2]).toBe('rgba(18,18,18,0.94)')
+    expect(nativePhoneDockFadeColors(false)[0]).toBe('rgba(255,255,255,0)')
+    expect(nativePhoneDockFadeColors(false)[2]).toBe('rgba(255,255,255,0.94)')
+    expect(nativePhoneDockFadeColors(true, NATIVE_PHONE_HOME_CANVAS)[0]).toBe('rgba(18,18,18,0)')
     expect(NATIVE_PHONE_DOCK_COMPOSER_GAP).toBe(12)
   })
 })
@@ -182,11 +182,11 @@ describe('nativePhoneDockGlassStyle', () => {
 })
 
 describe('nativePhoneSheetPanelStyle', () => {
-  test('dark sheets use the Figma container surface without a background dimmer', () => {
-    expect(NATIVE_PHONE_SHEET_CANVAS.dark).toBe('#201F1F')
+  test('dark sheets use the shared web card surface and border', () => {
+    expect(NATIVE_PHONE_SHEET_CANVAS.dark).toBe('#1E1E1E')
     expect(nativePhoneSheetPanelStyle(true)).toEqual({
-      backgroundColor: '#201F1F',
-      borderColor: 'rgba(255,255,255,0.10)',
+      backgroundColor: '#1E1E1E',
+      borderColor: '#333333',
     })
     expect(nativePhoneSheetPanelStyle(false)).toBeUndefined()
     expect(nativePhoneSheetBackdropStyle(true).backgroundColor).toBe('transparent')

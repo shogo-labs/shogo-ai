@@ -74,27 +74,21 @@ export const NATIVE_ACCOUNT_TITLE_CLASS = 'text-[17px]'
 export const NATIVE_PHONE_ROW_GAP = 8
 /** Wrap-row gap between two-column stat cards (`gap-3`). */
 export const NATIVE_PHONE_CARD_GAP = 12
-/**
- * Native ChatGPT canvas (`nativeChatGptSurfaces` in the Gluestack provider).
- * Use for style props where NativeWind `bg-background` is not applied.
- */
+/** Shared web-palette canvas for style props where NativeWind is not applied. */
 export const NATIVE_PHONE_CANVAS = {
   dark: SURFACE_COLORS.dark.surface,
   light: SURFACE_COLORS.light.surface,
 } as const
+
 /**
  * Home canvas alias kept separate so the home drawer can stay on a static
  * canvas without duplicating the shared surface token.
  */
-/** Home intentionally keeps the original OLED-black native canvas. */
-export const NATIVE_PHONE_HOME_CANVAS = '#000000'
-
-/**
- * ChatGPT iOS icon ink, sampled from App Store screenshots.
- * Dark: ~#F4F4F4 (header/composer glyphs). Light: ~#0D0D0D (plus/menu).
- * Lucide default stroke 2 reads heavier than ChatGPT's SF-Symbol weight.
- */
-export const NATIVE_PHONE_ICON = { dark: '#F4F4F4', light: '#0D0D0D' } as const
+export const NATIVE_PHONE_HOME_CANVAS = SURFACE_COLORS.dark.surface
+export const NATIVE_PHONE_ICON = {
+  dark: SURFACE_COLORS.dark.onSurface,
+  light: SURFACE_COLORS.light.onSurface,
+} as const
 export const NATIVE_PHONE_ICON_STROKE = 1.75
 /** Header menu / bell on native phone and narrow web (`AppHeader`). */
 export const NATIVE_PHONE_HEADER_ICON_SIZE = 28
@@ -119,17 +113,14 @@ export function useNativePhoneIconChrome(): { color: string; strokeWidth: number
   }
 }
 
-/**
- * Bottom sheets use the Figma surface-container token so they remain one
- * deliberate elevation above the app canvas in both color schemes.
- */
+/** Bottom sheets use the shared web card and border colors. */
 export const NATIVE_PHONE_SHEET_CANVAS = {
   dark: SURFACE_COLORS.dark.container,
   light: SURFACE_COLORS.light.container,
 } as const
 export const NATIVE_PHONE_SHEET_BORDER = {
-  dark: 'rgba(255,255,255,0.10)',
-  light: 'rgba(0,0,0,0.08)',
+  dark: SURFACE_COLORS.dark.containerHighest,
+  light: SURFACE_COLORS.light.containerHighest,
 } as const
 export const NATIVE_PHONE_SHEET_BACKDROP = {
   /** Bottom sheets stay non-blocking visually; the press target remains dismissible. */
@@ -238,12 +229,12 @@ export function nativePhoneDockStatusMaxHeight(windowHeight?: number): number {
 
 export const NATIVE_PHONE_DOCK_GLASS = {
   dark: {
-    fill: 'rgba(53,52,52,0.94)',
-    border: 'rgba(255,255,255,0.14)',
+    fill: 'rgba(30,30,30,0.94)',
+    border: 'rgba(51,51,51,0.94)',
   },
   light: {
-    fill: 'rgba(229,226,225,0.94)',
-    border: 'rgba(0,0,0,0.08)',
+    fill: 'rgba(255,255,255,0.94)',
+    border: 'rgba(228,228,231,0.94)',
   },
 } as const
 
