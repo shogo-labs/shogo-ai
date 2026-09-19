@@ -227,4 +227,24 @@ describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () =
     await expect(rm.startProjectWorkspace('', { workspaceId: 'ws-1' })).rejects.toThrow(/anchorProjectId is required/)
     await expect(rm.startProjectWorkspace('anchor-1', { workspaceId: '' })).rejects.toThrow(/workspaceId is required/)
   })
+
+  // Regression: WorkerRuntimeManager.buildEnv() defaults the spawned
+  // process's PROJECT_ID env var to whatever registry key it was called
+  // with — which for this path is `ensureRunning(projectWorkspaceRuntimeKey(...))`,
+  // i.e. `ws:proj:<anchor>`, not a real project id. Every internal API call
+  // the runtime makes with `projectId: process.env.PROJECT_ID` (cost
+  // metrics, heartbeat sync, checkpoints, ...) 401s against
+  // `resolveProjectWorkspaceId()` unless `extraEnv.PROJECT_ID` explicitly
+  // overrides it back to the bare anchor id. See manager.ts's
+  // `doStartMergedRuntime` for the full explanation.
+  test('overrides PROJECT_ID to the bare anchor id, not the ws:proj: registry key', async () => {
+    const { rm } = makeManager()
+    await rm.startProjectWorkspace('anchor-1', {
+      workspaceId: 'ws-1',
+      attachedProjectIds: ['p2'],
+    })
+    const spawnConfig = rm.agentManager.ensureRunning.mock.calls[0][1]
+    expect(spawnConfig.extraEnv.PROJECT_ID).toBe('anchor-1')
+    expect(spawnConfig.extraEnv.PROJECT_ID).not.toBe(projectWorkspaceRuntimeKey('anchor-1'))
+  })
 })

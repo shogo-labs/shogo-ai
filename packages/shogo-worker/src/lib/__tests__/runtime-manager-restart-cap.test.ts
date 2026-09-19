@@ -18,19 +18,25 @@
  *     ~1/minute respawn loop until the user quit the app. Symptom:
  *     `restart #54` in the same project's log.
  *
- * This file pins three contracts:
+ * This file pins four contracts:
  *
  *   1. Every non-clean exit reaps the runtime's process group via the
  *      recorded PID (the orphan-sweep that wasn't happening before).
  *   2. After {@link MAX_CONSECUTIVE_RESTARTS} consecutive non-clean
  *      exits within {@link RESTART_FAILURE_WINDOW_MS}, the slot
  *      transitions to `'failed'` and the manager stops scheduling
- *      restarts. `ensureRunning(...)` then refuses to silently
- *      respawn until the operator calls `resetFailure(...)`.
+ *      restarts.
  *   3. A clean exit (code=0, signal=null) does NOT increment the
  *      failure budget — bounded chat sessions that exit normally
  *      after their work is done should leave the slot in the same
  *      "healthy" state they found it in.
+ *   4. A `'failed'` slot is NOT terminal: it self-heals. A tripped
+ *      breaker refuses `ensureRunning(...)` immediately, but once an
+ *      escalating cooldown (2m/4m/8m/15m-cap, see `breakerCooldownMs`)
+ *      elapses, the NEXT `ensureRunning(...)` call auto-clears it and
+ *      attempts a fresh spawn with a full failure budget — no operator
+ *      or caller has to remember to invoke `resetFailure(...)`, though
+ *      it remains available for an immediate manual retry.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { WorkerRuntimeManager } from '../runtime-manager.ts';
@@ -79,6 +85,8 @@ function insertRunningSlot(mgr: WorkerRuntimeManager, projectId: string, pid = 9
     restarts: 0,
     consecutiveFailures: 0,
     lastFailureAt: 0,
+    breakerTrips: 0,
+    restartTimestamps: [] as number[],
     graceTimer: null,
     restartTimer: null,
     idleTimer: null,
@@ -306,5 +314,93 @@ describe('WorkerRuntimeManager.ensureRunning refuses failed slots', () => {
         apiKey: 'unused',
       }),
     ).rejects.toThrow(/Circuit breaker tripped|resetFailure/);
+  });
+});
+
+const spawnConfig = {
+  cloudUrl: 'https://example.invalid',
+  apiKey: 'unused',
+} as never;
+
+describe('WorkerRuntimeManager auto-heal (self-healing circuit breaker)', () => {
+  it('still refuses a failed slot before its cooldown has elapsed', async () => {
+    const mgr = new WorkerRuntimeManager({ logger: SILENT });
+    const slot = insertRunningSlot(mgr, 'proj-too-soon', 55551);
+    for (let i = 0; i < 8; i++) handleExit(mgr, slot, null, 'SIGKILL');
+    expect(slot.status).toBe('failed');
+    expect(slot.breakerTrips).toBe(1);
+
+    await expect(mgr.ensureRunning('proj-too-soon', spawnConfig)).rejects.toThrow(
+      /Will auto-retry in ~\d+s/,
+    );
+    // Refusing doesn't itself count as another trip.
+    expect(slot.breakerTrips).toBe(1);
+    expect(slot.status).toBe('failed');
+  });
+
+  it('auto-heals once the cooldown elapses, without anyone calling resetFailure', async () => {
+    const mgr = new WorkerRuntimeManager({ logger: SILENT });
+    const slot = insertRunningSlot(mgr, 'proj-cooldown', 55552);
+    for (let i = 0; i < 8; i++) handleExit(mgr, slot, null, 'SIGKILL');
+    expect(slot.status).toBe('failed');
+
+    // Backdate past the 2-minute base cooldown for trip #1.
+    slot.lastFailureAt = Date.now() - (2 * 60 * 1000 + 1_000);
+
+    // No `autoPull`/`projectDir` is configured on this bare manager, so
+    // the call still fails — but on a DIFFERENT, unrelated error (a
+    // workspace-misconfiguration, not the circuit breaker). That proves
+    // `ensureRunning` fell through the breaker guard and actually
+    // attempted a fresh start instead of refusing outright.
+    let caught: Error | null = null;
+    try {
+      await mgr.ensureRunning('proj-cooldown', spawnConfig);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).not.toMatch(/cannot ensureRunning|Circuit breaker tripped/);
+    // The slot moved off `'failed'` — the breaker is no longer open.
+    expect(slot.status).not.toBe('failed');
+  });
+
+  it('escalates the cooldown on repeated trips (2m -> 4m)', async () => {
+    const mgr = new WorkerRuntimeManager({ logger: SILENT });
+    const slot = insertRunningSlot(mgr, 'proj-escalate', 55553);
+    for (let i = 0; i < 8; i++) handleExit(mgr, slot, null, 'SIGKILL');
+    expect(slot.breakerTrips).toBe(1);
+
+    // Elapse the first (2m) cooldown and let it auto-heal + immediately
+    // re-trip (still no projectDir configured, but that's irrelevant here
+    // — we only care about the breaker bookkeeping around the 2nd trip).
+    slot.lastFailureAt = Date.now() - (2 * 60 * 1000 + 1_000);
+    try { await mgr.ensureRunning('proj-escalate', spawnConfig); } catch { /* expected */ }
+
+    // Re-insert as a running slot (ensureRunning's failed attempt didn't
+    // leave it running) and drive it back into `'failed'` a second time.
+    const slot2 = insertRunningSlot(mgr, 'proj-escalate', 55554);
+    slot2.breakerTrips = slot.breakerTrips; // carry the trip count forward
+    for (let i = 0; i < 8; i++) handleExit(mgr, slot2, null, 'SIGKILL');
+    expect(slot2.breakerTrips).toBe(2);
+
+    // Trip #2's cooldown should be double trip #1's (4m, not 2m): backdating
+    // by just over 2m must NOT be enough to auto-heal yet.
+    slot2.lastFailureAt = Date.now() - (2 * 60 * 1000 + 1_000);
+    await expect(mgr.ensureRunning('proj-escalate', spawnConfig)).rejects.toThrow(
+      /Will auto-retry/,
+    );
+    expect(slot2.status).toBe('failed');
+  });
+
+  it('healBreaker gives the project a fresh consecutiveFailures budget', async () => {
+    const mgr = new WorkerRuntimeManager({ logger: SILENT });
+    const slot = insertRunningSlot(mgr, 'proj-fresh-budget', 55555);
+    for (let i = 0; i < 8; i++) handleExit(mgr, slot, null, 'SIGKILL');
+    expect(slot.consecutiveFailures).toBe(8);
+
+    slot.lastFailureAt = Date.now() - (2 * 60 * 1000 + 1_000);
+    try { await mgr.ensureRunning('proj-fresh-budget', spawnConfig); } catch { /* expected */ }
+
+    expect(slot.consecutiveFailures).toBe(0);
   });
 });

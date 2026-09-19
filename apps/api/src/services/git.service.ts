@@ -1401,6 +1401,53 @@ export async function fetch(
 }
 
 /**
+ * Whether `<remote>/<branch>` exists locally (after a `fetch`). Used to
+ * distinguish "connecting to a brand-new, still-empty remote repo" (nothing
+ * to reset to) from "connecting to an existing repo with real content".
+ */
+export function remoteBranchExists(
+  workspacePath: string,
+  remote: string,
+  branch: string
+): boolean {
+  requireGit();
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `${remote}/${branch}`], {
+      cwd: workspacePath,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Hard-reset the current branch onto `<remote>/<branch>`, discarding any
+ * local commits/changes. Used when connecting a project to an already-
+ * populated external repo: the remote is authoritative, and the project's
+ * own placeholder scaffold commit has no relationship to (and, once the
+ * remote has diverged history, cannot be reconciled with via `pull`) the
+ * repo's real content.
+ */
+export async function resetHardToRemote(
+  workspacePath: string,
+  remote: string,
+  branch: string
+): Promise<{ success: boolean; error?: string }> {
+  requireGit();
+  try {
+    execFileSync('git', ['reset', '--hard', `${remote}/${branch}`], {
+      cwd: workspacePath,
+      stdio: 'pipe',
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Reset failed' };
+  }
+}
+
+/**
  * Pull from remote.
  */
 export async function pull(

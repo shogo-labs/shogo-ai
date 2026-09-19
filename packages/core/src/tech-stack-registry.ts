@@ -57,6 +57,37 @@ export interface StackRegistryEntry {
    * bundled Vite template; everything else seeds itself.
    */
   seedsOwnTemplate?: boolean
+  /**
+   * Metal VM class this stack requires. Mirrors `TechStackMeta.runtime.vmClass`
+   * (see `packages/agent-runtime/src/workspace-defaults.ts`) so `apps/api` —
+   * which does not bundle `tech-stacks/` and cannot read `stack.json` at
+   * runtime — can decide placement/gating without it. Omitted = `'standard'`,
+   * the default every non-Docker stack uses.
+   */
+  vmClass?: 'standard' | 'docker'
+  /**
+   * Smallest instance size (`apps/api/src/config/instance-sizes.ts`
+   * `InstanceSizeName`) this stack should be billed/provisioned at. Mirrors
+   * `TechStackMeta.runtime.minimumInstanceSize`. Unlike the mobile floor
+   * (`applyTechStackFloor`), this floor is BILLED, not just a free headroom
+   * bump — see `applyDockerStackFloor`.
+   */
+  minimumInstanceSize?: 'micro' | 'small' | 'medium' | 'large' | 'xlarge'
+  /**
+   * Ports the stack's services expose, mirroring
+   * `TechStackMeta.runtime.ports` (see `workspace-defaults.ts`) for the same
+   * reason `vmClass`/`minimumInstanceSize` are mirrored: apps/api can't read
+   * `stack.json` at runtime, but needs this to validate `PATCH .../ports/:port`
+   * (a project can only toggle visibility on a port its stack actually
+   * declares — never an arbitrary guest port) and to seed
+   * `Project.settings.exposedPorts` defaults.
+   */
+  ports?: Array<{
+    port: number
+    label?: string
+    protocol: 'http' | 'tcp'
+    defaultVisibility: 'tunnel' | 'preview'
+  }>
 }
 
 /**
@@ -82,6 +113,21 @@ export const TECH_STACK_REGISTRY: Record<string, StackRegistryEntry> = {
 
   // Data / scripting
   'python-data': { id: 'python-data', target: 'data', seedsOwnTemplate: true },
+
+  // Multi-service backend (dockerd + docker compose). Requires the
+  // Docker-capable metal VM class; gated separately by
+  // `runtime.docker_class_enabled` (see apps/api/src/lib/runtime-class-setting.ts).
+  'docker-compose': {
+    id: 'docker-compose',
+    target: 'data',
+    seedsOwnTemplate: true,
+    vmClass: 'docker',
+    minimumInstanceSize: 'large',
+    ports: [
+      { port: 8000, label: 'app', protocol: 'http', defaultVisibility: 'preview' },
+      { port: 5432, label: 'postgres', protocol: 'tcp', defaultVisibility: 'tunnel' },
+    ],
+  },
 
   // Native (full game engines)
   'unity-game': { id: 'unity-game', target: 'native', seedsOwnTemplate: true },
@@ -122,4 +168,33 @@ export function usesMetroBundler(techStackId: string | null | undefined): boolea
  */
 export function stackSeedsItself(techStackId: string | null | undefined): boolean {
   return getStackEntry(techStackId)?.seedsOwnTemplate === true
+}
+
+/**
+ * True for any stack whose `vmClass` is `'docker'` — i.e. it needs the
+ * Docker-capable metal VM class (dockerd + a persistent data volume), not
+ * the default standard project VM. Callers must still check the platform
+ * gate (`runtime.docker_class_enabled`) before honouring this.
+ */
+export function isDockerTechStack(techStackId: string | null | undefined): boolean {
+  return getStackEntry(techStackId)?.vmClass === 'docker'
+}
+
+/** The stack's declared minimum instance size, or `null` if it doesn't set one. */
+export function getMinimumInstanceSize(
+  techStackId: string | null | undefined,
+): StackRegistryEntry['minimumInstanceSize'] | null {
+  return getStackEntry(techStackId)?.minimumInstanceSize ?? null
+}
+
+/**
+ * The stack's declared ports (empty array if it declares none). This is the
+ * ONLY allowlist for both the client-side tunnel and the public per-port
+ * preview — a project can toggle visibility on a declared port, but can
+ * never expose a port its stack doesn't list.
+ */
+export function getDeclaredPorts(
+  techStackId: string | null | undefined,
+): NonNullable<StackRegistryEntry['ports']> {
+  return getStackEntry(techStackId)?.ports ?? []
 }

@@ -15,7 +15,7 @@ import {
 import { join, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
-import { createS3SyncForProject, isMacOSJunkName } from '@shogo/shared-runtime'
+import { createS3SyncForProject, isMacOSJunkName, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import type { AuthContext } from '../middleware/auth'
@@ -439,7 +439,7 @@ type ImportResult =
       warnings: string[]
       secretsAutoFilled: boolean
     }
-  | { ok: false; status: 400 | 401 | 403 | 413 | 500; error: string }
+  | { ok: false; status: 400 | 401 | 402 | 403 | 413 | 500; error: string }
 
 export async function runImport(
   zipBuffer: Uint8Array,
@@ -571,6 +571,27 @@ export async function runImport(
   ) {
     importedSettings.activeMode = 'canvas'
     importedSettings.canvasEnabled = true
+  }
+
+  // Docker-class minimum compute tier: an imported bundle can carry
+  // `techStackId: 'docker-compose'` (or infer it from `docker-compose.yml`
+  // in the archive) the same way a fresh create or marketplace install can —
+  // refuse the import rather than silently landing an under-provisioned
+  // project the workspace never paid for.
+  const importedTechStackId =
+    typeof importedSettings.techStackId === 'string' ? importedSettings.techStackId : undefined
+  if (getMinimumInstanceSize(importedTechStackId)) {
+    const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
+      workspaceId,
+      importedTechStackId,
+    )
+    if (!allowed) {
+      return {
+        ok: false,
+        status: 402,
+        error: `This bundle's stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
+      }
+    }
   }
 
   const project = await prisma.project.create({

@@ -94,6 +94,7 @@ mock.module('../routes/api-keys', () => ({
 
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: async () => {},
+  sendPushToUser: async () => {},
 }))
 
 const { instanceRoutes, _testing } = await import('../routes/instances')

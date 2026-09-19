@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// One project, one DB: the built-in task source (used when no external
+// tracker is connected — see .shogo/skills/task-source-builtin/SKILL.md)
+// plus the findings contract (see ../findings.schema.json and
+// .shogo/agents/retrospective.md).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model TrackerItem {
+  id        String           @id @default(cuid())
+  title     String
+  body      String
+  status    String           @default("open") @map("status") // open | analyzing | planning | implementing | in_review | done
+  runId     String?          @map("run_id")
+  comments  TrackerComment[]
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([runId])
+  @@map("tracker_items")
+}
+
+model TrackerComment {
+  id        String      @id @default(cuid())
+  item      TrackerItem @relation(fields: [itemId], references: [id])
+  itemId    String      @map("item_id")
+  author    String // "human" | a subagent name, e.g. "analyst"
+  body      String
+  runId     String?     @map("run_id")
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  @@index([itemId])
+  @@index([runId])
+  @@map("tracker_comments")
+}
+
+model Finding {
+  id           String    @id // matches findings.schema.json's `id`, minted by the reviewer subagent
+  runId        String    @map("run_id")
+  reviewer     String // "security" | "scalability" | "dry"
+  category     String
+  severity     String // "blocker" | "major" | "minor" | "nit"
+  summary      String
+  detail       String?
+  filePath     String?   @map("file_path")
+  line         Int?
+  suggestedFix String?   @map("suggested_fix")
+  planGap      Boolean?  @map("plan_gap")
+  accepted     Boolean?
+  resolution   String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  resolvedAt   DateTime? @map("resolved_at")
+
+  @@index([reviewer, category])
+  @@index([runId])
+  @@index([accepted])
+  @@map("findings")
+}
+
+model PromptAmendment {
+  id         String   @id @default(cuid())
+  targetKey  String   @map("target_key") // e.g. "planner" | "implementer" | "security" | "scalability" | "dry"
+  reviewer   String?
+  category   String
+  reason     String // "plan_gap" | "implementation_gap" | "reviewer_false_positive"
+  summary    String
+  findingIds String   @map("finding_ids") // comma-separated Finding.id values
+  runIds     String   @map("run_ids") // comma-separated runId values
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([targetKey])
+  @@map("prompt_amendments")
+}

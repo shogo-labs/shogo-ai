@@ -183,6 +183,35 @@ describe('PermissionEngine.check — balanced mode', () => {
     expect(eng.check('shell', 'exec', { command: 'rsync foo bar' }).action).toBe('ask')
   })
 
+  test('docker/compose/make require approval on a non-docker-class runtime', () => {
+    const prevClass = process.env.SHOGO_RUNTIME_CLASS
+    delete process.env.SHOGO_RUNTIME_CLASS
+    try {
+      const eng = newEngine({ preference: { mode: 'balanced' } })
+      expect(eng.check('shell', 'exec', { command: 'docker compose up -d' }).action).toBe('ask')
+      expect(eng.check('shell', 'exec', { command: 'make build' }).action).toBe('ask')
+    } finally {
+      if (prevClass === undefined) delete process.env.SHOGO_RUNTIME_CLASS
+      else process.env.SHOGO_RUNTIME_CLASS = prevClass
+    }
+  })
+
+  test('docker/compose/make are auto-allowed when SHOGO_RUNTIME_CLASS=docker', () => {
+    const prevClass = process.env.SHOGO_RUNTIME_CLASS
+    process.env.SHOGO_RUNTIME_CLASS = 'docker'
+    try {
+      const eng = newEngine({ preference: { mode: 'balanced' } })
+      expect(eng.check('shell', 'exec', { command: 'docker compose up -d --build' }).action).toBe('allow')
+      expect(eng.check('shell', 'exec', { command: 'docker ps' }).action).toBe('allow')
+      expect(eng.check('shell', 'exec', { command: 'make build' }).action).toBe('allow')
+      // sudo stays hard-blocked regardless of runtime class.
+      expect(eng.check('shell', 'exec', { command: 'sudo docker compose up' }).action).toBe('deny')
+    } finally {
+      if (prevClass === undefined) delete process.env.SHOGO_RUNTIME_CLASS
+      else process.env.SHOGO_RUNTIME_CLASS = prevClass
+    }
+  })
+
   test('network allows requests to default allowlist domains', () => {
     const eng = newEngine({ preference: { mode: 'balanced' } })
     expect(eng.check('network', 'fetch', { url: 'https://api.github.com/repos/x/y' }).action).toBe('allow')

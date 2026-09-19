@@ -16,11 +16,13 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Animated,
   Easing,
+  Platform,
   TextInput,
   type LayoutChangeEvent,
   type NativeSyntheticEvent,
   type TextLayoutEventData,
 } from "react-native"
+import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT } from "../../lib/native-phone-layout"
 
 export const PROMINENT_COMPOSER_MIN_HEIGHT = 24
 export const PROMINENT_COMPOSER_MAX_HEIGHT = 132
@@ -29,8 +31,11 @@ export const PROMINENT_COMPOSER_FONT_SIZE = 16
 export const PROMINENT_COMPOSER_PADDING_TOP = 14
 export const PROMINENT_COMPOSER_PADDING_HORIZONTAL = 16
 export const PROMINENT_COMPOSER_PADDING_BOTTOM = 8
+/** Preserve the existing web/desktop radius. */
 export const PROMINENT_COMPOSER_RADIUS = 28
-export const PROMINENT_COMPOSER_TOOLBAR_MIN_HEIGHT = 48
+/** Native phone capsule radius derived from its shared 45pt height. */
+export const PROMINENT_COMPOSER_NATIVE_RADIUS = NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2
+export const PROMINENT_COMPOSER_TOOLBAR_MIN_HEIGHT = NATIVE_PHONE_COMPOSER_PILL_HEIGHT
 export const PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION = 200
 export const PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION = 150
 export const PROMINENT_COMPOSER_DEFAULT_COMPACT_LEFT = 108
@@ -38,6 +43,10 @@ export const PROMINENT_COMPOSER_DEFAULT_COMPACT_RIGHT = 48
 export const PROMINENT_COMPOSER_SLOT_MEASURED_MIN_WIDTH = 80
 export const PROMINENT_COMPOSER_WRAP_SLOP = 8
 export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
+/** Keep the native compact field centered in the 45px toolbar row. */
+export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = 0
+/** Keep the iOS placeholder centered with the compact composer controls. */
+export const PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP = 0
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4
 export const PROMINENT_COMPOSER_TOOLBAR_Z_INDEX = 3
 export const PROMINENT_COMPOSER_CHROME_Z_INDEX = 5
@@ -171,7 +180,10 @@ export function useProminentComposerExpansion({
     pillWidth > 0 && slotWidth > 0
       ? Math.max(PROMINENT_COMPOSER_WRAP_SLOP, pillWidth - slotX - slotWidth)
       : PROMINENT_COMPOSER_DEFAULT_COMPACT_RIGHT
-  const compactTop = chromeHeight + (toolbarMinHeight - minHeight) / 2
+  const compactTop =
+    chromeHeight +
+    (toolbarMinHeight - minHeight) / 2 +
+    (Platform.OS === "web" ? 0 : PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET)
   const stackedTop = chromeHeight + paddingTop
 
   useEffect(() => {

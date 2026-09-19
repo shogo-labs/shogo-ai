@@ -284,6 +284,84 @@ export function seedWorkspaceDefaults(dir: string): void {
   }
 }
 
+function getPersonalCompanionTemplatePath(): string | null {
+  let execAdjacent: string | null = null
+  try {
+    if (process.execPath) execAdjacent = join(dirname(process.execPath), 'personal-companion')
+  } catch { /* execPath unavailable */ }
+  const candidates = [
+    ...(execAdjacent ? [execAdjacent] : []),
+    join(__dirname, '..', 'templates', 'personal-companion'),
+    join(__dirname, '..', '..', '..', 'templates', 'personal-companion'),
+    join(__dirname, 'templates', 'personal-companion'),
+    '/app/templates/personal-companion',
+    '/opt/shogo/templates/personal-companion',
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, 'AGENTS.md')) && existsSync(join(candidate, 'config.json'))) {
+      return candidate
+    }
+  }
+  return null
+}
+
+/**
+ * Seed the personal companion persona without copying a builder app scaffold.
+ * Generic defaults are replaced only when they are still pristine; user edits
+ * survive warm-pool reboots.
+ */
+export function seedPersonalCompanionTemplate(dir: string): boolean {
+  const templatePath = getPersonalCompanionTemplatePath()
+  if (!templatePath) {
+    console.error('[workspace-defaults] personal-companion template not found')
+    return false
+  }
+
+  mkdirSync(dir, { recursive: true })
+  let changed = false
+  for (const filename of ['AGENTS.md', 'HEARTBEAT.md']) {
+    const destination = join(dir, filename)
+    const current = existsSync(destination) ? readFileSync(destination, 'utf-8') : null
+    const pristine = DEFAULT_WORKSPACE_FILES[filename]
+    if (current === null || current === pristine || (filename === 'HEARTBEAT.md' && current.trim() === '')) {
+      copyFileSync(join(templatePath, filename), destination)
+      changed = true
+    }
+  }
+
+  const configPath = join(dir, 'config.json')
+  let config: Record<string, any> = {}
+  try {
+    if (existsSync(configPath)) config = JSON.parse(readFileSync(configPath, 'utf-8'))
+  } catch {
+    config = {}
+  }
+  const templateConfig = JSON.parse(readFileSync(join(templatePath, 'config.json'), 'utf-8')) as Record<string, any>
+  let pristineConfig = false
+  try {
+    pristineConfig = JSON.stringify(config) === JSON.stringify(JSON.parse(DEFAULT_WORKSPACE_FILES['config.json']))
+  } catch { /* malformed defaults are impossible, but do not block boot */ }
+  // Policy (capabilityProfile / activeMode / allowedModes / shellEnabled) is
+  // NOT written here. `gateway.ts loadConfig()` forces those four fields
+  // from `capability-profiles.ts`'s personal profile based on the
+  // `WORKSPACE_KIND` env var — writing them into config.json would just be
+  // a second, driftable copy of the same policy (see the "Runtime policy
+  // defined three times" finding in the companion-shell plan).
+  const merged = {
+    ...config,
+    ...(pristineConfig ? templateConfig : {}),
+    model: config.model ?? {
+      provider: templateConfig.modelProvider ?? 'anthropic',
+      name: templateConfig.modelName ?? 'claude-sonnet-4-5',
+    },
+  }
+  if (JSON.stringify(config) !== JSON.stringify(merged)) {
+    writeFileSync(configPath, JSON.stringify(merged, null, 2) + '\n', 'utf-8')
+    changed = true
+  }
+  return changed
+}
+
 /**
  * Force-write all default workspace files (overwrites existing).
  * Used by eval runner to reset workspace between tests.
@@ -800,6 +878,44 @@ export interface TechStackMeta {
      * number is only relevant to internal `/api/*` proxying.
      */
     templateApiPort?: number
+    /**
+     * Which metal VM class this stack requires. `'docker'` selects the
+     * Docker-capable microVM class (dockerd + a persistent data volume;
+     * see `apps/metal-agent`'s class plumbing). Omitted / `'standard'` is
+     * the default project VM every other stack uses. Purely a request —
+     * the platform gate (`runtime.docker_class_enabled`) can still refuse
+     * it, and callers must not assume it is honoured.
+     */
+    vmClass?: 'standard' | 'docker'
+    /**
+     * Smallest `InstanceSizeName` (see `apps/api/src/config/instance-sizes.ts`)
+     * this stack should run at. Unlike the mobile floor, this floor IS
+     * billed — a Docker-class project needs real CPU/RAM for
+     * `dockerd` + the compose stack, not just headroom.
+     */
+    minimumInstanceSize?: 'micro' | 'small' | 'medium' | 'large' | 'xlarge'
+    /**
+     * One-time setup command run after `seedTechStack()` places the
+     * stack's files (e.g. `docker compose pull`). Analogous to Cursor's
+     * `environment.json#install` — runs once, its output (pulled images /
+     * installed deps) is expected to survive into the next snapshot rather
+     * than being repeated on every resume.
+     */
+    installCommand?: string
+    /**
+     * Ports the stack's services expose, seeded into
+     * `Project.settings.exposedPorts` on project creation. `protocol: 'tcp'`
+     * ports are only reachable via the client-side tunnel (arbitrary bytes,
+     * e.g. Postgres); `'http'` ports may additionally opt into the public
+     * per-port preview. `defaultVisibility` is the initial toggle state,
+     * always user-editable afterward.
+     */
+    ports?: Array<{
+      port: number
+      label?: string
+      protocol: 'http' | 'tcp'
+      defaultVisibility: 'tunnel' | 'preview'
+    }>
   }
   capabilities?: {
     webEnabled?: boolean
@@ -866,7 +982,10 @@ export function listTechStacks(): TechStackMeta[] {
  * entry shouldn't take the runtime down for an unrelated bundling bug.
  */
 export function validateTechStackRegistry(
-  registry: Record<string, { target: string; seedsOwnTemplate?: boolean }>,
+  registry: Record<
+    string,
+    { target: string; seedsOwnTemplate?: boolean; vmClass?: string; minimumInstanceSize?: string }
+  >,
 ): Array<{ stackId: string; reason: string }> {
   const mismatches: Array<{ stackId: string; reason: string }> = []
   const onDisk = listTechStacks()
@@ -891,6 +1010,24 @@ export function validateTechStackRegistry(
       mismatches.push({
         stackId: meta.id,
         reason: `seedsOwnTemplate mismatch: stack.json=${diskSeeds} registry=${regSeeds}`,
+      })
+    }
+    // Same default-falsy normalisation as seedsOwnTemplate: an omitted
+    // vmClass means 'standard' on both sides.
+    const diskVmClass = meta.runtime?.vmClass ?? 'standard'
+    const regVmClass = reg.vmClass ?? 'standard'
+    if (diskVmClass !== regVmClass) {
+      mismatches.push({
+        stackId: meta.id,
+        reason: `vmClass mismatch: stack.json="${diskVmClass}" registry="${regVmClass}"`,
+      })
+    }
+    const diskFloor = meta.runtime?.minimumInstanceSize
+    const regFloor = reg.minimumInstanceSize
+    if ((diskFloor ?? null) !== (regFloor ?? null)) {
+      mismatches.push({
+        stackId: meta.id,
+        reason: `minimumInstanceSize mismatch: stack.json=${diskFloor ?? 'unset'} registry=${regFloor ?? 'unset'}`,
       })
     }
   }

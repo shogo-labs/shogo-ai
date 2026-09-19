@@ -45,6 +45,35 @@ export interface AdminScopeDef {
   description: string
 }
 
+// Aliased (not retyped) from `@shogo/shared-app`, the single definition of
+// the universal workspace-agent primitives shared with any other client
+// (web, desktop) that grows a companion surface. See that package's
+// `workspace-agent/types.ts` for the field-level docs. Kept under their
+// original `Personal*` names here so the many existing mobile call sites
+// (`PersonalGoalsScreen`, `PersonalHomeScreen`, `PersonalActivityScreen`, …)
+// don't need to change.
+import type {
+  GoalStatus as SharedGoalStatus,
+  GoalEventKind as SharedGoalEventKind,
+  WorkspaceAgentProfile as SharedWorkspaceAgentProfile,
+  Goal as SharedGoal,
+  WorkspaceActivityItem as SharedWorkspaceActivityItem,
+  GoalEventRecord as SharedGoalEventRecord,
+  GoalPlanStep as SharedGoalPlanStep,
+  GoalDeliverable as SharedGoalDeliverable,
+  AgentTaskSummary as SharedAgentTaskSummary,
+} from '@shogo/shared-app'
+
+export type PersonalGoalStatus = SharedGoalStatus
+export type PersonalGoalEventKind = SharedGoalEventKind
+export type PersonalAgentProfile = SharedWorkspaceAgentProfile
+export type PersonalGoal = SharedGoal
+export type PersonalWorkspaceActivity = SharedWorkspaceActivityItem
+export type PersonalGoalEvent = SharedGoalEventRecord
+export type PersonalGoalPlanStep = SharedGoalPlanStep
+export type PersonalGoalDeliverable = SharedGoalDeliverable
+export type PersonalAgentTaskSummary = SharedAgentTaskSummary
+
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {
   userId: string
@@ -187,6 +216,29 @@ export interface WorkspaceChildrenResponse {
   parent: { id: string; name: string; slug: string; plan: string }
   pooledWindows?: unknown
   children: ChildWorkspaceSummary[]
+}
+
+export type AgentTaskStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface AgentTask {
+  id: string
+  userId: string
+  workspaceId: string
+  projectId: string | null
+  projectName: string | null
+  chatSessionId: string | null
+  title: string
+  notes: string | null
+  dueAt: string | null
+  status: AgentTaskStatus
+  currentStep: string | null
+  resultSummary: string | null
+  errorMessage: string | null
+  queuedAt: string | null
+  startedAt: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface RegionalCurrencyInfo {
@@ -441,9 +493,59 @@ export const api = {
   },
 
   /** GET /api/notifications/unread-count — unread inbox count for the bell badge. */
-  async getUnreadNotificationCount(http: HttpClient) {
-    const res = await http.get<{ ok?: boolean; count?: number }>('/api/notifications/unread-count')
+  async getUnreadNotificationCount(
+    http: HttpClient,
+    options: { excludeMobileTaskNotifications?: boolean } = {},
+  ) {
+    const query = options.excludeMobileTaskNotifications
+      ? '?excludeMobileTaskNotifications=true'
+      : ''
+    const res = await http.get<{ ok?: boolean; count?: number }>(`/api/notifications/unread-count${query}`)
     return res.data?.count ?? 0
+  },
+
+  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android' }) {
+    const res = await http.post<{ ok?: boolean; id?: string }>('/api/mobile-push-subscriptions', body)
+    return res.data
+  },
+
+  async unregisterMobilePushSubscription(http: HttpClient, pushToken: string) {
+    const res = await http.delete<{ ok?: boolean }>('/api/mobile-push-subscriptions', { pushToken })
+    return res.data
+  },
+
+  async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string } = {}) {
+    const query = new URLSearchParams()
+    if (params.status) query.set('status', params.status)
+    if (params.projectId) query.set('projectId', params.projectId)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    const res = await http.get<{ ok?: boolean; items?: AgentTask[] }>(`/api/agent-tasks${suffix}`)
+    return res.data?.items ?? []
+  },
+
+  async createAgentTask(
+    http: HttpClient,
+    body: { workspaceId: string; projectId?: string | null; title: string; notes?: string; dueAt?: string | null },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: AgentTask }>('/api/agent-tasks', body)
+    if (!res.data?.data) throw new Error('Failed to create task')
+    return res.data.data
+  },
+
+  async startAgentTask(http: HttpClient, taskId: string) {
+    const res = await http.post<{ ok?: boolean; data?: AgentTask }>(`/api/agent-tasks/${encodeURIComponent(taskId)}/start`, {})
+    if (!res.data?.data) throw new Error('Failed to start task')
+    return res.data.data
+  },
+
+  async cancelAgentTask(http: HttpClient, taskId: string) {
+    const res = await http.post<{ ok?: boolean; data?: AgentTask }>(`/api/agent-tasks/${encodeURIComponent(taskId)}/cancel`, {})
+    if (!res.data?.data) throw new Error('Failed to cancel task')
+    return res.data.data
+  },
+
+  async deleteAgentTask(http: HttpClient, taskId: string) {
+    await http.delete<{ ok?: boolean }>(`/api/agent-tasks/${encodeURIComponent(taskId)}`)
   },
 
   async setUsageBasedPricing(
@@ -1227,6 +1329,110 @@ export const api = {
     )
     if (!res.data?.session) throw new Error('createWorkspaceSession: no session returned')
     return res.data.session
+  },
+
+  /** Return the stable primary chat for a personal workspace. */
+  async getPrimaryWorkspaceSession(
+    http: HttpClient,
+    workspaceId: string,
+  ): Promise<{ id: string; workspaceId: string; isPrimary?: boolean }> {
+    const sessions = await api.listWorkspaceSessions(http, workspaceId)
+    const primary = sessions.find((session) => session.isPrimary)
+    if (!primary) throw new Error('getPrimaryWorkspaceSession: no primary session returned')
+    return primary
+  },
+
+  /**
+   * List every workspace-scoped chat session (primary + "side chats").
+   * Personal workspaces get their primary session auto-created server-side
+   * on first list (see `routes/workspace-chat.ts`), so this always returns
+   * at least one session for a personal workspace.
+   */
+  async listWorkspaceSessions(
+    http: HttpClient,
+    workspaceId: string,
+  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
+    const res = await http.get<{
+      sessions?: Array<{
+        id: string
+        workspaceId: string
+        isPrimary?: boolean
+        name?: string | null
+        inferredName?: string | null
+        createdAt?: string
+        lastActiveAt?: string
+      }>
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`)
+    return res.data?.sessions ?? []
+  },
+
+  async getAgentProfile(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ profile?: PersonalAgentProfile }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`,
+    )
+    if (!res.data?.profile) throw new Error('getAgentProfile: no profile returned')
+    return res.data.profile
+  },
+
+  /** Update the companion's own profile fields (name/avatar/tagline/personality/statusText). */
+  async updateAgentProfile(
+    http: HttpClient,
+    workspaceId: string,
+    changes: Partial<Pick<PersonalAgentProfile, 'name' | 'avatarUrl' | 'tagline' | 'personality' | 'statusText'>>,
+  ) {
+    const res = await http.patch<{ profile?: PersonalAgentProfile }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`,
+      changes,
+    )
+    if (!res.data?.profile) throw new Error('updateAgentProfile: no profile returned')
+    return res.data.profile
+  },
+
+  async listWorkspaceGoals(
+    http: HttpClient,
+    workspaceId: string,
+    status?: PersonalGoalStatus,
+  ) {
+    const query = status ? `?status=${encodeURIComponent(status)}` : ''
+    const res = await http.get<{ goals?: PersonalGoal[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/goals${query}`,
+    )
+    return res.data?.goals ?? []
+  },
+
+  /** A single goal with its recent-first event timeline and linked agent tasks. */
+  async getGoal(
+    http: HttpClient,
+    workspaceId: string,
+    goalId: string,
+  ): Promise<(PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }) | null> {
+    const res = await http.get<{
+      goal?: PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}`)
+    return res.data?.goal ?? null
+  },
+
+  /** Record the user's decision on a pending "Needs your OK" approval event. */
+  async resolveGoalApproval(
+    http: HttpClient,
+    workspaceId: string,
+    goalId: string,
+    eventId: string,
+    decision: 'approved' | 'declined',
+  ) {
+    const res = await http.post<{ event?: PersonalGoalEvent }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}/events/${encodeURIComponent(eventId)}/resolve`,
+      { decision },
+    )
+    if (!res.data?.event) throw new Error('resolveGoalApproval: no event returned')
+    return res.data.event
+  },
+
+  async listWorkspaceActivity(http: HttpClient, workspaceId: string, limit = 100) {
+    const res = await http.get<{ activity?: PersonalWorkspaceActivity[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/activity?limit=${Math.min(Math.max(limit, 1), 200)}`,
+    )
+    return res.data?.activity ?? []
   },
 
   /** Attach a project to an existing workspace session. */

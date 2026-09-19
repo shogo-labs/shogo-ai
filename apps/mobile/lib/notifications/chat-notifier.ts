@@ -20,10 +20,9 @@ export interface ChatNotificationPayload {
   preview: string
 }
 
-export interface ChatNotificationClickData {
-  sessionId: string
-  projectId: string
-}
+export type ChatNotificationClickData =
+  | { taskId: string; sessionId?: string; projectId?: string }
+  | { sessionId: string; projectId: string; taskId?: string }
 
 export async function isUserInactive(): Promise<boolean> {
   return false
@@ -31,6 +30,12 @@ export async function isUserInactive(): Promise<boolean> {
 
 export async function ensureNotificationPermission(): Promise<boolean> {
   return false
+}
+
+export function setActiveChatNotificationContext(
+  _context: { sessionId: string; projectId: string } | null,
+): void {
+  // no-op fallback
 }
 
 export async function notifyChatFinished(_p: ChatNotificationPayload): Promise<void> {

@@ -35,6 +35,11 @@ import {
 import { getOveragePriceConfig } from '../config/stripe-prices';
 import { RAW_REGION_ID, PRIMARY_REGION, getPeer } from '../lib/region';
 import { callPeerInternal } from '../lib/region-peer-proxy';
+import {
+  meetsMinimumInstanceSize,
+  type InstanceSizeName,
+} from '../config/instance-sizes';
+import { getMinimumInstanceSize } from '@shogo/shared-runtime';
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
@@ -616,6 +621,49 @@ export async function canEnableAlwaysOn(
     countAlwaysOnUsed(workspaceId, projectId),
   ])
   return { allowed: used < allowance, planAllows: allowance > 0, allowance, used }
+}
+
+/**
+ * Check whether a workspace's CURRENT instance size (compute add-on tier —
+ * `micro`/`small`/`medium`/`large`/`xlarge`, a separate billing axis from the
+ * seat plan checked above) meets `techStackId`'s declared
+ * `minimumInstanceSize` floor (e.g. `docker-compose` requires `large`; see
+ * `packages/core/src/tech-stack-registry.ts` and
+ * `config/instance-sizes.ts`'s `applyDockerStackFloor`). Stacks that declare
+ * no floor always pass — this only bites Docker-class stacks today.
+ *
+ * This is the ONLY check that looks at `workspace.instanceSize` for gating
+ * purposes; it is independent of (and should be checked in ADDITION to) the
+ * super-admin platform flag `runtime.docker_class_enabled`
+ * (`lib/runtime-class-setting.ts`) — a workspace can be big enough AND still
+ * be refused if the platform gate is off, or vice versa.
+ *
+ * In local mode returns `allowed: true` unconditionally so dev workspaces
+ * (which are always `micro`, there being no Stripe to upgrade them) aren't
+ * blocked from using Docker-class stacks locally.
+ */
+export async function canRunTechStackOnInstanceSize(
+  workspaceId: string,
+  techStackId: string | null | undefined,
+): Promise<{
+  allowed: boolean
+  currentSize: InstanceSizeName
+  requiredSize: InstanceSizeName | null
+}> {
+  const requiredSize = getMinimumInstanceSize(techStackId) as InstanceSizeName | null
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { instanceSize: true },
+  })
+  const currentSize = (workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  if (isLocalMode || !requiredSize) {
+    return { allowed: true, currentSize, requiredSize }
+  }
+  return {
+    allowed: meetsMinimumInstanceSize(currentSize, techStackId),
+    currentSize,
+    requiredSize,
+  }
 }
 
 /** Snapshot of one rolling usage window for the usage endpoint / UI. */

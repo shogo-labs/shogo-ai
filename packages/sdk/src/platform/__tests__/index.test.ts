@@ -396,7 +396,7 @@ describe('PlatformApi.getFeatureFlags', () => {
   test('fallback: all-null when data missing', async () => {
     const { api } = mkApi()
     expect(await api.getFeatureFlags()).toEqual({
-      marketplace: null, ezMode: null, phoneChannel: null,
+      marketplace: null, ezMode: null, phoneChannel: null, personalShell: null,
     })
   })
 })
@@ -413,7 +413,7 @@ describe('PlatformApi.putFeatureFlags', () => {
     const { api } = mkApi()
     expect(await api.putFeatureFlags({})).toEqual({
       ok: false,
-      flags: { marketplace: null, ezMode: null, phoneChannel: null },
+      flags: { marketplace: null, ezMode: null, phoneChannel: null, personalShell: null },
     })
   })
 })

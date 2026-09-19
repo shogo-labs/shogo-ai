@@ -9,10 +9,12 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { resolveAgentModelEnv } from './agent-model-defaults'
-import { INSTANCE_SIZES } from '../../config/instance-sizes'
+import { INSTANCE_SIZES, meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
+import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
+import { isDockerTechStack, getDeclaredPorts } from '@shogo/shared-runtime'
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was
@@ -129,6 +131,77 @@ export async function buildProjectEnv(
       const techStackFromSettings = settings?.techStackId as string | undefined
       if (techStackFromSettings) {
         env.TECH_STACK_ID = techStackFromSettings
+      }
+
+      // Docker-capable ("Tier 2") project class. This is DERIVED from the
+      // project's tech stack via the registry's `isDockerTechStack()` — the
+      // same source of truth `docker-compose`'s `stack.json` declares
+      // (`runtime.vmClass: 'docker'`) — and NOT from `settings.runtimeClass`
+      // alone. Nothing persists an explicit `settings.runtimeClass` today (no
+      // creation-flow write site), but if one is ever added, deriving from
+      // the tech stack registry rather than trusting a project-settings field
+      // directly keeps `minimumInstanceSize`/`SHOGO_EXPOSED_PORTS`/warm-pool
+      // placement consistent with what the assigned stack actually declares
+      // — an unchecked `settings.runtimeClass` override could otherwise grant
+      // a docker-class VM (and its bigger instance floor) to a stack that
+      // never asked for one. A `settings.runtimeClass === 'docker'` that
+      // disagrees with the tech stack is logged (possible misconfiguration)
+      // but does not grant docker class on its own. Re-check the platform
+      // gate on every assignment (not just at creation) so flipping it off
+      // stops NEW assignments from requesting the docker-class VM pool
+      // without needing to touch every project row. A project that wants
+      // docker but is refused here silently gets a standard VM, where the
+      // `docker-compose` stack cannot actually run — that mismatch is a
+      // placement/gating bug to fix, not something this builder can repair,
+      // so it's logged loudly rather than swallowed.
+      const stackIsDockerClass = isDockerTechStack(techStackFromSettings)
+      if (settings?.runtimeClass === 'docker' && !stackIsDockerClass) {
+        console.error(
+          `[${prefix}] project ${projectId} has settings.runtimeClass === 'docker' but its ` +
+            `tech stack (${techStackFromSettings ?? '?'}) is not registered as docker-capable — ` +
+            `ignoring the override and assigning a standard VM`,
+        )
+      }
+      const wantsDockerClass = stackIsDockerClass
+      if (wantsDockerClass) {
+        if (!isDockerClassEnabled()) {
+          console.error(
+            `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
+              `${techStackFromSettings ?? '?'}) but the platform gate ` +
+              `(runtime.docker_class_enabled) is off — assigning a standard VM`,
+          )
+        } else if (!meetsMinimumInstanceSize(instanceSize as InstanceSizeName, techStackFromSettings)) {
+          // Defense-in-depth: the project-creation / stack-switch route
+          // should already have refused this via
+          // `billing.service.ts`'s `canRunTechStackOnInstanceSize()` — a
+          // workspace on `micro` should never be able to set
+          // `techStackId: 'docker-compose'` in the first place. If one
+          // slips through anyway (a bug, a manual DB edit, a workspace that
+          // was downsized after the fact), refuse the docker-class VM here
+          // too rather than silently handing out `large`-tier compute the
+          // workspace never paid for.
+          console.error(
+            `[${prefix}] project ${projectId} wants the docker-class VM (tech stack ` +
+              `${techStackFromSettings ?? '?'}) but workspace ${project.workspaceId ?? '?'} is on ` +
+              `instance size '${instanceSize}', below the stack's declared minimum — assigning a standard VM`,
+          )
+        } else {
+          env.SHOGO_RUNTIME_CLASS = 'docker'
+        }
+      }
+
+      // Exposed-ports allowlist (Phase 3: client-side tunnel + public per-port
+      // preview). This is the guest-side defense-in-depth check — `apps/api`
+      // already refuses to open a tunnel/preview for a port the project's
+      // tech stack doesn't declare (see `project-ports.ts`), but the runtime
+      // enforces the SAME allowlist itself so a bug or a forged upstream call
+      // can't be used to reach an arbitrary guest-local port (e.g. something
+      // an attacker got listening via a shell tool). Comma-separated, empty
+      // when the stack declares no ports (the default for every non-Docker
+      // stack today).
+      const declaredPorts = getDeclaredPorts(techStackFromSettings)
+      if (declaredPorts.length > 0) {
+        env.SHOGO_EXPOSED_PORTS = declaredPorts.map((p) => p.port).join(',')
       }
 
       const { getProjectOwnerUserId } = await import('../project-user-context')

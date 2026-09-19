@@ -68,6 +68,19 @@ const mockPrisma = {
 
 mock.module('../../lib/prisma', () => ({ prisma: mockPrisma }))
 
+// `project-export-import.ts` statically imports `../services/billing.service`
+// for the Docker-class tier gate + advanced-model checks. The real module
+// pulls in a chain (billing-alerts, stripe-prices, region, region-peer-proxy)
+// this file's bare-bones `mockPrisma` can't support — mock it directly.
+mock.module('../../services/billing.service', () => ({
+  hasAdvancedModelAccess: async (_workspaceId: string) => false,
+  canRunTechStackOnInstanceSize: async (_workspaceId: string, _techStackId: string | null | undefined) => ({
+    allowed: true,
+    currentSize: 'micro',
+    requiredSize: null,
+  }),
+}))
+
 // Stub S3 sync so the K8s code path doesn't try to dial Oracle/AWS in
 // tests. We only care that the local on-disk write step honored the
 // install-marker exclusion before S3 ran.
@@ -82,6 +95,10 @@ mock.module('@shogo/shared-runtime', () => ({
       archiveSize: 0,
     }),
   }),
+  // No fixture here declares a docker-class stack — always short-circuits
+  // the runImport tier gate. Still needs to be a real function so the
+  // route's static import doesn't crash at link time.
+  getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
   // mock.module replaces the entire module — the route under test also
   // imports isMacOSJunkName/isMacOSJunkPath, so we must re-export them
   // or Bun raises `Export named '…' not found in module` at link time.

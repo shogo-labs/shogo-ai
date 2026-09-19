@@ -306,6 +306,70 @@ describe('MetalWarmPoolController', () => {
     expect(url).toBe('http://10.8.0.2:8080')
   })
 
+  // --- class-aware placement (Phase 1 docker project class) ---------------
+
+  it('prefers a docker-capable host for a docker-class assign, even though it sorts second by load', async () => {
+    const seen: string[] = []
+    const fetchImpl = (async (url: string) => {
+      seen.push(new URL(url).hostname)
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const dockerEnv = () => async () => ({ PROJECT_ID: 'p', SHOGO_RUNTIME_CLASS: 'docker' })
+    const c = new MetalWarmPoolController(dockerEnv(), fetchImpl)
+    // ash-1 has the lower load (would sort first) but does not support docker.
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2', load: { available: 1, assigned: 0, suspended: 0 } })
+    // ash-2 has higher load but DOES advertise docker support.
+    c.registerHost({
+      ...REG,
+      hostId: 'ash-2',
+      meshIp: '10.8.0.3',
+      load: { available: 1, assigned: 5, suspended: 0 },
+      classes: [
+        { vmClass: 'standard', supported: true, poolSize: 4, available: 1 },
+        { vmClass: 'docker', supported: true, poolSize: 1, available: 1 },
+      ],
+    })
+
+    await c.getMetalProjectUrl('p1')
+    expect(seen).toEqual(['10.8.0.3'])
+  })
+
+  it('falls back to a standard-only host for a docker-class assign when none supports it (fail-closed lives on the agent)', async () => {
+    const seen: string[] = []
+    const fetchImpl = (async (url: string) => {
+      seen.push(new URL(url).hostname)
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const dockerEnv = () => async () => ({ PROJECT_ID: 'p', SHOGO_RUNTIME_CLASS: 'docker' })
+    const c = new MetalWarmPoolController(dockerEnv(), fetchImpl)
+    c.registerHost(REG) // no `classes` at all — an older agent, treated as standard-only
+    await c.getMetalProjectUrl('p1')
+    expect(seen).toEqual(['10.8.0.2'])
+  })
+
+  it('never moves a project off its sticky host to chase docker support', async () => {
+    const seen: string[] = []
+    const fetchImpl = (async (url: string) => {
+      seen.push(new URL(url).hostname)
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'resumed', source: 'local' }), { status: 200 })
+    }) as any
+    const dockerEnv = () => async () => ({ PROJECT_ID: 'p', SHOGO_RUNTIME_CLASS: 'docker' })
+    const c = new MetalWarmPoolController(dockerEnv(), fetchImpl)
+    // ash-1 does not support docker, but already holds this project's snapshot.
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2', load: { available: 1, assigned: 0, suspended: 0 } })
+    c.registerHost({
+      ...REG,
+      hostId: 'ash-2',
+      meshIp: '10.8.0.3',
+      load: { available: 1, assigned: 0, suspended: 0 },
+      classes: [{ vmClass: 'docker', supported: true, poolSize: 1, available: 1 }],
+    })
+    await getMetalPlacementRegistry().setPlacement('p1', 'ash-1', 'local')
+
+    await c.getMetalProjectUrl('p1')
+    expect(seen).toEqual(['10.8.0.2'])
+  })
+
   it('dedupes concurrent resolves for the same project', async () => {
     let calls = 0
     const fetchImpl = (async () => {

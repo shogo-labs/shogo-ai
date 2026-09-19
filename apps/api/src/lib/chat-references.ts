@@ -66,7 +66,7 @@ export async function enrichWorkspaceReferences(
       }
 
       const projects = await prisma.project.findMany({
-        where: { workspaceId: ref.id },
+        where: { workspaceId: ref.id, hidden: false },
         select: { name: true },
         orderBy: { name: 'asc' },
         take: MAX_WORKSPACE_PROJECTS,

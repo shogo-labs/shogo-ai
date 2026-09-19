@@ -71,6 +71,8 @@ function insertSlot(
     restarts: 0,
     consecutiveFailures: 0,
     lastFailureAt: 0,
+    breakerTrips: 0,
+    restartTimestamps: [],
     graceTimer: null,
     restartTimer: null,
     idleTimer: null,

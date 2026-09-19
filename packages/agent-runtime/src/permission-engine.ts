@@ -101,6 +101,36 @@ const DEFAULT_SHELL_ALLOWLIST: string[] = [
   'cd *', 'pushd *', 'popd',
 ]
 
+/**
+ * Extra Balanced-mode allowlist entries for Docker-class projects (see
+ * `apps/metal-agent`'s VM class plumbing + `TechStackMeta.runtime.vmClass`).
+ * `docker`/`docker compose` are not on the default allowlist because they
+ * are meaningless (and the daemon is absent) on every other project class;
+ * gating them behind `SHOGO_RUNTIME_CLASS=docker` — set by the API only
+ * when it actually assigned a docker-class VM — avoids widening the
+ * default surface for the vast majority of (non-Docker) projects.
+ * `sudo` stays hard-blocked in every mode regardless (see
+ * `SUB_COMMAND_BLOCKED` above): dockerd itself runs as root from `fc-init`,
+ * the agent's own user only needs group membership, never `sudo`.
+ */
+const DOCKER_CLASS_SHELL_ALLOWLIST: string[] = [
+  'docker *', 'docker',
+  'docker-compose *',
+  'make *', 'make',
+]
+
+/** True when this runtime was assigned a Docker-capable VM (Tier 2). */
+function isDockerRuntimeClass(): boolean {
+  return process.env.SHOGO_RUNTIME_CLASS === 'docker'
+}
+
+/** Balanced-mode base allowlist, widened with Docker commands on a docker-class runtime. */
+function getDefaultShellAllowlist(): string[] {
+  return isDockerRuntimeClass()
+    ? [...DEFAULT_SHELL_ALLOWLIST, ...DOCKER_CLASS_SHELL_ALLOWLIST]
+    : DEFAULT_SHELL_ALLOWLIST
+}
+
 const DEFAULT_NETWORK_ALLOWLIST: string[] = [
   'npmjs.org', 'registry.npmjs.org',
   'github.com', 'api.github.com', 'raw.githubusercontent.com',
@@ -509,7 +539,7 @@ export class PermissionEngine {
       case 'shell': {
         const command = (params.command as string) || ''
         const userAllow = this.pref.overrides?.shellCommands?.allow ?? []
-        const combinedAllow = [...DEFAULT_SHELL_ALLOWLIST, ...userAllow]
+        const combinedAllow = [...getDefaultShellAllowlist(), ...userAllow]
         if (matchesAnyPattern(command, combinedAllow)) {
           return { action: 'allow', reason: 'Command matches allowlist', category }
         }

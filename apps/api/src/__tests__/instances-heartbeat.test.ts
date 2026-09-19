@@ -61,6 +61,7 @@ mock.module('../routes/api-keys', () => ({
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(async () => {}),
+  sendPushToUser: mock(async () => {}),
 }))
 
 const adminUser = { id: 'user-1', userId: 'user-1', email: 'admin@test.com', role: 'super_admin' }

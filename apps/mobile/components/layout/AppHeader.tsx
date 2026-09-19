@@ -96,7 +96,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
         {isHome ? (
           <View className="flex-1" pointerEvents="none" />
         ) : (
-          <Text className={`flex-1 text-center ${PHONE_DENSITY.text.body} font-semibold text-foreground`} numberOfLines={1}>
+          <Text className={`flex-1 text-center ${PHONE_DENSITY.text.title} font-semibold text-foreground`} numberOfLines={1}>
             {title}
           </Text>
         )}

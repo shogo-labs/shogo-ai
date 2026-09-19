@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+// Built-in task source — used only when no external tracker (GitHub/Jira) is
+// connected. See .shogo/skills/task-source-builtin/SKILL.md.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model TrackerItem {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  status    String   @default("open") @map("status") // open | analyzing | planning | implementing | in_review | done
+  runId     String?  @map("run_id")
+  comments  TrackerComment[]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([runId])
+  @@map("tracker_items")
+}
+
+model TrackerComment {
+  id        String      @id @default(cuid())
+  item      TrackerItem @relation(fields: [itemId], references: [id])
+  itemId    String      @map("item_id")
+  author    String      // "human" | a stage's manifest key, e.g. "analyst"
+  body      String
+  runId     String?     @map("run_id")
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  @@index([itemId])
+  @@index([runId])
+  @@map("tracker_comments")
+}

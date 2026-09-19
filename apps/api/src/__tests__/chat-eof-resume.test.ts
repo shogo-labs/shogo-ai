@@ -351,7 +351,11 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
 
   test('EOF without turn-complete + resume hook returns null persists partial', async () => {
     // Covers the case where `chatSessionId` is missing or `fetchFromRuntime`
-    // throws — resume returns null, we keep what we had.
+    // throws — resume returns null on every attempt (buffer genuinely
+    // gone / pod not coming back), we exhaust the retry budget and keep
+    // what we had. `resumeRetryDelaysMs: [0, 0, 0]` skips the real-time
+    // sleeps but still exercises the same number of attempts (1 initial +
+    // 3 retries = 4) as production defaults.
     const projectId = 'proj-noresume'
     const chatSessionId = 'sess-noresume'
     await openSession(projectId, 'ws-n', 'user-n')
@@ -361,15 +365,67 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
       dataFrame({ type: 'text-delta', delta: 'half-finished thought' }),
     ])
 
+    let resumeCalls = 0
     await trackUsageFromStream(
       stream,
       { chatSessionId, agentMode: 'sonnet' },
       { id: projectId, workspaceId: 'ws-n' },
-      { resume: async () => null },
+      {
+        resume: async () => {
+          resumeCalls++
+          return null
+        },
+        resumeRetryDelaysMs: [0, 0, 0],
+      },
     )
 
+    expect(resumeCalls).toBe(4)
     expect(persistedMessages.length).toBe(1)
     expect(persistedMessages[0].content).toBe('half-finished thought')
+    expect(consumeUsageCalls.length).toBe(1)
+  })
+
+  test('EOF without turn-complete + resume() transiently fails then recovers on retry', async () => {
+    // Models the real-world case this retry loop exists for: the runtime
+    // crashed mid-turn, WorkerRuntimeManager is respawning it, and the
+    // FIRST resume attempt hits a dead connection — but a fresh attempt a
+    // moment later reattaches to the same buffered turn successfully.
+    const projectId = 'proj-resume-retry'
+    const chatSessionId = 'sess-resume-retry'
+    await openSession(projectId, 'ws-rr', 'user-rr')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+
+    const originalStream = makeSseStream([
+      dataFrame({ type: 'text-delta', delta: 'hello ' }),
+      dataFrame({ type: 'data-turn-seq', data: { turnId: 't1', seq: 7 } }),
+    ])
+    const resumeBody = makeSseStream([
+      dataFrame({ type: 'text-delta', delta: 'hello world after restart' }),
+      dataFrame({ type: 'data-turn-complete', data: { status: 'completed', lastSeq: 12 } }),
+      dataFrame({ type: 'finish', usage: { inputTokens: 120, outputTokens: 40 } }),
+    ])
+
+    let resumeCalls = 0
+    const resumeFn = async () => {
+      resumeCalls++
+      // First attempt: connection refused (runtime mid-restart) — the
+      // wrapper around fetchFromRuntime swallows this to null. Second
+      // attempt: runtime is back up, buffer replay succeeds.
+      if (resumeCalls === 1) return null
+      return new Response(resumeBody, { status: 200 })
+    }
+
+    await trackUsageFromStream(
+      originalStream,
+      { chatSessionId, agentMode: 'sonnet' },
+      { id: projectId, workspaceId: 'ws-rr' },
+      { resume: resumeFn, resumeRetryDelaysMs: [0] },
+    )
+
+    expect(resumeCalls).toBe(2)
+    expect(persistedMessages.length).toBe(1)
+    expect(persistedMessages[0].content).toBe('hello world after restart')
+    expect(await hasSession(projectId)).toBe(false)
     expect(consumeUsageCalls.length).toBe(1)
   })
 

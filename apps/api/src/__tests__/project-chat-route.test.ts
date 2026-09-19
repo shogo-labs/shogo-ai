@@ -240,6 +240,34 @@ describe('POST /projects/:projectId/chat', () => {
     expect(body.error.retryable).toBe(true)
   })
 
+  // Regression: WorkerRuntimeManager's circuit breaker (see
+  // packages/shogo-worker/src/lib/runtime-manager.ts) now self-heals on a
+  // cooldown rather than staying `'failed'` forever, but until that
+  // cooldown elapses `ensureRunning` throws a directive error mentioning
+  // "Circuit breaker tripped" / "resetFailure". That error must be
+  // classified as a retryable 503 — never a hard 500 — or a transient
+  // jetsam-OOM blip permanently breaks the user's chat until the whole
+  // app/worker restarts.
+  test('503 (not 500) when the runtime fetch fails with a circuit-breaker message', async () => {
+    resolvePodUrlResult = { url: 'http://runtime-p-1.local' }
+    nextFetchResponse = () => {
+      throw new Error(
+        '[WorkerRuntimeManager] cannot ensureRunning(p-1): Circuit breaker tripped (trip #1): ' +
+          '8 consecutive non-clean exits within 300s. Will auto-retry in ~117s; ' +
+          'call resetFailure(p-1) to retry immediately, or stop(p-1) to give up.',
+      )
+    }
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      body: JSON.stringify({ chatSessionId: 's-1' }),
+    }))
+
+    expect(res.status).toBe(503)
+    const body = await res.json() as any
+    expect(body.error.retryable).toBe(true)
+  })
+
   test('streams a successful runtime response with trusted billing user and model downgrade', async () => {
     hasAdvancedModelAccessResult = false
     nextFetchResponse = () => new Response('data: {"type":"text","text":"hi"}\n\n', {
@@ -464,6 +492,7 @@ describe('POST /projects/:projectId/chat/stop', () => {
     }))
     expect(res.status).toBe(200)
     expect((await res.json() as any).stopped).toBe(true)
+    expect(lastFetchInit?.body).toBe(JSON.stringify({ reason: 'user' }))
   })
 
   test('500 when runtime resolution fails', async () => {

@@ -32,6 +32,15 @@ import { getRuntimeManager } from '../lib/runtime/manager'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { resolve as resolvePath } from 'path'
 import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
+import { workspaceAgentRoutes, type WorkspaceAgentAuthContext } from './workspace-agent'
+import {
+  authenticate,
+  authorizeWorkspaceRuntimeRequest,
+  authorizeWorkspaceScope,
+  logAuthReject,
+  validateAuth,
+  type InternalIdentity,
+} from './internal-auth'
 
 const app = new Hono()
 
@@ -77,149 +86,6 @@ function checkRateLimit(projectId: string): boolean {
   }
   entry.count++
   return entry.count <= RATE_LIMIT_MAX
-}
-
-function logAuthReject(reason: string, projectId?: string): void {
-  console.warn(`[InternalAuth] rejected: ${reason}${projectId ? ` projectId=${projectId}` : ''}`)
-}
-
-/**
- * Who authenticated an internal request.
- *
- * `sa` is cluster-scoped (a real K8s ServiceAccount, only obtainable inside
- * the cluster). `project` and `workspace` are HMAC bearer capabilities that a
- * runtime holds in env, so an agent can read its own token — which means they
- * must never be treated as cluster-scoped. Routes that take a `workspaceId`
- * from the request body have to cross-check it against the token's scope; see
- * `authorizeWorkspaceScope`.
- */
-type InternalIdentity =
-  | { kind: 'sa' }
-  | { kind: 'project'; projectId: string }
-  | { kind: 'workspace'; workspaceId: string }
-
-/**
- * Authenticate a request: K8s SA bearer first, then HMAC-signed runtime token.
- *
- * Runtime tokens are accepted in production, not only local mode. Metal
- * microVMs (and any runtime without a ServiceAccount token file) send
- * `x-runtime-token` with no `Authorization` header; gating that path on
- * `SHOGO_LOCAL_MODE` 401'd every publish/checkpoint from those runtimes.
- * `authMiddleware` already accepts the same credential in production across
- * `/api/*`, so this only removes an inconsistency — see ../lib/runtime-token.md.
- *
- * If a Bearer header is present but TokenReview fails, fall through to the
- * runtime token instead of dead-ending — a Knative pod whose SA token is
- * stale still carries a valid `x-runtime-token`.
- *
- * Two runtime topologies present different `x-runtime-token` types:
- *   - Legacy single-project runtime → PROJECT token (`rt_v1_<projectId>_…`),
- *     verified by `verifyRuntimeToken`.
- *   - Universal workspace (merged-root) runtime → WORKSPACE token
- *     (`wrt_v1_<workspaceId>_…`), verified by `verifyWorkspaceRuntimeToken`.
- *     For project-scoped routes we additionally confirm the project belongs
- *     to the token's workspace so a workspace token can't act on a project
- *     in another workspace.
- */
-async function authenticate(c: Context, projectId?: string): Promise<InternalIdentity | null> {
-  const authHeader = c.req.header('Authorization')
-  if (authHeader?.startsWith('Bearer ')) {
-    const identity = await validatePodToken(authHeader.slice(7))
-    if (identity) return { kind: 'sa' }
-    console.warn(
-      `[InternalAuth] SA token rejected; falling through to runtime token` +
-        `${projectId ? ` projectId=${projectId}` : ''}`,
-    )
-  }
-
-  const runtimeToken = c.req.header('x-runtime-token')
-  if (!runtimeToken) {
-    logAuthReject(
-      authHeader?.startsWith('Bearer ')
-        ? 'invalid_sa_token_and_no_runtime_token'
-        : 'missing_credentials',
-      projectId,
-    )
-    return null
-  }
-
-  const { verifyRuntimeToken } = await import('../lib/runtime-token')
-  const verified = verifyRuntimeToken(runtimeToken, projectId)
-  if (verified.ok) {
-    if (!projectId || verified.projectId === projectId) {
-      return { kind: 'project', projectId: verified.projectId }
-    }
-    logAuthReject(`runtime_token_project_mismatch tokenProject=${verified.projectId}`, projectId)
-    return null
-  }
-
-  // Workspace (merged-root) runtimes authenticate with a workspace token
-  // instead of a project token. Accept it, enforcing project membership
-  // for project-scoped routes.
-  const { verifyWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
-  const wsVerified = verifyWorkspaceRuntimeToken(runtimeToken)
-  if (wsVerified.ok) {
-    if (!projectId) return { kind: 'workspace', workspaceId: wsVerified.workspaceId }
-    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
-    const workspaceId = await resolveProjectWorkspaceId(projectId)
-    if (workspaceId === wsVerified.workspaceId) {
-      return { kind: 'workspace', workspaceId: wsVerified.workspaceId }
-    }
-    logAuthReject(
-      `workspace_token_mismatch tokenWorkspace=${wsVerified.workspaceId} projectWorkspace=${workspaceId ?? 'none'}`,
-      projectId,
-    )
-    return null
-  }
-
-  logAuthReject(`runtime_token_invalid reason=${verified.reason}`, projectId)
-  return null
-}
-
-/** Boolean form for project-scoped routes, where the path param is the scope. */
-async function validateAuth(c: Context, projectId?: string): Promise<boolean> {
-  return (await authenticate(c, projectId)) !== null
-}
-
-/**
- * Authorize a route whose target workspace comes from the request body rather
- * than a path param, so the token's own scope cannot be inferred from the URL.
- *
- * A runtime token is a project/workspace capability, not a cluster credential:
- * without this check any pod could write analytics rows against an arbitrary
- * `workspaceId`. SA callers are cluster-internal and stay unrestricted.
- */
-async function authorizeWorkspaceScope(
-  c: Context,
-  workspaceId: string | null,
-  projectId?: string,
-): Promise<boolean> {
-  const identity = await authenticate(c, projectId)
-  if (!identity) return false
-  if (identity.kind === 'sa') return true
-  if (!workspaceId) {
-    logAuthReject(`workspace_scope_required identity=${identity.kind}`, projectId)
-    return false
-  }
-
-  if (identity.kind === 'workspace') {
-    if (identity.workspaceId === workspaceId) return true
-    logAuthReject(
-      `workspace_scope_mismatch tokenWorkspace=${identity.workspaceId} body=${workspaceId}`,
-      projectId,
-    )
-    return false
-  }
-
-  const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
-  const tokenWorkspaceId = await resolveProjectWorkspaceId(identity.projectId)
-  if (tokenWorkspaceId && tokenWorkspaceId === workspaceId) return true
-  logAuthReject(
-    `workspace_scope_mismatch tokenProject=${identity.projectId} ` +
-      `tokenWorkspace=${tokenWorkspaceId ?? 'none'} body=${workspaceId}`,
-    projectId,
-  )
-  return false
 }
 
 /**
@@ -604,6 +470,13 @@ app.post('/agent-cost-metrics', async (c) => {
       loopDetected: body.loopDetected === true,
       escalated: body.escalated === true,
       responseEmpty: body.responseEmpty === true,
+      // Free-form correlation (e.g. `pipelineRunId` from `project_call`).
+      // Bounded so a runtime can't stuff arbitrary payloads into analytics.
+      metadata:
+        body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+          && JSON.stringify(body.metadata).length <= 4_096
+          ? (body.metadata as Record<string, unknown>)
+          : undefined,
     })
     return c.json({ ok: true })
   } catch (err: any) {
@@ -613,9 +486,40 @@ app.post('/agent-cost-metrics', async (c) => {
 })
 
 // ---------------------------------------------------------------------------
+// Workspace agent profile and goals (universal workspace primitives; see
+// routes/workspace-agent.ts). Mounted here with the runtime-pod / SA
+// authorization strategy — the handler implementation is shared with the
+// session-authenticated mount in server.ts so the two surfaces can't drift.
+// ---------------------------------------------------------------------------
+
+app.route(
+  '/',
+  workspaceAgentRoutes({
+    authorize: async (c): Promise<WorkspaceAgentAuthContext | Response> => {
+      const workspaceId = c.req.param('workspaceId')
+      if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+        return c.json({ error: 'Unauthorized' }, 401)
+      }
+      return { workspaceId }
+    },
+  }),
+)
+
+// ---------------------------------------------------------------------------
 // Workspace meta-agent membership
 // ---------------------------------------------------------------------------
 
+/**
+ * User-facing project catalog for this workspace: what `list_projects`
+ * returns to the agent for chat display, and what the mount/unmount member
+ * endpoints below use to authorize attaching a project to a session.
+ * Excludes `hidden` projects (personal-companion builder delegates, or any
+ * workspace's explicitly-hidden projects) — those are resolved by id only
+ * (`project_call`), never surfaced in a list a user or chat transcript can
+ * read. `list_projects`/`mount_project`/`unmount_project` are themselves
+ * disabled for the `personal` capability profile (see
+ * `capability-profiles.ts`), so this only affects team workspaces today.
+ */
 async function accessibleWorkspaceProjects(workspaceId: string, userId: string) {
   const workspaceMember = await prisma.member.findFirst({
     where: { workspaceId, userId },
@@ -624,6 +528,7 @@ async function accessibleWorkspaceProjects(workspaceId: string, userId: string) 
   return prisma.project.findMany({
     where: {
       workspaceId,
+      hidden: false,
       ...(workspaceMember ? {} : { members: { some: { userId } } }),
     },
     select: { id: true, name: true, description: true, createdBy: true },
@@ -681,14 +586,6 @@ async function workspaceRuntimeMemberCall(
     throw new Error(responseBody?.error?.message || responseBody?.error || `workspace runtime HTTP ${response.status}`)
   }
   return { resolved, body: responseBody }
-}
-
-async function authorizeWorkspaceRuntimeRequest(c: Context, workspaceId: string): Promise<InternalIdentity | null> {
-  const identity = await authenticate(c)
-  if (!identity) return null
-  if (identity.kind === 'project') return null
-  if (identity.kind === 'workspace' && identity.workspaceId !== workspaceId) return null
-  return identity
 }
 
 app.get('/workspaces/:workspaceId/projects', async (c) => {
@@ -1427,6 +1324,326 @@ app.post('/billing/provision', async (c) => {
     console.error('[Internal] billing/provision failed:', err?.message ?? err)
     return c.json({ error: 'provision failed' }, 500)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Project lifecycle — create / attach / configure / call
+//
+// Backs the agent runtime's `project_*` and `system_apply` tools
+// (packages/agent-runtime/src/project-tools.ts). A runtime token is a
+// project- or workspace-scoped capability, so every route below resolves the
+// caller's workspace from its identity and refuses to touch projects outside
+// it. Cluster SA callers are unrestricted but must name the acting user.
+// ---------------------------------------------------------------------------
+
+/** Workspace the authenticated identity is allowed to act in (null for SA). */
+async function identityWorkspaceId(identity: InternalIdentity): Promise<string | null> {
+  if (identity.kind === 'workspace') return identity.workspaceId
+  if (identity.kind === 'project') {
+    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
+    return (await resolveProjectWorkspaceId(identity.projectId)) ?? null
+  }
+  return null
+}
+
+/**
+ * Authorize a project-scoped lifecycle call: SA passes; a runtime token must
+ * belong to the same workspace as `projectId`. Returns the project's
+ * workspace id so the handler can reuse it.
+ */
+async function authorizeLifecycleProject(
+  c: Context,
+  projectId: string,
+): Promise<{ identity: InternalIdentity; workspaceId: string } | null> {
+  const identity = await authenticate(c)
+  if (!identity) return null
+  const project = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })) as { workspaceId: string } | null
+  if (!project) return null
+  if (identity.kind === 'sa') return { identity, workspaceId: project.workspaceId }
+  const scope = await identityWorkspaceId(identity)
+  if (scope !== project.workspaceId) {
+    logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'}`, projectId)
+    return null
+  }
+  return { identity, workspaceId: project.workspaceId }
+}
+
+/**
+ * Resolve the user a lifecycle write is attributed to. Prefer the explicit
+ * `userId` the runtime forwards from the chat request; fall back to the
+ * calling project's creator for heartbeat-triggered turns that have no user.
+ *
+ * A merged-root (universal workspace) runtime authenticates with a workspace
+ * token, so there is no calling project to inherit from — attribute the write
+ * to the workspace's owner instead. Without this every `system_apply` /
+ * `project_create` from such a runtime 400s with `userId is required`, which
+ * breaks the `harness` anchor and any other multi-project assembly.
+ */
+async function resolveActingUserId(identity: InternalIdentity, requested: unknown): Promise<string | null> {
+  if (typeof requested === 'string' && requested.length > 0) return requested
+  if (identity.kind === 'project') {
+    const row = (await prisma.project.findUnique({
+      where: { id: identity.projectId },
+      select: { createdBy: true },
+    })) as { createdBy: string | null } | null
+    return row?.createdBy ?? null
+  }
+  if (identity.kind === 'workspace') {
+    const owner = await prisma.member.findFirst({
+      where: { workspaceId: identity.workspaceId, role: 'owner' },
+      select: { userId: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    return owner?.userId ?? null
+  }
+  return null
+}
+
+function lifecycleErrorResponse(c: Context, err: unknown): Response {
+  const anyErr = err as { name?: string; code?: string; message?: string }
+  if (anyErr?.name === 'ProjectLifecycleError') {
+    const status =
+      anyErr.code === 'unauthorized' ? 401
+      : anyErr.code === 'forbidden' ? 403
+      : anyErr.code === 'not_found' ? 404
+      : anyErr.code === 'instance_too_small' ? 402
+      : anyErr.code === 'paywall' ? 402
+      : 400
+    return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
+  }
+  if (anyErr?.name === 'ProjectAttachmentError') {
+    const status =
+      anyErr.code === 'project_not_found' ? 404 : anyErr.code === 'self_attach' ? 400 : 409
+    return c.json({ error: { code: anyErr.code, message: anyErr.message } }, status)
+  }
+  console.error('[Internal] project lifecycle error:', anyErr?.message ?? err)
+  return c.json({ error: { code: 'internal_error', message: 'Project lifecycle operation failed' } }, 500)
+}
+
+/**
+ * GET /api/internal/workspaces/:workspaceId/projects/graph
+ *
+ * Every project in the workspace with its attachment edges and agent config —
+ * the live state `system_apply` diffs a manifest against.
+ */
+app.get('/workspaces/:workspaceId/projects/graph', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+  const { listWorkspaceProjectsWithAttachments } = await import('../services/project-lifecycle.service')
+  return c.json({ workspaceId, projects: await listWorkspaceProjectsWithAttachments(workspaceId) })
+})
+
+/**
+ * POST /api/internal/workspaces/:workspaceId/projects
+ *   body: { name, description?, techStackId?, workingMode?, templateId?, settings?, hidden?, userId? }
+ *
+ * Create a project on behalf of a user. Goes through the same hooks as the
+ * public generated route, so membership, tier normalization and AgentConfig
+ * seeding are identical.
+ */
+app.post('/workspaces/:workspaceId/projects', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const identity = await authenticate(c)
+  if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+  if (identity.kind !== 'sa') {
+    const scope = await identityWorkspaceId(identity)
+    if (scope !== workspaceId) {
+      logAuthReject(`lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'} path=${workspaceId}`)
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+  }
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.name !== 'string') {
+    return c.json({ error: { code: 'bad_request', message: 'name is required' } }, 400)
+  }
+  const actingUserId = await resolveActingUserId(identity, body.userId)
+  if (!actingUserId) {
+    return c.json({ error: { code: 'bad_request', message: 'userId is required' } }, 400)
+  }
+
+  try {
+    const { createProjectInWorkspace } = await import('../services/project-lifecycle.service')
+    const project = await createProjectInWorkspace({
+      workspaceId,
+      actingUserId,
+      name: body.name,
+      description: typeof body.description === 'string' ? body.description : undefined,
+      techStackId: typeof body.techStackId === 'string' ? body.techStackId : undefined,
+      workingMode: body.workingMode === 'external' ? 'external' : body.workingMode === 'managed' ? 'managed' : undefined,
+      templateId: typeof body.templateId === 'string' ? body.templateId : undefined,
+      hidden: body.hidden === true,
+      settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
+    })
+    return c.json({ ok: true, project }, 201)
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/** GET /api/internal/projects/:projectId/attachments — durable anchor → attached edges. */
+app.get('/projects/:projectId/attachments', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const { listAttachments } = await import('../services/project-attachment.service')
+  return c.json({ projectId, attachments: await listAttachments(projectId) })
+})
+
+/**
+ * POST /api/internal/projects/:projectId/attachments
+ *   body: { attachedProjectId, attachMode?: 'readwrite' | 'readonly' }
+ *
+ * Record a durable `ProjectAttachment` and re-sync the anchor's pinned
+ * workspace session. Unlike the public route this never restarts the anchor
+ * runtime — the caller usually IS the anchor runtime. It attempts a live
+ * mount through the workspace-runtime member path and reports `mounted`;
+ * when that isn't possible the attachment takes effect on the next start.
+ */
+app.post('/projects/:projectId/attachments', async (c) => {
+  const projectId = c.req.param('projectId')
+  const authz = await authorizeLifecycleProject(c, projectId)
+  if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.attachedProjectId !== 'string') {
+    return c.json({ error: { code: 'bad_request', message: 'attachedProjectId is required' } }, 400)
+  }
+  const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
+
+  try {
+    const svc = await import('../services/project-attachment.service')
+    const attachment = await svc.attachProjectToProject(projectId, body.attachedProjectId, attachMode)
+
+    let mounted = false
+    try {
+      const pinned = await svc.getOrCreatePinnedWorkspaceSession(projectId)
+      const attached = await getAttachedProjects(pinned.id)
+      const attachedIds = attached.map((row) => row.projectId)
+      const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
+      const target = (await prisma.project.findUnique({
+        where: { id: body.attachedProjectId },
+        select: { id: true, name: true, description: true },
+      })) as { id: string; name: string; description: string | null } | null
+      if (target) {
+        await workspaceRuntimeMemberCall(
+          authz.workspaceId,
+          attachedIds,
+          '/internal/workspace/members',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              id: target.id,
+              name: target.name,
+              description: target.description ?? undefined,
+              readonly: attachMode === 'readonly',
+            }),
+          },
+          {
+            readonlyProjectIds: readonlyIds,
+            hostRealPath: resolvePath(process.env.WORKSPACES_DIR || resolvePath(process.cwd(), 'workspaces'), target.id),
+          },
+        )
+        mounted = true
+      }
+    } catch (mountErr: any) {
+      console.warn(`[Internal] live mount of ${body.attachedProjectId} into ${projectId} skipped: ${mountErr?.message ?? mountErr}`)
+    }
+
+    return c.json({ ok: true, attachment, mounted }, 201)
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/** DELETE /api/internal/projects/:projectId/attachments/:attachedProjectId */
+app.delete('/projects/:projectId/attachments/:attachedProjectId', async (c) => {
+  const projectId = c.req.param('projectId')
+  const attachedProjectId = c.req.param('attachedProjectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const { detachProjectFromProject } = await import('../services/project-attachment.service')
+    const removed = await detachProjectFromProject(projectId, attachedProjectId)
+    return c.json({ ok: true, removed })
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/** GET /api/internal/projects/:projectId/config — agent-facing config snapshot. */
+app.get('/projects/:projectId/config', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  try {
+    const { readProjectConfig } = await import('../services/project-lifecycle.service')
+    return c.json({ ok: true, project: await readProjectConfig(projectId) })
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/**
+ * PATCH /api/internal/projects/:projectId/config
+ *   body: { name?, description?, settings?, slackEnabled?, agent?: { heartbeat*, model*, quietHours* } }
+ */
+app.patch('/projects/:projectId/config', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+  try {
+    const { configureProject } = await import('../services/project-lifecycle.service')
+    const project = await configureProject(projectId, {
+      name: typeof body.name === 'string' ? body.name : undefined,
+      description: typeof body.description === 'string' || body.description === null ? (body.description as string | null) : undefined,
+      settings: body.settings && typeof body.settings === 'object' ? (body.settings as Record<string, unknown>) : undefined,
+      slackEnabled: typeof body.slackEnabled === 'boolean' ? body.slackEnabled : undefined,
+      agent: body.agent && typeof body.agent === 'object' ? (body.agent as any) : undefined,
+    })
+    return c.json({ ok: true, project })
+  } catch (err) {
+    return lifecycleErrorResponse(c, err)
+  }
+})
+
+/**
+ * POST /api/internal/projects/:projectId/agent-call
+ *   body: { message, runId?, sessionId?, wait?, timeoutMs?, callerProjectId? }
+ *
+ * Invoke another project's agent from a runtime. Resolves the target the same
+ * way the public agent-proxy does (pinned Instance tunnel first, then cloud
+ * pod / host runtime) and forwards to the runtime's `/agent/pipeline/call`,
+ * which is guarded by the runtime token alone — workspace runtimes are never
+ * given a `WEBHOOK_TOKEN`, so the external `/agent/hooks/*` path can't be
+ * reused here. `wait=true` blocks for the reply (bounded by `timeoutMs`,
+ * default 5 min, max 20 min); otherwise the runtime acks with 202.
+ */
+app.post('/projects/:projectId/agent-call', async (c) => {
+  const projectId = c.req.param('projectId')
+  const authz = await authorizeLifecycleProject(c, projectId)
+  if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.message !== 'string' || !body.message.trim()) {
+    return c.json({ error: { code: 'bad_request', message: 'message is required' } }, 400)
+  }
+  const callerProjectId =
+    typeof body.callerProjectId === 'string'
+      ? body.callerProjectId
+      : authz.identity.kind === 'project' ? authz.identity.projectId : undefined
+
+  const { callProjectAgent } = await import('../services/agent-call.service')
+  const outcome = await callProjectAgent(c, projectId, authz.workspaceId, {
+    message: body.message,
+    runId: typeof body.runId === 'string' ? body.runId : undefined,
+    sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+    wait: body.wait !== false,
+    timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+    callerProjectId,
+  })
+  return c.json(outcome.body, outcome.status as any)
 })
 
 export default app

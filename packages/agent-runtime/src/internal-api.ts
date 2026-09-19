@@ -68,6 +68,8 @@ export interface AgentCostMetricPayload {
   loopDetected?: boolean
   escalated?: boolean
   responseEmpty?: boolean
+  /** Free-form correlation, e.g. `{ pipelineRunId }` for cross-project pipeline runs. */
+  metadata?: Record<string, unknown>
 }
 
 /**
@@ -385,6 +387,405 @@ export async function publishProject(
     method: 'POST',
     body: JSON.stringify(opts),
     parse: (j) => j as PublishResult,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Project lifecycle wrappers — back the `project_*` / `system_apply` tools
+// (project-tools.ts). Routes live in apps/api/src/routes/internal.ts under
+// the "Project lifecycle" section. Same CheckpointCallResult envelope.
+// ---------------------------------------------------------------------------
+
+async function lifecycleFetch<T>(
+  path: string,
+  init: RequestInit & { parse?: (json: any) => T; timeoutMs?: number },
+): Promise<CheckpointCallResult<T>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  const { parse, timeoutMs, ...rest } = init
+  try {
+    const res = await fetch(`${apiUrl}${path}`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(timeoutMs ?? 20_000),
+      ...rest,
+    })
+    const json = (await res.json().catch(() => null)) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
+  } catch (err: any) {
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    return { ok: false, status: 0, error: err?.message ?? String(err), code: timedOut ? 'timeout' : undefined }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Personal workspace wrappers — profile, goals, and activity primitives.
+// ---------------------------------------------------------------------------
+
+export interface PersonalProfile {
+  id: string
+  workspaceId: string
+  name: string
+  avatarUrl: string | null
+  tagline: string | null
+  personality: string | null
+  statusText: string | null
+  statusUpdatedAt: string | null
+}
+
+export interface PersonalGoal {
+  id: string
+  workspaceId: string
+  title: string
+  why: string | null
+  status: 'active' | 'paused' | 'done'
+  plan: unknown
+  deliverables: unknown
+  nextCheckInAt: string | null
+  lastProgressAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersonalGoalEvent {
+  id: string
+  goalId: string
+  kind: 'progress' | 'blocker' | 'approval' | 'note' | 'deliverable'
+  message: string
+  metadata: unknown
+  createdAt: string
+}
+
+export interface PersonalGoalCreateRequest {
+  title: string
+  why?: string | null
+  status?: PersonalGoal['status']
+  plan?: unknown
+  deliverables?: unknown
+  nextCheckInAt?: string | null
+}
+
+export interface PersonalGoalUpdateRequest {
+  title?: string
+  why?: string | null
+  status?: PersonalGoal['status']
+  plan?: unknown
+  deliverables?: unknown
+  nextCheckInAt?: string | null
+  lastProgressAt?: string | null
+}
+
+async function personalFetch<T>(
+  path: string,
+  init: RequestInit & { parse?: (json: any) => T } = {},
+): Promise<CheckpointCallResult<T>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  const { parse, ...rest } = init
+  try {
+    const res = await fetch(`${apiUrl}${path}`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(20_000),
+      ...rest,
+    })
+    const json = await res.json().catch(() => null) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+export async function getAgentProfile(workspaceId: string): Promise<CheckpointCallResult<PersonalProfile>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`, {
+    method: 'GET',
+    parse: (j) => j?.profile as PersonalProfile,
+  })
+}
+
+export async function setAgentProfile(
+  workspaceId: string,
+  changes: Partial<Pick<PersonalProfile, 'name' | 'avatarUrl' | 'tagline' | 'personality' | 'statusText'>>,
+): Promise<CheckpointCallResult<PersonalProfile>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-profile`, {
+    method: 'PATCH',
+    body: JSON.stringify(changes),
+    parse: (j) => j?.profile as PersonalProfile,
+  })
+}
+
+export async function listGoals(
+  workspaceId: string,
+  status?: PersonalGoal['status'],
+): Promise<CheckpointCallResult<PersonalGoal[]>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals${query}`, {
+    method: 'GET',
+    parse: (j) => (j?.goals ?? []) as PersonalGoal[],
+  })
+}
+
+export async function getGoal(
+  workspaceId: string,
+  goalId: string,
+): Promise<CheckpointCallResult<PersonalGoal & { events?: PersonalGoalEvent[] }>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}`,
+    { method: 'GET', parse: (j) => j?.goal as PersonalGoal & { events?: PersonalGoalEvent[] } },
+  )
+}
+
+export async function createGoal(
+  workspaceId: string,
+  input: PersonalGoalCreateRequest,
+): Promise<CheckpointCallResult<PersonalGoal>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => j?.goal as PersonalGoal,
+  })
+}
+
+export async function updateGoal(
+  workspaceId: string,
+  goalId: string,
+  input: PersonalGoalUpdateRequest,
+): Promise<CheckpointCallResult<PersonalGoal>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}`,
+    { method: 'PATCH', body: JSON.stringify(input), parse: (j) => j?.goal as PersonalGoal },
+  )
+}
+
+export async function logGoalEvent(
+  workspaceId: string,
+  goalId: string,
+  input: { kind: PersonalGoalEvent['kind']; message: string; metadata?: unknown },
+): Promise<CheckpointCallResult<PersonalGoalEvent>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}/events`,
+    { method: 'POST', body: JSON.stringify(input), parse: (j) => j?.event as PersonalGoalEvent },
+  )
+}
+
+/**
+ * Upload raw image bytes as the agent's avatar and return the updated
+ * profile. Unlike the other wrappers here this sends a binary body, so it
+ * can't go through `personalFetch` (which always sets
+ * `Content-Type: application/json`). Used by `agent_profile_set` in
+ * `workspace-agent-tools.ts` when called with `avatarImagePath` — the
+ * generated image never leaves this pod as a raw filesystem path, it's
+ * uploaded to durable storage and the resulting URL becomes `avatarUrl`.
+ */
+export async function uploadAgentAvatar(
+  workspaceId: string,
+  imageBuffer: Buffer,
+  contentType = 'image/png',
+): Promise<CheckpointCallResult<PersonalProfile>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-avatar`,
+      {
+        method: 'POST',
+        headers: { ...getInternalHeaders(), 'Content-Type': contentType },
+        body: imageBuffer as unknown as BodyInit,
+        signal: AbortSignal.timeout(30_000),
+      },
+    )
+    const json = (await res.json().catch(() => null)) as any
+    if (!res.ok) {
+      const err = json?.error
+      const message = typeof err === 'string' ? err : err?.message
+      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    return { ok: true, status: res.status, data: json?.profile as PersonalProfile }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
+export interface ProjectSummary {
+  id: string
+  name: string
+  description: string | null
+  workingMode: string
+  settings: unknown
+  createdAt?: string
+}
+
+export interface CreateProjectRequest {
+  name: string
+  description?: string
+  techStackId?: string
+  workingMode?: 'managed' | 'external'
+  templateId?: string
+  settings?: Record<string, unknown>
+  hidden?: boolean
+  /** Acting user — forwarded from ToolContext.userId when present. */
+  userId?: string
+}
+
+export async function createProject(
+  workspaceId: string,
+  req: CreateProjectRequest,
+): Promise<CheckpointCallResult<ProjectSummary>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/projects`, {
+    method: 'POST',
+    body: JSON.stringify(req),
+    parse: (j) => j?.project as ProjectSummary,
+    timeoutMs: 30_000,
+  })
+}
+
+export interface ProjectGraphNode {
+  id: string
+  name: string
+  description: string | null
+  workingMode: string
+  settings: unknown
+  attachments: Array<{ attachedProjectId: string; attachMode: 'readwrite' | 'readonly' }>
+  agent: { heartbeatEnabled: boolean; heartbeatInterval: number; modelName: string; modelProvider: string } | null
+}
+
+export async function getWorkspaceProjectGraph(
+  workspaceId: string,
+): Promise<CheckpointCallResult<ProjectGraphNode[]>> {
+  return lifecycleFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/projects/graph`, {
+    method: 'GET',
+    parse: (j) => (j?.projects ?? []) as ProjectGraphNode[],
+  })
+}
+
+export interface AttachmentRow {
+  id: string
+  attachedProjectId: string
+  attachedProjectName: string | null
+  attachMode: 'readwrite' | 'readonly'
+}
+
+export async function listProjectAttachments(projectId: string): Promise<CheckpointCallResult<AttachmentRow[]>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/attachments`, {
+    method: 'GET',
+    parse: (j) => (j?.attachments ?? []) as AttachmentRow[],
+  })
+}
+
+export async function attachProject(
+  anchorProjectId: string,
+  attachedProjectId: string,
+  attachMode: 'readwrite' | 'readonly' = 'readwrite',
+): Promise<CheckpointCallResult<{ attachment: AttachmentRow; mounted: boolean }>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(anchorProjectId)}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify({ attachedProjectId, attachMode }),
+    parse: (j) => ({ attachment: j?.attachment as AttachmentRow, mounted: j?.mounted === true }),
+    timeoutMs: 60_000,
+  })
+}
+
+export async function detachProject(
+  anchorProjectId: string,
+  attachedProjectId: string,
+): Promise<CheckpointCallResult<{ removed: boolean }>> {
+  return lifecycleFetch(
+    `/api/internal/projects/${encodeURIComponent(anchorProjectId)}/attachments/${encodeURIComponent(attachedProjectId)}`,
+    { method: 'DELETE', parse: (j) => ({ removed: j?.removed === true }) },
+  )
+}
+
+export interface ProjectConfigPatch {
+  name?: string
+  description?: string | null
+  settings?: Record<string, unknown>
+  slackEnabled?: boolean
+  agent?: {
+    heartbeatEnabled?: boolean
+    heartbeatInterval?: number
+    modelProvider?: string
+    modelName?: string
+    quietHoursStart?: string | null
+    quietHoursEnd?: string | null
+    quietHoursTimezone?: string | null
+  }
+}
+
+export interface ProjectConfigSnapshot {
+  id: string
+  name: string
+  description: string | null
+  settings: unknown
+  slackEnabled: boolean
+  agent: {
+    heartbeatEnabled: boolean
+    heartbeatInterval: number
+    modelProvider: string
+    modelName: string
+    quietHoursStart: string | null
+    quietHoursEnd: string | null
+    quietHoursTimezone: string | null
+    nextHeartbeatAt: string | null
+  } | null
+}
+
+export async function getProjectConfig(projectId: string): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/config`, {
+    method: 'GET',
+    parse: (j) => j?.project as ProjectConfigSnapshot,
+  })
+}
+
+export async function configureProject(
+  projectId: string,
+  patch: ProjectConfigPatch,
+): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    parse: (j) => j?.project as ProjectConfigSnapshot,
+  })
+}
+
+export interface AgentCallRequest {
+  message: string
+  /** Pipeline correlation id, threaded into the callee's AgentCostMetric.metadata. */
+  runId?: string
+  /** Callee session key. Defaults to `run:<runId>` when a runId is given. */
+  sessionId?: string
+  /** Block for the reply (default true). */
+  wait?: boolean
+  /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
+  timeoutMs?: number
+  callerProjectId?: string
+}
+
+export interface AgentCallResult {
+  status: 'completed' | 'accepted'
+  reply?: string
+  runId?: string
+  sessionId?: string
+}
+
+export async function callProjectAgent(
+  targetProjectId: string,
+  req: AgentCallRequest,
+): Promise<CheckpointCallResult<AgentCallResult>> {
+  const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 5 * 60_000, 10_000), 20 * 60_000)
+  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(targetProjectId)}/agent-call`, {
+    method: 'POST',
+    body: JSON.stringify({ ...req, timeoutMs }),
+    parse: (j) => j as AgentCallResult,
+    // The API adds its own 5s grace on top of the runtime's wait budget.
+    timeoutMs: req.wait === false ? 20_000 : timeoutMs + 10_000,
   })
 }
 

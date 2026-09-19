@@ -1098,6 +1098,9 @@ export function marketplaceRoutes() {
       if (msg === 'listing_not_found' || msg === 'listing_not_published' || msg === 'install_not_found') {
         return c.json({ error: msg }, 404)
       }
+      if (msg.startsWith('instance_too_small')) {
+        return c.json({ error: { code: 'instance_too_small', message: msg.replace(/^instance_too_small:\s*/, '') } }, 402)
+      }
       console.error('[marketplace] install', err)
       return c.json({ error: 'Install failed' }, 500)
     }

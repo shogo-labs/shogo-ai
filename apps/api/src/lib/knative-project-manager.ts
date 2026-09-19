@@ -259,6 +259,25 @@ export function getPreviewUrl(projectId: string): string {
   return `https://${getPreviewSubdomain(projectId)}`
 }
 
+/**
+ * Build the public per-port preview subdomain (Phase 3, Tier 2 docker
+ * project class plan) — `{port}--{projectId}.preview.<base>`. The `--`
+ * separator is unambiguous because `projectId` is always a UUID (no
+ * hyphens-as-separators collision: UUIDs only ever use single hyphens, so
+ * splitting on the first `--` occurrence is safe — see the preview-router
+ * Worker's `projectIdFromHost`). Only meaningful for a port whose current
+ * `visibility` is `'preview'` (`lib/project-ports.ts`); the API-side render
+ * handler re-checks that regardless of what URL is minted here.
+ */
+export function getPortPreviewSubdomain(projectId: string, port: number): string {
+  return `${port}--${getPreviewSubdomain(projectId)}`
+}
+
+/** Get the full public per-port preview URL for a project (with https://) */
+export function getPortPreviewUrl(projectId: string, port: number): string {
+  return `https://${getPortPreviewSubdomain(projectId, port)}`
+}
+
 export interface ProjectPodInfo {
   projectId: string
   name: string

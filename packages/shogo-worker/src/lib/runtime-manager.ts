@@ -116,6 +116,57 @@ const RESTART_BACKOFF_MAX_MS = 60_000;
  */
 const MAX_CONSECUTIVE_RESTARTS = 8;
 const RESTART_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Second, independent trip condition: too many restarts in a long rolling
+ * window, regardless of the gaps between them.
+ *
+ * `MAX_CONSECUTIVE_RESTARTS`/`RESTART_FAILURE_WINDOW_MS` only catches a
+ * *tight* crash loop — repeated exits closer together than
+ * {@link STARTUP_GRACE_MS} (60s), which is what resets `consecutiveFailures`
+ * back to 0. A real production episode (main.log, 2026-09-19 19:44–20:52)
+ * showed macOS jetsam SIGKILLing several unrelated project runtimes (AND an
+ * idle warm-pool slot) in lockstep every 1–17 minutes for 68 minutes
+ * straight — individually every gap cleared the 60s grace window, so
+ * `consecutiveFailures` kept resetting to 0/1 and the tight breaker NEVER
+ * tripped, even after 15 restarts. Every one of those restarts still killed
+ * whatever chat turn was in flight.
+ *
+ * `slot.restartTimestamps` tracks restarts independently of the grace
+ * timer — pruned to this window, not reset by a "survived 60s" incarnation
+ * — so a slow, sustained bleed like that episode also trips the breaker
+ * (and gets the same auto-heal cooldown as a tight loop) instead of
+ * silently degrading chat for over an hour with no safety valve.
+ */
+const SLOW_BLEED_WINDOW_MS = 60 * 60 * 1000;
+const SLOW_BLEED_MAX_RESTARTS = 8;
+
+/**
+ * Self-heal cooldown for a `'failed'` (circuit-broken) slot.
+ *
+ * The breaker tripping is not evidence the project is permanently broken —
+ * the dominant real-world cause (see {@link MAX_CONSECUTIVE_RESTARTS}'s
+ * comment) is a transient jetsam OOM sweep that can clear itself up within
+ * minutes once memory pressure elsewhere on the box eases. Without this,
+ * `'failed'` was a terminal state: nothing ever called `resetFailure()`
+ * (no caller wires it to a route or the UI), so a project's chat was dead
+ * until the whole app/worker restarted — indistinguishable from a real bug
+ * to the end user.
+ *
+ * `ensureRunning()` treats a `'failed'` slot whose cooldown has elapsed as
+ * an implicit `resetFailure()` + fresh spawn attempt, with the SAME full
+ * `MAX_CONSECUTIVE_RESTARTS` budget (the cooldown itself is the rate
+ * limit — a project that's actually broken re-trips almost immediately and
+ * pays an escalating cooldown instead of hammering the OS every retry).
+ *
+ * Escalates 2m → 4m → 8m → 15m(cap) per repeated trip via
+ * {@link breakerCooldownMs}, and resets back to the 2m base the next time
+ * the project survives a full {@link STARTUP_GRACE_MS} healthy run (see
+ * `armGraceTimer`) — a project that recovers for good isn't penalized by
+ * cooldowns it earned months ago.
+ */
+const CIRCUIT_BREAKER_COOLDOWN_BASE_MS = 2 * 60 * 1000;
+const CIRCUIT_BREAKER_COOLDOWN_MAX_MS = 15 * 60 * 1000;
 /**
  * If a runtime stays up at least this long after the /health-gated
  * `'running'` transition, we treat it as "recovered" and reset the
@@ -211,10 +262,14 @@ export type RuntimeStatus =
   | 'stopped'
   | 'error'
   /**
-   * Terminal state: the circuit breaker tripped. The slot stays in the
-   * `runtimes` map (so `status(projectId)` keeps reporting it) but no
-   * more spawns will happen until {@link WorkerRuntimeManager.resetFailure}
-   * is called or the slot is explicitly `stop()`'d.
+   * The circuit breaker tripped. The slot stays in the `runtimes` map
+   * (so `status(projectId)` keeps reporting it) and refuses new spawns
+   * — but this is NOT terminal: the next `ensureRunning()` call after
+   * {@link CIRCUIT_BREAKER_COOLDOWN_BASE_MS} (escalating per repeat
+   * trip, see `breakerCooldownMs`) auto-heals it and tries again with a
+   * fresh budget. Callers that want to skip the wait can still call
+   * {@link WorkerRuntimeManager.resetFailure} directly, or `stop()` to
+   * give up on the project entirely.
    */
   | 'failed';
 
@@ -410,8 +465,26 @@ interface InternalRuntime {
   /** Consecutive non-clean exits since the last healthy run. */
   consecutiveFailures: number;
   /** Timestamp (Date.now) of the most recent non-clean exit. Used to
-   *  detect "loop within the failure window" for the circuit breaker. */
+   *  detect "loop within the failure window" for the circuit breaker,
+   *  and (once tripped) as the cooldown clock for auto-heal. */
   lastFailureAt: number;
+  /**
+   * Number of times the circuit breaker has tripped into `'failed'` for
+   * this project since it last survived a full {@link STARTUP_GRACE_MS}
+   * healthy run. Drives the escalating auto-heal cooldown in
+   * {@link WorkerRuntimeManager.breakerCooldownMs} — repeat offenders back
+   * off further instead of retrying every 2 minutes forever.
+   */
+  breakerTrips: number;
+  /**
+   * Wall-clock timestamps (Date.now) of the last several non-clean-exit
+   * restarts, pruned to {@link SLOW_BLEED_WINDOW_MS}. Independent of
+   * `consecutiveFailures` (which the 60s startup grace resets on every
+   * incarnation that survives a minute) — this is what catches a crash
+   * that recurs every few minutes for an hour: individually every gap
+   * clears the tight breaker, but the rolling count here keeps growing.
+   */
+  restartTimestamps: number[];
   /** Timer that resets `consecutiveFailures` to 0 once a fresh run has
    *  survived for {@link STARTUP_GRACE_MS}. */
   graceTimer: ReturnType<typeof setTimeout> | null;
@@ -678,18 +751,36 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   async ensureRunning(projectId: string, config: ProjectSpawnConfig): Promise<RuntimeStatusInfo> {
     if (this.stopped) throw new Error('WorkerRuntimeManager is stopped');
 
-    // Refuse circuit-broken slots BEFORE auto-pull so we don't churn
-    // the network/disk on a project we already know we won't spawn.
-    // Surfacing the parked-state message lets the caller (tunnel
-    // proxy, desktop UI) render an actionable error instead of the
+    // A circuit-broken slot gets one chance to heal itself before we
+    // refuse it: if its cooldown has elapsed, treat this call as an
+    // implicit resetFailure() and fall through to a fresh spawn attempt
+    // below. Otherwise refuse BEFORE auto-pull so we don't churn the
+    // network/disk on a project we already know we won't spawn — the
+    // parked-state message (with a concrete retry ETA) lets the caller
+    // (tunnel proxy, desktop UI) render an actionable error instead of a
     // generic auto-pull / spawn failure.
     const failedExisting = this.runtimes.get(projectId);
     if (failedExisting?.status === 'failed') {
-      throw new Error(
-        `[WorkerRuntimeManager] cannot ensureRunning(${projectId}): ` +
-        `${failedExisting.lastError ?? 'runtime is in failed state'}. ` +
-        `Call resetFailure(${projectId}) or stop(${projectId}) before retrying.`,
-      );
+      const cooldownMs = this.breakerCooldownMs(failedExisting.breakerTrips);
+      const sinceTripMs = Date.now() - failedExisting.lastFailureAt;
+      if (sinceTripMs >= cooldownMs) {
+        this.log.log(
+          `[WorkerRuntimeManager] auto-heal: ${projectId} cooldown elapsed ` +
+            `(${Math.round(sinceTripMs / 1000)}s since trip #${failedExisting.breakerTrips}) — ` +
+            `clearing circuit breaker and attempting a fresh spawn`,
+        );
+        this.healBreaker(failedExisting);
+        // Falls through — `failedExisting` is the same object referenced
+        // below as `existing`, now with status reset off `'failed'`.
+      } else {
+        const retryInMs = cooldownMs - sinceTripMs;
+        throw new Error(
+          `[WorkerRuntimeManager] cannot ensureRunning(${projectId}): ` +
+          `${failedExisting.lastError ?? 'runtime is in failed state'} ` +
+          `Will auto-retry in ~${Math.ceil(retryInMs / 1000)}s; ` +
+          `call resetFailure(${projectId}) to retry immediately, or stop(${projectId}) to give up.`,
+        );
+      }
     }
 
     // Apply auto-pull before any runtime spawn so the runtime's PROJECT_DIR
@@ -1076,15 +1167,21 @@ export class WorkerRuntimeManager implements RuntimeResolver {
   }
 
   /**
-   * Re-arm a runtime that the circuit breaker parked in `'failed'`.
-   * Drops the slot from the map so the next `ensureRunning(projectId, …)`
-   * call performs a fresh `doStart()` with a zeroed failure budget.
+   * Re-arm a runtime that the circuit breaker parked in `'failed'`,
+   * bypassing the auto-heal cooldown (see `breakerCooldownMs`) for an
+   * IMMEDIATE retry. Drops the slot from the map so the next
+   * `ensureRunning(projectId, …)` call performs a fresh `doStart()` with a
+   * zeroed failure budget (though `breakerTrips` — and therefore the NEXT
+   * cooldown if it re-trips — carries over; only a full healthy run via
+   * `armGraceTimer` resets that).
    *
-   * Intended for the desktop's "reopen project" flow and for operators
-   * who fixed whatever was crashing the runtime (e.g. freed memory,
-   * deleted a corrupted workspace file) and want to retry without
-   * tearing down the whole worker. No-op if the project isn't in
-   * `'failed'`.
+   * `ensureRunning()` itself now auto-heals a `'failed'` slot once its
+   * cooldown elapses, so this is no longer the only way out of `'failed'`
+   * — it's for callers that don't want to wait: the desktop's "reopen
+   * project" flow, or an operator who fixed whatever was crashing the
+   * runtime (e.g. freed memory, deleted a corrupted workspace file) and
+   * wants to retry right now without tearing down the whole worker. No-op
+   * if the project isn't in `'failed'`.
    */
   resetFailure(projectId: string): boolean {
     const r = this.runtimes.get(projectId);
@@ -1096,6 +1193,35 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     this.runtimes.delete(projectId);
     this.log.log(`[WorkerRuntimeManager] resetFailure: ${projectId} cleared, next ensureRunning will respawn`);
     return true;
+  }
+
+  /**
+   * Escalating cooldown for the Nth breaker trip: 2m, 4m, 8m, 15m(cap), …
+   * `tripCount` is `breakerTrips` *before* incrementing for this trip (so
+   * the very first trip — `tripCount === 0` going into `handleExit`, which
+   * increments it to `1` — cools down for the base 2m, not 4m).
+   */
+  private breakerCooldownMs(tripCount: number): number {
+    const exponent = Math.max(0, tripCount - 1);
+    const scaled = CIRCUIT_BREAKER_COOLDOWN_BASE_MS * Math.pow(2, exponent);
+    return Math.min(scaled, CIRCUIT_BREAKER_COOLDOWN_MAX_MS);
+  }
+
+  /**
+   * Clear a `'failed'` slot's breaker state in place (used by both the
+   * auto-heal path in `ensureRunning` and could be called directly by a
+   * future explicit "retry now" caller). Unlike {@link resetFailure} this
+   * does NOT remove the slot from `this.runtimes` — the caller is about to
+   * reuse the same object as the `existing` slot for a fresh `doStart()`,
+   * so timers/state on it are about to be overwritten by that path anyway.
+   * `breakerTrips` and `restartTimestamps` are deliberately left alone:
+   * they're what makes cooldowns escalate for a project that keeps
+   * re-tripping, and `armGraceTimer` is what resets them back to zero once
+   * the project actually recovers.
+   */
+  private healBreaker(slot: InternalRuntime): void {
+    slot.status = 'stopped';
+    slot.consecutiveFailures = 0;
   }
 
   async stopAll(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
@@ -1137,6 +1263,8 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       restarts: 0,
       consecutiveFailures: 0,
       lastFailureAt: 0,
+      breakerTrips: 0,
+      restartTimestamps: [],
       graceTimer: null,
       restartTimer: null,
       idleTimer: null,
@@ -1429,6 +1557,12 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    * survived for {@link STARTUP_GRACE_MS}. Re-armed on every successful
    * /health transition; cleared on any non-clean exit so a crash
    * inside the grace window counts toward the circuit breaker.
+   *
+   * Also resets `breakerTrips` and `restartTimestamps` on that same
+   * survived-a-full-grace-window signal: a project that's actually
+   * recovered for good shouldn't carry an escalated auto-heal cooldown
+   * (see `breakerCooldownMs`) or slow-bleed history from an incident
+   * months ago into its next unrelated hiccup.
    */
   private armGraceTimer(slot: InternalRuntime): void {
     if (slot.graceTimer) {
@@ -1440,6 +1574,8 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       if (slot.consecutiveFailures > 0) {
         slot.consecutiveFailures = 0;
       }
+      slot.breakerTrips = 0;
+      slot.restartTimestamps = [];
     }, STARTUP_GRACE_MS);
     try { slot.graceTimer.unref?.(); } catch { /* unref is best-effort */ }
   }
@@ -1586,15 +1722,30 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.restarts += 1;
     slot.lastError = `exited code=${code} signal=${signal}`;
 
-    if (slot.consecutiveFailures >= MAX_CONSECUTIVE_RESTARTS) {
+    // Slow-bleed tracking: independent of `consecutiveFailures`, which the
+    // 60s startup grace timer resets on every incarnation that survives a
+    // minute. Pruned to a rolling hour so a project that crashed a lot last
+    // month doesn't stay flagged forever.
+    slot.restartTimestamps.push(now);
+    slot.restartTimestamps = slot.restartTimestamps.filter((t) => now - t <= SLOW_BLEED_WINDOW_MS);
+
+    const tightLoopTripped = slot.consecutiveFailures >= MAX_CONSECUTIVE_RESTARTS;
+    const slowBleedTripped = slot.restartTimestamps.length >= SLOW_BLEED_MAX_RESTARTS;
+
+    if (tightLoopTripped || slowBleedTripped) {
       slot.status = 'failed';
+      slot.breakerTrips += 1;
+      const cooldownMs = this.breakerCooldownMs(slot.breakerTrips);
+      const cause = tightLoopTripped
+        ? `${slot.consecutiveFailures} consecutive non-clean exits within ${Math.round(RESTART_FAILURE_WINDOW_MS / 1000)}s`
+        : `${slot.restartTimestamps.length} non-clean exits within the last ${Math.round(SLOW_BLEED_WINDOW_MS / 60_000)}m (slow-bleed loop — gaps between crashes kept clearing the tight-loop window)`;
       slot.lastError =
-        `Circuit breaker tripped: ${slot.consecutiveFailures} consecutive non-clean exits ` +
-        `within ${Math.round(RESTART_FAILURE_WINDOW_MS / 1000)}s (last: code=${code} signal=${signal}). ` +
-        `Most recent on macOS is jetsam OOM (signal=SIGKILL with code=null); ` +
-        `the previous incarnation's vite/tsserver/preview-manager children were reaped to ` +
-        `prevent further RSS growth. Stop, fix the workspace, and call resetFailure(projectId) ` +
-        `(or stop(projectId)) to allow another spawn attempt.`;
+        `Circuit breaker tripped (trip #${slot.breakerTrips}): ${cause} ` +
+        `(last: code=${code} signal=${signal}). Most recent on macOS is jetsam OOM ` +
+        `(signal=SIGKILL with code=null); the previous incarnation's vite/tsserver/` +
+        `preview-manager children were reaped to prevent further RSS growth. ` +
+        `Will auto-retry in ~${Math.round(cooldownMs / 1000)}s; call resetFailure(${slot.projectId}) ` +
+        `to retry immediately, or stop(${slot.projectId}) to give up.`;
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
       slot.apiServerPort = 0;

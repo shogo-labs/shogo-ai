@@ -494,6 +494,26 @@ export function githubRoutes(config: GitHubRoutesConfig) {
           }
           break;
 
+        // Task-source events (issue pipeline, docs/issue-pipeline/PLAN.md
+        // Phase 2): wake the connected project's agent. Each handler
+        // no-ops when there's no connected project or the event doesn't
+        // pass its own action/bot filter.
+        case 'issues':
+          await githubService.handleIssueWebhook(c, data);
+          break;
+
+        case 'issue_comment':
+          await githubService.handleIssueCommentWebhook(c, data);
+          break;
+
+        case 'pull_request_review':
+          await githubService.handlePullRequestReviewWebhook(c, data);
+          break;
+
+        case 'pull_request_review_comment':
+          await githubService.handlePullRequestReviewCommentWebhook(c, data);
+          break;
+
         case 'ping':
           console.log('[GitHub] Webhook ping received');
           break;

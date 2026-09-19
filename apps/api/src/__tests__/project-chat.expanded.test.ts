@@ -100,6 +100,7 @@ mock.module('../lib/prisma', () => ({
         prismaCalls.chatSessionFindUnique.push(args)
         return chatSessionFixture
       },
+      update: async () => ({}),
     },
     toolCallLog: {
       createMany: async (args: any) => {
@@ -148,6 +149,11 @@ mock.module('../lib/proxy-billing-session', () => ({
   hasSession: () => false,
   hasActiveSession: () => false,
   accumulateUsage: () => {},
+}))
+
+const pushCalls: Array<{ userId: string; payload: any }> = []
+mock.module('../lib/push-notifications', () => ({
+  sendPushToUser: async (userId: string, payload: any) => { pushCalls.push({ userId, payload }) },
 }))
 
 let resolvePodUrlResult: { url: string } | Error = { url: 'http://runtime-p-1.local' }
@@ -246,6 +252,7 @@ beforeEach(() => {
   prismaCalls.chatSessionFindUnique.length = 0
   checkpointCalls.length = 0
   sessionCalls.length = 0
+  pushCalls.length = 0
   delete process.env.KUBERNETES_SERVICE_HOST
   delete process.env.SHOGO_CLOUD_SYNC
 })
@@ -351,6 +358,41 @@ describe('trackUsageFromStream — processLine branches', () => {
     ])
     await trackUsageFromStream(stream, { chatSessionId: 's-2' }, { id: 'p-1', workspaceId: 'w-1' })
     expect(prismaCalls.chatMessageCreate[0]?.data.content).toBe('hi')
+  })
+
+  test('delegated tasks suppress the generic project-chat completion push', async () => {
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"done"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(
+      stream,
+      { chatSessionId: 's-task' },
+      { id: 'p-1', workspaceId: 'w-1' },
+      { userId: 'user-1', projectName: 'Test', suppressCompletionPush: true },
+    )
+    expect(pushCalls).toEqual([])
+  })
+
+  test('ordinary project chats still send one completion push', async () => {
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"done"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(
+      stream,
+      { chatSessionId: 's-chat' },
+      { id: 'p-1', workspaceId: 'w-1' },
+      { userId: 'user-1', projectName: 'Test' },
+    )
+    expect(pushCalls).toEqual([{
+      userId: 'user-1',
+      payload: {
+        title: 'Test response ready',
+        body: 'done',
+        data: { sessionId: 's-chat', projectId: 'p-1' },
+      },
+    }])
   })
 
   test('persists a data-turn-timing part with startedAt/completedAt read off data-turn-start/data-turn-complete', async () => {

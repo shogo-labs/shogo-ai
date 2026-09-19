@@ -69,6 +69,7 @@ mock.module('../routes/remote-audit', () => ({
 }))
 mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(() => Promise.resolve()),
+  sendPushToUser: mock(() => Promise.resolve()),
 }))
 
 const testUser = { id: 'user-1', userId: 'user-1', email: 'test@test.com', role: 'super_admin' }

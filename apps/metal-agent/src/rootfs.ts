@@ -181,15 +181,28 @@ export class RootfsProvisioner {
     if (this.mode === 'dm') mkdirSync(cfg.dmCowDir, { recursive: true })
   }
 
-  /** Create a fresh writable rootfs for a new VM. Returns the FC backing path. */
-  provision(vmId: string): string {
+  /**
+   * Create a fresh writable rootfs for a new VM off `baseRootfsOverride`
+   * (defaults to the standard `cfg.baseRootfs` — e.g. a docker-class VM's
+   * layered image). Returns the FC backing path.
+   *
+   * Ignored in dm mode: dm-snapshot shares ONE loop-mounted golden base across
+   * every VM on the host, and making that per-class-safe (base loop + CoW
+   * sizing keyed per golden image, not just per VM) is a deferred follow-up —
+   * see `isVmClassSupported` in config.ts, which is what actually keeps a
+   * non-standard class from reaching dm mode in the first place. This
+   * fallback exists only so a caller that got that gate wrong fails to a
+   * (wrong-content-free) standard-class rootfs rather than corrupting the dm
+   * base's sizing.
+   */
+  provision(vmId: string, baseRootfsOverride?: string): string {
     switch (this.mode) {
       case 'dm':
         return this.provisionDm(vmId)
       case 'reflink':
-        return this.provisionCopy(vmId, true)
+        return this.provisionCopy(vmId, true, baseRootfsOverride)
       default:
-        return this.provisionCopy(vmId, false)
+        return this.provisionCopy(vmId, false, baseRootfsOverride)
     }
   }
 
@@ -349,16 +362,17 @@ export class RootfsProvisioner {
 
   // --- copy / reflink ------------------------------------------------------
 
-  private provisionCopy(vmId: string, reflink: boolean): string {
+  private provisionCopy(vmId: string, reflink: boolean, baseRootfsOverride?: string): string {
+    const base = baseRootfsOverride || this.cfg.baseRootfs
     const dst = join(this.cfg.runDir, `${vmId}.rootfs.ext4`)
     if (reflink) {
       // FICLONE (not FICLONE_FORCE) attempts a reflink and transparently falls
       // back to a full copy on a non-reflink fs — always correct, just denser
       // where the fs supports it.
-      copyFileSync(this.cfg.baseRootfs, dst, constants.COPYFILE_FICLONE)
+      copyFileSync(base, dst, constants.COPYFILE_FICLONE)
       this.detectReflinkFallback(dst)
     } else {
-      copyFileSync(this.cfg.baseRootfs, dst)
+      copyFileSync(base, dst)
     }
     return dst
   }

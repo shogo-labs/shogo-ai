@@ -45,6 +45,9 @@ import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
+import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
+import { createAgentTaskRoutes } from './routes/agent-tasks'
+import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { slackAgentRoutes } from './routes/slack-agent'
 import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -96,8 +99,16 @@ import { techStackRoutes } from './routes/tech-stacks'
 import { evalOutputRoutes } from './routes/eval-outputs'
 import { projectExportImportRoutes } from './routes/project-export-import'
 import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
-import { apiKeyRoutes } from './routes/api-keys'
+import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { cliAuthRoutes } from './routes/cli-auth'
+import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
+import {
+  resolveExposedPorts,
+  isDeclaredPort,
+  getDeclaredPort,
+  withPortVisibility,
+  type PortVisibility,
+} from './lib/project-ports'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import {
   fetchCloudVisibleModels,
@@ -115,6 +126,7 @@ import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
 import { remoteAuditRoutes } from './routes/remote-audit'
+import { mobilePushRoutes } from './routes/mobile-push'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
@@ -125,6 +137,7 @@ import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
+import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { normalizeAdminScopes } from './lib/admin-scopes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -307,8 +320,8 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
     if (Array.isArray(msg.parts)) {
       const contentParts: Array<
         | { type: 'text'; text: string }
-        | { type: 'image'; image: string; mimeType: string }
-        | { type: 'file'; data: string; mimeType: string }
+        | { type: 'image'; image: string; mediaType: string }
+        | { type: 'file'; data: string; mediaType: string }
       > = []
 
       for (const part of msg.parts) {
@@ -322,13 +335,13 @@ function convertUIMessagesToModelMessages(messages: any[]): ModelMessage[] {
             contentParts.push({
               type: 'image',
               image: parsed.base64Data,
-              mimeType: parsed.mimeType,
+              mediaType: parsed.mimeType,
             })
           } else {
             contentParts.push({
               type: 'file',
               data: parsed.base64Data,
-              mimeType: parsed.mimeType,
+              mediaType: parsed.mimeType,
             })
           }
         }
@@ -499,6 +512,10 @@ const previewFrameStrip = async (c: any, next: any) => {
 }
 app.use('/api/preview/:projectId/render', previewFrameStrip)
 app.use('/api/preview/:projectId/render/*', previewFrameStrip)
+// Per-port public preview (Phase 3) is embedded the same way — apply the same
+// frame-header relaxation so it isn't blocked as SAMEORIGIN by default.
+app.use('/api/preview/:projectId/ports/:port/render', previewFrameStrip)
+app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
@@ -754,6 +771,17 @@ app.use(
     ) {
       return next()
     }
+    // GitHub App webhook (routes/github.ts, verified with HMAC-SHA256 over
+    // `GH_APP_WEBHOOK_SECRET` inside the handler via `verifyWebhookSignature`)
+    // — GitHub's delivery has no Shogo session/API-key, so this blanket
+    // `requireAuth` 401'd every real installation/push/issues/issue_comment/
+    // pull_request_review webhook before the handler's own signature check
+    // ever ran. This is the ONLY inbound trigger for the issue-pipeline's
+    // "webhook wakes the pipeline" step (docs/issue-pipeline/PLAN.md Phase 2)
+    // — found live connecting a project's GitHub App for the first time
+    // (issue-pipeline multi-project eval, L1) and hand-delivering a
+    // synthetic `issues` event, since GitHub itself can't reach localhost.
+    if (path === '/api/github/webhook') return next()
     return requireAuth(c, next)
   }
 )
@@ -917,19 +945,34 @@ app.get('/api/config', async (c) => {
     marketplace: true,
     ezMode: true,
     phoneChannel: !localMode,
+    // Companion-shell rollout kill switch: personal workspaces render the
+    // simplified Muse/Grok-style companion shell (see `workspaceExperience`)
+    // whenever this is true. Defaults on; a super-admin can flip it off
+    // instance-wide without a deploy if the rollout needs to pause.
+    personalShell: true,
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
   let overrides: Record<string, boolean> = {}
   try {
     const rows = await prisma.platformSetting.findMany({
-      where: { key: { in: ['feature.marketplace', 'feature.ez_mode', 'feature.phone_channel'] } },
+      where: {
+        key: {
+          in: [
+            'feature.marketplace',
+            'feature.ez_mode',
+            'feature.phone_channel',
+            'feature.personal_shell',
+          ],
+        },
+      },
     })
     for (const row of rows) {
       const bool = row.value === 'true'
       if (row.key === 'feature.marketplace') overrides.marketplace = bool
       if (row.key === 'feature.ez_mode') overrides.ezMode = bool
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
+      if (row.key === 'feature.personal_shell') overrides.personalShell = bool
     }
   } catch (err) {
     console.error('[config] Failed to load feature flag overrides:', err)
@@ -1494,6 +1537,7 @@ app.route('/api', cliAuthRoutes())
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
+app.route('/api', mobilePushRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder
@@ -1502,6 +1546,11 @@ app.route('/api', syncRoutes())
 // workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
 // runtime resolution returns 501 until that flag is enabled.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
+// Resume queued agent tasks after API restarts and keep dueAt-backed work
+// moving without relying on a request that happens to remain open.
+startAgentTaskWorker(getRuntimeManager())
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -2088,6 +2137,102 @@ const previewRenderHandler = async (c: any) => {
 }
 app.all('/api/preview/:projectId/render', previewRenderHandler)
 app.all('/api/preview/:projectId/render/*', previewRenderHandler)
+
+// -----------------------------------------------------------------------------
+// Per-port preview render proxy (Phase 3, Tier 2 docker project class plan).
+// -----------------------------------------------------------------------------
+// Sibling of `previewRenderHandler` above for the `{port}--{projectId}.preview.<base>`
+// hostname (see preview-router Worker) — same anonymous-by-UUID trust model, but
+// scoped to ONE declared port instead of the runtime root, and gated by that
+// port's current visibility (`project-ports.ts`): only a declared `protocol:
+// 'http'` port whose visibility is `'preview'` is reachable here. Unlike the
+// root proxy, the target route on the runtime (`/agent/ports/:port/http/*`)
+// sits behind the runtime's own auth, so this forwards `x-runtime-token` —
+// the anonymity boundary is enforced HERE (by the visibility gate), not by
+// the runtime, which has no way to know a request came through the public
+// preview surface vs. the authenticated tunnel.
+const previewPortRenderHandler = async (c: any) => {
+  const projectId = c.req.param('projectId')
+  const port = Number(c.req.param('port'))
+  try {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid port' } }, 400)
+    }
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, workspaceId: true, settings: true },
+    })
+    if (!project) return c.json({ error: { code: 'not_found' } }, 404)
+    if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+
+    const settings = parseProjectSettings(project.settings)
+    const techStackId = settings?.techStackId as string | undefined
+    const exposed = resolveExposedPorts(techStackId, settings).find((p) => p.port === port)
+    if (!exposed || exposed.protocol !== 'http' || exposed.visibility !== 'preview') {
+      return c.json({ error: { code: 'not_found', message: 'Port is not publicly previewable' } }, 404)
+    }
+
+    const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+    let target: string
+    try {
+      const resolved = await resolveProjectPodUrl(projectId, {
+        logTag: 'preview/port-render',
+        metalWaitMs: 8000,
+        metalRetryDelayMs: 1000,
+      })
+      target = resolved.url
+    } catch (err: any) {
+      console.warn(`[preview/port-render] ${projectId}:${port} not ready:`, err?.message || err)
+      return c.json({ error: { code: 'pod_starting', message: 'preview backend starting' } }, 503, {
+        'Cache-Control': 'no-store',
+      })
+    }
+
+    const prefix = `/api/preview/${projectId}/ports/${port}/render`
+    const rawPath = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) : ''
+    const path = rawPath || '/'
+    const search = new URL(c.req.url).search
+    const targetUrl = `${target.replace(/\/+$/, '')}/agent/ports/${port}/http${path}${search}`
+
+    const headers = new Headers()
+    for (const h of [
+      'content-type', 'accept', 'accept-encoding', 'accept-language',
+      'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
+    ]) {
+      const v = c.req.header(h)
+      if (v) headers.set(h, v)
+    }
+    headers.set('x-runtime-token', await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId }))
+    const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') init.body = await c.req.arrayBuffer()
+
+    const resp = await fetch(targetUrl, init)
+
+    // Same hop-by-hop/framing stripping as `previewRenderHandler`, PLUS: this
+    // route (unlike the root proxy) sends a real `x-runtime-token` upstream on
+    // the OUTBOUND leg above. Defense-in-depth against a guest app that echoes
+    // request headers back (e.g. a debug/reflection endpoint) leaking that
+    // token to the anonymous public visitor — strip it (and `authorization`,
+    // just in case) from the response on the way out. Neither header should
+    // ever legitimately appear in a normal HTTP response.
+    const outHeaders = new Headers()
+    resp.headers.forEach((value, key) => {
+      const k = key.toLowerCase()
+      if (k === 'transfer-encoding' || k === 'connection' || k === 'set-cookie') return
+      if (k === 'x-frame-options' || k === 'content-security-policy') return
+      if (k === 'x-runtime-token' || k === 'authorization') return
+      outHeaders.set(key, value)
+    })
+    outHeaders.set('access-control-allow-origin', '*')
+    return new Response(resp.body, { status: resp.status, headers: outHeaders })
+  } catch (err: any) {
+    console.error('[preview/port-render]', err?.message || err)
+    return c.json({ error: { code: 'proxy_error', message: 'preview proxy failed' } }, 502)
+  }
+}
+app.all('/api/preview/:projectId/ports/:port/render', previewPortRenderHandler)
+app.all('/api/preview/:projectId/ports/:port/render/*', previewPortRenderHandler)
 
 // -----------------------------------------------------------------------------
 // Published API proxy — serves a metal-backed published site's `/api/*` via the API.
@@ -3517,6 +3662,117 @@ app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
 
   return c.json({ ok: true })
 })
+
+// =============================================================================
+// Exposed ports (Phase 3, Tier 2 docker project class plan)
+//
+// A project's tech stack declares a fixed set of ports (see
+// `lib/project-ports.ts`'s module doc for the full trust-model writeup); this
+// surface only lets the caller toggle a declared port's `visibility` between
+// 'tunnel' (default — reachable only via the authenticated client-side WS
+// tunnel below) and 'preview' (also reachable via the public per-port preview
+// URL, http-protocol ports only). It can never add a port the stack doesn't
+// list.
+// =============================================================================
+
+app.get('/api/projects/:projectId/ports', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { settings: true },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  const settings = parseProjectSettings(project.settings)
+  const techStackId = settings?.techStackId as string | undefined
+  return c.json({ ports: await withPreviewUrls(projectId, resolveExposedPorts(techStackId, settings)) })
+})
+
+app.patch('/api/projects/:projectId/ports/:port', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+
+  const port = Number(c.req.param('port'))
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return c.json({ error: { code: 'invalid_request', message: 'Invalid port' } }, 400)
+  }
+
+  const body = await c.req
+    .json<{ visibility?: string }>()
+    .catch(() => ({}) as { visibility?: string })
+  if (body.visibility !== 'tunnel' && body.visibility !== 'preview') {
+    return c.json(
+      { error: { code: 'invalid_request', message: "visibility must be 'tunnel' or 'preview'" } },
+      400,
+    )
+  }
+  const visibility: PortVisibility = body.visibility
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { settings: true },
+  })
+  if (!project) {
+    return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  }
+
+  const settings = parseProjectSettings(project.settings)
+  const techStackId = settings?.techStackId as string | undefined
+  const declared = getDeclaredPort(techStackId, port)
+  if (!declared) {
+    return c.json({ error: { code: 'not_found', message: 'Port is not declared by this project\'s tech stack' } }, 404)
+  }
+  // Public preview only makes sense for a full HTTP surface — a raw TCP port
+  // (e.g. postgres) has no HTTP semantics to serve at a preview URL, and
+  // exposing it unauthenticated would defeat whatever auth that protocol has.
+  if (visibility === 'preview' && declared.protocol !== 'http') {
+    return c.json(
+      { error: { code: 'invalid_request', message: 'Only http ports can be made publicly previewable' } },
+      400,
+    )
+  }
+
+  const nextExposedPorts = withPortVisibility(settings, port, visibility)
+  const nextSettings = { ...(settings ?? {}), exposedPorts: nextExposedPorts }
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { settings: encodeProjectSettingsForWrite(nextSettings) as any },
+  })
+
+  return c.json({ ports: await withPreviewUrls(projectId, resolveExposedPorts(techStackId, nextSettings)) })
+})
+
+/** Annotate each `preview`-visibility http port with its public preview URL. */
+async function withPreviewUrls(
+  projectId: string,
+  ports: ReturnType<typeof resolveExposedPorts>,
+): Promise<Array<ReturnType<typeof resolveExposedPorts>[number] & { previewUrl?: string }>> {
+  if (!ports.some((p) => p.visibility === 'preview')) return ports
+  const { getPortPreviewUrl } = await import('./lib/knative-project-manager')
+  return ports.map((p) =>
+    p.visibility === 'preview' && p.protocol === 'http'
+      ? { ...p, previewUrl: getPortPreviewUrl(projectId, p.port) }
+      : p,
+  )
+}
 
 // =============================================================================
 // Files routes - Project file listing and reading
@@ -5978,6 +6234,44 @@ app.put('/api/admin/settings/sandbox-exec', async (c) => {
   }
 })
 
+// GET /api/admin/settings/docker-class - Read the Docker-capable ("Tier 2") project class gate
+app.get('/api/admin/settings/docker-class', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: DOCKER_CLASS_SETTING_KEY } })
+    return c.json({ enabled: row ? row.value === 'true' : null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/docker-class - Set/clear the Docker-capable project class gate.
+// `enabled: true` allows new/existing projects to request the docker-compose
+// stack's `vmClass: 'docker'`; `enabled: false`/`null` refuses it platform-wide
+// (falls back to `DOCKER_CLASS_ENABLED` env, then off). See runtime-class-setting.ts
+// for why this defaults to off.
+app.put('/api/admin/settings/docker-class', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const { enabled } = body as { enabled: boolean | null }
+
+    if (enabled === null) {
+      await prisma.platformSetting.deleteMany({ where: { key: DOCKER_CLASS_SETTING_KEY } })
+    } else {
+      await prisma.platformSetting.upsert({
+        where: { key: DOCKER_CLASS_SETTING_KEY },
+        create: { key: DOCKER_CLASS_SETTING_KEY, value: String(enabled), updatedBy: userId },
+        update: { value: String(enabled), updatedBy: userId },
+      })
+    }
+    setDockerClassOverride(enabled)
+    return c.json({ ok: true, enabled })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // PUT /api/admin/settings/agent-models - Update agent mode model overrides
 app.put('/api/admin/settings/agent-models', async (c) => {
   try {
@@ -6165,6 +6459,7 @@ const FEATURE_FLAG_KEYS = {
   marketplace: 'feature.marketplace',
   ezMode: 'feature.ez_mode',
   phoneChannel: 'feature.phone_channel',
+  personalShell: 'feature.personal_shell',
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
@@ -6179,6 +6474,7 @@ app.get('/api/admin/settings/features', async (c) => {
       marketplace: null,
       ezMode: null,
       phoneChannel: null,
+      personalShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -6222,6 +6518,7 @@ app.put('/api/admin/settings/features', async (c) => {
       marketplace: null,
       ezMode: null,
       phoneChannel: null,
+      personalShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -7443,6 +7740,64 @@ app.post('/api/webhooks/stripe', async (c) => {
             console.error('[Webhook] Failed to sync subscription event:', err.message)
           }
         }
+
+        // Instance/capacity add-on lifecycle. Identified by the
+        // `InstanceSubscription` row's `stripeSubscriptionId`, NOT
+        // `subscription.metadata` (the `wsId && metaPlanId` branch above
+        // never matches an instance sub — see `findInstanceSubscriptionByStripeId`'s
+        // doc comment for why). Keeps status/period/cancel-at-period-end
+        // fresh for renewals, `past_due`, portal-initiated pauses, etc. — a
+        // TIER change still arrives via `checkout.session.completed` below.
+        try {
+          const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
+          if (instanceSub) {
+            const now = Date.now()
+            const currentPeriodStart = subscription.current_period_start
+              ? subscription.current_period_start * 1000
+              : now
+            const currentPeriodEnd = subscription.current_period_end
+              ? subscription.current_period_end * 1000
+              : now + (30 * 24 * 60 * 60 * 1000)
+            await instanceService.syncInstanceSubscriptionStatus(
+              subscription.id,
+              subscription.status as any,
+              subscription.cancel_at_period_end ?? false,
+              new Date(currentPeriodStart),
+              new Date(currentPeriodEnd),
+            )
+            console.log('[Webhook] Instance subscription status synced:', {
+              workspaceId: instanceSub.workspaceId,
+              status: subscription.status,
+              cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
+            })
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to sync instance subscription status:', err.message)
+        }
+        break
+      }
+      case 'customer.subscription.deleted': {
+        // Instance/capacity add-on cancellation (immediate cancel, or the
+        // final event at period end for a `cancel_at_period_end` sub).
+        // `downgradeToMicro()` existed but had zero production callers
+        // before this — nothing synced a canceled instance add-on back to
+        // `workspace.instanceSize`, so a workspace that canceled kept
+        // running (and being billed floor-wise) at its old tier forever.
+        // Seat-plan cancellation is intentionally NOT handled here — that's
+        // a separate, pre-existing gap outside this change's scope.
+        const subscription = event.data.object as Stripe.Subscription
+        try {
+          const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
+          if (instanceSub) {
+            await instanceService.downgradeToMicro(instanceSub.workspaceId)
+            instanceService.applyInstanceToRuntime(instanceSub.workspaceId).catch((err) =>
+              console.error('[Webhook] Failed to apply micro downgrade to runtime:', err.message),
+            )
+            console.log('[Webhook] Instance subscription canceled, downgraded to micro:', instanceSub.workspaceId)
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to downgrade canceled instance subscription:', err.message)
+        }
         break
       }
       case 'checkout.session.completed': {
@@ -8478,7 +8833,9 @@ app.get('/api/notifications/unread-count', async (c) => {
   if (!userId) {
     return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
   }
-  const count = await getUnreadNotificationCount(userId)
+  const count = await getUnreadNotificationCount(userId, {
+    excludeMobileTaskNotifications: c.req.query('excludeMobileTaskNotifications') === 'true',
+  })
   return c.json({ ok: true, count }, 200)
 })
 
@@ -8550,6 +8907,7 @@ const DRAIN_POLL_MS = 1_000
 async function gracefulShutdown(signal: string) {
   if (isShuttingDown) return
   isShuttingDown = true
+  stopAgentTaskWorker()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain
@@ -8742,6 +9100,8 @@ await (async () => {
 
 // Load the super-admin sandbox-exec override (see apps/api/src/lib/sandbox-exec-setting.ts).
 await loadSandboxExecOverride()
+// Load the Docker-capable project class gate (see apps/api/src/lib/runtime-class-setting.ts).
+await loadDockerClassOverride()
 
 // Self-provision in-process AI proxy credentials so the API server can reach
 // its own AI proxy for server-initiated LLM surfaces (title generation, in-app
@@ -8819,6 +9179,58 @@ import {
 } from './lib/pty-pod-bridge'
 const ptyPodBridge = createPtyPodBridgeHandlers()
 
+// Match a path like `/api/projects/<projectId>/ports/<port>/tunnel`.
+// Port capture group mirrors `parsePortParam()` in
+// `packages/agent-runtime/src/port-bridge.ts` (no leading zeros, e.g. `"0443"`
+// or `"00"`, which `Number()` would otherwise silently normalize) — kept in
+// sync by hand rather than a cross-package import since apps/api doesn't
+// otherwise depend on agent-runtime.
+const PORT_TUNNEL_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/ports\/([1-9][0-9]{0,4})\/tunnel$/
+
+// Client-side TCP port tunnel (Phase 3, Tier 2 plan): desktop/CLI ↔ this API
+// ↔ the project's runtime's raw TCP port bridge. See lib/port-tunnel-bridge.ts.
+import {
+  buildPortTunnelBridgeData,
+  createPortTunnelBridgeHandlers,
+  isPortTunnelBridgeData,
+  type PortTunnelBridgeData,
+} from './lib/port-tunnel-bridge'
+const portTunnelBridge = createPortTunnelBridgeHandlers()
+
+/**
+ * Authenticate a port-tunnel WS upgrade request against `project.workspaceId`.
+ * Unlike the PTY WS route (browser-only, reached via same-origin cookies that
+ * the WS handshake carries automatically), the port tunnel's primary caller
+ * is the desktop app / CLI dialing cross-origin with the `ws` library —
+ * which, unlike a browser `WebSocket`, CAN set arbitrary headers on the
+ * upgrade request. So this accepts the same two credential shapes
+ * `authMiddleware` does for a normal HTTP call: a `shogo_sk_*` API key
+ * (workspace-scoped) or a Better Auth session cookie (membership-scoped) —
+ * just resolved directly here since a WS upgrade never reaches Hono.
+ */
+async function authenticatePortTunnelWs(
+  req: Request,
+  projectId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const authHeader = req.headers.get('authorization') ?? ''
+  if (authHeader.startsWith('Bearer shogo_sk_')) {
+    const result = await resolveApiKey(authHeader.slice(7)).catch(() => null)
+    return !!result && result.workspaceId === workspaceId
+  }
+
+  try {
+    const session = await auth.api.getSession({ headers: req.headers })
+    if (session?.user?.id) {
+      const grantedWorkspaceId = await verifyProjectAccess(session.user.id, projectId)
+      return grantedWorkspaceId === workspaceId
+    }
+  } catch (err: any) {
+    console.warn('[PortTunnelWs] session auth failed:', err?.message ?? err)
+  }
+  return false
+}
+
 export default {
   port: API_PORT,
   hostname: "0.0.0.0",
@@ -8886,6 +9298,49 @@ export default {
           return new Response('Runtime unavailable', { status: 503 })
         }
       }
+      // Client-side TCP port tunnel: bridged to the per-project runtime's
+      // guest-local port bridge (see lib/port-tunnel-bridge.ts). Any port the
+      // project's tech stack declares can be tunneled — visibility only
+      // gates the SEPARATE public preview surface, not this authenticated path.
+      const portTunnelMatch = PORT_TUNNEL_WS_PATH_RE.exec(url.pathname)
+      if (portTunnelMatch) {
+        const [, projectId, portStr] = portTunnelMatch
+        const port = Number(portStr)
+        if (!isSafeProjectId(projectId) || !Number.isInteger(port) || port < 1 || port > 65535) {
+          return new Response('Invalid id', { status: 400 })
+        }
+        try {
+          const project = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { workspaceId: true, settings: true },
+          })
+          if (!project) return new Response('Project not found', { status: 404 })
+
+          const authed = await authenticatePortTunnelWs(req, projectId, project.workspaceId)
+          if (!authed) return new Response('Unauthorized', { status: 401 })
+
+          const settings = parseProjectSettings(project.settings)
+          const techStackId = settings?.techStackId as string | undefined
+          if (!isDeclaredPort(techStackId, port)) {
+            return new Response('Port is not declared by this project\'s tech stack', { status: 404 })
+          }
+
+          const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+          const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+          const resolved = await resolveProjectPodUrl(projectId, { logTag: 'PortTunnel' })
+          const data: PortTunnelBridgeData = buildPortTunnelBridgeData({
+            podUrl: resolved.url,
+            port,
+            runtimeToken: await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId }),
+          })
+          const upgraded = server.upgrade(req, { data })
+          if (upgraded) return undefined
+          return new Response('Port tunnel WebSocket upgrade failed', { status: 500 })
+        } catch (err: any) {
+          console.error('[PortTunnel] WS runtime-resolve failed:', err?.message ?? err)
+          return new Response('Runtime unavailable', { status: 503 })
+        }
+      }
     }
     return app.fetch(req, server)
   },
@@ -8893,16 +9348,19 @@ export default {
     open(ws: any) {
       if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
+      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
       if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
+      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
       if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
+      else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)
     },
   },

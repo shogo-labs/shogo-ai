@@ -56,7 +56,7 @@ export function ComposerPlusSection({
         <View className="min-w-0 flex-1">
           <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>{label}</Text>
           {value ? (
-            <Text className={PHONE_DENSITY.text.caption} numberOfLines={1}>
+            <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")} numberOfLines={1}>
               {value}
             </Text>
           ) : null}
@@ -151,7 +151,7 @@ export function ComposerPlusModeList<T extends string>({
               >
                 {mode.label}
               </Text>
-              <Text className={PHONE_DENSITY.text.caption}>{mode.description}</Text>
+              <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>{mode.description}</Text>
             </View>
           </Pressable>
         )

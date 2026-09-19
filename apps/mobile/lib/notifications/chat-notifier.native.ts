@@ -18,19 +18,40 @@ import type {
 
 let handlerConfigured = false
 let androidChannelConfigured = false
+let activeChatContext: { sessionId: string; projectId: string } | null = null
+
+/**
+ * Lets the native notification handler avoid interrupting the user when the
+ * exact chat that just completed is already visible in the foreground.
+ */
+export function setActiveChatNotificationContext(
+  context: { sessionId: string; projectId: string } | null,
+): void {
+  activeChatContext = context
+}
 
 function ensureHandler() {
   if (handlerConfigured) return
   handlerConfigured = true
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-      // Keep legacy field for older runtime surfaces that still read it.
-      shouldShowAlert: true,
-    }),
+    handleNotification: async (notification) => {
+      const data = notification.request.content.data as
+        | { sessionId?: string; projectId?: string }
+        | undefined
+      const isAlreadyVisible =
+        AppState.currentState === 'active' &&
+        activeChatContext?.sessionId === data?.sessionId &&
+        activeChatContext?.projectId === data?.projectId
+
+      return {
+        shouldShowBanner: !isAlreadyVisible,
+        shouldShowList: !isAlreadyVisible,
+        shouldPlaySound: !isAlreadyVisible,
+        shouldSetBadge: false,
+        // Keep legacy field for older runtime surfaces that still read it.
+        shouldShowAlert: !isAlreadyVisible,
+      }
+    },
   })
 }
 
@@ -60,6 +81,7 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   try {
     const current = await Notifications.getPermissionsAsync()
     if (current.granted) {
+      await ensureAndroidChannel()
       permissionCache = true
       return true
     }
@@ -75,6 +97,7 @@ export async function ensureNotificationPermission(): Promise<boolean> {
       },
     })
     permissionCache = next.granted
+    if (next.granted) await ensureAndroidChannel()
     return next.granted
   } catch {
     return false
@@ -109,7 +132,9 @@ export function subscribeNotificationClicks(
     const data = response.notification.request.content.data as
       | Partial<ChatNotificationClickData>
       | undefined
-    if (data?.sessionId && data?.projectId) {
+    if (typeof data?.taskId === 'string') {
+      cb({ taskId: data.taskId })
+    } else if (typeof data?.sessionId === 'string' && typeof data.projectId === 'string') {
       cb({ sessionId: data.sessionId, projectId: data.projectId })
     }
   })
@@ -128,7 +153,10 @@ export async function consumeColdStartNotification(): Promise<ChatNotificationCl
     const data = resp?.notification.request.content.data as
       | Partial<ChatNotificationClickData>
       | undefined
-    if (data?.sessionId && data?.projectId) {
+    if (typeof data?.taskId === 'string') {
+      return { taskId: data.taskId }
+    }
+    if (typeof data?.sessionId === 'string' && typeof data.projectId === 'string') {
       return { sessionId: data.sessionId, projectId: data.projectId }
     }
   } catch {

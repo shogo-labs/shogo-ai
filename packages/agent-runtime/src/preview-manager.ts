@@ -647,7 +647,7 @@ async function pickFreePort(
   return null
 }
 
-export type DevServerKind = 'vite' | 'metro' | 'none'
+export type DevServerKind = 'vite' | 'metro' | 'none' | 'compose'
 
 /**
  * Where the device-preview Metro tunnel lives.
@@ -1058,7 +1058,7 @@ export class PreviewManager {
       if (!stackId) return 'vite'
       const meta = loadTechStackMeta(stackId)
       const decl = meta?.runtime?.devServer
-      if (decl === 'metro' || decl === 'vite' || decl === 'none') return decl
+      if (decl === 'metro' || decl === 'vite' || decl === 'none' || decl === 'compose') return decl
       return 'vite'
     } catch {
       return 'vite'
@@ -1871,13 +1871,30 @@ export class PreviewManager {
 
     const timings: Record<string, number> = {}
     const bundlerCwd = this.resolveBundlerCwd()
+    const devServer = this.resolveDevServer()
+
+    // `compose` stacks (docker-compose.yml driven, e.g. a Python/Postgres
+    // backend) have no `package.json` / node_modules pipeline at all — the
+    // agent brings the stack up itself via `docker compose up` (permitted by
+    // the docker-class permission-engine allowlist), not PreviewManager. We
+    // deliberately do NOT lifecycle-manage the compose stack here (no
+    // readiness polling against `docker compose ps`, no log streaming, no
+    // quiesce/resume hooks) — that requires validation against a real
+    // dockerd-capable guest this repo's tests cannot exercise. Marking
+    // `ready` immediately just stops this kind from silently falling through
+    // to the `vite` default below (the pre-existing bug for unknown
+    // `runtime.devServer` values).
+    if (devServer === 'compose') {
+      console.log(`[${LOG_PREFIX}] Stack declares devServer=compose — PreviewManager does not manage it; the agent runs \`docker compose\` directly`)
+      this._phase = 'ready'
+      this.started = true
+      return { mode: 'compose-unmanaged', port: this.runtimePort, timings }
+    }
 
     if (!existsSync(join(bundlerCwd, 'package.json'))) {
       console.log(`[${LOG_PREFIX}] No package.json in ${bundlerCwd} — skipping preview start`)
       return { mode: 'no-project', port: null, timings }
     }
-
-    const devServer = this.resolveDevServer()
 
     if (devServer === 'none') {
       console.log(`[${LOG_PREFIX}] Stack declares devServer=none — skipping bundler`)
@@ -1958,8 +1975,9 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] Pool pre-warm: no package.json in ${bundlerCwd} — skipping`)
       return
     }
-    if (this.resolveDevServer() === 'none') {
-      console.log(`[${LOG_PREFIX}] Pool pre-warm: devServer=none — skipping`)
+    const devServer = this.resolveDevServer()
+    if (devServer === 'none' || devServer === 'compose') {
+      console.log(`[${LOG_PREFIX}] Pool pre-warm: devServer=${devServer} — skipping`)
       return
     }
 

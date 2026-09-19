@@ -39,6 +39,8 @@ export interface PlatformConfig {
     marketplace: boolean
     ezMode: boolean
     phoneChannel: boolean
+    /** Companion-shell rollout kill switch for personal workspaces. */
+    personalShell: boolean
   }
 }
 
@@ -47,6 +49,7 @@ export interface FeatureFlagOverrides {
   marketplace: boolean | null
   ezMode: boolean | null
   phoneChannel: boolean | null
+  personalShell: boolean | null
 }
 
 /** Partial feature flag patch; omit a key to leave it unchanged; `null` to reset to default. */
@@ -54,6 +57,7 @@ export type FeatureFlagPatch = Partial<{
   marketplace: boolean | null
   ezMode: boolean | null
   phoneChannel: boolean | null
+  personalShell: boolean | null
 }>
 
 /** API keys come in two flavours:
@@ -1096,7 +1100,7 @@ export class PlatformApi {
   /** Read super-admin feature flag overrides. `null` means "use platform default". */
   async getFeatureFlags(): Promise<FeatureFlagOverrides> {
     const res = await this.http.get<FeatureFlagOverrides>('/api/admin/settings/features')
-    return res.data ?? { marketplace: null, ezMode: null, phoneChannel: null }
+    return res.data ?? { marketplace: null, ezMode: null, phoneChannel: null, personalShell: null }
   }
 
   /** Update feature flag overrides. Pass `null` for a flag to reset to platform default. */
@@ -1105,7 +1109,12 @@ export class PlatformApi {
       '/api/admin/settings/features',
       { method: 'PUT', body: patch },
     )
-    return res.data ?? { ok: false, flags: { marketplace: null, ezMode: null, phoneChannel: null } }
+    return (
+      res.data ?? {
+        ok: false,
+        flags: { marketplace: null, ezMode: null, phoneChannel: null, personalShell: null },
+      }
+    )
   }
 
   // ===========================================================================

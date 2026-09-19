@@ -40,6 +40,7 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { workspaceExperience } from '@shogo/shared-app'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
@@ -56,6 +57,8 @@ import { TechStackPicker } from '../../components/chat/TechStackPicker'
 import { techStackDisplayName } from '../../lib/tech-stack-catalog'
 import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
+import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
+import { PersonalHomeScreen } from '../../components/personal/PersonalHomeScreen'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -857,9 +860,17 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
+  // `features.personalShell` is an instance-wide kill switch (default on):
+  // a super-admin can fall back every personal workspace to the standard
+  // builder home without a deploy if the companion-shell rollout needs to
+  // pause. See the API's `/api/config` handler and `(admin)/general.tsx`.
+  if (features.personalShell && workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion') {
+    return <PersonalHomeScreen />
+  }
+
   const greeting = (
     <Text
-      className={`text-center text-foreground ${isNativePhone ? 'font-semibold' : 'font-bold mb-2'}`}
+      className={`text-center text-foreground ${isNativePhone ? 'font-medium' : 'font-bold mb-2'}`}
       style={heroTitleStyle}
     >
       {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
@@ -963,6 +974,7 @@ const HomeScreen = observer(function HomeScreen() {
             nativeEntranceStyle,
           ]}
         >
+          {isNativePhone ? <ShogoLogoMark className="mb-6 h-28 w-28" /> : null}
           {greeting}
         </Animated.View>
         <View

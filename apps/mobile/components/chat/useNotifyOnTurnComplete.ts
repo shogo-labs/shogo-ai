@@ -19,6 +19,7 @@ import {
   notifyChatFinished,
 } from '../../lib/notifications/chat-notifier'
 import { getNotifyOnTurnComplete } from '../../lib/notifications/preferences'
+import { hasRegisteredMobilePushSubscription } from '../../lib/notifications/mobile-push-registration'
 
 export interface UseNotifyOnTurnCompleteArgs {
   isStreaming: boolean
@@ -97,6 +98,11 @@ export function useNotifyOnTurnComplete(args: UseNotifyOnTurnCompleteArgs): void
       preferenceEnabled: getNotifyOnTurnComplete(),
     })
     if (!shouldAttempt) return
+    // Native devices with a registered Expo token receive the server push for
+    // this completion. Suppressing the local fallback in that case prevents
+    // the same turn from producing two OS notifications. If registration is
+    // unavailable, the local notifier remains the fallback path.
+    if (hasRegisteredMobilePushSubscription()) return
 
     void (async () => {
       try {

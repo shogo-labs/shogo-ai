@@ -1595,7 +1595,11 @@ export async function getChatAnalytics(
  * Get project analytics - status distribution, tier breakdown, most active.
  */
 export async function getProjectAnalytics(scope: AnalyticsScope = {}) {
-  const where = scope.workspaceId ? { workspaceId: scope.workspaceId } : {}
+  // Workspace-scoped calls back a user-facing `mostActive` project list
+  // (`scoped-analytics.ts`), so hidden (companion builder-delegate)
+  // projects are excluded there. The platform-wide admin call (no
+  // `workspaceId`) intentionally keeps everything for operational visibility.
+  const where = scope.workspaceId ? { workspaceId: scope.workspaceId, hidden: false } : {}
 
   const projects = await prisma.project.findMany({
     where,
