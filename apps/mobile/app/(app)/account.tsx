@@ -147,11 +147,15 @@ export default observer(function AccountPage() {
         await workspaces.loadAll()
         projects.clear()
         await projects.loadAll({ workspaceId: newWorkspace.id })
+        // Land the user in their new space instead of leaving them on the
+        // Account page — home reactively renders the personal-workspace
+        // "companion" experience once `currentWorkspace.kind === 'personal'`.
+        router.push("/(app)" as never)
       }
     } catch (err) {
       console.warn("Failed to create personal workspace:", err)
     }
-  }, [http, posthog, projects, workspaces])
+  }, [http, posthog, projects, workspaces, router])
 
   const handleSignOut = useCallback(async () => {
     trackEvent(posthog, EVENTS.SIGN_OUT)
