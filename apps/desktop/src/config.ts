@@ -37,6 +37,11 @@ export interface BugReportConfig {
   maxLogLines?: number
 }
 
+/** Desktop auto-update channel. `beta` tracks the newest build off `main`
+ * (published on every push, prerelease on GitHub) instead of the latest
+ * tagged stable release. See `update-channel.ts` for feed-URL resolution. */
+export type UpdateChannel = 'stable' | 'beta'
+
 export interface DesktopConfig {
   mode: 'local' | 'cloud'
   hostRuntime: HostRuntimeConfig
@@ -47,6 +52,8 @@ export interface DesktopConfig {
    * install signs in multiple times. Treated as non-secret metadata — the
    * minted API key is still the only credential. */
   deviceId: string
+  /** Defaults to 'stable'. User-controlled via Settings → Updates. */
+  updateChannel: UpdateChannel
 }
 
 /** Default Shogo Cloud endpoint used when SHOGO_CLOUD_URL is not set. */
@@ -90,6 +97,7 @@ const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
   hostRuntime: getDefaultHostRuntimeConfig(),
   meetings: { ...DEFAULT_MEETING_CONFIG },
+  updateChannel: 'stable',
 }
 
 function getConfigPath(): string {
@@ -129,6 +137,7 @@ export function readConfig(): DesktopConfig {
       ? parsed.bugReport
       : undefined,
     deviceId: existingDeviceId || generateDeviceId(),
+    updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
   }
 
   // Persist the freshly generated deviceId so all subsequent reads are stable.

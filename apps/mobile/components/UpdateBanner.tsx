@@ -6,33 +6,40 @@ import { useUpdateChecker } from '@/lib/use-update-checker'
 import { X } from 'lucide-react-native'
 
 type DesktopUpdateStatus = 'idle' | 'available' | 'downloading' | 'ready' | 'error'
+type DesktopUpdateChannel = 'stable' | 'beta'
+
+interface DesktopUpdateStatusPayload {
+  status: DesktopUpdateStatus
+  releaseName: string | null
+  availableVersion: string | null
+  channel?: DesktopUpdateChannel
+}
 
 function useDesktopUpdateStatus() {
   const [status, setStatus] = useState<DesktopUpdateStatus>('idle')
   const [releaseName, setReleaseName] = useState<string | null>(null)
   const [availableVersion, setAvailableVersion] = useState<string | null>(null)
+  const [channel, setChannel] = useState<DesktopUpdateChannel>('stable')
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
     const desktop = typeof window !== 'undefined' ? (window as any).shogoDesktop : null
     if (!desktop?.getUpdateStatus) return
 
-    desktop
-      .getUpdateStatus()
-      .then((data: { status: DesktopUpdateStatus; releaseName: string | null; availableVersion: string | null }) => {
-        setStatus(data.status)
-        setReleaseName(data.releaseName)
-        setAvailableVersion(data.availableVersion)
-      })
+    desktop.getUpdateStatus().then((data: DesktopUpdateStatusPayload) => {
+      setStatus(data.status)
+      setReleaseName(data.releaseName)
+      setAvailableVersion(data.availableVersion)
+      if (data.channel) setChannel(data.channel)
+    })
 
-    desktop.onUpdateStatus(
-      (data: { status: DesktopUpdateStatus; releaseName: string | null; availableVersion: string | null }) => {
-        setStatus(data.status)
-        setReleaseName(data.releaseName)
-        setAvailableVersion(data.availableVersion)
-        setDismissed(false)
-      },
-    )
+    desktop.onUpdateStatus((data: DesktopUpdateStatusPayload) => {
+      setStatus(data.status)
+      setReleaseName(data.releaseName)
+      setAvailableVersion(data.availableVersion)
+      if (data.channel) setChannel(data.channel)
+      setDismissed(false)
+    })
 
     return () => desktop.removeUpdateListener?.()
   }, [])
@@ -60,6 +67,7 @@ function useDesktopUpdateStatus() {
     status,
     releaseName,
     availableVersion,
+    channel,
     dismissed,
     setDismissed,
     download,
@@ -82,10 +90,17 @@ export function UpdateBanner() {
   if (!showDesktopBanner && !showWebBanner) return null
 
   if (showDesktopBanner) {
+    const betaTag = desktop.channel === 'beta' ? (
+      <View className="mr-2 rounded bg-white/20 px-1.5 py-0.5">
+        <Text className="text-[10px] font-semibold uppercase text-white">Beta</Text>
+      </View>
+    ) : null
+
     return (
-      <View className="relative flex-row items-center justify-center bg-brand-landing px-8 py-1.5">
+      <View testID="shogo-update-banner" className="relative flex-row items-center justify-center bg-brand-landing px-8 py-1.5">
         {desktop.status === 'available' ? (
           <>
+            {betaTag}
             <Text className="text-xs font-medium text-white">
               {desktop.availableVersion ?? 'A new version'} is available.
             </Text>
@@ -97,9 +112,13 @@ export function UpdateBanner() {
             </Pressable>
           </>
         ) : desktop.status === 'downloading' ? (
-          <Text className="text-xs font-medium text-white">Downloading update…</Text>
+          <>
+            {betaTag}
+            <Text className="text-xs font-medium text-white">Downloading update…</Text>
+          </>
         ) : (
           <>
+            {betaTag}
             <Text className="text-xs font-medium text-white">
               {desktop.releaseName ?? 'A new version'} is ready to install.
             </Text>

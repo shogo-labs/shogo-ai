@@ -1757,13 +1757,20 @@ app.whenReady().then(async () => {
     void startRecordingHttpBridge()
   }
 
-  if (app.isPackaged) {
+  // SHOGO_UPDATER_E2E lets the update-channel Playwright spec exercise the
+  // real updater IPC surface (probe, channel switch, banner status) against
+  // an unpackaged `dist/main.js` build pointed at a mock feed server via
+  // SHOGO_UPDATE_FEED_BASE_URL — see apps/desktop/e2e/update-channel.spec.ts.
+  if (app.isPackaged || process.env.SHOGO_UPDATER_E2E === '1') {
     initAutoUpdater()
   } else {
     // In dev mode, register no-op handlers so the renderer doesn't crash
     // when it invokes update-related IPC (initAutoUpdater registers these
     // only in packaged builds).
-    ipcMain.handle('get-update-status', () => ({ status: 'idle', releaseName: null, availableVersion: null }))
+    ipcMain.handle('get-update-status', () => ({ status: 'idle', releaseName: null, availableVersion: null, channel: 'stable' }))
+    ipcMain.handle('get-update-channel', () => ({ channel: 'stable' }))
+    ipcMain.handle('set-update-channel', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
+    ipcMain.handle('check-for-updates', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
     ipcMain.handle('download-update', () => ({ ok: false, error: 'Updates disabled in dev mode' }))
     ipcMain.handle('dismiss-update', () => ({ ok: true }))
     ipcMain.handle('install-update', () => {})

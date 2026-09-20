@@ -86,6 +86,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Unit test releases-worker.js.tftpl (releases.shogo.ai)
+        # Runs from the repo root (this job's working-directory default is
+        # terraform/environments/staging) — see releases-worker.test.ts for
+        # why the Worker is rendered to a temp .mjs and imported rather than
+        # tested in-place.
+        working-directory: ${{ github.workspace }}
+        run: bun test terraform/modules/install-shogo-ai/scripts/releases-worker.test.ts
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}

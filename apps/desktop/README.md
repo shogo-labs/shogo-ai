@@ -152,6 +152,56 @@ control agent is active. Adjust under **Settings → Security**.
   computer control. The MCP automatically prefers `xdotool` for typing when
   available (handles non-US keyboard layouts).
 
+## Update Channels
+
+Shogo Desktop auto-updates via Electron's Squirrel-based `autoUpdater`. Every
+install ships on the **Stable** channel by default; users can opt into
+**Beta** from **Settings → Updates** to track the newest signed build off
+`main` instead of the latest tagged release.
+
+| | Stable (default) | Beta (opt-in) |
+|---|---|---|
+| Tracks | Latest tagged `vX.Y.Z` release | Newest build off `main`, published on every push |
+| Feed | `update.electronjs.org` (reads this repo's GitHub Releases; ignores prereleases/drafts by design) | `releases.shogo.ai/desktop/beta/...` — a Cloudflare Worker route that speaks the same protocol but includes prereleases |
+| Version scheme | `X.Y.Z` | `<next patch>-beta.<UTC YYYYMMDDHHMMSS>`, e.g. `1.14.10-beta.20260919233000` |
+| Stability | Recommended for everyday use | May be unstable — it's whatever's on `main` right now |
+
+Switching channels persists to `config.json` (`updateChannel`) and immediately
+re-probes the new feed. Switching **Beta → Stable** does not downgrade — the
+app keeps the currently-installed beta build until a stable release with a
+higher version is published. The channel toggle is refused while a download
+is in progress (`downloading`) or a downloaded update is waiting to install
+(`ready`) — see the `set-update-channel` handler in `apps/desktop/src/updater.ts`.
+
+Relevant source:
+- `apps/desktop/src/update-channel.ts` — pure feed-URL resolver (channel + platform + arch + version → feed URL), unit-tested in `apps/desktop/test-update-channel.ts`.
+- `apps/desktop/src/updater.ts` — probes the feed, owns the `get/set-update-channel`, `check-for-updates`, `download-update`, `install-update` IPC handlers.
+- `apps/mobile/components/settings/UpdatesTab.tsx` / `apps/mobile/components/UpdateBanner.tsx` — the channel selector and the in-app update banner (shows a "Beta" tag when on the beta channel).
+- `terraform/modules/install-shogo-ai/scripts/releases-worker.js.tftpl` — the `/desktop/<channel>/<platform>-<arch>/<version>[/RELEASES]` Worker route beta rides on, tested in `releases-worker.test.ts`.
+
+### Testing update channels
+
+- **Unit**: `bun test-update-channel.ts` (feed URL resolution), plus the
+  Worker route tests (`bun test terraform/modules/install-shogo-ai/scripts/releases-worker.test.ts`)
+  and the beta-version script tests (`bun test scripts/__tests__/desktop-next-beta-version.test.ts`).
+- **E2E (Playwright-Electron)**: `apps/desktop/e2e/update-channel.spec.ts` boots
+  the real Electron app against a local mock feed server (via
+  `SHOGO_UPDATE_FEED_BASE_URL` + `SHOGO_UPDATER_E2E=1`) and drives the real
+  `window.shogoDesktop` update-channel IPC surface — channel switch, banner
+  render, `config.json` persistence, and persistence across a relaunch:
+  ```bash
+  cd apps/desktop
+  npm run build   # or: npx tsc && npm run bundle:main
+  PLAYWRIGHT_E2E=1 npx playwright test --config e2e/playwright.config.ts e2e/update-channel.spec.ts
+  ```
+  It does not exercise a real Squirrel download/install (that needs a signed
+  build — see the beta dry-run procedure in `BUILD.md`).
+- **Deployed-feed smoke test**: `./scripts/check-desktop-feed.sh` hits the
+  live `releases.shogo.ai` Worker and checks the beta route's up-to-date /
+  update-available / `RELEASES`-rewrite responses, plus parity between the
+  stable route and `update.electronjs.org` for the same inputs. Run after any
+  Terraform apply that touches `releases-worker.js.tftpl`.
+
 ## What's Different in Local Mode
 
 | Feature             | Cloud                      | Local                           |

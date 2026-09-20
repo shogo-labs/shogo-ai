@@ -1,21 +1,42 @@
 // =============================================================================
 // releases.shogo.ai — resolver Worker
 // =============================================================================
-// Resolves /cli/<channel>/shogo-<target>.<ext>(.sha256)? to the latest
-// matching v* GitHub Release asset and 302-redirects.
+// Two independent resolvers on one Worker:
 //
-// 302 (not proxy) keeps the Worker off the data path so checksums stay
-// GitHub-signed and bandwidth doesn't bill against Cloudflare.
+//   GET /cli/<channel>/shogo-<target>.<ext>(.sha256)?
+//     Resolves to the latest matching v* GitHub Release asset and
+//     302-redirects. channel: stable | beta | nightly.
 //
-// Cache key is (channel, asset) so a windows-zip request doesn't pin a
-// tag that lacks them for the darwin/linux callers. Per-channel cache
-// TTL keeps GH API calls well under the 5000/hr authenticated quota
-// even with no warm cache across PoPs.
+//   GET /desktop/<channel>/<platform-arch>/<version>[/RELEASES]
+//     Feed for the Electron desktop app's auto-updater (see
+//     apps/desktop/src/update-channel.ts). channel: stable | beta.
+//     Speaks the exact same wire protocol as update.electronjs.org (the
+//     desktop app's stable-channel feed) so the client needs zero
+//     channel-specific response handling: 204 = up to date, JSON
+//     `{name,notes,url}` = update available, `/RELEASES` = Squirrel.Windows
+//     manifest with the nupkg filename rewritten to an absolute download
+//     URL. update.electronjs.org can't serve `beta` itself — its
+//     `getLatest()` unconditionally skips `release.prerelease` entries — so
+//     this route exists specifically to serve our own prereleases (tagged
+//     `vX.Y.Z-beta.<timestamp>`, published on every push to `main`) to
+//     desktop installs that opted into the beta channel.
+//
+// 302 (not proxy) keeps the Worker off the data path for /cli so checksums
+// stay GitHub-signed and bandwidth doesn't bill against Cloudflare. /desktop
+// follows the same principle: only the small JSON/RELEASES manifests are
+// served directly; the actual .zip/.nupkg bytes are always a GitHub URL the
+// client (Squirrel) fetches on its own.
+//
+// Cache key is (channel, asset) / (channel, platform) so a windows-zip
+// request doesn't pin a tag that lacks them for the darwin/linux callers.
+// Per-channel cache TTL keeps GH API calls well under the 5000/hr
+// authenticated quota even with no warm cache across PoPs.
 // =============================================================================
 
 const OWNER = '${github_owner}';
 const REPO = '${github_repo}';
 const PATH_RE = /^\/cli\/(stable|beta|nightly)\/(shogo-(?:darwin|linux|win)-(?:arm64|x64|x86)\.(?:tar\.gz|zip)(?:\.sha256)?)$/;
+const DESKTOP_PATH_RE = /^\/desktop\/(stable|beta)\/(darwin-arm64|darwin-x64|win32-x64)\/([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)(?:\/(RELEASES))?$/;
 
 const CHANNEL_TTL = { stable: 3600, beta: 600, nightly: 60 };
 
@@ -63,34 +84,287 @@ async function resolveTag(channel, asset, env, ctx) {
   return hit.tag_name;
 }
 
-export default {
-  async fetch(request, env, ctx) {
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      return new Response('Method Not Allowed', {
-        status: 405,
-        headers: { Allow: 'GET, HEAD' },
-      });
+// -----------------------------------------------------------------------
+// /desktop resolver helpers
+// -----------------------------------------------------------------------
+// Dependency-free semver (no `semver` npm package available inside a
+// Worker without a build step). Only handles what our own tags ever
+// produce: MAJOR.MINOR.PATCH with an optional dot-delimited prerelease
+// (e.g. "1.14.10-beta.20260919233000"), which is all this route ever
+// compares.
+
+function parseSemver(input) {
+  if (typeof input !== 'string') return null;
+  const s = input.charAt(0) === 'v' ? input.slice(1) : input;
+  const m = /^([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?$/.exec(s);
+  if (!m) return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3]),
+    prerelease: m[4] ? m[4].split('.') : [],
+  };
+}
+
+function isSemverValid(input) {
+  return parseSemver(input) !== null;
+}
+
+// Per the semver spec: numeric identifiers compare numerically and always
+// have lower precedence than alphanumeric identifiers, which compare
+// lexically (ASCII).
+function compareIdentifiers(a, b) {
+  const aNum = /^[0-9]+$/.test(a);
+  const bNum = /^[0-9]+$/.test(b);
+  if (aNum && bNum) {
+    const an = Number(a);
+    const bn = Number(b);
+    return an === bn ? 0 : (an < bn ? -1 : 1);
+  }
+  if (aNum) return -1;
+  if (bNum) return 1;
+  return a === b ? 0 : (a < b ? -1 : 1);
+}
+
+// Returns <0 if a<b, 0 if equal, >0 if a>b. A version WITHOUT a prerelease
+// always outranks the same major.minor.patch WITH one.
+function compareSemver(a, b) {
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  if (a.patch !== b.patch) return a.patch - b.patch;
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0;
+  if (a.prerelease.length === 0) return 1;
+  if (b.prerelease.length === 0) return -1;
+  const len = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let i = 0; i < len; i++) {
+    if (i >= a.prerelease.length) return -1;
+    if (i >= b.prerelease.length) return 1;
+    const c = compareIdentifiers(a.prerelease[i], b.prerelease[i]);
+    if (c !== 0) return c;
+  }
+  return 0;
+}
+
+function semverGt(aStr, bStr) {
+  const a = parseSemver(aStr);
+  const b = parseSemver(bStr);
+  if (!a || !b) return false;
+  return compareSemver(a, b) > 0;
+}
+
+function semverLte(aStr, bStr) {
+  const a = parseSemver(aStr);
+  const b = parseSemver(bStr);
+  if (!a || !b) return false;
+  return compareSemver(a, b) <= 0;
+}
+
+// `beta` is a superset of `stable` — a beta-channel install should also
+// receive ordinary (non-prerelease) releases once they're newer than
+// whatever prerelease it's currently running, so switching back to stable
+// later never looks like a downgrade in the meantime.
+function desktopChannelMatches(release, channel) {
+  if (channel === 'beta') return true;
+  return !release.prerelease;
+}
+
+function desktopAssetForPlatform(release, platform) {
+  if (!Array.isArray(release.assets)) return null;
+  if (platform === 'darwin-arm64' || platform === 'darwin-x64') {
+    const arch = platform.slice('darwin-'.length);
+    const re = new RegExp('^Shogo-darwin-' + arch + '-.*\\.zip$');
+    return release.assets.find((a) => re.test(a.name)) || null;
+  }
+  if (platform === 'win32-x64') {
+    const hasReleases = release.assets.some((a) => a.name === 'RELEASES');
+    const nupkg = release.assets.find((a) => /\.nupkg$/.test(a.name));
+    return hasReleases && nupkg ? nupkg : null;
+  }
+  return null;
+}
+
+// Finds the newest (per) release on `channel` that has a usable asset for
+// `platform`, caching the small resolved summary (not the GitHub API
+// response) per (channel, platform).
+async function resolveDesktopRelease(channel, platform, env, ctx) {
+  const cache = caches.default;
+  const cacheKey = new Request('https://internal/desktop-resolve/' + channel + '/' + platform);
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const text = await cached.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  const headers = {
+    'user-agent': 'releases.shogo.ai-desktop-resolver',
+    accept: 'application/vnd.github+json',
+  };
+  if (env.GITHUB_TOKEN) headers.authorization = 'Bearer ' + env.GITHUB_TOKEN;
+
+  const res = await fetch(
+    'https://api.github.com/repos/' + OWNER + '/' + REPO + '/releases?per_page=100',
+    { headers },
+  );
+  if (!res.ok) return null;
+  const releases = await res.json();
+
+  let best = null;
+  let bestAsset = null;
+  for (const r of releases) {
+    if (r.draft || !isSemverValid(r.tag_name) || !desktopChannelMatches(r, channel)) continue;
+    const asset = desktopAssetForPlatform(r, platform);
+    if (!asset) continue;
+    const version = r.tag_name.charAt(0) === 'v' ? r.tag_name.slice(1) : r.tag_name;
+    if (!best || semverGt(version, best.version)) {
+      best = { tag: r.tag_name, version, name: r.name || r.tag_name, notes: r.body || '' };
+      bestAsset = asset;
     }
-    const url = new URL(request.url);
-    if (url.pathname === '/' || url.pathname === '') {
-      return new Response(
-        'releases.shogo.ai\n\nGET /cli/<channel>/shogo-<target>.<ext>\n  channel: stable | beta | nightly\n  target:  darwin-arm64 | darwin-x64 | linux-arm64 | linux-x64 | win-x64 | win-x86\n  ext:     tar.gz | zip (+ optional .sha256)\n',
-        { headers: { 'content-type': 'text/plain; charset=utf-8' } },
-      );
-    }
-    const m = url.pathname.match(PATH_RE);
-    if (!m) return new Response('Not Found', { status: 404 });
-    const [, channel, asset] = m;
-    const tag = await resolveTag(channel, asset, env, ctx);
-    if (!tag) {
-      return new Response(
-        'No release found for channel=' + channel + ' asset=' + asset,
-        { status: 503 },
-      );
-    }
-    return Response.redirect(
-      'https://github.com/' + OWNER + '/' + REPO + '/releases/download/' + tag + '/' + asset,
-      302,
+  }
+
+  const ttl = CHANNEL_TTL[channel];
+  if (!best) {
+    ctx.waitUntil(cache.put(cacheKey, new Response('', {
+      headers: { 'cache-control': 'public, max-age=' + ttl },
+    })));
+    return null;
+  }
+
+  const result = { ...best, url: bestAsset.browser_download_url };
+  ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(result), {
+    headers: { 'cache-control': 'public, max-age=' + ttl },
+  })));
+  return result;
+}
+
+// Locate the first whitespace-delimited `.nupkg` token in a RELEASES file
+// body. A manual bounded scan (not a regex) so a maliciously large/crafted
+// RELEASES asset can't trigger catastrophic backtracking — mirrors
+// electron/update.electronjs.org's own `findNupkgName()`.
+function findNupkgName(body) {
+  const marker = '.nupkg';
+  const idx = body.toLowerCase().indexOf(marker);
+  if (idx === -1) return null;
+  let start = idx;
+  while (start > 0 && body[start - 1] !== ' ') start--;
+  let end = idx + marker.length;
+  while (end < body.length && body[end] !== ' ') end++;
+  return body.slice(start, end);
+}
+
+// Fetches `<tag>/RELEASES` from the GitHub release and rewrites the bare
+// nupkg filename it contains into an absolute download URL, exactly as
+// update.electronjs.org does for the stable channel — Squirrel.Windows
+// downloads the nupkg directly from that URL, never through this Worker.
+async function fetchDesktopReleasesFile(tag) {
+  const url = 'https://github.com/' + OWNER + '/' + REPO + '/releases/download/' + tag + '/RELEASES';
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const body = await res.text();
+  const nupkgName = findNupkgName(body);
+  if (!nupkgName) return body;
+  const nupkgUrl = url.replace('RELEASES', nupkgName);
+  return body.replace(nupkgName, nupkgUrl);
+}
+
+async function handleDesktopRequest(match, env, ctx) {
+  const channel = match[1];
+  const platform = match[2];
+  const version = match[3];
+  const releasesFile = match[4];
+
+  if (!isSemverValid(version)) {
+    return new Response('Invalid SemVer: "' + version + '"', {
+      status: 400,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+
+  const latest = await resolveDesktopRelease(channel, platform, env, ctx);
+  if (!latest) {
+    return new Response(
+      'No release found for channel=' + channel + ' platform=' + platform,
+      { status: releasesFile ? 404 : 503, headers: { 'content-type': 'text/plain; charset=utf-8' } },
     );
-  },
+  }
+
+  if (releasesFile) {
+    const body = await fetchDesktopReleasesFile(latest.tag);
+    if (body === null) return new Response('Not Found', { status: 404 });
+    return new Response(body, {
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' },
+    });
+  }
+
+  if (semverLte(latest.version, version)) {
+    return new Response(null, { status: 204 });
+  }
+
+  return new Response(JSON.stringify({
+    name: latest.name,
+    notes: latest.notes,
+    url: latest.url,
+  }), { headers: { 'content-type': 'application/json' } });
+}
+
+async function handleRequest(request, env, ctx) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: { Allow: 'GET, HEAD' },
+    });
+  }
+  const url = new URL(request.url);
+  if (url.pathname === '/' || url.pathname === '') {
+    return new Response(
+      'releases.shogo.ai\n\n' +
+      'GET /cli/<channel>/shogo-<target>.<ext>\n  channel: stable | beta | nightly\n  target:  darwin-arm64 | darwin-x64 | linux-arm64 | linux-x64 | win-x64 | win-x86\n  ext:     tar.gz | zip (+ optional .sha256)\n\n' +
+      'GET /desktop/<channel>/<platform-arch>/<version>[/RELEASES]\n  channel: stable | beta\n  platform-arch: darwin-arm64 | darwin-x64 | win32-x64\n  Mirrors update.electronjs.org: 204 = up to date, JSON = update available.\n',
+      { headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
+  }
+
+  const desktopMatch = url.pathname.match(DESKTOP_PATH_RE);
+  if (desktopMatch) {
+    return handleDesktopRequest(desktopMatch, env, ctx);
+  }
+  if (url.pathname.indexOf('/desktop/') === 0) {
+    return new Response('Not Found — expected /desktop/<stable|beta>/<darwin-arm64|darwin-x64|win32-x64>/<version>[/RELEASES]', { status: 404 });
+  }
+
+  const m = url.pathname.match(PATH_RE);
+  if (!m) return new Response('Not Found', { status: 404 });
+  const [, channel, asset] = m;
+  const tag = await resolveTag(channel, asset, env, ctx);
+  if (!tag) {
+    return new Response(
+      'No release found for channel=' + channel + ' asset=' + asset,
+      { status: 503 },
+    );
+  }
+  return Response.redirect(
+    'https://github.com/' + OWNER + '/' + REPO + '/releases/download/' + tag + '/' + asset,
+    302,
+  );
+}
+
+export default {
+  fetch: handleRequest,
+};
+
+// Named exports exist purely so `releases-worker.test.ts` can unit-test the
+// pure helpers without spinning up a Workers runtime. Cloudflare's Workers
+// bundler only looks at the `default` export above; extra named exports are
+// inert in production.
+export {
+  parseSemver,
+  isSemverValid,
+  compareSemver,
+  semverGt,
+  semverLte,
+  desktopChannelMatches,
+  desktopAssetForPlatform,
+  findNupkgName,
+  matchChannel,
+  DESKTOP_PATH_RE,
+  PATH_RE,
 };

@@ -26,4 +26,16 @@ describe("settings tabs", () => {
     expect(local.map((tab) => tab.id)).not.toContain("people")
     expect(ios.map((tab) => tab.id)).not.toContain("compute")
   })
+
+  test("updates tab is desktop-only regardless of local/cloud mode", () => {
+    const desktopLocal = visibleSettingsTabs({ localMode: true, isDesktop: true })
+    const desktopCloud = visibleSettingsTabs({ localMode: false, showBilling: true, isDesktop: true })
+    const webCloud = visibleSettingsTabs({ localMode: false, showBilling: true, isDesktop: false })
+    const webLocalNonDesktop = visibleSettingsTabs({ localMode: true, isDesktop: false })
+
+    expect(desktopLocal.map((tab) => tab.id)).toContain("updates")
+    expect(desktopCloud.map((tab) => tab.id)).toContain("updates")
+    expect(webCloud.map((tab) => tab.id)).not.toContain("updates")
+    expect(webLocalNonDesktop.map((tab) => tab.id)).not.toContain("updates")
+  })
 })
