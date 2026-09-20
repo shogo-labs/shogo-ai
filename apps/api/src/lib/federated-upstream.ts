@@ -311,7 +311,7 @@ function buildUpstreamUrl(path: string, search: string): string {
   return `${base}${cleanPath}${search || ''}`
 }
 
-async function fetchUpstream(
+export async function fetchUpstream(
   path: string,
   init: RequestInit & { search?: string } = {},
 ): Promise<Response> {

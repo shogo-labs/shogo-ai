@@ -75,6 +75,7 @@ import {
 import { scheduleWorkspaceSwitch } from "../../../lib/switch-workspace";
 import { workspaceProjectFilter } from "../../../lib/project-load";
 import { usePlatformConfig } from "../../../lib/platform-config";
+import { useCloudBillingSummary } from "../../../hooks/useCloudBillingSummary";
 import {
   nativePhoneCanvas,
   WEB_WIDE_MIN_WIDTH,
@@ -163,6 +164,7 @@ export const AppSidebar = observer(function AppSidebar({
     ? nativeDrawerSideInset(insets.left)
     : 0;
   const { features, localMode } = usePlatformConfig();
+  const cloudBilling = useCloudBillingSummary(localMode);
 
   const { user, signOut } = useAuth();
   // Full super admins and users with any assigned admin scope.
@@ -311,7 +313,9 @@ export const AppSidebar = observer(function AppSidebar({
             ),
           );
       });
-      window.history.replaceState({}, "", "/");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("workspace");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
   }, []);
 
@@ -596,6 +600,10 @@ export const AppSidebar = observer(function AppSidebar({
   const isPaidPlan =
     billingData.hasActiveSubscription ||
     (workspacePlan?.planId !== "free" && workspacePlan?.status === "active");
+  const showLocalUpgrade =
+    localMode &&
+    cloudBilling.summary?.signedIn === true &&
+    cloudBilling.summary.plan?.planId === "free";
 
   useEffect(() => {
     if (!isOpen) setFilterMenuOpen(false);
@@ -1185,11 +1193,15 @@ export const AppSidebar = observer(function AppSidebar({
         style={{ paddingBottom: drawerFooterInset }}
       >
         {/* Upgrade to Pro CTA */}
-        {features.billing && !collapsed && !isPaidPlan && (
+        {((features.billing && !isPaidPlan) || showLocalUpgrade) && !collapsed && (
           <View className={cn("px-2", isNativeDrawer ? "pt-3" : "pt-2")}>
             <Pressable
               onPress={() => {
-                router.push("/(app)/billing" as any);
+                router.push(
+                  (showLocalUpgrade
+                    ? "/(app)/settings?tab=billing"
+                    : "/(app)/billing") as any,
+                );
                 onNavPress();
               }}
               className={cn(

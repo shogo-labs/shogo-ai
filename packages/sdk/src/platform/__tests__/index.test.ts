@@ -21,6 +21,7 @@ import {
   type ApiKeyInfo,
   type ApiKeyValidation,
   type CloudLoginStatus,
+  type CloudBillingSummary,
   type DeviceInfo,
   type FeatureFlagOverrides,
   type InstanceInfo,
@@ -257,6 +258,50 @@ describe('PlatformApi.cloudLoginStatus', () => {
   test('fallback: { signedIn: false } when data missing', async () => {
     const { api } = mkApi()
     expect(await api.cloudLoginStatus()).toEqual({ signedIn: false })
+  })
+})
+
+describe('PlatformApi.cloudBillingSummary', () => {
+  test('happy: returns data', async () => {
+    const { api, http } = mkApi()
+    const summary: CloudBillingSummary = {
+      signedIn: true,
+      workspace: { id: 'cloud-ws-1' },
+      plan: { planId: 'pro', paidTier: true },
+    }
+    http.setGet('/api/local/cloud-billing/summary', summary)
+    expect(await api.cloudBillingSummary()).toEqual(summary)
+  })
+
+  test('fallback: signedIn false when data is missing', async () => {
+    const { api } = mkApi()
+    expect(await api.cloudBillingSummary()).toEqual({ signedIn: false })
+  })
+})
+
+describe('PlatformApi.setCloudSpendingLimit', () => {
+  test('posts the local cloud billing payload', async () => {
+    const { api, http } = mkApi()
+    http.setPost('/api/local/cloud-billing/usage-based-pricing', {
+      ok: true,
+      overageEnabled: true,
+      overageHardLimitUsd: 100,
+    })
+    const params = { overageEnabled: true, overageHardLimitUsd: 100 }
+    expect(await api.setCloudSpendingLimit(params)).toEqual({
+      ok: true,
+      overageEnabled: true,
+      overageHardLimitUsd: 100,
+    })
+    expect(http.calls[0]!.body).toEqual(params)
+  })
+
+  test('fallback: ok false when data is missing', async () => {
+    const { api } = mkApi()
+    expect(await api.setCloudSpendingLimit({
+      overageEnabled: true,
+      overageHardLimitUsd: null,
+    })).toEqual({ ok: false })
   })
 })
 

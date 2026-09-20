@@ -69,14 +69,16 @@ import {
 } from '../../contexts/domain'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { setActiveWorkspaceId } from '../../lib/workspace-store'
+import { resolveActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { api, API_URL, isInvitationExpired, type WorkspaceChildrenResponse } from '../../lib/api'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { formatUsd, getWindowDisplays, getUsageLimitNotice, PLAN_PRICING } from '../../lib/billing-config'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { openWebAppSession } from '../../lib/openWebAppSession'
+import { useCloudBillingSummary } from '../../hooks/useCloudBillingSummary'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
+import { LocalCloudBillingTab } from '../../components/settings/LocalCloudBillingTab'
 import { BugReportTab } from '../../components/settings/BugReportTab'
 import { UpdatesTab } from '../../components/settings/UpdatesTab'
 import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
@@ -218,6 +220,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   'account',
   'appearance',
   'security',
+  'billing',
   'analytics',
   'costs',
   'support',
@@ -327,6 +330,7 @@ function SettingsSidebar({
           tabItem('costs'),
         ]
       : [
+          tabItem('billing'),
           tabItem('analytics'),
           tabItem('costs'),
         ]),
@@ -3059,6 +3063,7 @@ function WorkspaceAnalyticsTab() {
   const workspaceId = workspace?.id
   const { localMode } = usePlatformConfig()
   const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } = useBillingData(workspaceId)
+  const cloudBilling = useCloudBillingSummary(localMode)
   // Warm the visible-models metadata cache so chart series can be labeled with
   // model display names (e.g. "Hoshi 1.0") rather than raw ids (mimo-v2.5).
   useVisibleModels()
@@ -3130,8 +3135,13 @@ function WorkspaceAnalyticsTab() {
   // ─── Progress card data ──────────────────────────────────
   // Coupled window display: weekly-at-100% forces the 5-hour card to 100% too.
   const analyticsWindowDisplays = getWindowDisplays(usageWindows)
-  const onDemandUsed = effectiveBalance?.overageAccumulatedUsd ?? 0
-  const onDemandLimit = effectiveBalance?.overageHardLimitUsd ?? null
+  const cloudPlan = cloudBilling.summary?.plan
+  const onDemandUsed = localMode
+    ? (cloudPlan?.overageAccumulatedUsd ?? 0)
+    : (effectiveBalance?.overageAccumulatedUsd ?? 0)
+  const onDemandLimit = localMode
+    ? (cloudPlan?.overageHardLimitUsd ?? null)
+    : (effectiveBalance?.overageHardLimitUsd ?? null)
   const onDemandPct = onDemandLimit && onDemandLimit > 0
     ? Math.min(100, (onDemandUsed / onDemandLimit) * 100)
     : (onDemandUsed > 0 ? Math.min(100, onDemandUsed / 1000 * 100) : 0)
@@ -3199,7 +3209,10 @@ function WorkspaceAnalyticsTab() {
               ? `${fmtUsd(onDemandLimit)} team spend cap`
               : 'No spend cap set'
           }
-          {...(Platform.OS !== 'ios'
+          {...(Platform.OS !== 'ios' && (!localMode || (
+            cloudBilling.summary?.signedIn === true &&
+            cloudBilling.summary.plan?.paidTier === true
+          ))
             ? {
                 actionLabel: 'Set Limit',
                 onActionPress: () => setSpendLimitOpen(true),
@@ -3274,8 +3287,13 @@ function WorkspaceAnalyticsTab() {
           workspaceId={workspaceId}
           currentLimitUsd={onDemandLimit}
           accumulatedUsageUsd={onDemandUsed}
+          onSave={localMode ? cloudBilling.setSpendingLimit : undefined}
           onSaved={() => {
-            refetchUsageWallet()
+            if (localMode) {
+              void cloudBilling.refresh()
+            } else {
+              refetchUsageWallet()
+            }
           }}
         />
       )}
@@ -3365,7 +3383,7 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === 'appearance' && <AppearanceTab />}
       {activeTab === 'security' && <SecuritySettingsPanel />}
       {activeTab === 'compute' && !isLocal && !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
-      {activeTab === 'billing' && !isLocal && <BillingTab />}
+      {activeTab === 'billing' && (isLocal ? <LocalCloudBillingTab /> : <BillingTab />)}
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
       {activeTab === 'costs' && <WorkspaceCostTab />}
       {activeTab === 'support' && <BugReportTab />}
@@ -3377,11 +3395,12 @@ export const SettingsContent = observer(function SettingsContent({
 export default observer(function SettingsPage() {
   const { ExternalLink, ArrowLeft } = useSettingsIcons()
   const router = useRouter()
-  const params = useLocalSearchParams<{ tab?: string }>()
+  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>()
   const { width, height } = useWindowDimensions()
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
   const { user } = useAuth()
+  const workspaces = useWorkspaceCollection()
   const currentWorkspace = useActiveWorkspace()
   const { features, localMode } = usePlatformConfig()
 
@@ -3393,11 +3412,18 @@ export default observer(function SettingsPage() {
   )
 
   useEffect(() => {
+    const requestedWorkspace = params.workspace
+    const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
+    if (!requestedWorkspace || ownWorkspaceIds.length === 0) return
+    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, requestedWorkspace)
+    if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace)
+  }, [params.workspace, workspaces?.all])
+
+  useEffect(() => {
     const isLocal = localMode || !features.billing
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
     if (activeTab === 'models' && isLocal) setActiveTab('workspace')
     if (activeTab === 'compute' && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS)) setActiveTab('workspace')
-    if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
     if (activeTab === 'updates' && !IS_DESKTOP_CLIENT) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 

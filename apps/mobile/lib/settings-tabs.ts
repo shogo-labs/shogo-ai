@@ -59,7 +59,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   { id: "remote-control", label: "Remote Control", Icon: Monitor, group: "settings" },
   { id: "security", label: "Security", Icon: Shield, group: "settings", localOnly: true },
   { id: "support", label: "Report Bug", Icon: Bug, group: "settings", localOnly: true },
-  { id: "billing", label: "Billing", Icon: CreditCard, group: "plan", cloudOnly: true },
+  { id: "billing", label: "Billing", Icon: CreditCard, group: "plan" },
   { id: "analytics", label: "Usage", Icon: BarChart3, group: "plan" },
   { id: "costs", label: "Cost Optimizer", Icon: Coins, group: "plan" },
   { id: "compute", label: "Compute", Icon: Server, group: "plan", cloudOnly: true },

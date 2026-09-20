@@ -21,6 +21,6 @@ describe("accountSettingsSheetGroups", () => {
     expect(ids).toContain("security")
     expect(ids).toContain("support")
     expect(ids).not.toContain("people")
-    expect(ids).not.toContain("billing")
+    expect(ids).toContain("billing")
   })
 })
