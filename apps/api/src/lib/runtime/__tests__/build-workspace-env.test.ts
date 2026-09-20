@@ -21,6 +21,7 @@ import { buildWorkspaceEnv } from '../build-workspace-env'
 const seams = {
   _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace' }),
   _getProjectOwnerUserId: async () => 'owner-1',
+  _getWorkspaceOwnerUserId: async () => 'ws-owner-1',
   _generateProxyToken: async (projectId: string) => `tok-${projectId}`,
   _loadProjects: async (ids: string[]) =>
     ids.map((id) => ({ id, name: id === 'p1' ? 'alpha-api' : id === 'p2' ? 'beta-web' : null })),
@@ -74,6 +75,44 @@ describe('buildWorkspaceEnv', () => {
     expect(env.WORKSPACE_PROJECT_IDS).toBe('')
     expect(JSON.parse(env.WORKSPACE_PROJECTS)).toEqual([])
     expect(env.AI_PROXY_TOKENS).toBe('{}')
+  })
+
+  describe('workspace-level fallback AI_PROXY_TOKEN (no attached projects)', () => {
+    // Regression coverage for the staging incident where a brand-new
+    // personal companion (zero attached projects) got AI_PROXY_URL set but
+    // no AI_PROXY_TOKEN, and the agent-runtime's configureAIProxy() threw,
+    // failing metal /pool/assign and surfacing as a generic "Something went
+    // wrong" for every message.
+    it('mints a workspace-sentinel token when there are no attached projects', async () => {
+      const env = await buildWorkspaceEnv('ws-1', [], seams as any)
+      expect(env.AI_PROXY_TOKEN).toBe('tok-workspace')
+    })
+
+    it('uses the workspace owner lookup (not the project owner lookup) for the fallback token', async () => {
+      const seenArgs: unknown[][] = []
+      const env = await buildWorkspaceEnv('ws-1', [], {
+        ...seams,
+        _generateProxyToken: async (...args: unknown[]) => {
+          seenArgs.push(args)
+          return 'fallback-tok'
+        },
+      } as any)
+      expect(env.AI_PROXY_TOKEN).toBe('fallback-tok')
+      expect(seenArgs).toEqual([['workspace', 'ws-1', 'ws-owner-1', 7 * 24 * 60 * 60 * 1000]])
+    })
+
+    it('the real getWorkspaceOwnerUserId lookup never throws — it falls back to \'system\' internally (see project-user-context.ts), so this fallback mint only fails on a broken generate() itself', async () => {
+      const env = await buildWorkspaceEnv('ws-1', [], {
+        ...seams,
+        _getWorkspaceOwnerUserId: async () => 'system',
+      } as any)
+      expect(env.AI_PROXY_TOKEN).toBe('tok-workspace')
+    })
+
+    it('does NOT mint a workspace-sentinel token when a project token is already set', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+      expect(env.AI_PROXY_TOKEN).toBe('tok-p1')
+    })
   })
 
   it('requires a workspaceId', async () => {

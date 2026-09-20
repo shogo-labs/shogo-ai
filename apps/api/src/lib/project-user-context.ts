@@ -75,3 +75,34 @@ export async function getProjectOwnerUserId(projectId: string): Promise<string> 
     return 'system'
   }
 }
+
+/**
+ * Look up a workspace's owner userId directly — no project in between.
+ *
+ * Used for workspaces with zero attached projects (e.g. a brand-new
+ * personal companion) where there's no Project row to resolve an owner
+ * through via {@link getProjectOwnerUserId}. Falls back to 'system' if the
+ * lookup fails.
+ */
+export async function getWorkspaceOwnerUserId(workspaceId: string): Promise<string> {
+  try {
+    const { prisma } = await import('./prisma')
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: {
+        members: {
+          where: { role: 'owner' },
+          select: { userId: true },
+          take: 1,
+        },
+      },
+    })
+    const ownerId = workspace?.members?.[0]?.userId
+    if (ownerId) return ownerId
+    console.warn(`[ProjectUserContext] No owner found for workspace ${workspaceId}, falling back to 'system'`)
+    return 'system'
+  } catch (err: any) {
+    console.error(`[ProjectUserContext] Failed to look up owner for workspace ${workspaceId}:`, err.message)
+    return 'system'
+  }
+}
