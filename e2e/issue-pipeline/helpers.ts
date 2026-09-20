@@ -283,7 +283,13 @@ export async function checkoutBaseBranch(env: PipelineEnv, pr: GhPullRequest): P
  * all accepted.
  */
 export function countNumberedOptions(commentBody: string): number {
-  const matches = commentBody.match(/^\s*[*_#>~`\s-]*(?:options?\s*)?[1-9]\s*[.):—–-]?\s+\S/gim)
+  // Negative lookahead excludes a heading like "## 5 options — please pick
+  // one": that's the section title (count-of-options first, word "options"
+  // after), not an individual option line (word "Option" first, number
+  // after) — without it, a comment with exactly 5 real options plus that
+  // heading counts as 6 and this helper's callers (which wait for exactly 5)
+  // poll forever until timeout (found live running the L1 multi-project eval).
+  const matches = commentBody.match(/^\s*[*_#>~`\s-]*(?:options?\s*)?[1-9](?!\d)(?!\s*options?\b)\s*[.):—–-]?\s+\S/gim)
   return matches ? matches.length : 0
 }
 

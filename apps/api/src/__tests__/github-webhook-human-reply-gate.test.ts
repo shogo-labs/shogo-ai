@@ -29,25 +29,110 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 const findFirstCalls: any[] = []
+let connectionToReturn: any = null
 const mockPrisma = {
   gitHubConnection: {
     findFirst: mock(async (args: any) => {
       findFirstCalls.push(args)
-      return null // no connected project — short-circuits wakeConnectedProjectAgent before any runtime call
+      return connectionToReturn // no connected project by default — short-circuits wakeConnectedProjectAgent
     }),
   },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma as any }))
 
-const { handleIssueCommentWebhook, handlePullRequestReviewWebhook, handlePullRequestReviewCommentWebhook } =
-  await import('../services/github.service')
+const callProjectAgentCalls: any[] = []
+mock.module('../services/agent-call.service', () => ({
+  callProjectAgent: mock(async (_c: any, projectId: string, workspaceId: string, req: any) => {
+    callProjectAgentCalls.push({ projectId, workspaceId, ...req })
+    return { status: 202, body: {} }
+  }),
+}))
+
+const {
+  handleIssueWebhook,
+  handleIssueCommentWebhook,
+  handlePullRequestReviewWebhook,
+  handlePullRequestReviewCommentWebhook,
+} = await import('../services/github.service')
 
 const fakeContext = {} as any
 
 beforeEach(() => {
   findFirstCalls.length = 0
+  callProjectAgentCalls.length = 0
+  connectionToReturn = null
   mockPrisma.gitHubConnection.findFirst.mockClear()
+})
+
+/**
+ * Regression: `handleIssueWebhook` (new "issue opened" events) used to wake
+ * the connected project with no `runId` at all. `callProjectAgent`'s session
+ * key defaults to `run:<runId>` (agent-call.service.ts) only when a runId is
+ * given — with none, every new-issue event on a project fell into the same
+ * default session, so the full turn history of every previously-seen issue
+ * (including intake's own past tool calls, which happen to mention *other*
+ * issues' runIds) stayed in context. On a fixture that reopens byte-for-byte
+ * identical bug reports, this reliably made intake regurgitate a stale runId
+ * from a prior issue instead of minting a fresh one for the current issue
+ * number — found live running the L1 multi-project eval (every issue after
+ * the first got the wrong runId in its posted-options comment). The fix
+ * assigns a deterministic `run-issue-<number>` up front and states it
+ * explicitly in the message, so each issue gets its own isolated session and
+ * never needs to improvise (or copy) an id.
+ */
+describe('handleIssueWebhook assigns a deterministic per-issue runId', () => {
+  test('a new "issue opened" event is woken with runId=run-issue-<number>, stated in the message', async () => {
+    connectionToReturn = { project: { id: 'proj-1', workspaceId: 'ws-1' } }
+
+    await handleIssueWebhook(fakeContext, {
+      action: 'opened',
+      repository: { full_name: 'acme/widgets' },
+      installation: { id: 42 },
+      issue: {
+        number: 99,
+        title: 'Something is broken',
+        body: 'Steps to reproduce...',
+        html_url: 'https://github.com/acme/widgets/issues/99',
+      },
+    })
+
+    expect(callProjectAgentCalls.length).toBe(1)
+    expect(callProjectAgentCalls[0].runId).toBe('run-issue-99')
+    expect(callProjectAgentCalls[0].message).toContain('#99')
+    expect(callProjectAgentCalls[0].message).toContain('run-issue-99')
+  })
+
+  test('two different issues on the same project get two different runIds (no shared/default session)', async () => {
+    connectionToReturn = { project: { id: 'proj-1', workspaceId: 'ws-1' } }
+
+    await handleIssueWebhook(fakeContext, {
+      action: 'opened',
+      repository: { full_name: 'acme/widgets' },
+      issue: { number: 100, title: 'Bug A', body: 'Same repro text every time', html_url: 'https://x/100' },
+    })
+    await handleIssueWebhook(fakeContext, {
+      action: 'opened',
+      repository: { full_name: 'acme/widgets' },
+      issue: { number: 101, title: 'Bug A', body: 'Same repro text every time', html_url: 'https://x/101' },
+    })
+
+    expect(callProjectAgentCalls.length).toBe(2)
+    expect(callProjectAgentCalls[0].runId).toBe('run-issue-100')
+    expect(callProjectAgentCalls[1].runId).toBe('run-issue-101')
+  })
+
+  test('a non-"opened" issue action (e.g. labeled) is still ignored', async () => {
+    connectionToReturn = { project: { id: 'proj-1', workspaceId: 'ws-1' } }
+
+    await handleIssueWebhook(fakeContext, {
+      action: 'labeled',
+      repository: { full_name: 'acme/widgets' },
+      issue: { number: 102, title: 'Bug', body: 'x', html_url: 'https://x/102' },
+    })
+
+    expect(callProjectAgentCalls.length).toBe(0)
+  })
 })
 
 describe('handleIssueCommentWebhook wakes on a tracked-run reply even with no bot mention', () => {

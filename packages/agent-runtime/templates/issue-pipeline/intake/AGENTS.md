@@ -26,11 +26,11 @@ Read it with `memory_search({ query: "run:" })` or `memory_read({ key: "run:<run
 ## Core Workflow
 
 ### New item (webhook wake: new issue/ticket, or heartbeat poll finds one)
-1. Mint or reuse a `runId` (one is minted per work item on first sight).
+1. **Use the `runId` given to you in the message.** For a brand-new item the task-source adapter already assigned one and states it explicitly (e.g. "its runId is \"run-issue-68\"; use exactly that string") — copy it verbatim, do not alter or re-derive it. This also means a new item's turn runs in its own isolated session, so you will not see any other issue's history here. If (unusually) no runId is stated in the message, mechanically extract the number from the message's own first line — `[GitHub] New issue #<N> opened in <repo>: "<title>"` — and mint `run-issue-<N>`. Either way: never reuse, copy, or pattern-match a `runId` from a *different* issue, even if this one's title/body text looks identical to a previous item's (the test fixture intentionally re-opens the same recurring bug — same text, different issue, different runId, every time).
 2. `memory_write({ key: "run:<runId>", value: { stage: "reproducing", taskSourceRef, createdAt } })`.
 3. **Reproduce** (this is the "small model" step from the design — keep it cheap and mechanical): read the description, try to reproduce with `exec` against the checked-out repo (run the existing test suite, or a minimal repro script if the report includes steps). Capture exact output. Do not try to root-cause here — that's `analyst`'s job. If you cannot reproduce after a reasonable attempt, say so explicitly; `analyst` still gets useful signal from a documented non-repro.
 4. `project_call({ project: "Issue Pipeline — Analyst", message: "<issue title+body+URL> + <reproduction notes>", runId, wait: true })`. Expect a JSON reply with `rootCause` and 5 `options`.
-5. Use the active task-source skill to post the options as a comment, formatted for a human to pick one, with `<!-- shogo:runId=<runId> -->` embedded (the skill does this for you — see below).
+5. Use the active task-source skill to post the options as a comment, formatted for a human to pick one, with `<!-- shogo:runId=<runId> -->` embedded (the skill does this for you — see below). **Also stamp that same marker onto the issue's own body** (`gh issue edit`, see the skill's `comment()` section) — this is what lets the human's plain "Go with option 1" reply (which carries no marker itself) be routed back to this run at all.
 6. `memory_write({ key: "run:<runId>", value: { stage: "awaiting_pick", ... } })`.
 
 ### Reply on an existing run (webhook wake: comment/review with a recovered runId)

@@ -24,6 +24,15 @@ EOF
 ```
 Use `gh pr comment` instead when `ref` is a PR. The HTML comment is invisible when GitHub renders the comment — don't strip it when composing.
 
+**The very first time you embed a `runId` for an issue (posting the 5 options), also stamp the marker onto the issue's own body**, not just the comment:
+```bash
+gh issue edit <number> --repo <owner/repo> --body "$(gh issue view <number> --repo <owner/repo> --json body --jq .body)
+
+<!-- shogo:runId=<runId> -->
+"
+```
+This matters because the webhook payload for a later `issue_comment` event (e.g. the human's "Go with option 1" reply) contains the *issue's* body but only the *new* comment's body — never earlier comments. The API's recovery check (`extractRunId(issue.body) ?? extractRunId(comment.body)`) can only find a marker that's actually in one of those two places. A marker that lives solely in your own earlier options-comment is invisible to it, so a plain reply with no `runId` and no bot-mention gets silently dropped and the run stalls forever at "awaiting_pick" (found live running the L1 multi-project eval). Stamping the issue body once, right after minting the `runId`, is what makes every later reply on that issue recoverable. A PR's body carries its own marker the same way (see `implementer`'s instructions) — no separate edit needed there since the PR is created with the marker already in its body.
+
 ## `list()` / `get(ref)`
 `gh issue view <number> --repo <owner/repo> --json title,body,url,comments,state` (or `gh pr view` for a PR). Use to backfill context when a webhook message doesn't include everything you need.
 

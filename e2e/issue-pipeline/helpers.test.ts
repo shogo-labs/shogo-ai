@@ -86,6 +86,34 @@ describe('countNumberedOptions', () => {
     ].join('\n')
     expect(countNumberedOptions(body)).toBe(5)
   })
+
+  // Regression: intake's real "post the options" comment includes a section
+  // heading like "## 5 options — please pick one" above the list. The old
+  // pattern happily matched this too (digit "5" + optional decoration +
+  // whitespace + non-space), turning a genuine 5-option comment into a count
+  // of 6 — which never satisfies a `waitUntil` for "exactly 5", so it hangs
+  // for the full timeout (found live running the L1 multi-project eval).
+  test('does not count a "## N options — ..." section heading as an option', () => {
+    const body = [
+      '## 5 options — please pick one',
+      '',
+      '**Option 1 — Add a symmetric trailing-strip step** ⭐ _Recommended_',
+      'One-liner, zero risk.',
+      '',
+      '**Option 2 — Merge both guards into one combined replace**',
+      'Single call, identical semantics.',
+      '',
+      '**Option 3 — Prevent the tail hyphen at generation time**',
+      'Harder to read.',
+      '',
+      '**Option 4 — Rewrite using split/filter/join**',
+      'Structural rewrite.',
+      '',
+      '**Option 5 — Delegate to an established `slugify` npm library**',
+      'Adds a dependency.',
+    ].join('\n')
+    expect(countNumberedOptions(body)).toBe(5)
+  })
 })
 
 describe('botComments', () => {
