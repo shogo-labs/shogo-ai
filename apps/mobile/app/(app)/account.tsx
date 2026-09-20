@@ -13,7 +13,7 @@ import { observer } from "mobx-react-lite"
 import { ArrowLeft } from "lucide-react-native"
 import { useBillingData } from "@shogo/shared-app/hooks"
 import { useAuth } from "../../contexts/auth"
-import { useDomainActions, useProjectCollection, useWorkspaceCollection } from "../../contexts/domain"
+import { useDomainActions, useDomainHttp, useProjectCollection, useWorkspaceCollection } from "../../contexts/domain"
 import { usePostHogSafe } from "../../contexts/posthog"
 import { useResolvedTheme } from "../../contexts/theme"
 import { AccountMenuBody } from "../../components/layout/sidebar/AccountMenu"
@@ -28,6 +28,7 @@ import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useHasAdminAccess } from "../../hooks/useHasAdminAccess"
 import { useWorkspacePlans } from "../../hooks/useWorkspacePlans"
 import { EVENTS, trackEvent } from "../../lib/analytics"
+import { api } from "../../lib/api"
 import { nativePhoneCanvas, NATIVE_ACCOUNT_SCROLL_EXTRA_PAD, NATIVE_ACCOUNT_TITLE_CLASS, NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout"
 import { PHONE_DENSITY } from "../../lib/phone-density"
 import { usePlatformConfig } from "../../lib/platform-config"
@@ -49,6 +50,7 @@ export default observer(function AccountPage() {
   const workspaces = useWorkspaceCollection()
   const projects = useProjectCollection()
   const actions = useDomainActions()
+  const http = useDomainHttp()
   const posthog = usePostHogSafe()
   const currentWorkspace = useActiveWorkspace()
   const hasAdminAccess = useHasAdminAccess(user?.id)
@@ -57,6 +59,14 @@ export default observer(function AccountPage() {
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null)
 
   const allWorkspaces = workspaces?.all ?? []
+  // Whether the user already has a `kind: 'personal'` workspace. `false`
+  // surfaces the free "Create personal space" CTA — see
+  // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
+  // just be `allWorkspaces.length === 0` (a user's original signup
+  // workspace may have been mis-backfilled to `kind: 'team'`).
+  const hasPersonalWorkspace = allWorkspaces.some(
+    (w: { kind?: string }) => w.kind === "personal",
+  )
   const workspaceIds = useMemo(
     () => allWorkspaces.map((w: { id: string }) => w.id),
     [allWorkspaces],
@@ -128,6 +138,21 @@ export default observer(function AccountPage() {
     [actions, posthog, projects, user?.id, workspaces],
   )
 
+  const handleCreatePersonalWorkspace = useCallback(async () => {
+    try {
+      const newWorkspace = await api.createPersonalWorkspace(http)
+      if (newWorkspace?.id) {
+        trackEvent(posthog, EVENTS.WORKSPACE_CREATED)
+        setActiveWorkspaceId(newWorkspace.id)
+        await workspaces.loadAll()
+        projects.clear()
+        await projects.loadAll({ workspaceId: newWorkspace.id })
+      }
+    } catch (err) {
+      console.warn("Failed to create personal workspace:", err)
+    }
+  }, [http, posthog, projects, workspaces])
+
   const handleSignOut = useCallback(async () => {
     trackEvent(posthog, EVENTS.SIGN_OUT)
     try {
@@ -172,6 +197,8 @@ export default observer(function AccountPage() {
           showBilling={features.billing}
           onSwitchWorkspace={handleSwitchWorkspace}
           onCreateWorkspace={handleCreateWorkspace}
+          hasPersonalWorkspace={hasPersonalWorkspace}
+          onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
           localMode={localMode}
           onClose={noopAccountClose}
           isNative

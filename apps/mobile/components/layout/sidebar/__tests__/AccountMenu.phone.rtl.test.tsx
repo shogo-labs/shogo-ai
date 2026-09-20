@@ -47,6 +47,8 @@ mock.module("lucide-react-native", () => {
     Paintbrush: Icon("Paintbrush"),
     Plus: Icon("Plus"),
     Plug: Icon("Plug"),
+    RefreshCcw: Icon("RefreshCcw"),
+    RefreshCw: Icon("RefreshCw"),
     Boxes: Icon("Boxes"),
     Building2: Icon("Building2"),
     BarChart3: Icon("BarChart3"),
@@ -214,5 +216,47 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.getByLabelText("Profile")).toBeTruthy()
     expect(screen.getByText("Settings")).toBeTruthy()
     expect(screen.getByText("Invite")).toBeTruthy()
+  })
+})
+
+describe("AccountMenuBody free personal-space CTA", () => {
+  // Targets users whose original signup workspace was mis-backfilled to
+  // `kind: 'team'` — they have a workspace, but not a personal one, so the
+  // generic `hasPersonalWorkspace={false}` CTA must still show.
+  test("shows the free CTA when the user has no personal workspace", () => {
+    const onCreatePersonalWorkspace = mock(() => {})
+    render(
+      <AccountMenuBody
+        {...bodyProps}
+        isNative={false}
+        hasPersonalWorkspace={false}
+        onCreatePersonalWorkspace={onCreatePersonalWorkspace}
+      />,
+    )
+
+    expect(screen.getByText("Create personal space")).toBeTruthy()
+    expect(screen.getByText("Free")).toBeTruthy()
+
+    fireEvent.click(screen.getByText("Create personal space"))
+    expect(onCreatePersonalWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  test("hides the CTA once the user already has a personal workspace", () => {
+    render(
+      <AccountMenuBody
+        {...bodyProps}
+        isNative={false}
+        hasPersonalWorkspace
+        onCreatePersonalWorkspace={() => {}}
+      />,
+    )
+
+    expect(screen.queryByText("Create personal space")).toBeNull()
+  })
+
+  test("hides the CTA when hasPersonalWorkspace is omitted (unknown/loading)", () => {
+    render(<AccountMenuBody {...bodyProps} isNative={false} />)
+
+    expect(screen.queryByText("Create personal space")).toBeNull()
   })
 })

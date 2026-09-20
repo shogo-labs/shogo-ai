@@ -3,7 +3,7 @@
 /**
  * Tests for `src/services/workspace.service.ts`.
  *
- * Covers all 8 exported functions:
+ * Covers these exported functions:
  *   - createPersonalWorkspace
  *   - getWorkspacesForUser
  *   - getWorkspace
@@ -11,6 +11,7 @@
  *   - updateWorkspace
  *   - createPaidWorkspace
  *   - getUserOwnedWorkspaceCount
+ *   - hasPersonalWorkspace
  *   - hasWorkspaceAccess
  *
  * Strategy: replace `../lib/prisma` with an in-memory stub that mimics the
@@ -84,6 +85,10 @@ const memberTable = {
       if (where.workspaceId && row.workspaceId !== where.workspaceId) return false
       if (where.userId && row.userId !== where.userId) return false
       if (where.role?.in && !where.role.in.includes(row.role)) return false
+      if (where.workspace?.kind) {
+        const ws = workspaces.get(row.workspaceId)
+        if (!ws || ws.kind !== where.workspace.kind) return false
+      }
       return true
     })
     if (!m) return null
@@ -157,6 +162,17 @@ describe('createPersonalWorkspace', () => {
       throw new Error('db down')
     }
     await expect(svc.createPersonalWorkspace('u1', 'X')).rejects.toThrow('db down')
+  })
+
+  // Regression: a user retroactively creating a personal workspace (the
+  // free "create your personal space" flow) may already own a workspace at
+  // the deterministic `user-<id>-personal` slug — their original signup
+  // workspace, mis-backfilled to `kind: 'team'`. The create must fall back
+  // to a random suffix instead of colliding.
+  test('appends a nanoid suffix when the base slug is already taken', async () => {
+    workspaces.set('ws_legacy', { id: 'ws_legacy', slug: 'user-abcdefgh-personal', kind: 'team' })
+    const result = await svc.createPersonalWorkspace('abcdefgh', 'X')
+    expect(result.workspace.slug).toBe('user-abcdefgh-personal-abc123')
   })
 })
 
@@ -290,6 +306,30 @@ describe('getUserOwnedWorkspaceCount', () => {
 
   test('returns 0 for user with no memberships', async () => {
     expect(await svc.getUserOwnedWorkspaceCount('ghost')).toBe(0)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// hasPersonalWorkspace
+// ──────────────────────────────────────────────────────────────────────
+
+describe('hasPersonalWorkspace', () => {
+  test('returns true when the user is a member of a personal-kind workspace', async () => {
+    workspaces.set('ws_p', { id: 'ws_p', name: 'P', slug: 'p', kind: 'personal' })
+    members.push({ id: 'm1', userId: 'u1', workspaceId: 'ws_p', role: 'owner' })
+    expect(await svc.hasPersonalWorkspace('u1')).toBe(true)
+  })
+
+  // The exact scenario this feature targets: the user owns a workspace, but
+  // it's `kind: 'team'` (mis-backfilled), so it doesn't count.
+  test('returns false when the user only owns a team-kind workspace', async () => {
+    workspaces.set('ws_t', { id: 'ws_t', name: 'T', slug: 't', kind: 'team' })
+    members.push({ id: 'm1', userId: 'u1', workspaceId: 'ws_t', role: 'owner' })
+    expect(await svc.hasPersonalWorkspace('u1')).toBe(false)
+  })
+
+  test('returns false for a user with no memberships', async () => {
+    expect(await svc.hasPersonalWorkspace('ghost')).toBe(false)
   })
 })
 

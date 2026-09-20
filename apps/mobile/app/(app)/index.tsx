@@ -59,6 +59,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 import { PersonalHomeScreen } from '../../components/personal/PersonalHomeScreen'
+import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -326,6 +327,22 @@ const HomeScreen = observer(function HomeScreen() {
   }, [])
 
   const currentWorkspace = useActiveWorkspace()
+
+  // Whether the user already has a `kind: 'personal'` workspace. `false`
+  // surfaces `CreatePersonalSpaceBanner` below — see that component for why
+  // this can't just be "does the user have any workspace at all" (a user's
+  // original signup workspace may have been mis-backfilled to `kind: 'team'`).
+  const hasPersonalWorkspace = (workspaces?.all ?? []).some(
+    (w: { kind?: string }) => w.kind === 'personal',
+  )
+
+  const handleCreatePersonalWorkspace = useCallback(async () => {
+    const newWorkspace = await api.createPersonalWorkspace(http)
+    if (newWorkspace?.id) {
+      trackEvent(posthog, EVENTS.WORKSPACE_CREATED)
+      await workspaces.loadAll()
+    }
+  }, [http, posthog, workspaces])
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -869,12 +886,22 @@ const HomeScreen = observer(function HomeScreen() {
   }
 
   const greeting = (
-    <Text
-      className={`text-center text-foreground ${isNativePhone ? 'font-medium' : 'font-bold mb-2'}`}
-      style={heroTitleStyle}
-    >
-      {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
-    </Text>
+    <>
+      {!localMode && !hasPersonalWorkspace ? (
+        <View className={isNativePhone ? 'mb-5 w-full' : 'mb-5 w-full max-w-2xl'}>
+          <CreatePersonalSpaceBanner
+            userId={user?.id}
+            onCreate={handleCreatePersonalWorkspace}
+          />
+        </View>
+      ) : null}
+      <Text
+        className={`text-center text-foreground ${isNativePhone ? 'font-medium' : 'font-bold mb-2'}`}
+        style={heroTitleStyle}
+      >
+        {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
+      </Text>
+    </>
   )
 
   const composer = (

@@ -50,10 +50,21 @@ export async function createPersonalWorkspace(
 ): Promise<CreatePersonalWorkspaceResult> {
   // Generate slug from userId prefix (first 8 chars, no dashes)
   const userIdPrefix = userId.substring(0, 8).replace(/-/g, '');
-  const slug = `user-${userIdPrefix}-personal`;
+  const baseSlug = `user-${userIdPrefix}-personal`;
   const workspaceName = `${userName || 'User'} Personal`;
 
   const result = await prisma.$transaction(async (tx) => {
+    // The base slug is normally free — it's assigned once per user at
+    // signup. But a user retroactively creating a personal workspace (see
+    // `hasPersonalWorkspace` / `POST /api/workspaces/personal`) may already
+    // own a workspace at this exact slug: their original signup workspace,
+    // mis-backfilled to `kind: 'team'` by the personal-workspace-foundation
+    // migration (it only flipped slug-matching workspaces with zero
+    // projects to `kind: 'personal'`). Fall back to a random suffix so this
+    // create never collides with that pre-existing row.
+    const existing = await tx.workspace.findUnique({ where: { slug: baseSlug } });
+    const slug = existing ? `${baseSlug}-${nanoid()}` : baseSlug;
+
     const workspace = await tx.workspace.create({
       data: {
         name: workspaceName,
@@ -222,6 +233,27 @@ export async function getUserOwnedWorkspaceCount(userId: string): Promise<number
       workspaceId: { not: null },
     },
   });
+}
+
+/**
+ * Whether a user already has a `kind: 'personal'` workspace. Used to gate
+ * the free "create your personal space" flow (`POST /api/workspaces/personal`).
+ *
+ * Unlike `getUserOwnedWorkspaceCount` (which counts every owned workspace
+ * regardless of `kind`, and drives the *paid* "additional workspace" limit),
+ * this stays `false` for users whose original signup workspace was
+ * mis-backfilled to `kind: 'team'` by the personal-workspace-foundation
+ * migration, even though they already own that (team) workspace — those
+ * users are exactly who the free personal-workspace flow targets.
+ */
+export async function hasPersonalWorkspace(userId: string): Promise<boolean> {
+  const member = await prisma.member.findFirst({
+    where: {
+      userId,
+      workspace: { kind: 'personal' },
+    },
+  });
+  return !!member;
 }
 
 /**

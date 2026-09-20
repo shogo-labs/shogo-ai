@@ -15,6 +15,10 @@ interface State {
   hasAccessMember: any | null
   txWorkspaceCreateCalls: any[]
   txMemberCreateCalls: any[]
+  /** What `tx.workspace.findUnique` (the slug-collision check inside
+   * `createPersonalWorkspace`) should return. `null` (default) means the
+   * base slug is free. */
+  txWorkspaceFindUniqueResult: any | null
 }
 
 const s: State = {
@@ -29,6 +33,7 @@ const s: State = {
   hasAccessMember: null,
   txWorkspaceCreateCalls: [],
   txMemberCreateCalls: [],
+  txWorkspaceFindUniqueResult: null,
 }
 
 const tx = {
@@ -37,6 +42,7 @@ const tx = {
       s.txWorkspaceCreateCalls.push(args)
       return s.txWorkspaceCreate ?? { id: 'ws-new', ...args.data }
     },
+    findUnique: async (_args: any) => s.txWorkspaceFindUniqueResult,
   },
   workspaceAgentProfile: {
     create: async (args: any) => {
@@ -81,6 +87,7 @@ const {
   getWorkspace,
   getWorkspaceBySlug,
   getWorkspacesForUser,
+  hasPersonalWorkspace,
   hasWorkspaceAccess,
   updateWorkspace,
 } = await import('../workspace.service')
@@ -97,6 +104,7 @@ beforeEach(() => {
   s.hasAccessMember = null
   s.txWorkspaceCreateCalls = []
   s.txMemberCreateCalls = []
+  s.txWorkspaceFindUniqueResult = null
 })
 
 afterEach(() => {})
@@ -146,6 +154,40 @@ describe('createPersonalWorkspace', () => {
       workspace: { id: 'ws-1', name: 'X Personal', slug: 'user-abcdefgh-personal' },
       member: { id: 'm-1', userId: 'abcdefgh', role: 'owner', workspaceId: 'ws-1' },
     })
+  })
+
+  // Regression: a user retroactively creating a personal workspace (the
+  // free "create your personal space" flow) may already own a workspace at
+  // the deterministic `user-<id>-personal` slug — their original signup
+  // workspace, mis-backfilled to `kind: 'team'`. The create must fall back
+  // to a random suffix instead of colliding.
+  it('appends a nanoid suffix when the base slug is already taken', async () => {
+    s.txWorkspaceFindUniqueResult = { id: 'ws-legacy', slug: 'user-abcdefgh-personal', kind: 'team' }
+    s.txWorkspaceCreate = { id: 'ws-2', name: 'X Personal', slug: 'user-abcdefgh-personal-abc123' }
+    s.txMemberCreate = { id: 'm-1', userId: 'u', role: 'owner', workspaceId: 'ws-2' }
+    await createPersonalWorkspace('abcdefgh', 'X')
+    expect(s.txWorkspaceCreateCalls[0].data.slug).toBe('user-abcdefgh-personal-abc123')
+    expect(s.txWorkspaceCreateCalls[0].data.kind).toBe('personal')
+  })
+
+  it('uses the plain base slug when it is free', async () => {
+    s.txWorkspaceFindUniqueResult = null
+    s.txWorkspaceCreate = { id: 'ws-1', name: 'X Personal', slug: 'user-abcdefgh-personal' }
+    s.txMemberCreate = { id: 'm-1', userId: 'u', role: 'owner', workspaceId: 'ws-1' }
+    await createPersonalWorkspace('abcdefgh', 'X')
+    expect(s.txWorkspaceCreateCalls[0].data.slug).toBe('user-abcdefgh-personal')
+  })
+})
+
+describe('hasPersonalWorkspace', () => {
+  it('returns true when the user has a member row on a personal-kind workspace', async () => {
+    s.findFirstMember = { id: 'm-1', userId: 'u-1', workspace: { kind: 'personal' } }
+    expect(await hasPersonalWorkspace('u-1')).toBe(true)
+  })
+
+  it('returns false when no such membership is found (e.g. only a mis-backfilled team workspace)', async () => {
+    s.findFirstMember = null
+    expect(await hasPersonalWorkspace('u-1')).toBe(false)
   })
 })
 

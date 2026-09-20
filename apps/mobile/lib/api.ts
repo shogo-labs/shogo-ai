@@ -1172,6 +1172,21 @@ export const api = {
     return res.data
   },
 
+  /**
+   * Create a free, one-per-user personal ("companion") workspace for the
+   * current user. Only succeeds when the user doesn't already have one
+   * (409 `personal_workspace_exists` otherwise) — see the server's
+   * `POST /api/workspaces/personal` for why this is a separate endpoint
+   * from the generic (count-gated) workspace create flow.
+   */
+  async createPersonalWorkspace(http: HttpClient) {
+    const res = await http.post<{ ok: boolean; workspace: { id: string; name: string; slug: string } }>(
+      '/api/workspaces/personal',
+    )
+    if (!res.data?.workspace) throw new Error('createPersonalWorkspace: no workspace returned')
+    return res.data.workspace
+  },
+
   // ─── Members ──────────────────────────────────────────
 
   async getWorkspaceMembers(http: HttpClient, workspaceId: string) {

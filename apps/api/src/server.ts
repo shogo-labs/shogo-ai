@@ -8456,6 +8456,42 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   return c.json({ ok: true })
 })
 
+// =============================================================================
+// Create Personal Workspace - Free, one-per-user "companion" workspace
+// =============================================================================
+// Bespoke route (bypasses `workspaceHooks.beforeCreate`'s one-free-workspace
+// limit entirely), same pattern as `/api/billing/workspace-checkout`'s
+// `createPaidWorkspace` call below. Exists because the personal-workspace-
+// foundation migration only backfilled `kind: 'personal'` onto pre-existing
+// signup workspaces that had zero projects — everyone else's original
+// workspace stayed `kind: 'team'`, leaving them with no personal workspace
+// at all and no way to get one through the generic (count-gated) create
+// flow. This lets those users create a fresh, free personal workspace,
+// gated only on "do you already have one" rather than total workspace count.
+app.post('/api/workspaces/personal', async (c) => {
+  try {
+    const auth = c.get('auth') as any
+    const userId = auth?.userId
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+
+    if (await workspaceService.hasPersonalWorkspace(userId)) {
+      return c.json({
+        error: { code: 'personal_workspace_exists', message: 'You already have a personal workspace.' },
+      }, 409)
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } })
+    const result = await workspaceService.createPersonalWorkspace(userId, user?.name || 'User')
+
+    return c.json({ ok: true, workspace: result.workspace, member: result.member })
+  } catch (error: any) {
+    console.error('[Workspace] Failed to create personal workspace:', error)
+    return c.json({ error: { code: 'create_personal_workspace_failed', message: error.message } }, 500)
+  }
+})
+
 // Read-only "family" dashboard for a parent workspace: list the child
 // workspaces that pool this workspace's Business/Enterprise plan, with each
 // child's member count and month-to-date usage. Gated to owners/admins/billing
