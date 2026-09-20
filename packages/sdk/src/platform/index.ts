@@ -856,6 +856,25 @@ export class PlatformApi {
     })
   }
 
+  /** Get the admin-configured model powering the personal companion's
+   *  interactive chat (its picker is hidden — one companion per person).
+   *  Returns `{ model: null }` when unset (platform default, Hoshi 2.0, applies). */
+  async getPersonalCompanionModel(): Promise<{ model: string | null }> {
+    const res = await this.http.get<{ model: string | null }>(
+      '/api/admin/settings/personal-companion-model',
+    )
+    return res.data ?? { model: null }
+  }
+
+  /** Set the model powering the personal companion's interactive chat. Pass
+   *  null/empty to reset to the platform default (Hoshi 2.0). */
+  async putPersonalCompanionModel(model: string | null): Promise<void> {
+    await this.http.request('/api/admin/settings/personal-companion-model', {
+      method: 'PUT',
+      body: { model },
+    })
+  }
+
   // ===========================================================================
   // Admin: Sandbox Exec (Docker isolation for the agent's exec tool)
   // ===========================================================================
