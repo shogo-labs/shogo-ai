@@ -84,6 +84,7 @@ import {
 import {
   fallbackGenerateProjectName,
   parseTitleResponse,
+  shouldPersistGeneratedProjectName,
 } from './lib/title-parse'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
@@ -6631,14 +6632,28 @@ Examples:
     // which records the completion server-side. No explicit `consumeUsage`
     // here — billing it again would double-charge.
 
-    // When projectId is provided, persist the generated name and description
+    // When projectId is provided, persist the generated name and description —
+    // but only when the project hasn't been named yet. This endpoint is hit
+    // for every "Untitled" chat session's first assistant response, including
+    // "New Chat" / debug threads started inside an already-named project.
+    // Without this guard, every one of those threads would clobber the
+    // project's real title with whatever it happens to generate (mirrors the
+    // client-side guard in ChatPanel.tsx's auto-naming effect).
     if (projectId) {
       try {
-        await prisma.project.update({
+        const existingProject = await prisma.project.findUnique({
           where: { id: projectId },
-          data: { name, description },
+          select: { name: true },
         })
-        console.log(`[/api/generate-project-name] Updated project ${projectId}: "${name}"`)
+        if (shouldPersistGeneratedProjectName(existingProject?.name)) {
+          await prisma.project.update({
+            where: { id: projectId },
+            data: { name, description },
+          })
+          console.log(`[/api/generate-project-name] Updated project ${projectId}: "${name}"`)
+        } else {
+          console.log(`[/api/generate-project-name] Skipped renaming already-named project ${projectId} (current name: "${existingProject?.name}")`)
+        }
       } catch (dbErr) {
         console.error('[/api/generate-project-name] Failed to update project:', dbErr)
       }
