@@ -7,7 +7,7 @@
 
 import { useCallback, type ReactNode } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { Check, Plus, Settings, Users, Zap } from "lucide-react-native";
+import { Check, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { getPlanDisplayName } from "../../../lib/billing-config";
@@ -26,6 +26,16 @@ export interface WorkspaceMenuSectionProps {
   onNavigate: (href: string) => void;
   onSwitchWorkspace: (workspaceId: string) => void;
   onCreateWorkspace: () => void;
+  /**
+   * Whether the current user already has a `kind: 'personal'` workspace.
+   * `false` shows the free "Create personal space" CTA below the workspace
+   * list — targets users whose original signup workspace was mis-backfilled
+   * to `kind: 'team'` (see `POST /api/workspaces/personal`), who otherwise
+   * have no way to get a personal/companion workspace. Omit (or leave
+   * `undefined`) to hide the CTA, e.g. while the workspace list is loading.
+   */
+  hasPersonalWorkspace?: boolean;
+  onCreatePersonalWorkspace?: () => void;
   localMode?: boolean;
   onClose: () => void;
   includePlan?: boolean;
@@ -65,6 +75,8 @@ export function WorkspaceMenuSection({
   onNavigate,
   onSwitchWorkspace,
   onCreateWorkspace,
+  hasPersonalWorkspace,
+  onCreatePersonalWorkspace,
   localMode,
   onClose,
   isNative = false,
@@ -283,6 +295,31 @@ export function WorkspaceMenuSection({
           </Pressable>
         );
       })}
+      {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
+        <Pressable
+          onPress={() => {
+            onClose();
+            onCreatePersonalWorkspace();
+          }}
+          className={cn(
+            "flex-row items-center gap-2 px-4 active:bg-muted",
+            isNative ? "py-3.5" : "py-2",
+            !isNative && "rounded-md",
+          )}
+        >
+          <Sparkles size={isNative ? 18 : 16} className="text-primary" />
+          <Text className={cn("text-foreground flex-1", density.text.body)}>
+            Create personal space
+          </Text>
+          <View className="rounded bg-primary/10 px-1.5 py-0.5">
+            <Text
+              className={cn(density.text.caption, "text-primary font-medium")}
+            >
+              Free
+            </Text>
+          </View>
+        </Pressable>
+      )}
       {!localMode && (
         <Pressable
           onPress={() => {
