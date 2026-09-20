@@ -94,6 +94,9 @@ export const toolCallLogHooks: ToolCallLogHooks = {
               },
             },
           },
+          workspace: {
+            include: { members: true },
+          },
         },
       })
 
@@ -104,9 +107,9 @@ export const toolCallLogHooks: ToolCallLogHooks = {
         }
       }
 
-      const hasAccess = session.project?.workspace?.members?.some(
-        (m: any) => m.userId === userId
-      )
+      const hasAccess =
+        session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+        session.workspace?.members?.some((m: any) => m.userId === userId)
 
       if (!hasAccess) {
         return {
@@ -152,6 +155,9 @@ export const toolCallLogHooks: ToolCallLogHooks = {
                 },
               },
             },
+            workspace: {
+              include: { members: true },
+            },
           },
         },
       },
@@ -164,9 +170,9 @@ export const toolCallLogHooks: ToolCallLogHooks = {
       }
     }
 
-    const hasAccess = toolCall.chatSession?.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+    const hasAccess =
+      toolCall.chatSession?.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+      toolCall.chatSession?.workspace?.members?.some((m: any) => m.userId === userId)
 
     if (!hasAccess) {
       return {

@@ -30,7 +30,7 @@ export function PersonalAgentHeader({
         accessibilityRole="button"
         accessibilityLabel={`${profile.name} profile and settings`}
         onPress={onProfilePress}
-        className="mx-auto w-full max-w-2xl flex-row items-center gap-3 active:opacity-80"
+        className="mx-auto w-full max-w-3xl flex-row items-center gap-3 active:opacity-80"
       >
         <View className="h-12 w-12 overflow-hidden rounded-full border border-border bg-muted">
           {profile.avatarUrl ? (
@@ -54,7 +54,7 @@ export function PersonalAgentHeader({
         </View>
         <ChevronRight size={17} className="text-muted-foreground" />
       </Pressable>
-      <View className="mx-auto mt-2 w-full max-w-2xl flex-row items-center gap-1.5">
+      <View className="mx-auto mt-2 w-full max-w-3xl flex-row items-center gap-1.5">
         <Sparkles size={13} className="text-primary" />
         <Text className="text-[11px] text-muted-foreground">
           Tap to change my avatar, name, personality, or see what I remember

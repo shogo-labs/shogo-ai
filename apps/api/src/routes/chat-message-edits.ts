@@ -85,6 +85,9 @@ export function createChatMessageEditRoutes(): Hono {
                 },
               },
             },
+            workspace: {
+              include: { members: true },
+            },
           },
         },
       },
@@ -100,11 +103,14 @@ export function createChatMessageEditRoutes(): Hono {
     // Same membership check the auto-generated chat-message hooks use.
     // Tunnel-authenticated callers (desktop bridge) skip the check
     // because the tunnel already authoritatively identifies the user
-    // outside this router's purview.
+    // outside this router's purview. Workspace-level sessions (no
+    // project, e.g. the personal companion home chat) are authorized
+    // via the session's own workspace relation instead.
     if (!auth.tunnelAuthenticated) {
-      const hasAccess = message.session?.project?.workspace?.members?.some(
-        (m) => m.userId === auth.userId,
-      )
+      const hasAccess =
+        message.session?.project?.workspace?.members?.some(
+          (m) => m.userId === auth.userId,
+        ) || message.session?.workspace?.members?.some((m) => m.userId === auth.userId)
       if (!hasAccess) {
         return c.json(
           {
