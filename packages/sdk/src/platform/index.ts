@@ -162,6 +162,45 @@ export interface CloudLoginStatus {
   cloudKeyRejected?: boolean
 }
 
+export interface CloudBillingPlan {
+  ok?: boolean
+  planId?: string
+  source?: 'subscription' | 'grant' | 'free'
+  status?: string | null
+  billingInterval?: string | null
+  seats?: number
+  monthlyIncludedUsd?: number
+  dailyIncludedUsd?: number
+  monthlyIncludedAllocationUsd?: number
+  overageEnabled?: boolean
+  overageActive?: boolean
+  paidTier?: boolean
+  overageHardLimitUsd?: number | null
+  overageAccumulatedUsd?: number
+  usageWindows?: unknown
+  [key: string]: unknown
+}
+
+export interface CloudBillingSummary {
+  signedIn: boolean
+  cloudUrl?: string
+  email?: string | null
+  workspace?: { id?: string; name?: string; slug?: string } | null
+  cloudKeyRejected?: boolean
+  manageUrl?: string
+  upgradeUrl?: string
+  plan?: CloudBillingPlan
+  error?: unknown
+}
+
+export interface CloudSpendingLimitResult {
+  ok: boolean
+  overageEnabled?: boolean
+  overageHardLimitUsd?: number | null
+  overageAccumulatedUsd?: number
+  error?: unknown
+}
+
 export interface ShogoKeyStatus {
   connected: boolean
   keyMask?: string
@@ -621,6 +660,24 @@ export class PlatformApi {
   async cloudLoginStatus(): Promise<CloudLoginStatus> {
     const res = await this.http.get<CloudLoginStatus>('/api/local/cloud-login/status')
     return res.data ?? { signedIn: false }
+  }
+
+  /** Read the linked cloud workspace's plan, usage, and billing handoff URLs. */
+  async cloudBillingSummary(): Promise<CloudBillingSummary> {
+    const res = await this.http.get<CloudBillingSummary>('/api/local/cloud-billing/summary')
+    return res.data ?? { signedIn: false }
+  }
+
+  /** Update the linked cloud workspace's usage-based spending cap. */
+  async setCloudSpendingLimit(params: {
+    overageEnabled: boolean
+    overageHardLimitUsd: number | null
+  }): Promise<CloudSpendingLimitResult> {
+    const res = await this.http.post<CloudSpendingLimitResult>(
+      '/api/local/cloud-billing/usage-based-pricing',
+      params,
+    )
+    return res.data ?? { ok: false }
   }
 
   /** Sign out of Shogo Cloud on this device. Wipes the local key and best-

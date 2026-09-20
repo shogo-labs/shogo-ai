@@ -29,6 +29,8 @@ interface SetSpendLimitDialogProps {
   currentLimitUsd: number | null
   /** Optional accumulated overage so far this period (purely informational). */
   accumulatedUsageUsd?: number
+  /** Optional alternate save handler for a cloud-linked local workspace. */
+  onSave?: (limitUsd: number | null) => Promise<void>
   onSaved?: () => void
 }
 
@@ -38,6 +40,7 @@ export function SetSpendLimitDialog({
   workspaceId,
   currentLimitUsd,
   accumulatedUsageUsd,
+  onSave,
   onSaved,
 }: SetSpendLimitDialogProps) {
   const http = useDomainHttp()
@@ -66,10 +69,14 @@ export function SetSpendLimitDialog({
         }
         limitUsd = parsed
       }
-      await api.setUsageBasedPricing(http, workspaceId, {
-        enabled: true,
-        hardLimitUsd: limitUsd,
-      })
+      if (onSave) {
+        await onSave(limitUsd)
+      } else {
+        await api.setUsageBasedPricing(http, workspaceId, {
+          enabled: true,
+          hardLimitUsd: limitUsd,
+        })
+      }
       onSaved?.()
       onClose()
     } catch (e: any) {

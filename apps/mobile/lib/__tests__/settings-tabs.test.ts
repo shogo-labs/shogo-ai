@@ -23,6 +23,7 @@ describe("settings tabs", () => {
     expect(cloud.map((tab) => tab.id)).toContain("people")
     expect(cloud.map((tab) => tab.id)).toContain("compute")
     expect(local.map((tab) => tab.id)).toContain("security")
+    expect(local.map((tab) => tab.id)).toContain("billing")
     expect(local.map((tab) => tab.id)).not.toContain("people")
     expect(ios.map((tab) => tab.id)).not.toContain("compute")
   })

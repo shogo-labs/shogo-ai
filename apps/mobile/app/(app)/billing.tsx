@@ -44,6 +44,7 @@ import type { RegionalPricingResponse } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
+import { resolveActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData } from '@shogo/shared-app/hooks'
@@ -97,7 +98,10 @@ function relativeUsageCopy(planId: string): string {
 
 export default observer(function BillingPage() {
   const router = useRouter()
-  const { redeem: redeemParam } = useLocalSearchParams<{ redeem?: string }>()
+  const { redeem: redeemParam, workspace: workspaceParam } = useLocalSearchParams<{
+    redeem?: string
+    workspace?: string
+  }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
   const actions = useDomainActions()
@@ -107,6 +111,13 @@ export default observer(function BillingPage() {
       workspaces.loadAll({ userId: user.id }).catch((e) => console.error('[Billing] Failed to load workspaces:', e))
     }
   }, [user?.id, workspaces])
+
+  useEffect(() => {
+    const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
+    if (!workspaceParam || ownWorkspaceIds.length === 0) return
+    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, workspaceParam)
+    if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace)
+  }, [workspaceParam, workspaces?.all])
 
   const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()

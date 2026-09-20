@@ -122,6 +122,7 @@ import {
   resolvePlatformVisibleModels,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
+import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { meetingRoutes } from './routes/meetings'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
@@ -1443,6 +1444,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
   // Cloud-login routes (replacement UX for PUT /api/local/shogo-key). The
   // legacy PUT handler above is preserved as a CLI / headless escape hatch.
   app.route('/api', localAuthRoutes())
+  app.route('/api', localCloudBillingRoutes())
 
   // ── Local mode: Instance info (how this machine is registered to cloud) ──
 
