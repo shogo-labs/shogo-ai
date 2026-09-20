@@ -6161,6 +6161,39 @@ export function filterDisabledCapabilityTools(
   })
 }
 
+/**
+ * Tools delegated to dedicated subagents on team workspaces — removed from
+ * the main agent's tool list to reduce per-request token cost. The main
+ * agent is expected to reach them via `agent_spawn({ type: "browser"|"media"|"devops", ... })`.
+ */
+export const SUBAGENT_ONLY_TOOLS = new Set([
+  'browser',                                                                       // -> browser subagent
+  'generate_image', 'transcribe_audio',                                            // -> media subagent
+  'server_sync',                                                                   // -> devops subagent
+])
+
+/**
+ * Remove `SUBAGENT_ONLY_TOOLS` from the main agent's tool list — EXCEPT on
+ * personal-companion workspaces, which have the entire `orchestration`
+ * capability group disabled (see `disabledToolNamesForProfile('personal')`
+ * above: no `agent_spawn`, no subagents of any kind). Stripping
+ * `generate_image`/`transcribe_audio` there would leave the companion with
+ * literally no way to generate images — despite its own AGENTS.md
+ * instructing it to call `generate_image` directly for avatar changes — and
+ * it will correctly (if unhelpfully) tell the user it has no image tool.
+ * `browser`/`server_sync` stay delegated-only on personal workspaces too;
+ * only the media tools need this carve-out.
+ */
+export function filterSubagentOnlyTools(
+  tools: AgentTool[],
+  config: import('./gateway').GatewayConfig,
+): AgentTool[] {
+  const exempt = config.capabilityProfile === 'personal'
+    ? new Set(['generate_image', 'transcribe_audio'])
+    : new Set<string>()
+  return tools.filter(t => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
+}
+
 // ---------------------------------------------------------------------------
 // File Management Tools (files/ directory with RAG search)
 // ---------------------------------------------------------------------------

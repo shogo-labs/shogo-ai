@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { createTools, filterDisabledCapabilityTools, type ToolContext } from '../gateway-tools'
+import { createTools, filterDisabledCapabilityTools, filterSubagentOnlyTools, type ToolContext } from '../gateway-tools'
 import type { GatewayConfig } from '../gateway'
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -158,5 +158,35 @@ describe('filterDisabledCapabilityTools', () => {
     ]) {
       expect(n.has(tool)).toBe(true)
     }
+  })
+})
+
+describe('filterSubagentOnlyTools', () => {
+  // Regression test for a Sep 2026 bug: personal-companion workspaces have
+  // the entire `orchestration` group disabled (no `agent_spawn`), so if
+  // generate_image/transcribe_audio are also stripped as "subagent only"
+  // tools, the companion has NO way to generate images at all — despite its
+  // own AGENTS.md instructing it to call `generate_image` directly for
+  // avatar changes. Confirmed live on staging: the model correctly (but
+  // unhelpfully) reported "I don't have an image generation tool."
+  test('team profile delegates media tools to the subagent (removes them from the main agent)', () => {
+    const tools = createTools(makeCtx(makeConfig()))
+    const n = new Set(filterSubagentOnlyTools(tools, makeConfig()).map(t => t.name))
+    expect(n.has('generate_image')).toBe(false)
+    expect(n.has('transcribe_audio')).toBe(false)
+    expect(n.has('browser')).toBe(false)
+    expect(n.has('server_sync')).toBe(false)
+  })
+
+  test('personal profile keeps generate_image/transcribe_audio directly callable (no subagent path exists)', () => {
+    const config = makeConfig({ capabilityProfile: 'personal' })
+    const tools = createTools({ ...makeCtx(config), workspaceId: 'workspace-1' })
+    const n = new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
+    expect(n.has('generate_image')).toBe(true)
+    expect(n.has('transcribe_audio')).toBe(true)
+    // browser/server_sync stay delegated-only; personal workspaces just don't
+    // have a subagent to delegate to, which is unrelated to this bug.
+    expect(n.has('browser')).toBe(false)
+    expect(n.has('server_sync')).toBe(false)
   })
 })
