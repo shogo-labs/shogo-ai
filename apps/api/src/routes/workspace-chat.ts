@@ -864,50 +864,42 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             },
           })
 
-          if (billingProjectId) {
-            // trackUsageFromStream owns billing close + persistence + the
-            // anchor project's auto-checkpoint.
-            billingSessionHandedOff = true
-            trackUsageFromStream(
-              trackingStream,
-              parsedBody,
-              { id: billingProjectId, workspaceId },
-              {
-                chatSessionId: sessionId,
-                userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
-                projectName: 'Workspace project',
-                resume: async (fromSeq) => {
-                  try {
-                    return await fetchFromWorkspaceRuntime(
-                      workspaceId,
-                      attachedProjectIds,
-                      `/agent/chat/${encodeURIComponent(sessionId)}/stream?fromSeq=${fromSeq}`,
-                      { method: 'GET' },
-                      runtimeExtra,
-                    )
-                  } catch (err: any) {
-                    console.warn(
-                      `[WorkspaceChat] Resume fetch failed for ${workspaceId}/${sessionId}:`,
-                      err?.message || err,
-                    )
-                    return null
-                  }
-                },
+          // trackUsageFromStream owns persistence (+ tool-call logging) always,
+          // and additionally billing close + auto-checkpoint when there's an
+          // anchor project. Workspace-scoped chats with nothing attached yet
+          // (e.g. a brand-new personal companion space) pass `project: null`
+          // — there's no billing session to close and no project workspace
+          // to checkpoint, but the assistant's reply must still be saved so
+          // chat history survives a page reload. See the doc comment on
+          // `trackUsageFromStream` in project-chat.ts.
+          if (billingProjectId) billingSessionHandedOff = true
+          trackUsageFromStream(
+            trackingStream,
+            parsedBody,
+            billingProjectId ? { id: billingProjectId, workspaceId } : null,
+            {
+              chatSessionId: sessionId,
+              userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
+              projectName: 'Workspace project',
+              resume: async (fromSeq) => {
+                try {
+                  return await fetchFromWorkspaceRuntime(
+                    workspaceId,
+                    attachedProjectIds,
+                    `/agent/chat/${encodeURIComponent(sessionId)}/stream?fromSeq=${fromSeq}`,
+                    { method: 'GET' },
+                    runtimeExtra,
+                  )
+                } catch (err: any) {
+                  console.warn(
+                    `[WorkspaceChat] Resume fetch failed for ${workspaceId}/${sessionId}:`,
+                    err?.message || err,
+                  )
+                  return null
+                }
               },
-            ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err))
-          } else {
-            // No anchor project → no billing/persistence anchor; drain the
-            // tracking stream so the background fan-out doesn't stall.
-            void (async () => {
-              try {
-                const r = trackingStream.getReader()
-                // eslint-disable-next-line no-empty
-                while (!(await r.read()).done) {}
-              } catch {
-                /* noop */
-              }
-            })()
-          }
+            },
+          ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err))
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
           // (the anchor is checkpointed by trackUsageFromStream). Best-effort,

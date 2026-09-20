@@ -632,6 +632,87 @@ describe('trackUsageFromStream — processLine branches', () => {
 })
 
 // =============================================================================
+// trackUsageFromStream — project: null (workspace-scoped chat with no
+// attached project, e.g. a brand-new personal companion space). Persistence
+// and tool-call logging must still happen; billing + checkpointing must not.
+// =============================================================================
+
+describe('trackUsageFromStream — project: null (no billing anchor)', () => {
+  test('still persists the assistant message and bumps session.lastActiveAt', async () => {
+    chatSessionFixture = { id: 's-null-proj' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"hi from personal companion"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-null-proj' }, null)
+    expect(prismaCalls.chatMessageCreate).toHaveLength(1)
+    expect(prismaCalls.chatMessageCreate[0]!.data.content).toBe('hi from personal companion')
+    expect(prismaCalls.chatMessageCreate[0]!.data.sessionId).toBe('s-null-proj')
+  })
+
+  test('still logs tool calls', async () => {
+    chatSessionFixture = { id: 's-null-tools' }
+    const stream = streamFromChunks([
+      'data: {"type":"tool-input-available","toolCallId":"t1","toolName":"search","input":{"q":"x"}}\n',
+      'data: {"type":"tool-output-available","toolCallId":"t1","output":{"hits":1}}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-null-tools' }, null)
+    expect(prismaCalls.toolCallLogCreateMany).toHaveLength(1)
+    expect(prismaCalls.toolCallLogCreateMany[0]!.data[0].toolName).toBe('search')
+  })
+
+  test('does NOT open/close a billing session or set quality signals', async () => {
+    chatSessionFixture = { id: 's-null-billing' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"ok"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+      'data: {"type":"finish","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-null-billing' }, null)
+    expect(sessionCalls).toEqual([])
+  })
+
+  test('does NOT bump Project.lastMessageAt (no project to update)', async () => {
+    chatSessionFixture = { id: 's-null-lastmsg' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"ok"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-null-lastmsg' }, null)
+    expect(prismaCalls.projectUpdate).toEqual([])
+  })
+
+  test('does NOT auto-checkpoint (no project workspace to checkpoint)', async () => {
+    isGitAvailableResult = true
+    chatSessionFixture = { id: 's-null-checkpoint' }
+    const stream = streamFromChunks([
+      'data: {"type":"tool-input-available","toolCallId":"t1","toolName":"write_file","input":{}}\n',
+      'data: {"type":"tool-output-available","toolCallId":"t1","output":{}}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-null-checkpoint' }, null)
+    expect(checkpointCalls.length).toBe(0)
+  })
+
+  test('completion push omits projectId when there is no anchor project', async () => {
+    chatSessionFixture = { id: 's-null-push' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"done"}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(
+      stream,
+      { chatSessionId: 's-null-push' },
+      null,
+      { userId: 'user-1', projectName: 'Personal' },
+    )
+    expect(pushCalls).toHaveLength(1)
+    expect(pushCalls[0]!.payload.data).toEqual({ sessionId: 's-null-push' })
+  })
+})
+
+// =============================================================================
 // trackUsageFromStream — EOF without turn-complete + resume hook
 // =============================================================================
 
