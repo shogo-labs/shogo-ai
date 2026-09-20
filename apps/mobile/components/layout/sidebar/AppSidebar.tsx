@@ -693,11 +693,18 @@ export const AppSidebar = observer(function AppSidebar({
         await workspaces.loadAll();
         projects.clear();
         await projects.loadAll({ workspaceId: newWorkspace.id });
+        // Land the user in their new space rather than leaving them on
+        // whatever screen (settings, a project, another workspace's
+        // billing page, ...) they triggered this from — home reactively
+        // renders the personal-workspace "companion" experience once
+        // `currentWorkspace.kind === 'personal'`.
+        router.push("/(app)" as any);
+        if (!isWide) closeNativeDrawer();
       }
     } catch (e) {
       console.warn("Failed to create personal workspace:", e);
     }
-  }, [http, workspaces, projects, posthog]);
+  }, [http, workspaces, projects, posthog, router, isWide, closeNativeDrawer]);
 
   const handleSignOut = useCallback(async () => {
     trackEvent(posthog, EVENTS.SIGN_OUT);
