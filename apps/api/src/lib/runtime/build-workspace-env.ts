@@ -97,6 +97,12 @@ export interface BuildWorkspaceEnvOpts {
     projectId: string,
     workspaceId: string,
   ) => Promise<string | null | undefined>
+  /**
+   * Test-only injection seam for the workspace-level fallback proxy token
+   * (see the AI_PROXY_TOKEN block below). Production callers omit this and
+   * the builder resolves the workspace owner via a DB lookup.
+   */
+  _getWorkspaceOwnerUserId?: (workspaceId: string) => Promise<string | undefined>
 }
 
 /**
@@ -232,6 +238,42 @@ export async function buildWorkspaceEnv(
     if (first && tokens[first]) env.AI_PROXY_TOKEN = tokens[first]
   } catch (err: any) {
     console.error(`[${prefix}] Failed to mint proxy tokens for workspace ${workspaceId}:`, err?.message)
+  }
+
+  // Workspace-level fallback token. A workspace with zero attached projects
+  // (e.g. a brand-new personal companion — see the free-personal-space flow)
+  // has no Project to hang a per-project AI_PROXY_TOKEN off, so the loop
+  // above never runs and AI_PROXY_TOKEN is left unset. AI_PROXY_URL is
+  // ALWAYS set a few lines down though, and the agent-runtime's
+  // configureAIProxy() throws hard — poisoning the entire pod's
+  // "Reconfigure" step — when the URL is set without a token (see
+  // packages/agent/src/ai-proxy.ts). That failure surfaced in staging as
+  // metal /pool/assign 400s → a generic "Something went wrong" for every
+  // message sent from a project-less workspace chat.
+  //
+  // Mint one scoped to the 'workspace' sentinel projectId, which
+  // ai-proxy.ts already treats as "not a real project" for billing
+  // attribution — identical to the 'api-key' / 'system' sentinels handled
+  // in recordUsage/recordImageUsage/recordTranscriptionUsage/
+  // isTurnInFlight/touchRuntimeFor — so usage still bills against the
+  // workspace owner instead of a Project FK that doesn't exist.
+  if (!env.AI_PROXY_TOKEN) {
+    try {
+      const generate = opts._generateProxyToken ?? generateProxyToken
+      const getWorkspaceOwner =
+        opts._getWorkspaceOwnerUserId ??
+        (async (id: string) => {
+          const { getWorkspaceOwnerUserId } = await import('../project-user-context')
+          return getWorkspaceOwnerUserId(id)
+        })
+      const ownerUserId = await getWorkspaceOwner(workspaceId)
+      env.AI_PROXY_TOKEN = await generate('workspace', workspaceId, ownerUserId, 7 * 24 * 60 * 60 * 1000)
+    } catch (err: any) {
+      console.error(
+        `[${prefix}] Failed to mint workspace-level fallback proxy token for ${workspaceId}:`,
+        err?.message,
+      )
+    }
   }
   console.log(`[${prefix}] proxy tokens took ${Date.now() - tokenStart}ms`)
 

@@ -1959,6 +1959,21 @@ const INTERNAL_USAGE_TAG_HEADER = 'x-shogo-usage-tag'
 const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation', 'analytics_digest'])
 
 /**
+ * Sentinel `projectId` values that never correspond to a real `Project` row:
+ * - `'api-key'` — workspace-scoped Shogo API key auth (no single project).
+ * - `'system'` — the API server's own internal proxy token.
+ * - `'workspace'` — a workspace runtime with zero attached projects (e.g. a
+ *   brand-new personal companion); see build-workspace-env.ts's fallback
+ *   AI_PROXY_TOKEN mint.
+ *
+ * Billing/attribution code throughout this file treats all three the same
+ * way: fall back to workspace-level attribution instead of a Project FK.
+ */
+function isNonProjectSentinel(projectId: string | undefined | null): boolean {
+  return projectId === 'api-key' || projectId === 'system' || projectId === 'workspace'
+}
+
+/**
  * Resolve the internal (non-billable) usage tag for a request, if any.
  *
  * Security: only the server's own proxy-JWT (`authKind === 'proxy-jwt'`) is
@@ -1986,15 +2001,14 @@ function resolveInternalUsage(c: any, tokenPayload: ProxyTokenPayload): { action
  * to finish; the overage is billed at session close and gates the NEXT turn.
  *
  * Resolves the billing project id the same way `recordUsage` does (the
- * `'api-key'` / `'system'` sentinels are not real projects and never carry a
- * chat billing session), and keys the lookup on the forwarded
+ * `'api-key'` / `'system'` / `'workspace'` sentinels are not real projects
+ * and never carry a chat billing session), and keys the lookup on the forwarded
  * `x-chat-session-id` header when present.
  */
 async function isTurnInFlight(c: any, tokenPayload: ProxyTokenPayload): Promise<boolean> {
-  const billingProjectId =
-    tokenPayload.projectId === 'api-key' || tokenPayload.projectId === 'system'
-      ? null
-      : (tokenPayload.projectId || null)
+  const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
+    ? null
+    : (tokenPayload.projectId || null)
   if (!billingProjectId) return false
   return hasActiveSession(billingProjectId, c.req.header('x-chat-session-id') || null)
 }
@@ -2010,13 +2024,13 @@ export async function recordUsage(
   internalUsage?: { actionType: string } | null,
   reasoningTokens: number = 0,
 ) {
-  // For API-key auth the projectId is a sentinel ('api-key'), and the API
-  // server's own internal proxy token uses the 'system' sentinel — neither is a
-  // real Project row. Pass null so the UsageEvent projectId FK is satisfied.
-  const billingProjectId =
-    tokenPayload.projectId === 'api-key' || tokenPayload.projectId === 'system'
-      ? null
-      : (tokenPayload.projectId || null)
+  // For API-key auth the projectId is a sentinel ('api-key'), the API
+  // server's own internal proxy token uses 'system', and a project-less
+  // workspace runtime's fallback token uses 'workspace' — none of these are
+  // a real Project row. Pass null so the UsageEvent projectId FK is satisfied.
+  const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
+    ? null
+    : (tokenPayload.projectId || null)
 
   // Internal, non-billable completion (e.g. server-initiated title generation):
   // record the real cost for ADMIN cost-tracking only — never debit a wallet,
@@ -2290,7 +2304,9 @@ async function recordImageUsage(
     const billedUsd = single.billedUsd * n
     if (billedUsd === 0) return
 
-    const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+    const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
+      ? null
+      : (tokenPayload.projectId || null)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
     // If a billing session is open for this project, fold this image's USD
@@ -2337,7 +2353,9 @@ async function recordTranscriptionUsage(
     const { rawUsd, billedUsd } = calculateTranscriptionUsageCost(durationSeconds)
     if (billedUsd === 0) return
 
-    const billingProjectId = tokenPayload.projectId === 'api-key' ? null : (tokenPayload.projectId || null)
+    const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
+      ? null
+      : (tokenPayload.projectId || null)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
     const result = await billingService.consumeUsage({
@@ -2430,11 +2448,13 @@ export function aiProxyRoutes() {
    * model call still resets the 15-min reaper, even though the user's
    * agent-proxy connection is silent during that span.
    *
-   * `'api-key'` payloads come from workspace-scoped Shogo API keys
-   * (no project context) and have no local runtime to touch — skip.
+   * `'api-key'` payloads come from workspace-scoped Shogo API keys, and
+   * `'workspace'` payloads come from a project-less workspace runtime's
+   * fallback token (see build-workspace-env.ts) — neither is a real project
+   * id, so there's no project-keyed local runtime to touch here. Skip.
    */
   function touchRuntimeFor(payload: ProxyTokenPayload | null): void {
-    if (!payload || !payload.projectId || payload.projectId === 'api-key') return
+    if (!payload || !payload.projectId || isNonProjectSentinel(payload.projectId)) return
     try {
       getRuntimeManager().touch(payload.projectId)
     } catch {
