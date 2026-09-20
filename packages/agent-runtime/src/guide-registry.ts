@@ -152,6 +152,15 @@ export interface CapabilitiesIndexFlags {
   media?: boolean
   /** Devops / heartbeat scheduling line (default: true) */
   devops?: boolean
+  /**
+   * Whether media (generate_image/transcribe_audio) is reached via the media
+   * subagent (default: true) or called directly. Personal-companion
+   * workspaces have no subagent orchestration at all, so `generate_image`/
+   * `transcribe_audio` are kept directly callable there (see gateway.ts's
+   * `SUBAGENT_ONLY_TOOLS` filtering) — pass `false` so the index says so
+   * instead of pointing at an `agent_spawn` call the model can't make.
+   */
+  mediaDelegated?: boolean
 }
 
 /**
@@ -164,6 +173,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   const integrations = flags.integrations !== false
   const channels = flags.channels !== false
   const media = flags.media !== false
+  const mediaDelegated = flags.mediaDelegated !== false
   const devops = flags.devops !== false
 
   // The subagent line advertises delegated agent types; only list the ones
@@ -175,7 +185,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     'browser',
     ...(integrations ? ['integration'] : []),
     ...(channels ? ['channel'] : []),
-    ...(media ? ['media'] : []),
+    ...(media && mediaDelegated ? ['media'] : []),
     ...(devops ? ['devops'] : []),
     'fork mode',
     'and team swarm',
@@ -204,7 +214,9 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   )
   if (media) {
     lines.push(
-      '- **media**: Image generation and audio transcription. Delegated — use `agent_spawn({ type: "media", prompt: "..." })`.',
+      mediaDelegated
+        ? '- **media**: Image generation and audio transcription. Delegated — use `agent_spawn({ type: "media", prompt: "..." })`.'
+        : '- **media**: Image generation and audio transcription. Call `generate_image` / `transcribe_audio` directly — subagent delegation is not available in this workspace.',
     )
   }
   if (channels) {

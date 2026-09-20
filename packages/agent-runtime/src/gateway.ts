@@ -31,7 +31,7 @@ import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { runAgentLoop, classifyRetryability, type LoopDetectorConfig } from './agent-loop'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult, filterDisabledCapabilityTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
+import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
@@ -2329,12 +2329,9 @@ export class AgentGateway {
     // Haiku reliably used them directly in the persona/agentic pipelines, but
     // often fails to infer that a subagent should be spawned for simple "connect
     // my email" or "set up a reminder" requests.
-    const SUBAGENT_ONLY_TOOLS = new Set([
-      'browser',                                                                       // -> browser subagent
-      'generate_image', 'transcribe_audio',                                            // -> media subagent
-      'server_sync',                                                                   // -> devops subagent
-    ])
-    assembledTools = assembledTools.filter(t => !SUBAGENT_ONLY_TOOLS.has(t.name))
+    // (Personal-companion workspaces are exempted for generate_image/
+    // transcribe_audio — see `filterSubagentOnlyTools`'s docstring.)
+    assembledTools = filterSubagentOnlyTools(assembledTools, this.config)
 
     // Snapshot the full agent-mode tool set BEFORE any read-only mode
     // restriction. Used to (a) guarantee core tools survive in agent mode and
@@ -3831,6 +3828,10 @@ export class AgentGateway {
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,
       media: mediaGuideOn,
+      // Personal workspaces have no subagent orchestration at all, so
+      // generate_image/transcribe_audio are kept directly callable (see the
+      // SUBAGENT_ONLY_TOOLS carve-out above) rather than delegated.
+      mediaDelegated: this.config.capabilityProfile !== 'personal',
       devops: devopsGuideOn,
     }))
 
