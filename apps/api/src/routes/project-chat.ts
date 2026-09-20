@@ -112,11 +112,18 @@ export function hasFileModifyingTools(toolCallMap: Map<string, { toolName: strin
  *   the abort signal; the buffer is closed naturally once the agent loop's
  *   wind-down emits `data-usage` and `data-turn-complete{status:'aborted'}`,
  *   so we observe a real terminal frame and bill the partial usage.
+ *
+ *   `project: null` — workspace-scoped chats with no attached project yet
+ *   (e.g. a brand-new personal companion space) have no billing anchor.
+ *   Message persistence + tool-call logging still run (they only need
+ *   `chatSessionId`); billing (open/close), the `Project.lastMessageAt`
+ *   bump, and auto-checkpointing are simply skipped since there's no
+ *   project to attribute them to.
  */
 export async function trackUsageFromStream(
   stream: ReadableStream<Uint8Array>,
   requestBody: any,
-  project: { id: string; workspaceId: string },
+  project: { id: string; workspaceId: string; workingMode?: string } | null,
   options: {
     /**
      * Reconnect to the runtime's stream buffer for `fromSeq=N`. Returns null
@@ -721,20 +728,26 @@ export async function trackUsageFromStream(
   // Set quality signals BEFORE closing the session so they reach
   // recordAgentCostMetric inside closeSession (closeSession deletes the
   // session before reading quality, so a post-close set would be a no-op).
-  await setQualitySignals(project.id, qualitySignals, chatSessionId)
-  const { billedUsd } = await closeSession(project.id, {
-    discardPartial: false,
-    chatSessionId,
-    fallbackUsage: {
-      model: usageRef.value?.model,
-      inputTokens,
-      outputTokens,
-      cachedInputTokens: usageRef.value?.cachedInputTokens,
-      cacheWriteTokens: usageRef.value?.cacheWriteTokens,
-    },
-  })
-  if (billedUsd > 0) {
-    console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
+  //
+  // Skipped entirely when there's no anchor project (a workspace-scoped
+  // chat with zero attached projects) — there's no billing session to
+  // close in the first place; see the doc comment above.
+  if (project) {
+    await setQualitySignals(project.id, qualitySignals, chatSessionId)
+    const { billedUsd } = await closeSession(project.id, {
+      discardPartial: false,
+      chatSessionId,
+      fallbackUsage: {
+        model: usageRef.value?.model,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens: usageRef.value?.cachedInputTokens,
+        cacheWriteTokens: usageRef.value?.cacheWriteTokens,
+      },
+    })
+    if (billedUsd > 0) {
+      console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
+    }
   }
 
   // Persist whatever we accumulated. Partial rows are fine: the agent's
@@ -795,7 +808,7 @@ export async function trackUsageFromStream(
           void sendPushToUser(options.userId, {
             title: `${options.projectName || 'Project'} response ready`,
             body: preview || 'The agent finished responding.',
-            data: { sessionId: chatSessionId, projectId: project.id },
+            data: { sessionId: chatSessionId, ...(project ? { projectId: project.id } : {}) },
           })
         }
 
@@ -811,10 +824,14 @@ export async function trackUsageFromStream(
           data: { lastActiveAt: now, updatedAt: now },
         }).catch(() => {})
 
-        prisma.project.update({
-          where: { id: project.id },
-          data: { lastMessageAt: now },
-        }).catch(() => {})
+        // No anchor project (workspace-scoped chat with nothing attached
+        // yet) — there's no Project row to bump lastMessageAt on.
+        if (project) {
+          prisma.project.update({
+            where: { id: project.id },
+            data: { lastMessageAt: now },
+          }).catch(() => {})
+        }
       }
     } catch (err) {
       console.error("[ProjectChat] Failed to persist assistant message:", err)
@@ -873,17 +890,22 @@ export async function trackUsageFromStream(
   // either no-op or capture unrelated main state, so skip it entirely.
   let worktreesEnabled = false
   try {
-    const p = await prisma.project.findUnique({ where: { id: project.id }, select: { settings: true } as any }) as { settings?: unknown } | null
+    const p = project
+      ? (await prisma.project.findUnique({ where: { id: project.id }, select: { settings: true } as any }) as { settings?: unknown } | null)
+      : null
     worktreesEnabled = parseProjectSettings(p?.settings)?.gitWorktreesEnabled === true
   } catch { /* default false */ }
+  // No anchor project (workspace-scoped chat with nothing attached yet) —
+  // there's no project workspace directory to checkpoint.
   if (
+    project &&
     !workerOwnsSync &&
     !worktreesEnabled &&
     hasFileModifyingTools(toolCallMap) &&
     observedTurnComplete &&
     !originalStreamErrored &&
     isGitAvailable() &&
-    (project as { workingMode?: string }).workingMode !== 'external'
+    project.workingMode !== 'external'
   ) {
     const workspacePath = resolve(WORKSPACES_DIR, project.id)
     if (existsSync(workspacePath)) {
