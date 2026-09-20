@@ -50,6 +50,7 @@ import {
   Bug as BugIcon,
   Monitor as MonitorIcon,
   Paintbrush as PaintbrushIcon,
+  RefreshCw as RefreshCwIcon,
 } from 'lucide-react-native'
 import {
   Text,
@@ -77,6 +78,7 @@ import { openWebAppSession } from '../../lib/openWebAppSession'
 import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
 import { ComputeTab } from '../../components/settings/ComputeTab'
 import { BugReportTab } from '../../components/settings/BugReportTab'
+import { UpdatesTab } from '../../components/settings/UpdatesTab'
 import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
 import { WorkspaceModelsTab } from '../../components/settings/WorkspaceModelsTab'
 import { RemoteControlTab } from '../../components/settings/RemoteControlTab'
@@ -147,6 +149,7 @@ const SETTINGS_ICON_MAP = {
   Bug: BugIcon,
   Monitor: MonitorIcon,
   Paintbrush: PaintbrushIcon,
+  RefreshCw: RefreshCwIcon,
 } as const
 
 function useSettingsIcons() {
@@ -167,6 +170,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   costs: 'Coins',
   support: 'Bug',
   appearance: 'Paintbrush',
+  updates: 'RefreshCw',
 }
 
 export type TabId = SettingsTabId
@@ -176,6 +180,15 @@ const ALL_TAB_IDS: TabId[] = SETTINGS_TABS.map(({ id }) => id)
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = WEB_WIDE_MIN_WIDTH
 const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === 'ios'
+
+// Whether we're running inside the Electron desktop shell. Deliberately NOT
+// the same as the `localMode` passed into TabBar/SettingsSidebar below:
+// `localMode` reflects the connected API's app-mode (self-hosted vs Shogo
+// Cloud), while a cloud-connected desktop install still needs the Updates
+// tab since it's the Electron auto-updater's home regardless of which
+// backend the app talks to. See `desktopOnly` in lib/settings-tabs.ts.
+const IS_DESKTOP_CLIENT =
+  Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
 
 interface NavItem {
   id: TabId
@@ -195,6 +208,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   'billing',
   'analytics',
   'costs',
+  ...(IS_DESKTOP_CLIENT ? ['updates' as TabId] : []),
 ])
 
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
@@ -207,6 +221,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   'analytics',
   'costs',
   'support',
+  ...(IS_DESKTOP_CLIENT ? ['updates' as TabId] : []),
 ])
 
 function TabBar({
@@ -330,6 +345,7 @@ function SettingsSidebar({
         { ...tabItem('account'), label: userName || settingsTab('account').label },
         tabItem('appearance'),
         ...(!showBilling ? [tabItem('security')] : []),
+        ...(IS_DESKTOP_CLIENT ? [tabItem('updates')] : []),
       ],
     },
     ...(localMode ? [{
@@ -3353,6 +3369,7 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
       {activeTab === 'costs' && <WorkspaceCostTab />}
       {activeTab === 'support' && <BugReportTab />}
+      {activeTab === 'updates' && <UpdatesTab />}
     </>
   )
 })
@@ -3381,6 +3398,7 @@ export default observer(function SettingsPage() {
     if (activeTab === 'models' && isLocal) setActiveTab('workspace')
     if (activeTab === 'compute' && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS)) setActiveTab('workspace')
     if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
+    if (activeTab === 'updates' && !IS_DESKTOP_CLIENT) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
   const workspaceName = currentWorkspace?.name || ''

@@ -189,13 +189,22 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   dismissUpdate: () => ipcRenderer.invoke('dismiss-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   onUpdateStatus: (
-    callback: (data: { status: string; releaseName: string | null; availableVersion: string | null }) => void,
+    callback: (data: { status: string; releaseName: string | null; availableVersion: string | null; channel?: 'stable' | 'beta' }) => void,
   ) => {
     ipcRenderer.on('desktop-update-status', (_event, data) => callback(data))
   },
   removeUpdateListener: () => {
     ipcRenderer.removeAllListeners('desktop-update-status')
   },
+  // Update channel — 'stable' (default) tracks tagged releases; 'beta' is an
+  // opt-in channel that tracks the newest build off `main`. See
+  // apps/desktop/src/update-channel.ts + updater.ts.
+  getUpdateChannel: (): Promise<{ channel: 'stable' | 'beta' }> =>
+    ipcRenderer.invoke('get-update-channel'),
+  setUpdateChannel: (channel: 'stable' | 'beta'): Promise<{ ok: boolean; channel?: 'stable' | 'beta'; error?: string }> =>
+    ipcRenderer.invoke('set-update-channel', channel),
+  checkForUpdates: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('check-for-updates'),
   showRemoteActionNotification: (title: string, body: string) =>
     ipcRenderer.invoke('show-remote-action-notification', title, body),
   showChatNotification: (args: {

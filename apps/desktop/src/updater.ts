@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { app, autoUpdater, ipcMain, BrowserWindow, net } from 'electron'
+import { readConfig, writeConfig } from './config'
+import { resolveFeedUrl, parseUpdateChannel, type UpdateChannel } from './update-channel'
 
 const TAG = '[Updater]'
-const UPDATE_HOST = 'https://update.electronjs.org'
-const REPO = 'shogo-labs/shogo-ai'
 const CHECK_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 const SUPPORTED_PLATFORMS = ['darwin', 'win32']
 
@@ -31,6 +31,7 @@ let isApplyingUpdate = false
 let dismissedVersion: string | null = null
 let feedURL: string | null = null
 let userAgent: string | null = null
+let currentChannel: UpdateChannel = 'stable'
 
 export function getIsApplyingUpdate(): boolean {
   return isApplyingUpdate
@@ -41,15 +42,16 @@ function broadcastUpdateStatus() {
     status: currentStatus,
     releaseName: updateReleaseName,
     availableVersion,
+    channel: currentChannel,
   }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('desktop-update-status', payload)
   }
 }
 
-// Manual probe of the Electron update service. Returns the response payload
-// when an update is available, or null when the server reports up-to-date
-// (HTTP 204) or the request fails. We deliberately don't throw — transient
+// Manual probe of the update feed. Returns the response payload when an
+// update is available, or null when the server reports up-to-date (HTTP
+// 204) or the request fails. We deliberately don't throw — transient
 // network errors are normal and should silently retry on the next interval.
 async function probeFeed(): Promise<FeedResponse | null> {
   if (!feedURL) return null
@@ -112,9 +114,34 @@ async function runProbe(): Promise<void> {
   broadcastUpdateStatus()
 }
 
-export function initAutoUpdater(): void {
+// Recompute the feed URL for `channel` and point Squirrel's autoUpdater at
+// it. Safe to call repeatedly (e.g. on every channel switch) — Squirrel
+// itself is not mid-flight until `checkForUpdates()` is called, which only
+// happens from the user-gated `download-update` IPC handler below.
+function applyFeedForChannel(channel: UpdateChannel): void {
   const platform = process.platform
   const arch = process.arch
+  const version = app.getVersion()
+
+  currentChannel = channel
+  feedURL = resolveFeedUrl({
+    channel,
+    platform,
+    arch,
+    version,
+    baseUrlOverride: process.env.SHOGO_UPDATE_FEED_BASE_URL || null,
+  })
+  userAgent = `shogo-desktop/${version} (${platform}: ${arch}; channel=${channel})`
+
+  console.log(`${TAG} Channel: ${channel} — feed URL: ${feedURL}`)
+  autoUpdater.setFeedURL({
+    url: feedURL,
+    headers: { 'User-Agent': userAgent },
+  })
+}
+
+export function initAutoUpdater(): void {
+  const platform = process.platform
   const version = app.getVersion()
 
   if (!SUPPORTED_PLATFORMS.includes(platform)) {
@@ -122,21 +149,45 @@ export function initAutoUpdater(): void {
     return
   }
 
-  feedURL = `${UPDATE_HOST}/${REPO}/${platform}-${arch}/${version}`
-  userAgent = `shogo-desktop/${version} (${platform}: ${arch})`
-  console.log(`${TAG} Initialising (v${version}, ${platform}-${arch})`)
-  console.log(`${TAG} Feed URL: ${feedURL}`)
-
-  autoUpdater.setFeedURL({
-    url: feedURL,
-    headers: { 'User-Agent': userAgent },
-  })
+  currentChannel = parseUpdateChannel(readConfig().updateChannel)
+  console.log(`${TAG} Initialising (v${version}, ${platform}-${process.arch}, channel=${currentChannel})`)
+  applyFeedForChannel(currentChannel)
 
   ipcMain.handle('get-update-status', () => ({
     status: currentStatus,
     releaseName: updateReleaseName,
     availableVersion,
+    channel: currentChannel,
   }))
+
+  ipcMain.handle('get-update-channel', () => ({ channel: currentChannel }))
+
+  ipcMain.handle('set-update-channel', (_event, requested: unknown) => {
+    const next = parseUpdateChannel(requested)
+    if (currentStatus === 'downloading' || currentStatus === 'ready') {
+      console.log(`${TAG} set-update-channel ignored — status is ${currentStatus}`)
+      return { ok: false, error: `cannot switch channels while an update is ${currentStatus}`, channel: currentChannel }
+    }
+    if (next === currentChannel) {
+      return { ok: true, channel: currentChannel }
+    }
+    console.log(`${TAG} Switching update channel: ${currentChannel} -> ${next}`)
+    writeConfig({ updateChannel: next })
+    currentStatus = 'idle'
+    availableVersion = null
+    updateReleaseName = null
+    dismissedVersion = null
+    applyFeedForChannel(next)
+    broadcastUpdateStatus()
+    void runProbe()
+    return { ok: true, channel: next }
+  })
+
+  ipcMain.handle('check-for-updates', () => {
+    console.log(`${TAG} Manual update check requested`)
+    void runProbe()
+    return { ok: true }
+  })
 
   ipcMain.handle('download-update', () => {
     if (currentStatus !== 'available') {
@@ -204,7 +255,7 @@ export function initAutoUpdater(): void {
     if (msg.includes('Could not get code signature') || msg.includes('Code signature')) {
       console.warn(`${TAG} Update check skipped — app is not code-signed (expected in development builds)`)
     } else if (msg.includes('ENOTFOUND') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) {
-      console.warn(`${TAG} Update check failed — cannot reach update server (${UPDATE_HOST}). Will retry.`)
+      console.warn(`${TAG} Update check failed — cannot reach update server. Will retry.`)
     } else if (msg.includes('Can not find Squirrel')) {
       console.warn(`${TAG} Squirrel not found — app was not installed via the Setup installer. Auto-updates are disabled.`)
       console.warn(`${TAG} To enable auto-updates, reinstall using the Shogo-Setup.exe installer.`)

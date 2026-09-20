@@ -11,6 +11,7 @@ import {
   Monitor,
   Paintbrush,
   Plug,
+  RefreshCw,
   Server,
   Shield,
   User,
@@ -32,6 +33,7 @@ export type SettingsTabId =
   | "costs"
   | "support"
   | "appearance"
+  | "updates"
 
 export type SettingsTabGroup = "settings" | "plan" | "personal"
 
@@ -42,6 +44,11 @@ export type SettingsTabDefinition = {
   group: SettingsTabGroup
   cloudOnly?: boolean
   localOnly?: boolean
+  /** Only shown when running inside the Electron desktop shell — regardless
+   * of `localMode` (a cloud-connected desktop install still needs the
+   * updater, since `localMode` there reflects the app-mode API, not whether
+   * the client is Electron). See `visibleSettingsTabs`'s `isDesktop` param. */
+  desktopOnly?: boolean
 }
 
 export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
@@ -58,6 +65,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   { id: "compute", label: "Compute", Icon: Server, group: "plan", cloudOnly: true },
   { id: "account", label: "Account", Icon: User, group: "personal" },
   { id: "appearance", label: "Appearance", Icon: Paintbrush, group: "personal" },
+  { id: "updates", label: "Updates", Icon: RefreshCw, group: "personal", desktopOnly: true },
 ]
 
 const SETTINGS_TAB_BY_ID = new Map(SETTINGS_TABS.map((tab) => [tab.id, tab]))
@@ -81,13 +89,16 @@ export function visibleSettingsTabs({
   localMode = false,
   showBilling = true,
   platform,
+  isDesktop = false,
 }: {
   localMode?: boolean
   showBilling?: boolean
   platform?: string
+  isDesktop?: boolean
 } = {}): SettingsTabDefinition[] {
   return SETTINGS_TABS.filter((tab) => {
     if (tab.id === "compute") return showBilling && platform !== "ios"
+    if (tab.desktopOnly) return isDesktop
     if (tab.localOnly) return localMode
     if (tab.cloudOnly) return !localMode && showBilling
     return true

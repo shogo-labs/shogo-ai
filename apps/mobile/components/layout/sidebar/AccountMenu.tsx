@@ -52,6 +52,9 @@ export interface AccountMenuProps extends UserMenuProps {
   showBilling: boolean;
   onSwitchWorkspace: (workspaceId: string) => void;
   onCreateWorkspace: () => void;
+  /** See `WorkspaceMenuSectionProps.hasPersonalWorkspace`. */
+  hasPersonalWorkspace?: boolean;
+  onCreatePersonalWorkspace?: () => void;
   localMode?: boolean;
   /** Native Account: open a settings tab in a sheet instead of pushing Settings. */
   onOpenNativeSettingsTab?: (tab: AccountSettingsSheetTab) => void;
@@ -72,6 +75,8 @@ export function AccountMenu({
   showBilling,
   onSwitchWorkspace,
   onCreateWorkspace,
+  hasPersonalWorkspace,
+  onCreatePersonalWorkspace,
   localMode,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -197,6 +202,8 @@ export function AccountMenu({
               showBilling={showBilling}
               onSwitchWorkspace={onSwitchWorkspace}
               onCreateWorkspace={onCreateWorkspace}
+              hasPersonalWorkspace={hasPersonalWorkspace}
+              onCreatePersonalWorkspace={onCreatePersonalWorkspace}
               localMode={localMode}
               onClose={close}
               isNative={false}
@@ -221,6 +228,8 @@ export function AccountMenuBody({
   showBilling,
   onSwitchWorkspace,
   onCreateWorkspace,
+  hasPersonalWorkspace,
+  onCreatePersonalWorkspace,
   localMode,
   onClose,
   isNative = false,
@@ -247,6 +256,8 @@ export function AccountMenuBody({
           onNavigate={onNavigate}
           onSwitchWorkspace={onSwitchWorkspace}
           onCreateWorkspace={onCreateWorkspace}
+          hasPersonalWorkspace={hasPersonalWorkspace}
+          onCreatePersonalWorkspace={onCreatePersonalWorkspace}
           localMode={localMode}
           onClose={onClose}
           isNative
@@ -297,6 +308,8 @@ export function AccountMenuBody({
         onNavigate={onNavigate}
         onSwitchWorkspace={onSwitchWorkspace}
         onCreateWorkspace={onCreateWorkspace}
+        hasPersonalWorkspace={hasPersonalWorkspace}
+        onCreatePersonalWorkspace={onCreatePersonalWorkspace}
         localMode={localMode}
         onClose={onClose}
         isNative={false}

@@ -584,6 +584,15 @@ export const AppSidebar = observer(function AppSidebar({
     allWorkspaces = [];
   }
 
+  // Whether the user already has a `kind: 'personal'` workspace. `false`
+  // surfaces the free "Create personal space" CTA — see
+  // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
+  // just be `allWorkspaces.length === 0` (a user's original signup
+  // workspace may have been mis-backfilled to `kind: 'team'`).
+  const hasPersonalWorkspace = allWorkspaces.some(
+    (w: any) => w.kind === "personal",
+  );
+
   const allPlans = useWorkspacePlans(
     allWorkspaces.map((w: any) => w.id),
     !!features.billing,
@@ -665,6 +674,22 @@ export const AppSidebar = observer(function AppSidebar({
     },
     [actions, user?.id, workspaces, projects, posthog],
   );
+
+  const handleCreatePersonalWorkspace = useCallback(async () => {
+    try {
+      const newWorkspace = await api.createPersonalWorkspace(http);
+      if (newWorkspace?.id) {
+        trackEvent(posthog, EVENTS.WORKSPACE_CREATED);
+        setSelectedWorkspaceId(newWorkspace.id);
+        setActiveWorkspaceId(newWorkspace.id);
+        await workspaces.loadAll();
+        projects.clear();
+        await projects.loadAll({ workspaceId: newWorkspace.id });
+      }
+    } catch (e) {
+      console.warn("Failed to create personal workspace:", e);
+    }
+  }, [http, workspaces, projects, posthog]);
 
   const handleSignOut = useCallback(async () => {
     trackEvent(posthog, EVENTS.SIGN_OUT);
@@ -1260,6 +1285,8 @@ export const AppSidebar = observer(function AppSidebar({
               showBilling={features.billing}
               onSwitchWorkspace={handleSwitchWorkspace}
               onCreateWorkspace={handleCreateWorkspace}
+              hasPersonalWorkspace={hasPersonalWorkspace}
+              onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
               localMode={localMode}
             />
           </View>

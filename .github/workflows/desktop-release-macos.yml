@@ -7,9 +7,30 @@ on:
         description: 'Release version (e.g. 0.1.0)'
         required: true
         type: string
+      channel:
+        description: 'Update channel for this manual build'
+        required: false
+        type: choice
+        options: [stable, beta]
+        default: stable
   push:
     tags:
       - 'v[0-9]*'
+    # Every push to main publishes a beta prerelease so opted-in desktop
+    # users get the newest main build via Settings -> Updates -> Beta. See
+    # the `resolve-version` job + scripts/desktop-next-beta-version.ts.
+    branches:
+      - main
+
+# Tag pushes each get their own concurrency group (the ref IS the tag, so
+# these never collide with each other regardless of cancel-in-progress).
+# main pushes share one group and cancel any in-flight beta build for the
+# previous commit — there's no reason to finish building/publishing a beta
+# that's already superseded, and it keeps the (~25min x2 archs) cost down
+# on a busy day.
+concurrency:
+  group: desktop-release-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 env:
   BUN_VERSION: '1.3.11'
@@ -23,6 +44,42 @@ env:
   NODE_VERSION: '24.15.0'
 
 jobs:
+  resolve-version:
+    # Single source of truth for "what version/channel is this run" so the
+    # four duplicated inline "Set app version from tag" steps (build-web,
+    # build-desktop x2 archs, and formerly copy-pasted into every desktop
+    # release workflow) don't drift. See scripts/desktop-next-beta-version.ts
+    # for why the beta timestamp is derived from HEAD's committer date
+    # rather than wall-clock build time — this job's Windows-workflow
+    # twin must land on the IDENTICAL version string for the same push so
+    # both publish to the same GitHub Release.
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Need full tag history to find the newest stable vX.Y.Z tag when
+          # resolving a beta version off a main push.
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Resolve desktop version + update channel
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
+        run: |
+          bun scripts/desktop-next-beta-version.ts
+          echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
   preflight:
     # Release-blocking sanity checks that have no platform dependencies.
     # Runs FIRST and gates every downstream job — see the matching
@@ -76,7 +133,7 @@ jobs:
 
   build-web:
     name: Build Expo Web
-    needs: preflight
+    needs: [preflight, resolve-version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -89,19 +146,16 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Set app version from tag
+      - name: Set app version
         # Mirrors the build-desktop step so the renderer's Sentry `release`
         # (read from EXPO_PUBLIC_BUILD_HASH in apps/mobile/app/_layout.tsx)
         # matches the main process's `app.getVersion()`. Without this the
         # renderer defaulted every desktop build's release to `dev`.
+        # Version + channel come from the `resolve-version` job so tag,
+        # workflow_dispatch, and main-push (beta) builds agree with
+        # build-desktop and with each other.
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="0.0.0-dev"
-          fi
+          VERSION="${{ needs.resolve-version.outputs.version }}"
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Renderer build version: $VERSION"
 
@@ -178,7 +232,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (macOS ${{ matrix.arch }})
-    needs: [preflight, build-web]
+    needs: [preflight, build-web, resolve-version]
     strategy:
       fail-fast: false
       matrix:
@@ -192,15 +246,12 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set app version from tag
+      - name: Set app version
+        # Version + channel come from the `resolve-version` job — see that
+        # job for why (tag / workflow_dispatch / main-push-beta logic lives
+        # in one script both this workflow and the Windows one share).
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="0.0.0-dev"
-          fi
+          VERSION="${{ needs.resolve-version.outputs.version }}"
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
           cd apps/desktop
           node -e "const p=require('./package.json'); p.version='$VERSION'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')"
@@ -764,9 +815,9 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-desktop, boot-smoke-x64]
+    needs: [build-desktop, boot-smoke-x64, resolve-version]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
@@ -777,6 +828,7 @@ jobs:
           pattern: desktop-darwin-*
 
       - name: Add stable macOS download aliases
+        if: needs.resolve-version.outputs.channel != 'beta'
         run: |
           set -euo pipefail
           mkdir -p artifacts/stable-downloads
@@ -795,18 +847,69 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
-          name: Shogo Desktop ${{ github.ref_name }}
-          # Keep the release a DRAFT while every workflow that targets this
-          # tag uploads its assets. Four workflows publish to the same v*
-          # release (this one + desktop-release-windows, publish-agent-runtime,
-          # publish-shogo-worker), so a non-draft create here would expose a
-          # release that is still missing the other workflows' assets. The
-          # finalize-release.yml coordinator flips draft -> published only once
-          # all four runs for this commit have succeeded.
-          draft: true
+          name: ${{ needs.resolve-version.outputs.channel == 'beta' && format('Shogo Desktop v{0} (beta, main@{1})', needs.resolve-version.outputs.version, needs.resolve-version.outputs.short_sha) || format('Shogo Desktop {0}', github.ref_name) }}
+          tag_name: ${{ needs.resolve-version.outputs.channel == 'beta' && format('v{0}', needs.resolve-version.outputs.version) || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          # Stable: keep the release a DRAFT while every workflow that
+          # targets this tag uploads its assets. Four workflows publish to
+          # the same v* release (this one + desktop-release-windows,
+          # publish-agent-runtime, publish-shogo-worker), so a non-draft
+          # create here would expose a release that is still missing the
+          # other workflows' assets. finalize-release.yml flips draft ->
+          # published only once all four runs for this commit succeed.
+          #
+          # Beta: publish immediately (not draft, prerelease, not "latest").
+          # Only this workflow + desktop-release-windows target a beta tag
+          # (the tag is minted via GITHUB_TOKEN, which doesn't re-trigger
+          # `push: tags` workflows — see scripts/desktop-next-beta-version.ts),
+          # so there's no finalize-release.yml coordinator to wait for and
+          # no reason to hide a beta build from opted-in users.
+          draft: ${{ needs.resolve-version.outputs.channel != 'beta' }}
+          prerelease: ${{ needs.resolve-version.outputs.channel == 'beta' }}
+          make_latest: ${{ needs.resolve-version.outputs.channel != 'beta' }}
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write beta release notes
+        if: needs.resolve-version.outputs.channel == 'beta'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ needs.resolve-version.outputs.version }}"
+          cat > release-notes.md <<EOF
+          Beta build off \`main\` at commit [\`${{ needs.resolve-version.outputs.short_sha }}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+
+          Opt in via **Settings -> Updates -> Beta** in the desktop app. This channel tracks the newest commit on \`main\` — it may be unstable. Switch back to Stable at any time; you'll stay on this build until a newer stable release ships.
+          EOF
+          gh release edit "$TAG" --repo "${{ github.repository }}" --notes-file release-notes.md
+
+      - name: Prune old beta prereleases
+        # Keep the newest 10 beta prereleases (and their tags) so the
+        # releases list doesn't grow unbounded on a repo that publishes one
+        # per push to main. Only runs from the macOS job — the Windows
+        # release job targets the same tags, so doing this from both would
+        # just race two `gh release delete` calls against the same list.
+        if: needs.resolve-version.outputs.channel == 'beta'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          KEEP=10
+          mapfile -t OLD_TAGS < <(gh release list --repo "${{ github.repository }}" --limit 200 \
+            --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("-beta\\.")))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName')
+          if [ "${#OLD_TAGS[@]}" -eq 0 ]; then
+            echo "No old beta releases to prune (fewer than $KEEP exist)."
+            exit 0
+          fi
+          echo "Pruning ${#OLD_TAGS[@]} beta release(s) beyond the newest $KEEP:"
+          printf '  %s\n' "${OLD_TAGS[@]}"
+          for tag in "${OLD_TAGS[@]}"; do
+            gh release delete "$tag" --repo "${{ github.repository }}" --yes --cleanup-tag \
+              || echo "::warning::Failed to delete old beta release $tag, continuing"
+          done
 
       - name: Make desktop downloads the headline of the release notes
         # Four workflows publish to this tag (macos + windows desktop,
@@ -817,6 +920,9 @@ jobs:
         # installers up top and everything else (CLI / runtime / auto-update
         # feeds) tucked into a collapsed section. `gh release edit` overwrites
         # the body regardless of which workflow created the release first.
+        # Beta releases get their own short notes above instead (no CLI /
+        # runtime assets ever land on a beta tag to explain away).
+        if: needs.resolve-version.outputs.channel != 'beta'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
