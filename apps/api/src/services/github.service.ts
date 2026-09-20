@@ -718,20 +718,38 @@ async function wakeConnectedProjectAgent(
 /**
  * `issues` webhook — a new item entering the pipeline. Only `opened` wakes
  * the agent; labels/assignment/etc. are noise for intake.
+ *
+ * Every "new issue opened" event is assigned a deterministic `runId`
+ * (`run-issue-<number>`) up front, rather than leaving intake to mint one.
+ * Without this, every new-issue event shares intake's single default
+ * session (no `runId` means `callProjectAgent`'s default session key never
+ * changes), so the full history of every prior issue — including intake's
+ * own past tool calls that happened to embed a runId string for a *different*
+ * issue — stays in context. On a test fixture that reopens byte-identical
+ * bug reports (same title/body every time), the model reliably regurgitates
+ * the previous issue's `runId` marker instead of minting a fresh one for the
+ * current issue number (found live running the L1 multi-project eval — every
+ * new issue after the first got the wrong, stale runId). Assigning the
+ * runId here routes each issue to its own isolated `run:<runId>` session
+ * (see `agent-call.service.ts`), so a new issue never sees another issue's
+ * turn history.
  */
 export async function handleIssueWebhook(c: Context, payload: any): Promise<void> {
   if (payload?.action !== 'opened') return;
   const repoFullName = payload.repository?.full_name;
   const issue = payload.issue;
   if (!repoFullName || !issue) return;
+  const runId = `run-issue-${issue.number}`;
   const message = [
     `[GitHub] New issue #${issue.number} opened in ${repoFullName}: "${issue.title}"`,
     '',
     issue.body || '(no description)',
     '',
     `URL: ${issue.html_url}`,
+    '',
+    `(This is a brand-new item — its runId is "${runId}"; use exactly that string, do not reuse or invent a different one.)`,
   ].join('\n');
-  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message });
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
 }
 
 /**

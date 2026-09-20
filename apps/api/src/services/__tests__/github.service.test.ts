@@ -806,7 +806,14 @@ describe('isBotLogin / mentionsBot', () => {
 })
 
 describe('handleIssueWebhook', () => {
-  it('wakes the connected project on action=opened, with no runId (fresh intake)', async () => {
+  it('wakes the connected project on action=opened, assigning a deterministic run-issue-<number> runId', async () => {
+    // A new issue gets its own runId minted here (not left for intake to
+    // improvise) so it lands in an isolated run:<runId> session instead of
+    // sharing intake's single default session with every other issue —
+    // without this, the model can regurgitate a *different* issue's runId
+    // from its own prior turn history on a fixture that reopens
+    // byte-identical bug reports (found live running the L1 multi-project
+    // eval).
     seedConnection({ projectId: 'proj_intake', installationId: 7, repoFullName: 'acme/widgets' })
     await svc.handleIssueWebhook(FAKE_CTX, {
       action: 'opened',
@@ -817,10 +824,11 @@ describe('handleIssueWebhook', () => {
     expect(agentCallCalls).toHaveLength(1)
     const call = agentCallCalls[0]!
     expect(call.projectId).toBe('proj_intake')
-    expect(call.req.runId).toBeUndefined()
+    expect(call.req.runId).toBe('run-issue-5')
     expect(call.req.wait).toBe(false)
     expect(call.req.message).toContain('Crash on login')
     expect(call.req.message).toContain('https://github.com/acme/widgets/issues/5')
+    expect(call.req.message).toContain('run-issue-5')
   })
 
   it('ignores non-opened actions (labeled, assigned, closed, ...)', async () => {
