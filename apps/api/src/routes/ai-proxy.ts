@@ -2169,6 +2169,35 @@ function getImageProviderApiKey(provider: ImageProvider): string | null {
   }
 }
 
+/**
+ * `quality` is a shared tool-level param ("standard" | "hd") modeled on
+ * dall-e-3, but GPT image models (gpt-image-1, gpt-image-1.5, ...) only
+ * accept "low" | "medium" | "high" | "auto" and 400 on "standard"/"hd" with
+ * `Invalid value: 'standard'. Supported values are: 'low', 'medium', 'high', and 'auto'.`
+ * Map the dall-e-3 vocabulary onto the nearest GPT image equivalent instead
+ * of forwarding it verbatim.
+ */
+export function normalizeQualityForModel(model: string, quality?: string): string | undefined {
+  if (!quality) return undefined
+  if (!model.startsWith('gpt-image')) return quality
+  if (quality === 'standard') return 'medium'
+  if (quality === 'hd') return 'high'
+  return quality
+}
+
+/**
+ * dall-e-3's portrait/landscape sizes ("1024x1792" / "1792x1024" — the ones
+ * our `generate_image` tool schema documents) aren't valid for GPT image
+ * models, which use "1024x1536" / "1536x1024" instead. Map onto the nearest
+ * equivalent rather than forwarding a size the model will reject.
+ */
+export function normalizeSizeForModel(model: string, size: string): string {
+  if (!model.startsWith('gpt-image')) return size
+  if (size === '1024x1792') return '1024x1536'
+  if (size === '1792x1024') return '1536x1024'
+  return size
+}
+
 async function generateImageOpenAI(
   apiKey: string,
   model: string,
@@ -2178,11 +2207,16 @@ async function generateImageOpenAI(
   const body: Record<string, unknown> = {
     model,
     prompt: params.prompt,
-    size: params.size || '1024x1024',
+    size: normalizeSizeForModel(model, params.size || '1024x1024'),
     n: params.n || 1,
-    response_format: 'b64_json',
   }
-  if (params.quality) body.quality = params.quality
+  // GPT image models (gpt-image-1, gpt-image-1.5, ...) always return
+  // base64-encoded images and reject `response_format` outright with
+  // "Unknown parameter: 'response_format'" (400). Only dall-e-2/dall-e-3
+  // support (and need) this parameter to get b64_json instead of a URL.
+  if (!model.startsWith('gpt-image')) body.response_format = 'b64_json'
+  const quality = normalizeQualityForModel(model, params.quality)
+  if (quality) body.quality = quality
 
   const response = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
