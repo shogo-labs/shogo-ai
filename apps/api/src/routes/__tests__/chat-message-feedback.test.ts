@@ -31,6 +31,13 @@ import { Hono } from 'hono'
 type SessionFixture = {
   sessionId: string
   workspaceMembers: string[]
+  /**
+   * Direct `session.workspaceId` members — set for workspace-scoped
+   * sessions (no project, e.g. the personal companion home chat) to
+   * exercise the `session.workspace?.members` fallback in the route's
+   * access check.
+   */
+  directWorkspaceMembers?: string[]
 }
 
 type MessageFixture = {
@@ -62,11 +69,16 @@ function shapeMessage(msg: MessageFixture) {
     id: msg.id,
     sessionId: msg.sessionId,
     session: {
-      project: {
-        workspace: {
-          members: session.workspaceMembers.map((userId) => ({ userId })),
-        },
-      },
+      project: session.directWorkspaceMembers
+        ? null
+        : {
+            workspace: {
+              members: session.workspaceMembers.map((userId) => ({ userId })),
+            },
+          },
+      workspace: session.directWorkspaceMembers
+        ? { members: session.directWorkspaceMembers.map((userId) => ({ userId })) }
+        : null,
     },
   }
 }
@@ -74,11 +86,16 @@ function shapeMessage(msg: MessageFixture) {
 function shapeSession(session: SessionFixture) {
   return {
     id: session.sessionId,
-    project: {
-      workspace: {
-        members: session.workspaceMembers.map((userId) => ({ userId })),
-      },
-    },
+    project: session.directWorkspaceMembers
+      ? null
+      : {
+          workspace: {
+            members: session.workspaceMembers.map((userId) => ({ userId })),
+          },
+        },
+    workspace: session.directWorkspaceMembers
+      ? { members: session.directWorkspaceMembers.map((userId) => ({ userId })) }
+      : null,
   }
 }
 
@@ -158,6 +175,15 @@ function seedSession(sessionId: string, members: string[]) {
 
 function seedMessage(id: string, sessionId: string) {
   messagesById.set(id, { id, sessionId })
+}
+
+/**
+ * Seeds a workspace-scoped session (no project) — the shape used by
+ * the personal companion home chat. Access is only via
+ * `session.workspace.members`, not `session.project.workspace`.
+ */
+function seedWorkspaceSession(sessionId: string, members: string[]) {
+  sessionsById.set(sessionId, { sessionId, workspaceMembers: [], directWorkspaceMembers: members })
 }
 
 beforeEach(() => {
@@ -273,6 +299,20 @@ describe('PUT /api/chat-messages/:id/feedback — happy path', () => {
     })
     expect(res.status).toBe(200)
   })
+
+  test('workspace-scoped sessions (no project, e.g. personal companion home chat): access granted via session.workspace.members', async () => {
+    seedWorkspaceSession('ws-session', ['u1'])
+    seedMessage('msg-a', 'ws-session')
+    const app = createApp({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-messages/msg-a/feedback', {
+      method: 'PUT',
+      body: JSON.stringify({ thumbs: 'up' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; data: { thumbs: string } }
+    expect(body.ok).toBe(true)
+    expect(body.data.thumbs).toBe('up')
+  })
 })
 
 // =============================================================================
@@ -324,6 +364,22 @@ describe('DELETE /api/chat-messages/:id/feedback', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { ok: boolean }
     expect(body.ok).toBe(true)
+  })
+
+  test('workspace-scoped sessions: access granted via session.workspace.members', async () => {
+    seedWorkspaceSession('ws-session', ['u1'])
+    seedMessage('msg-a', 'ws-session')
+    feedbackByKey.set(feedbackKey('msg-a', 'u1'), {
+      messageId: 'msg-a',
+      userId: 'u1',
+      thumbs: 'up',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const app = createApp({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-messages/msg-a/feedback', { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    expect(feedbackByKey.has(feedbackKey('msg-a', 'u1'))).toBe(false)
   })
 })
 
@@ -401,5 +457,29 @@ describe('GET /api/chat-sessions/:id/feedback', () => {
     const app = createApp({ isAuthenticated: true, userId: 'bridge-proxy', tunnelAuthenticated: true })
     const res = await app.request('/api/chat-sessions/s1/feedback')
     expect(res.status).toBe(200)
+  })
+
+  test('workspace-scoped sessions (no project, e.g. personal companion home chat): access granted via session.workspace.members', async () => {
+    seedWorkspaceSession('ws-session', ['u1'])
+    seedMessage('msg-a', 'ws-session')
+    feedbackByKey.set(feedbackKey('msg-a', 'u1'), {
+      messageId: 'msg-a',
+      userId: 'u1',
+      thumbs: 'up',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const app = createApp({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-sessions/ws-session/feedback')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; feedback: Record<string, string> }
+    expect(body.feedback).toEqual({ 'msg-a': 'up' })
+  })
+
+  test('workspace-scoped sessions: 403 when caller is not a member', async () => {
+    seedWorkspaceSession('ws-session', ['owner-user'])
+    const app = createApp({ isAuthenticated: true, userId: 'intruder' })
+    const res = await app.request('/api/chat-sessions/ws-session/feedback')
+    expect(res.status).toBe(403)
   })
 })

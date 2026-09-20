@@ -42,10 +42,17 @@ type CheckpointFixture = {
 
 type SessionFixture = {
   sessionId: string
-  contextType: 'project' | 'feature' | 'general'
+  contextType: 'project' | 'feature' | 'general' | 'workspace'
   projectId: string | null
   workingMode: string | null
   workspaceMembers: string[]
+  /**
+   * Direct `session.workspaceId` members — set for workspace-scoped
+   * sessions (no project, e.g. the personal companion home chat) to
+   * exercise the `session.workspace?.members` fallback in the route's
+   * access check.
+   */
+  directWorkspaceMembers?: string[]
 }
 
 type MessageFixture = {
@@ -90,6 +97,9 @@ function shapeFindUniqueResult(msg: MessageFixture) {
       // no_project_context branch; truncate-from doesn't read it.
       contextType: session.contextType,
       project,
+      workspace: session.directWorkspaceMembers
+        ? { members: session.directWorkspaceMembers.map((userId) => ({ userId })) }
+        : null,
     },
   }
 }
@@ -204,6 +214,33 @@ function seedSession(opts: {
     projectId,
     workingMode: opts.workingMode ?? null,
     workspaceMembers: [opts.ownerUserId],
+  })
+  for (const row of opts.rows) {
+    messagesById.set(row.id, {
+      id: row.id,
+      sessionId: opts.sessionId,
+      createdAt: new Date(row.createdAtMs),
+    })
+  }
+}
+
+/**
+ * Seeds a workspace-scoped session (`contextType: 'workspace'`, no
+ * project) — the shape used by the personal companion home chat. Access
+ * is only via `session.workspace.members`, not `session.project.workspace`.
+ */
+function seedWorkspaceSession(opts: {
+  sessionId: string
+  ownerUserId: string
+  rows: Array<{ id: string; createdAtMs: number }>
+}) {
+  sessionsById.set(opts.sessionId, {
+    sessionId: opts.sessionId,
+    contextType: 'workspace',
+    projectId: null,
+    workingMode: null,
+    workspaceMembers: [],
+    directWorkspaceMembers: [opts.ownerUserId],
   })
   for (const row of opts.rows) {
     messagesById.set(row.id, {
@@ -391,6 +428,41 @@ describe('POST /api/chat-messages/:id/truncate-from — happy path', () => {
     })
     expect(res.status).toBe(200)
     expect(messagesById.has('msg-x')).toBe(false)
+  })
+
+  test('workspace-scoped sessions (no project, e.g. personal companion home chat): access granted via session.workspace.members', async () => {
+    seedWorkspaceSession({
+      sessionId: 'ws-session',
+      ownerUserId: 'u1',
+      rows: [
+        { id: 'msg-a', createdAtMs: 1000 },
+        { id: 'msg-b', createdAtMs: 2000 },
+      ],
+    })
+    const app = createApp({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-messages/msg-b/truncate-from', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; deletedCount: number }
+    expect(body.ok).toBe(true)
+    expect(body.deletedCount).toBe(1)
+    expect(messagesById.has('msg-b')).toBe(false)
+    expect(messagesById.has('msg-a')).toBe(true)
+  })
+
+  test('workspace-scoped sessions: 403 when caller is not a member of the direct workspace', async () => {
+    seedWorkspaceSession({
+      sessionId: 'ws-session',
+      ownerUserId: 'owner-user',
+      rows: [{ id: 'msg-a', createdAtMs: 1000 }],
+    })
+    const app = createApp({ isAuthenticated: true, userId: 'intruder' })
+    const res = await app.request('/api/chat-messages/msg-a/truncate-from', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(403)
+    expect(messagesById.has('msg-a')).toBe(true)
   })
 })
 

@@ -107,7 +107,7 @@ export const PersonalHomeScreen = observer(function PersonalHomeScreen() {
     <View className="flex-1 bg-background">
       <PersonalAgentHeader profile={profile} onProfilePress={() => setShowProfileSheet(true)} />
       {showWelcome ? (
-        <View className="mx-auto mt-3 w-full max-w-2xl px-4">
+        <View className="mx-auto mt-3 w-full max-w-3xl px-4">
           <View className="flex-row items-start gap-3 rounded-2xl border border-primary/30 bg-primary/5 p-4">
             <Sparkles size={18} className="mt-0.5 text-primary" />
             <View className="min-w-0 flex-1">

@@ -101,7 +101,9 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    // Verify user owns this session via project workspace membership
+    // Verify user owns this session via project workspace membership, or
+    // (for workspace-level sessions with no project, e.g. the personal
+    // companion home chat) via the session's own workspace relation.
     const session = await ctx.prisma.chatSession.findUnique({
       where: { id: sessionId },
       include: {
@@ -111,6 +113,9 @@ export const chatMessageHooks: ChatMessageHooks = {
               include: { members: true },
             },
           },
+        },
+        workspace: {
+          include: { members: true },
         },
       },
     })
@@ -124,9 +129,9 @@ export const chatMessageHooks: ChatMessageHooks = {
 
     // Tunnel-authenticated requests skip local membership checks
     if (!ctx.tunnelAuthenticated) {
-      const hasAccess = session.project?.workspace?.members?.some(
-        (m: any) => m.userId === userId
-      )
+      const hasAccess =
+        session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+        session.workspace?.members?.some((m: any) => m.userId === userId)
 
       if (!hasAccess) {
         return {
@@ -176,6 +181,9 @@ export const chatMessageHooks: ChatMessageHooks = {
                 },
               },
             },
+            workspace: {
+              include: { members: true },
+            },
           },
         },
       },
@@ -188,9 +196,9 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    const hasAccess = message.session?.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+    const hasAccess =
+      message.session?.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+      message.session?.workspace?.members?.some((m: any) => m.userId === userId)
 
     if (!hasAccess) {
       return {
@@ -234,6 +242,9 @@ export const chatMessageHooks: ChatMessageHooks = {
               },
             },
           },
+          workspace: {
+            include: { members: true },
+          },
         },
       })
 
@@ -244,9 +255,9 @@ export const chatMessageHooks: ChatMessageHooks = {
         }
       }
 
-      const hasAccess = session.project?.workspace?.members?.some(
-        (m: any) => m.userId === userId
-      )
+      const hasAccess =
+        session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+        session.workspace?.members?.some((m: any) => m.userId === userId)
 
       if (!hasAccess) {
         return {

@@ -98,12 +98,14 @@ export const chatSessionHooks: ChatSessionHooks = {
         }
       }
     } else if (!ctx.tunnelAuthenticated) {
-      // No specific project - filter to only accessible projects
-      where.project = {
-        workspace: {
-          members: { some: { userId } },
-        },
-      }
+      // No specific project - filter to only sessions the user can access:
+      // either via their project's workspace, or (for workspace-level
+      // sessions with no project, e.g. the personal companion home chat)
+      // via the session's own workspace relation.
+      where.OR = [
+        { project: { workspace: { members: { some: { userId } } } } },
+        { workspace: { members: { some: { userId } } } },
+      ]
     }
 
     return {
@@ -142,6 +144,9 @@ export const chatSessionHooks: ChatSessionHooks = {
             },
           },
         },
+        workspace: {
+          include: { members: true },
+        },
       },
     })
 
@@ -152,9 +157,9 @@ export const chatSessionHooks: ChatSessionHooks = {
       }
     }
 
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+    const hasAccess =
+      session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+      session.workspace?.members?.some((m: any) => m.userId === userId)
 
     if (!hasAccess) {
       return {
@@ -238,6 +243,9 @@ export const chatSessionHooks: ChatSessionHooks = {
             },
           },
         },
+        workspace: {
+          include: { members: true },
+        },
       },
     })
 
@@ -248,9 +256,9 @@ export const chatSessionHooks: ChatSessionHooks = {
       }
     }
 
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+    const hasAccess =
+      session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+      session.workspace?.members?.some((m: any) => m.userId === userId)
 
     if (!hasAccess) {
       return {
@@ -286,6 +294,9 @@ export const chatSessionHooks: ChatSessionHooks = {
             },
           },
         },
+        workspace: {
+          include: { members: true },
+        },
       },
     })
 
@@ -296,9 +307,9 @@ export const chatSessionHooks: ChatSessionHooks = {
       }
     }
 
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
+    const hasAccess =
+      session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
+      session.workspace?.members?.some((m: any) => m.userId === userId)
 
     if (!hasAccess) {
       return {

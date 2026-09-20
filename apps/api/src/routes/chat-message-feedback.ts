@@ -108,6 +108,7 @@ export function createChatMessageFeedbackRoutes(): Hono {
                 workspace: { include: { members: true } },
               },
             },
+            workspace: { include: { members: true } },
           },
         },
       },
@@ -118,9 +119,10 @@ export function createChatMessageFeedbackRoutes(): Hono {
     }
 
     if (!auth.tunnelAuthenticated) {
-      const hasAccess = message.session?.project?.workspace?.members?.some(
-        (m: any) => m.userId === auth.userId,
-      )
+      const hasAccess =
+        message.session?.project?.workspace?.members?.some(
+          (m: any) => m.userId === auth.userId,
+        ) || message.session?.workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
     }
 
@@ -160,6 +162,7 @@ export function createChatMessageFeedbackRoutes(): Hono {
                 workspace: { include: { members: true } },
               },
             },
+            workspace: { include: { members: true } },
           },
         },
       },
@@ -170,9 +173,10 @@ export function createChatMessageFeedbackRoutes(): Hono {
     }
 
     if (!auth.tunnelAuthenticated) {
-      const hasAccess = message.session?.project?.workspace?.members?.some(
-        (m: any) => m.userId === auth.userId,
-      )
+      const hasAccess =
+        message.session?.project?.workspace?.members?.some(
+          (m: any) => m.userId === auth.userId,
+        ) || message.session?.workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
     }
 
@@ -213,6 +217,7 @@ export function createChatSessionFeedbackRoutes(): Hono {
             workspace: { include: { members: true } },
           },
         },
+        workspace: { include: { members: true } },
       },
     })
 
@@ -221,9 +226,10 @@ export function createChatSessionFeedbackRoutes(): Hono {
     }
 
     if (!auth.tunnelAuthenticated) {
-      const hasAccess = (session as any).project?.workspace?.members?.some(
-        (m: any) => m.userId === auth.userId,
-      )
+      const hasAccess =
+        (session as any).project?.workspace?.members?.some(
+          (m: any) => m.userId === auth.userId,
+        ) || (session as any).workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
     }
 
