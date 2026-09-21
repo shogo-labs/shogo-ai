@@ -7060,10 +7060,10 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
       filename: Type.Optional(Type.String({ description: 'Destination filename (default: auto-generated). Saved under images/ directory.' })),
       size: Type.Optional(Type.String({ description: 'Image size: "1024x1024", "1024x1792", "1792x1024" (default: "1024x1024")' })),
       // OpenAI retired the DALL-E 2/3 models (2026-09) — "dall-e-3" now 400s
-      // with "The model 'dall-e-3' does not exist." `gpt-image-1` is the
-      // supported default now, for both generation and reference_image
+      // with "The model 'dall-e-3' does not exist." `gpt-image-2.5-flare`
+      // is the current default, for both generation and reference_image
       // edits (edits used to require dall-e-2, which is also retired).
-      model: Type.Optional(Type.String({ description: 'Image model: "gpt-image-1", "imagen-4", etc. (default: "gpt-image-1")' })),
+      model: Type.Optional(Type.String({ description: 'Image model: "gpt-image-2.5-flare", "gpt-image-1", "imagen-4", etc. (default: "gpt-image-2.5-flare")' })),
       quality: Type.Optional(Type.String({ description: 'Image quality: "standard" or "hd" (default: "standard")' })),
       reference_image: Type.Optional(Type.String({ description: 'Path to a workspace image to use as reference for editing (e.g. "images/logo.png")' })),
     }),
@@ -7072,7 +7072,7 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
         prompt,
         filename,
         size = '1024x1024',
-        model = 'gpt-image-1',
+        model = 'gpt-image-2.5-flare',
         quality = 'standard',
         reference_image,
       } = params as {
@@ -7121,9 +7121,12 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
           const formData = new FormData()
           formData.append('image', new Blob([imageBuffer], { type: mimeType }), `reference${refExt || '.png'}`)
           formData.append('prompt', prompt)
-          // dall-e-2 (the previous edit model) is retired; gpt-image-1
-          // supports /v1/images/edits too — see the ai-proxy edits route.
-          formData.append('model', 'gpt-image-1')
+          // dall-e-2 (the previous edit model) is retired; the gpt-image
+          // family supports /v1/images/edits too — see the ai-proxy edits
+          // route. Send the resolved `model` (defaults to
+          // gpt-image-2.5-flare) instead of a hardcoded literal so an
+          // explicit model choice is respected for edits too.
+          formData.append('model', model)
           formData.append('size', size)
           formData.append('n', '1')
 

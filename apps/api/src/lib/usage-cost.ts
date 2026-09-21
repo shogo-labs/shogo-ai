@@ -133,6 +133,7 @@ export const IMAGE_USD_CONFIG: Record<string, { base: number; hdMultiplier: numb
   'dall-e-2':       { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
   'gpt-image-1':    { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
   'gpt-image-1.5':  { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'gpt-image-2.5-flare': { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
   'imagen-4':       { base: 0.20, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
   'imagen-4-ultra': { base: 0.39, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
   'imagen-4-fast':  { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
@@ -148,7 +149,9 @@ export function calculateImageUsageCost(
   quality: string = 'standard',
   size: string = '1024x1024',
 ): UsageCostResult {
-  const config = IMAGE_USD_CONFIG[model] || IMAGE_USD_CONFIG['dall-e-3']
+  // dall-e-3 (the old fallback) is retired (OpenAI, 2026-09) — fall back to
+  // the current gpt-image-1 pricing profile for an unrecognized model id.
+  const config = IMAGE_USD_CONFIG[model] || IMAGE_USD_CONFIG['gpt-image-1']
   let rawUsd = config.base
 
   if (quality === 'hd' || quality === 'high') {
