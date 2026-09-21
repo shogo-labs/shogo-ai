@@ -16,7 +16,9 @@ import {
   Pressable,
   ActivityIndicator,
   TextInput,
+  useWindowDimensions,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Server,
   CheckCircle,
@@ -70,6 +72,9 @@ export default function AdminSettingsPage() {
 // =============================================================================
 
 function CloudModelSettingsPage() {
+  const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  const pagePadding = width >= 900 ? 32 : 16
   const [cloudBasicModel, setCloudBasicModel] = useState('')
   const [cloudAdvancedModel, setCloudAdvancedModel] = useState('')
   const [defaultMode, setDefaultMode] = useState('')
@@ -132,11 +137,22 @@ function CloudModelSettingsPage() {
   }
 
   return (
-    <ScrollView className="flex-1 bg-background" contentContainerClassName="p-6 pb-20">
-      <View className="max-w-2xl w-full mx-auto gap-8">
-        <View className="flex-row items-center justify-between">
+    <ScrollView
+      className="flex-1 bg-background"
+      contentContainerStyle={{
+        paddingHorizontal: pagePadding,
+        paddingTop: pagePadding,
+        paddingBottom: Math.max(48, insets.bottom + 32),
+      }}
+      showsVerticalScrollIndicator={false}
+    >
+      <View className="max-w-3xl w-full self-center gap-6">
+        <View className="flex-row items-center justify-between rounded-2xl border border-border bg-card/70 p-5">
           <View className="flex-1">
-            <Text className="text-2xl font-bold text-foreground">AI</Text>
+            <Text className="text-[11px] font-semibold uppercase tracking-[1.5px] text-muted-foreground">
+              Admin / Intelligence
+            </Text>
+            <Text className="mt-1 text-2xl font-bold tracking-tight text-foreground">AI</Text>
             <Text className="text-sm text-muted-foreground mt-1">
               Configure which models power the Basic and Advanced agent modes.
             </Text>
@@ -197,6 +213,9 @@ function AutoSaveIndicator({ status }: { status: 'idle' | 'saving' | 'saved' | '
 // =============================================================================
 
 function LocalSettingsPage() {
+  const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  const pagePadding = width >= 900 ? 32 : 16
   const [activeMode, setActiveMode] = useState<AIMode | null>(null)
   const [modeLoaded, setModeLoaded] = useState(false)
 
@@ -318,12 +337,23 @@ function LocalSettingsPage() {
   }
 
   return (
-    <ScrollView className="flex-1 bg-background" contentContainerClassName="p-6 pb-20">
-      <View className="max-w-2xl w-full mx-auto gap-8">
+    <ScrollView
+      className="flex-1 bg-background"
+      contentContainerStyle={{
+        paddingHorizontal: pagePadding,
+        paddingTop: pagePadding,
+        paddingBottom: Math.max(48, insets.bottom + 32),
+      }}
+      showsVerticalScrollIndicator={false}
+    >
+      <View className="max-w-3xl w-full self-center gap-6">
         {/* Header */}
-        <View className="flex-row items-center gap-3">
+        <View className="flex-row items-center gap-3 rounded-2xl border border-border bg-card/70 p-5">
           <View className="flex-1">
-            <Text className="text-2xl font-bold text-foreground">AI</Text>
+            <Text className="text-[11px] font-semibold uppercase tracking-[1.5px] text-muted-foreground">
+              Admin / Intelligence
+            </Text>
+            <Text className="mt-1 text-2xl font-bold tracking-tight text-foreground">AI</Text>
             <Text className="text-sm text-muted-foreground mt-1">
               Choose your AI provider and configure models.
             </Text>
@@ -521,8 +551,8 @@ function SectionCard({
   children: React.ReactNode
 }) {
   return (
-    <View className="bg-card border border-border rounded-xl overflow-hidden">
-      <View className="px-5 py-4 border-b border-border">
+    <View className="bg-card/80 border border-border rounded-2xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border/70">
         <View className="flex-row items-center gap-2.5 mb-1">
           <Icon size={16} className="text-foreground" />
           <Text className="text-base font-semibold text-foreground">{title}</Text>

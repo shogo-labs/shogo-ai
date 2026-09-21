@@ -869,7 +869,7 @@ export default function AdminDashboard() {
       style={isNativeNarrow ? { width, maxWidth: width } : undefined}
       contentContainerStyle={{
         padding: isWide ? 32 : 16,
-        paddingBottom: 40,
+        paddingBottom: isWide ? 48 : 32,
         ...(isNativeNarrow ? { width, maxWidth: width } : null),
       }}
       showsVerticalScrollIndicator={false}
@@ -877,98 +877,107 @@ export default function AdminDashboard() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }
     >
-      {/* Header */}
-      {isNativeNarrow ? (
-        <View className="mb-6 gap-3" style={{ width: periodRowWidth }}>
-          <View>
-            <Text className="text-xl font-bold text-foreground">Dashboard</Text>
-            <Text className="text-sm text-muted-foreground mt-0.5">
-              Platform overview and key metrics
-            </Text>
+      <View className="w-full self-center max-w-[1440px]">
+        {/* Header */}
+        {isNativeNarrow ? (
+          <View className="mb-5 gap-4 rounded-2xl border border-border bg-card/70 p-4" style={{ width: periodRowWidth }}>
+            <View>
+              <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Admin / Overview
+              </Text>
+              <Text className="mt-1 text-xl font-bold tracking-tight text-foreground">Dashboard</Text>
+              <Text className="text-sm text-muted-foreground mt-1">
+                A quiet view of platform health and momentum.
+              </Text>
+            </View>
+            <PeriodSelector value={period} onChange={setPeriod} rowWidth={periodRowWidth} />
           </View>
-          <PeriodSelector value={period} onChange={setPeriod} rowWidth={periodRowWidth} />
-        </View>
-      ) : (
-        <View className="flex-row items-center justify-between mb-6">
-          <View>
-            <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
-              Dashboard
-            </Text>
-            <Text className="text-sm text-muted-foreground mt-0.5">
-              Platform overview and key metrics
-            </Text>
+        ) : (
+          <View className="mb-7 flex-row items-center justify-between rounded-2xl border border-border bg-card/70 px-6 py-5">
+            <View>
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.5px] text-muted-foreground">
+                Admin / Overview
+              </Text>
+              <Text className={cn('mt-1 font-bold tracking-tight text-foreground', isWide ? 'text-3xl' : 'text-2xl')}>
+                Dashboard
+              </Text>
+              <Text className="mt-1 text-sm text-muted-foreground">
+                A quiet view of platform health and momentum.
+              </Text>
+            </View>
+            <View className="rounded-xl bg-background/80 p-1">
+              <PeriodSelector value={period} onChange={setPeriod} />
+            </View>
           </View>
-          <PeriodSelector value={period} onChange={setPeriod} />
-        </View>
-      )}
+        )}
 
-      {/* Row 1: Stat cards — business + infra */}
-      {overview.loading && infra.loading ? (
-        <View className="flex-row flex-wrap gap-3 mb-6">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <StatCardSkeleton key={i} />
-          ))}
-        </View>
-      ) : (
-        <View className="flex-row flex-wrap gap-3 mb-6">
-          <StatCard
-            label="Total Users"
-            value={overview.data?.totalUsers}
-            icon={Users}
-            subtitle={overview.data?.newUsersLast30d ? `+${overview.data.newUsersLast30d} last 30d` : undefined}
-            accent="bg-blue-500/10"
-            iconColor="text-blue-500"
-            width={cardWidth}
-          />
-          <StatCard
-            label="Workspaces"
-            value={overview.data?.totalWorkspaces}
-            icon={Building2}
-            accent="bg-purple-500/10"
-            iconColor="text-purple-500"
-            width={cardWidth}
-          />
-          <StatCard
-            label="Projects"
-            value={overview.data?.totalProjects}
-            icon={FolderKanban}
-            accent="bg-emerald-500/10"
-            iconColor="text-emerald-500"
-            width={cardWidth}
-          />
-          <StatCard
-            label="Chat Sessions"
-            value={overview.data?.totalChatSessions}
-            icon={MessageSquare}
-            subtitle={overview.data?.activeUsersLast30d ? `${overview.data.activeUsersLast30d} active users` : undefined}
-            accent="bg-orange-500/10"
-            iconColor="text-orange-500"
-            width={cardWidth}
-          />
-          {isSuperAdmin && (
-            <>
-              <StatCard
-                label="Cluster Nodes"
-                value={infraSource?.totalNodes}
-                icon={Server}
-                subtitle={infraSource ? `${infraSource.asgDesired} / ${infraSource.asgMax} ASG` : undefined}
-                accent="bg-cyan-500/10"
-                iconColor="text-cyan-500"
-                width={cardWidth}
-              />
-              <StatCard
-                label="Warm Pool"
-                value={warmTgt > 0 ? `${warmAvail} / ${warmTgt}` : warmAvail}
-                icon={Box}
-                subtitle={warmTgt > 0 ? `${Math.round((warmAvail / warmTgt) * 100)}% available` : undefined}
-                accent="bg-amber-500/10"
-                iconColor="text-amber-500"
-                width={cardWidth}
-              />
-            </>
-          )}
-        </View>
-      )}
+        {/* Row 1: Stat cards — business + infra */}
+        {overview.loading && infra.loading ? (
+          <View className="flex-row flex-wrap gap-3 mb-6">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <StatCardSkeleton key={i} />
+            ))}
+          </View>
+        ) : (
+          <View className="flex-row flex-wrap gap-3 mb-6">
+            <StatCard
+              label="Total Users"
+              value={overview.data?.totalUsers}
+              icon={Users}
+              subtitle={overview.data?.newUsersLast30d ? `+${overview.data.newUsersLast30d} last 30d` : undefined}
+              accent="bg-blue-500/10"
+              iconColor="text-blue-500"
+              width={cardWidth}
+            />
+            <StatCard
+              label="Workspaces"
+              value={overview.data?.totalWorkspaces}
+              icon={Building2}
+              accent="bg-purple-500/10"
+              iconColor="text-purple-500"
+              width={cardWidth}
+            />
+            <StatCard
+              label="Projects"
+              value={overview.data?.totalProjects}
+              icon={FolderKanban}
+              accent="bg-emerald-500/10"
+              iconColor="text-emerald-500"
+              width={cardWidth}
+            />
+            <StatCard
+              label="Chat Sessions"
+              value={overview.data?.totalChatSessions}
+              icon={MessageSquare}
+              subtitle={overview.data?.activeUsersLast30d ? `${overview.data.activeUsersLast30d} active users` : undefined}
+              accent="bg-orange-500/10"
+              iconColor="text-orange-500"
+              width={cardWidth}
+            />
+            {isSuperAdmin && (
+              <>
+                <StatCard
+                  label="Cluster Nodes"
+                  value={infraSource?.totalNodes}
+                  icon={Server}
+                  subtitle={infraSource ? `${infraSource.asgDesired} / ${infraSource.asgMax} ASG` : undefined}
+                  accent="bg-cyan-500/10"
+                  iconColor="text-cyan-500"
+                  width={cardWidth}
+                />
+                <StatCard
+                  label="Warm Pool"
+                  value={warmTgt > 0 ? `${warmAvail} / ${warmTgt}` : warmAvail}
+                  icon={Box}
+                  subtitle={warmTgt > 0 ? `${Math.round((warmAvail / warmTgt) * 100)}% available` : undefined}
+                  accent="bg-amber-500/10"
+                  iconColor="text-amber-500"
+                  width={cardWidth}
+                />
+              </>
+            )}
+          </View>
+        )}
 
       {/* Row 2: Active Users + System Health (health is super-admin only) */}
       <View className={cn('gap-4 mb-6', isWide ? 'flex-row' : '')}>
@@ -1030,6 +1039,7 @@ export default function AdminDashboard() {
           </View>
         </>
       )}
+      </View>
     </ScrollView>
   )
 }

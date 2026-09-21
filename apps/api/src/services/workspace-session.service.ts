@@ -24,6 +24,12 @@ export interface AttachedProject {
   attachMode: AttachMode
 }
 
+// Coalesce duplicate first requests in one process. The partial unique index
+// introduced in `20260921092000_enforce_workspace_primary_session` is the
+// authoritative cross-pod guard; this map merely avoids needless DB races in
+// a single API process.
+const primarySessionFlights = new Map<string, Promise<any>>()
+
 function normalizeAttachMode(mode: string | undefined | null): AttachMode {
   return mode === 'readonly' ? 'readonly' : 'readwrite'
 }
@@ -76,24 +82,51 @@ export async function createWorkspaceSession(
  * `routes/workspace-chat.ts`); team workspaces let users create/select
  * sessions explicitly.
  */
-export async function getOrCreatePrimaryWorkspaceSession(workspaceId: string) {
-  const existing = await prisma.chatSession.findFirst({
-    where: { workspaceId, contextType: 'workspace', isPrimary: true } as any,
-    orderBy: { createdAt: 'asc' },
-    include: { attachedProjects: true } as any,
-  })
-  if (existing) return existing as any
+export function getOrCreatePrimaryWorkspaceSession(workspaceId: string): Promise<any> {
+  const inFlight = primarySessionFlights.get(workspaceId)
+  if (inFlight) return inFlight
 
-  return prisma.chatSession.create({
-    data: {
-      contextType: 'workspace',
-      workspaceId,
-      isPrimary: true,
-      name: 'Chat',
-      inferredName: 'Chat',
-    } as any,
-    include: { attachedProjects: true } as any,
-  }) as any
+  const create = (async () => {
+    const existing = await prisma.chatSession.findFirst({
+      where: { workspaceId, contextType: 'workspace', isPrimary: true } as any,
+      orderBy: { createdAt: 'asc' },
+      include: { attachedProjects: true } as any,
+    })
+    if (existing) return existing as any
+
+    try {
+      return await prisma.chatSession.create({
+        data: {
+          contextType: 'workspace',
+          workspaceId,
+          isPrimary: true,
+          name: 'Chat',
+          inferredName: 'Chat',
+        } as any,
+        include: { attachedProjects: true } as any,
+      }) as any
+    } catch (err: any) {
+      // A second API pod may have won the partial-unique-index race between
+      // our lookup and create. Re-read the singleton rather than surfacing a
+      // false failure to the client.
+      if (err?.code === 'P2002') {
+        const raced = await prisma.chatSession.findFirst({
+          where: { workspaceId, contextType: 'workspace', isPrimary: true } as any,
+          orderBy: { createdAt: 'asc' },
+          include: { attachedProjects: true } as any,
+        })
+        if (raced) return raced as any
+      }
+      throw err
+    }
+  })()
+
+  primarySessionFlights.set(workspaceId, create)
+  return create.finally(() => {
+    if (primarySessionFlights.get(workspaceId) === create) {
+      primarySessionFlights.delete(workspaceId)
+    }
+  })
 }
 
 /**
@@ -137,6 +170,25 @@ export async function getAttachedProjects(sessionId: string): Promise<AttachedPr
     orderBy: { createdAt: 'asc' },
   })) as any[]
   return rows.map(toAttachedProject)
+}
+
+/**
+ * Ensure a workspace-scoped session belongs to the workspace named in the
+ * route. Route-level membership alone is not sufficient: without this check,
+ * a member who guessed another session id could read or mutate its project
+ * attachments through their own workspace URL.
+ */
+export async function assertWorkspaceSessionInWorkspace(
+  workspaceId: string,
+  sessionId: string,
+): Promise<void> {
+  const sessionWorkspaceId = await getSessionWorkspaceId(sessionId)
+  if (sessionWorkspaceId !== workspaceId) {
+    throw new WorkspaceSessionError(
+      'session_not_in_workspace',
+      `Chat session ${sessionId} does not belong to workspace ${workspaceId}`,
+    )
+  }
 }
 
 /** List workspace-scoped sessions for a workspace (most-recent first). */
@@ -206,6 +258,7 @@ async function assertProjectsInWorkspace(workspaceId: string, projectIds: string
 export type WorkspaceSessionErrorCode =
   | 'session_not_found'
   | 'not_workspace_session'
+  | 'session_not_in_workspace'
   | 'project_not_in_workspace'
 
 export class WorkspaceSessionError extends Error {

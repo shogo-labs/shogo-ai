@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useMemo } from 'react'
-import { Platform } from 'react-native'
+import { KeyboardAvoidingView, Platform, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { usePlatformConfig } from '../../lib/platform-config'
@@ -147,10 +147,28 @@ export default function OnboardingPage() {
   }, [handleComplete])
 
   return (
-    <ChatOnboarding
-      steps={steps}
-      renderWidget={renderWidget}
-      context={context}
-    />
+    <KeyboardAvoidingView
+      className="flex-1 bg-muted/30 px-3 pb-3 pt-2 sm:px-6 sm:pb-6"
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <View className="w-full max-w-4xl self-center flex-1 border border-border bg-card">
+        <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
+          <View className="flex-row items-center gap-2">
+            <View className="h-5 w-5 rounded-full bg-primary" />
+            <Text className="text-xs font-semibold tracking-[2px] text-foreground">SHOGO</Text>
+          </View>
+          <Text className="text-xs font-medium uppercase tracking-[1.5px] text-muted-foreground">
+            Getting started
+          </Text>
+        </View>
+        <View className="flex-1">
+          <ChatOnboarding
+            steps={steps}
+            renderWidget={renderWidget}
+            context={context}
+          />
+        </View>
+      </View>
+    </KeyboardAvoidingView>
   )
 }

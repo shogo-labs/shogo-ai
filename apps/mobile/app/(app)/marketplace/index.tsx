@@ -688,13 +688,17 @@ export default observer(function MarketplaceHomeScreen() {
   return (
     <View className="flex-1 bg-background">
       {/* Top bar */}
-      <View className={isNative ? 'flex-row items-center px-4 pt-2 pb-2' : 'flex-row items-center px-5 pt-3 pb-2'}>
+      <View
+        className={isNative ? 'flex-row items-center border-b border-border/60 bg-background/95 px-4 py-3' : 'flex-row items-center border-b border-border/60 bg-background/95 px-6 py-4'}
+        style={!isNative ? { width: '100%', maxWidth: 1180, alignSelf: 'center' } : undefined}
+      >
         <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1 mr-1">
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1 min-w-0">
-          Marketplace
-        </Text>
+        <View className="flex-1 min-w-0">
+          <Text className="text-[11px] font-bold uppercase tracking-[1.2px] text-primary">Community tools</Text>
+          <Text className="mt-0.5 text-base font-semibold text-foreground">Marketplace</Text>
+        </View>
         <View className={isNative ? 'flex-row items-center gap-1 shrink-0' : 'flex-row items-center gap-3 shrink-0'}>
           <Pressable
             onPress={() => router.push('/(app)/marketplace/installs' as any)}
@@ -728,18 +732,21 @@ export default observer(function MarketplaceHomeScreen() {
       {/* Editorial hero */}
       <MarketplaceHero
         eyebrow="Agent Marketplace"
-        title="Discover agents built by the community"
-        subtitle="Install vetted agents into your workspace, or publish your own and earn from every install."
+        title="Useful agents, thoughtfully chosen"
+        subtitle="Explore community-built tools for the work already happening in your workspace."
         accent="#e27927"
         compact
       />
 
       {/* Search + sort + view */}
-      <View className={isNative ? 'px-4 pt-3 pb-3 gap-3' : 'px-5 pt-4 pb-3 gap-3'}>
+      <View
+        className={isNative ? 'mx-4 mt-3 mb-3 overflow-hidden rounded-3xl border border-border/70 bg-card/70 px-3 py-3 gap-3' : 'mx-5 mt-4 mb-3 overflow-hidden rounded-3xl border border-border/70 bg-card/70 px-4 py-4 gap-3'}
+        style={!isNative ? { width: '100%', maxWidth: 1140, alignSelf: 'center' } : undefined}
+      >
         {isNative ? (
           <>
-            <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-12 w-full">
-              <Search size={16} color="#71717a" />
+            <View className="flex-row items-center border border-primary/20 bg-background rounded-2xl px-3 h-12 w-full">
+              <Search size={16} color="#e27927" />
               <TextInput
                 className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
                 placeholder="Search agents…"
@@ -810,8 +817,8 @@ export default observer(function MarketplaceHomeScreen() {
         ) : (
           <>
             <View className="flex-row items-center gap-2">
-              <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11 flex-1">
-                <Search size={16} color="#71717a" />
+              <View className="flex-row items-center bg-background border border-primary/20 rounded-2xl px-3 h-11 flex-1">
+                <Search size={16} color="#e27927" />
                 <TextInput
                   className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
                   placeholder="Search agents…"

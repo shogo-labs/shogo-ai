@@ -19,7 +19,6 @@ import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing.service'
-import { normalizeWorkspaceKind } from './workspace.service'
 
 export type ProjectLifecycleErrorCode =
   | 'unauthorized'
@@ -49,7 +48,7 @@ export interface CreateProjectInput {
   workingMode?: 'managed' | 'external'
   /** Agent template id — seeds AgentConfig from the template's settings. */
   templateId?: string
-  /** Hidden delegated-builder project. Personal workspaces force this on. */
+  /** Hidden delegated-builder project. Visible user projects leave this unset. */
   hidden?: boolean
   /** Extra `Project.settings` keys, merged over the defaults derived from `techStackId`. */
   settings?: Record<string, unknown>
@@ -83,17 +82,6 @@ export async function createProjectInWorkspace(input: CreateProjectInput): Promi
     throw new ProjectLifecycleError('invalid_working_mode', `Unknown workingMode "${input.workingMode}"`)
   }
 
-  // Deliberately inline (not routed through workspace.service's
-  // getWorkspaceKind): this file's own `prisma` binding is what
-  // project-lifecycle.service.test.ts mocks per-file, and cross-file
-  // `mock.module('../lib/prisma', ...)` calls race on Bun's shared module
-  // cache when two test files import the same helper with different stubs.
-  const workspace = await prisma.workspace.findUnique({
-    where: { id: input.workspaceId },
-    select: { kind: true },
-  })
-  const workspaceKind = normalizeWorkspaceKind(workspace?.kind)
-
   const settings: Record<string, unknown> | undefined = input.techStackId
     ? {
         activeMode: 'canvas',
@@ -110,7 +98,7 @@ export async function createProjectInWorkspace(input: CreateProjectInput): Promi
     description: input.description ?? null,
     ...(input.templateId ? { templateId: input.templateId } : {}),
     ...(input.workingMode ? { workingMode: input.workingMode } : {}),
-    hidden: workspaceKind === 'personal' ? true : input.hidden === true,
+    hidden: input.hidden === true,
     ...(settings ? { settings } : {}),
   }
 

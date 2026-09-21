@@ -43,7 +43,7 @@ import {
   ArrowUpRight,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
+import { SegmentedFilter } from '../../../components/phone/SegmentedFilter'
 
 import { fetchAdminJson, postAdmin, formatCents, formatRelative } from './_helpers'
 
@@ -428,27 +428,51 @@ function PendingTab({ isWide }: { isWide: boolean }) {
         </View>
       )}
 
-      <FlatList
-        data={rows ?? []}
-        keyExtractor={(it) => it.creatorId}
-        renderItem={renderRow}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListEmptyComponent={
-          loading ? null : (
-            <View className="items-center justify-center py-16">
-              <DollarSign size={32} className="text-muted-foreground/50 mb-2" />
-              <Text className="text-sm text-muted-foreground">No pending payouts</Text>
-            </View>
-          )
-        }
-        contentContainerStyle={{ paddingBottom: 24 }}
-        showsVerticalScrollIndicator={false}
-      />
-      {loading && !refreshing && (
-        <View className="absolute inset-0 items-center justify-center bg-background/80">
-          <ActivityIndicator size="large" />
-        </View>
-      )}
+      <View className="flex-1 overflow-hidden rounded-xl border border-border bg-card">
+        <FlatList
+          data={rows ?? []}
+          keyExtractor={(it) => it.creatorId}
+          renderItem={renderRow}
+          ListHeaderComponent={
+            isWide ? (
+              <View className="flex-row items-center border-b border-border bg-muted/35 px-4 py-2.5">
+                <View className="w-5 mr-3" />
+                <Text className="w-[260px] mr-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Creator
+                </Text>
+                <Text className="w-[110px] mr-3 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Owed
+                </Text>
+                <Text className="w-[110px] mr-3 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Available
+                </Text>
+                <Text className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Status
+                </Text>
+                <Text className="text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Action
+                </Text>
+              </View>
+            ) : null
+          }
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          ListEmptyComponent={
+            loading ? null : (
+              <View className="items-center justify-center py-16">
+                <DollarSign size={32} className="text-muted-foreground/50 mb-2" />
+                <Text className="text-sm text-muted-foreground">No pending payouts</Text>
+              </View>
+            )
+          }
+          contentContainerStyle={{ paddingBottom: 24 }}
+          showsVerticalScrollIndicator={false}
+        />
+        {loading && !refreshing && (
+          <View className="absolute inset-0 items-center justify-center bg-background/80">
+            <ActivityIndicator size="large" />
+          </View>
+        )}
+      </View>
       <HoldModal
         visible={!!holdTarget}
         creator={holdTarget}
@@ -589,59 +613,83 @@ function HistoryTab({ isWide }: { isWide: boolean }) {
         )}
       </View>
 
-      <FlatList
-        data={data?.items ?? []}
-        keyExtractor={(it) => it.id}
-        renderItem={renderRow}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        ListEmptyComponent={
-          loading ? null : (
-            <View className="items-center justify-center py-16">
-              <History size={32} className="text-muted-foreground/50 mb-2" />
-              <Text className="text-sm text-muted-foreground">No payout history</Text>
-            </View>
-          )
-        }
-        ListFooterComponent={
-          totalPages > 1 ? (
-            <View className="flex-row items-center justify-between mt-3 px-1">
-              <Text className="text-xs text-muted-foreground">{data?.total ?? 0} total</Text>
-              <View className="flex-row items-center gap-2">
-                <Pressable
-                  onPress={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className={cn(
-                    'p-2 rounded-md border border-border',
-                    page === 1 && 'opacity-30',
-                  )}
-                >
-                  <ChevronLeft size={16} className="text-foreground" />
-                </Pressable>
-                <Text className="text-xs text-muted-foreground">
-                  {page} / {totalPages}
+      <View className="flex-1 overflow-hidden rounded-xl border border-border bg-card">
+        <FlatList
+          data={data?.items ?? []}
+          keyExtractor={(it) => it.id}
+          renderItem={renderRow}
+          ListHeaderComponent={
+            isWide ? (
+              <View className="flex-row items-center border-b border-border bg-muted/35 px-4 py-2.5">
+                <View className="w-9 mr-3" />
+                <Text className="w-[220px] mr-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Creator / listing
                 </Text>
-                <Pressable
-                  onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page >= totalPages}
-                  className={cn(
-                    'p-2 rounded-md border border-border',
-                    page >= totalPages && 'opacity-30',
-                  )}
-                >
-                  <ChevronRight size={16} className="text-foreground" />
-                </Pressable>
+                <Text className="w-[100px] mr-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Type
+                </Text>
+                <Text className="w-[110px] mr-3 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Amount
+                </Text>
+                <Text className="w-[170px] mr-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Transfer
+                </Text>
+                <Text className="flex-1 text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Created
+                </Text>
               </View>
-            </View>
-          ) : null
-        }
-        contentContainerStyle={{ paddingBottom: 24 }}
-        showsVerticalScrollIndicator={false}
-      />
-      {loading && !refreshing && (
-        <View className="absolute inset-0 items-center justify-center bg-background/80">
-          <ActivityIndicator size="large" />
-        </View>
-      )}
+            ) : null
+          }
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          ListEmptyComponent={
+            loading ? null : (
+              <View className="items-center justify-center py-16">
+                <History size={32} className="text-muted-foreground/50 mb-2" />
+                <Text className="text-sm text-muted-foreground">No payout history</Text>
+              </View>
+            )
+          }
+          ListFooterComponent={
+            totalPages > 1 ? (
+              <View className="flex-row items-center justify-between mt-3 px-3">
+                <Text className="text-xs text-muted-foreground">{data?.total ?? 0} total</Text>
+                <View className="flex-row items-center gap-2">
+                  <Pressable
+                    onPress={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className={cn(
+                      'p-2 rounded-md border border-border',
+                      page === 1 && 'opacity-30',
+                    )}
+                  >
+                    <ChevronLeft size={16} className="text-foreground" />
+                  </Pressable>
+                  <Text className="text-xs text-muted-foreground">
+                    {page} / {totalPages}
+                  </Text>
+                  <Pressable
+                    onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                    className={cn(
+                      'p-2 rounded-md border border-border',
+                      page >= totalPages && 'opacity-30',
+                    )}
+                  >
+                    <ChevronRight size={16} className="text-foreground" />
+                  </Pressable>
+                </View>
+              </View>
+            ) : null
+          }
+          contentContainerStyle={{ paddingBottom: 24 }}
+          showsVerticalScrollIndicator={false}
+        />
+        {loading && !refreshing && (
+          <View className="absolute inset-0 items-center justify-center bg-background/80">
+            <ActivityIndicator size="large" />
+          </View>
+        )}
+      </View>
     </>
   )
 }
@@ -653,24 +701,40 @@ export default function MarketplacePayoutsPage() {
   const [tab, setTab] = useState<'pending' | 'history'>('pending')
 
   return (
-    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-3')}>
-      <View className="gap-3 mb-3">
-        <Text className="text-xl font-semibold text-foreground">Payouts</Text>
-        <SegmentedFilter
-          options=
-          {[
-            { value: 'pending', label: 'Pending' },
-            { value: 'history', label: 'History' },
-          ]}
-          value ={tab}
-          onChange={ setTab}
-          equalWidth
-                className="self-start" />
-                </View>
+    <View className={cn('flex-1 bg-background', isWide ? 'px-8 py-6' : 'px-4 pt-4')}>
+      <View className="w-full max-w-[1180px] self-center flex-1">
+        <View className="rounded-2xl border border-border bg-card px-4 py-4 mb-4">
+          <View className="flex-row items-start gap-3">
+            <View className="h-9 w-9 shrink-0 rounded-lg bg-primary/10 items-center justify-center">
+              <Banknote size={17} className="text-primary" />
+            </View>
+            <View className="flex-1 min-w-0">
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-muted-foreground">
+                Marketplace finance
+              </Text>
+              <Text className={cn('mt-1 font-bold text-foreground tracking-tight', isWide ? 'text-2xl' : 'text-xl')}>
+                Payouts
+              </Text>
+              <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+                Release verified creator balances or reconcile completed marketplace transactions.
+              </Text>
+            </View>
+          </View>
+          <SegmentedFilter
+            options={[
+              { value: 'pending', label: 'Pending' },
+              { value: 'history', label: 'History' },
+            ]}
+            value={tab}
+            onChange={setTab}
+            equalWidth
+            className="self-start mt-4"
+          />
+        </View>
 
-      <View className="flex-1">
-        {tab === 'pending' ? <PendingTab isWide={isWide} /> : ( <HistoryTab isWide={isWide} />
-        )}
+        <View className="flex-1">
+          {tab === 'pending' ? <PendingTab isWide={isWide} /> : <HistoryTab isWide={isWide} />}
+        </View>
       </View>
     </View>
   )

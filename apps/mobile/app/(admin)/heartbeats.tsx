@@ -24,6 +24,7 @@ import {
   Switch,
   useWindowDimensions,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Heart,
   Activity,
@@ -310,7 +311,7 @@ function StatCard({
   color?: string
 }) {
   return (
-    <View className="flex-1 min-w-[140px] bg-card border border-border rounded-xl p-3">
+    <View className="flex-1 min-w-[140px] bg-muted/30 border border-border rounded-xl p-3">
       <View className="flex-row items-center gap-2 mb-1">
         <Icon size={14} className={color} />
         <Text className="text-xs text-muted-foreground">{label}</Text>
@@ -340,7 +341,7 @@ function SchedulerCard({
     : { label: 'Running', cls: 'bg-green-500/15 text-green-400' }
 
   return (
-    <View className="bg-card border border-border rounded-xl p-4 mb-4">
+    <View className="bg-card border border-border rounded-2xl p-4 mb-5">
       <View className="flex-row items-center gap-2 mb-3">
         <Activity size={14} className="text-primary" />
         <Text className="text-sm font-medium text-foreground">Scheduler</Text>
@@ -483,7 +484,7 @@ function FilterRow({
     </Pressable>
   )
     return (
-    <View className="bg-card border border-border rounded-xl p-3 mb-4 gap-2">
+    <View className="bg-card border border-border rounded-2xl p-3 mb-5 gap-2">
       <View className="flex-row items-center gap-2">
         <View className="flex-1 flex-row items-center bg-muted rounded-lg px-2.5">
           <Search size={14} className="text-muted-foreground" />
@@ -804,7 +805,9 @@ function EditModal({
 
 export default function HeartbeatsPage() {
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
+  const pagePadding = isWide ? 32 : 16
 
   const [overview, setOverview] = useState<OverviewData | null>(null)
   const [list, setList] = useState<ListResponse | null>(null)
@@ -966,9 +969,16 @@ export default function HeartbeatsPage() {
 
   if (loading) {
     return (
-      <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
-        <Text className="text-muted-foreground mt-3 text-sm">Loading heartbeats...</Text>
+      <View className="flex-1 bg-background px-4 items-center justify-center">
+        <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
+          <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
+            <ActivityIndicator size="small" />
+          </View>
+          <Text className="text-sm font-semibold text-foreground mt-3">Preparing scheduler signal</Text>
+          <Text className="text-xs text-muted-foreground mt-1 text-center">
+            Loading heartbeat configuration and the latest scheduler state.
+          </Text>
+        </View>
       </View>
     )
   }
@@ -981,113 +991,151 @@ export default function HeartbeatsPage() {
     <ScrollView
       className="flex-1 bg-background"
       contentContainerStyle={{
-        padding: isWide ? 32 : 16,
-        paddingBottom: 40,
+        paddingTop: Math.max(insets.top, 12) + 12,
+        paddingHorizontal: pagePadding,
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
+        width: '100%',
+        alignSelf: 'center' as const,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <View className="flex-row items-center gap-2 mb-4">
-        <Heart size={20} className="text-pink-400" />
-        <Text className="text-2xl font-bold text-foreground">Heartbeats</Text>
-        <Text className="text-xs text-muted-foreground ml-2">
-          Autonomous-agent scheduler
-        </Text>
-      </View>
-
-      {overview && (
-        <SchedulerCard overview={overview} onTogglePause={onTogglePause} busy={pauseBusy} />
-      )}
-
-      <FilterRow
-        search={search}
-        onSearchChange={setSearch}
-        enabledOnly={enabledOnly}
-        onEnabledOnlyChange={setEnabledOnly}
-        dueSoon={dueSoon}
-        onDueSoonChange={setDueSoon}
-        inBackoff={inBackoff}
-        onInBackoffChange={setInBackoff}
-        sort={sort}
-        onSortChange={setSort}
-        onRefresh={() => {
-          loadOverview()
-          loadList()
-        }}
-      />
-
-      <View className="flex-row items-center justify-between mb-2">
-        <Text className="text-xs text-muted-foreground">
-          {total} {total === 1 ? 'config' : 'configs'} · page {page} of {" "}
-          {pageCount}
-        </Text>
-        <View className="flex-row items-center gap-1">
-          <Pressable
-            disabled={page <= 1}
-            onPress={() => setPage((p) => Math.max(1, p - 1))}
-            className={cn(
-              'px-2.5 py-1 rounded-md',
-              page <= 1 ? 'bg-muted/50' : 'bg-muted active:bg-muted/70'
-            )}
-          >
-            <Text
-              className={cn(
-                'text-xs font-medium',
-                page <= 1 ? 'text-muted-foreground' : 'text-foreground'
-              )}
-            >
-              Prev
-            </Text>
-          </Pressable>
-          <Pressable
-            disabled={page >= pageCount}
-            onPress={() => setPage((p) => Math.min(pageCount, p + 1))}
-            className={cn(
-              'px-2.5 py-1 rounded-md',
-              page >= pageCount ? 'bg-muted/50' : 'bg-muted active:bg-muted/70'
-            )}
-          >
-            <Text
-              className={cn(
-                'text-xs font-medium',
-                page >= pageCount ? 'text-muted-foreground' : 'text-foreground'
-              )}
-            >
-              Next
-            </Text>
-          </Pressable>
+      <View className="w-full max-w-[1320px] self-center">
+        <View className="rounded-2xl border border-border bg-card p-4 mb-5">
+          <View className="flex-row items-center gap-2">
+            <View className="h-8 w-8 rounded-lg bg-pink-500/10 items-center justify-center">
+              <Heart size={16} className="text-pink-400" />
+            </View>
+            <View className="flex-1">
+              <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+                Heartbeats
+              </Text>
+              <Text className="text-xs text-muted-foreground mt-0.5">
+                Autonomous-agent scheduler observability and controls
+              </Text>
+            </View>
+            <View className="rounded-full bg-muted px-2 py-1">
+              <Text className="text-[10px] font-medium text-muted-foreground">Refreshes every 15s</Text>
+            </View>
+          </View>
         </View>
-      </View>
 
-      {rows.length === 0 ? (
-        <View className="bg-card border border-border rounded-xl p-6 items-center">
-          <Text className="text-sm text-muted-foreground">
-            No heartbeat configs match the current filters.
+        {overview ? (
+          <>
+            <SectionLabel title="Scheduler health" detail="Current instance" />
+            <SchedulerCard overview={overview} onTogglePause={onTogglePause} busy={pauseBusy} />
+          </>
+        ) : (
+          <View className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 mb-5">
+            <Text className="text-sm font-medium text-foreground">Scheduler state is unavailable</Text>
+            <Text className="text-xs text-muted-foreground mt-1">
+              Project configurations may still load below. Pull to refresh to try the scheduler overview again.
+            </Text>
+          </View>
+        )}
+
+        <SectionLabel title="Project configurations" detail="Search, focus, and intervene" />
+        <FilterRow
+          search={search}
+          onSearchChange={setSearch}
+          enabledOnly={enabledOnly}
+          onEnabledOnlyChange={setEnabledOnly}
+          dueSoon={dueSoon}
+          onDueSoonChange={setDueSoon}
+          inBackoff={inBackoff}
+          onInBackoffChange={setInBackoff}
+          sort={sort}
+          onSortChange={setSort}
+          onRefresh={() => {
+            loadOverview()
+            loadList()
+          }}
+        />
+
+        <View className="flex-row items-center justify-between mb-2 px-1">
+          <Text className="text-xs text-muted-foreground">
+            {total} {total === 1 ? 'config' : 'configs'} · page {page} of {" "}
+            {pageCount}
           </Text>
+          <View className="flex-row items-center gap-1">
+            <Pressable
+              disabled={page <= 1}
+              onPress={() => setPage((p) => Math.max(1, p - 1))}
+              className={cn(
+                'px-2.5 py-1 rounded-md',
+                page <= 1 ? 'bg-muted/50' : 'bg-muted active:bg-muted/70'
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-xs font-medium',
+                  page <= 1 ? 'text-muted-foreground' : 'text-foreground'
+                )}
+              >
+                Prev
+              </Text>
+            </Pressable>
+            <Pressable
+              disabled={page >= pageCount}
+              onPress={() => setPage((p) => Math.min(pageCount, p + 1))}
+              className={cn(
+                'px-2.5 py-1 rounded-md',
+                page >= pageCount ? 'bg-muted/50' : 'bg-muted active:bg-muted/70'
+              )}
+            >
+              <Text
+                className={cn(
+                  'text-xs font-medium',
+                  page >= pageCount ? 'text-muted-foreground' : 'text-foreground'
+                )}
+              >
+                Next
+              </Text>
+            </Pressable>
+          </View>
         </View>
-      ) : (
-        rows.map((row) => (
-          <HeartbeatRowItem
-            key={row.id}
-            row={row}
-            busy={rowBusy === row.projectId}
-            onToggle={(next) => onToggleRow(row, next)}
-            onTrigger={() => onTriggerRow(row)}
-            onEdit={() => setEditing(row)}
-            onClearFailures={() => onClearRow(row)}
-          />
-        ))
-      )}
 
-      <EditModal
-        visible={editing !== null}
-        row={editing}
-        onClose={() => setEditing(null)}
-        onSaved={() => {
-          loadList()
-          loadOverview()
-        }}
-      />
+        {rows.length === 0 ? (
+          <View className="bg-card border border-border rounded-2xl p-7 items-center">
+            <Heart size={18} className="text-muted-foreground" />
+            <Text className="text-sm font-medium text-foreground mt-2">No matching heartbeat configs</Text>
+            <Text className="text-xs text-muted-foreground mt-1 text-center">
+              Change the filters or refresh to check for newly configured projects.
+            </Text>
+          </View>
+        ) : (
+          rows.map((row) => (
+            <HeartbeatRowItem
+              key={row.id}
+              row={row}
+              busy={rowBusy === row.projectId}
+              onToggle={(next) => onToggleRow(row, next)}
+              onTrigger={() => onTriggerRow(row)}
+              onEdit={() => setEditing(row)}
+              onClearFailures={() => onClearRow(row)}
+            />
+          ))
+        )}
+
+        <EditModal
+          visible={editing !== null}
+          row={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            loadList()
+            loadOverview()
+          }}
+        />
+      </View>
     </ScrollView>
+  )
+}
+
+function SectionLabel({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline justify-between mb-2 px-1">
+      <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      <Text className="text-[11px] text-muted-foreground">{detail}</Text>
+    </View>
   )
 }

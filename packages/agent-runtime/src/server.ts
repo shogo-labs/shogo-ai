@@ -1745,6 +1745,26 @@ app.post('/agent/chat', async (c) => {
     }
   }
 
+  // Workspace chat can select one already-mounted project as the focus for
+  // this turn. The API proxy validates attachment membership; the runtime
+  // checks its mounted roots again so direct callers cannot invent a project.
+  if (
+    IS_WORKSPACE_RUNTIME &&
+    typeof body.focusedProjectId === 'string' &&
+    isAttachedProjectId(body.focusedProjectId, effectiveWorkspaceProjectIds())
+  ) {
+    const focusedProject = workspaceProjectsManifest().find(
+      (project) => project.id === body.focusedProjectId,
+    )
+    const projectLabel = focusedProject?.name || body.focusedProjectId
+    const focusContext = [
+      '[Focused project for this turn]',
+      `Prioritize work in "${projectLabel}" (project id: ${body.focusedProjectId}).`,
+      'Other mounted projects remain available only when the request explicitly needs them.',
+    ].join('\n')
+    userText = userText ? `${focusContext}\n\n${userText}` : focusContext
+  }
+
   if (!userText && userFileParts.length === 0) {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }

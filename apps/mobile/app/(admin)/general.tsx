@@ -12,8 +12,10 @@ import {
   Pressable,
   ActivityIndicator,
   TextInput,
+  useWindowDimensions,
 } from 'react-native'
 import { Linking } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Cloud,
   CheckCircle,
@@ -52,6 +54,9 @@ const SHOGO_CLOUD_URL_DEFAULT = 'https://studio.shogo.ai'
 
 export default function AdminGeneralPage() {
   const { localMode } = usePlatformConfig()
+  const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  const pagePadding = width >= 900 ? 32 : 16
   const [shogoKeyConnected, setShogoKeyConnected] = useState(false)
   const [shogoKeyMask, setShogoKeyMask] = useState('')
   const [shogoWorkspaceName, setShogoWorkspaceName] = useState('')
@@ -328,13 +333,24 @@ export default function AdminGeneralPage() {
   }
 
   return (
-    <ScrollView className="flex-1 bg-background" contentContainerClassName="p-6 pb-20">
-      <View className="max-w-2xl w-full mx-auto gap-8">
+    <ScrollView
+      className="flex-1 bg-background"
+      contentContainerStyle={{
+        paddingHorizontal: pagePadding,
+        paddingTop: pagePadding,
+        paddingBottom: Math.max(48, insets.bottom + 32),
+      }}
+      showsVerticalScrollIndicator={false}
+    >
+      <View className="max-w-3xl w-full self-center gap-6">
         {/* Header */}
-        <View>
-          <Text className="text-2xl font-bold text-foreground">General</Text>
-          <Text className="text-sm text-muted-foreground mt-1">
-            Cloud connection, appearance, and machine registration.
+        <View className="rounded-2xl border border-border bg-card/70 p-5">
+          <Text className="text-[11px] font-semibold uppercase tracking-[1.5px] text-muted-foreground">
+            Admin / System
+          </Text>
+          <Text className="mt-1 text-2xl font-bold tracking-tight text-foreground">General</Text>
+          <Text className="mt-1 text-sm text-muted-foreground">
+            Connection, appearance, and machine registration in one place.
           </Text>
         </View>
 
@@ -769,6 +785,16 @@ const FEATURE_FLAG_DEFINITIONS: Array<{
     label: 'Personal Companion Shell',
     hint: 'Simplified Muse/Grok-style chat home for personal workspaces (goals, activity, avatar chat). When off, personal workspaces fall back to the standard builder home.',
   },
+  {
+    key: 'agentShell',
+    label: 'Workspace Agent Shell',
+    hint: 'Muse-inspired wide-screen workspace shell with compact rail, context pane, and inspector. Requires the workspace runtime; turn this off to retain the legacy home.',
+  },
+  {
+    key: 'mobileAgentShell',
+    label: 'Mobile Workspace Agent Shell',
+    hint: 'Independent narrow-web and native shell rollout. Requires the workspace runtime and can be rolled back without changing the wide-screen shell.',
+  },
 ]
 
 function FeatureFlagsCard() {
@@ -777,12 +803,16 @@ function FeatureFlagsCard() {
     ezMode: null,
     phoneChannel: null,
     personalShell: null,
+    agentShell: null,
+    mobileAgentShell: null,
   })
   const [effective, setEffective] = useState<Record<keyof FeatureFlagOverrides, boolean | null>>({
     marketplace: null,
     ezMode: null,
     phoneChannel: null,
     personalShell: null,
+    agentShell: null,
+    mobileAgentShell: null,
   })
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -801,6 +831,8 @@ function FeatureFlagsCard() {
           ezMode: cfg.features?.ezMode ?? null,
           phoneChannel: cfg.features?.phoneChannel ?? null,
           personalShell: cfg.features?.personalShell ?? null,
+          agentShell: cfg.features?.agentShell ?? null,
+          mobileAgentShell: cfg.features?.mobileAgentShell ?? null,
         })
       })
       .catch((err) => console.error('[FeatureFlags] load failed:', err))
@@ -822,6 +854,8 @@ function FeatureFlagsCard() {
           ezMode: cfg.features?.ezMode ?? null,
           phoneChannel: cfg.features?.phoneChannel ?? null,
           personalShell: cfg.features?.personalShell ?? null,
+          agentShell: cfg.features?.agentShell ?? null,
+          mobileAgentShell: cfg.features?.mobileAgentShell ?? null,
         })
       } catch {}
       setSaveStatus('saved')
@@ -836,8 +870,8 @@ function FeatureFlagsCard() {
   }, [platform])
 
   return (
-    <View className="bg-card border border-border rounded-xl overflow-hidden">
-      <View className="px-5 py-4 border-b border-border flex-row items-start justify-between">
+    <View className="bg-card/80 border border-border rounded-2xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border/70 flex-row items-start justify-between">
         <View className="flex-1 pr-3">
           <View className="flex-row items-center gap-2.5 mb-1">
             <Flag size={16} className="text-foreground" />
@@ -968,8 +1002,8 @@ function SandboxExecCard() {
   }, [platform])
 
   return (
-    <View className="bg-card border border-border rounded-xl overflow-hidden">
-      <View className="px-5 py-4 border-b border-border flex-row items-start justify-between">
+    <View className="bg-card/80 border border-border rounded-2xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border/70 flex-row items-start justify-between">
         <View className="flex-1 pr-3">
           <View className="flex-row items-center gap-2.5 mb-1">
             <ShieldCheck size={16} className="text-foreground" />
@@ -1058,8 +1092,8 @@ function SectionCard({
   children: React.ReactNode
 }) {
   return (
-    <View className="bg-card border border-border rounded-xl overflow-hidden">
-      <View className="px-5 py-4 border-b border-border">
+    <View className="bg-card/80 border border-border rounded-2xl overflow-hidden">
+      <View className="px-5 py-4 border-b border-border/70">
         <View className="flex-row items-center gap-2.5 mb-1">
           <Icon size={16} className="text-foreground" />
           <Text className="text-base font-semibold text-foreground">{title}</Text>

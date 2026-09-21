@@ -346,7 +346,7 @@ function AdminSidebar({
 
   const sidebar = (
     <View
-      className={cn('h-full', isNativeDrawer ? 'w-full' : 'w-64 bg-card border-r border-border')}
+      className={cn('h-full', isNativeDrawer ? 'w-full' : 'w-64 bg-background border-r border-border/70')}
       style={
         isNativeDrawer
           ? {
@@ -359,16 +359,22 @@ function AdminSidebar({
     >
       {isNativeDrawer ? <View style={{ height: nativeDrawerTopInset(insets.top) }} /> : null}
       <View className={cn(
-        'border-b border-border flex-row items-center justify-between px-3',
-        isNativeDrawer ? 'h-16' : 'py-2',
+        'border-b border-border/70 flex-row items-center justify-between',
+        isNativeDrawer ? 'h-16 px-3' : 'px-4 py-4',
       )}>
         <View className={cn('flex-row items-center', isNativeDrawer ? 'gap-3' : 'gap-2')}>
-          <Shield size={density.icon.nav} className="text-primary" />
-          <View>
-            <Text className={cn('font-semibold text-foreground',
-                density.text.title)}>Admin</Text>
+          <View className={cn(
+            'items-center justify-center rounded-lg bg-primary/10',
+            isNativeDrawer ? 'h-10 w-10' : 'h-8 w-8',
+          )}>
+            <Shield size={density.icon.nav} className="text-primary" />
+          </View>
+          <View className="gap-0.5">
+            <Text className={cn('font-semibold text-foreground', density.text.title)}>
+              Shogo Admin
+            </Text>
             <Text className={cn('text-muted-foreground', density.text.label)}>
-              {isSuperAdmin ? 'Super Admin Portal' : 'Admin Portal'}
+              {isSuperAdmin ? 'Control room' : 'Workspace controls'}
             </Text>
           </View>
         </View>
@@ -484,22 +490,50 @@ function MobileHeader({
         >
           <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
         </Pressable>
-        <Text className={`flex-1 px-3 text-center ${PHONE_DENSITY.text.body} font-semibold text-foreground`} numberOfLines={1}>
-          {title}
-        </Text>
+        <View className="flex-1 items-center px-3">
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Admin console
+          </Text>
+          <Text className={`${PHONE_DENSITY.text.body} font-semibold text-foreground`} numberOfLines={1}>
+            {title}
+          </Text>
+        </View>
         <View className={PHONE_DENSITY.hitSize} />
       </View>
     )
   }
 
   return (
-    <View className="flex-row items-center h-12 px-3 border-b border-border bg-card">
+    <View className="flex-row items-center min-h-14 px-3 border-b border-border/70 bg-background">
       <Pressable onPress={onMenuPress} role="button" accessibilityLabel="Open menu" className="p-2 -ml-1 rounded-md active:bg-muted">
         <Menu size={20} className="text-foreground" />
       </Pressable>
-      <View className="flex-row items-center gap-2 ml-2">
-        <Shield size={14} className="text-primary" />
-        <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      <View className="flex-row items-center gap-2.5 ml-2">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-primary/10">
+          <Shield size={14} className="text-primary" />
+        </View>
+        <View>
+          <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Admin console
+          </Text>
+          <Text className="text-sm font-semibold text-foreground">{title}</Text>
+        </View>
+      </View>
+    </View>
+  )
+}
+
+function DesktopContextHeader({ title }: { title: string }) {
+  return (
+    <View className="min-h-20 flex-row items-center justify-between border-b border-border/70 bg-background px-8">
+      <View>
+        <Text className="text-[11px] font-semibold uppercase tracking-[1.5px] text-muted-foreground">
+          Shogo / Admin console
+        </Text>
+        <Text className="mt-1 text-xl font-semibold tracking-tight text-foreground">{title}</Text>
+      </View>
+      <View className="rounded-full border border-border bg-card px-3 py-1.5">
+        <Text className="text-xs font-medium text-muted-foreground">Private workspace</Text>
       </View>
     </View>
   )
@@ -642,14 +676,16 @@ function AdminLayoutInner() {
         ) : null
       }
       header={
-        !isWide ? (
+        isWide ? (
+          <DesktopContextHeader title={getPageTitle(pathname)} />
+        ) : (
           <MobileHeader
             onMenuPress={toggleDrawer}
             title={getPageTitle(pathname)}
             menuOpen={drawerOpen}
             isNative={nativeSheetDrawer}
           />
-        ) : null
+        )
       }
       drawer={drawer}
     >

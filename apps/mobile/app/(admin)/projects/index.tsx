@@ -27,6 +27,7 @@ import {
   MessageSquare,
   Globe,
 } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
 import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
@@ -165,6 +166,7 @@ function ProjectRow({
 export default function AdminProjectsPage() {
   const router = useRouter()
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
 
   const [search, setSearch] = useState('')
@@ -212,11 +214,19 @@ export default function AdminProjectsPage() {
   }
 
   const listHeader = (
-    <View className="gap-3 mb-2">
+    <View className="gap-4 p-3 pb-2">
+      <View className="gap-1">
+        <Text className="text-base font-semibold tracking-tight text-foreground">
+          Project inventory
+        </Text>
+        <Text className="text-xs leading-5 text-muted-foreground">
+          Search projects and review publication state across the platform.
+        </Text>
+      </View>
       <View className={cn(isWide ? 'flex-row items-center gap-3' : 'gap-3')}>
         <View
           className={cn(
-            'flex-row items-center border border-border rounded-lg px-3 py-2 bg-card',
+            'min-h-11 flex-row items-center border border-border/70 rounded-xl px-3 bg-background',
             isWide ? 'flex-1' : '',
           )}
         >
@@ -239,19 +249,19 @@ export default function AdminProjectsPage() {
             { value: 'draft', label: 'Draft' },
             { value: 'published', label: 'Published' },
             { value: 'archived', label: 'Archived' },
-          ]}value={statusFilter}
+          ]}
+          value={statusFilter}
           onChange={(value) => {
                 setStatusFilter(value)
                 setPage(1)
               }}
           equalWidth
-              className={isWide ? "w-[280px]" : undefined}
-        /
-              >
-              </View>
+          className={isWide ? 'w-[280px]' : undefined}
+        />
+      </View>
 
       {isWide && data && (
-        <Text className="text-xs text-muted-foreground">
+        <Text className="px-1 text-xs text-muted-foreground">
           {data.total} project{data.total !== 1 ? 's' : ''} total
           {statusFilter ? ` (filtered by ${statusFilter})` : ''}
         </Text>
@@ -259,7 +269,7 @@ export default function AdminProjectsPage() {
 
       <View
         className={cn(
-          'flex-row items-center bg-muted/50 rounded-t-lg border-b border-border',
+          'flex-row items-center bg-muted/40 rounded-lg border border-border/70',
           isWide ? 'px-4 py-2.5' : 'px-3 py-2',
         )}
       >
@@ -332,11 +342,10 @@ export default function AdminProjectsPage() {
   )
 
   return (
-    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-2')}>
-      <View
-        className="flex-1"
-      >
-        <FlatList
+    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-8' : 'px-4 pt-4')}>
+      <View className="flex-1 w-full self-center max-w-[1180px]">
+        <View className="flex-1 overflow-hidden rounded-2xl border border-border/70 bg-card">
+          <FlatList
           data={data?.projects ?? []}
           keyExtractor={(item) => item.id}
           ListHeaderComponent={listHeader}
@@ -352,9 +361,10 @@ export default function AdminProjectsPage() {
               onPress={() => router.push(`/(admin)/projects/${item.id}` as any)}
             />
           )}
-          contentContainerStyle={{ paddingBottom: 20 }}
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 24) }}
           showsVerticalScrollIndicator={false}
-        />
+          />
+        </View>
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
             <ActivityIndicator size="large" />

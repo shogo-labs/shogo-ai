@@ -23,6 +23,7 @@ const store = {
   resolvedUrl: null as null | { url: string; mode: string },
   resolveThrow: null as null | Error,
   fetchImpl: null as null | ((url: string, init?: RequestInit) => Promise<Response>),
+  sessionWorkspaceMatches: true,
 }
 
 mock.module('../../services/workspace.service', () => ({
@@ -64,14 +65,25 @@ mock.module('../../lib/project-user-context', () => ({
 
 // Not exercised by this route, but required by workspace-chat.ts's module
 // scope (other routes in the same file import these).
+class MockWorkspaceSessionError extends Error {
+  constructor(public code: string) {
+    super(code)
+  }
+}
+
 mock.module('../../services/workspace-session.service', () => ({
   attachProject: async () => ({ attachMode: 'readwrite' }),
+  assertWorkspaceSessionInWorkspace: async () => {
+    if (!store.sessionWorkspaceMatches) {
+      throw new MockWorkspaceSessionError('session_not_in_workspace')
+    }
+  },
   detachProject: async () => true,
   getAttachedProjects: async () => [],
   createWorkspaceSession: async () => ({ id: 'sess-1' }),
   listWorkspaceSessions: async () => [],
   getOrCreatePrimaryWorkspaceSession: async () => ({ id: 'sess-1' }),
-  WorkspaceSessionError: class extends Error {},
+  WorkspaceSessionError: MockWorkspaceSessionError,
 }))
 
 const originalFetch = globalThis.fetch
@@ -99,6 +111,7 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     store.resolvedUrl = { url: 'http://pod.internal:8080', mode: 'pod' }
     store.resolveThrow = null
     store.fetchImpl = null
+    store.sessionWorkspaceMatches = true
     globalThis.fetch = ((url: any, init?: any) => {
       if (store.fetchImpl) return store.fetchImpl(String(url), init)
       return originalFetch(url, init)
@@ -116,6 +129,54 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
       new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/workspace/download/images/a.png'),
     )
     expect(res.status).toBe(401)
+  })
+
+  test('creates or returns the primary workspace session for an authorized team member', async () => {
+    store.kind = 'team'
+    const app = buildApp()
+    const first = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    const second = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    expect((await first.json() as any).session.id).toBe('sess-1')
+    expect((await second.json() as any).session.id).toBe('sess-1')
+  })
+
+  test('does not expose a primary session outside the workspace', async () => {
+    store.hasAccess = false
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    expect(res.status).toBe(403)
+  })
+
+  test('does not expose attachments from a session in another workspace', async () => {
+    store.sessionWorkspaceMatches = false
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/foreign-session/projects'),
+    )
+    expect(res.status).toBe(404)
+  })
+
+  test('does not report a project scope mutation ready until the workspace runtime resolves', async () => {
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/sess-1/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: 'project-1', attachMode: 'readonly' }),
+      }),
+    )
+    expect(res.status).toBe(201)
+    expect(await res.json()).toMatchObject({
+      runtime: { ready: true },
+    })
   })
 
   test('403s when the caller lacks workspace access', async () => {

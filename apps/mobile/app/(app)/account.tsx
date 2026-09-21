@@ -170,44 +170,58 @@ export default observer(function AccountPage() {
 
   return (
     <View className="flex-1 bg-background" style={{ flex: 1, paddingTop: insets.top, backgroundColor: pageBg }}>
-      <View className="flex-row items-center gap-2 px-3 pb-2">
-        <Pressable
-          onPress={closeAccount}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-          hitSlop={8}
-          className="items-center justify-center"
-          style={{ width: NATIVE_PHONE_CONTROL_SIZE, height: NATIVE_PHONE_CONTROL_SIZE }}
-        >
-          <ArrowLeft size={PHONE_DENSITY.icon.md} className="text-foreground" />
-        </Pressable>
-        <Text className={`${NATIVE_ACCOUNT_TITLE_CLASS} font-semibold text-foreground`}>Account</Text>
+      <View className="border-b border-border/70 bg-card">
+        <View className="self-center flex-row items-center gap-2 px-4 py-2" style={{ width: '100%', maxWidth: 680 }}>
+          <Pressable
+            onPress={closeAccount}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            hitSlop={8}
+            className="items-center justify-center rounded-full active:bg-muted"
+            style={{ width: NATIVE_PHONE_CONTROL_SIZE, height: NATIVE_PHONE_CONTROL_SIZE }}
+          >
+            <ArrowLeft size={PHONE_DENSITY.icon.md} className="text-foreground" />
+          </Pressable>
+          <View className="min-w-0 flex-1">
+            <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground" numberOfLines={1}>
+              {displayWorkspace?.name || 'Workspace'}
+            </Text>
+            <Text className={`${NATIVE_ACCOUNT_TITLE_CLASS} font-semibold text-foreground`}>Account</Text>
+          </View>
+        </View>
       </View>
       <ScrollView
         className="flex-1"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + NATIVE_ACCOUNT_SCROLL_EXTRA_PAD }}
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingTop: 16,
+          paddingBottom: insets.bottom + NATIVE_ACCOUNT_SCROLL_EXTRA_PAD,
+          alignItems: 'center',
+        }}
       >
-        <AccountMenuBody
-          user={user}
-          onSignOut={handleSignOut}
-          onNavigate={go}
-          isSuperAdmin={hasAdminAccess}
-          workspaces={allWorkspaces}
-          currentWorkspace={displayWorkspace}
-          billingData={billingData}
-          workspacePlan={workspacePlan}
-          allPlans={allPlans}
-          showBilling={features.billing}
-          onSwitchWorkspace={handleSwitchWorkspace}
-          onCreateWorkspace={handleCreateWorkspace}
-          hasPersonalWorkspace={hasPersonalWorkspace}
-          onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
-          localMode={localMode}
-          onClose={noopAccountClose}
-          isNative
-          onOpenNativeSettingsTab={setSettingsTab}
-        />
+        <View style={{ width: '100%', maxWidth: 680 }}>
+          <AccountMenuBody
+            user={user}
+            onSignOut={handleSignOut}
+            onNavigate={go}
+            isSuperAdmin={hasAdminAccess}
+            workspaces={allWorkspaces}
+            currentWorkspace={displayWorkspace}
+            billingData={billingData}
+            workspacePlan={workspacePlan}
+            allPlans={allPlans}
+            showBilling={features.billing}
+            onSwitchWorkspace={handleSwitchWorkspace}
+            onCreateWorkspace={handleCreateWorkspace}
+            hasPersonalWorkspace={hasPersonalWorkspace}
+            onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
+            localMode={localMode}
+            onClose={noopAccountClose}
+            isNative
+            onOpenNativeSettingsTab={setSettingsTab}
+          />
+        </View>
       </ScrollView>
       <NativeAccountSettingsSheet
         visible={settingsTab != null}

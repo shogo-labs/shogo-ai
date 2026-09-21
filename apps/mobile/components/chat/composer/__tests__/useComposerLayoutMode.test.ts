@@ -7,8 +7,8 @@ import { COMPOSER_SIZES } from "../useComposerLayoutMode";
 describe("COMPOSER_SIZES", () => {
   test("keeps the three composer variants explicit", () => {
     expect(COMPOSER_SIZES.web).toMatchObject({
-      inputMinHeight: 60,
-      inputMaxHeight: 200,
+      inputMinHeight: 48,
+      inputMaxHeight: 160,
     });
     expect(COMPOSER_SIZES.native).toMatchObject({
       inputMinHeight: 52,

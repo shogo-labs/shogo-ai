@@ -15,10 +15,13 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   Key,
@@ -79,9 +82,9 @@ function PlatformIcon({ platform, size = 16 }: { platform?: string | null; size?
 
 export default observer(function ApiKeysPage() {
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const { user } = useAuth()
-  const { width: windowWidth, height: windowHeight,
-    isPhone: isNativePhone } = useNativePhoneWindow()
+  const { isPhone: isNativePhone } = useNativePhoneWindow()
   const workspaces = useWorkspaceCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()
@@ -177,20 +180,32 @@ export default observer(function ApiKeysPage() {
   }
 
   return (
-    <View className="flex-1 bg-background">
+    <View className="flex-1 bg-muted/20">
       {/* Header */}
-      <View className={cn("flex-row items-center gap-3 border-b border-border", isNativePhone ? "px-4 py-3" : "px-6 py-4")}>
+      <View
+        className={cn(
+          "flex-row items-center gap-3 border-b border-border/80 bg-background",
+          isNativePhone ? "px-4 pb-3" : "px-6 py-4"
+        )}
+        style={isNativePhone ? { paddingTop: Math.max(insets.top, 12) } : undefined}
+      >
         <Pressable
           onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)/settings')}
           hitSlop={8}
-          className={isNativePhone ? "h-11 w-11 items-center justify-center" : undefined}
+          className={cn(
+            "items-center justify-center rounded-full border border-border bg-background",
+            isNativePhone ? "h-11 w-11" : "h-9 w-9"
+          )}
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
         >
           <ArrowLeft size={isNativePhone ? 22 : 20} className="text-foreground" />
         </Pressable>
         <View className="flex-1 min-w-0">
-          <Text className={cn("font-bold text-foreground", isNativePhone ? "text-lg" : "text-xl")}>Devices & API Keys</Text>
-          <Text className={cn("text-muted-foreground", isNativePhone ? "text-sm mt-0.5" : "text-sm")}>
-            Manage signed-in Shogo Desktop devices and long-lived keys
+          <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">Workspace access</Text>
+          <Text className={cn("mt-0.5 font-semibold tracking-tight text-foreground", isNativePhone ? "text-xl" : "text-2xl")}>Devices & API Keys</Text>
+          <Text className={cn("text-muted-foreground", isNativePhone ? "text-sm mt-1" : "text-sm mt-0.5")}>
+            Manage desktop sessions and advanced credentials
           </Text>
           {workspace?.id && (
             <Text
@@ -206,18 +221,22 @@ export default observer(function ApiKeysPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerClassName={isNativePhone ? "p-4 pb-24" : "p-6 pb-20 max-w-3xl w-full mx-auto"}
+        contentContainerClassName={isNativePhone ? "p-4" : "p-6 max-w-3xl w-full mx-auto"}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 32, isNativePhone ? 96 : 80) }}
+        keyboardShouldPersistTaps="handled"
       >
         {/* Info banner */}
-        <Card className="mb-6">
-          <CardContent className={isNativePhone ? "p-4" : "p-4"}>
+        <Card className="mb-7 rounded-2xl border-border/80 bg-card">
+          <CardContent className="p-5">
             <View className="flex-row items-start gap-3">
-              <Monitor size={isNativePhone ? 22 : 20} className="text-primary mt-0.5" />
+              <View className="h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+                <Monitor size={20} className="text-primary" />
+              </View>
               <View className="flex-1 min-w-0">
-                <Text className={cn("font-medium text-foreground", isNativePhone ? "text-base" : "text-sm")}>
+                <Text className={cn("font-semibold text-foreground", isNativePhone ? "text-base" : "text-sm")}>
                   Shogo Desktop signs in as a device
                 </Text>
-                <Text className={cn("text-muted-foreground mt-1", isNativePhone ? "text-sm leading-5" : "text-xs leading-5")}>
+                <Text className={cn("text-muted-foreground mt-1.5", isNativePhone ? "text-sm leading-5" : "text-sm leading-5")}>
                   Each desktop install gets its own device credential. Signing out here
                   immediately revokes it. Use a manual API key only for headless / CI
                   environments that can't run the desktop login
@@ -229,7 +248,17 @@ export default observer(function ApiKeysPage() {
         </Card>
 
         {/* Devices section */}
-        <Text className="text-base font-semibold text-foreground mb-3">Devices</Text>
+        <View className="mb-3 flex-row items-center justify-between">
+          <View>
+            <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">Sessions</Text>
+            <Text className="mt-1 text-lg font-semibold text-foreground">Devices</Text>
+          </View>
+          {!isLoading && (
+            <Badge variant="outline">
+              <Text className="text-xs text-muted-foreground">{deviceKeys.length} active</Text>
+            </Badge>
+          )}
+        </View>
 
         {isLoading ? (
           <View className="py-12 items-center">
@@ -237,7 +266,7 @@ export default observer(function ApiKeysPage() {
             <Text className="text-sm text-muted-foreground mt-3">Loading devices...</Text>
           </View>
         ) : deviceKeys.length === 0 ? (
-          <Card className="mb-6">
+          <Card className="mb-7 rounded-2xl border-border/80 bg-card">
             <CardContent className="p-6 items-center">
               <View className="h-12 w-12 rounded-full bg-muted/50 items-center justify-center mb-3">
                 <Laptop size={22} className="text-muted-foreground/50" />
@@ -249,7 +278,7 @@ export default observer(function ApiKeysPage() {
             </CardContent>
           </Card>
         ) : (
-          <Card className="mb-6">
+          <Card className="mb-7 rounded-2xl border-border/80 bg-card">
             <CardContent className="p-0">
               {deviceKeys.map((key) =>
                 isNativePhone ? (
@@ -285,12 +314,12 @@ export default observer(function ApiKeysPage() {
                     </View>
                     <Pressable
                       onPress={() => setRevokeTarget(key)}
-                      className="h-11 flex-row items-center justify-center gap-2 rounded-lg border border-border"
+                      className="h-11 flex-row items-center justify-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5"
                       accessibilityRole="button"
                       accessibilityLabel={`Sign out ${key.deviceName || key.name}`}
                     >
-                      <LogOut size={16} className="text-muted-foreground" />
-                      <Text className="text-sm font-medium text-foreground">Sign out</Text>
+                      <LogOut size={16} className="text-destructive" />
+                      <Text className="text-sm font-medium text-destructive">Sign out</Text>
                     </Pressable>
                   </View>
                 ) : (
@@ -320,12 +349,12 @@ export default observer(function ApiKeysPage() {
                   </View>
                   <Pressable
                     onPress={() => setRevokeTarget(key)}
-                    className="flex-row items-center gap-1 px-2 py-1 rounded border border-border"
+                    className="flex-row items-center gap-1 rounded border border-destructive/30 bg-destructive/5 px-2 py-1"
                     accessibilityRole="button"
                     accessibilityLabel={`Sign out ${key.deviceName || key.name}`}
                   >
-                    <LogOut size={12} className="text-muted-foreground" />
-                    <Text className="text-xs text-muted-foreground">Sign out</Text>
+                    <LogOut size={12} className="text-destructive" />
+                    <Text className="text-xs text-destructive">Sign out</Text>
                   </Pressable>
                 </View>
                 )
@@ -343,7 +372,7 @@ export default observer(function ApiKeysPage() {
         <Pressable
           testID="manual-api-keys-toggle"
           onPress={() => setShowManualKeys((v) => !v)}
-          className={cn("flex-row items-center gap-2 mb-3 py-1", isNativePhone && "min-h-11")}
+          className={cn("mb-3 flex-row items-center gap-2 py-1", isNativePhone && "min-h-11")}
           accessibilityRole="button"
           accessibilityState={{ expanded: showManualKeys }}
         >
@@ -380,7 +409,7 @@ export default observer(function ApiKeysPage() {
               </Button>
             </View>
             {userKeys.length === 0 ? (
-              <Card>
+              <Card className="rounded-2xl border-border/80 bg-card">
                 <CardContent className="p-6 items-center">
                   <Key size={22} className="text-muted-foreground/50 mb-2" />
                   <Text className="text-sm text-muted-foreground">
@@ -389,7 +418,7 @@ export default observer(function ApiKeysPage() {
                 </CardContent>
               </Card>
             ) : isNativePhone ? (
-              <Card>
+              <Card className="rounded-2xl border-border/80 bg-card">
                 <CardContent className="p-0">
                   {userKeys.map((key) => (
                     <View key={key.id} className="gap-2 border-b border-border px-4 py-4 last:border-b-0">
@@ -407,11 +436,11 @@ export default observer(function ApiKeysPage() {
                         <Pressable
                           onPress={() => setRevokeTarget(key)}
                           hitSlop={8}
-                          className="h-11 w-11 items-center justify-center rounded-lg"
+                          className="h-11 w-11 items-center justify-center rounded-lg bg-destructive/5"
                           accessibilityRole="button"
                           accessibilityLabel={`Revoke ${key.name}`}
                         >
-                          <Trash2 size={20} className="text-muted-foreground" />
+                          <Trash2 size={20} className="text-destructive" />
                         </Pressable>
                       </View>
                       <Text className="font-mono text-sm text-muted-foreground" numberOfLines={1}>
@@ -437,7 +466,7 @@ export default observer(function ApiKeysPage() {
                 </CardContent>
               </Card>
             ) : (
-              <Card>
+              <Card className="rounded-2xl border-border/80 bg-card">
                 <CardContent className="p-0">
                   <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
                     <View className="flex-[2]">
@@ -480,8 +509,13 @@ export default observer(function ApiKeysPage() {
                         </Text>
                       </View>
                       <View className="w-10 items-center">
-                        <Pressable onPress={() => setRevokeTarget(key)}>
-                          <Trash2 size={14} className="text-muted-foreground" />
+                        <Pressable
+                          onPress={() => setRevokeTarget(key)}
+                          className="rounded p-1"
+                          accessibilityRole="button"
+                          accessibilityLabel={`Revoke ${key.name}`}
+                        >
+                          <Trash2 size={14} className="text-destructive" />
                         </Pressable>
                       </View>
                     </View>
@@ -505,94 +539,105 @@ export default observer(function ApiKeysPage() {
         animationType="fade"
         onRequestClose={closeCreateModal}
       >
-        <Pressable
-          className="flex-1 bg-black/50 justify-center items-center px-6"
-          onPress={closeCreateModal}
+        <KeyboardAvoidingView
+          className="flex-1"
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          enabled={Platform.OS !== 'web'}
         >
           <Pressable
-            onPress={(e) => e.stopPropagation()}
-            className="bg-background rounded-xl p-6 w-full max-w-md"
-            role="dialog"
-            aria-label={createdKey ? 'API Key Created' : 'Create API Key'}
-            aria-modal
+            className="flex-1 bg-black/50 justify-center items-center px-6"
+            onPress={closeCreateModal}
           >
-            {createdKey ? (
-              <View className="gap-4">
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-lg font-semibold text-foreground">API Key Created</Text>
-                  <Pressable onPress={closeCreateModal} className="p-1">
-                    <X size={20} className="text-muted-foreground" />
-                  </Pressable>
-                </View>
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-border/80 bg-background p-6"
+              role="dialog"
+              aria-label={createdKey ? 'API Key Created' : 'Create API Key'}
+              aria-modal
+            >
+              {createdKey ? (
+                <View className="gap-4">
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-lg font-semibold text-foreground">API Key Created</Text>
+                    <Pressable onPress={closeCreateModal} className="h-9 w-9 items-center justify-center rounded-full bg-muted">
+                      <X size={20} className="text-muted-foreground" />
+                    </Pressable>
+                  </View>
 
-                <View className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex-row items-start gap-2">
-                  <AlertTriangle size={16} className="text-amber-500 mt-0.5" />
-                  <Text className="text-sm text-foreground flex-1">
-                    Copy this key now. You won't be able to see it again.
-                  </Text>
-                </View>
+                  <View className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 flex-row items-start gap-2">
+                    <AlertTriangle size={16} className="text-amber-500 mt-0.5" />
+                    <Text className="text-sm text-foreground flex-1">
+                      Copy this key now. You won't be able to see it again.
+                    </Text>
+                  </View>
 
-                <View className="bg-muted rounded-lg p-3 flex-row items-center gap-2">
-                  <Text
-                    className="text-sm font-mono text-foreground flex-1"
-                    selectable
-                    numberOfLines={1}
-                  >
-                    {createdKey}
-                  </Text>
-                  <Pressable onPress={() => handleCopy(createdKey)}>
-                    {copied ? (
-                      <Check size={16} className="text-green-500" />
-                    ) : (
-                      <Copy size={16} className="text-muted-foreground" />
-                    )}
-                  </Pressable>
-                </View>
+                  <View className="bg-muted rounded-xl p-3 flex-row items-center gap-2">
+                    <Text
+                      className="text-sm font-mono text-foreground flex-1"
+                      selectable
+                      numberOfLines={1}
+                    >
+                      {createdKey}
+                    </Text>
+                    <Pressable
+                      onPress={() => handleCopy(createdKey)}
+                      className="h-10 w-10 items-center justify-center rounded-lg bg-background"
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy API key"
+                    >
+                      {copied ? (
+                        <Check size={16} className="text-green-500" />
+                      ) : (
+                        <Copy size={16} className="text-muted-foreground" />
+                      )}
+                    </Pressable>
+                  </View>
 
-                <Button onPress={closeCreateModal} className="w-full">
-                  Done
-                </Button>
-              </View>
-            ) : (
-              <View className="gap-4">
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-lg font-semibold text-foreground">Create API Key</Text>
-                  <Pressable onPress={closeCreateModal} className="p-1">
-                    <X size={20} className="text-muted-foreground" />
-                  </Pressable>
-                </View>
-
-                <Text className="text-sm text-muted-foreground">
-                  This key will allow a Shogo Local instance to use cloud LLMs
-                  billed to the workspace "{workspace?.name}".
-                </Text>
-
-                <View className="gap-1.5">
-                  <Text className="text-sm font-medium text-foreground">Key name</Text>
-                  <Input
-                    value={newKeyName}
-                    onChangeText={setNewKeyName}
-                    placeholder="e.g. My Laptop, Office Desktop"
-                  />
-                </View>
-
-                <View className="flex-row gap-3">
-                  <Button variant="outline" onPress={closeCreateModal} className="flex-1" disabled={isCreating}>
-                    Cancel
-                  </Button>
-                  <Button
-                    testID="create-api-key-submit"
-                    onPress={handleCreate}
-                    disabled={isCreating || !newKeyName.trim()}
-                    className="flex-1"
-                  >
-                    {isCreating ? 'Creating...' : 'Create Key'}
+                  <Button onPress={closeCreateModal} className="min-h-12 w-full rounded-xl">
+                    Done
                   </Button>
                 </View>
-              </View>
-            )}
+              ) : (
+                <View className="gap-4">
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-lg font-semibold text-foreground">Create API Key</Text>
+                    <Pressable onPress={closeCreateModal} className="h-9 w-9 items-center justify-center rounded-full bg-muted">
+                      <X size={20} className="text-muted-foreground" />
+                    </Pressable>
+                  </View>
+
+                  <Text className="text-sm leading-5 text-muted-foreground">
+                    This key will allow a Shogo Local instance to use cloud LLMs
+                    billed to the workspace "{workspace?.name}".
+                  </Text>
+
+                  <View className="gap-1.5">
+                    <Text className="text-sm font-medium text-foreground">Key name</Text>
+                    <Input
+                      value={newKeyName}
+                      onChangeText={setNewKeyName}
+                      placeholder="e.g. My Laptop, Office Desktop"
+                    />
+                  </View>
+
+                  <View className="flex-row gap-3">
+                    <Button variant="outline" onPress={closeCreateModal} className="min-h-11 flex-1 rounded-xl" disabled={isCreating}>
+                      Cancel
+                    </Button>
+                    <Button
+                      testID="create-api-key-submit"
+                      onPress={handleCreate}
+                      disabled={isCreating || !newKeyName.trim()}
+                      className="min-h-11 flex-1 rounded-xl"
+                    >
+                      {isCreating ? 'Creating...' : 'Create Key'}
+                    </Button>
+                  </View>
+                </View>
+              )}
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Revoke Confirmation Modal */}
@@ -608,14 +653,19 @@ export default observer(function ApiKeysPage() {
         >
           <Pressable
             onPress={(e) => e.stopPropagation()}
-            className="bg-background rounded-xl p-6 w-full max-w-sm gap-4"
+            className="w-full max-w-sm gap-4 rounded-2xl border border-destructive/30 bg-background p-6"
             role="dialog"
             aria-label="Revoke API Key"
             aria-modal
           >
-            <Text className="text-lg font-semibold text-foreground">
-              {revokeTarget?.kind === 'device' ? 'Sign out device' : 'Revoke API Key'}
-            </Text>
+            <View className="flex-row items-center gap-3">
+              <View className="h-10 w-10 items-center justify-center rounded-xl bg-destructive/10">
+                <AlertTriangle size={19} className="text-destructive" />
+              </View>
+              <Text className="text-lg font-semibold text-foreground">
+                {revokeTarget?.kind === 'device' ? 'Sign out device' : 'Revoke API Key'}
+              </Text>
+            </View>
             <Text className="text-sm text-muted-foreground">
               {revokeTarget?.kind === 'device'
                 ? `Sign "${revokeTarget?.deviceName || revokeTarget?.name}" out of Shogo Cloud? The desktop app will be signed out the next time it makes a cloud request, and the user can sign in again at any time.`
@@ -626,7 +676,7 @@ export default observer(function ApiKeysPage() {
                 variant="outline"
                 onPress={() => setRevokeTarget(null)}
                 disabled={isRevoking}
-                className="flex-1"
+                className="min-h-11 flex-1 rounded-xl"
               >
                 Cancel
               </Button>
@@ -634,7 +684,7 @@ export default observer(function ApiKeysPage() {
                 variant="destructive"
                 onPress={handleRevoke}
                 disabled={isRevoking}
-                className="flex-1"
+                className="min-h-11 flex-1 rounded-xl"
               >
                 {isRevoking
                   ?revokeTarget?.kind === 'device' ? 'Signing out...' : 'Revoking...'
