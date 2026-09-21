@@ -30,6 +30,7 @@ import {
   ShieldCheck,
   ShieldOff,
 } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 import {
@@ -226,11 +227,19 @@ function UsersListHeader({
   setRoleFilter: (v: string) => void
 }) {
   return (
-    <View className="gap-3 mb-2">
+    <View className="gap-4 p-3 pb-2">
+      <View className="gap-1">
+        <Text className="text-base font-semibold tracking-tight text-foreground">
+          User directory
+        </Text>
+        <Text className="text-xs leading-5 text-muted-foreground">
+          Review membership, access level, and workspace activity.
+        </Text>
+      </View>
       <View className={cn(isWide ? 'flex-row items-center gap-3' : 'gap-3')}>
         <View
           className={cn(
-            'flex-row items-center border border-border rounded-lg px-3 py-2 bg-card',
+            'min-h-11 flex-row items-center border border-border/70 rounded-xl px-3 bg-background',
             isWide ? 'flex-1' : '',
           )}
         >
@@ -254,19 +263,19 @@ function UsersListHeader({
             { value: '', label: 'All' },
             { value: 'user', label: 'Users' },
             { value: 'super_admin', label: 'Admins' },
-          ]}value={roleFilter}
+          ]}
+          value={roleFilter}
           onChange={(value) => {
                 setRoleFilter(value)
                 setPage(1)
               }}
           equalWidth
-              className={isWide ? "w-[240px]" : undefined}
-        /
-              >
-              </View>
+          className={isWide ? 'w-[240px]' : undefined}
+        />
+      </View>
 
       {isWide && data && (
-        <Text className="text-xs text-muted-foreground">
+        <Text className="px-1 text-xs text-muted-foreground">
           {data.total} user{data.total !== 1 ? 's' : ''} total
           {roleFilter ? ` (filtered by ${roleFilter === 'super_admin' ? 'admins' : 'users'})` : ''}
         </Text>
@@ -274,7 +283,7 @@ function UsersListHeader({
 
       <View
         className={cn(
-          'flex-row items-center bg-muted/50 rounded-t-lg border-b border-border',
+          'flex-row items-center bg-muted/40 rounded-lg border border-border/70',
           isWide ? 'px-4 py-2.5' : 'px-3 py-2',
         )}
       >
@@ -363,6 +372,7 @@ function UsersEmptyState() {
 export default function AdminUsersPage() {
   const router = useRouter()
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
 
   const [search, setSearch] = useState('')
@@ -410,11 +420,10 @@ export default function AdminUsersPage() {
   const isPromoting = roleDialog?.currentRole !== 'super_admin'
 
   return (
-    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-2')}>
-      <View
-        className="flex-1"
-      >
-        <FlatList
+    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-8' : 'px-4 pt-4')}>
+      <View className="flex-1 w-full self-center max-w-[1180px]">
+        <View className="flex-1 overflow-hidden rounded-2xl border border-border/70 bg-card">
+          <FlatList
           data={data?.users ?? []}
           keyExtractor={(item) => item.id}
           ListHeaderComponent={
@@ -450,9 +459,10 @@ export default function AdminUsersPage() {
               }
             />
           )}
-          contentContainerStyle={{ paddingBottom: 20 }}
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 24) }}
           showsVerticalScrollIndicator={false}
-        />
+          />
+        </View>
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
             <ActivityIndicator size="large" />

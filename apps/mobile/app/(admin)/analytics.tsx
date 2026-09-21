@@ -16,6 +16,7 @@ import {
   RefreshControl,
   useWindowDimensions,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Users,
   Building2,
@@ -23,6 +24,8 @@ import {
   MessageSquare,
   Calendar,
   CalendarDays,
+  BarChart3,
+  Sparkles,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -144,7 +147,9 @@ function ActiveUsersSection({ data, loading }: { data: ActiveUsersData | null; l
 
 export default function AdminMarketingAnalyticsPage() {
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
+  const pagePadding = isWide ? 32 : 16
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [userPage, setUserPage] = useState(1)
@@ -238,75 +243,110 @@ export default function AdminMarketingAnalyticsPage() {
     <ScrollView
       className="flex-1 bg-background"
       contentContainerStyle={{
-        padding: isWide ? 32 : 16,
-        paddingBottom: 40,
+        paddingTop: Math.max(insets.top, 12) + 12,
+        paddingHorizontal: pagePadding,
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
         width: '100%',
         alignSelf: 'center' as const,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <AnalyticsHeader
-        title="Marketing Analytics"
-        subtitle="Growth, acquisition, and engagement insights"
-        isWide={isWide}
-        period={period}
-        onPeriodChange={setPeriod}
-        excludeInternal={excludeInternal}
-        onExcludeInternalChange={setExcludeInternal}
-      />
-
-      {/* Overview cards */}
-      <View className="mb-4">
-        <OverviewCards data={overview.data} loading={overview.loading} />
-      </View>
-
-      {/* User Funnel */}
-      <View className="mb-4">
-        <FunnelSection data={funnel.data} loading={funnel.loading} />
-      </View>
-
-      {/* Active users */}
-      <View className="mb-4">
-        <ActiveUsersSection data={activeUsers.data} loading={activeUsers.loading} />
-      </View>
-
-      {/* Activity + active-user trends: side-by-side on desktop */}
-      <View className={cn('gap-4 mb-4', isWide && 'flex-row')}>
-        <View className={cn(isWide && 'flex-1')}>
-          <ActivityTrendsChart data={activityTs.data} loading={activityTs.loading} />
+      <View className="w-full max-w-[1320px] self-center">
+        <View className="rounded-2xl border border-border bg-card px-4 py-4 mb-5 overflow-hidden">
+          <View className="flex-row items-center gap-2 mb-2">
+            <View className="h-7 w-7 rounded-lg bg-primary/10 items-center justify-center">
+              <BarChart3 size={15} className="text-primary" />
+            </View>
+            <Text className="text-[11px] font-semibold tracking-[1.2px] text-primary uppercase">
+              Growth signal
+            </Text>
+            <View className="ml-auto flex-row items-center gap-1 rounded-full bg-muted px-2 py-1">
+              <Sparkles size={11} className="text-muted-foreground" />
+              <Text className="text-[10px] text-muted-foreground">Live workspace view</Text>
+            </View>
+          </View>
+          <AnalyticsHeader
+            title="Marketing Analytics"
+            subtitle="Growth, acquisition, and engagement signals across the platform"
+            isWide={isWide}
+            period={period}
+            onPeriodChange={setPeriod}
+            excludeInternal={excludeInternal}
+            onExcludeInternalChange={setExcludeInternal}
+          />
         </View>
-        <View className={cn(isWide && 'flex-1')}>
-          <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} />
+
+        {/* Overview cards */}
+        <View className="mb-5">
+          <SectionLabel title="At a glance" detail="Current platform footprint" />
+          <OverviewCards data={overview.data} loading={overview.loading} />
         </View>
-      </View>
 
-      {/* User Activity Table */}
-      <View className="mb-4">
-        <UserActivityTable
-          data={userActivity.data}
-          loading={userActivity.loading}
-          page={userPage}
-          onPageChange={setUserPage}
-        />
-      </View>
+        {/* User Funnel */}
+        <View className="mb-5">
+          <SectionLabel title="Conversion" detail="Where people progress" />
+          <FunnelSection data={funnel.data} loading={funnel.loading} />
+        </View>
 
-      {/* Source breakdown */}
-      <View className="mb-4">
-        <SourceBreakdownPanel data={sourceBreakdown.data} loading={sourceBreakdown.loading} />
-      </View>
+        {/* Active users */}
+        <View className="mb-5">
+          <SectionLabel title="Audience cadence" detail="Active people over time" />
+          <ActiveUsersSection data={activeUsers.data} loading={activeUsers.loading} />
+        </View>
 
-      {/* AI Insights */}
-      <View>
-        <AIInsightsPanel
-          data={aiDigest.data}
-          digestList={digestList.data}
-          loading={aiDigest.loading}
-          onDateSelect={handleDigestDateSelect}
-          onGenerate={handleGenerateDigest}
-          generating={generating}
-        />
+        {/* Activity + active-user trends: side-by-side on desktop */}
+        <View className="mb-5">
+          <SectionLabel title="Momentum" detail="Activity and audience movement" />
+          <View className={cn('gap-4', isWide && 'flex-row')}>
+            <View className={cn(isWide && 'flex-1')}>
+              <ActivityTrendsChart data={activityTs.data} loading={activityTs.loading} />
+            </View>
+            <View className={cn(isWide && 'flex-1')}>
+              <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} />
+            </View>
+          </View>
+        </View>
+
+        {/* User Activity Table */}
+        <View className="mb-5">
+          <SectionLabel title="People" detail="Recent user activity" />
+          <UserActivityTable
+            data={userActivity.data}
+            loading={userActivity.loading}
+            page={userPage}
+            onPageChange={setUserPage}
+          />
+        </View>
+
+        {/* Source breakdown */}
+        <View className="mb-5">
+          <SectionLabel title="Acquisition" detail="How people find Shogo" />
+          <SourceBreakdownPanel data={sourceBreakdown.data} loading={sourceBreakdown.loading} />
+        </View>
+
+        {/* AI Insights */}
+        <View>
+          <SectionLabel title="Operator brief" detail="AI-generated insights and decisions" />
+          <AIInsightsPanel
+            data={aiDigest.data}
+            digestList={digestList.data}
+            loading={aiDigest.loading}
+            onDateSelect={handleDigestDateSelect}
+            onGenerate={handleGenerateDigest}
+            generating={generating}
+          />
+        </View>
       </View>
     </ScrollView>
+  )
+}
+
+function SectionLabel({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline justify-between mb-2 px-1">
+      <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      <Text className="text-[11px] text-muted-foreground">{detail}</Text>
+    </View>
   )
 }

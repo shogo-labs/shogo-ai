@@ -45,13 +45,13 @@ type ProminentComposerFieldProps = {
   onSubmitEditing?: () => void;
   onSelectionChange?: (event: any) => void;
   onKeyPress?: (
-    event: NativeSyntheticEvent<TextInputKeyPressEventData>,
+    event: NativeSyntheticEvent<TextInputKeyPressEventData>
   ) => void;
   onContentSizeChange?: (
-    event: NativeSyntheticEvent<TextInputContentSizeChangeEventData>,
+    event: NativeSyntheticEvent<TextInputContentSizeChangeEventData>
   ) => void;
   onMeasureTextLayout: (
-    event: NativeSyntheticEvent<TextLayoutEventData>,
+    event: NativeSyntheticEvent<TextLayoutEventData>
   ) => void;
   scrollEnabled?: boolean;
   onLayout?: (event: any) => void;
@@ -91,15 +91,15 @@ export const ProminentComposerField = forwardRef<
     onLayout,
     inputComponent,
   },
-  ref: Ref<TextInput>,
+  ref: Ref<TextInput>
 ) {
-    const FieldInput = useMemo(
-      () =>
-        inputComponent
-          ? Animated.createAnimatedComponent(inputComponent)
-          : ProminentAnimatedTextInput,
-      [inputComponent],
-    );
+  const FieldInput = useMemo(
+    () =>
+      inputComponent
+        ? Animated.createAnimatedComponent(inputComponent)
+        : ProminentAnimatedTextInput,
+    [inputComponent]
+  );
   return (
     <>
       <Text
@@ -146,8 +146,8 @@ export const ProminentComposerField = forwardRef<
             top: stacked
               ? 0
               : Platform.OS === "web"
-                ? 1
-                : PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
+              ? 1
+              : PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
             height: PROMINENT_COMPOSER_MIN_HEIGHT,
             fontSize: PROMINENT_COMPOSER_FONT_SIZE,
             lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
@@ -155,7 +155,7 @@ export const ProminentComposerField = forwardRef<
             // Do not let the fading placeholder paint over newly typed native
             // text. Native can composite both layers for a frame while the
             // Animated.Value transitions, which produces visible ghost text.
-            opacity: empty ? (placeholderOpacity ?? 1) : 0,
+            opacity: empty ? placeholderOpacity ?? 1 : 0,
           }}
         >
           {placeholder}
@@ -193,15 +193,22 @@ export const ProminentComposerField = forwardRef<
             textAlignVertical: stacked
               ? "top"
               : Platform.OS === "android"
-                ? "center"
-                : undefined,
+              ? "center"
+              : undefined,
             ...(Platform.OS === "android"
               ? { includeFontPadding: false }
+              : null),
+            ...(Platform.OS === "web"
+              ? ({
+                  outlineWidth: 0,
+                  outlineStyle: "none",
+                  boxShadow: "none",
+                } as any)
               : null),
           }}
           className={cn(
             disabled && dimWhenDisabled && "opacity-50",
-            Platform.OS === "web" && "outline-none no-focus-ring",
+            Platform.OS === "web" && "outline-none no-focus-ring"
           )}
         />
       </Animated.View>

@@ -217,6 +217,11 @@ export const CommandPalette = observer(function CommandPalette({
   }, [query])
 
   useEffect(() => {
+    if (!visible) return
+    void projects.loadAll().catch(() => undefined)
+  }, [projects, visible])
+
+  useEffect(() => {
     if (!visible) {
       setQuery('')
       setSelectedIndex(0)

@@ -11,7 +11,8 @@
 import { useCallback, useState } from 'react'
 import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
 import { useRouter } from 'expo-router'
-import { ArrowLeft, AlertTriangle } from 'lucide-react-native'
+import { ArrowLeft, AlertTriangle, Sparkles } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, CardContent, Button, Input } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { affiliateApi } from '../../../lib/affiliate-api'
@@ -34,6 +35,7 @@ function describeError(code: string): string {
 export default function AffiliateEnrollScreen() {
   const router = useRouter()
   const http = useDomainHttp()
+  const insets = useSafeAreaInsets()
   const [code, setCode] = useState('')
   const [accepted, setAccepted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -66,22 +68,50 @@ export default function AffiliateEnrollScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+      <View
+        className="flex-row items-center gap-3 px-5 pb-3 border-b border-border"
+        style={{ paddingTop: Math.max(insets.top, 12) }}
+      >
         <Pressable onPress={() => router.back()} hitSlop={8}>
           <ArrowLeft size={22} className="text-foreground" />
         </Pressable>
-        <Text className="text-lg font-semibold text-foreground">Become an affiliate</Text>
+        <View>
+          <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+            Creator earnings
+          </Text>
+          <Text className="text-lg font-semibold text-foreground">Become an affiliate</Text>
+        </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }}>
-        <Card>
+      <ScrollView
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 20,
+          paddingBottom: Math.max(insets.bottom, 16) + 28,
+          gap: 20,
+        }}
+      >
+        <View className="gap-2">
+          <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
+            <Sparkles size={19} className="text-primary" />
+          </View>
+          <Text className="text-2xl font-semibold tracking-tight text-foreground">
+            Earn when you introduce Shogo
+          </Text>
+          <Text className="text-sm text-muted-foreground leading-5">
+            Set up your referral link in a minute. You can customize your code now or
+            let us make one for you.
+          </Text>
+        </View>
+
+        <Card className="border-primary/20">
           <CardContent className="gap-3 p-5">
-            <Text className="text-sm text-foreground">
+            <Text className="text-sm font-medium text-foreground">
               You'll get a unique link. When someone clicks it and pays for
               Shogo, you earn 20% of their seat subscription for the first 12
               months, then 10% forever after.
             </Text>
-            <Text className="text-xs text-muted-foreground">
+            <Text className="text-xs text-muted-foreground leading-5">
               Stripe issues a 1099-NEC if you earn $600+ in a calendar year.
               Self-referrals are not eligible. Commissions are held for a
               refund window before becoming payable.
@@ -90,7 +120,9 @@ export default function AffiliateEnrollScreen() {
         </Card>
 
         <View className="gap-2">
-          <Text className="text-xs uppercase text-muted-foreground tracking-wide">Custom slug (optional)</Text>
+          <Text className="text-[11px] uppercase text-muted-foreground tracking-[1.5px] font-semibold">
+            Custom slug (optional)
+          </Text>
           <Input
             value={code}
             onChangeText={setCode}
@@ -98,19 +130,19 @@ export default function AffiliateEnrollScreen() {
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <Text className="text-[10px] text-muted-foreground">
+          <Text className="text-xs text-muted-foreground">
             Letters, numbers, and dashes. We'll generate one for you if you skip this.
           </Text>
         </View>
 
         <Pressable
           onPress={() => setAccepted((v) => !v)}
-          className="flex-row items-start gap-2"
+          className="flex-row items-start gap-3 rounded-xl bg-muted/40 p-4"
         >
-          <View className={`w-5 h-5 rounded border ${accepted ? 'bg-primary border-primary' : 'border-border'} items-center justify-center mt-0.5`}>
+          <View className={`w-5 h-5 rounded-md border ${accepted ? 'bg-primary border-primary' : 'border-border'} items-center justify-center mt-0.5`}>
             {accepted ? <Text className="text-primary-foreground text-xs">✓</Text> : null}
           </View>
-          <Text className="text-xs text-foreground flex-1">
+          <Text className="text-xs text-foreground flex-1 leading-5">
             I have read and agree to the Shogo Affiliate Terms, including the
             FTC disclosure requirement when sharing my link, and I understand
             that commissions may be reversed on refund or chargeback.
@@ -126,7 +158,7 @@ export default function AffiliateEnrollScreen() {
           </Card>
         ) : null}
 
-        <Button onPress={submit} disabled={submitting || !accepted}>
+        <Button onPress={submit} disabled={submitting || !accepted} className="mt-1">
           {submitting ? <ActivityIndicator /> : (
             <Text className="text-primary-foreground font-medium">Enroll</Text>
           )}

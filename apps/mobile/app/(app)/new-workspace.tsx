@@ -17,10 +17,12 @@ import {
   TextInput,
   Linking,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
 import * as ExpoLinking from 'expo-linking'
 import { useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   Building2,
@@ -51,6 +53,7 @@ import {
 
 export default function NewWorkspacePage() {
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const { user } = useAuth()
   const http = useDomainHttp()
 
@@ -157,280 +160,348 @@ export default function NewWorkspacePage() {
 
   if (Platform.OS === 'ios') {
     return (
-      <View className="flex-1 bg-background p-4">
-        <View className="flex-row items-center gap-3 mb-6">
-          <Pressable onPress={() => router.back()}>
-            <ArrowLeft size={20} className="text-foreground" />
-          </Pressable>
-          <Text className="text-2xl font-bold text-foreground">
-            Create workspace
-          </Text>
-        </View>
+      <View
+        className="flex-1 bg-muted/20 px-4"
+        style={{ paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }}
+      >
+        <View className="mx-auto w-full max-w-xl">
+          <View className="mb-8 flex-row items-center gap-3">
+            <Pressable
+              onPress={() => router.back()}
+              className="h-11 w-11 items-center justify-center rounded-full border border-border bg-background"
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <ArrowLeft size={20} className="text-foreground" />
+            </Pressable>
+            <View>
+              <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">
+                Workspace
+              </Text>
+              <Text className="text-xl font-semibold text-foreground">
+                Create workspace
+              </Text>
+            </View>
+          </View>
 
-        <Card>
-          <CardContent className="p-5 gap-3">
-            <Text className="text-base font-semibold text-foreground">
-              Additional workspaces are not available in the iOS app.
-            </Text>
-            <Text className="text-sm text-muted-foreground">
-              You can continue using workspaces that are already available on your account.
-            </Text>
-          </CardContent>
-        </Card>
+          <Card className="rounded-2xl border-border/80 bg-card">
+            <CardContent className="gap-3 p-5">
+              <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted">
+                <Building2 size={20} className="text-foreground" />
+              </View>
+              <Text className="text-base font-semibold text-foreground">
+                Additional workspaces are not available in the iOS app.
+              </Text>
+              <Text className="text-sm leading-5 text-muted-foreground">
+                You can continue using workspaces that are already available on your account.
+              </Text>
+            </CardContent>
+          </Card>
+        </View>
       </View>
     )
   }
 
   return (
-    <ScrollView
-      className="flex-1 bg-background"
-      contentContainerClassName="p-4 pb-[60px]"
-      showsVerticalScrollIndicator={false}
+    <KeyboardAvoidingView
+      className="flex-1 bg-muted/20"
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      enabled={Platform.OS !== 'web'}
     >
-      {/* Header */}
-      <View className="flex-row items-center gap-3 mb-6">
-        <Pressable onPress={() => router.back()}>
-          <ArrowLeft size={20} className="text-foreground" />
-        </Pressable>
-        <View className="flex-1">
-          <Text className="text-2xl font-bold text-foreground">
-            Create workspace
-          </Text>
-          <Text className="text-sm text-muted-foreground">
-            Additional workspaces require a paid subscription. Choose a plan to get started.
-          </Text>
-        </View>
-      </View>
-
-      {/* Workspace Name */}
-      <Card className="mb-6">
-        <CardContent className="p-4">
-          <Text className="text-sm font-medium text-foreground mb-2">
-            Workspace name
-          </Text>
-          <TextInput
-            value={workspaceName}
-            onChangeText={(t) => { setWorkspaceName(t); if (error) setError(null) }}
-            placeholder="e.g. My Team, Acme Corp"
-            placeholderTextColor="#9ca3af"
-            className="border border-border rounded-md px-3 py-2.5 text-sm text-foreground bg-background"
-            autoFocus={Platform.OS === 'web'}
-          />
-          <Text className="text-xs text-muted-foreground mt-2">
-            You can rename it later in settings.
-          </Text>
-        </CardContent>
-      </Card>
-
-      {/* Error */}
-      {error && (
-        <View className="mb-4 rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3">
-          <Text className="text-sm text-destructive">{error}</Text>
-        </View>
-      )}
-
-      {/* Billing Interval Toggle */}
-      <View className="items-center mb-6">
-        <View className="flex-row border border-border rounded-lg bg-muted/60 p-1">
-          <Pressable
-            onPress={() => setBillingInterval('monthly')}
-            className={cn(
-              'px-4 py-2 rounded-md',
-              billingInterval === 'monthly' && 'bg-primary'
-            )}
-          >
-            <Text className={cn(
-              'text-sm font-medium',
-              billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground'
-            )}>
-              Monthly
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setBillingInterval('annual')}
-            className={cn(
-              'flex-row items-center gap-1.5 px-4 py-2 rounded-md',
-              billingInterval === 'annual' && 'bg-primary'
-            )}
-          >
-            <Text className={cn(
-              'text-sm font-medium',
-              billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground'
-            )}>
-              Annual
-            </Text>
-            <Badge variant="secondary" className="ml-1">
-              <Text className="text-[10px]">Save ~17%</Text>
-            </Badge>
-          </Pressable>
-        </View>
-      </View>
-
-      {/* Plan Cards */}
-      <View className="gap-6 md:flex-row md:items-start">
-        {/* Pro Plan */}
-        <View className="md:flex-1 md:w-0">
-          <Card>
-            <CardContent className="p-5 gap-5">
-              <View className="flex-row items-center gap-2">
-                <Zap size={20} className="text-blue-500" />
-                <Text className="text-lg font-semibold text-foreground">Pro</Text>
-              </View>
-              <Text className="text-sm text-muted-foreground">
-                Designed for fast-moving teams building together in real time.
+      <ScrollView
+        className="flex-1"
+        contentContainerClassName="px-4"
+        contentContainerStyle={{ paddingTop: Math.max(insets.top, 20), paddingBottom: Math.max(insets.bottom + 32, 72) }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View className="mx-auto w-full max-w-6xl">
+          {/* Header */}
+          <View className="mb-8 flex-row items-start gap-3">
+            <Pressable
+              onPress={() => router.back()}
+              className="mt-1 h-11 w-11 items-center justify-center rounded-full border border-border bg-background"
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <ArrowLeft size={20} className="text-foreground" />
+            </Pressable>
+            <View className="flex-1">
+              <Text className="mb-1 text-xs font-semibold uppercase tracking-[1.5px] text-primary">
+                New workspace
               </Text>
-
-              <View>
-                <View className="flex-row items-baseline gap-1">
-                  <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats)}
-                  </Text>
-                  <Text className="text-sm text-muted-foreground">per month</Text>
-                </View>
-                <Text className="text-sm text-muted-foreground">
-                  ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
-                </Text>
-              </View>
-
-              <View>
-                <Text className="text-sm font-medium text-foreground mb-2">
-                  Seats
-                </Text>
-                <SeatCounter
-                  value={proSeats}
-                  onChange={setProSeats}
-                  min={1}
-                  max={500}
-                  label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
-                />
-              </View>
-
-              <Pressable
-                onPress={() => handleCheckout('pro', proSeats)}
-                disabled={isCheckoutLoading}
-                className={cn(
-                  'w-full items-center justify-center py-3 rounded-md',
-                  isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
-                )}
-              >
-                <Text className={cn(
-                  'text-sm font-medium',
-                  isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
-                )}>
-                  {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
-                </Text>
-              </Pressable>
-
-              <View className="gap-2">
-                <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
-                </Text>
-                <Text className="text-sm text-muted-foreground">
-                  All features in Free, plus:
-                </Text>
-                <FeatureList features={PRO_FEATURES} />
-              </View>
-            </CardContent>
-          </Card>
-        </View>
-
-        {/* Business Plan */}
-        <View className="md:flex-1 md:w-0">
-          <View className="items-center -mb-3 z-10">
-            <Badge className="bg-primary">
-              <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
-            </Badge>
+              <Text className="text-3xl font-semibold tracking-tight text-foreground">
+                Set up your team space
+              </Text>
+              <Text className="mt-2 max-w-xl text-sm leading-5 text-muted-foreground">
+                Name your workspace, choose the access your team needs, and continue securely to checkout.
+              </Text>
+            </View>
           </View>
-          <Card className="border-primary">
-            <CardContent className="p-5 gap-5 pt-6">
-              <View className="flex-row items-center gap-2">
-                <Building2 size={20} className="text-purple-500" />
-                <Text className="text-lg font-semibold text-foreground">Business</Text>
-              </View>
-              <Text className="text-sm text-muted-foreground">
-                Advanced controls and power features for growing departments
-              </Text>
 
-              <View>
-                <View className="flex-row items-baseline gap-1">
-                  <Text className="text-4xl font-bold text-foreground">
-                    ${billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats)}
-                  </Text>
-                  <Text className="text-sm text-muted-foreground">per month</Text>
+          {/* Workspace Name */}
+          <Card className="mb-6 rounded-2xl border-border/80 bg-card">
+            <CardContent className="p-5">
+              <View className="mb-4 flex-row items-center gap-3">
+                <View className="h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+                  <Building2 size={19} className="text-primary" />
                 </View>
-                <Text className="text-sm text-muted-foreground">
-                  ${businessPricing.monthly}/seat × {businessSeats} seat{businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage
-                </Text>
+                <View className="flex-1">
+                  <Text className="text-base font-semibold text-foreground">1. Name your workspace</Text>
+                  <Text className="mt-0.5 text-sm text-muted-foreground">You can change this later in settings.</Text>
+                </View>
               </View>
+              <TextInput
+                value={workspaceName}
+                onChangeText={(t) => { setWorkspaceName(t); if (error) setError(null) }}
+                placeholder="e.g. My Team, Acme Corp"
+                placeholderTextColor="#9ca3af"
+                className="min-h-12 rounded-xl border border-border bg-background px-4 py-3 text-base text-foreground"
+                autoFocus={Platform.OS === 'web'}
+                accessibilityLabel="Workspace name"
+                returnKeyType="done"
+              />
+            </CardContent>
+          </Card>
 
-              <View>
-                <Text className="text-sm font-medium text-foreground mb-2">
-                  Seats
-                </Text>
-                <SeatCounter
-                  value={businessSeats}
-                  onChange={setBusinessSeats}
-                  min={1}
-                  max={500}
-                  label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
-                />
-              </View>
+          {/* Error */}
+          {error && (
+            <View className="mb-6 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3">
+              <Text className="text-sm font-medium text-destructive">{error}</Text>
+            </View>
+          )}
 
+          <View className="mb-4 flex-row flex-wrap items-end justify-between gap-3">
+            <View>
+              <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">2. Choose a plan</Text>
+              <Text className="mt-1 text-xl font-semibold text-foreground">Simple pricing for growing teams</Text>
+            </View>
+            {/* Billing Interval Toggle */}
+            <View className="flex-row rounded-xl border border-border bg-background p-1">
               <Pressable
-                onPress={() => handleCheckout('business', businessSeats)}
-                disabled={isCheckoutLoading}
+                onPress={() => setBillingInterval('monthly')}
                 className={cn(
-                  'w-full items-center justify-center py-3 rounded-md',
-                  isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
+                  'min-h-10 justify-center rounded-lg px-4',
+                  billingInterval === 'monthly' && 'bg-primary'
                 )}
+                accessibilityRole="button"
+                accessibilityState={{ selected: billingInterval === 'monthly' }}
               >
                 <Text className={cn(
                   'text-sm font-medium',
-                  isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
+                  billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground'
                 )}>
-                  {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
+                  Monthly
                 </Text>
               </Pressable>
-
-              <View className="gap-2">
-                <Text className="text-sm font-medium text-foreground">
-                  {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
-                </Text>
-                <FeatureList features={BUSINESS_FEATURES} />
-              </View>
-            </CardContent>
-          </Card>
-        </View>
-
-        {/* Enterprise Plan */}
-        <View className="md:flex-1 md:w-0">
-          <Card>
-            <CardContent className="p-5 gap-5">
-              <View className="flex-row items-center gap-2">
-                <Crown size={20} className="text-amber-500" />
-                <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
-              </View>
-              <Text className="text-sm text-muted-foreground">
-                Built for large orgs needing flexibility, scale, and governance.
-              </Text>
-
-              <View>
-                <Text className="text-4xl font-bold text-foreground">Custom</Text>
-                <Text className="text-sm text-muted-foreground">Flexible plans</Text>
-              </View>
-
               <Pressable
-                onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
-                className="w-full items-center justify-center py-3 rounded-md border border-border active:bg-muted"
+                onPress={() => setBillingInterval('annual')}
+                className={cn(
+                  'min-h-10 flex-row items-center justify-center gap-1.5 rounded-lg px-4',
+                  billingInterval === 'annual' && 'bg-primary'
+                )}
+                accessibilityRole="button"
+                accessibilityState={{ selected: billingInterval === 'annual' }}
               >
-                <Text className="text-sm font-medium text-foreground">Book a demo</Text>
+                <Text className={cn(
+                  'text-sm font-medium',
+                  billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground'
+                )}>
+                  Annual
+                </Text>
+                <Badge variant="secondary" className="ml-1">
+                  <Text className="text-[10px]">Save ~17%</Text>
+                </Badge>
               </Pressable>
+            </View>
+          </View>
 
-              <FeatureList features={ENTERPRISE_FEATURES} />
-            </CardContent>
-          </Card>
+          {/* Plan Cards */}
+          <View className="gap-5 md:flex-row md:items-stretch">
+            {/* Pro Plan */}
+            <View className="md:flex-1 md:w-0">
+              <Card className="h-full rounded-2xl border-border/80 bg-card">
+                <CardContent className="gap-5 p-5">
+                  <View className="flex-row items-center gap-2">
+                    <View className="h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10">
+                      <Zap size={18} className="text-blue-500" />
+                    </View>
+                    <Text className="text-lg font-semibold text-foreground">Pro</Text>
+                  </View>
+                  <Text className="text-sm leading-5 text-muted-foreground">
+                    Designed for fast-moving teams building together in real time.
+                  </Text>
+
+                  <View>
+                    <View className="flex-row items-baseline gap-1">
+                      <Text className="text-4xl font-bold text-foreground">
+                        ${billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats)}
+                      </Text>
+                      <Text className="text-sm text-muted-foreground">per month</Text>
+                    </View>
+                    <Text className="mt-1 text-sm text-muted-foreground">
+                      ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
+                    </Text>
+                  </View>
+
+                  <View>
+                    <Text className="mb-2 text-sm font-medium text-foreground">
+                      Seats
+                    </Text>
+                    <SeatCounter
+                      value={proSeats}
+                      onChange={setProSeats}
+                      min={1}
+                      max={500}
+                      label={`$${SEAT_INCLUDED_USD.pro} / seat / month`}
+                    />
+                  </View>
+
+                  <Pressable
+                    onPress={() => handleCheckout('pro', proSeats)}
+                    disabled={isCheckoutLoading}
+                    className={cn(
+                      'min-h-12 w-full items-center justify-center rounded-xl',
+                      isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
+                    )}
+                    accessibilityRole="button"
+                    accessibilityLabel="Subscribe to Pro and create workspace"
+                    accessibilityState={{ disabled: isCheckoutLoading }}
+                  >
+                    <Text className={cn(
+                      'text-sm font-semibold',
+                      isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
+                    )}>
+                      {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
+                    </Text>
+                  </Pressable>
+
+                  <View className="gap-2 border-t border-border pt-4">
+                    <Text className="text-sm font-medium text-foreground">
+                      {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
+                    </Text>
+                    <Text className="text-sm text-muted-foreground">
+                      All features in Free, plus:
+                    </Text>
+                    <FeatureList features={PRO_FEATURES} />
+                  </View>
+                </CardContent>
+              </Card>
+            </View>
+
+            {/* Business Plan */}
+            <View className="md:flex-1 md:w-0">
+              <View className="items-center -mb-3 z-10">
+                <Badge className="bg-primary">
+                  <Text className="text-xs text-primary-foreground font-medium">Most Popular</Text>
+                </Badge>
+              </View>
+              <Card className="h-full rounded-2xl border-primary bg-card">
+                <CardContent className="gap-5 p-5 pt-7">
+                  <View className="flex-row items-center gap-2">
+                    <View className="h-9 w-9 items-center justify-center rounded-lg bg-purple-500/10">
+                      <Building2 size={18} className="text-purple-500" />
+                    </View>
+                    <Text className="text-lg font-semibold text-foreground">Business</Text>
+                  </View>
+                  <Text className="text-sm leading-5 text-muted-foreground">
+                    Advanced controls and power features for growing departments
+                  </Text>
+
+                  <View>
+                    <View className="flex-row items-baseline gap-1">
+                      <Text className="text-4xl font-bold text-foreground">
+                        ${billingInterval === 'monthly' ? businessPricing.monthly * businessSeats : Math.round((businessPricing.annual / 12) * businessSeats)}
+                      </Text>
+                      <Text className="text-sm text-muted-foreground">per month</Text>
+                    </View>
+                    <Text className="mt-1 text-sm text-muted-foreground">
+                      ${businessPricing.monthly}/seat × {businessSeats} seat{businessSeats === 1 ? '' : 's'} — raw cost + 20% on usage
+                    </Text>
+                  </View>
+
+                  <View>
+                    <Text className="mb-2 text-sm font-medium text-foreground">
+                      Seats
+                    </Text>
+                    <SeatCounter
+                      value={businessSeats}
+                      onChange={setBusinessSeats}
+                      min={1}
+                      max={500}
+                      label={`$${SEAT_INCLUDED_USD.business} / seat / month`}
+                    />
+                  </View>
+
+                  <Pressable
+                    onPress={() => handleCheckout('business', businessSeats)}
+                    disabled={isCheckoutLoading}
+                    className={cn(
+                      'min-h-12 w-full items-center justify-center rounded-xl',
+                      isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
+                    )}
+                    accessibilityRole="button"
+                    accessibilityLabel="Subscribe to Business and create workspace"
+                    accessibilityState={{ disabled: isCheckoutLoading }}
+                  >
+                    <Text className={cn(
+                      'text-sm font-semibold',
+                      isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
+                    )}>
+                      {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
+                    </Text>
+                  </Pressable>
+
+                  <View className="gap-2 border-t border-border pt-4">
+                    <Text className="text-sm font-medium text-foreground">
+                      {formatUsd(SEAT_INCLUDED_USD.business * businessSeats)} of usage / month
+                    </Text>
+                    <FeatureList features={BUSINESS_FEATURES} />
+                  </View>
+                </CardContent>
+              </Card>
+            </View>
+
+            {/* Enterprise Plan */}
+            <View className="md:flex-1 md:w-0">
+              <Card className="h-full rounded-2xl border-border/80 bg-card">
+                <CardContent className="gap-5 p-5">
+                  <View className="flex-row items-center gap-2">
+                    <View className="h-9 w-9 items-center justify-center rounded-lg bg-amber-500/10">
+                      <Crown size={18} className="text-amber-500" />
+                    </View>
+                    <Text className="text-lg font-semibold text-foreground">Enterprise</Text>
+                  </View>
+                  <Text className="text-sm leading-5 text-muted-foreground">
+                    Built for large orgs needing flexibility, scale, and governance.
+                  </Text>
+
+                  <View>
+                    <Text className="text-4xl font-bold text-foreground">Custom</Text>
+                    <Text className="mt-1 text-sm text-muted-foreground">Flexible plans</Text>
+                  </View>
+
+                  <Pressable
+                    onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+                    className="min-h-12 w-full items-center justify-center rounded-xl border border-border active:bg-muted"
+                    accessibilityRole="link"
+                    accessibilityLabel="Book an Enterprise demo"
+                  >
+                    <Text className="text-sm font-semibold text-foreground">Book a demo</Text>
+                  </Pressable>
+
+                  <View className="border-t border-border pt-4">
+                    <FeatureList features={ENTERPRISE_FEATURES} />
+                  </View>
+                </CardContent>
+              </Card>
+            </View>
+          </View>
+          <Text className="mt-5 text-center text-xs leading-5 text-muted-foreground">
+            Payments are handled through Stripe. You can review plan details before completing checkout.
+          </Text>
         </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   )
 }

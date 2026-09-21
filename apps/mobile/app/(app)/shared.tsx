@@ -298,7 +298,7 @@ export default observer(function SharedWithMePage() {
     ({ item: project }: { item: any }) => (
       <Pressable
         onPress={() => handleProjectPress(project)}
-        className="flex-1 mx-1.5 mb-3 rounded-xl bg-card overflow-hidden border border-border"
+        className="flex-1 mx-1.5 mb-3 overflow-hidden rounded-xl border border-border bg-card active:bg-muted/50"
       >
         <View
           style={{ aspectRatio: 16 / 9 }}
@@ -348,7 +348,7 @@ export default observer(function SharedWithMePage() {
     ({ item: project }: { item: any }) => (
       <Pressable
         onPress={() => handleProjectPress(project)}
-        className="flex-row items-center px-4 py-3 border-b border-border"
+        className="mb-2 flex-row items-center rounded-xl border border-border bg-card px-4 py-3 active:bg-muted/50"
       >
         <View
           className={cn(
@@ -387,7 +387,7 @@ export default observer(function SharedWithMePage() {
           onPress={() => toggleCollapsed(group.workspace.id)}
           accessibilityRole="button"
           accessibilityState={{ expanded: !isCollapsed }}
-          className="flex-row items-center pl-3 pr-4 py-3 bg-muted/60 dark:bg-muted/40 border-y border-border border-l-2 border-l-primary/50 hover:bg-muted/80 dark:hover:bg-muted/60"
+          className="mx-4 flex-row items-center rounded-xl border border-border bg-card py-3 pl-3 pr-4 active:bg-muted"
         >
           <View
             className={cn(
@@ -428,42 +428,50 @@ export default observer(function SharedWithMePage() {
   return (
     <SafeAreaView className="flex-1 bg-background">
       {/* Header */}
-      <View className="px-4 pt-4 pb-2">
-        <View className="flex-row items-center gap-2">
-          <Users size={20} className="text-primary" />
-          <Text className="text-foreground text-lg font-semibold">Shared with me</Text>
-        </View>
-        <Text className="text-muted-foreground text-sm mt-1">
-          Projects from workspaces you've been invited to
-        </Text>
-        {!isLoading && totalFiltered > 0 && (
-          <Text className="text-muted-foreground text-xs mt-1">
-            {totalFiltered} {totalFiltered === 1 ? 'project' : 'projects'} across{' '}
-            {visibleGroupCount} {visibleGroupCount === 1 ? 'workspace' : 'workspaces'}
+      <View className="border-b border-border/70 px-4 pt-3 pb-3">
+        <View className="w-full max-w-5xl self-center">
+          <View className="flex-row items-center gap-3">
+            <View className="h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+              <Users size={19} className="text-primary" />
+            </View>
+            <View className="min-w-0 flex-1">
+              <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">Collaboration</Text>
+              <Text className="text-2xl font-semibold tracking-tight text-foreground">Shared with me</Text>
+            </View>
+          </View>
+          <Text className="mt-2 text-sm leading-5 text-muted-foreground">
+            Projects from workspaces you've been invited to
           </Text>
-        )}
+          {!isLoading && totalFiltered > 0 && (
+            <Text className="mt-1 text-xs text-muted-foreground">
+              {totalFiltered} {totalFiltered === 1 ? 'project' : 'projects'} across{' '}
+              {visibleGroupCount} {visibleGroupCount === 1 ? 'workspace' : 'workspaces'}
+            </Text>
+          )}
+        </View>
       </View>
 
       {/* Filters Bar */}
-      <View className="flex-row items-center gap-2 px-4 py-2 border-b border-border">
-        <View className="flex-1 flex-row items-center bg-muted rounded-lg px-3 py-2">
-          <Search size={16} className="text-muted-foreground mr-2" />
-          <TextInput
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search shared..."
-            placeholderTextColor="#9ca3af"
-            className="flex-1 text-foreground text-sm"
-          />
-        </View>
-        <Pressable
-          onPress={() => setSortModalVisible(true)}
-          className="flex-row items-center border border-border rounded-lg px-3 py-2"
-        >
-          <Text className="text-foreground text-xs mr-1">{sortLabel}</Text>
-          <ChevronDown size={14} className="text-muted-foreground" />
-        </Pressable>
-        <View className="flex-row">
+      <View className="px-4 py-3">
+        <View className="w-full max-w-5xl self-center flex-row items-center gap-2 rounded-xl border border-border bg-card p-2">
+          <View className="flex-1 flex-row items-center rounded-lg bg-muted px-3 py-2">
+            <Search size={16} className="mr-2 text-muted-foreground" />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search shared..."
+              placeholderTextColor="#9ca3af"
+              className="flex-1 text-foreground text-sm"
+            />
+          </View>
+          <Pressable
+            onPress={() => setSortModalVisible(true)}
+            className="flex-row items-center rounded-lg border border-border px-3 py-2"
+          >
+            <Text className="mr-1 text-foreground text-xs">{sortLabel}</Text>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Pressable>
+          <View className="flex-row">
           <Pressable
             onPress={() => setViewMode('grid')}
             className={cn('p-2 rounded-l-lg border border-border', viewMode === 'grid' && 'bg-secondary')}
@@ -476,6 +484,7 @@ export default observer(function SharedWithMePage() {
           >
             <List size={16} className={viewMode === 'list' ? 'text-foreground' : 'text-muted-foreground'} />
           </Pressable>
+          </View>
         </View>
       </View>
 
@@ -486,24 +495,26 @@ export default observer(function SharedWithMePage() {
         </View>
       ) : filteredProjects.length === 0 ? (
         <View className="flex-1 items-center justify-center px-6">
-          <View className="w-16 h-16 rounded-full bg-muted items-center justify-center mb-4">
-            <Users size={32} className="text-muted-foreground/50" />
+          <View className="w-full max-w-sm items-center rounded-2xl border border-border bg-card px-6 py-8">
+            <View className="mb-4 h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+              <Users size={24} className="text-primary" />
+            </View>
+            <Text className="text-foreground text-base font-semibold mb-1">
+              {searchQuery ? 'No results found' : 'No shared projects yet'}
+            </Text>
+            <Text className="text-muted-foreground text-sm text-center max-w-[300px]">
+              {searchQuery
+                ? `No shared projects match "${searchQuery}"`
+                : 'Projects you are invited to will appear here. When someone adds you to their workspace, you\'ll see their projects here.'}
+            </Text>
           </View>
-          <Text className="text-foreground text-base font-medium mb-1">
-            {searchQuery ? 'No results found' : 'No shared projects yet'}
-          </Text>
-          <Text className="text-muted-foreground text-sm text-center max-w-[300px]">
-            {searchQuery
-              ? `No shared projects match "${searchQuery}"`
-              : 'Projects you are invited to will appear here. When someone adds you to their workspace, you\'ll see their projects here.'}
-          </Text>
         </View>
       ) : (
         <FlatList
           key={`groups-${viewMode}`}
           data={groups}
           keyExtractor={(g) => g.workspace.id}
-          contentContainerClassName="pb-8"
+          contentContainerClassName="w-full max-w-5xl self-center pb-8"
           renderItem={({ item: group }) => {
             const isCollapsed = !!collapsed[group.workspace.id]
             return (

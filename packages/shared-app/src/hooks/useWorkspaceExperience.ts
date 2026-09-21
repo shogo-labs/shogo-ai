@@ -26,7 +26,7 @@
 
 export type WorkspaceExperienceKind = 'personal' | 'team'
 
-export type BottomTabId = 'chat' | 'goals' | 'activity' | 'tasks' | 'canvases'
+export type BottomTabId = 'chat' | 'goals' | 'activity' | 'tasks' | 'canvases' | 'more'
 
 export interface WorkspaceExperienceComposer {
   /** Show the model picker control in ChatInput. */
@@ -35,6 +35,19 @@ export interface WorkspaceExperienceComposer {
   showInteractionModes: boolean
   /** When interaction modes are hidden, the mode ChatPanel should force. */
   forcedMode?: 'agent'
+}
+
+/**
+ * Capabilities supplied by the workspace-scoped agent APIs. Activation is
+ * controlled separately by the server-managed `agentShell` rollout flag; the
+ * descriptor only prevents personal/team navigation from drifting once the
+ * shell is enabled.
+ */
+export interface WorkspaceAgentExperience {
+  primarySession: boolean
+  sideChats: boolean
+  projectAttachments: boolean
+  goalsAndApprovals: boolean
 }
 
 export interface WorkspaceExperience {
@@ -66,6 +79,7 @@ export interface WorkspaceExperience {
    */
   chatReturnsToProjectContext: boolean
   composer: WorkspaceExperienceComposer
+  workspaceAgent: WorkspaceAgentExperience
 }
 
 /**
@@ -89,13 +103,19 @@ export function workspaceExperience(
     showGoalsNav: isPersonal,
     showSideChatsNav: isPersonal,
     bottomTabs: isPersonal
-      ? ['chat', 'goals', 'activity']
-      : ['chat', 'tasks', 'activity', 'canvases'],
+      ? ['chat', 'canvases', 'activity', 'goals', 'more']
+      : ['chat', 'tasks', 'activity', 'canvases', 'more'],
     chatReturnsToProjectContext: !isPersonal,
     composer: {
       showModelPicker: !isPersonal,
       showInteractionModes: !isPersonal,
       forcedMode: isPersonal ? 'agent' : undefined,
+    },
+    workspaceAgent: {
+      primarySession: true,
+      sideChats: true,
+      projectAttachments: true,
+      goalsAndApprovals: true,
     },
   }
 }

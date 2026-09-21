@@ -34,7 +34,6 @@ import {
 } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { CHATGPT_COMPOSER } from "../../lib/composer-phone"
 import { NativePhoneBottomFade } from '../../components/phone/NativePhoneBottomFade'
 import {
   PhoneListEmpty,
@@ -58,11 +57,11 @@ const SEARCH_PILL_GAP = 8
 const SEARCH_PILL_PAD_X = 14
 const SEARCH_DOCK_ROW = 48
 const SEARCH_DOCK_PAD_TOP = 12
-const SEARCH_PILL_IDLE = { dark: '#2a2a2a', light: '#f4f4f5' } as const
-const SEARCH_PILL_COUNT_IDLE = CHATGPT_COMPOSER.dark.placeholder
+const SEARCH_PILL_IDLE = { dark: '#292521', light: '#fff8f2' } as const
+const SEARCH_PILL_COUNT_IDLE = '#8b8b8b'
 const SEARCH_PILL_COUNT_ACTIVE = {
-  dark: 'rgba(13,13,13,0.55)',
-  light: 'rgba(255,255,255,0.6)',
+  dark: '#ffedd5',
+  light: '#fff7ed',
 } as const
 
 type SearchTab = 'all' | 'starred' | 'shared' | 'keys'
@@ -291,6 +290,19 @@ export default observer(function SearchPage() {
   return (
     <View className="flex-1 bg-background" style={{ flex: 1, paddingTop: insets.top, backgroundColor: pageBg }}>
       <View className="flex-1">
+        <View className="mx-4 mt-3 overflow-hidden rounded-3xl border border-primary/15 bg-primary/5 px-5 py-4">
+          <View className="absolute -right-5 -top-8 h-24 w-24 rounded-full bg-primary/10" />
+          <View className="flex-row items-center gap-2">
+            <View className="h-8 w-8 items-center justify-center rounded-xl bg-primary/15">
+              <Search size={17} color="#e27927" strokeWidth={2.2} />
+            </View>
+            <Text className="text-xs font-bold uppercase tracking-[1.4px] text-primary">Workspace</Text>
+          </View>
+          <Text className="mt-3 text-2xl font-semibold tracking-tight text-foreground">Find what matters</Text>
+          <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+            Search projects, shared work, and API keys in one place.
+          </Text>
+        </View>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -318,8 +330,8 @@ export default observer(function SearchPage() {
                   flexDirection: 'row',
                   alignItems: 'center',
                   backgroundColor: active
-                    ?isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text
-                    :isDark ? SEARCH_PILL_IDLE.dark : SEARCH_PILL_IDLE.light,
+                    ? '#e27927'
+                    : isDark ? SEARCH_PILL_IDLE.dark : SEARCH_PILL_IDLE.light,
                 }}
               >
                 <Text
@@ -328,8 +340,8 @@ export default observer(function SearchPage() {
                     lineHeight: 18,
                     fontWeight: '500',
                     color: active
-                      ?isDark ? CHATGPT_COMPOSER.dark.sendIcon : CHATGPT_COMPOSER.light.sendIcon
-                      :isDark ? CHATGPT_COMPOSER.dark.text : CHATGPT_COMPOSER.light.text,
+                      ? '#fff'
+                      : isDark ? '#fafafa' : '#3f3f46',
                     ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
                   }}
                 >
@@ -401,16 +413,16 @@ export default observer(function SearchPage() {
             }}
           >
             <View
-              className="h-12 min-w-0 flex-1 flex-row items-center rounded-full px-4"
+              className="h-12 min-w-0 flex-1 flex-row items-center rounded-full border border-primary/15 px-4"
               style={[{ overflow: 'hidden' }, dockGlass]}
             >
-              <Search size={18} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+              <Search size={18} color={query ? '#e27927' : iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
               <TextInput
                 ref={inputRef}
                 value={query}
                 onChangeText={setQuery}
                 placeholder="Search"
-                placeholderTextColor={CHATGPT_COMPOSER.dark.placeholder}
+                placeholderTextColor={isDark ? '#a1a1aa' : '#71717a'}
                 autoCorrect={false}
                 autoCapitalize="none"
                 returnKeyType="search"
@@ -427,10 +439,10 @@ export default observer(function SearchPage() {
             <Pressable
               onPress={closeSearch}
               accessibilityLabel="Close search"
-              className="ml-2 h-12 w-12 items-center justify-center rounded-full"
+              className="ml-2 h-12 w-12 items-center justify-center rounded-full border border-primary/15 bg-primary/10"
               style={[{ overflow: 'hidden' }, dockGlass]}
             >
-              <X size={20} color={iconChrome.color} strokeWidth={iconChrome.strokeWidth} />
+              <X size={20} color="#e27927" strokeWidth={iconChrome.strokeWidth} />
             </Pressable>
           </View>
           <Animated.View style={{ height: composerKeyboardPad, backgroundColor: pageBg }} />

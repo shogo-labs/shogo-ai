@@ -62,7 +62,6 @@ import {
   useSDKDomain,
   useSDKReady,
   useDomainActions,
-  useDomainHttp,
   useIsRemoteSource,
 } from '@shogo/shared-app/domain'
 import type { IDomainStore } from '@shogo/domain-stores'
@@ -82,6 +81,7 @@ import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu
 import {
   useNativePhoneWindow, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useDomainHttp } from '../../../contexts/domain'
 
 // Types
 type SortBy = 'lastEdited' | 'dateCreated' | 'alphabetical'
@@ -458,7 +458,7 @@ export default observer(function AllProjectsPage() {
   }, [http])
 
   const handleCreateProject = useCallback(() => {
-    router.push('/(app)/' as any)
+    router.push('/(app)/new-project' as any)
   }, [router])
 
   const handleToggleStar = useCallback(
@@ -825,6 +825,8 @@ export default observer(function AllProjectsPage() {
           <View style={{ flex: 1, margin: 6 }}>
             <Pressable
               onPress={handleCreateProject}
+              accessibilityRole="button"
+              accessibilityLabel="Create a new project"
               className="items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-border"
               style={{ height: comfortable ? 196 : 228 }}
             >
@@ -1060,6 +1062,8 @@ export default observer(function AllProjectsPage() {
         return (
           <Pressable
             onPress={handleCreateProject}
+            accessibilityRole="button"
+            accessibilityLabel="Create a new project"
             className={cn(
               'flex-row items-center border-b border-border/50',
               comfortable ? 'min-h-16 gap-3 px-4 py-3.5' : 'gap-3 px-4 py-3',
@@ -1345,6 +1349,8 @@ export default observer(function AllProjectsPage() {
         </Text>
         <Pressable
           onPress={handleCreateProject}
+          accessibilityRole="button"
+          accessibilityLabel="Create your first project"
           className="flex-row items-center gap-2 bg-primary px-4 py-2 rounded-lg"
         >
           <Plus size={16} color="#fff" />
@@ -1356,9 +1362,32 @@ export default observer(function AllProjectsPage() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* Header */}
-      <View className={cn('flex-row items-center px-4', comfortable ? 'pt-2 pb-2' : 'pt-3 pb-1')}>
-        <Text className={cn('font-semibold text-foreground', comfortable ? 'text-2xl' : 'text-lg')}>Projects</Text>
+      {/* Page identity and primary action */}
+      <View className="border-b border-border/70 bg-card/80">
+        <View className={cn('flex-row items-center px-4', comfortable ? 'min-h-[76px] py-3' : 'min-h-[64px] py-2.5')}>
+          <View className="min-w-0 flex-1 pr-3">
+            <Text className={cn('font-semibold tracking-tight text-foreground', comfortable ? 'text-2xl' : 'text-xl')}>
+              Projects
+            </Text>
+            <Text className={cn('mt-0.5 text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')} numberOfLines={1}>
+              Organize, revisit, and build on your work.
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleCreateProject}
+            accessibilityRole="button"
+            accessibilityLabel="Create a new project"
+            className={cn(
+              'flex-row items-center justify-center gap-1.5 rounded-xl bg-primary active:opacity-85',
+              comfortable ? 'min-h-11 px-4' : 'h-10 px-3',
+            )}
+          >
+            <Plus size={comfortable ? 18 : 16} color="#fff" />
+            <Text className={cn('font-semibold text-primary-foreground', comfortable ? 'text-sm' : 'text-xs')}>
+              New project
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
       {/* Breadcrumb navigation */}
@@ -1377,7 +1406,7 @@ export default observer(function AllProjectsPage() {
       )}
 
       {comfortable ? (
-        <View className="px-4 pb-3 gap-3">
+        <View className="mx-4 mb-3 mt-3 gap-3 rounded-2xl border border-border/70 bg-card/70 p-3">
           <View className="h-12 flex-row items-center rounded-xl border border-input bg-card px-3">
             <Search size={20} className="text-muted-foreground" />
             <TextInput
@@ -1389,6 +1418,7 @@ export default observer(function AllProjectsPage() {
               autoCapitalize="none"
               autoCorrect={false}
               textAlignVertical="center"
+              accessibilityLabel="Search projects"
             />
           </View>
 
@@ -1405,6 +1435,8 @@ export default observer(function AllProjectsPage() {
             ) : null}
             <Pressable
               onPress={() => setNewFolderModalVisible(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Create a new folder"
               className="h-12 flex-row items-center gap-2 rounded-xl border border-input px-4 active:bg-muted"
             >
               <FolderPlus size={20} className="text-muted-foreground" />
@@ -1415,6 +1447,9 @@ export default observer(function AllProjectsPage() {
           <View className="flex-row flex-wrap items-center gap-2">
             <Pressable
               onPress={() => setSortOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Sort projects: ${sortLabel}`}
+              accessibilityState={{ expanded: sortOpen }}
               className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
             >
               <Text className="text-base text-foreground">{sortLabel}</Text>
@@ -1422,6 +1457,9 @@ export default observer(function AllProjectsPage() {
             </Pressable>
             <Pressable
               onPress={() => setVisibilityOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter by visibility: ${visibilityLabel}`}
+              accessibilityState={{ expanded: visibilityOpen }}
               className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
             >
               <Text className="text-base text-foreground">{visibilityLabel}</Text>
@@ -1429,6 +1467,9 @@ export default observer(function AllProjectsPage() {
             </Pressable>
             <Pressable
               onPress={() => setStatusOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter by status: ${statusLabel}`}
+              accessibilityState={{ expanded: statusOpen }}
               className="h-11 flex-row items-center gap-1.5 rounded-xl border border-input px-3"
             >
               <Text className="text-base text-foreground">{statusLabel}</Text>
@@ -1437,6 +1478,9 @@ export default observer(function AllProjectsPage() {
             <View className="flex-1" />
             <Pressable
               onPress={handleToggleSelect}
+              accessibilityRole="button"
+              accessibilityLabel={selectMode ? 'Exit project selection mode' : 'Select projects'}
+              accessibilityState={{ selected: selectMode }}
               className={cn(
                 'h-11 w-11 items-center justify-center rounded-xl',
                 selectMode ? 'bg-primary/10' : 'border border-input',
@@ -1446,6 +1490,9 @@ export default observer(function AllProjectsPage() {
             </Pressable>
             <Pressable
               onPress={() => setViewMode('grid')}
+              accessibilityRole="button"
+              accessibilityLabel="Show projects as a grid"
+              accessibilityState={{ selected: viewMode === 'grid' }}
               className={cn(
                 'h-11 w-11 items-center justify-center rounded-xl',
                 viewMode === 'grid' ? 'bg-secondary' : 'border border-input',
@@ -1455,6 +1502,9 @@ export default observer(function AllProjectsPage() {
             </Pressable>
             <Pressable
               onPress={() => setViewMode('list')}
+              accessibilityRole="button"
+              accessibilityLabel="Show projects as a list"
+              accessibilityState={{ selected: viewMode === 'list' }}
               className={cn(
                 'h-11 w-11 items-center justify-center rounded-xl',
                 viewMode === 'list' ? 'bg-secondary' : 'border border-input',
@@ -1465,7 +1515,7 @@ export default observer(function AllProjectsPage() {
           </View>
         </View>
       ) : (
-      <View className="px-4 py-2 gap-2">
+      <View className="mx-4 mb-2 mt-3 gap-2 rounded-xl border border-border/70 bg-card/70 p-2.5">
         <View className="flex-row items-center gap-2 flex-wrap">
           {/* Search */}
           <View className="flex-row items-center bg-card border border-input rounded-lg px-3 h-9 min-w-[180px] flex-1">
@@ -1479,6 +1529,7 @@ export default observer(function AllProjectsPage() {
               autoCapitalize="none"
               autoCorrect={false}
               textAlignVertical="center"
+              accessibilityLabel="Search projects"
             />
           </View>
           {/* Sort */}
@@ -1490,6 +1541,9 @@ export default observer(function AllProjectsPage() {
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
+                accessibilityRole="button"
+                accessibilityLabel={`Sort projects: ${sortLabel}`}
+                accessibilityState={{ expanded: sortOpen }}
                 className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
               >
                 <Text className="text-xs text-foreground">{sortLabel}</Text>
@@ -1528,6 +1582,9 @@ export default observer(function AllProjectsPage() {
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
+                accessibilityRole="button"
+                accessibilityLabel={`Filter by visibility: ${visibilityLabel}`}
+                accessibilityState={{ expanded: visibilityOpen }}
                 className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
               >
                 <Text className="text-xs text-foreground">{visibilityLabel}</Text>
@@ -1566,6 +1623,9 @@ export default observer(function AllProjectsPage() {
             trigger={(triggerProps) => (
               <Pressable
                 {...triggerProps}
+                accessibilityRole="button"
+                accessibilityLabel={`Filter by status: ${statusLabel}`}
+                accessibilityState={{ expanded: statusOpen }}
                 className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input"
               >
                 <Text className="text-xs text-foreground">{statusLabel}</Text>
@@ -1611,6 +1671,8 @@ export default observer(function AllProjectsPage() {
           {/* New folder */}
           <Pressable
             onPress={() => setNewFolderModalVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Create a new folder"
             className="flex-row items-center gap-1 px-2.5 py-1.5 rounded-lg border border-input active:bg-muted"
           >
             <FolderPlus size={14} className="text-muted-foreground" />
@@ -1620,6 +1682,9 @@ export default observer(function AllProjectsPage() {
           {/* Select */}
           <Pressable
             onPress={handleToggleSelect}
+            accessibilityRole="button"
+            accessibilityLabel={selectMode ? 'Exit project selection mode' : 'Select projects'}
+            accessibilityState={{ selected: selectMode }}
             className={cn(
               'w-8 h-8 items-center justify-center rounded-lg',
               selectMode ? 'bg-primary/10' : 'bg-transparent',
@@ -1632,6 +1697,9 @@ export default observer(function AllProjectsPage() {
           <View className="flex-row items-center gap-1">
             <Pressable
               onPress={() => setViewMode('grid')}
+              accessibilityRole="button"
+              accessibilityLabel="Show projects as a grid"
+              accessibilityState={{ selected: viewMode === 'grid' }}
               className={cn(
                 'w-8 h-8 items-center justify-center rounded-lg',
                 viewMode === 'grid' ? 'bg-secondary' : 'bg-transparent',
@@ -1644,6 +1712,9 @@ export default observer(function AllProjectsPage() {
             </Pressable>
             <Pressable
               onPress={() => setViewMode('list')}
+              accessibilityRole="button"
+              accessibilityLabel="Show projects as a list"
+              accessibilityState={{ selected: viewMode === 'list' }}
               className={cn(
                 'w-8 h-8 items-center justify-center rounded-lg',
                 viewMode === 'list' ? 'bg-secondary' : 'bg-transparent',
@@ -1660,6 +1731,15 @@ export default observer(function AllProjectsPage() {
       )}
 
       {/* Content */}
+      <View className="flex-row items-center justify-between px-4 pb-2 pt-1">
+        <Text className="text-sm font-medium text-foreground">
+          {currentFolder ? currentFolder.name : 'All projects'}
+        </Text>
+        <Text className="text-xs text-muted-foreground">
+          {filteredProjects.length} project{filteredProjects.length === 1 ? '' : 's'}
+          {currentFolders.length > 0 ? ` · ${currentFolders.length} folder${currentFolders.length === 1 ? '' : 's'}` : ''}
+        </Text>
+      </View>
 
       {viewMode === 'grid' ? (
         <FlatList

@@ -25,6 +25,7 @@ import * as WebBrowser from 'expo-web-browser'
 import * as ExpoLinking from 'expo-linking'
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   Building2,
@@ -170,6 +171,7 @@ export default observer(function BillingPage() {
   const iapTransactionsInFlightRef = useRef<Map<string, Promise<'processed' | 'failed'>>>(new Map())
   const toast = useToast()
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isTabletWidth = width >= 768
   const contentHorizontalPadding = isTabletWidth ? 24 : 16
   // Wider container on iPad portrait so the new 2-column plan grid breathes.
@@ -581,7 +583,10 @@ export default observer(function BillingPage() {
 
   if (isAuthLoading || isBillingLoading) {
     return (
-      <View className="flex-1 bg-background p-6">
+      <View
+        className="flex-1 bg-background px-6"
+        style={{ paddingTop: Math.max(insets.top + 24, 32), paddingBottom: Math.max(insets.bottom + 24, 32) }}
+      >
         <View className="gap-4">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-48 w-full" />
@@ -593,7 +598,10 @@ export default observer(function BillingPage() {
 
   if (!user || !currentWorkspace) {
     return (
-      <View className="flex-1 bg-background p-6">
+      <View
+        className="flex-1 bg-background px-6"
+        style={{ paddingTop: Math.max(insets.top + 24, 32), paddingBottom: Math.max(insets.bottom + 24, 32) }}
+      >
         <View className="items-center justify-center py-12">
           <Building2 size={48} className="text-muted-foreground mb-4" />
           <Text className="text-xl font-semibold text-foreground mb-2">
@@ -623,30 +631,38 @@ export default observer(function BillingPage() {
       className="flex-1 bg-background"
       contentContainerStyle={{
         paddingHorizontal: contentHorizontalPadding,
-        paddingVertical: 16,
-        paddingBottom: 60,
+        paddingTop: Math.max(insets.top + 20, 28),
+        paddingBottom: Math.max(insets.bottom + 32, 60),
         alignItems: 'center',
       }}
       showsVerticalScrollIndicator={false}
     >
       <View style={{ width: '100%', maxWidth: contentMaxWidth }}>
       {/* Header */}
-      <View className="flex-row items-center gap-3 mb-6">
-        <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)')}>
+      <View className="mb-6 flex-row items-center gap-3 border-b border-border/70 pb-5">
+        <Pressable
+          onPress={() => router.canGoBack() ? router.back() : router.replace('/(app)')}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          className="h-10 w-10 items-center justify-center rounded-full bg-muted/60 active:bg-muted"
+        >
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
         <View className="flex-1">
-          <Text className="text-2xl font-bold text-foreground">
+          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Workspace plan
+          </Text>
+          <Text className="mt-1 text-2xl font-semibold text-foreground">
             Billing
           </Text>
-          <Text className="text-sm text-muted-foreground">
+          <Text className="mt-1 text-sm text-muted-foreground">
             Manage your subscription plan and usage.
           </Text>
         </View>
       </View>
 
       {/* Current Plan Card */}
-      <Card className="mb-4">
+      <Card className="mb-4 rounded-2xl border-border shadow-none">
         <CardContent className="p-4">
           <View className="flex-row items-center justify-between">
             <View className="flex-row items-center gap-3 flex-1">
@@ -695,7 +711,7 @@ export default observer(function BillingPage() {
 
       {/* Redeem a license key */}
       {Platform.OS !== 'ios' && (
-      <Card className="mb-4">
+      <Card className="mb-4 rounded-2xl border-border shadow-none">
         <CardContent className="p-4 gap-3">
           <View className="flex-row items-center gap-2">
             <KeyRound size={16} className="text-primary" />
@@ -731,7 +747,7 @@ export default observer(function BillingPage() {
       )}
 
       {/* Usage Display — time-gated rolling windows */}
-      <Card className="mb-8">
+      <Card className="mb-6 rounded-2xl border-border shadow-none">
         <CardContent className="p-4 gap-4">
           <View>
             <Text className="text-sm font-medium text-foreground mb-1">
@@ -860,11 +876,11 @@ export default observer(function BillingPage() {
       </View>
 
       {/* Plan Cards — keep iPad portrait single-column; use columns only on wider layouts. */}
-      <View className="gap-6 lg:flex-row lg:flex-wrap lg:items-stretch xl:flex-nowrap" testID="plan-cards-row">
+      <View className="gap-4 lg:flex-row lg:flex-wrap lg:items-stretch xl:flex-nowrap" testID="plan-cards-row">
         {/* Basic Plan */}
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-basic">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col rounded-xl shadow-md">
+          <Card className="lg:flex-1 flex flex-col rounded-2xl border-border shadow-none">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2.5">
                 <View className="h-9 w-9 items-center justify-center rounded-full bg-green-500/10">
@@ -916,7 +932,7 @@ export default observer(function BillingPage() {
         {/* Pro Plan */}
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-pro">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col rounded-xl shadow-md">
+          <Card className="lg:flex-1 flex flex-col rounded-2xl border-border shadow-none">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2.5">
                 <View className="h-9 w-9 items-center justify-center rounded-full bg-blue-500/10">
@@ -978,11 +994,11 @@ export default observer(function BillingPage() {
         {/* Business Plan */}
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-business">
           <View className="min-h-8 items-center justify-center px-1">
-            <Badge className="bg-primary shadow-sm px-3 py-1 rounded-full">
+            <Badge className="rounded-full bg-primary px-3 py-1">
               <Text className="text-xs text-primary-foreground font-semibold">Most Popular</Text>
             </Badge>
           </View>
-          <Card className="lg:flex-1 flex flex-col rounded-xl border-2 border-primary bg-primary/[0.03] shadow-lg">
+          <Card className="lg:flex-1 flex flex-col rounded-2xl border-2 border-primary bg-primary/[0.03] shadow-none">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2.5">
                 <View className="h-9 w-9 items-center justify-center rounded-full bg-purple-500/10">
@@ -1042,7 +1058,7 @@ export default observer(function BillingPage() {
         {Platform.OS !== 'ios' && (
         <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-enterprise">
           <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col rounded-xl shadow-md">
+          <Card className="lg:flex-1 flex flex-col rounded-2xl border-border shadow-none">
             <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
               <View className="flex-row items-center gap-2.5">
                 <View className="h-9 w-9 items-center justify-center rounded-full bg-amber-500/10">

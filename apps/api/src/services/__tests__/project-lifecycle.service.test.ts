@@ -48,6 +48,7 @@ interface FakeProject {
   description: string | null
   workspaceId: string
   workingMode: string
+  hidden: boolean
   settings: unknown
   createdAt: Date
 }
@@ -69,6 +70,7 @@ const prismaStub = {
         description: (data.description as string | null) ?? null,
         workspaceId: data.workspaceId as string,
         workingMode: (data.workingMode as string) ?? 'managed',
+        hidden: data.hidden === true,
         settings: data.settings ?? null,
         createdAt: new Date(),
       }
@@ -119,6 +121,7 @@ function seedProject(overrides: Partial<FakeProject> = {}): FakeProject {
     description: null,
     workspaceId: 'ws_1',
     workingMode: 'managed',
+    hidden: false,
     settings: { techStackId: 'nextjs' },
     createdAt: new Date(),
     ...overrides,
@@ -150,6 +153,28 @@ describe('createProjectInWorkspace', () => {
     expect(project.name).toBe('New Project')
     expect(project.workspaceId).toBe('ws_1')
     expect(beforeCreateCalls).toHaveLength(1)
+  })
+
+  it('keeps agent-created projects visible unless the caller explicitly delegates them', async () => {
+    const project = await createProjectInWorkspace({
+      workspaceId: 'ws_personal',
+      actingUserId: 'user_1',
+      name: 'A visible project',
+    })
+
+    expect(beforeCreateCalls[0].hidden).toBe(false)
+    expect(projects.get(project.id)?.hidden).toBe(false)
+  })
+
+  it('keeps explicitly delegated agent projects hidden', async () => {
+    const project = await createProjectInWorkspace({
+      workspaceId: 'ws_personal',
+      actingUserId: 'user_1',
+      name: 'A delegated draft',
+      hidden: true,
+    })
+
+    expect(projects.get(project.id)?.hidden).toBe(true)
   })
 
   it('throws ProjectLifecycleError with the instance_too_small code untouched (not coerced to bad_request)', async () => {

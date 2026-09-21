@@ -24,7 +24,8 @@ import {
   Switch,
   useWindowDimensions,
 } from 'react-native'
-import { Clapperboard, Save, KeyRound, DollarSign, ShieldAlert } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { Clapperboard, Save, KeyRound, DollarSign, ShieldAlert, RefreshCw, RadioTower } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
 
@@ -120,9 +121,12 @@ function NumField({
 
 export default function AffiliateContentSettingsPage() {
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
+  const pagePadding = isWide ? 32 : 16
 
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null)
@@ -161,7 +165,12 @@ export default function AffiliateContentSettingsPage() {
 
   const load = useCallback(async () => {
     const r = await fetchSettings()
-    if (r) applyResponse(r)
+    if (r) {
+      applyResponse(r)
+      setLoadError(false)
+    } else {
+      setLoadError(true)
+    }
     setLoading(false)
   }, [applyResponse])
 
@@ -230,10 +239,48 @@ export default function AffiliateContentSettingsPage() {
 
   if (loading) {
     return (
-      <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
-        <Text className="text-muted-foreground mt-3 text-sm">Loading settings…</Text>
+      <View className="flex-1 items-center justify-center bg-background px-4">
+        <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
+          <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
+            <ActivityIndicator size="small" />
+          </View>
+          <Text className="text-sm font-semibold text-foreground mt-3">Loading content CPM controls</Text>
+          <Text className="text-xs text-muted-foreground mt-1 text-center">
+            Fetching provider, payout, and token settings.
+          </Text>
+        </View>
       </View>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <ScrollView
+        className="flex-1 bg-background"
+        contentContainerStyle={{
+          paddingTop: Math.max(insets.top, 12) + 12,
+          paddingHorizontal: pagePadding,
+          paddingBottom: Math.max(insets.bottom, 16) + 32,
+          width: '100%',
+        }}
+      >
+        <View className="w-full max-w-2xl self-center">
+          <SettingsHeader isWide={isWide} enabled={false} />
+          <View className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5 mt-5">
+            <Text className="text-sm font-semibold text-foreground">Settings could not be loaded</Text>
+            <Text className="text-xs text-muted-foreground mt-1">
+              No values are shown or saved until the admin settings endpoint responds.
+            </Text>
+            <Pressable
+              onPress={load}
+              className="self-start mt-4 flex-row items-center gap-1.5 rounded-lg bg-muted px-3 py-2"
+            >
+              <RefreshCw size={13} className="text-foreground" />
+              <Text className="text-xs font-medium text-foreground">Try again</Text>
+            </Pressable>
+          </View>
+        </View>
+      </ScrollView>
     )
   }
 
@@ -243,70 +290,68 @@ export default function AffiliateContentSettingsPage() {
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: isWide ? 32 : 16, paddingBottom: 48 }}
+      contentContainerStyle={{
+        paddingTop: Math.max(insets.top, 12) + 12,
+        paddingHorizontal: pagePadding,
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
+        width: '100%',
+      }}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <View className="flex-row items-center gap-2 mb-1">
-        <Clapperboard size={18} className="text-primary" />
-        <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
-          Affiliate Content CPM
+      <View className="w-full max-w-2xl self-center">
+        <SettingsHeader isWide={isWide} enabled={enabled} />
+        <Text className="text-sm text-muted-foreground mt-3 mb-5 px-1">
+          Track Instagram / TikTok views by affiliates and pay a CPM on new views. Per-creator CPM
+          overrides continue to be managed on each affiliate.
         </Text>
-      </View>
-      <Text className="text-sm text-muted-foreground mb-6">
-        Track Instagram / TikTok views by affiliates and pay a CPM on new views. Optional and off
-        by default — most deployments never enable this. Per-creator CPM overrides are set on each
-        affiliate.
-      </Text>
 
-      {/* Master toggle */}
-      <View className="bg-card border border-border rounded-xl p-4 mb-4">
-        <View className="flex-row items-center justify-between">
-          <View className="flex-1 pr-4">
-            <Text className="text-sm font-semibold text-foreground">Enabled</Text>
-            <Text className="text-[11px] text-muted-foreground mt-0.5">
-              Master toggle. When on, affiliates can connect handles, the hourly poll runs, and view
-              deltas accrue CPM commissions. Requires the affiliate program (SHOGO_AFFILIATES_NATIVE)
-              to also be enabled on the server.
-            </Text>
+        {/* Master toggle */}
+        <View className="bg-card border border-border rounded-2xl p-4 mb-5">
+          <View className="flex-row items-center justify-between">
+            <View className="flex-1 pr-4">
+              <Text className="text-sm font-semibold text-foreground">Content payouts</Text>
+              <Text className="text-[11px] text-muted-foreground mt-0.5">
+                When active, affiliates can connect handles, the hourly poll runs, and view deltas accrue
+                CPM commissions. The native affiliate program must also be enabled on the server.
+              </Text>
+            </View>
+            <Switch value={enabled} onValueChange={setEnabled} />
           </View>
-          <Switch value={enabled} onValueChange={setEnabled} />
         </View>
-      </View>
 
-      {/* Provider */}
-      <View className="bg-card border border-border rounded-xl p-4 mb-4">
-        <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Data Provider
-        </Text>
-        <View className="flex-row gap-2">
-          {(['ensembledata', 'official'] as ProviderName[]).map((p) => (
-            <Pressable
-              key={p}
-              onPress={() => setProvider(p)}
-              className={cn(
-                'flex-1 px-3 py-2.5 rounded-lg border items-center',
-                provider === p ? 'bg-primary/10 border-primary' : 'border-border active:bg-muted/50',
-              )}
-            >
-              <Text className={cn('text-sm font-medium', provider === p ? 'text-primary' : 'text-foreground')}>
-                {p === 'ensembledata' ? 'EnsembleData' : 'Official APIs'}
-              </Text>
-              <Text className="text-[10px] text-muted-foreground mt-0.5">
-                {p === 'ensembledata' ? 'Handle-based (unofficial)' : 'IG Graph + TikTok (OAuth)'}
-              </Text>
-            </Pressable>
-          ))}
+        {/* Provider */}
+        <SectionLabel title="Data source" detail="Where view counts come from" />
+        <View className="bg-card border border-border rounded-2xl p-4 mb-5">
+          <View className="flex-row gap-2">
+            {(['ensembledata', 'official'] as ProviderName[]).map((p) => (
+              <Pressable
+                key={p}
+                onPress={() => setProvider(p)}
+                className={cn(
+                  'flex-1 px-3 py-2.5 rounded-xl border items-center',
+                  provider === p ? 'bg-primary/10 border-primary' : 'border-border active:bg-muted/50',
+                )}
+              >
+                <Text className={cn('text-sm font-medium', provider === p ? 'text-primary' : 'text-foreground')}>
+                  {p === 'ensembledata' ? 'EnsembleData' : 'Official APIs'}
+                </Text>
+                <Text className="text-[10px] text-muted-foreground mt-0.5">
+                  {p === 'ensembledata' ? 'Handle-based (unofficial)' : 'IG Graph + TikTok (OAuth)'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          {provider === 'official' && (
+            <Text className="text-[11px] text-amber-500 mt-2">
+              The official OAuth provider is not yet implemented — polling will report
+              “not configured” until it ships.
+            </Text>
+          )}
         </View>
-        {provider === 'official' && (
-          <Text className="text-[11px] text-amber-500 mt-2">
-            The official OAuth provider is not yet implemented — polling will report
-            “not configured” until it ships.
-          </Text>
-        )}
-      </View>
 
-      {/* EnsembleData token */}
-      <View className="bg-card border border-border rounded-xl p-4 mb-4">
+        {/* EnsembleData token */}
+        <SectionLabel title="Provider credential" detail="Encrypted at rest" />
+        <View className="bg-card border border-border rounded-2xl p-4 mb-5">
         <View className="flex-row items-center gap-2 mb-2">
           <KeyRound size={14} className="text-primary" />
           <Text className="text-sm font-medium text-foreground">EnsembleData API Token</Text>
@@ -338,10 +383,11 @@ export default function AffiliateContentSettingsPage() {
             <Text className="text-xs text-red-400">Clear stored token</Text>
           </Pressable>
         )}
-      </View>
+        </View>
 
-      {/* CPM rates */}
-      <View className="bg-card border border-border rounded-xl p-4 mb-4">
+        {/* CPM rates */}
+        <SectionLabel title="Payout controls" detail="Rates, caps, and polling guardrails" />
+        <View className="bg-card border border-border rounded-2xl p-4 mb-5">
         <View className="flex-row items-center gap-2 mb-3">
           <DollarSign size={14} className="text-primary" />
           <Text className="text-sm font-medium text-foreground">CPM Rates</Text>
@@ -411,25 +457,59 @@ export default function AffiliateContentSettingsPage() {
             />
           </View>
         </View>
-      </View>
+        </View>
 
-      <View className="flex-row items-center gap-3">
-        <Pressable
-          onPress={onSave}
-          disabled={saving}
-          className={cn('flex-row items-center gap-1.5 px-4 py-2.5 rounded-lg', saving ? 'bg-muted' : 'bg-primary')}
-        >
-          {saving ? <ActivityIndicator size="small" /> : <Save size={14} className="text-primary-foreground" />}
-          <Text className={cn('text-sm font-medium', saving ? 'text-muted-foreground' : 'text-primary-foreground')}>
-            Save settings
-          </Text>
-        </Pressable>
-        {message && (
-          <Text className={cn('text-xs', message.type === 'ok' ? 'text-green-400' : 'text-red-400')}>
-            {message.text}
-          </Text>
-        )}
+        <View className="flex-row items-center gap-3 px-1">
+          <Pressable
+            onPress={onSave}
+            disabled={saving}
+            className={cn('flex-row items-center gap-1.5 px-4 py-2.5 rounded-lg', saving ? 'bg-muted' : 'bg-primary')}
+          >
+            {saving ? <ActivityIndicator size="small" /> : <Save size={14} className="text-primary-foreground" />}
+            <Text className={cn('text-sm font-medium', saving ? 'text-muted-foreground' : 'text-primary-foreground')}>
+              Save settings
+            </Text>
+          </Pressable>
+          {message && (
+            <Text className={cn('text-xs', message.type === 'ok' ? 'text-green-400' : 'text-red-400')}>
+              {message.text}
+            </Text>
+          )}
+        </View>
       </View>
     </ScrollView>
+  )
+}
+
+function SettingsHeader({ isWide, enabled }: { isWide: boolean; enabled: boolean }) {
+  return (
+    <View className="rounded-2xl border border-border bg-card p-4">
+      <View className="flex-row items-center gap-3">
+        <View className="h-9 w-9 rounded-xl bg-primary/10 items-center justify-center">
+          <Clapperboard size={17} className="text-primary" />
+        </View>
+        <View className="flex-1">
+          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+            Affiliate Content CPM
+          </Text>
+          <Text className="text-xs text-muted-foreground mt-0.5">Social-view attribution and payout policy</Text>
+        </View>
+        <View className={cn('flex-row items-center gap-1 rounded-full px-2.5 py-1.5', enabled ? 'bg-green-500/10' : 'bg-muted')}>
+          <RadioTower size={11} className={enabled ? 'text-green-500' : 'text-muted-foreground'} />
+          <Text className={cn('text-[11px] font-medium', enabled ? 'text-green-500' : 'text-muted-foreground')}>
+            {enabled ? 'Active' : 'Off'}
+          </Text>
+        </View>
+      </View>
+    </View>
+  )
+}
+
+function SectionLabel({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline justify-between mb-2 px-1">
+      <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      <Text className="text-[11px] text-muted-foreground">{detail}</Text>
+    </View>
   )
 }

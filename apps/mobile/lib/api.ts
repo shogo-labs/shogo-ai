@@ -1346,15 +1346,20 @@ export const api = {
     return res.data.session
   },
 
-  /** Return the stable primary chat for a personal workspace. */
+  /**
+   * Return the stable Workspace Agent Chat, creating it when needed.
+   * This is deliberately a dedicated endpoint rather than a list-then-find
+   * client flow so team workspaces receive the same idempotent primary chat.
+   */
   async getPrimaryWorkspaceSession(
     http: HttpClient,
     workspaceId: string,
   ): Promise<{ id: string; workspaceId: string; isPrimary?: boolean }> {
-    const sessions = await api.listWorkspaceSessions(http, workspaceId)
-    const primary = sessions.find((session) => session.isPrimary)
-    if (!primary) throw new Error('getPrimaryWorkspaceSession: no primary session returned')
-    return primary
+    const res = await http.post<{
+      session?: { id: string; workspaceId: string; isPrimary?: boolean }
+    }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/primary`, {})
+    if (!res.data?.session) throw new Error('getPrimaryWorkspaceSession: no primary session returned')
+    return res.data.session
   },
 
   /**
@@ -1464,6 +1469,33 @@ export const api = {
     )
     if (!res.data?.attached) throw new Error('attachProject: no attachment returned')
     return res.data.attached
+  },
+
+  /** List the projects mounted in a workspace chat, including their write mode. */
+  async getWorkspaceSessionProjects(
+    http: HttpClient,
+    workspaceId: string,
+    sessionId: string,
+  ): Promise<Array<{ id: string; projectId: string; attachMode: 'readwrite' | 'readonly' }>> {
+    const res = await http.get<{
+      attached?: Array<{ id: string; projectId: string; attachMode: 'readwrite' | 'readonly' }>
+    }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/projects`,
+    )
+    return res.data?.attached ?? []
+  },
+
+  /** Detach a project from a workspace chat. Repeating the operation is safe. */
+  async detachWorkspaceSessionProject(
+    http: HttpClient,
+    workspaceId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<boolean> {
+    const res = await http.delete<{ removed?: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/projects/${encodeURIComponent(projectId)}`,
+    )
+    return res.data?.removed === true
   },
 
   /**

@@ -12,6 +12,7 @@ import {
   Modal,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   Clock,
@@ -216,17 +217,17 @@ export default function MeetingDetailScreen() {
 
   if (loading) {
     return (
-      <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator />
-      </View>
+      <SafeAreaView className="flex-1 items-center justify-center bg-background">
+        <ActivityIndicator color="#f97316" />
+      </SafeAreaView>
     )
   }
 
   if (!meeting) {
     return (
-      <View className="flex-1 bg-background items-center justify-center">
+      <SafeAreaView className="flex-1 items-center justify-center bg-background">
         <Text className="text-muted-foreground">Meeting not found</Text>
-      </View>
+      </SafeAreaView>
     )
   }
 
@@ -235,13 +236,13 @@ export default function MeetingDetailScreen() {
   const hasSpeakers = transcript?.segments.some((s) => s.speaker)
 
   return (
-    <View className="flex-1 bg-background">
-      {/* Header */}
-      <View className="px-4 py-3 border-b border-border">
+    <SafeAreaView className="flex-1 bg-background" edges={['top', 'left', 'right']}>
+      <View className="border-b border-border/70 bg-card/70 px-4 pb-4 pt-3">
         <View className="flex-row items-center gap-3 mb-2">
           <Pressable
             onPress={() => router.back()}
-            className="p-1.5 -ml-1.5 rounded-md active:bg-muted"
+            accessibilityLabel="Back to meetings"
+            className="-ml-1.5 rounded-xl p-2 active:bg-muted"
           >
             <ArrowLeft size={20} className="text-foreground" />
           </Pressable>
@@ -253,7 +254,7 @@ export default function MeetingDetailScreen() {
               onBlur={handleSaveTitle}
               onSubmitEditing={handleSaveTitle}
               autoFocus
-              className="flex-1 text-lg font-semibold text-foreground border-b border-primary pb-0.5"
+              className="flex-1 border-b border-orange-500 pb-0.5 text-lg font-semibold text-foreground"
             />
           ) : (
             <Pressable
@@ -263,7 +264,7 @@ export default function MeetingDetailScreen() {
               }}
               className="flex-1"
             >
-              <Text className="text-lg font-semibold text-foreground" numberOfLines={1}>
+              <Text className="text-xl font-semibold tracking-[-0.25px] text-foreground" numberOfLines={1}>
                 {meeting.title || 'Untitled Meeting'}
               </Text>
             </Pressable>
@@ -287,8 +288,8 @@ export default function MeetingDetailScreen() {
             })}
           </Text>
           {meeting.project && (
-            <View className="flex-row items-center gap-1 bg-primary/10 rounded px-1.5 py-0.5">
-              <Text className="text-xs text-primary font-medium">{meeting.project.name}</Text>
+            <View className="flex-row items-center gap-1 rounded-md bg-orange-500/10 px-1.5 py-0.5">
+              <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">{meeting.project.name}</Text>
             </View>
           )}
           {hasSpeakers && transcript?.numSpeakers && (
@@ -302,13 +303,13 @@ export default function MeetingDetailScreen() {
         </View>
 
         {/* Actions */}
-        <View className="flex-row items-center gap-2 mt-3 ml-8">
+        <View className="ml-8 mt-4 flex-row flex-wrap items-center gap-2">
           <Pressable
             onPress={handleCopyTranscript}
             disabled={!transcript}
             className={cn(
-              'flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border border-border',
-              !transcript ? 'opacity-40' : 'active:bg-muted'
+              'min-h-10 flex-row items-center gap-1.5 rounded-xl border border-border/70 px-3',
+              !transcript ? 'opacity-40' : 'active:bg-muted/70'
             )}
           >
             {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} className="text-muted-foreground" />}
@@ -318,7 +319,7 @@ export default function MeetingDetailScreen() {
           <Pressable
             onPress={handleRetranscribe}
             disabled={retranscribing || meeting.status === 'transcribing'}
-            className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border border-border active:bg-muted"
+            className="min-h-10 flex-row items-center gap-1.5 rounded-xl border border-border/70 px-3 active:bg-muted/70"
           >
             <RefreshCw size={14} className={cn('text-muted-foreground', retranscribing && 'animate-spin')} />
             <Text className="text-xs text-muted-foreground">Re-transcribe</Text>
@@ -326,7 +327,7 @@ export default function MeetingDetailScreen() {
 
           <Pressable
             onPress={handleDelete}
-            className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-200 active:bg-red-50"
+            className="min-h-10 flex-row items-center gap-1.5 rounded-xl border border-red-200 px-3 active:bg-red-50"
           >
             <Trash2 size={14} className="text-red-500" />
             <Text className="text-xs text-red-500">Delete</Text>
@@ -334,11 +335,18 @@ export default function MeetingDetailScreen() {
         </View>
       </View>
 
-      {/* Transcript */}
-      <ScrollView className="flex-1 px-4 py-4">
+      <ScrollView
+        className="flex-1"
+        contentContainerClassName="px-4 pb-8 pt-4"
+        showsVerticalScrollIndicator={false}
+      >
+        <View className="min-h-[180px] rounded-2xl border border-border/70 bg-card p-4">
+          <Text className="mb-4 text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
+            Transcript
+          </Text>
         {meeting.status === 'transcribing' ? (
           <View className="items-center justify-center py-16">
-            <ActivityIndicator size="large" className="mb-4" />
+            <ActivityIndicator size="large" color="#f97316" className="mb-4" />
             <Text className="text-sm text-muted-foreground">Transcribing...</Text>
             <Text className="text-xs text-muted-foreground mt-1">This may take a few minutes</Text>
           </View>
@@ -350,7 +358,7 @@ export default function MeetingDetailScreen() {
             )}
             <Pressable
               onPress={handleRetranscribe}
-              className="px-4 py-2 bg-primary rounded-lg active:opacity-80"
+              className="rounded-xl bg-orange-500 px-4 py-2.5 active:bg-orange-600"
             >
               <Text className="text-sm text-white font-medium">Try Again</Text>
             </Pressable>
@@ -390,6 +398,7 @@ export default function MeetingDetailScreen() {
             <Text className="text-sm text-muted-foreground">No transcript available</Text>
           </View>
         )}
+        </View>
       </ScrollView>
 
       {/* Delete Confirmation Modal */}
@@ -433,7 +442,7 @@ export default function MeetingDetailScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </SafeAreaView>
   )
 }
 
