@@ -101,6 +101,31 @@ describe('workspace agent routes (session-authorized mount)', () => {
     expect(res.status).toBe(400)
   })
 
+  // Regression test for the 2026-09-21 incident: workspace-agent-cloud-storage.ts's
+  // saveAgentAvatar used to swallow any storage failure into a base64 data: URI
+  // fallback that got persisted forever and resent as chat context on every
+  // turn. It now propagates the error, so this route (with no local try/catch
+  // of its own) must surface a failure rather than a 200 with a giant inline
+  // image.
+  test('surfaces a storage failure instead of silently succeeding', async () => {
+    const app = new Hono()
+    app.route(
+      '/api',
+      workspaceAgentRoutes({
+        authorize: sessionAuthorize(async () => 'user-1'),
+        saveAgentAvatar: async () => {
+          throw new Error('S3_ARTIFACT_BUCKET environment variable is required for S3 storage')
+        },
+      }),
+    )
+    const res = await app.request('/api/workspaces/workspace-1/agent-avatar', {
+      method: 'POST',
+      headers: { 'content-type': 'image/png' },
+      body: new Uint8Array([1, 2, 3, 4]),
+    })
+    expect(res.status).not.toBe(200)
+  })
+
   test('lists goals, goal details, and activity', async () => {
     const goals = await appFor('user-1').request('/api/workspaces/workspace-1/goals?status=active')
     expect(goals.status).toBe(200)
