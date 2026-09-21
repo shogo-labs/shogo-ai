@@ -19,18 +19,17 @@ import { trace, SpanStatusCode } from "@opentelemetry/api"
 
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
-import * as billingService from "../services/billing.service"
+import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
-import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
+import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session-runtime"
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from "../lib/chat-references"
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
-import { isMetalEligibleProject } from "../lib/metal-eligibility"
 import { sendPushToUser } from "../lib/push-notifications"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
@@ -1360,7 +1359,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const metalChat = isMetalEligibleProject(projectId)
+      const metalChat = process.env.KUBERNETES_SERVICE_HOST
+        ? (await import(new URL('../lib/metal-eligibility.ts', import.meta.url).href))
+            .isMetalEligibleProject(projectId)
+        : false
       // Metal guests currently hang rather than refuse — a 4h fetch timeout
       // never fires before the client aborts, so we never invalidate the
       // placement. A 90s budget is long enough for a healthy wake and short
@@ -1424,7 +1426,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // Threshold is intentionally higher than other callers because the
             // chat path sees transient 401s during normal warm-pool transitions.
             const EVICT_AFTER_ATTEMPTS = 8
-            const { evictIfPodMissingAuth } = await import('../lib/warm-pool-self-heal')
+            const { evictIfPodMissingAuth } = await import(
+              new URL('../lib/warm-pool-self-heal.ts', import.meta.url).href
+            )
             const evicted = await evictIfPodMissingAuth(
               projectId,
               response.status,
@@ -1676,7 +1680,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             )
             try {
               const { getMetalWarmPoolController, destroyMetalProject } = await import(
-                '../lib/metal-warm-pool-controller'
+                new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
               )
               getMetalWarmPoolController().invalidateUrlCache(projectId)
               void destroyMetalProject(projectId).catch((err) =>
@@ -1783,7 +1787,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         // took ownership (retry exhaustion, client disconnect, thrown error).
         // closeSession is idempotent — safe to call even if already closed.
         if (!billingSessionHandedOff) {
-          closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err) =>
+          closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
         }
@@ -2061,9 +2065,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Metal-only mode: the project runs on the metal microVM substrate, not
       // Knative. Report readiness off the live host fleet — the actual resume
       // happens on the chat call (fast), same contract as the warm pool.
-      const { isMetalAllProjects } = await import("../lib/metal-eligibility")
+      const { isMetalAllProjects } = await import(
+        new URL('../lib/metal-eligibility.ts', import.meta.url).href
+      )
       if (isMetalAllProjects()) {
-        const { getMetalWarmPoolController } = await import("../lib/metal-warm-pool-controller")
+        const { getMetalWarmPoolController } = await import(
+          new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
+        )
         const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",
@@ -2076,7 +2084,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       if (isKubernetes()) {
         // In Kubernetes: Check Knative Service status
-        const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+        const { getKnativeProjectManager } = await import(
+          new URL('../lib/knative-project-manager.ts', import.meta.url).href
+        )
         const manager = getKnativeProjectManager()
         const status = await manager.getStatus(projectId)
 
@@ -2137,7 +2147,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // In Kubernetes, wait for pod to be ready
       if (isKubernetes()) {
-        const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+        const { getKnativeProjectManager } = await import(
+          new URL('../lib/knative-project-manager.ts', import.meta.url).href
+        )
         const manager = getKnativeProjectManager()
         await manager.waitForReady(projectId, 60000)
       }

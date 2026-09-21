@@ -21,15 +21,15 @@ mock.module('../lib/prisma', () => withPrismaExports({
   },
 }))
 
-mock.module('../lib/knative-project-manager', () => ({
-  getProjectPodUrl: mock(async () => {
+mock.module('../lib/resolve-pod-url', () => ({
+  resolveProjectPodUrl: mock(async () => {
     if (podUrl instanceof Error) throw podUrl
-    return podUrl
+    return { mode: 'host', url: podUrl }
   }),
 }))
 
-mock.module('../lib/runtime-token', () => ({
-  deriveRuntimeToken: (projectId: string) => `runtime-${projectId}`,
+mock.module('../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken: (projectId: string) => `runtime-${projectId}`,
 }))
 
 mock.module('../lib/warm-pool-self-heal', () => ({

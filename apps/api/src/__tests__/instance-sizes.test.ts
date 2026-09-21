@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
-
-// Mock the shared-runtime predicate BEFORE importing instance-sizes
-// (instance-sizes re-exports `isMobileTechStack` from it).
-const isMobileTechStackShared = mock((id: string | null | undefined): boolean => {
-  if (!id) return false
-  return id.startsWith('expo') || id === 'react-native'
-})
-mock.module('@shogo/shared-runtime', () => ({
-  isMobileTechStack: isMobileTechStackShared,
-  getMinimumInstanceSize: () => null,
-}))
+import { describe, expect, test } from 'bun:test'
 
 const {
   INSTANCE_MARKUP,
@@ -26,10 +15,6 @@ const {
   isInstanceUpgrade,
   isMobileTechStack,
 } = await import('../config/instance-sizes')
-
-beforeEach(() => {
-  isMobileTechStackShared.mockClear()
-})
 
 describe('INSTANCE_SIZE_ORDER', () => {
   test('lists sizes in monotonically increasing power', () => {
@@ -118,13 +103,9 @@ describe('getInstanceSizeSpec', () => {
 })
 
 describe('isMobileTechStack', () => {
-  test('is the re-export from @shogo/shared-runtime', () => {
-    expect(isMobileTechStack).toBe(isMobileTechStackShared)
-  })
-
-  test('delegates to the shared predicate (no inline heuristic)', () => {
-    isMobileTechStack('expo-router')
-    expect(isMobileTechStackShared).toHaveBeenCalledWith('expo-router')
+  test('uses the canonical tech-stack registry', () => {
+    expect(isMobileTechStack('expo-app')).toBe(true)
+    expect(isMobileTechStack('expo-router')).toBe(false)
   })
 })
 
@@ -136,15 +117,15 @@ describe('applyTechStackFloor', () => {
   })
 
   test('floors micro to small for mobile tech stacks', () => {
-    expect(applyTechStackFloor('micro', 'expo-router')).toBe('small')
+    expect(applyTechStackFloor('micro', 'expo-app')).toBe('small')
     expect(applyTechStackFloor('micro', 'react-native')).toBe('small')
   })
 
   test('does NOT downgrade larger sizes for mobile stacks', () => {
-    expect(applyTechStackFloor('small', 'expo-router')).toBe('small')
-    expect(applyTechStackFloor('medium', 'expo-router')).toBe('medium')
-    expect(applyTechStackFloor('large', 'expo-router')).toBe('large')
-    expect(applyTechStackFloor('xlarge', 'expo-router')).toBe('xlarge')
+    expect(applyTechStackFloor('small', 'expo-app')).toBe('small')
+    expect(applyTechStackFloor('medium', 'expo-app')).toBe('medium')
+    expect(applyTechStackFloor('large', 'expo-app')).toBe('large')
+    expect(applyTechStackFloor('xlarge', 'expo-app')).toBe('xlarge')
   })
 
   test('treats null and undefined tech stack as non-mobile', () => {

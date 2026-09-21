@@ -31,7 +31,7 @@ import {
   listGoals,
   listWorkspaceActivity,
   resolveGoalEventApproval,
-  saveAgentAvatar,
+  saveAgentAvatar as saveLocalAgentAvatar,
   updateAgentProfile,
   updateGoal,
   type GoalApprovalDecision,
@@ -53,6 +53,7 @@ export type WorkspaceAgentAuthorize = (
 
 export interface WorkspaceAgentRoutesConfig {
   authorize: WorkspaceAgentAuthorize
+  saveAgentAvatar?: (workspaceId: string, imageBuffer: Buffer) => Promise<string>
 }
 
 /** Session-authenticated strategy: requires login + workspace membership. */
@@ -75,6 +76,7 @@ export function sessionAuthorize(
 export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   const router = new Hono()
   const { authorize } = config
+  const saveAvatar = config.saveAgentAvatar ?? saveLocalAgentAvatar
 
   router.get('/workspaces/:workspaceId/agent-profile', async (c) => {
     const auth = await authorize(c)
@@ -123,7 +125,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       return c.json({ error: { code: 'empty_body', message: 'No image data' } }, 400)
     }
 
-    const avatarUrl = await saveAgentAvatar(auth.workspaceId, Buffer.from(body))
+    const avatarUrl = await saveAvatar(auth.workspaceId, Buffer.from(body))
     return c.json({ profile: await updateAgentProfile(auth.workspaceId, { avatarUrl }) })
   })
 

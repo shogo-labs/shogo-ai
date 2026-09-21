@@ -402,12 +402,10 @@ export default observer(function ProjectLayout() {
     () => params.chatSessionId ?? null
   )
 
-  // Universal workspace-runtime rollout gate. When on, a project's chat runs
-  // on its anchor-keyed merged-root runtime via a single project-pinned
-  // workspace session (mounting the project + its attachments + linked
-  // folders). Strictly flag-gated so flag-off behavior is byte-identical to
-  // the legacy single-project runtime + project-scoped chat.
-  const workspaceRuntimeEnabled = process.env.EXPO_PUBLIC_WORKSPACE_RUNTIME === 'true'
+  // Workspace runtimes are the only supported project runtime topology. Keep
+  // this local boolean because the surrounding state machine still uses it to
+  // coordinate pinned-session resolution and avoid remount races.
+  const workspaceRuntimeEnabled = true
   // The project-pinned workspace session id (resolved from the API when the
   // flag is on). Tabs whose id is this session chat in 'workspace' scope.
   const [pinnedWorkspaceSessionId, setPinnedWorkspaceSessionId] = useState<string | null>(null)

@@ -3,7 +3,7 @@
 /**
  * Regression test for the "Plan not found" 404 seen in production multi-region
  * deployments (see `docs/prod-e2e-findings-2026-08.md` and the `resolve-pod-url`
- * SHOGO_WORKSPACE_RUNTIME fix — this covers the OTHER split: plain per-project
+ * Workspace-runtime fix — this covers the OTHER split: plain per-project
  * chat, no merged-root workspace runtime involved).
  *
  * Root cause: `/api/projects/:id/agent-proxy/*` had no region affinity, while

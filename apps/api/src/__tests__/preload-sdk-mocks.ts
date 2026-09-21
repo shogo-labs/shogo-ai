@@ -124,6 +124,19 @@ mock.module('@shogo-ai/sdk/cli/pkg', () => ({
   resolveBinInvocation: (cmd: string) => cmd,
 }))
 
+const emailService = {
+  send: async () => ({ success: true }),
+  sendTemplate: async () => ({ success: true }),
+}
+mock.module('@shogo-ai/email/server', () => ({
+  createEmail: () => emailService,
+  createEmailOptional: () => emailService,
+}))
+mock.module('@shogo-ai/sdk/email/server', () => ({
+  createEmail: () => emailService,
+  createEmailOptional: () => emailService,
+}))
+
 // Intercept workspace package re-export shims that Bun doesn't hoist in
 // static-import context. Keep the symbol union in sync with `import { ... }
 // from '@shogo/model-catalog'` across apps/api/src/** — Bun resolves every

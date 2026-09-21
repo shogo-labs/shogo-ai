@@ -32,25 +32,22 @@ export function computeDefaultRuntimeMemoryMB(totalMemMB: number): number {
   return Math.min(8192, Math.max(3072, Math.floor(totalMemMB * 0.4)))
 }
 
-/**
- * Default number of generic runtimes the Host Warm Pool (see
- * `host-warm-pool-controller.ts`) should keep pre-booted, scaled to the
- * host's total RAM.
- *
- * Cold-opening a project on desktop pays a real one-time cost — spawning
- * the agent-runtime process, JIT warm-up, LSP init — on top of the
- * per-project `bun install`/build. A pre-booted pool of 1 lets that first
- * open claim an already-running runtime instead of paying the spawn cost
- * inline, at the price of one extra idle runtime's RAM footprint
- * (`computeDefaultRuntimeMemoryMB`) sitting around before any project is
- * opened.
- *
- * That trade-off only makes sense once the machine has headroom to spare,
- * so this defaults to 0 below 4GB total RAM and 1 at/above it. Users who want
- * more can still opt in via
- * `HOST_WARM_POOL_SIZE`.
- */
-export function computeDefaultWarmPoolSize(totalMemMB: number): number {
-  if (!Number.isFinite(totalMemMB) || totalMemMB <= 0) return 0
-  return totalMemMB >= 4096 ? 1 : 0
+export type HostTier = 'low' | 'standard' | 'high'
+
+/** Classify the host once so every local process applies the same budget. */
+export function computeHostTier(totalMemMB: number, cpuCount = 8): HostTier {
+  if (!Number.isFinite(totalMemMB) || totalMemMB <= 0) return 'low'
+  if (totalMemMB <= 8192 || cpuCount <= 4) return 'low'
+  if (totalMemMB >= 32768 && cpuCount >= 8) return 'high'
+  return 'standard'
+}
+
+export function resolveHostTier(
+  env: Record<string, string | undefined>,
+  totalMemMB: number,
+  cpuCount = 8,
+): HostTier {
+  const explicit = env.SHOGO_HOST_TIER
+  if (explicit === 'low' || explicit === 'standard' || explicit === 'high') return explicit
+  return computeHostTier(totalMemMB, cpuCount)
 }

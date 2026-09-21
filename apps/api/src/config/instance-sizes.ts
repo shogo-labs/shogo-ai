@@ -13,7 +13,7 @@
 import {
   isMobileTechStack as isMobileTechStackShared,
   getMinimumInstanceSize,
-} from '@shogo/shared-runtime'
+} from '../../../../packages/core/src/tech-stack-registry'
 
 export const INSTANCE_MARKUP = 1.0
 

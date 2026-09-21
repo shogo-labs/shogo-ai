@@ -9,6 +9,8 @@ if (process.env.SHOGO_LOCAL_MODE !== 'true') {
   await import('./instrumentation')
 }
 
-const server = await import('./server')
+const server = process.env.SHOGO_LOCAL_MODE === 'true'
+  ? await import('./local-server')
+  : await import('./server')
 export default server.default
 

@@ -7,8 +7,7 @@
  *
  *   bun run bench:local-api                      # data in <tmp>/shogo-bench/data, port 39200
  *   bun run bench:local-api --reset              # wipe the scratch data dir first
- *   bun run bench:local-api --port 39300 --pool-size 2
- *   bun run bench:local-api --env HOST_POOL_MAX_ASSIGNED=4 --env SHOGO_WINDOWS_INSTALL_BACKEND=bun
+ *   bun run bench:local-api --port 39300
  *
  * Mirrors the environment `apps/desktop/src/local-server.ts` builds for the
  * Electron shell (SQLite DB, workspaces dir, runtime template, warm pool,
@@ -40,7 +39,6 @@ const multiArg = (name: string): string[] => {
 const repoRoot = resolve(import.meta.dir, '..', '..')
 const dataDir = resolve(arg('data-dir') || join(tmpdir(), 'shogo-bench', 'data'))
 const port = Number(arg('port', '39200'))
-const poolSize = Number(arg('pool-size', '1'))
 const reset = process.argv.includes('--reset')
 const extraEnv = Object.fromEntries(multiArg('env').map((kv) => {
   const idx = kv.indexOf('=')
@@ -94,12 +92,14 @@ console.log(`[bench-api] migrations: ${migrateOut.trim().split('\n').pop()}`)
 
 const totalMemMB = Math.round(totalmem() / 1024 / 1024)
 const memoryMB = Math.min(8192, Math.max(3072, Math.floor(totalMemMB * 0.4)))
+const hostTier = process.env.SHOGO_HOST_TIER || (totalMemMB <= 8192 ? 'low' : 'standard')
 
 const env: Record<string, string> = {
   ...(process.env as Record<string, string>),
   PATH: `${dirname(bunPath)}${isWindows ? ';' : ':'}${process.env.PATH || ''}`,
   HOME: process.env.HOME || process.env.USERPROFILE || homedir(),
   SHOGO_LOCAL_MODE: 'true',
+  SHOGO_HOST_TIER: hostTier,
   APP_VERSION: 'bench-dev',
   SHOGO_APP_DATABASE_URL: `file:${dbPath}`,
   WORKSPACES_DIR: workspacesDir,
@@ -108,8 +108,6 @@ const env: Record<string, string> = {
   PORT: String(port),
   // Desktop uses 39110 / 38300–38900; stay clear of an installed app.
   RUNTIME_BASE_PORT: String(port + 110),
-  HOST_POOL_PORT_BASE: String(port + 300),
-  HOST_POOL_PORT_END: String(port + 900),
   NODE_ENV: 'development',
   BETTER_AUTH_SECRET: authSecret,
   BETTER_AUTH_URL: `http://localhost:${port}`,
@@ -123,18 +121,19 @@ const env: Record<string, string> = {
   SHOGO_SHERPA_DIR: join(dataDir, 'sherpa-onnx'),
   RUNTIME_MEMORY_MB: String(memoryMB),
   RUNTIME_CPU_PERCENT: '0',
-  HOST_WARM_POOL_SIZE: String(poolSize),
+  RUNTIME_MAX_COUNT: hostTier === 'low' ? '2' : '10',
   SHOGO_PERF_LOG: '1',
   ...extraEnv,
 }
 delete env.DATABASE_URL
 delete env.PROJECTS_DATABASE_URL
 
-console.log(`[bench-api] starting API on :${port} (pool ${poolSize}, data ${dataDir})`)
+console.log(`[bench-api] starting API on :${port} (workspace runtime, data ${dataDir})`)
 const child = spawn(bunPath, ['--no-env-file', '--conditions=development', join('apps', 'api', 'src', 'entry.ts')], {
   cwd: repoRoot,
   env,
   stdio: ['ignore', 'pipe', 'pipe'],
+  detached: !isWindows,
   windowsHide: true,
 })
 

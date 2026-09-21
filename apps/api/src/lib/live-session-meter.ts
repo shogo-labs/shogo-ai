@@ -7,7 +7,7 @@ import { MARKUP_MULTIPLIER } from './usage-cost'
 import { getMergedModelEntrySync } from '../services/model-registry.service'
 import { calculateLiveSessionCost, getModelEntry } from '@shogo/model-catalog'
 import { recordUsage } from '../routes/ai-proxy'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 
 export interface LiveSessionMeterContext {
   sessionId: string

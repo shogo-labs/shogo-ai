@@ -65,6 +65,8 @@
     "bench:open": "bun scripts/bench/project-open.ts",
     "bench:waterfall": "bun scripts/bench/perf-waterfall.ts",
     "bench:local-api": "bun scripts/bench/local-api.ts",
+    "bench:api-boot": "bun scripts/bench/api-import-cost.ts",
+    "check:api-local-bundle": "bun scripts/check-api-local-bundle.ts",
     "shogo-ide:phase1:check": "bun run --cwd apps/shogo-ide phase1:check",
     "shogo-ide:phase2:check": "bun run --cwd apps/shogo-ide phase2:check",
     "shogo-ide:phase3:check": "bun run --cwd apps/shogo-ide phase3:check",

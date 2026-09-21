@@ -31,8 +31,8 @@ mock.module('../lib/prisma', () =>
   }),
 )
 
-mock.module('../lib/runtime-token', () => ({
-  deriveRuntimeToken: (projectId: string) => `tok-${projectId}`,
+mock.module('../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken: (projectId: string) => `tok-${projectId}`,
 }))
 
 let LocalHeartbeatScheduler: any

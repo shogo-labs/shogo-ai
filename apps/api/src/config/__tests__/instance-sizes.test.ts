@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, it, mock } from 'bun:test'
-
-const mobileTechStackIds = new Set(['expo', 'react-native'])
-const minimumInstanceSizeByStack: Record<string, string> = { 'docker-compose': 'large' }
-
-mock.module('@shogo/shared-runtime', () => ({
-  isMobileTechStack: (id: string | null | undefined) =>
-    typeof id === 'string' && mobileTechStackIds.has(id),
-  getMinimumInstanceSize: (id: string | null | undefined) =>
-    (typeof id === 'string' && minimumInstanceSizeByStack[id]) || null,
-}))
+import { describe, expect, it } from 'bun:test'
 
 const {
   INSTANCE_MARKUP,
@@ -104,7 +94,7 @@ describe('getInstanceSizeSpec', () => {
 
 describe('isMobileTechStack (re-export)', () => {
   it('proxies the registry function', () => {
-    expect(isMobileTechStack('expo')).toBe(true)
+    expect(isMobileTechStack('expo-app')).toBe(true)
     expect(isMobileTechStack('react-native')).toBe(true)
     expect(isMobileTechStack('nextjs')).toBe(false)
     expect(isMobileTechStack(null)).toBe(false)
@@ -120,15 +110,15 @@ describe('applyTechStackFloor', () => {
   })
 
   it('lifts micro to small for mobile stacks', () => {
-    expect(applyTechStackFloor('micro', 'expo')).toBe('small')
+    expect(applyTechStackFloor('micro', 'expo-app')).toBe('small')
     expect(applyTechStackFloor('micro', 'react-native')).toBe('small')
   })
 
   it('does not downgrade larger sizes for mobile stacks', () => {
-    expect(applyTechStackFloor('small', 'expo')).toBe('small')
-    expect(applyTechStackFloor('medium', 'expo')).toBe('medium')
-    expect(applyTechStackFloor('large', 'expo')).toBe('large')
-    expect(applyTechStackFloor('xlarge', 'expo')).toBe('xlarge')
+    expect(applyTechStackFloor('small', 'expo-app')).toBe('small')
+    expect(applyTechStackFloor('medium', 'expo-app')).toBe('medium')
+    expect(applyTechStackFloor('large', 'expo-app')).toBe('large')
+    expect(applyTechStackFloor('xlarge', 'expo-app')).toBe('xlarge')
   })
 })
 
