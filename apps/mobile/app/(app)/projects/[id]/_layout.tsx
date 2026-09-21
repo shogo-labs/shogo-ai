@@ -462,7 +462,7 @@ export default observer(function ProjectLayout() {
   // Tab state for narrow screens
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [idePrimarySideBarPosition, setIdePrimarySideBarPosition] =
-    useState<IdePrimarySideBarPosition>("left");
+    useState<IdePrimarySideBarPosition>('left');
 
   // Imperative request to focus a specific section inside SettingsPanel
   // (e.g. when a subagent stream starts and we want to show "Agents").
