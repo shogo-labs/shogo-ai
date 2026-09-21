@@ -3425,7 +3425,6 @@ export default observer(function SettingsPage() {
     if (activeTab === 'people' && isLocal) setActiveTab('workspace')
     if (activeTab === 'models' && isLocal) setActiveTab('workspace')
     if (activeTab === 'compute' && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS)) setActiveTab('workspace')
-    if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
     if (activeTab === 'updates' && !IS_DESKTOP_CLIENT) setActiveTab('workspace')
   }, [activeTab, features.billing, localMode])
 
