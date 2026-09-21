@@ -83,14 +83,14 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
     setDisconnecting(connectionId)
     setError(null)
     try {
-      await api.disconnectIntegration(http, connectionId)
+      await api.disconnectIntegration(http, connectionId, { projectId })
       await loadConnections()
     } catch (err: any) {
       setError(err.message)
     } finally {
       setDisconnecting(null)
     }
-  }, [http, loadConnections])
+  }, [http, projectId, loadConnections])
 
   const handleReconnect = useCallback(async (toolkit: string) => {
     setReconnecting(toolkit)

@@ -16,7 +16,8 @@
  * test will fail as expected.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { Hono } from 'hono'
 
 type ComposioScope = 'workspace' | 'project'
 
@@ -95,5 +96,168 @@ describe('buildLookupCandidates (composio scope asymmetric fallback)', () => {
     for (const id of projIds) {
       expect(wsIds.has(id)).toBe(true)
     }
+  })
+})
+
+// =============================================================================
+// REPRO 5 / FIX 5: disconnect/connect must prune EVERY connected account for
+// the toolkit across all lookup-candidate user IDs, not just the single
+// connectionId (disconnect) or skip prune entirely (connect). Otherwise a
+// sibling ACTIVE account under a different candidate ID (workspace-scoped vs.
+// legacy project-scoped) keeps `checkComposioAuth` reporting "active" forever
+// — the "24 days OAuth theme" pain point.
+// =============================================================================
+
+process.env.COMPOSIO_API_KEY = 'test-composio-key'
+
+// In-memory fake Composio connected-accounts store, seeded per test.
+let fakeAccounts: Array<{ id: string; userId: string; toolkitSlug: string; status: string }> = []
+let deleteCalls: string[] = []
+let authorizeCalls: Array<{ userId: string; toolkit: string }> = []
+
+class FakeComposio {
+  connectedAccounts = {
+    list: async ({ userIds, toolkitSlugs }: { userIds: string[]; toolkitSlugs?: string[] }) => {
+      const wantedToolkits = toolkitSlugs?.map((t) => t.toLowerCase())
+      const items = fakeAccounts.filter(
+        (a) =>
+          userIds.includes(a.userId) &&
+          (!wantedToolkits || wantedToolkits.includes(a.toolkitSlug.toLowerCase())),
+      )
+      return { items: items.map((a) => ({ id: a.id, toolkit: { slug: a.toolkitSlug }, status: a.status })) }
+    },
+    delete: async (id: string) => {
+      deleteCalls.push(id)
+      fakeAccounts = fakeAccounts.filter((a) => a.id !== id)
+    },
+  }
+  toolkits = { get: async () => [] }
+  create = async (userId: string, _opts?: any) => ({
+    authorize: async (toolkit: string, _opts?: any) => {
+      authorizeCalls.push({ userId, toolkit })
+      return { redirectUrl: 'https://composio.example/auth', id: 'conn-new', status: 'INITIATED' }
+    },
+  })
+}
+
+mock.module('@composio/core', () => ({ Composio: FakeComposio }))
+
+// Force the workspace-scope lookup to always fall back to the default
+// ('workspace') deterministically, without touching a real database.
+mock.module('../lib/prisma', () => ({
+  prisma: {
+    workspace: { findUnique: async () => null },
+    project: { findUnique: async () => null },
+  },
+}))
+
+const { integrationRoutes } = await import('../routes/integrations')
+
+function buildIntegrationsApp(auth: { userId: string; workspaceId?: string }) {
+  const app = new Hono()
+  app.use('*', async (c, next) => {
+    c.set('auth', auth)
+    await next()
+  })
+  app.route('/api', integrationRoutes())
+  return app
+}
+
+const PRUNE_USER = 'user_prune'
+const PRUNE_WORKSPACE = 'ws_prune'
+const PRUNE_PROJECT = 'proj_prune'
+// Matches buildComposioUserId(userId, workspaceId, projectId, 'workspace')
+const WORKSPACE_SCOPED_ID = `shogo_${PRUNE_USER}_${PRUNE_WORKSPACE}`
+// Matches buildLegacyComposioUserId(userId, projectId)
+const LEGACY_SCOPED_ID = `shogo_${PRUNE_USER}_${PRUNE_PROJECT}`
+
+describe('integrations routes — disconnect/connect prune sibling accounts (repro + fix)', () => {
+  beforeEach(() => {
+    fakeAccounts = [
+      { id: 'conn-ws', userId: WORKSPACE_SCOPED_ID, toolkitSlug: 'googledrive', status: 'ACTIVE' },
+      { id: 'conn-legacy', userId: LEGACY_SCOPED_ID, toolkitSlug: 'googledrive', status: 'ACTIVE' },
+    ]
+    deleteCalls = []
+    authorizeCalls = []
+  })
+
+  test('DELETE prunes the sibling legacy account too, not just the targeted id', async () => {
+    // Mirrors a real project-context caller (e.g. ToolsPanel/ServicesPanel):
+    // the auth session already carries workspaceId, and the request passes
+    // projectId — together these resolve every lookup candidate, including
+    // the legacy project-scoped ID.
+    const app = buildIntegrationsApp({ userId: PRUNE_USER, workspaceId: PRUNE_WORKSPACE })
+
+    const del = await app.fetch(
+      new Request(
+        `http://localhost/api/integrations/connections/conn-ws?projectId=${PRUNE_PROJECT}`,
+        { method: 'DELETE' },
+      ),
+    )
+    expect(del.status).toBe(200)
+
+    const list = await app.fetch(
+      new Request(`http://localhost/api/integrations/connections?projectId=${PRUNE_PROJECT}`),
+    )
+    const body = (await list.json()) as { data: Array<{ id: string }> }
+
+    // Fixed behavior: the sibling legacy account for the same toolkit must
+    // also be gone — it must not keep winning the ACTIVE check.
+    expect(body.data.find((c) => c.id === 'conn-legacy')).toBeUndefined()
+    expect(deleteCalls.sort()).toEqual(['conn-legacy', 'conn-ws'])
+  })
+
+  test('POST /connect prunes existing accounts for the toolkit before authorizing', async () => {
+    const app = buildIntegrationsApp({ userId: PRUNE_USER, workspaceId: PRUNE_WORKSPACE })
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/integrations/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolkit: 'googledrive', projectId: PRUNE_PROJECT }),
+      }),
+    )
+    expect(res.status).toBe(200)
+
+    // Both pre-existing accumulated accounts must be pruned before the new
+    // authorize call — reconnect replaces rather than accumulates.
+    expect(deleteCalls.sort()).toEqual(['conn-legacy', 'conn-ws'])
+    expect(authorizeCalls).toHaveLength(1)
+    expect(authorizeCalls[0]?.toolkit).toBe('googledrive')
+  })
+
+  test('DELETE leaves a different-toolkit sibling account alone', async () => {
+    fakeAccounts.push({ id: 'conn-slack', userId: WORKSPACE_SCOPED_ID, toolkitSlug: 'slack', status: 'ACTIVE' })
+    const app = buildIntegrationsApp({ userId: PRUNE_USER, workspaceId: PRUNE_WORKSPACE })
+
+    await app.fetch(
+      new Request(
+        `http://localhost/api/integrations/connections/conn-ws?projectId=${PRUNE_PROJECT}`,
+        { method: 'DELETE' },
+      ),
+    )
+
+    expect(deleteCalls).not.toContain('conn-slack')
+    const list = await app.fetch(
+      new Request(`http://localhost/api/integrations/connections?projectId=${PRUNE_PROJECT}`),
+    )
+    const body = (await list.json()) as { data: Array<{ id: string }> }
+    expect(body.data.find((c) => c.id === 'conn-slack')).toBeDefined()
+  })
+
+  test('DELETE with only workspaceId (no projectId) prunes what it can resolve (workspace-scoped) without erroring on the unresolvable legacy id', async () => {
+    // Settings → Integrations panel only knows workspaceId. It cannot guess
+    // the legacy per-project id, so pruning is best-effort within what the
+    // caller's context can resolve — this must not throw or 500.
+    const app = buildIntegrationsApp({ userId: PRUNE_USER })
+
+    const del = await app.fetch(
+      new Request(
+        `http://localhost/api/integrations/connections/conn-ws?workspaceId=${PRUNE_WORKSPACE}`,
+        { method: 'DELETE' },
+      ),
+    )
+    expect(del.status).toBe(200)
+    expect(deleteCalls).toContain('conn-ws')
   })
 })

@@ -29,6 +29,18 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
+import { DEFAULT_STAGING_DIR } from '../build-output-commit'
+
+// Redirect `homedir()` to a scratch directory for the whole file, so the
+// ENOSPC-reclaim test (which exercises a real `rm -rf` of
+// "~/.bun/install/cache" / "~/.npm/_cacache") can never touch the actual
+// developer/CI machine's package-manager caches. Every other test in this
+// file is unaffected — nothing else here reads the home directory.
+const FAKE_HOME = mkdtempSync(join(require('node:os').tmpdir(), 'pm-spawn-paths-fakehome-'))
+mock.module('node:os', () => {
+  const real = require('node:os')
+  return { ...real, homedir: () => FAKE_HOME }
+})
 
 // ---------------------------------------------------------------------------
 // Hoisted child_process mock
@@ -432,6 +444,116 @@ describe('PreviewManager.runViteOneShotBuild (private)', () => {
     proc.emit('error', new Error('spawn ENOENT (async)'))
     // The error handler resolves with null; runViteOneShotBuild logs and returns.
     await runP
+  })
+
+  // -------------------------------------------------------------------------
+  // Repro for the "14GB/14GB" silent-blank-preview production pain point
+  // (AI Insights digest, 09-21): a prebuilt template `dist/` marks
+  // `_phase = 'ready'` before the FIRST real build ever runs (see
+  // `start()`'s fast-path doc-block). If that first real vite build then
+  // fails with ENOSPC, the pre-fix code only `console.warn`s — `_phase`
+  // stays 'ready' and `errors.setup` stays null forever, so the preview
+  // keeps serving the stale prebuilt template while reporting itself
+  // perfectly healthy. Nothing tells the user (or the agent reading
+  // `getStatus()`) that the workspace disk is full.
+  // -------------------------------------------------------------------------
+  describe('PreviewManager.runViteOneShotBuild — ENOSPC surfacing (prebuilt dist/ already "ready")', () => {
+    test('a one-shot build failure force-flips phase to failed and populates errors.setup, even from "ready"', async () => {
+      const root = makeWorkspace({})
+      const pm = new PreviewManager({ workspaceDir: root, runtimePort: 38405 })
+      // Simulate the prebuilt-template fast path: dist/ already exists, so
+      // `_phase` was set to 'ready' before this (the first REAL) build ran.
+      ;(pm as any)._phase = 'ready'
+
+      const buildLogPath = join(root, '.shogo', 'logs', 'build.log')
+      const runP = (pm as any).runViteOneShotBuild('vite', join(root, 'project'), buildLogPath, false)
+      await drain()
+      const proc = pendingProcs[0]
+      proc.stderr.emit('data', Buffer.from('Error: ENOSPC: no space left on device, write\n'))
+      proc.emit('exit', 1)
+      await runP
+
+      const status = pm.getStatus()
+      expect(status.phase).toBe('failed')
+      expect(status.errors.setup).not.toBeNull()
+      expect(status.errors.setup).toMatch(/disk|space|enospc/i)
+    })
+
+    test('a non-ENOSPC one-shot build failure still force-flips phase to failed with a generic message', async () => {
+      const root = makeWorkspace({})
+      const pm = new PreviewManager({ workspaceDir: root, runtimePort: 38406 })
+      ;(pm as any)._phase = 'ready'
+
+      const buildLogPath = join(root, '.shogo', 'logs', 'build.log')
+      const runP = (pm as any).runViteOneShotBuild('vite', join(root, 'project'), buildLogPath, false)
+      await drain()
+      const proc = pendingProcs[0]
+      proc.stderr.emit('data', Buffer.from('SyntaxError: Unexpected token in src/App.tsx\n'))
+      proc.emit('exit', 1)
+      await runP
+
+      const status = pm.getStatus()
+      expect(status.phase).toBe('failed')
+      expect(status.errors.setup).not.toBeNull()
+      expect(status.errors.setup).not.toMatch(/disk is full/i)
+    })
+
+    test('ENOSPC failure best-effort reclaims node_modules/.vite, the vite staging dir, and the (faked) global package caches', async () => {
+      const root = makeWorkspace({})
+      const projectDir = join(root, 'project')
+      const pm = new PreviewManager({ workspaceDir: root, runtimePort: 38407 })
+      ;(pm as any)._phase = 'ready'
+
+      // Populate every candidate reclaim path with a marker file so we can
+      // assert it was actually removed, not just that the code ran.
+      const viteCache = join(projectDir, 'node_modules', '.vite')
+      const stagingDir = join(projectDir, DEFAULT_STAGING_DIR)
+      const bunCache = join(FAKE_HOME, '.bun', 'install', 'cache')
+      const npmCache = join(FAKE_HOME, '.npm', '_cacache')
+      for (const dir of [viteCache, stagingDir, bunCache, npmCache]) {
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'marker'), 'x')
+      }
+
+      const buildLogPath = join(root, '.shogo', 'logs', 'build.log')
+      const runP = (pm as any).runViteOneShotBuild('vite', projectDir, buildLogPath, false)
+      await drain()
+      const proc = pendingProcs[0]
+      proc.stderr.emit('data', Buffer.from('ENOSPC: no space left on device, write\n'))
+      proc.emit('exit', 1)
+      await runP
+
+      expect(existsSync(viteCache)).toBe(false)
+      expect(existsSync(stagingDir)).toBe(false)
+      expect(existsSync(bunCache)).toBe(false)
+      expect(existsSync(npmCache)).toBe(false)
+
+      // The freed paths are named in the operator-facing message so the
+      // agent (which reads build.log tails) can act on it.
+      const status = pm.getStatus()
+      expect(status.errors.setup).toMatch(/\.vite|cache/i)
+    })
+
+    test('non-ENOSPC failures do NOT touch any cache directories', async () => {
+      const root = makeWorkspace({})
+      const projectDir = join(root, 'project')
+      const pm = new PreviewManager({ workspaceDir: root, runtimePort: 38408 })
+      ;(pm as any)._phase = 'ready'
+
+      const viteCache = join(projectDir, 'node_modules', '.vite')
+      mkdirSync(viteCache, { recursive: true })
+      writeFileSync(join(viteCache, 'marker'), 'x')
+
+      const buildLogPath = join(root, '.shogo', 'logs', 'build.log')
+      const runP = (pm as any).runViteOneShotBuild('vite', projectDir, buildLogPath, false)
+      await drain()
+      const proc = pendingProcs[0]
+      proc.stderr.emit('data', Buffer.from('SyntaxError: Unexpected token\n'))
+      proc.emit('exit', 1)
+      await runP
+
+      expect(existsSync(viteCache)).toBe(true)
+    })
   })
 })
 
