@@ -20,13 +20,7 @@ import {
   View,
 } from "react-native";
 import { usePathname, useRouter } from "expo-router";
-import {
-  ChevronDown,
-  ChevronRight,
-  Folder,
-  Plus,
-  Search,
-} from "lucide-react-native";
+import { Folder, Plus, Search } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
@@ -423,7 +417,7 @@ export function WorkspaceConversationSidebar() {
 
   return (
     <View className="w-64 shrink-0 border-r border-border/70 bg-card/60">
-      <View className="border-b border-border/70 px-3 py-3">
+      <View className="px-3 py-3">
         <View className="flex-row items-center gap-2 rounded-2xl border border-border/70 bg-background px-3 py-2">
           <Search size={16} className="text-muted-foreground" />
           <TextInput
@@ -431,7 +425,7 @@ export function WorkspaceConversationSidebar() {
             onChangeText={setChatQuery}
             placeholder="Search chats"
             placeholderTextColor="#8a8a8a"
-            className="min-w-0 flex-1 text-sm text-foreground"
+            className="min-w-0 flex-1 text-sm leading-5 text-foreground"
             accessibilityLabel="Search side chats and project chats"
           />
         </View>
@@ -454,7 +448,9 @@ export function WorkspaceConversationSidebar() {
               : "active:bg-muted"
           )}
         >
-          <Text className="text-sm font-medium text-foreground">Main Chat</Text>
+          <Text className="text-sm font-medium leading-5 text-foreground">
+            Main Chat
+          </Text>
         </Pressable>
 
         {experience.workspaceAgent.sideChats ? (
@@ -464,6 +460,7 @@ export function WorkspaceConversationSidebar() {
               count={matchingSideChats.length}
               expanded={sideChatsExpanded}
               onExpandedChange={setSideChatsExpanded}
+              collapseOnHover
               action={
                 <Pressable
                   accessibilityRole="button"
@@ -487,6 +484,9 @@ export function WorkspaceConversationSidebar() {
                     key={session.id}
                     session={session}
                     active={active}
+                    textClassName="text-sm leading-5"
+                    inactiveTextClassName="text-foreground"
+                    rowClassName="px-2 py-2"
                     onSelect={() =>
                       router.push({
                         pathname: "/(app)/side-chats/[id]",
@@ -543,6 +543,8 @@ export function WorkspaceConversationSidebar() {
             count={workspaceProjects.length}
             expanded={projectsExpanded}
             onExpandedChange={setProjectsExpanded}
+            actionVisibility="hover"
+            collapseOnHover
             action={
               <Pressable
                 accessibilityRole="button"
@@ -589,51 +591,41 @@ export function WorkspaceConversationSidebar() {
               const activeProject = project.id === activeProjectId;
               return (
                 <View key={project.id} className="mb-1">
-                  <View
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${
+                      expanded ? "Collapse" : "Expand"
+                    } chats for ${project.name || "Untitled project"}`}
+                    accessibilityState={{ expanded }}
+                    onPress={() => toggleProject(project.id)}
                     className={cn(
-                      "group flex-row items-center rounded-lg",
+                      "group flex-row items-center rounded-lg hover:bg-muted",
                       activeProject && "bg-primary/10"
                     )}
                   >
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${
-                        expanded ? "Collapse" : "Expand"
-                      } chats for ${project.name || "Untitled project"}`}
-                      accessibilityState={{ expanded }}
-                      onPress={() => toggleProject(project.id)}
-                      className="min-w-0 flex-1 flex-row items-center gap-2 px-2.5 py-2 active:bg-muted"
-                    >
-                      {expanded ? (
-                        <ChevronDown
-                          size={15}
-                          className="text-muted-foreground"
-                        />
-                      ) : (
-                        <ChevronRight
-                          size={15}
-                          className="text-muted-foreground"
-                        />
-                      )}
+                    <View className="min-w-0 flex-1 flex-row items-center gap-2 px-2.5 py-2">
                       <Folder size={16} className="text-primary" />
                       <Text
-                        className="min-w-0 flex-1 text-sm font-medium text-foreground"
+                        className="min-w-0 flex-1 text-sm font-medium leading-5 text-foreground"
                         numberOfLines={1}
                       >
                         {project.name || "Untitled project"}
                       </Text>
-                    </Pressable>
+                    </View>
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Create a new chat in ${
                         project.name || "this project"
                       }`}
-                      onPress={() => startProjectChat(project.id)}
+                      onPress={(event) => {
+                        event.stopPropagation?.();
+                        startProjectChat(project.id);
+                      }}
                       className="mr-1 hidden h-9 w-9 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
                     >
                       <Plus size={16} className="text-muted-foreground" />
                     </Pressable>
-                  </View>
+                  </Pressable>
                   {expanded ? (
                     <View className="ml-5 pl-2">
                       {chats?.loading ? (
@@ -667,6 +659,9 @@ export function WorkspaceConversationSidebar() {
                             <ChatTreeItem
                               key={chat.id}
                               session={chat}
+                              textClassName="text-sm leading-5"
+                              inactiveTextClassName="text-foreground"
+                              rowClassName="px-2 py-2"
                               onSelect={() =>
                                 router.push({
                                   pathname: "/(app)/projects/[id]",

@@ -13,6 +13,8 @@ interface WorkspaceSidebarSectionProps {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   action?: ReactNode;
+  actionVisibility?: "always" | "hover";
+  collapseOnHover?: boolean;
   children: ReactNode;
 }
 
@@ -27,6 +29,8 @@ export function WorkspaceSidebarSection({
   expanded,
   onExpandedChange,
   action,
+  actionVisibility = "always",
+  collapseOnHover = false,
   children,
 }: WorkspaceSidebarSectionProps) {
   const prefersReducedMotion = useReducedMotion();
@@ -41,16 +45,28 @@ export function WorkspaceSidebarSection({
   }, [expanded, prefersReducedMotion, progress]);
 
   return (
-    <View className="border-t border-border/70 pt-2">
-      <View className="flex-row items-center">
+    <View className="pt-2">
+      <View className="group flex-row items-center">
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${label}`}
           accessibilityState={{ expanded }}
           onPress={() => onExpandedChange(!expanded)}
-          className="min-h-11 flex-1 flex-row items-center gap-1.5 rounded-lg px-2 active:bg-muted"
+          className="min-h-11 flex-1 flex-row items-center rounded-lg px-2 active:bg-muted"
         >
+          <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {label}
+          </Text>
+          {typeof count === "number" ? (
+            <Text className="ml-1 text-xs text-muted-foreground">
+              ({count})
+            </Text>
+          ) : null}
           <Animated.View
+            className={cn(
+              "ml-auto",
+              collapseOnHover && "hidden group-hover:flex"
+            )}
             style={{
               transform: [
                 {
@@ -64,14 +80,17 @@ export function WorkspaceSidebarSection({
           >
             <ChevronRight size={15} className="text-muted-foreground" />
           </Animated.View>
-          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {label}
-          </Text>
-          {typeof count === "number" ? (
-            <Text className="text-[11px] text-muted-foreground">({count})</Text>
-          ) : null}
         </Pressable>
-        {action ? <View className="ml-1">{action}</View> : null}
+        {action ? (
+          <View
+            className={cn(
+              "ml-1",
+              actionVisibility === "hover" && "hidden group-hover:flex"
+            )}
+          >
+            {action}
+          </View>
+        ) : null}
       </View>
       <Animated.View
         accessible

@@ -44,6 +44,9 @@ export function ChatTreeItem({
   onRequestDelete,
   onMeasureHeight,
   mobileProjectDetail,
+  textClassName,
+  inactiveTextClassName,
+  rowClassName,
 }: {
   session: any;
   active?: boolean;
@@ -57,6 +60,12 @@ export function ChatTreeItem({
   onMeasureHeight?: (height: number) => void;
   /** Align detail-panel chat labels with the project name, after its folder icon. */
   mobileProjectDetail?: boolean;
+  /** Override the label scale for a distinct sidebar presentation. */
+  textClassName?: string;
+  /** Keep conversation labels visually prominent outside the legacy tree. */
+  inactiveTextClassName?: string;
+  /** Override row density for a distinct sidebar presentation. */
+  rowClassName?: string;
 }) {
   const isNative = Platform.OS !== "web";
   const density = densityFor(isNative);
@@ -92,7 +101,7 @@ export function ChatTreeItem({
       const height = event.nativeEvent.layout.height;
       if (height > 0) onMeasureHeight?.(height);
     },
-    [onMeasureHeight],
+    [onMeasureHeight]
   );
 
   const menuItems: SidebarMenuEntry[] = [
@@ -134,8 +143,10 @@ export function ChatTreeItem({
         className={cn(
           "flex-row items-center rounded-md",
           isNative
-            ? `${density.rowMin} gap-2 px-2 py-1.5${mobileProjectDetail ? " pl-12" : ""}`
-            : "gap-1 px-1 py-1",
+            ? `${density.rowMin} gap-2 px-2 py-1.5${
+                mobileProjectDetail ? " pl-12" : ""
+              }`
+            : "gap-1 px-1 py-1"
         )}
       >
         <TextInput
@@ -146,7 +157,7 @@ export function ChatTreeItem({
           autoFocus
           className={cn(
             "flex-1 px-2 rounded border border-border bg-background text-foreground",
-            isNative ? `${density.text.body} h-11` : "h-6 text-xs",
+            isNative ? `${density.text.body} h-11` : "h-6 text-xs"
           )}
         />
         <Pressable
@@ -184,9 +195,12 @@ export function ChatTreeItem({
         className={cn(
           "group flex-row items-center rounded-md",
           isNative
-            ? `${density.rowMin} gap-2 px-2 py-2${mobileProjectDetail ? " pl-12" : ""}`
+            ? `${density.rowMin} gap-2 px-2 py-2${
+                mobileProjectDetail ? " pl-12" : ""
+              }`
             : "gap-1 px-1 py-1.5",
-          active ? "bg-accent" : "active:bg-accent/50",
+          rowClassName,
+          active ? "bg-accent" : "active:bg-accent/50"
         )}
         {...(Platform.OS === "web"
           ? ({ onContextMenu: handleContextMenu } as any)
@@ -211,8 +225,11 @@ export function ChatTreeItem({
         ) : null}
         <Text
           className={cn(
-            isNative ? `${density.text.body} flex-1` : "text-xs flex-1",
-            active ? "text-foreground" : "text-muted-foreground",
+            textClassName ?? (isNative ? density.text.body : "text-xs"),
+            "flex-1",
+            active
+              ? "text-foreground"
+              : inactiveTextClassName ?? "text-muted-foreground"
           )}
           numberOfLines={1}
         >
@@ -222,50 +239,50 @@ export function ChatTreeItem({
           CSS-driven via the row's `group` + `group-hover:flex` so moving the
           cursor between icons never tears down the hover target. */}
         {!isNative && (
-        <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
-          <Pressable
-            onPress={(e) => {
-              stop(e);
-              onTogglePin(session.id, !session.isPinned);
-            }}
-            className="p-0.5"
-            accessibilityLabel={
-              session.isPinned ? `Unpin ${label}` : `Pin ${label}`
-            }
-          >
-            {session.isPinned ? (
-              <PinOff size={11} className="text-muted-foreground" />
-            ) : (
-              <Pin size={11} className="text-muted-foreground" />
-            )}
-          </Pressable>
-          <Pressable
-            onPress={(e) => {
-              stop(e);
-              onToggleArchive(session.id, !session.isArchived);
-            }}
-            className="p-0.5"
-            accessibilityLabel={
-              session.isArchived ? `Unarchive ${label}` : `Archive ${label}`
-            }
-          >
-            {session.isArchived ? (
-              <ArchiveRestore size={11} className="text-muted-foreground" />
-            ) : (
-              <Archive size={11} className="text-muted-foreground" />
-            )}
-          </Pressable>
-          <Pressable
-            onPress={(e) => {
-              stop(e);
-              startEdit();
-            }}
-            className="p-0.5"
-            accessibilityLabel={`Rename ${label}`}
-          >
-            <Pencil size={11} className="text-muted-foreground" />
-          </Pressable>
-        </View>
+          <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+            <Pressable
+              onPress={(e) => {
+                stop(e);
+                onTogglePin(session.id, !session.isPinned);
+              }}
+              className="p-0.5"
+              accessibilityLabel={
+                session.isPinned ? `Unpin ${label}` : `Pin ${label}`
+              }
+            >
+              {session.isPinned ? (
+                <PinOff size={11} className="text-muted-foreground" />
+              ) : (
+                <Pin size={11} className="text-muted-foreground" />
+              )}
+            </Pressable>
+            <Pressable
+              onPress={(e) => {
+                stop(e);
+                onToggleArchive(session.id, !session.isArchived);
+              }}
+              className="p-0.5"
+              accessibilityLabel={
+                session.isArchived ? `Unarchive ${label}` : `Archive ${label}`
+              }
+            >
+              {session.isArchived ? (
+                <ArchiveRestore size={11} className="text-muted-foreground" />
+              ) : (
+                <Archive size={11} className="text-muted-foreground" />
+              )}
+            </Pressable>
+            <Pressable
+              onPress={(e) => {
+                stop(e);
+                startEdit();
+              }}
+              className="p-0.5"
+              accessibilityLabel={`Rename ${label}`}
+            >
+              <Pencil size={11} className="text-muted-foreground" />
+            </Pressable>
+          </View>
         )}
       </Pressable>
       {menu && (
