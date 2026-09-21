@@ -102,7 +102,8 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
       }
 
       const podUrl = `http://localhost:${runtime.agentPort}`
-      // Workspace token under SHOGO_WORKSPACE_RUNTIME, project token otherwise.
+      // Project calls use the workspace token because every project runtime is
+      // an anchored merged-root workspace.
       const token = await deriveProjectRuntimeToken(projectId)
 
       const response = await fetch(`${podUrl}/agent/heartbeat/trigger`, {

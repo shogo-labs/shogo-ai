@@ -51,7 +51,7 @@ function managerWithRuntime(overrides: Record<string, unknown> = {}) {
     lastHealthCheck: undefined,
     ...overrides,
   }
-  rm.runtimes.set('proj-1', runtime)
+  rm.runtimes.set('ws:proj:proj-1', runtime)
   rm.usedPorts.add(runtime.port)
   return { rm, runtime }
 }
@@ -70,7 +70,7 @@ describe('RuntimeManager lifecycle and health helpers', () => {
       url: 'http://localhost:37123',
     })
     expect(rm.status('missing')).toBeNull()
-    expect(rm.getActiveProjects().sort()).toEqual(['proj-1', 'starting'])
+    expect(rm.getActiveProjects().sort()).toEqual(['starting', 'ws:proj:proj-1'])
   })
 
   test('getHealth reports missing runtimes and healthy Vite responses', async () => {
@@ -120,7 +120,7 @@ describe('RuntimeManager lifecycle and health helpers', () => {
 
   test('stopAll swallows individual stop failures and health-check timers can be started/stopped', async () => {
     const { rm } = managerWithRuntime()
-    rm.runtimes.set('proj-2', {
+    rm.runtimes.set('ws:proj:proj-2', {
       ...rm.runtimes.get('proj-1'),
       id: 'proj-2',
       port: 37124,

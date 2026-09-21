@@ -4,7 +4,6 @@
 import { describe, expect, it, mock } from 'bun:test'
 import {
   resolveWorkspaceRuntimeUrl,
-  WorkspaceRuntimeNotEnabledError,
 } from '../resolve-workspace-runtime-url'
 
 function enabled() {
@@ -17,14 +16,22 @@ function enabled() {
 const passthroughLease = <T>(_id: string, fn: () => Promise<T>) => fn()
 
 describe('resolveWorkspaceRuntimeUrl', () => {
-  it('throws WorkspaceRuntimeNotEnabledError when the flag is off', async () => {
-    await expect(
-      resolveWorkspaceRuntimeUrl('ws-1', {
-        attachedProjectIds: ['p1'],
-        _isEnabled: () => false,
-        _loadWorkspaceKind: async () => 'team',
+  it('resolves workspace runtimes even when the retired flag is off', async () => {
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: ['p1'],
+      _isEnabled: () => false,
+      _isKubernetes: () => false,
+      _isMetalEnabled: () => false,
+      _hostStart: async () => ({
+        projectId: 'ws-1',
+        port: 37000,
+        agentPort: 38000,
+        status: 'running' as const,
+        url: 'http://localhost:37000',
+        startedAt: Date.now(),
       }),
-    ).rejects.toBeInstanceOf(WorkspaceRuntimeNotEnabledError)
+    })
+    expect(res).toMatchObject({ mode: 'host', url: 'http://localhost:38000' })
   })
 
   it('allows personal workspaces through when the global flag is off', async () => {

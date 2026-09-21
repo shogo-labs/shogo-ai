@@ -125,8 +125,8 @@ mock.module('../lib/resolve-pod-url', () => ({
   },
 }))
 
-mock.module('../lib/runtime-token', () => ({
-  deriveRuntimeToken: () => 'tok-1',
+mock.module('../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken: () => 'tok-1',
 }))
 
 mock.module('../lib/project-user-context', () => ({

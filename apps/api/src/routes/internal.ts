@@ -33,6 +33,7 @@ import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { resolve as resolvePath } from 'path'
 import { searchWorkspaceHistory, renderWorkspaceTranscript, readWorkspacePlan } from '../lib/history-search'
 import { workspaceAgentRoutes, type WorkspaceAgentAuthContext } from './workspace-agent'
+import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import {
   authenticate,
   authorizeWorkspaceRuntimeRequest,
@@ -495,6 +496,7 @@ app.post('/agent-cost-metrics', async (c) => {
 app.route(
   '/',
   workspaceAgentRoutes({
+    saveAgentAvatar,
     authorize: async (c): Promise<WorkspaceAgentAuthContext | Response> => {
       const workspaceId = c.req.param('workspaceId')
       if (!(await authorizeWorkspaceScope(c, workspaceId))) {

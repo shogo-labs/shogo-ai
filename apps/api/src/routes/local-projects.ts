@@ -99,9 +99,8 @@ function prewarmRuntimeBackground(projectId: string, hint: string): void {
  * remounted. `LINKED_FOLDERS` / `READONLY_ROOTS` are parsed once at runtime
  * boot, so the set only takes effect after a restart.
  *
- * No-op (swallowed) when `SHOGO_WORKSPACE_RUNTIME` is off — in that case the
- * project still runs on the legacy single-project runtime and attachments
- * are inert until the flag is enabled.
+ * The anchored workspace runtime is the only project runtime topology, so
+ * attachment changes always restart the same merged-root process.
  */
 async function restartAnchorRuntime(anchorProjectId: string, hint: string): Promise<void> {
   const [{ getRuntimeManager, projectWorkspaceRuntimeKey }, resolveMod] = await Promise.all([

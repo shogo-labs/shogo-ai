@@ -266,7 +266,7 @@ export function chatRoutes() {
     // *named* (non-default) agent is a hard 404 so consumers get a
     // useful error during dev.
     const { resolveProjectAgent, listProjectAgentNames } = await import(
-      '../services/projectAgent.service'
+      new URL('../services/projectAgent.service.ts', import.meta.url).href
     )
     let resolvedAgent: Awaited<ReturnType<typeof resolveProjectAgent>> = null
     try {

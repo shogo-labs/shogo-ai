@@ -15,4 +15,4 @@
  * directly should switch to the public surface above.
  */
 
-export * from '@shogo-ai/sdk/model-catalog'
+export * from '../../agent/src/model-catalog/index'

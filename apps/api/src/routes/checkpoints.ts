@@ -17,7 +17,6 @@ import { join } from 'path';
 import * as checkpointService from '../services/checkpoint.service';
 import * as gitService from '../services/git.service';
 import { prisma } from '../lib/prisma';
-import { hydrateRepo } from '../services/git-repo-store';
 
 // =============================================================================
 // Types
@@ -26,6 +25,8 @@ import { hydrateRepo } from '../services/git-repo-store';
 export interface CheckpointRoutesConfig {
   /** Directory containing project workspaces */
   workspacesDir: string;
+  /** Cloud object-store hydration; local SQLite uses the filesystem directly. */
+  hydrateRepo?: (projectId: string, workspacePath: string) => Promise<unknown>;
 }
 
 // =============================================================================
@@ -34,6 +35,7 @@ export interface CheckpointRoutesConfig {
 
 export function checkpointRoutes(config: CheckpointRoutesConfig) {
   const { workspacesDir } = config;
+  const hydrate = config.hydrateRepo ?? (async () => undefined);
   const router = new Hono();
 
   /**
@@ -52,7 +54,7 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
    */
   async function withHydratedRepo(projectId: string): Promise<string> {
     const workspacePath = getWorkspacePath(projectId);
-    await hydrateRepo(projectId, workspacePath).catch((err) =>
+    await hydrate(projectId, workspacePath).catch((err) =>
       console.warn(`[Checkpoints] hydrate for ${projectId} failed:`, err?.message ?? err),
     );
     return workspacePath;

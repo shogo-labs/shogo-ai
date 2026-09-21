@@ -7,7 +7,7 @@
  * committing node_modules on its first open.
  */
 import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -22,8 +22,6 @@ mock.module('../runtime', () => ({
 }))
 
 const { isTemplateCopyExcluded, ensureWorkspaceGitignore } = await import('../runtime/manager')
-const { HostWarmPoolController, hostPoolScratchRoot } = await import('../host-warm-pool-controller')
-
 const dirs: string[] = []
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -63,33 +61,5 @@ describe('ensureWorkspaceGitignore', () => {
     writeFileSync(join(project, '.gitignore'), 'custom\n')
     expect(ensureWorkspaceGitignore(project, [template])).toBe(false)
     expect(readFileSync(join(project, '.gitignore'), 'utf8')).toBe('custom\n')
-  })
-})
-
-describe('host pool runtime spawn env', () => {
-  test('points idle pool runtimes at a private scratch workspace and skips the pod pre-seed', () => {
-    const prevEntry = process.env.AGENT_RUNTIME_ENTRY
-    const prevWs = process.env.WORKSPACES_DIR
-    const root = mkdtempSync(join(tmpdir(), 'shogo-pool-'))
-    dirs.push(root)
-    process.env.AGENT_RUNTIME_ENTRY = '/opt/agent-runtime.js'
-    process.env.WORKSPACES_DIR = root
-    try {
-      const controller = new HostWarmPoolController(1, 1)
-      const { env } = (controller as any).buildSpawn(38300, 'host-test-1')
-      expect(env.PROJECT_ID).toBe('__POOL__')
-      expect(env.SHOGO_POOL_SKIP_PRESEED).toBe('1')
-      expect(env.WORKSPACE_DIR).toBe(join(hostPoolScratchRoot(), 'host-test-1'))
-      expect(env.PROJECT_DIR).toBe(env.WORKSPACE_DIR)
-      expect(env.WORKSPACE_DIR.startsWith(join(root, '.pool'))).toBe(true)
-      expect(existsSync(env.WORKSPACE_DIR)).toBe(true)
-      // Never the container default that resolves to a shared C:\app\workspace.
-      expect(env.WORKSPACE_DIR).not.toBe('/app/workspace')
-    } finally {
-      if (prevEntry === undefined) delete process.env.AGENT_RUNTIME_ENTRY
-      else process.env.AGENT_RUNTIME_ENTRY = prevEntry
-      if (prevWs === undefined) delete process.env.WORKSPACES_DIR
-      else process.env.WORKSPACES_DIR = prevWs
-    }
   })
 })

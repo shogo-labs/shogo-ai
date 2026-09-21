@@ -82,6 +82,36 @@ mock.module('../services/billing.service', () => ({
   allocateMonthlyIncluded: async () => ({}),
 }))
 
+mock.module('../services/billing-runtime', () => ({
+  SYSTEM_WORKSPACE_ID: 'system',
+  hasBalance: async () => true,
+  checkUsageBalance: async () => ({ ok: true }),
+  usageLimitErrorPayload: (reason?: string) => ({
+    code: reason ?? 'usage_limit_reached',
+    message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
+  }),
+  hasAdvancedModelAccess: async () => true,
+  consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
+  getUsageWindows: async () => null,
+  ensureSystemWorkspace: async () => ({}),
+  getSubscription: async () => ({
+    planId: 'pro',
+    status: 'active',
+    billingInterval: 'monthly',
+    currentPeriodEnd: new Date('2030-01-01'),
+    cancelAtPeriodEnd: false,
+  }),
+  getUsageWallet: async () => ({
+    monthlyIncludedUsd: 100,
+    dailyIncludedUsd: 10,
+    overageEnabled: false,
+    overageHardLimitUsd: null,
+    overageAccumulatedUsd: 0,
+  }),
+  syncFromStripe: async () => ({}),
+  allocateMonthlyIncluded: async () => ({}),
+}))
+
 mock.module('../lib/proxy-billing-session', () => ({
   openSession: () => null,
   hasSession: () => false,

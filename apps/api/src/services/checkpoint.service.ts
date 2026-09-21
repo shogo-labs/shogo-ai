@@ -822,7 +822,10 @@ export async function syncAfterCheckpoint(
     }
 
     // Lazy import github service to avoid loading jsonwebtoken when not needed
-    const githubService = await import('./github.service');
+    // Keep the cloud-only GitHub client outside the local API graph. Bun
+    // retains literal dynamic imports in bundles even behind a local-mode
+    // branch, while this URL form is resolved only when cloud push is used.
+    const githubService = await import(new URL('./github.service.ts', import.meta.url).href);
 
     if (!githubService.isConfigured()) {
       return; // GitHub App not configured on this server

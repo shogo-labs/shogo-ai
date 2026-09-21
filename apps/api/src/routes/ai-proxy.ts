@@ -1904,9 +1904,9 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 // =============================================================================
 
 import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session'
+import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 
 /**
  * Build the time-gating detail attached to a 402 "usage limit reached"

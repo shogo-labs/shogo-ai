@@ -8,9 +8,7 @@
  *   - Workspace chat session management (create / list / attach / detach
  *     projects) — fully functional today, DB-backed.
  *   - POST /workspaces/:workspaceId/chat — resolves the workspace runtime
- *     and proxies the chat. The runtime spawn lands in Phase 2b; until
- *     `SHOGO_WORKSPACE_RUNTIME=true` this returns a clean 501 rather than
- *     half-booting a single-project runtime.
+ *     and proxies the chat through the shared merged-root workspace runtime.
  *
  * Auth: every route resolves the caller via the injected `resolveUserId`
  * (Better Auth session / API key) and checks workspace membership with
@@ -23,7 +21,7 @@ import { Hono } from 'hono'
 
 import type { IRuntimeManager } from '../lib/runtime'
 import { prisma } from '../lib/prisma'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { stampModelProvider } from '../lib/stamp-model-provider'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
@@ -39,13 +37,10 @@ import {
   WorkspaceSessionError,
   type AttachMode,
 } from '../services/workspace-session.service'
-import {
-  resolveWorkspaceRuntimeUrl,
-  WorkspaceRuntimeNotEnabledError,
-} from '../lib/resolve-workspace-runtime-url'
+import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
-import { openSession, closeSession } from '../lib/proxy-billing-session'
+import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
 import {
   attachProjectToProject,
@@ -202,43 +197,16 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
      */
     precomputedKind?: WorkspaceKind,
   ): Promise<{ url: string; mode: string } | { res: Response }> {
-    let workspaceKind: WorkspaceKind | undefined = precomputedKind
-    if (!workspaceKind) {
-      try {
-        workspaceKind = await getWorkspaceKind(workspaceId)
-      } catch {
-        // The resolver can still return the normal feature-gate response when
-        // the kind lookup is unavailable.
-      }
-    }
-    try {
-      const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-        attachedProjectIds,
-        logTag,
-        runtimeManager,
-        alwaysEnabled: config.alwaysEnabled,
-        workspaceKind,
-        ...extra,
-      })
-      return { url: resolved.url, mode: resolved.mode }
-    } catch (err) {
-      if (err instanceof WorkspaceRuntimeNotEnabledError) {
-        return {
-          res: c.json(
-            {
-              error: {
-                code: 'workspace_runtime_unavailable',
-                message:
-                  'Workspace runtimes are not yet available in this environment. ' +
-                  'Multi-project chat lands with the merged-root runtime (Phase 2b).',
-              },
-            },
-            501,
-          ),
-        }
-      }
-      throw err
-    }
+    const workspaceKind = precomputedKind ?? (await getWorkspaceKind(workspaceId))
+    const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+      attachedProjectIds,
+      logTag,
+      runtimeManager,
+      alwaysEnabled: config.alwaysEnabled,
+      workspaceKind,
+      ...extra,
+    })
+    return { url: resolved.url, mode: resolved.mode }
   }
 
   /**
@@ -414,28 +382,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       )
     }
 
-    let resolved
-    try {
-      resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-        attachedProjectIds,
-        logTag: 'WorkspacePreview',
-        runtimeManager,
-        ...runtimeExtra,
-      })
-    } catch (err) {
-      if (err instanceof WorkspaceRuntimeNotEnabledError) {
-        return c.json(
-          {
-            error: {
-              code: 'workspace_runtime_unavailable',
-              message: 'Workspace runtimes are not yet available in this environment.',
-            },
-          },
-          501,
-        )
-      }
-      throw err
-    }
+    const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+      attachedProjectIds,
+      logTag: 'WorkspacePreview',
+      runtimeManager,
+      ...runtimeExtra,
+    })
 
     return c.json({
       projectId,
@@ -474,10 +426,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   // claimed / cold-started while the user is still composing. The attached
   // project set (resolved from `attachProjectIds` in the body, or from a
   // `sessionId`'s attachments) drives which subfolders the runtime mounts.
-  // Returns 202 immediately and resolves in the background (idempotent — host
-  // `startWorkspace` dedupes concurrent starts). The SHOGO_WORKSPACE_RUNTIME
-  // gate is honoured silently in the background resolve, so a prewarm in an
-  // environment without the flag is simply a no-op rather than an error.
+  // Returns 202 immediately and resolves in the background (idempotent —
+  // `startWorkspace` dedupes concurrent starts).
   router.post('/workspaces/:workspaceId/runtime/prewarm', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
@@ -508,12 +458,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       runtimeManager,
       ...runtimeExtra,
     }).catch((err) => {
-      if (!(err instanceof WorkspaceRuntimeNotEnabledError)) {
-        console.error(
-          `[WorkspaceChat] Background prewarm failed for ${workspaceId}:`,
-          err?.message ?? err,
-        )
-      }
+      console.error(
+        `[WorkspaceChat] Background prewarm failed for ${workspaceId}:`,
+        err?.message ?? err,
+      )
     })
 
     return c.json({ success: true, workspaceId, status: 'warming' }, 202)
@@ -554,7 +502,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       runtimeManager,
       ...runtimeExtra,
     }).catch((err) => {
-      if (err instanceof WorkspaceRuntimeNotEnabledError) return
       console.warn(
         `[WorkspaceChat] Prewarm failed for ${workspaceId} (non-blocking):`,
         err?.message ?? err,
@@ -573,7 +520,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   // token are project-scoped), decoupled upstream streaming so a client
   // disconnect never aborts the runtime, and trackUsageFromStream for
   // persistence + server-side auto-resume + billing close. Runtime
-  // resolution stays gated behind SHOGO_WORKSPACE_RUNTIME (501 when off).
+  // resolution always uses the merged-root workspace runtime.
   router.post('/workspaces/:workspaceId/chat', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
@@ -721,7 +668,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // member is reflected. Per-call multi-project attribution is Phase 2b.
     const billingProjectId: string | null = attachedProjectIds[0] ?? null
 
-    // Resolve the workspace runtime (501 when SHOGO_WORKSPACE_RUNTIME off).
+    // Resolve the unconditional merged-root workspace runtime.
     const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceChat', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
     let podUrl = runtimeRes.url
@@ -1031,7 +978,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       // Guard: close the billing session if trackUsageFromStream never took
       // ownership (retry exhaustion, client disconnect, thrown error).
       if (billingProjectId && !billingSessionHandedOff) {
-        closeSession(billingProjectId, { chatSessionId: sessionId }).catch((err) =>
+        closeSession(billingProjectId, { chatSessionId: sessionId }).catch((err: any) =>
           console.error(
             `[WorkspaceChat] Failed to close orphaned billing session for ${billingProjectId}:`,
             err,
