@@ -2889,7 +2889,28 @@ export function aiProxyRoutes() {
       // non-billable completions (e.g. server-initiated title generation) also
       // bypass tier gating: the admin picks the title model and it is never
       // billed to or restricted by the end user's plan.
-      if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev && !internalUsage) {
+      //
+      // The `'workspace'` sentinel identifies a project-less workspace
+      // runtime — in practice, exclusively the free personal-companion chat
+      // (see build-workspace-env.ts). Its model is never end-user-chosen: the
+      // client's `agentMode` is force-overridden server-side in
+      // workspace-chat.ts to the super-admin-configured personal companion
+      // model (default `hoshi-2-0`, an intentionally low-cost model picked
+      // *because* personal spaces are free). Gating it on the workspace's
+      // own Stripe plan made the free personal companion 403 for every
+      // non-economy-tier admin choice — surfaced to users as "The model
+      // provider rejected the request" (403 classifies as `auth` in
+      // retry-classifier.ts) even though DeepSeek/the provider never saw the
+      // call. Bypass tier gating here the same way `internalUsage` does,
+      // rather than requiring every free personal space to carry a Pro plan.
+      const isPersonalCompanionRuntime = tokenPayload.projectId === 'workspace'
+      if (
+        modelConfig.provider !== 'local' &&
+        modelConfig.provider !== 'openrouter' &&
+        !isLocalDev &&
+        !internalUsage &&
+        !isPersonalCompanionRuntime
+      ) {
         const tier = resolveModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -3430,9 +3451,9 @@ export function aiProxyRoutes() {
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.
-      // Internal, non-billable completions bypass tier gating (see
-      // chat/completions for rationale).
-      if (!isLocal && !isLocalDev && !internalUsage) {
+      // Internal, non-billable completions and the free personal-companion
+      // runtime bypass tier gating (see chat/completions for rationale).
+      if (!isLocal && !isLocalDev && !internalUsage && tokenPayload.projectId !== 'workspace') {
         const tier = resolveModelTier(resolvedModel)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
