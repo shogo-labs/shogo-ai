@@ -37,7 +37,7 @@ import {
   WorkspaceSessionError,
   type AttachMode,
 } from '../services/workspace-session.service'
-import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
+import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
@@ -197,16 +197,49 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
      */
     precomputedKind?: WorkspaceKind,
   ): Promise<{ url: string; mode: string } | { res: Response }> {
-    const workspaceKind = precomputedKind ?? (await getWorkspaceKind(workspaceId))
-    const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
-      logTag,
-      runtimeManager,
-      alwaysEnabled: config.alwaysEnabled,
-      workspaceKind,
-      ...extra,
-    })
-    return { url: resolved.url, mode: resolved.mode }
+    let workspaceKind: WorkspaceKind | undefined = precomputedKind
+    if (!workspaceKind) {
+      try {
+        workspaceKind = await getWorkspaceKind(workspaceId)
+      } catch {
+        // The resolver can still return the normal feature-gate response when
+        // the kind lookup is unavailable.
+      }
+    }
+    try {
+      const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds,
+        logTag,
+        runtimeManager,
+        alwaysEnabled: config.alwaysEnabled,
+        workspaceKind,
+        ...extra,
+      })
+      return { url: resolved.url, mode: resolved.mode }
+    } catch (err) {
+      // PR #927 ("unify workspace runtime") dropped this catch when
+      // refactoring resolveOr501, so every caller (agent-proxy, chat,
+      // resume, turn, stop) started 500ing instead of 501ing when
+      // workspace runtimes are disabled — see
+      // workspace-chat-agent-proxy.test.ts's "returns 501 when workspace
+      // runtimes are not enabled".
+      if (err instanceof WorkspaceRuntimeNotEnabledError) {
+        return {
+          res: c.json(
+            {
+              error: {
+                code: 'workspace_runtime_unavailable',
+                message:
+                  'Workspace runtimes are not yet available in this environment. ' +
+                  'Multi-project chat lands with the merged-root runtime (Phase 2b).',
+              },
+            },
+            501,
+          ),
+        }
+      }
+      throw err
+    }
   }
 
   /**
