@@ -1584,6 +1584,16 @@ function buildOpenAICompatibleBody(
     else body.max_tokens = max_tokens
   }
 
+  // Chat Completions is the compatibility fallback for native OpenAI models.
+  // OpenAI rejects reasoning_effort on older GPT models outright and rejects
+  // it on GPT-5+ whenever function tools are present. Reasoning-capable
+  // runtime turns should use /v1/responses; if a caller still reaches this
+  // endpoint, omitting the field preserves tool calling instead of failing
+  // before the first tool invocation.
+  if (modelConfig.provider === 'openai') {
+    delete body.reasoning_effort
+  }
+
   const isDeepSeek =
     modelConfig.upstream === 'deepseek' ||
     (modelConfig.provider === 'custom' && modelConfig.baseUrl?.includes('api.deepseek.com') === true)
