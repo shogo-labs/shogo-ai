@@ -205,7 +205,9 @@ describe('gateway-tools final-cluster sweep', () => {
       installFetch(async () => makeResponse({ status: 500, ok: false, body: 'err' }))
       const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
       const r = await call(ctx, 'generate_image', { prompt: 'x', reference_image: 'images/r.png' })
-      expect(r.error).toContain('Image edit failed')
+      // friendlyImageGenerationError maps 5xx to a generic "try again" message
+      // instead of surfacing the raw upstream error body to the chat.
+      expect(r.error).toContain('temporarily unavailable')
     })
 
     test('responseData with error field is surfaced', async () => {

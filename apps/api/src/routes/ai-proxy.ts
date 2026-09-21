@@ -2169,6 +2169,35 @@ function getImageProviderApiKey(provider: ImageProvider): string | null {
   }
 }
 
+/**
+ * `quality` is a shared tool-level param ("standard" | "hd") modeled on
+ * dall-e-3, but GPT image models (gpt-image-1, gpt-image-1.5, ...) only
+ * accept "low" | "medium" | "high" | "auto" and 400 on "standard"/"hd" with
+ * `Invalid value: 'standard'. Supported values are: 'low', 'medium', 'high', and 'auto'.`
+ * Map the dall-e-3 vocabulary onto the nearest GPT image equivalent instead
+ * of forwarding it verbatim.
+ */
+export function normalizeQualityForModel(model: string, quality?: string): string | undefined {
+  if (!quality) return undefined
+  if (!model.startsWith('gpt-image')) return quality
+  if (quality === 'standard') return 'medium'
+  if (quality === 'hd') return 'high'
+  return quality
+}
+
+/**
+ * dall-e-3's portrait/landscape sizes ("1024x1792" / "1792x1024" — the ones
+ * our `generate_image` tool schema documents) aren't valid for GPT image
+ * models, which use "1024x1536" / "1536x1024" instead. Map onto the nearest
+ * equivalent rather than forwarding a size the model will reject.
+ */
+export function normalizeSizeForModel(model: string, size: string): string {
+  if (!model.startsWith('gpt-image')) return size
+  if (size === '1024x1792') return '1024x1536'
+  if (size === '1792x1024') return '1536x1024'
+  return size
+}
+
 async function generateImageOpenAI(
   apiKey: string,
   model: string,
@@ -2178,11 +2207,16 @@ async function generateImageOpenAI(
   const body: Record<string, unknown> = {
     model,
     prompt: params.prompt,
-    size: params.size || '1024x1024',
+    size: normalizeSizeForModel(model, params.size || '1024x1024'),
     n: params.n || 1,
-    response_format: 'b64_json',
   }
-  if (params.quality) body.quality = params.quality
+  // GPT image models (gpt-image-1, gpt-image-1.5, ...) always return
+  // base64-encoded images and reject `response_format` outright with
+  // "Unknown parameter: 'response_format'" (400). Only dall-e-2/dall-e-3
+  // support (and need) this parameter to get b64_json instead of a URL.
+  if (!model.startsWith('gpt-image')) body.response_format = 'b64_json'
+  const quality = normalizeQualityForModel(model, params.quality)
+  if (quality) body.quality = quality
 
   const response = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
@@ -2855,7 +2889,28 @@ export function aiProxyRoutes() {
       // non-billable completions (e.g. server-initiated title generation) also
       // bypass tier gating: the admin picks the title model and it is never
       // billed to or restricted by the end user's plan.
-      if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev && !internalUsage) {
+      //
+      // The `'workspace'` sentinel identifies a project-less workspace
+      // runtime — in practice, exclusively the free personal-companion chat
+      // (see build-workspace-env.ts). Its model is never end-user-chosen: the
+      // client's `agentMode` is force-overridden server-side in
+      // workspace-chat.ts to the super-admin-configured personal companion
+      // model (default `hoshi-2-0`, an intentionally low-cost model picked
+      // *because* personal spaces are free). Gating it on the workspace's
+      // own Stripe plan made the free personal companion 403 for every
+      // non-economy-tier admin choice — surfaced to users as "The model
+      // provider rejected the request" (403 classifies as `auth` in
+      // retry-classifier.ts) even though DeepSeek/the provider never saw the
+      // call. Bypass tier gating here the same way `internalUsage` does,
+      // rather than requiring every free personal space to carry a Pro plan.
+      const isPersonalCompanionRuntime = tokenPayload.projectId === 'workspace'
+      if (
+        modelConfig.provider !== 'local' &&
+        modelConfig.provider !== 'openrouter' &&
+        !isLocalDev &&
+        !internalUsage &&
+        !isPersonalCompanionRuntime
+      ) {
         const tier = resolveModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -3396,9 +3451,9 @@ export function aiProxyRoutes() {
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.
-      // Internal, non-billable completions bypass tier gating (see
-      // chat/completions for rationale).
-      if (!isLocal && !isLocalDev && !internalUsage) {
+      // Internal, non-billable completions and the free personal-companion
+      // runtime bypass tier gating (see chat/completions for rationale).
+      if (!isLocal && !isLocalDev && !internalUsage && tokenPayload.projectId !== 'workspace') {
         const tier = resolveModelTier(resolvedModel)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -3822,7 +3877,9 @@ export function aiProxyRoutes() {
         )
       }
 
-      const model = body.model || 'dall-e-3'
+      // dall-e-3 is retired (OpenAI, 2026-09) — "The model 'dall-e-3' does
+      // not exist." gpt-image-2.5-flare is the current default.
+      const model = body.model || 'gpt-image-2.5-flare'
       const imageModel = resolveImageModel(model)
       if (!imageModel) {
         return c.json(
@@ -3909,7 +3966,7 @@ export function aiProxyRoutes() {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
       const imageFile = formData.get('image') as File | null
-      const model = (formData.get('model') as string) || 'dall-e-2'
+      const model = (formData.get('model') as string) || 'gpt-image-2.5-flare'
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
       const quality = (formData.get('quality') as string) || 'standard'
@@ -3937,15 +3994,21 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
 
-      // OpenAI edits endpoint only supports dall-e-2
-      const editModel = 'dall-e-2'
+      // dall-e-2 (the previous edits-only model) is retired (OpenAI,
+      // 2026-09). gpt-image-1 supports /v1/images/edits too, so honor the
+      // caller's model instead of hardcoding a dead one — but gpt-image
+      // models reject `response_format` (400 unknown_parameter) and use
+      // different size tokens, same as the generations path above.
+      const editModel = model
       const forwardForm = new FormData()
       forwardForm.append('image', imageFile)
       forwardForm.append('prompt', prompt)
       forwardForm.append('model', editModel)
-      forwardForm.append('size', size)
+      forwardForm.append('size', normalizeSizeForModel(editModel, size))
       forwardForm.append('n', String(n))
-      forwardForm.append('response_format', 'b64_json')
+      const editQuality = normalizeQualityForModel(editModel, quality)
+      if (editQuality) forwardForm.append('quality', editQuality)
+      if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
 
       const response = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',

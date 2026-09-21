@@ -58,6 +58,10 @@ import {
   TITLE_MODEL_SETTING_KEY,
 } from './lib/title-model'
 import {
+  setPersonalCompanionModelId,
+  PERSONAL_COMPANION_MODEL_SETTING_KEY,
+} from './lib/personal-companion-model'
+import {
   fallbackGenerateProjectName,
   parseTitleResponse,
   shouldPersistGeneratedProjectName,
@@ -6442,6 +6446,49 @@ app.put('/api/admin/settings/title-generation-model', async (c) => {
 })
 
 // =============================================================================
+// Personal Companion Model — super-admin selectable model powering the
+// personal companion's interactive chat (its picker is hidden — one
+// companion per person). Stored as a single PlatformSetting row; null/empty
+// resets to the platform default (Hoshi 2.0). See lib/personal-companion-model.ts.
+// =============================================================================
+
+// GET /api/admin/settings/personal-companion-model
+app.get('/api/admin/settings/personal-companion-model', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
+    return c.json({ model: row?.value ?? null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/personal-companion-model
+app.put('/api/admin/settings/personal-companion-model', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const value = typeof body?.model === 'string' ? body.model.trim() : ''
+
+    if (value.length === 0) {
+      await prisma.platformSetting.deleteMany({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
+      setPersonalCompanionModelId(null)
+      return c.json({ ok: true, model: null })
+    }
+
+    await prisma.platformSetting.upsert({
+      where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY },
+      create: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY, value, updatedBy: userId },
+      update: { value, updatedBy: userId },
+    })
+    setPersonalCompanionModelId(value)
+    return c.json({ ok: true, model: value })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// =============================================================================
 // Visible Models Config — admin-curated model allowlist for the user picker.
 // =============================================================================
 //
@@ -9092,6 +9139,21 @@ await (async () => {
     }
   } catch (err: any) {
     console.log('[TitleModel] No title model override loaded (non-fatal):', err.message)
+  }
+})()
+
+// Load the admin-configured personal-companion model from platform_settings
+// into memory so `POST /workspaces/:id/chat` resolves it without a DB
+// round-trip. Unset falls back to Hoshi 2.0 (see lib/personal-companion-model.ts).
+await (async () => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
+    if (row?.value) {
+      setPersonalCompanionModelId(row.value)
+      console.log('[PersonalCompanionModel] Loaded admin override:', row.value)
+    }
+  } catch (err: any) {
+    console.log('[PersonalCompanionModel] No override loaded, defaulting to Hoshi 2.0 (non-fatal):', err.message)
   }
 })()
 

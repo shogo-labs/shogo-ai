@@ -130,10 +130,12 @@ describe('calculateImageUsageCost', () => {
     )
   })
 
-  it('falls back to dall-e-3 config for an unknown model', () => {
+  // dall-e-3 is retired (OpenAI, 2026-09); the fallback moved to the
+  // current-generation gpt-image-1 pricing profile.
+  it('falls back to gpt-image-1 config for an unknown model', () => {
     const fallback = calculateImageUsageCost('mystery-model')
-    const dalle = calculateImageUsageCost('dall-e-3')
-    expect(fallback.rawUsd).toBe(dalle.rawUsd)
+    const gptImage1 = calculateImageUsageCost('gpt-image-1')
+    expect(fallback.rawUsd).toBe(gptImage1.rawUsd)
   })
 
   it('uses default args when called bare', () => {
