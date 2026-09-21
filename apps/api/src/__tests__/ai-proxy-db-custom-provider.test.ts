@@ -698,6 +698,63 @@ describe('ai-proxy DB-defined model routing', () => {
     const auth = (lastFetchInit?.headers as Record<string, string>)?.['Authorization']
     expect(auth).toBe('Bearer sk-openai-db-routing-test')
   })
+
+  test('Chat Completions drops reasoning_effort for a GPT tool call', async () => {
+    const res = await postChatBody(buildApp(), {
+      model: GPT_UUID,
+      messages: [{ role: 'user', content: 'Run pwd.' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'run_terminal',
+          description: 'Run a terminal command.',
+          parameters: { type: 'object', properties: { command: { type: 'string' } } },
+        },
+      }],
+      tool_choice: 'auto',
+      reasoning_effort: 'high',
+    })
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://api.openai.com/v1/chat/completions')
+    const body = lastForwardedBody()
+    expect(body.model).toBe('gpt-5.5')
+    expect(body.tools).toHaveLength(1)
+    expect(body.reasoning_effort).toBeUndefined()
+  })
+
+  test('Chat Completions also drops reasoning_effort after a GPT tool result', async () => {
+    const res = await postChatBody(buildApp(), {
+      model: GPT_UUID,
+      messages: [
+        { role: 'user', content: 'Run pwd.' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'call_pwd',
+            type: 'function',
+            function: { name: 'run_terminal', arguments: '{"command":"pwd"}' },
+          }],
+        },
+        { role: 'tool', tool_call_id: 'call_pwd', content: '/workspace' },
+      ],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'run_terminal',
+          description: 'Run a terminal command.',
+          parameters: { type: 'object', properties: { command: { type: 'string' } } },
+        },
+      }],
+      reasoning_effort: 'high',
+    })
+
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.messages.at(-1)).toMatchObject({ role: 'tool', content: '/workspace' })
+    expect(body.reasoning_effort).toBeUndefined()
+  })
 })
 
 // ── Cloud-proxy forwarding for the Responses API (GPT reasoning) ────────────
