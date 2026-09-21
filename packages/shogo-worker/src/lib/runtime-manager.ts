@@ -48,7 +48,7 @@ import {
   type RuntimeResourceLimits,
 } from './resource-limits.ts';
 import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
-import { CloudFileTransport } from '../../../sdk/src/projects/cloud-file-transport';
+import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
 

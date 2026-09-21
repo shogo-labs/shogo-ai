@@ -37,7 +37,7 @@ import {
   WorkspaceSessionError,
   type AttachMode,
 } from '../services/workspace-session.service'
-import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
+import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
@@ -198,15 +198,34 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     precomputedKind?: WorkspaceKind,
   ): Promise<{ url: string; mode: string } | { res: Response }> {
     const workspaceKind = precomputedKind ?? (await getWorkspaceKind(workspaceId))
-    const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
-      logTag,
-      runtimeManager,
-      alwaysEnabled: config.alwaysEnabled,
-      workspaceKind,
-      ...extra,
-    })
-    return { url: resolved.url, mode: resolved.mode }
+    try {
+      const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds,
+        logTag,
+        runtimeManager,
+        alwaysEnabled: config.alwaysEnabled,
+        workspaceKind,
+        ...extra,
+      })
+      return { url: resolved.url, mode: resolved.mode }
+    } catch (err) {
+      if (err instanceof WorkspaceRuntimeNotEnabledError) {
+        return {
+          res: c.json(
+            {
+              error: {
+                code: 'workspace_runtime_unavailable',
+                message:
+                  'Workspace runtimes are not yet available in this environment. ' +
+                  'Multi-project chat lands with the merged-root runtime (Phase 2b).',
+              },
+            },
+            501,
+          ),
+        }
+      }
+      throw err
+    }
   }
 
   /**

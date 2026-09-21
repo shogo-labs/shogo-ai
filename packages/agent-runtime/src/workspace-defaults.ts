@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync, cpSync, readFileSync, copyFileSyn
 import { createHash } from 'node:crypto'
 import { join, dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { pkg } from '../../shared-runtime/src/platform-pkg'
+import { pkg } from '@shogo/shared-runtime'
 
 // =============================================================================
 // Per-workspace install mutex

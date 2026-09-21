@@ -37,6 +37,16 @@ describe('local API route parity', () => {
     process.env.SHOGO_LOCAL_MODE = 'true'
     mock.module('@shogo-ai/sdk/cli/pkg', () => ({
       pkg: { version: '0.0.0', name: '@shogo-ai/sdk' },
+      PlatformPackageManager: class {},
+      NodeMissingError: class NodeMissingError extends Error {
+        constructor(m: string) {
+          super(m)
+          this.name = 'NodeMissingError'
+        }
+      },
+      isNodeAvailableOnUnix: () => Promise.resolve(false),
+      isNodeAvailableOnWindows: () => Promise.resolve(false),
+      _resetUnixNodeCache: () => {},
       resolveBinInvocation: (command: string) => command,
     }))
     const { createLocalApp } = await import('../create-local-app')
