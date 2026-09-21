@@ -9019,7 +9019,41 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
           } catch {}
           continue
         }
-        if (!process.env[row.key]) {
+        if (
+          row.key === 'SHOGO_API_KEY' &&
+          process.env.SHOGO_API_KEY &&
+          process.env.SHOGO_API_KEY !== row.value
+        ) {
+          const validate = async (key: string): Promise<boolean> => {
+            try {
+              const response = await fetch(`${getShogoCloudUrl()}/api/api-keys/validate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key }),
+                signal: AbortSignal.timeout(5_000),
+              })
+              const body = await response.json().catch(() => ({} as any))
+              return response.ok && body?.valid === true
+            } catch {
+              return false
+            }
+          }
+          const [envValid, storedValid] = await Promise.all([
+            validate(process.env.SHOGO_API_KEY),
+            validate(row.value),
+          ])
+          const winner = envValid || !storedValid ? process.env.SHOGO_API_KEY : row.value
+          process.env.SHOGO_API_KEY = winner
+          if (winner !== row.value) {
+            await (prisma as any).localConfig.update({
+              where: { key: 'SHOGO_API_KEY' },
+              data: { value: winner },
+            }).catch(() => {})
+          }
+          console.log(
+            `[LocalMode] Resolved conflicting SHOGO_API_KEY sources (envValid=${envValid}, storedValid=${storedValid}, source=${winner === row.value ? 'localConfig' : 'environment'})`,
+          )
+        } else if (!process.env[row.key]) {
           process.env[row.key] = row.value
           console.log(`[LocalMode] Restored ${row.key} from local config`)
         }

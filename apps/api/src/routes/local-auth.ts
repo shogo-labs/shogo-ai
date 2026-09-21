@@ -38,6 +38,10 @@ import { onUpstreamRejection } from '../lib/federated-upstream'
  * degraded-connection banner without wiping credentials. Only an explicit
  * user-initiated sign-out deletes the stored key. */
 let cloudKeyRejected = false
+let lastHeartbeatOk: boolean | null = null
+let lastHeartbeatAt: number | null = null
+let lastHeartbeatError: string | null = null
+let credentialMismatchLogged = false
 
 /**
  * Set the cloudKeyRejected flag from outside this module. Used by the
@@ -92,6 +96,10 @@ export function localAuthRoutes() {
     ])
     delete process.env.SHOGO_API_KEY
     cloudKeyRejected = false
+    lastHeartbeatOk = null
+    lastHeartbeatAt = null
+    lastHeartbeatError = null
+    credentialMismatchLogged = false
 
     import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
       stopInstanceTunnel()
@@ -103,7 +111,28 @@ export function localAuthRoutes() {
   // POST /api/local/cloud-login/heartbeat — ping cloud to keep lastSeenAt fresh.
   router.post('/local/cloud-login/heartbeat', async (c) => {
     const storedKey = await readStoredKey(localDb)
-    if (!storedKey) {
+    const envKey = process.env.SHOGO_API_KEY || null
+    const key = envKey || storedKey
+    if (envKey && storedKey && envKey !== storedKey) {
+      if (!credentialMismatchLogged) {
+        console.warn(
+          '[CloudLogin] Environment SHOGO_API_KEY differs from localConfig; using the environment key and re-syncing localConfig.',
+        )
+        credentialMismatchLogged = true
+      }
+      const upsert = localDb.localConfig.upsert
+      if (typeof upsert === 'function') {
+        await upsert({
+          where: { key: 'SHOGO_API_KEY' },
+          update: { value: envKey },
+          create: { key: 'SHOGO_API_KEY', value: envKey },
+        }).catch(() => {})
+      }
+    }
+    if (!key) {
+      lastHeartbeatOk = false
+      lastHeartbeatAt = Date.now()
+      lastHeartbeatError = 'Not signed in'
       return c.json({ ok: false, error: 'Not signed in' }, 401)
     }
     const cloudUrl = getShogoCloudUrl()
@@ -115,7 +144,7 @@ export function localAuthRoutes() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          key: storedKey,
+          key,
           deviceAppVersion: body?.deviceAppVersion,
         }),
         signal: AbortSignal.timeout(5_000),
@@ -133,15 +162,25 @@ export function localAuthRoutes() {
           // this for the federated-upstream path).
           markCloudKeyRejected('heartbeat 401')
         }
+        lastHeartbeatOk = false
+        lastHeartbeatAt = Date.now()
+        lastHeartbeatError = data?.error || `HTTP ${res.status}`
         return c.json({
           ok: false,
           error: data?.error || `HTTP ${res.status}`,
           cloudKeyRejected: res.status === 401,
+          ...(res.status === 401 ? { keyPrefix: key.slice(0, 16) } : {}),
         }, res.status as any)
       }
       cloudKeyRejected = false
+      lastHeartbeatOk = true
+      lastHeartbeatAt = Date.now()
+      lastHeartbeatError = null
       return c.json({ ok: true })
     } catch (err: any) {
+      lastHeartbeatOk = false
+      lastHeartbeatAt = Date.now()
+      lastHeartbeatError = err?.message || 'Heartbeat failed'
       return c.json({ ok: false, error: err?.message || 'Heartbeat failed' }, 502)
     }
   })
@@ -149,8 +188,15 @@ export function localAuthRoutes() {
   // GET /api/local/cloud-login/status — current local session state.
   router.get('/local/cloud-login/status', async (c) => {
     const storedKey = await readStoredKey(localDb)
-    if (!storedKey) {
-      return c.json({ signedIn: false, cloudUrl: getShogoCloudUrl() })
+    const effectiveKey = process.env.SHOGO_API_KEY || storedKey
+    if (!effectiveKey) {
+      return c.json({
+        signedIn: false,
+        cloudUrl: getShogoCloudUrl(),
+        lastHeartbeatOk,
+        lastHeartbeatAt,
+        lastHeartbeatError,
+      })
     }
     const info = await readStoredKeyInfo(localDb)
     return c.json({
@@ -159,8 +205,11 @@ export function localAuthRoutes() {
       email: info?.email || null,
       workspace: info?.workspace || null,
       deviceId: info?.deviceId || null,
-      keyPrefix: storedKey.slice(0, 16),
+      keyPrefix: effectiveKey.slice(0, 16),
       cloudKeyRejected,
+      lastHeartbeatOk,
+      lastHeartbeatAt,
+      lastHeartbeatError,
     })
   })
 

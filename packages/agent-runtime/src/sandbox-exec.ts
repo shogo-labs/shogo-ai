@@ -516,6 +516,7 @@ function nativeExec(command: string, cwd: string, timeout?: number): SandboxExec
 
 /** Per-stream buffer cap. When exceeded we keep head + tail and drop the middle. */
 const MAX_STREAM_BUFFER_BYTES = 64 * 1024
+const MAX_RECENT_OUTPUT_BYTES = 256 * 1024
 
 /**
  * Bounded text buffer that keeps the head and tail of a stream when it
@@ -559,6 +560,23 @@ class BoundedBuffer {
   }
 }
 
+/** Rolling interleaved output window used by readiness-pattern waits. */
+class RecentOutputBuffer {
+  private value = ''
+
+  push(chunk: string): void {
+    if (!chunk) return
+    this.value += chunk
+    if (this.value.length > MAX_RECENT_OUTPUT_BYTES) {
+      this.value = this.value.slice(-MAX_RECENT_OUTPUT_BYTES)
+    }
+  }
+
+  toString(): string {
+    return this.value
+  }
+}
+
 export interface CommandHandle {
   /** Native pid for non-sandboxed runs, the docker CLI pid otherwise. */
   pid: number | undefined
@@ -569,6 +587,13 @@ export interface CommandHandle {
   stdout: () => string
   /** Snapshot accumulated stderr so far. */
   stderr: () => string
+  /**
+   * Interleaved rolling output window. Unlike stdout/stderr snapshots, this
+   * retains recent output that may have fallen out of the bounded head/tail
+   * buffers, so readiness markers printed during a noisy startup are still
+   * observable by exec_wait.
+   */
+  recentOutput: () => string
   /** Resolves once the child process has exited (cleanly or killed). */
   done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>
   /** Send a termination signal. SIGTERM is graceful, SIGKILL is forceful. */
@@ -593,6 +618,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
 
   const stdoutBuf = new BoundedBuffer()
   const stderrBuf = new BoundedBuffer()
+  const recentOutputBuf = new RecentOutputBuffer()
 
   let child: ChildProcess
   let containerName: string | undefined
@@ -657,8 +683,14 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
 
   child.stdout?.setEncoding('utf-8')
   child.stderr?.setEncoding('utf-8')
-  child.stdout?.on('data', (chunk: string) => stdoutBuf.push(chunk))
-  child.stderr?.on('data', (chunk: string) => stderrBuf.push(chunk))
+  child.stdout?.on('data', (chunk: string) => {
+    stdoutBuf.push(chunk)
+    recentOutputBuf.push(chunk)
+  })
+  child.stderr?.on('data', (chunk: string) => {
+    stderrBuf.push(chunk)
+    recentOutputBuf.push(chunk)
+  })
 
   // Suppress unhandled-error events; we surface failures via the `done`
   // promise's exitCode field instead of throwing.
@@ -692,7 +724,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     const escalate = setTimeout(() => {
       if (!exited) sendKill('SIGKILL')
     }, 2_000)
-    escalate.unref?.()
+    ;(escalate as any)?.unref?.()
   }
 
   const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>((resolve) => {
@@ -716,6 +748,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     sandboxed: useSandbox,
     stdout: () => stdoutBuf.toString(),
     stderr: () => stderrBuf.toString(),
+    recentOutput: () => recentOutputBuf.toString(),
     done,
     kill: (signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM') => {
       if (signal === 'SIGTERM') {

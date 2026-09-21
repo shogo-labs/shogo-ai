@@ -24,6 +24,7 @@ function fakeHandle(opts?: { pid?: number; sandboxed?: boolean; containerName?: 
     sandboxed: opts?.sandboxed ?? false,
     stdout: () => '',
     stderr: () => '',
+    recentOutput: () => '',
     done,
     kill: (signal = 'SIGTERM') => { killSignal = signal },
     exited: () => exited,
@@ -132,5 +133,33 @@ describe('CommandRegistry.onChange', () => {
     reg.register('echo hi', fakeHandle().handle)
     // No new event after unsubscribe.
     expect(seen.at(-1)).toBe(0)
+  })
+})
+
+describe('CommandRegistry completion notes', () => {
+  test('queues a note when a backgrounded command exits unobserved', async () => {
+    const reg = new CommandRegistry()
+    const f = fakeHandle()
+    const entry = reg.register('bun test', f.handle)
+    reg.markBackgrounded(entry.runId)
+    f.finish(7)
+    await Promise.resolve()
+
+    expect(reg.consumeCompletionNotes()).toEqual([
+      `Background command "bun test" (${entry.runId}) exited with code 7.`,
+    ])
+  })
+
+  test('does not queue a duplicate note while exec_wait is observing', async () => {
+    const reg = new CommandRegistry()
+    const f = fakeHandle()
+    const entry = reg.register('sleep 1', f.handle)
+    reg.markBackgrounded(entry.runId)
+    const endWait = reg.beginWait(entry.runId)
+    f.finish(0)
+    await Promise.resolve()
+    endWait()
+
+    expect(reg.consumeCompletionNotes()).toEqual([])
   })
 })
