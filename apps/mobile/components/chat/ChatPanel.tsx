@@ -5513,7 +5513,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [feedbackMap, handleSetFeedback, handleClearFeedback, handleForkFromMessage, canActOnTurnMessage],
   )
 
-  const resolvedAgentUrl = localAgentUrl || (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+  // Project-less workspace chats (the free personal-companion chat has no
+  // Project row at all) fall back to the workspace-scoped agent-proxy
+  // instead — `/api/projects/:id/agent-proxy` requires a projectId that
+  // doesn't exist here. Without this, GenerateImageWidget/etc. built a
+  // `null` agentUrl for personal companions and every generated image
+  // silently failed to render (only the "Image generated" placeholder
+  // showed, never the actual picture — see workspace-chat.ts's matching
+  // `/workspaces/:workspaceId/agent-proxy/*` route).
+  const resolvedAgentUrl =
+    localAgentUrl ||
+    (projectId
+      ? `${API_URL}/api/projects/${projectId}/agent-proxy`
+      : chatWorkspaceId
+        ? `${API_URL}/api/workspaces/${chatWorkspaceId}/agent-proxy`
+        : null)
 
   // Generate a stakeholder summary for a plan that doesn't have one yet.
   // Mutates the local pending/streaming plan as soon as the summary comes

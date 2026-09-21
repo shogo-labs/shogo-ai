@@ -191,7 +191,9 @@ describe('AI Proxy Image Endpoints — Integration', () => {
   // ===========================================================================
 
   test(
-    'OpenAI image generation returns valid b64_json (dall-e-2)',
+    // dall-e-2/dall-e-3 were retired by OpenAI (2026-09) — "The model
+    // 'dall-e-3' does not exist." gpt-image-1 is the current default.
+    'OpenAI image generation returns valid b64_json (gpt-image-1)',
     async () => {
       if (!hasOpenAIKey) {
         console.log('[Image E2E] Skipping — OPENAI_API_KEY not set')
@@ -207,14 +209,13 @@ describe('AI Proxy Image Endpoints — Integration', () => {
           },
           body: JSON.stringify({
             prompt: 'A simple red circle on a white background',
-            model: 'dall-e-2',
-            size: '256x256',
-            response_format: 'b64_json',
+            model: 'gpt-image-1',
+            size: '1024x1024',
           }),
         })
       )
 
-      console.log(`[Image E2E] OpenAI dall-e-2 status: ${res.status}`)
+      console.log(`[Image E2E] OpenAI gpt-image-1 status: ${res.status}`)
       expect(res.status).toBe(200)
 
       const data = (await res.json()) as any
@@ -225,7 +226,7 @@ describe('AI Proxy Image Endpoints — Integration', () => {
 
       const imageBytes = Buffer.from(data.data[0].b64_json, 'base64')
       expect(imageBytes.length).toBeGreaterThan(1000)
-      console.log(`[Image E2E] OpenAI dall-e-2 returned ${imageBytes.length} bytes`)
+      console.log(`[Image E2E] OpenAI gpt-image-1 returned ${imageBytes.length} bytes`)
     },
     60_000
   )
@@ -308,8 +309,10 @@ describe('AI Proxy Image Endpoints — Integration', () => {
       const form = new FormData()
       form.append('image', new Blob([PNG_1x1], { type: 'image/png' }), 'ref.png')
       form.append('prompt', 'Make the pixel red')
-      form.append('model', 'dall-e-2')
-      form.append('size', '256x256')
+      // dall-e-2 (the previous edits-only model) was retired by OpenAI
+      // (2026-09) — gpt-image-1 supports /v1/images/edits too.
+      form.append('model', 'gpt-image-1')
+      form.append('size', '1024x1024')
 
       const res = await app.fetch(
         new Request('http://localhost/api/ai/v1/images/edits', {
