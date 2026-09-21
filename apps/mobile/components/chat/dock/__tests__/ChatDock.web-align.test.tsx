@@ -3,7 +3,7 @@
 /**
  * Web dock cards (Error, Changed files, Queue, …) float above the
  * composer. They must be exactly as wide as the composer column ChatInput
- * renders in — plain `w-full`, with NO independent `max-w-3xl`/measured-
+ * renders in — plain `w-full`, with NO independent `max-w-2xl`/measured-
  * width cap of its own. `ProjectComposerDock` is the only place that caps
  * or measures that shared column; a second cap here would let the dock
  * silently disagree with ChatInput whenever the shared measurement is
@@ -77,9 +77,9 @@ describe("ChatDock web alignment", () => {
     const columnClass = column?.getAttribute("class") ?? ""
     // No independent cap: width comes entirely from the shared
     // `ProjectComposerDock` column, exactly like `ChatInput`. A stray
-    // `max-w-3xl` here would let the dock drift from the composer
+    // `max-w-2xl` here would let the dock drift from the composer
     // whenever that shared width is mismeasured.
-    expect(columnClass).not.toContain("max-w-3xl")
+    expect(columnClass).not.toContain("max-w-2xl")
     expect(columnClass).toContain("w-full")
     // Matches `ChatInput`'s own outer horizontal padding on web (`px-3`).
     expect(columnClass).toContain("px-3")

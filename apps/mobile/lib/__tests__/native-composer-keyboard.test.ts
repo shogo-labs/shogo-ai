@@ -15,7 +15,6 @@ import {
   NATIVE_COMPOSER_KEYBOARD_GAP,
   NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP,
 } from '../native-composer-keyboard'
-import { WEB_WIDE_MIN_WIDTH } from '../native-phone-layout'
 
 describe('nativeComposerKeyboardPad', () => {
   test('uses the visible keyboard top edge, plus a gap', () => {
@@ -70,8 +69,13 @@ describe('nativeComposerKeyboardOpenFromSource', () => {
 })
 
 describe('CHAT_TRANSCRIPT_MAX_WIDTH', () => {
-  test('uses the named web-wide breakpoint instead of a second magic 768', () => {
-    expect(CHAT_TRANSCRIPT_MAX_WIDTH).toBe(WEB_WIDE_MIN_WIDTH)
+  test('is max-w-2xl (672px), independent of the phone/wide layout breakpoint', () => {
+    // Deliberately NOT tied to WEB_WIDE_MIN_WIDTH (the phone/wide chrome
+    // breakpoint, 768px) — the transcript/composer width and the layout
+    // breakpoint are separate concerns that happened to share a value
+    // before; keep them decoupled so changing one can't silently change
+    // the other again.
+    expect(CHAT_TRANSCRIPT_MAX_WIDTH).toBe(672)
   })
 })
 
@@ -87,7 +91,7 @@ describe('chatComposerDockStyle', () => {
     ])
   })
 
-  test('matches the transcript max-w-3xl column when width is not measured', () => {
+  test('matches the transcript max-w-2xl column when width is not measured', () => {
     expect(chatComposerDockStyle({})).toEqual([
       { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
     ])

@@ -61,10 +61,76 @@ function toolPath(tool: ToolCallData): string | undefined {
 }
 
 /**
+ * Per-tool-call cache for the (added, removed) line-diff counts an edit
+ * contributes to its work-group's summary.
+ *
+ * `groupWorkParts` (see `turnShaping.ts`) always returns fresh `items` array
+ * references on every streaming tick — even for work-groups that finished
+ * minutes ago — so `WorkGroup`'s `useMemo(() => summarizeWork(items, ...),
+ * [items, isStreaming])` can never cache-hit on `items` identity while the
+ * message keeps streaming. Without this cache, a turn with N sizeable edits
+ * keeps re-running `computeLineDiff`'s O(m*n) LCS diff for every edit, ~20x a
+ * second, for as long as the message keeps streaming — measured to cost
+ * 10ms+ per tick for a 20-edit/300-line-file turn, which is most of a 60fps
+ * frame budget on top of everything else the streaming turn is already
+ * paying for.
+ *
+ * Keyed by tool call id (unique and immutable once a tool call exists).
+ * Only populated once the tool call is no longer streaming (`state !==
+ * "streaming"`), since `old_string`/`new_string` can still be growing
+ * mid-stream for the one actively-streaming edit — caching those would lock
+ * in a stale, incomplete diff. Size-capped with FIFO eviction so a very
+ * long-lived session doesn't grow this unbounded.
+ */
+const MAX_DIFF_CACHE_ENTRIES = 2000
+const diffCountCache = new Map<string, { added: number; removed: number }>()
+
+function cacheDiffCounts(id: string, counts: { added: number; removed: number }): void {
+  if (diffCountCache.size >= MAX_DIFF_CACHE_ENTRIES) {
+    const oldestKey = diffCountCache.keys().next().value
+    if (oldestKey !== undefined) diffCountCache.delete(oldestKey)
+  }
+  diffCountCache.set(id, counts)
+}
+
+/** Line-diff added/removed counts for one edit tool call, cached once finalized. */
+function getEditDiffCounts(tool: ToolCallData): { added: number; removed: number } {
+  const finalized = tool.state !== "streaming"
+  if (finalized) {
+    const cached = diffCountCache.get(tool.id)
+    if (cached) return cached
+  }
+
+  const oldString = toolArgs(tool).old_string
+  const newString = toolArgs(tool).new_string
+  let added = 0
+  let removed = 0
+  if (typeof oldString === "string" || typeof newString === "string") {
+    const diff = computeLineDiff((oldString as string) ?? "", (newString as string) ?? "")
+    for (const line of diff) {
+      if (line.type === "added") added++
+      else if (line.type === "removed") removed++
+    }
+  }
+  const result = { added, removed }
+  if (finalized) cacheDiffCounts(tool.id, result)
+  return result
+}
+
+/**
  * Tally a run of work-tool parts into buckets plus aggregated
  * added/removed line counts. Reasoning parts are ignored (transparent).
+ *
+ * `includeDiffCounts` (default `true`) gates the expensive per-edit line
+ * diff. `summarizeWork` passes `false` while the group's tense is "present"
+ * (actively streaming) since `WorkGroup` never renders the added/removed
+ * badge in that state anyway (see `WorkGroup.tsx`'s `!isStreaming` gate) —
+ * there's no reason to pay for a diff whose result is immediately discarded.
  */
-export function tallyWork(items: ReadonlyArray<MessagePart>): {
+export function tallyWork(
+  items: ReadonlyArray<MessagePart>,
+  includeDiffCounts: boolean = true,
+): {
   counts: WorkCounts
   added: number
   removed: number
@@ -89,14 +155,10 @@ export function tallyWork(items: ReadonlyArray<MessagePart>): {
 
     if (EDIT_TOOL_NAMES.has(tool.toolName)) {
       editedPaths.add(toolPath(tool) ?? tool.id)
-      const oldString = toolArgs(tool).old_string
-      const newString = toolArgs(tool).new_string
-      if (typeof oldString === "string" || typeof newString === "string") {
-        const diff = computeLineDiff((oldString as string) ?? "", (newString as string) ?? "")
-        for (const line of diff) {
-          if (line.type === "added") added++
-          else if (line.type === "removed") removed++
-        }
+      if (includeDiffCounts) {
+        const diffCounts = getEditDiffCounts(tool)
+        added += diffCounts.added
+        removed += diffCounts.removed
       }
       continue
     }
@@ -180,7 +242,11 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
 }
 
 export function summarizeWork(items: ReadonlyArray<MessagePart>, tense: WorkTense): WorkSummary {
-  const { counts, added, removed } = tallyWork(items)
+  // Skip the per-edit diff while the group is actively streaming ("present"
+  // tense) — WorkGroup never renders the added/removed badge in that state
+  // (see its `!isStreaming` gate), so computing it would be pure waste on
+  // the hottest path (recomputed on every streaming throttle tick).
+  const { counts, added, removed } = tallyWork(items, tense === "past")
   const kind = classifyWorkKind(counts)
   const label = buildWorkLabel(counts, kind, tense)
   return { kind, label, added, removed, counts }
