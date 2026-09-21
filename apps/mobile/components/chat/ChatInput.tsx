@@ -94,6 +94,10 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { VideoPreviewModal } from "./VideoPreviewModal";
 import { PastedTextChip } from "./PastedTextChip";
 import {
+  LiquidGlassBackdrop,
+  supportsLiquidGlass,
+} from "../ui/LiquidGlassBackdrop";
+import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
   PROMINENT_COMPOSER_HEIGHT_EASING,
   PROMINENT_COMPOSER_LINE_HEIGHT,
@@ -556,6 +560,7 @@ function ChatInputImpl({
     prominent: true,
     flush,
   });
+  const liquidGlass = useProminentComposer && supportsLiquidGlass();
   const sendChrome = composerSendChrome(isNative || useProminentComposer);
   const inputMinHeight = sizes.inputMinHeight;
   const inputMaxHeight = sizes.inputMaxHeight;
@@ -1910,12 +1915,25 @@ function ChatInputImpl({
                     ? PROMINENT_COMPOSER_NATIVE_RADIUS
                     : PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
-                  borderColor: chatgptComposer.border,
-                  backgroundColor: chatgptComposer.fill,
+                  borderColor: liquidGlass
+                    ? "rgba(255,255,255,0.25)"
+                    : chatgptComposer.border,
+                  backgroundColor: liquidGlass
+                    ? "transparent"
+                    : chatgptComposer.fill,
                 }
               : undefined
           }
         >
+          {useProminentComposer ? (
+            <LiquidGlassBackdrop
+              style={{
+                borderRadius: isNative
+                  ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                  : PROMINENT_COMPOSER_RADIUS,
+              }}
+            />
+          ) : null}
           {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
           {Platform.OS === "web" && (
             <input

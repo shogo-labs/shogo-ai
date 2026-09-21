@@ -28,6 +28,7 @@ import {
 import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import { Folder, Menu, Plus, Search, Settings } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { cn } from "@shogo/shared-ui/primitives";
 import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
@@ -43,6 +44,10 @@ import {
   useNativePhoneIconChrome,
 } from "../../lib/native-phone-layout";
 import { WorkspaceSidebarSection } from "./WorkspaceSidebarSection";
+import {
+  LiquidGlassBackdrop,
+  supportsLiquidGlass,
+} from "../ui/LiquidGlassBackdrop";
 import { MobileWorkspaceChromeProvider } from "./MobileWorkspaceChromeContext";
 import { ShogoLogoMark } from "../branding/ShogoLogoMark";
 
@@ -62,6 +67,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const icon = useNativePhoneIconChrome();
+  const liquidGlass = supportsLiquidGlass();
   const http = useDomainHttp();
   const workspace = useActiveWorkspace();
   const projects = useProjectCollection();
@@ -232,15 +238,27 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
             }
             accessibilityState={{ expanded: sessionsOpen }}
             onPress={() => (sessionsOpen ? closeSessions() : openSessions())}
-            className="h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-card/95 active:bg-muted"
+            className={cn(
+              "h-11 w-11 items-center justify-center overflow-hidden rounded-full border active:bg-muted",
+              liquidGlass
+                ? "border-white/25 bg-transparent"
+                : "border-border/70 bg-card/95"
+            )}
           >
+            <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
             <Menu size={20} color={icon.color} strokeWidth={icon.strokeWidth} />
           </Pressable>
         </View>
         <View
-          className="absolute right-3 z-20 h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-card/95"
+          className={cn(
+            "absolute right-3 z-20 h-11 w-11 items-center justify-center overflow-hidden rounded-full border",
+            liquidGlass
+              ? "border-white/25 bg-transparent"
+              : "border-border/70 bg-card/95"
+          )}
           style={{ top: insets.top + 10 }}
         >
+          <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
           <NotificationBell size={NATIVE_PHONE_HEADER_ICON_SIZE} />
         </View>
         <Modal

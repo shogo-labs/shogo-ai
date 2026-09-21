@@ -23,6 +23,10 @@ import {
 } from "lucide-react-native";
 import { NativePhoneBottomFade } from "../phone/NativePhoneBottomFade";
 import { MobileSettingsSheet } from "./MobileSettingsSheet";
+import {
+  LiquidGlassBackdrop,
+  supportsLiquidGlass,
+} from "../ui/LiquidGlassBackdrop";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useResolvedTheme } from "../../contexts/theme";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
@@ -109,6 +113,7 @@ export function MobileBottomNav() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isDark = useResolvedTheme() === "dark";
+  const liquidGlass = supportsLiquidGlass();
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openProjectSettings, setOpenProjectSettings] = useState(false);
@@ -404,7 +409,12 @@ export function MobileBottomNav() {
           />
         ) : null}
         <View
-          className="w-full flex-row items-center gap-1 border border-border bg-card/95 px-1.5 shadow-sm"
+          className={cn(
+            "w-full flex-row items-center gap-1 overflow-hidden border px-1.5 shadow-sm",
+            liquidGlass
+              ? "border-white/25 bg-transparent"
+              : "border-border bg-card/95"
+          )}
           style={{
             height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
             maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
@@ -412,6 +422,14 @@ export function MobileBottomNav() {
             borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
           }}
         >
+          <LiquidGlassBackdrop
+            tintColor={
+              isDark ? "rgba(28,28,30,0.42)" : "rgba(255,255,255,0.42)"
+            }
+            style={{
+              borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
+            }}
+          />
           {items.map(({ id, label, Icon, onPress }) => {
             const selected = active === id;
             return (
