@@ -2408,6 +2408,35 @@ async function tryClaimWarmPod(
         const envTime = Date.now()
         console.log(`[KnativeProjectManager] buildProjectEnv for ${projectId}: ${envTime - t0}ms`)
 
+        // Enforce the per-user claimed-pod cap before claiming, mirroring the
+        // desktop VM warm pool's LRU cap. Best-effort: cap failures must never
+        // block a warm-pod claim.
+        try {
+          const { getProjectOwnerUserId } = await import('./project-user-context')
+          const ownerUserId = await getProjectOwnerUserId(projectId)
+          if (ownerUserId && ownerUserId !== 'system') {
+            const projectRow = await prisma.project.findUnique({
+              where: { id: projectId },
+              select: { workspaceId: true },
+            })
+            const { getEffectivePlanId } = await import('../services/billing.service')
+            const planId = projectRow?.workspaceId
+              ? await getEffectivePlanId(projectRow.workspaceId)
+              : 'free'
+            const capResult = await warmPool.enforcePerUserClaimedCap(projectId, ownerUserId, planId)
+            if (capResult.evicted.length > 0) {
+              console.log(
+                `[KnativeProjectManager] Per-user cap for ${projectId}: evicted ${capResult.evicted.length} LRU pod(s) (owner had ${capResult.count}/${capResult.cap})`,
+              )
+            }
+          }
+        } catch (capErr: any) {
+          console.error(
+            `[KnativeProjectManager] Per-user cap enforcement failed for ${projectId} (non-fatal):`,
+            capErr.message,
+          )
+        }
+
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           const pod = warmPool.claim()
           if (!pod) {
