@@ -23,7 +23,8 @@
 import { useMemo, useState } from 'react'
 import { View, Text, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { Cloud } from 'lucide-react-native'
+import { Cloud, Sparkles } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { CreatorPublishingPanel } from '../marketplace/creator/index'
@@ -40,6 +41,7 @@ export default function CreatorHub() {
   const router = useRouter()
   const params = useLocalSearchParams<{ tab?: string }>()
   const { localMode, shogoKeyConnected, features } = usePlatformConfig()
+  const insets = useSafeAreaInsets()
 
   // Both panels proxy to the cloud account; in local/desktop mode they only
   // work when signed in to Shogo Cloud.
@@ -72,14 +74,26 @@ export default function CreatorHub() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="px-4 pt-3 pb-2 border-b border-border">
-        <Text className="text-lg font-semibold text-foreground">Creator</Text>
-        <Text className="text-xs text-muted-foreground mt-0.5">
-          Two ways to earn: publish agents to the marketplace, or refer Shogo and
-          earn from your content.
+      <View
+        className="px-5 pb-3 border-b border-border bg-background"
+        style={{ paddingTop: Math.max(insets.top, 12) }}
+      >
+        <View className="flex-row items-center gap-2 mb-2">
+          <View className="h-7 w-7 rounded-full bg-primary/10 items-center justify-center">
+            <Sparkles size={14} className="text-primary" />
+          </View>
+          <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+            Creator studio
+          </Text>
+        </View>
+        <Text className="text-2xl font-semibold tracking-tight text-foreground">
+          Build your earning engine
+        </Text>
+        <Text className="text-sm text-muted-foreground mt-1 leading-5">
+          Publish useful agents or share Shogo with your audience.
         </Text>
         {showTabs ? (
-          <View className="flex-row gap-1 mt-3 rounded-lg bg-muted/40 p-1 self-start">
+          <View className="flex-row gap-1 mt-4 rounded-xl bg-muted/60 p-1 self-start">
             <TabButton label="Publishing" active={effectiveTab === 'publish'} onPress={() => selectTab('publish')} />
             <TabButton label="Referrals" active={effectiveTab === 'refer'} onPress={() => selectTab('refer')} />
           </View>
@@ -110,11 +124,11 @@ function TabButton({
     <Pressable
       onPress={onPress}
       className={cn(
-        'px-4 py-1.5 rounded-md',
-        active ? 'bg-background border border-border' : 'active:opacity-70',
+        'px-4 py-2 rounded-lg',
+        active ? 'bg-background' : 'active:opacity-70',
       )}
     >
-      <Text className={cn('text-sm', active ? 'text-foreground font-semibold' : 'text-muted-foreground')}>
+      <Text className={cn('text-sm', active ? 'text-foreground font-semibold' : 'text-muted-foreground font-medium')}>
         {label}
       </Text>
     </Pressable>
@@ -123,14 +137,14 @@ function TabButton({
 
 function SignInToCloud() {
   return (
-    <View className="flex-1 bg-background items-center justify-center px-8">
-      <View className="h-14 w-14 rounded-full bg-primary/10 items-center justify-center mb-4">
+    <View className="flex-1 bg-background items-center justify-center px-8 pb-10">
+      <View className="h-14 w-14 rounded-2xl bg-primary/10 items-center justify-center mb-5">
         <Cloud size={26} className="text-primary" />
       </View>
-      <Text className="text-lg font-semibold text-foreground text-center mb-1">
+      <Text className="text-xl font-semibold text-foreground text-center mb-2">
         Sign in to Shogo Cloud
       </Text>
-      <Text className="text-sm text-muted-foreground text-center max-w-sm leading-5">
+      <Text className="text-sm text-muted-foreground text-center max-w-sm leading-6">
         Publishing and Referrals both run on your Shogo Cloud account. Connect
         this desktop app to publish agents to the marketplace and track your
         referral and content earnings from here.

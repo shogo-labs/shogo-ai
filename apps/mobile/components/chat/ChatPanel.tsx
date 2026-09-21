@@ -367,12 +367,23 @@ export interface WorkspacePanelData {
 
 export interface ChatPanelProps {
   mode?: "compact" | "full"
+  /**
+   * `agent` keeps the existing chat behavior while using the quieter,
+   * centred surface intended for the Workspace Agent shell. `studio`
+   * preserves the dense project/IDE presentation.
+   */
+  presentation?: "agent" | "studio"
   featureId: string | null
   featureName?: string
   phase: string | null
   workspaceId?: string
   userId?: string
   projectId?: string
+  /**
+   * Workspace project to prioritize for the next agent turn. The API verifies
+   * this belongs to the chat's attached project set before forwarding it.
+   */
+  focusedProjectId?: string | null
   /**
    * Chat routing scope. `'project'` (default) chats against the per-project
    * runtime (`/api/projects/:projectId/chat`); `'workspace'` chats against
@@ -791,12 +802,14 @@ function normalizePlanData(plan: PlanData): PlanData {
 
 const ChatPanelContent = observer(function ChatPanelContent({
   mode = "full",
+  presentation = "studio",
   featureId,
   featureName,
   phase,
   workspaceId,
   userId,
   projectId,
+  focusedProjectId,
   chatScope = "project",
   localAgentUrl,
   children,
@@ -4389,6 +4402,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           workspaceId,
           userId,
           projectId,
+          focusedProjectId,
           agentMode: perMsgModel || selectedModel,
           interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
@@ -4439,6 +4453,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       workspaceId,
       userId,
       projectId,
+      focusedProjectId,
       selectedModel,
       actions,
       enrichMessage,
@@ -6107,7 +6122,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       />
       <ChangesDockPanel />
       <View
-        className={cn(isNativePhoneLayout ? "flex-col flex-1" : "flex-row flex-1", className)}
+        className={cn(
+          isNativePhoneLayout ? "flex-col flex-1" : "flex-row flex-1",
+          presentation === "agent" && "agent-chat-surface",
+          className,
+        )}
         style={{ flex: 1, minHeight: 0 }}
       >
         {/* Main content area */}
@@ -6118,7 +6137,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         {/* Chat Panel — full width on mobile (no resize handle) */}
         <ChatSurface
           behavior={Platform.OS === "ios" ? "padding" : "height"}
-          className="flex-1 flex-col bg-background"
+            className={cn(
+              "flex-1 flex-col bg-background",
+              presentation === "agent" && "bg-transparent",
+            )}
           style={{ flex: 1, minHeight: 0 }}
           keyboardVerticalOffset={isNativePhoneLayout ? 0 : Platform.OS === "ios" ? 90 : 50}
         >
@@ -6135,8 +6157,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
             className="flex-1"
             style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
-              isPhoneViewport ? "px-4 pt-2 pb-36" : "p-2 pb-[40px]",
-              "max-w-2xl w-full self-center",
+              isPhoneViewport ? "px-4 pt-2 pb-36" : presentation === "agent" ? "px-6 pt-8 pb-[48px]" : "p-2 pb-[40px]",
+              presentation === "agent" ? "max-w-[760px] w-full self-center" : "max-w-2xl w-full self-center",
             )}
             contentContainerStyle={
               nativePhoneColumnWidth
@@ -6145,7 +6167,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   // pins the `max-w-2xl` width even if the className
                   // doesn't resolve on this content container.
                   {
-                    maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+                    maxWidth: presentation === "agent" ? 760 : CHAT_TRANSCRIPT_MAX_WIDTH,
                     width: "100%",
                     alignSelf: "center" as const,
                   }
@@ -6372,6 +6394,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               ideContext={ideBridge.context}
               ideFileSearch={ideBridge.listFiles}
               onOpenIdeFile={ideBridge.openFile}
+              presentation={presentation}
             />
           </ProjectComposerDock>
           ) : (

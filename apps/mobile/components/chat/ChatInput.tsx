@@ -66,6 +66,7 @@ import {
   Languages,
   Play,
   Cloud,
+  SlidersHorizontal,
 } from "lucide-react-native"
 import { useVoiceInput } from "./useVoiceInput"
 import { VoiceWaveform } from "./VoiceWaveform"
@@ -436,6 +437,8 @@ export interface ChatInputProps {
    * between the composer's bordered box and the panel edges.
    */
   flush?: boolean
+  /** The workspace-agent shell uses a quieter, focused composer. */
+  presentation?: "agent" | "studio"
 }
 
 function ChatInputImpl({
@@ -475,6 +478,7 @@ function ChatInputImpl({
   dimWhenDisabled = true,
   highlighted = false,
   flush = false,
+  presentation = "studio",
 }: ChatInputProps) {
   const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
   const { features } = usePlatformConfig()
@@ -616,6 +620,7 @@ function ChatInputImpl({
   )
 
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+  const [agentControlsOpen, setAgentControlsOpen] = useState(false)
 
   // Long-text pastes are extracted out of the TextInput and rendered as
   // compact ChatGPT-style file chips. The input stays editable so the user
@@ -1323,6 +1328,7 @@ function ChatInputImpl({
           : isNative
             ? "px-2 pb-4 pt-0"
             : "p-3 pt-0",
+        presentation === "agent" && !flush && "w-full self-center px-4 pb-4 pt-0",
         )}>
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1573,7 +1579,8 @@ function ChatInputImpl({
             "relative overflow-hidden",
             !useProminentComposer && "border bg-muted/30 rounded-xl",
             !useProminentComposer && (isDragOver ? "border-primary border-dashed" : "border-border/60"),
-            !useProminentComposer && highlighted && !isDragOver && "ring-2 ring-primary/70"
+            !useProminentComposer && highlighted && !isDragOver && "ring-2 ring-primary/70",
+            presentation === "agent" && !useProminentComposer && "rounded-2xl border-border bg-card",
           )}
           style={
             useProminentComposer
@@ -1956,7 +1963,96 @@ function ChatInputImpl({
               </>
             ) : (
               <>
-            {composer.showInteractionModes ? (
+            {presentation === "agent" ? (
+              <Popover
+                placement="top"
+                size="xs"
+                isOpen={agentControlsOpen}
+                onOpen={() => setAgentControlsOpen(true)}
+                onClose={() => setAgentControlsOpen(false)}
+                trigger={(triggerProps) => (
+                  <WebTooltip label="Advanced controls">
+                    <Pressable
+                      {...triggerProps}
+                      disabled={disabled}
+                      accessibilityLabel="Advanced controls"
+                      className={cn(
+                        "h-[22px] w-[22px] items-center justify-center rounded-md",
+                        agentControlsOpen ? "bg-primary/12" : "bg-muted/50",
+                      )}
+                    >
+                      <SlidersHorizontal
+                        className={agentControlsOpen ? "text-primary" : "text-muted-foreground"}
+                        size={14}
+                      />
+                    </Pressable>
+                  </WebTooltip>
+                )}
+              >
+                <PopoverBackdrop />
+                <PopoverContent className="w-[248px] p-2">
+                  {composer.showInteractionModes ? (
+                    <>
+                      <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Mode</Text>
+                      <View className="flex-row gap-1">
+                        {INTERACTION_MODES.map((mode) => (
+                          <Pressable
+                            key={mode.id}
+                            onPress={() => {
+                              handleInteractionModeChange(mode.id)
+                              setAgentControlsOpen(false)
+                            }}
+                            className={cn(
+                              "flex-1 items-center rounded-md px-1.5 py-1.5",
+                              interactionMode === mode.id ? "bg-primary/12" : "bg-muted/50",
+                            )}
+                          >
+                            <Text className={cn("text-xs", interactionMode === mode.id ? "text-primary" : "text-muted-foreground")}>
+                              {mode.label}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </>
+                  ) : null}
+                  <View className="mt-2 border-t border-border/60 pt-2">
+                    <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Model</Text>
+                    {composer.showModelPicker ? <ComposerModelPicker{...composerModelPickerProps({
+                      currentModelId,
+                      effectiveIsPro,
+                      disabled,
+                      nativeSheet: false,
+                      triggerClassName: "h-8 w-full flex-row items-center justify-between rounded-md bg-muted px-2",
+                      labelClassName: "text-xs text-foreground",
+                      chevronSize: 12,
+                      label: resolveShortName(currentModelId),
+                      menuWidth: nativeModelMenuWidth,
+                      onSelect: handleModelChange,
+                    })} /> : null}
+                  </View>
+                  <View className="mt-2 border-t border-border/60 pt-2">
+                    <EnvironmentPicker disabled={disabled} />
+                  </View>
+                  {quickActions.length > 0 ? (
+                    <View className="mt-2 border-t border-border/60 pt-2">
+                      {quickActions.map((action) => (
+                        <Pressable
+                          key={action.label}
+                          onPress={() => {
+                            onQuickActionClick?.(action.prompt)
+                            setAgentControlsOpen(false)
+                          }}
+                          className="rounded-md px-2 py-1.5 active:bg-muted"
+                        >
+                          <Text className="text-xs text-foreground">{action.label}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </PopoverContent>
+              </Popover>
+            ) : null}
+            {composer.showInteractionModes && presentation !== "agent" ? (
               <>
             {/* Interaction mode selector (Agent / Plan / Ask) */}
             <Popover
@@ -2108,7 +2204,7 @@ function ChatInputImpl({
             {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
                 per-device preference: once on, every plan generated in Plan
                 mode also produces a stakeholder summary. */}
-            {interactionMode === "plan" && (
+            {interactionMode === "plan" && presentation !== "agent" && (
               <WebTooltip label="Also generate a stakeholder summary">
                 <Pressable
                   testID="dual-plan-toggle"
@@ -2137,7 +2233,7 @@ function ChatInputImpl({
             )}
 
             {/* Quick Actions selector */}
-            {quickActions.length > 0 && (
+            {quickActions.length > 0 && presentation !== "agent" && (
               <Popover
                 placement="top"
                 size="xs"
@@ -2202,12 +2298,14 @@ function ChatInputImpl({
             )}
 
             {/* Environment selector — pick Cloud or a paired machine */}
-            <EnvironmentPicker disabled={disabled} prominentMobile={isNative} />
+            {presentation !== "agent" ? (
+              <EnvironmentPicker disabled={disabled} prominentMobile={isNative} />
+            ) : null}
               </>
             )}
 
             {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-            {composer.showModelPicker ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
+            {composer.showModelPicker && presentation !== "agent" ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
               effectiveIsPro,
               disabled,
               nativeSheet: isPhoneChrome,

@@ -50,7 +50,13 @@ import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from '../../lib/native-composer-keyboard'
 import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
-import { nativePhoneCanvas, nativePhoneIconColor, NATIVE_PHONE_GUTTER, isPhoneLayout } from '../../lib/native-phone-layout'
+import {
+  nativePhoneCanvas,
+  nativePhoneIconColor,
+  NATIVE_PHONE_GUTTER,
+  WEB_WIDE_MIN_WIDTH,
+  isPhoneLayout,
+} from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
@@ -58,7 +64,7 @@ import { techStackDisplayName } from '../../lib/tech-stack-catalog'
 import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
-import { PersonalHomeScreen } from '../../components/personal/PersonalHomeScreen'
+import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
 
 /**
@@ -238,7 +244,13 @@ const styles = StyleSheet.create({
   },
 })
 
-const HomeScreen = observer(function HomeScreen() {
+export const HomeScreen = observer(function HomeScreen({
+  forceBuilder = false,
+  originWorkspaceSessionId,
+}: {
+  forceBuilder?: boolean
+  originWorkspaceSessionId?: string
+}) {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
   const { localMode, features } = usePlatformConfig()
@@ -253,6 +265,7 @@ const HomeScreen = observer(function HomeScreen() {
   const insets = useSafeAreaInsets()
   const isMobile = screenWidth < 640
   const isNativePhone = isPhoneLayout(screenWidth, screenHeight)
+  const isNarrowAgentSurface = Platform.OS !== 'web' || screenWidth < WEB_WIDE_MIN_WIDTH
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
   const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   const restComposerSidePad = NATIVE_PHONE_GUTTER
@@ -479,6 +492,14 @@ const HomeScreen = observer(function HomeScreen() {
   const createHomeDraftSession = useCallback(
     async (projectId: string, workspaceId: string): Promise<HomeDraft> => {
       if (isWorkspaceRuntimeEnabled()) {
+        if (originWorkspaceSessionId) {
+          await api.attachProject(http, workspaceId, originWorkspaceSessionId, projectId, 'readwrite')
+          return {
+            projectId,
+            chatSessionId: originWorkspaceSessionId,
+            chatScope: 'workspace',
+          }
+        }
         const session = await api.createWorkspaceSession(http, workspaceId, {
           inferredName: 'Untitled',
           attachProjectIds: [projectId],
@@ -493,7 +514,7 @@ const HomeScreen = observer(function HomeScreen() {
       })
       return { projectId, chatSessionId: chatSession.id, chatScope: 'project' }
     },
-    [actions, http],
+    [actions, http, originWorkspaceSessionId],
   )
 
   /** Fire-and-forget warm the runtime that backs a draft (workspace or project). */
@@ -877,12 +898,27 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
+  // Never route hosted users into a workspace chat that cannot execute. The
+  // wide and narrow/native shells ship independently, while local review
+  // keeps both enabled once the workspace runtime is explicitly available.
+  const workspaceAgentChatEnabled =
+    isWorkspaceRuntimeEnabled() &&
+    (localMode || (isNarrowAgentSurface ? features.mobileAgentShell : features.agentShell))
+  if (!forceBuilder && workspaceAgentChatEnabled) {
+    return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
+  }
+
   // `features.personalShell` is an instance-wide kill switch (default on):
   // a super-admin can fall back every personal workspace to the standard
   // builder home without a deploy if the companion-shell rollout needs to
   // pause. See the API's `/api/config` handler and `(admin)/general.tsx`.
-  if (features.personalShell && workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion') {
-    return <PersonalHomeScreen />
+  if (
+    !forceBuilder &&
+    isWorkspaceRuntimeEnabled() &&
+    features.personalShell &&
+    workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion'
+  ) {
+    return <WorkspaceAgentChatScreen />
   }
 
   const greeting = (

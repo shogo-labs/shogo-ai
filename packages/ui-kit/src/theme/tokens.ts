@@ -69,6 +69,16 @@ export interface ThemeExecColors {
   error: string
 }
 
+/** Semantic surfaces shared by the Workspace Agent shell on web and native. */
+export interface AgentShellTokens {
+  canvas: string
+  panel: string
+  raised: string
+  subtleBorder: string
+  controlRadius: number
+  panelRadius: number
+}
+
 export interface Theme {
   colors: ThemeColors
   chart: ThemeChartColors
@@ -86,7 +96,7 @@ export const lightTheme: Theme = {
     cardForeground: '#0a0a0a',
     popover: '#ffffff',
     popoverForeground: '#0a0a0a',
-    primary: '#2563eb',
+    primary: '#e27927',
     primaryForeground: '#ffffff',
     secondary: '#f4f4f5',
     secondaryForeground: '#18181b',
@@ -98,7 +108,7 @@ export const lightTheme: Theme = {
     destructiveForeground: '#ffffff',
     border: '#e4e4e7',
     input: '#e4e4e7',
-    ring: '#2563eb',
+    ring: '#e27927',
   },
   chart: {
     chart1: '#e76e50',
@@ -145,7 +155,7 @@ export const darkTheme: Theme = {
     cardForeground: 'rgba(255, 255, 255, 0.87)',
     popover: '#1e1e1e',
     popoverForeground: 'rgba(255, 255, 255, 0.87)',
-    primary: '#2196f3',
+    primary: '#f09050',
     primaryForeground: '#ffffff',
     secondary: '#333333',
     secondaryForeground: '#ffffff',
@@ -157,7 +167,7 @@ export const darkTheme: Theme = {
     destructiveForeground: '#ffffff',
     border: '#333333',
     input: '#333333',
-    ring: '#2196f3',
+    ring: '#f09050',
   },
   chart: {
     chart1: '#2662d9',
@@ -196,20 +206,38 @@ export const darkTheme: Theme = {
   },
 }
 
+export const lightAgentShellTokens: AgentShellTokens = {
+  canvas: '#fafaf9',
+  panel: '#ffffff',
+  raised: '#ffffff',
+  subtleBorder: '#e7e5e4',
+  controlRadius: 12,
+  panelRadius: 16,
+}
+
+export const darkAgentShellTokens: AgentShellTokens = {
+  canvas: '#141413',
+  panel: '#1c1c1b',
+  raised: '#232322',
+  subtleBorder: '#3e3e3c',
+  controlRadius: 12,
+  panelRadius: 16,
+}
+
 export const spacing = {
   xs: 4,
   sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  '2xl': 48,
+  md: 14,
+  lg: 22,
+  xl: 30,
+  '2xl': 44,
 } as const
 
 export const borderRadius = {
-  sm: 4,
-  md: 6,
-  lg: 8,
-  xl: 12,
+  sm: 6,
+  md: 8,
+  lg: 12,
+  xl: 16,
   full: 9999,
 } as const
 

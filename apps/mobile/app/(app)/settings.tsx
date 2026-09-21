@@ -244,8 +244,8 @@ function TabBar({
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      className="border-b border-border"
-      contentContainerClassName="px-4"
+      className="border-b border-border/70 bg-card"
+      contentContainerClassName="gap-1 px-4 py-1"
       style={{ flexGrow: 0 }}
     >
       {items.map((item) => {
@@ -256,8 +256,8 @@ function TabBar({
             key={item.id}
             onPress={() => onTabChange(item.id)}
             className={cn(
-              'flex-row items-center gap-2 px-3 py-3 mr-1',
-              isActive ? 'border-b-2 border-primary' : ''
+              'flex-row items-center gap-2 rounded-lg px-3 py-2.5',
+              isActive ? 'bg-primary/10' : 'active:bg-muted'
             )}
           >
             <Icon
@@ -362,10 +362,10 @@ function SettingsSidebar({
   ]
 
   return (
-    <View className="w-[210px] pt-4 pb-3 px-3">
+    <View className="w-[232px] px-3 pb-5 pt-5">
       <Pressable
         onPress={() => leaveSettings(router, false)}
-        className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
+        className="mb-5 flex-row items-center gap-1.5 self-start rounded-lg px-2 py-1.5 active:bg-muted"
       >
         <ArrowLeft size={14} className="text-muted-foreground" />
         <Text className="text-sm text-muted-foreground">Go back</Text>
@@ -374,7 +374,7 @@ function SettingsSidebar({
       {sections.map((section, sectionIdx) => (
         <View key={section.id} className={sectionIdx > 0 ? 'mt-6' : ''}>
           {section.label && (
-            <Text className="text-xs font-medium text-muted-foreground px-2 mb-1">
+            <Text className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               {section.label}
             </Text>
           )}
@@ -386,8 +386,8 @@ function SettingsSidebar({
                 key={item.id}
                 onPress={() => onTabChange(item.id)}
                 className={cn(
-                  'flex-row items-center gap-2 px-2 py-2 rounded-md',
-                  isActive ? 'bg-muted' : ''
+                  'flex-row items-center gap-2 rounded-lg px-2.5 py-2.5',
+                  isActive ? 'border border-primary/20 bg-primary/5' : 'active:bg-muted'
                 )}
               >
                 {item.avatar && (
@@ -3396,6 +3396,7 @@ export default observer(function SettingsPage() {
   const { ExternalLink, ArrowLeft } = useSettingsIcons()
   const router = useRouter()
   const params = useLocalSearchParams<{ tab?: string; workspace?: string }>()
+  const insets = useSafeAreaInsets()
   const { width, height } = useWindowDimensions()
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
@@ -3430,28 +3431,36 @@ export default observer(function SettingsPage() {
 
   const workspaceName = currentWorkspace?.name || ''
   const userName = user?.name || ''
+  const activeTabLabel = settingsTab(activeTab).label
 
   if (isWide) {
     return (
-      <View className="flex-1 bg-background flex-row">
-        <SettingsSidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          workspaceName={workspaceName}
-          userName={userName}
-          showBilling={features.billing}
-          localMode={localMode}
-        />
+      <View className="flex-1 flex-row bg-muted/30" style={{ paddingTop: insets.top }}>
+        <View className="border-r border-border/70 bg-card">
+          <SettingsSidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            workspaceName={workspaceName}
+            userName={userName}
+            showBilling={features.billing}
+            localMode={localMode}
+          />
+        </View>
         <ScrollView
           className="flex-1"
-          contentContainerClassName="px-12 pt-6 pb-[60px]"
+          contentContainerClassName="px-8 py-8 xl:px-12"
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 40, 60) }}
           showsVerticalScrollIndicator={false}
         >
-          <View>
-            <View className="flex-row items-center justify-end mb-1">
+          <View className="w-full max-w-[1080px] self-center">
+            <View className="mb-6 flex-row items-end justify-between border-b border-border/70 pb-5">
+              <View>
+                <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Settings</Text>
+                <Text className="mt-1 text-2xl font-semibold text-foreground">{activeTabLabel}</Text>
+              </View>
               <Pressable
                 onPress={() => Linking.openURL(DOCS_URL)}
-                className="flex-row items-center gap-1.5"
+                className="flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 active:bg-muted"
               >
                 <ExternalLink size={14} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">Docs</Text>
@@ -3465,19 +3474,23 @@ export default observer(function SettingsPage() {
   }
 
   return (
-    <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
+    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+      <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back"
           onPress={() => leaveSettings(router, isNativePhone)}
+          className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
         >
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
-        <Text className="text-xl font-bold text-foreground">Settings</Text>
+        <View className="flex-1">
+          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Settings</Text>
+          <Text className="text-xl font-semibold text-foreground">{activeTabLabel}</Text>
+        </View>
       </View>
 
-      <View className="z-10 bg-background">
+      <View className="z-10 bg-card">
         <TabBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -3488,10 +3501,13 @@ export default observer(function SettingsPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerClassName="p-4 pb-10"
+        contentContainerClassName="px-4 pt-5"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 28, 40) }}
         showsVerticalScrollIndicator={false}
       >
-        <SettingsContent activeTab={activeTab} localMode={localMode || !features.billing} />
+        <View className="w-full self-center" style={{ maxWidth: 720 }}>
+          <SettingsContent activeTab={activeTab} localMode={localMode || !features.billing} />
+        </View>
       </ScrollView>
     </View>
   )

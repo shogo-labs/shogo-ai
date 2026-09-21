@@ -13,6 +13,7 @@ import {
   Linking,
   TextInput,
   Modal,
+  Platform,
   useWindowDimensions,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
@@ -486,22 +487,52 @@ export default observer(function MarketplaceDetailScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* Header */}
-      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+      {/* Contextual route header */}
+      <View
+        className={
+          isWide
+            ? 'flex-row items-center gap-3 border-b border-border/60 bg-background/95 px-6 py-4'
+            : 'flex-row items-center gap-3 border-b border-border/60 bg-background px-4 py-3'
+        }
+      >
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          className="p-1"
+          accessibilityRole="button"
+          accessibilityLabel="Back to marketplace"
+        >
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1" numberOfLines={1}>
-          {listing.title}
-        </Text>
-        <Pressable hitSlop={6} className="p-1.5 active:opacity-60">
+        <View className="flex-1 min-w-0">
+          {isWide && (
+            <Text className="text-[11px] font-bold uppercase tracking-[1.2px] text-primary">
+              Marketplace · {listing.category ? categoryLabel(listing.category) : 'Agent'}
+            </Text>
+          )}
+          <Text
+            className={isWide ? 'mt-0.5 text-base font-semibold text-foreground' : 'text-base font-semibold text-foreground'}
+            numberOfLines={1}
+          >
+            {listing.title}
+          </Text>
+        </View>
+        <Pressable
+          hitSlop={8}
+          className="p-1.5 active:opacity-60"
+          accessibilityRole="button"
+          accessibilityLabel={`Share ${listing.title}`}
+        >
           <Share2 size={18} color="#71717a" />
         </Pressable>
       </View>
 
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ paddingBottom: 120 }}
+        contentContainerStyle={{
+          paddingBottom: Platform.OS === 'web' && isWide ? 48 : 120,
+          ...(isWide ? { width: '100%', maxWidth: 1180, alignSelf: 'center' } : {}),
+        }}
         onScroll={onScroll}
         scrollEventThrottle={32}
       >
@@ -1067,8 +1098,8 @@ export default observer(function MarketplaceDetailScreen() {
         </View>
       </ScrollView>
 
-      {/* Sticky bottom CTA — only when hero scrolled out of view */}
-      {!heroVisible && (
+      {/* Keep the install action reachable on narrow screens without obscuring content. */}
+      {!heroVisible && !isWide && (
         <View
           className="absolute bottom-0 left-0 right-0 bg-background border-t border-border px-5 py-3 pb-6"
           style={{

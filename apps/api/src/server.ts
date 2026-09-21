@@ -956,6 +956,11 @@ app.get('/api/config', async (c) => {
     // whenever this is true. Defaults on; a super-admin can flip it off
     // instance-wide without a deploy if the rollout needs to pause.
     personalShell: true,
+    // Workspace runtimes are separately gated. Keep both redesigned shells
+    // off in hosted environments until that runtime and the relevant QA lane
+    // have been explicitly enabled; local design work stays opt-in by default.
+    agentShell: localMode,
+    mobileAgentShell: localMode,
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
@@ -969,6 +974,8 @@ app.get('/api/config', async (c) => {
             'feature.ez_mode',
             'feature.phone_channel',
             'feature.personal_shell',
+            'feature.agent_shell',
+            'feature.mobile_agent_shell',
           ],
         },
       },
@@ -979,6 +986,8 @@ app.get('/api/config', async (c) => {
       if (row.key === 'feature.ez_mode') overrides.ezMode = bool
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
       if (row.key === 'feature.personal_shell') overrides.personalShell = bool
+      if (row.key === 'feature.agent_shell') overrides.agentShell = bool
+      if (row.key === 'feature.mobile_agent_shell') overrides.mobileAgentShell = bool
     }
   } catch (err) {
     console.error('[config] Failed to load feature flag overrides:', err)
@@ -6510,6 +6519,8 @@ const FEATURE_FLAG_KEYS = {
   ezMode: 'feature.ez_mode',
   phoneChannel: 'feature.phone_channel',
   personalShell: 'feature.personal_shell',
+  agentShell: 'feature.agent_shell',
+  mobileAgentShell: 'feature.mobile_agent_shell',
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
@@ -6525,6 +6536,8 @@ app.get('/api/admin/settings/features', async (c) => {
       ezMode: null,
       phoneChannel: null,
       personalShell: null,
+      agentShell: null,
+      mobileAgentShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -6569,6 +6582,8 @@ app.put('/api/admin/settings/features', async (c) => {
       ezMode: null,
       phoneChannel: null,
       personalShell: null,
+      agentShell: null,
+      mobileAgentShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'

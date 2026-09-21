@@ -10,11 +10,14 @@ interface PersonalAgentHeaderProps {
   profile: PersonalAgentProfile
   /** Opens the profile action sheet (change avatar, rename, personality, memory, activity). */
   onProfilePress: () => void
+  /** A parent mobile chat shell already owns the safe-area header. */
+  compact?: boolean
 }
 
 export function PersonalAgentHeader({
   profile,
   onProfilePress,
+  compact = false,
 }: PersonalAgentHeaderProps) {
   const initial = profile.name.trim().charAt(0).toUpperCase() || 'S'
   const insets = useSafeAreaInsets()
@@ -24,7 +27,7 @@ export function PersonalAgentHeader({
   return (
     <View
       className="w-full border-b border-border/60 bg-background/95 px-4 pb-3 pt-3"
-      style={needsOverlayClearance ? { paddingTop: insets.top + 58 } : undefined}
+      style={needsOverlayClearance && !compact ? { paddingTop: insets.top + 58 } : undefined}
     >
       <Pressable
         accessibilityRole="button"
@@ -54,12 +57,14 @@ export function PersonalAgentHeader({
         </View>
         <ChevronRight size={17} className="text-muted-foreground" />
       </Pressable>
-      <View className="mx-auto mt-2 w-full max-w-2xl flex-row items-center gap-1.5">
-        <Sparkles size={13} className="text-primary" />
-        <Text className="text-[11px] text-muted-foreground">
-          Tap to change my avatar, name, personality, or see what I remember
-        </Text>
-      </View>
+      {!compact ? (
+        <View className="mx-auto mt-2 w-full max-w-2xl flex-row items-center gap-1.5">
+          <Sparkles size={13} className="text-primary" />
+          <Text className="text-[11px] text-muted-foreground">
+            Tap to change my avatar, name, personality, or see what I remember
+          </Text>
+        </View>
+      ) : null}
     </View>
   )
 }

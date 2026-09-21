@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, RefreshControl, ActivityIndicator, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   Bell,
@@ -137,27 +138,32 @@ export default observer(function NotificationsScreen() {
   const isNative = Platform.OS !== 'web'
 
   return (
-    <View className="flex-1 bg-background">
+    <SafeAreaView className="flex-1 bg-background">
       {/* Header */}
-      <View className={cn('flex-row items-center gap-2 px-4', isNative ? 'py-4' : 'border-b border-border py-3')}>
-        <Pressable
-          onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
-          accessibilityLabel="Back"
-          className={cn('rounded-md active:bg-muted', isNative ? 'p-2 -ml-2' : 'p-1.5 -ml-1.5')}
-        >
-          <ArrowLeft size={isNative ? 24 : 20} className="text-foreground" />
-        </Pressable>
-        <Text className={cn('font-semibold text-foreground flex-1', isNative ? 'text-xl' : 'text-base')}>Notifications</Text>
-        {unread.length > 0 && (
+      <View className="border-b border-border/70 px-4">
+        <View className={cn('w-full max-w-3xl self-center flex-row items-center gap-3', isNative ? 'py-4' : 'py-3')}>
           <Pressable
-            onPress={markAllRead}
-            accessibilityLabel="Mark all as read"
-            className="flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted"
+            onPress={() => (router.canGoBack() ? router.back() : router.replace('/(app)'))}
+            accessibilityLabel="Back"
+            className={cn('h-10 w-10 items-center justify-center rounded-full border border-border active:bg-muted', !isNative && 'h-8 w-8')}
           >
-            <CheckCheck size={isNative ? 18 : 16} className="text-muted-foreground" />
-            <Text className={cn('text-muted-foreground', isNative ? 'text-sm' : 'text-xs')}>Mark all read</Text>
+            <ArrowLeft size={isNative ? 20 : 18} className="text-foreground" />
           </Pressable>
-        )}
+          <View className="min-w-0 flex-1">
+            <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">Inbox</Text>
+            <Text className={cn('font-semibold tracking-tight text-foreground', isNative ? 'text-2xl' : 'text-xl')}>Notifications</Text>
+          </View>
+          {unread.length > 0 && (
+            <Pressable
+              onPress={markAllRead}
+              accessibilityLabel="Mark all as read"
+              className="flex-row items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 active:bg-muted"
+            >
+              <CheckCheck size={isNative ? 18 : 16} className="text-primary" />
+              <Text className={cn('font-medium text-foreground', isNative ? 'text-sm' : 'text-xs')}>Mark all read</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
 
       {notifications.isLoading && items.length === 0 ? (
@@ -166,17 +172,22 @@ export default observer(function NotificationsScreen() {
         </View>
       ) : items.length === 0 ? (
         <View className={cn('flex-1 items-center justify-center px-8', isNative ? 'gap-3' : 'gap-2')}>
-          <Bell size={isNative ? 44 : 28} className="text-muted-foreground" />
-          <Text className={cn('font-semibold text-foreground text-center', isNative ? 'text-2xl' : 'text-sm')}>
-            You're all caught up
-          </Text>
-          <Text className={cn('text-muted-foreground text-center', isNative ? 'text-base leading-6 max-w-[280px]' : 'text-xs')}>
-            Billing receipts, usage alerts, and workspace updates will show up here.
-          </Text>
+          <View className="w-full max-w-sm items-center rounded-2xl border border-border bg-card px-6 py-8">
+            <View className="mb-4 h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+              <Bell size={isNative ? 26 : 22} className="text-primary" />
+            </View>
+            <Text className={cn('font-semibold text-foreground text-center', isNative ? 'text-2xl' : 'text-sm')}>
+              You're all caught up
+            </Text>
+            <Text className={cn('mt-2 text-muted-foreground text-center', isNative ? 'text-base leading-6 max-w-[280px]' : 'text-xs')}>
+              Billing receipts, usage alerts, and workspace updates will show up here.
+            </Text>
+          </View>
         </View>
       ) : (
         <ScrollView
           className="flex-1"
+          contentContainerClassName="w-full max-w-3xl self-center px-4 pb-8 pt-3"
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         >
           {items.map((n) => {
@@ -187,9 +198,9 @@ export default observer(function NotificationsScreen() {
                 key={n.id}
                 onPress={() => handleOpen(n)}
                 className={cn(
-                  'flex-row gap-3 px-4 border-b border-border active:bg-muted/50',
+                  'mb-2 flex-row gap-3 rounded-xl border border-border bg-card px-4 active:bg-muted/50',
                   isNative ? 'py-4' : 'py-3',
-                  isUnread && 'bg-primary/5',
+                  isUnread && 'border-l-2 border-l-primary bg-primary/5',
                 )}
               >
                 <View className="mt-0.5">
@@ -219,6 +230,6 @@ export default observer(function NotificationsScreen() {
           })}
         </ScrollView>
       )}
-    </View>
+    </SafeAreaView>
   )
 })

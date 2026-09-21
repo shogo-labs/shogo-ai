@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Keyboard, Platform, Pressable, View } from 'react-native'
+import { Keyboard, Platform, Pressable, View, useWindowDimensions } from 'react-native'
 import { useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Activity, LayoutGrid, ListTodo, MessageCircle, Target } from 'lucide-react-native'
+import { Activity, LayoutGrid, ListTodo, MessageCircle, Settings, Target } from 'lucide-react-native'
 import { NativePhoneBottomFade } from '../phone/NativePhoneBottomFade'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useResolvedTheme } from '../../contexts/theme'
@@ -20,6 +20,7 @@ import {
   NATIVE_PHONE_DOCK_COMPOSER_GAP,
   NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_HOME_CANVAS,
+  WEB_WIDE_MIN_WIDTH,
 } from '../../lib/native-phone-layout'
 
 function firstParam(value: string | string[] | undefined): string | undefined {
@@ -69,6 +70,7 @@ export function MobileBottomNav() {
     returnChatSessionId?: string
   }>()
   const insets = useSafeAreaInsets()
+  const { width } = useWindowDimensions()
   const isDark = useResolvedTheme() === 'dark'
   const [keyboardOpen, setKeyboardOpen] = useState(false)
   const lastProjectContext = useLastProjectContext()
@@ -118,11 +120,12 @@ export function MobileBottomNav() {
     if (pathname.includes('/goals')) return 'goals'
     if (pathname.includes('/activity')) return 'activity'
     if (pathname.includes('/canvases')) return 'canvases'
+    if (pathname.includes('/settings')) return 'more'
     if (pathname.includes('/marketplace')) return 'none'
     return 'chat'
   }, [pathname])
 
-  if (Platform.OS === 'web') return null
+  if (Platform.OS === 'web' && width >= WEB_WIDE_MIN_WIDTH) return null
   if (isHiddenPath(pathname) || keyboardOpen) return null
 
   const goChat = () => {
@@ -183,6 +186,12 @@ export function MobileBottomNav() {
         : {}),
     } as any),
   }
+  const moreItem = {
+    id: 'more',
+    label: 'More',
+    Icon: Settings,
+    onPress: () => router.push('/(app)/settings' as any),
+  }
 
   // The team vs. personal tab set (and order) is owned by the experience
   // descriptor (`bottomTabs`); this map just supplies the onPress/icon for
@@ -194,6 +203,7 @@ export function MobileBottomNav() {
     activity: activityItem,
     canvases: canvasesItem,
     goals: goalsItem,
+    more: moreItem,
   }
   const items = experience.bottomTabs.map((id) => tabsById[id])
 

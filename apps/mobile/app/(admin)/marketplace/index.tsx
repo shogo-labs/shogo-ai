@@ -36,6 +36,7 @@ import {
   Info,
   ChevronLeft,
   ChevronRight,
+  ShieldCheck,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
@@ -343,21 +344,24 @@ export default function MarketplaceReviewQueuePage() {
 
   const totalPages = data?.totalPages ?? 1
 
-  const ListHeader = () => (
-    <View className="gap-2 mb-2">
-      <View className="flex-row items-center justify-between">
-        <Text className="text-xl font-semibold text-foreground">Review queue</Text>
-        {data && (
-          <Text className="text-xs text-muted-foreground">
-            {data.total} pending
-          </Text>
-        )}
+  const ListHeader = () =>
+    isWide ? (
+      <View className="flex-row items-center border-b border-border bg-muted/35 px-4 py-2.5">
+        <View className="w-9 mr-3" />
+        <Text className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Listing
+        </Text>
+        <Text className="w-[235px] text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Audit signal
+        </Text>
+        <Text className="w-[175px] text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Submitted
+        </Text>
+        <Text className="w-[168px] text-right text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Decision
+        </Text>
       </View>
-      <Text className="text-sm text-muted-foreground">
-        Oldest submissions first. Audit findings come from the per-version Haiku auditor; they're advisory, not blocking.
-      </Text>
-    </View>
-  )
+    ) : null
 
   const ListFooter = () => {
     if (totalPages <= 1) return null
@@ -473,42 +477,101 @@ export default function MarketplaceReviewQueuePage() {
             </View>
           )}
         </View>
+        {!isWide && (
+          <View className="mt-3 flex-row justify-end gap-2 border-t border-border/70 pt-3">
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation()
+                setRejectTarget(item)
+              }}
+              disabled={isBusy}
+              className={cn(
+                'flex-row items-center gap-1 px-3 py-1.5 rounded-lg border border-border',
+                isBusy ? 'opacity-50' : 'active:bg-muted',
+              )}
+            >
+              <XCircle size={13} className="text-red-600" />
+              <Text className="text-xs font-medium text-foreground">Reject</Text>
+            </Pressable>
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation()
+                setApproveTarget(item)
+              }}
+              disabled={isBusy}
+              className={cn(
+                'flex-row items-center gap-1 px-3 py-1.5 rounded-lg',
+                isBusy ? 'bg-green-500/40' : 'bg-green-600 active:opacity-80',
+              )}
+            >
+              {isBusy ? <ActivityIndicator size="small" color="#fff" /> : <CheckCircle2 size={13} color="#fff" />}
+              <Text className="text-xs font-semibold text-white">Approve</Text>
+            </Pressable>
+          </View>
+        )}
       </Pressable>
     )
   }
 
   return (
-    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-3')}>
-      <FlatList
-        data={data?.items ?? []}
-        keyExtractor={(it) => it.id}
-        ListHeaderComponent={<ListHeader />}
-        ListFooterComponent={<ListFooter />}
-        ListEmptyComponent={loading ? null : <Empty />}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        renderItem={renderRow}
-        contentContainerStyle={{ paddingBottom: 24 }}
-        showsVerticalScrollIndicator={false}
-      />
-      {loading && !refreshing && (
-        <View className="absolute inset-0 items-center justify-center bg-background/80">
-          <ActivityIndicator size="large" />
+    <View className={cn('flex-1 bg-background', isWide ? 'px-8 py-6' : 'px-4 pt-4')}>
+      <View className="w-full max-w-[1180px] self-center flex-1">
+        <View className="rounded-2xl border border-border bg-card px-4 py-4 mb-4">
+          <View className="flex-row items-start justify-between gap-4">
+            <View className="flex-1 min-w-0">
+              <View className="flex-row items-center gap-2 mb-1.5">
+                <ShieldCheck size={15} className="text-primary" />
+                <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-muted-foreground">
+                  Marketplace operations
+                </Text>
+              </View>
+              <Text className={cn('font-bold text-foreground tracking-tight', isWide ? 'text-2xl' : 'text-xl')}>
+                Review queue
+              </Text>
+              <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+                Review the oldest submissions first. Audit signals are advisory and never replace your decision.
+              </Text>
+            </View>
+            <View className="rounded-lg border border-border bg-background px-3 py-2 items-end">
+              <Text className="text-lg font-semibold text-foreground">{data?.total ?? '—'}</Text>
+              <Text className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">pending</Text>
+            </View>
+          </View>
         </View>
-      )}
-      <RejectModal
-        visible={!!rejectTarget}
-        listing={rejectTarget}
-        busy={busyId === rejectTarget?.id}
-        onCancel={() => setRejectTarget(null)}
-        onSubmit={onSubmitReject}
-      />
-      <ApproveModal
-        visible={!!approveTarget}
-        listing={approveTarget}
-        busy={busyId === approveTarget?.id}
-        onCancel={() => setApproveTarget(null)}
-        onConfirm={onConfirmApprove}
-      />
+
+        <View className="flex-1 overflow-hidden rounded-xl border border-border bg-card">
+          <FlatList
+            data={data?.items ?? []}
+            keyExtractor={(it) => it.id}
+            ListHeaderComponent={<ListHeader />}
+            ListFooterComponent={<ListFooter />}
+            ListEmptyComponent={loading ? null : <Empty />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+            renderItem={renderRow}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            showsVerticalScrollIndicator={false}
+          />
+          {loading && !refreshing && (
+            <View className="absolute inset-0 items-center justify-center bg-background/80">
+              <ActivityIndicator size="large" />
+            </View>
+          )}
+        </View>
+        <RejectModal
+          visible={!!rejectTarget}
+          listing={rejectTarget}
+          busy={busyId === rejectTarget?.id}
+          onCancel={() => setRejectTarget(null)}
+          onSubmit={onSubmitReject}
+        />
+        <ApproveModal
+          visible={!!approveTarget}
+          listing={approveTarget}
+          busy={busyId === approveTarget?.id}
+          onCancel={() => setApproveTarget(null)}
+          onConfirm={onConfirmApprove}
+        />
+      </View>
     </View>
   )
 }

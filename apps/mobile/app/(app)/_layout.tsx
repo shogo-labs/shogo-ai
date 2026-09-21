@@ -22,7 +22,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { ActivityIndicator, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { Slot, usePathname, useRouter } from 'expo-router'
 import { useAuth } from '../../contexts/auth'
-import { usePlatformConfig } from '../../lib/platform-config'
+import { isWorkspaceRuntimeEnabled, usePlatformConfig } from '../../lib/platform-config'
 import { API_URL } from '../../lib/api'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { usePostHogIdentify, usePostHogSafe } from '../../contexts/posthog'
@@ -41,6 +41,8 @@ import { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe';
 import { useNativePhoneSheetOpen } from '../../lib/native-phone-sheet-lock'
 import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell"
 import { MobileBottomNav } from '../../components/layout/MobileBottomNav'
+import { WorkspaceAgentShell } from '../../components/layout/WorkspaceAgentShell'
+import { MobileWorkspaceShell } from '../../components/layout/MobileWorkspaceShell'
 import { projectSidebarEvents } from '../../lib/project-sidebar-events'
 
 csMark('app:layout:module-load')
@@ -48,7 +50,7 @@ csMark('app:layout:module-load')
 export default function AppLayout() {
   csMark('app:layout:render')
   const { isAuthenticated, isLoading, user, refreshSession } = useAuth()
-  const { localMode } = usePlatformConfig()
+  const { localMode, features } = usePlatformConfig()
   const router = useRouter()
   const pathname = usePathname()
   const isIdeEmbed = useMemo(() => {
@@ -70,11 +72,26 @@ export default function AppLayout() {
   const phoneSheetOpen = useNativePhoneSheetOpen()
   const nativeDrawerCanvas = nativePhoneCanvas(isDark)
   const isWide = !isNativeApp && width >= WEB_WIDE_MIN_WIDTH
-  const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
-
   const isProjectDetail = /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, '/'))
     && pathname !== '/projects'
     && pathname !== '/(app)/projects'
+  // The shell is coupled to the workspace runtime: without it, the legacy
+  // home remains available instead of exposing a chat that cannot run turns.
+  // Desktop and narrow/native rollouts are deliberately independent.
+  // Project detail owns a dense editor/IDE shell, so retain its top bar and
+  // panels outside this wrapper.
+  const desktopAgentShellEnabled =
+    isWorkspaceRuntimeEnabled() && (localMode || features.agentShell)
+  const mobileAgentShellEnabled =
+    isWorkspaceRuntimeEnabled() && (localMode || features.mobileAgentShell)
+  const useAgentShell = isWide && !isIdeEmbed && !isProjectDetail && desktopAgentShellEnabled
+  const isHomePage = pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
+  const isWorkspaceChatRoute = isHomePage || pathname.includes('/side-chats/')
+  const useMobileWorkspaceShell = !isWide
+    && !isIdeEmbed
+    && mobileAgentShellEnabled
+    && isWorkspaceChatRoute
+
   const isSettingsPage = pathname === '/settings' || pathname === '/(app)/settings' || pathname.includes('/settings')
   const isBillingPage = pathname === '/billing' || pathname === '/(app)/billing'
   // The notifications inbox provides its own header (back + mark-all-read), so
@@ -261,7 +278,7 @@ export default function AppLayout() {
     return null
   }
 
-  const showSidebar = isWide && !isIdeEmbed && !isSettingsPage && !isBillingPage
+  const showSidebar = isWide && !useAgentShell && !isIdeEmbed && !isSettingsPage && !isBillingPage
   const nativeEdgeToEdgeChrome = isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage)
 
   return (
@@ -285,15 +302,25 @@ export default function AppLayout() {
           />
         }
         header={
-          !isWide && !isIdeEmbed && !suppressNarrowAppHeader ? (
+          !isWide && !isIdeEmbed && !suppressNarrowAppHeader && !useMobileWorkspaceShell ? (
             <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
           ) : null
         }
-        bottomNav={isNativeApp && !isIdeEmbed ? <MobileBottomNav /> : null}
+        bottomNav={!isWide && !isIdeEmbed ? <MobileBottomNav /> : null}
         drawer={drawer}
       >
         {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
-        <Slot />
+        {useAgentShell ? (
+          <WorkspaceAgentShell>
+            <Slot />
+          </WorkspaceAgentShell>
+        ) : useMobileWorkspaceShell ? (
+          <MobileWorkspaceShell>
+            <Slot />
+          </MobileWorkspaceShell>
+        ) : (
+          <Slot />
+        )}
       </NativeSheetDrawerShell>
     </DomainProvider>
   )
