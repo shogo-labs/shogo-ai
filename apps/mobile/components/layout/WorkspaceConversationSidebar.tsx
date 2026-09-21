@@ -8,215 +8,418 @@
  * own agent/runtime.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { usePathname, useRouter } from 'expo-router'
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { usePathname, useRouter } from "expo-router";
 import {
   ChevronDown,
   ChevronRight,
   Folder,
-  MessageCircle,
   Plus,
   Search,
-} from 'lucide-react-native'
-import { cn } from '@shogo/shared-ui/primitives'
-import { useDomainHttp, useProjectCollection } from '../../contexts/domain'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
-import { api } from '../../lib/api'
+} from "lucide-react-native";
+import { cn } from "@shogo/shared-ui/primitives";
+import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
+import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
+import { api } from "../../lib/api";
+import { chatSessionEvents } from "../../lib/chat-session-events";
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
   projectChatLabel,
   visibleProjectChatItems,
   type ProjectChatListItem,
-} from '../../lib/project-chat-sessions'
+} from "../../lib/project-chat-sessions";
 import {
   getKnownPrimaryWorkspaceSession,
   subscribePrimaryWorkspaceSession,
-} from '../workspace/workspace-agent-session-bus'
+} from "../workspace/workspace-agent-session-bus";
+import { WorkspaceSidebarSection } from "./WorkspaceSidebarSection";
+import { ChatTreeItem } from "./sidebar/ChatTreeItem";
 
-const PROJECT_CHAT_INITIAL_COUNT = PROJECT_CHAT_PAGE_SIZE
+const PROJECT_CHAT_INITIAL_COUNT = PROJECT_CHAT_PAGE_SIZE;
 
 type WorkspaceSession = {
-  id: string
-  workspaceId: string
-  isPrimary?: boolean
-  name?: string | null
-  inferredName?: string | null
-  lastActiveAt?: string
-}
+  id: string;
+  workspaceId: string;
+  isPrimary?: boolean;
+  name?: string | null;
+  inferredName?: string | null;
+  lastActiveAt?: string;
+  isPinned?: boolean;
+  isArchived?: boolean;
+};
 
 type ProjectChatState = {
-  sessions: ProjectChatListItem[]
-  loading: boolean
-  loadingMore: boolean
-  hasMore: boolean
-}
+  sessions: ProjectChatListItem[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+};
 
 function sidebarSessionLabel(session: WorkspaceSession) {
-  return session.name || session.inferredName || 'New side chat'
+  return session.name || session.inferredName || "New side chat";
 }
 
 function routeIsActive(pathname: string, href: string): boolean {
-  if (href === '/(app)') return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
-  const normalized = href.replace('/(app)', '')
-  return pathname === normalized || pathname.startsWith(`${normalized}/`)
+  if (href === "/(app)")
+    return (
+      pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index"
+    );
+  const normalized = href.replace("/(app)", "");
+  return pathname === normalized || pathname.startsWith(`${normalized}/`);
 }
 
 export function WorkspaceConversationSidebar() {
-  const router = useRouter()
-  const pathname = usePathname()
-  const http = useDomainHttp()
-  const workspace = useActiveWorkspace()
-  const projects = useProjectCollection()
-  const experience = useWorkspaceExperience()
-  const sideChatMatch = pathname.match(/\/side-chats\/([^/]+)/)
-  const sideChatId = sideChatMatch?.[1] ? decodeURIComponent(sideChatMatch[1]) : null
+  const router = useRouter();
+  const pathname = usePathname();
+  const http = useDomainHttp();
+  const workspace = useActiveWorkspace();
+  const projects = useProjectCollection();
+  const experience = useWorkspaceExperience();
+  const sideChatMatch = pathname.match(/\/side-chats\/([^/]+)/);
+  const sideChatId = sideChatMatch?.[1]
+    ? decodeURIComponent(sideChatMatch[1])
+    : null;
+  const projectRouteMatch = pathname.match(/\/projects\/([^/?]+)/);
+  const activeProjectId = projectRouteMatch?.[1]
+    ? decodeURIComponent(projectRouteMatch[1])
+    : null;
 
-  const [sessions, setSessions] = useState<WorkspaceSession[]>([])
-  const [primarySessionId, setPrimarySessionId] = useState<string | null>(null)
-  const [creatingSideChat, setCreatingSideChat] = useState(false)
-  const [chatQuery, setChatQuery] = useState('')
-  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
-  const [projectChats, setProjectChats] = useState<Record<string, ProjectChatState>>({})
+  const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
+  const [primarySessionId, setPrimarySessionId] = useState<string | null>(null);
+  const [creatingSideChat, setCreatingSideChat] = useState(false);
+  const [chatQuery, setChatQuery] = useState("");
+  const [sideChatsExpanded, setSideChatsExpanded] = useState(true);
+  const [projectsExpanded, setProjectsExpanded] = useState(true);
+  const [showAllSideChats, setShowAllSideChats] = useState(false);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [projectChats, setProjectChats] = useState<
+    Record<string, ProjectChatState>
+  >({});
 
-  const loadWorkspaceSessions = useCallback(async (publishedPrimaryId?: string | null) => {
-    if (!workspace?.id) return
-    const nextSessions = await api.listWorkspaceSessions(http, workspace.id)
-    setSessions(nextSessions)
-    setPrimarySessionId(
-      publishedPrimaryId
-      ?? nextSessions.find((session) => session.isPrimary)?.id
-      ?? null,
-    )
-  }, [http, workspace?.id])
+  const loadWorkspaceSessions = useCallback(
+    async (publishedPrimaryId?: string | null) => {
+      if (!workspace?.id) return;
+      const nextSessions = await api.listWorkspaceSessions(http, workspace.id);
+      setSessions(nextSessions);
+      setPrimarySessionId(
+        publishedPrimaryId ??
+          nextSessions.find((session) => session.isPrimary)?.id ??
+          null
+      );
+    },
+    [http, workspace?.id]
+  );
 
   useEffect(() => {
     if (!workspace?.id) {
-      setSessions([])
-      setPrimarySessionId(null)
-      setProjectChats({})
-      setExpandedProjectIds(new Set())
-      return
+      setSessions([]);
+      setPrimarySessionId(null);
+      setProjectChats({});
+      setExpandedProjectIds(new Set());
+      return;
     }
 
-    setProjectChats({})
-    setExpandedProjectIds(new Set())
-    void loadWorkspaceSessions(getKnownPrimaryWorkspaceSession(workspace.id)).catch(() => {
-      setSessions([])
-      setPrimarySessionId(null)
-    })
-    void projects.loadAll({ workspaceId: workspace.id }).catch(() => undefined)
+    setProjectChats({});
+    setExpandedProjectIds(new Set());
+    void loadWorkspaceSessions(
+      getKnownPrimaryWorkspaceSession(workspace.id)
+    ).catch(() => {
+      setSessions([]);
+      setPrimarySessionId(null);
+    });
+    void projects.loadAll({ workspaceId: workspace.id }).catch(() => undefined);
 
     return subscribePrimaryWorkspaceSession(workspace.id, (sessionId) => {
-      void loadWorkspaceSessions(sessionId).catch(() => undefined)
-    })
-  }, [loadWorkspaceSessions, projects, workspace?.id])
+      void loadWorkspaceSessions(sessionId).catch(() => undefined);
+    });
+  }, [loadWorkspaceSessions, projects, workspace?.id]);
 
   const sideChats = useMemo(
-    () => sessions
-      .filter((session) => !session.isPrimary)
-      .sort((a, b) => (
-        new Date(b.lastActiveAt || 0).getTime() - new Date(a.lastActiveAt || 0).getTime()
-      )),
-    [sessions],
-  )
-  const normalizedChatQuery = chatQuery.trim().toLowerCase()
+    () =>
+      sessions
+        .filter((session) => !session.isPrimary && !session.isArchived)
+        .sort(
+          (a, b) =>
+            Number(!!b.isPinned) - Number(!!a.isPinned) ||
+            new Date(b.lastActiveAt || 0).getTime() -
+              new Date(a.lastActiveAt || 0).getTime()
+        ),
+    [sessions]
+  );
+  const normalizedChatQuery = chatQuery.trim().toLowerCase();
   const matchingSideChats = useMemo(
-    () => sideChats.filter((session) => (
-      !normalizedChatQuery || sidebarSessionLabel(session).toLowerCase().includes(normalizedChatQuery)
-    )),
-    [normalizedChatQuery, sideChats],
-  )
+    () =>
+      sideChats.filter(
+        (session) =>
+          !normalizedChatQuery ||
+          sidebarSessionLabel(session)
+            .toLowerCase()
+            .includes(normalizedChatQuery)
+      ),
+    [normalizedChatQuery, sideChats]
+  );
+  const visibleSideChats = useMemo(() => {
+    if (showAllSideChats || normalizedChatQuery) return matchingSideChats;
+    const recent = matchingSideChats.slice(0, 5);
+    const selected = matchingSideChats.find(
+      (session) => session.id === sideChatId
+    );
+    return selected && !recent.some((session) => session.id === selected.id)
+      ? [...recent, selected]
+      : recent;
+  }, [matchingSideChats, normalizedChatQuery, showAllSideChats, sideChatId]);
   const workspaceProjects = useMemo(
-    () => projects.all
-      .filter((project: any) => project.workspaceId === workspace?.id)
-      .sort((a: any, b: any) => (
-        String(a.name || '').localeCompare(String(b.name || ''))
-      )),
-    [projects.all, workspace?.id],
-  )
+    () =>
+      projects.all
+        .filter((project: any) => project.workspaceId === workspace?.id)
+        .sort((a: any, b: any) =>
+          String(a.name || "").localeCompare(String(b.name || ""))
+        ),
+    [projects.all, workspace?.id]
+  );
 
   const startSideChat = async () => {
-    if (!workspace?.id || creatingSideChat) return
+    if (!workspace?.id || creatingSideChat) return;
     try {
-      setCreatingSideChat(true)
+      setCreatingSideChat(true);
       // Side chats always talk to the Workspace/Shogo agent. Project agent
       // sessions are created only from a project's own chat history below.
-      const session = await api.createWorkspaceSession(http, workspace.id)
-      await loadWorkspaceSessions()
-      router.push({ pathname: '/(app)/side-chats/[id]', params: { id: session.id } } as any)
+      const session = await api.createWorkspaceSession(http, workspace.id);
+      await loadWorkspaceSessions();
+      router.push({
+        pathname: "/(app)/side-chats/[id]",
+        params: { id: session.id },
+      } as any);
     } finally {
-      setCreatingSideChat(false)
+      setCreatingSideChat(false);
     }
-  }
+  };
 
-  const loadProjectChats = useCallback(async (projectId: string, offset = 0) => {
-    const isFirstPage = offset === 0
-    setProjectChats((current) => ({
-      ...current,
-      [projectId]: {
-        sessions: current[projectId]?.sessions ?? [],
-        loading: isFirstPage,
-        loadingMore: !isFirstPage,
-        hasMore: current[projectId]?.hasMore ?? false,
-      },
-    }))
-    try {
-      const result = await fetchProjectChatSessions(
-        http,
-        projectId,
-        PROJECT_CHAT_INITIAL_COUNT,
-        offset,
-      )
-      setProjectChats((current) => ({
-        ...current,
-        [projectId]: {
-          sessions: visibleProjectChatItems(
-            isFirstPage
-              ? result.sessions
-              : [...(current[projectId]?.sessions ?? []), ...result.sessions],
-          ),
-          loading: false,
-          loadingMore: false,
-          hasMore: result.hasMore,
-        },
-      }))
-    } catch {
+  const loadProjectChats = useCallback(
+    async (projectId: string, offset = 0) => {
+      const isFirstPage = offset === 0;
       setProjectChats((current) => ({
         ...current,
         [projectId]: {
           sessions: current[projectId]?.sessions ?? [],
-          loading: false,
-          loadingMore: false,
-          hasMore: false,
+          loading: isFirstPage,
+          loadingMore: !isFirstPage,
+          hasMore: current[projectId]?.hasMore ?? false,
         },
-      }))
-    }
-  }, [http])
+      }));
+      try {
+        const result = await fetchProjectChatSessions(
+          http,
+          projectId,
+          PROJECT_CHAT_INITIAL_COUNT,
+          offset
+        );
+        setProjectChats((current) => ({
+          ...current,
+          [projectId]: {
+            sessions: visibleProjectChatItems(
+              isFirstPage
+                ? result.sessions
+                : [...(current[projectId]?.sessions ?? []), ...result.sessions]
+            ),
+            loading: false,
+            loadingMore: false,
+            hasMore: result.hasMore,
+          },
+        }));
+      } catch {
+        setProjectChats((current) => ({
+          ...current,
+          [projectId]: {
+            sessions: current[projectId]?.sessions ?? [],
+            loading: false,
+            loadingMore: false,
+            hasMore: false,
+          },
+        }));
+      }
+    },
+    [http]
+  );
 
   useEffect(() => {
-    if (!normalizedChatQuery) return
+    if (!normalizedChatQuery) return;
     workspaceProjects.forEach((project: any) => {
       if (!projectChats[project.id]) {
-        void loadProjectChats(project.id)
+        void loadProjectChats(project.id);
       }
-    })
-  }, [loadProjectChats, normalizedChatQuery, projectChats, workspaceProjects])
+    });
+  }, [loadProjectChats, normalizedChatQuery, projectChats, workspaceProjects]);
 
   const toggleProject = (projectId: string) => {
-    const isExpanded = expandedProjectIds.has(projectId)
+    const isExpanded = expandedProjectIds.has(projectId);
     setExpandedProjectIds((current) => {
-      const next = new Set(current)
-      if (next.has(projectId)) next.delete(projectId)
-      else next.add(projectId)
-      return next
-    })
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
     if (!isExpanded && !projectChats[projectId]) {
-      void loadProjectChats(projectId)
+      void loadProjectChats(projectId);
     }
-  }
+  };
+
+  const startProjectChat = useCallback(
+    (projectId: string) => {
+      if (activeProjectId === projectId) {
+        chatSessionEvents.requestNewChat({ projectId });
+        return;
+      }
+      router.push({
+        pathname: "/(app)/projects/[id]",
+        params: {
+          id: projectId,
+          newChat: "1",
+          newChatNonce: String(Date.now()),
+        },
+      } as any);
+    },
+    [activeProjectId, router]
+  );
+
+  const updateWorkspaceChat = useCallback(
+    async (
+      sessionId: string,
+      changes: { name?: string; isPinned?: boolean; isArchived?: boolean }
+    ) => {
+      const previous = sessions;
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === sessionId ? { ...session, ...changes } : session
+        )
+      );
+      try {
+        await http.patch(
+          `/api/chat-sessions/${encodeURIComponent(sessionId)}`,
+          changes
+        );
+      } catch {
+        setSessions(previous);
+      }
+    },
+    [http, sessions]
+  );
+
+  const updateProjectChat = useCallback(
+    async (
+      projectId: string,
+      sessionId: string,
+      changes: { name?: string; isPinned?: boolean; isArchived?: boolean }
+    ) => {
+      const previous = projectChats[projectId]?.sessions ?? [];
+      setProjectChats((current) => {
+        const state = current[projectId];
+        if (!state) return current;
+        return {
+          ...current,
+          [projectId]: {
+            ...state,
+            sessions: state.sessions.map((session) =>
+              session.id === sessionId ? { ...session, ...changes } : session
+            ),
+          },
+        };
+      });
+      try {
+        await http.patch(
+          `/api/chat-sessions/${encodeURIComponent(sessionId)}`,
+          changes
+        );
+      } catch {
+        setProjectChats((current) => {
+          const state = current[projectId];
+          return state
+            ? { ...current, [projectId]: { ...state, sessions: previous } }
+            : current;
+        });
+      }
+    },
+    [http, projectChats]
+  );
+
+  const requestDelete = useCallback((onConfirm: () => void) => {
+    const confirm = () => {
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        if (window.confirm("Delete this chat? This cannot be undone."))
+          onConfirm();
+        return;
+      }
+      Alert.alert("Delete chat", "This cannot be undone.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: onConfirm },
+      ]);
+    };
+    confirm();
+  }, []);
+
+  const deleteWorkspaceChat = useCallback(
+    async (sessionId: string) => {
+      const previous = sessions;
+      setSessions((current) =>
+        current.filter((session) => session.id !== sessionId)
+      );
+      try {
+        await http.delete(
+          `/api/chat-sessions/${encodeURIComponent(sessionId)}`
+        );
+      } catch {
+        setSessions(previous);
+      }
+    },
+    [http, sessions]
+  );
+
+  const deleteProjectChat = useCallback(
+    async (projectId: string, sessionId: string) => {
+      const previous = projectChats[projectId]?.sessions ?? [];
+      setProjectChats((current) => {
+        const state = current[projectId];
+        return state
+          ? {
+              ...current,
+              [projectId]: {
+                ...state,
+                sessions: state.sessions.filter(
+                  (session) => session.id !== sessionId
+                ),
+              },
+            }
+          : current;
+      });
+      try {
+        await http.delete(
+          `/api/chat-sessions/${encodeURIComponent(sessionId)}`
+        );
+      } catch {
+        setProjectChats((current) => {
+          const state = current[projectId];
+          return state
+            ? { ...current, [projectId]: { ...state, sessions: previous } }
+            : current;
+        });
+      }
+    },
+    [http, projectChats]
+  );
 
   return (
     <View className="w-64 shrink-0 border-r border-border/70 bg-card/60">
@@ -242,195 +445,301 @@ export function WorkspaceConversationSidebar() {
         <Pressable
           accessibilityRole="link"
           accessibilityLabel="Open Main Chat"
-          accessibilityState={{ selected: routeIsActive(pathname, '/(app)') }}
-          onPress={() => router.push('/(app)' as any)}
+          accessibilityState={{ selected: routeIsActive(pathname, "/(app)") }}
+          onPress={() => router.push("/(app)" as any)}
           className={cn(
-            'rounded-xl px-3 py-2.5',
-            routeIsActive(pathname, '/(app)') ? 'bg-primary/10' : 'active:bg-muted',
+            "rounded-xl px-3 py-2.5",
+            routeIsActive(pathname, "/(app)")
+              ? "bg-primary/10"
+              : "active:bg-muted"
           )}
         >
           <Text className="text-sm font-medium text-foreground">Main Chat</Text>
         </Pressable>
 
         {experience.workspaceAgent.sideChats ? (
-          <View className="mt-5">
-            <View className="mb-1 flex-row items-center justify-between px-2">
-              <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Side chats</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Start a new Shogo side chat"
-                disabled={creatingSideChat}
-                onPress={() => void startSideChat()}
-                className="h-7 w-7 items-center justify-center rounded-lg border border-border/70 active:bg-muted disabled:opacity-50"
-              >
-                {creatingSideChat ? (
-                  <ActivityIndicator size="small" />
-                ) : (
-                  <Plus size={15} className="text-foreground" />
-                )}
-              </Pressable>
-            </View>
-            <ScrollView
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={sideChats.length > 5}
-              style={{ maxHeight: 184 }}
+          <View className="mt-4">
+            <WorkspaceSidebarSection
+              label="Side chats"
+              count={matchingSideChats.length}
+              expanded={sideChatsExpanded}
+              onExpandedChange={setSideChatsExpanded}
+              action={
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Start a new Shogo side chat"
+                  disabled={creatingSideChat}
+                  onPress={() => void startSideChat()}
+                  className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted disabled:opacity-50"
+                >
+                  {creatingSideChat ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <Plus size={17} className="text-foreground" />
+                  )}
+                </Pressable>
+              }
             >
-              {matchingSideChats.map((session) => {
-                const active = session.id === sideChatId
+              {visibleSideChats.map((session) => {
+                const active = session.id === sideChatId;
                 return (
-                  <Pressable
+                  <ChatTreeItem
                     key={session.id}
-                    accessibilityRole="link"
-                    accessibilityLabel={`Open side chat ${sidebarSessionLabel(session)}`}
-                    accessibilityState={{ selected: active }}
-                    onPress={() => router.push({
-                      pathname: '/(app)/side-chats/[id]',
-                      params: { id: session.id },
-                    } as any)}
-                    className={cn(
-                      'mt-0.5 flex-row items-center gap-2 rounded-lg px-2.5 py-2',
-                      active ? 'bg-primary/10' : 'active:bg-muted',
-                    )}
-                  >
-                    <MessageCircle size={15} className={active ? 'text-primary' : 'text-muted-foreground'} />
-                    <Text
-                      className={cn('flex-1 text-sm', active ? 'font-medium text-foreground' : 'text-muted-foreground')}
-                      numberOfLines={1}
-                    >
-                      {sidebarSessionLabel(session)}
-                    </Text>
-                  </Pressable>
-                )
+                    session={session}
+                    active={active}
+                    onSelect={() =>
+                      router.push({
+                        pathname: "/(app)/side-chats/[id]",
+                        params: { id: session.id },
+                      } as any)
+                    }
+                    onTogglePin={(id, isPinned) =>
+                      void updateWorkspaceChat(id, { isPinned })
+                    }
+                    onRename={(id, name) =>
+                      void updateWorkspaceChat(id, { name })
+                    }
+                    onToggleArchive={(id, isArchived) =>
+                      void updateWorkspaceChat(id, { isArchived })
+                    }
+                    onRequestDelete={(id) =>
+                      requestDelete(() => void deleteWorkspaceChat(id))
+                    }
+                  />
+                );
               })}
-            </ScrollView>
-            {matchingSideChats.length === 0 ? (
-              <Text className="px-2 py-2 text-xs text-muted-foreground">
-                {normalizedChatQuery ? 'No matching side chats.' : 'No side chats yet.'}
-              </Text>
-            ) : null}
+              {matchingSideChats.length > 5 && !normalizedChatQuery ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    showAllSideChats
+                      ? "Show fewer side chats"
+                      : "Show all side chats"
+                  }
+                  onPress={() => setShowAllSideChats((showAll) => !showAll)}
+                  className="mt-1 min-h-11 justify-center rounded-lg px-2.5 active:bg-muted"
+                >
+                  <Text className="text-xs font-medium text-primary">
+                    {showAllSideChats
+                      ? "Show less"
+                      : `Show all chats (${matchingSideChats.length})`}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {matchingSideChats.length === 0 ? (
+                <Text className="px-2 py-2 text-xs text-muted-foreground">
+                  {normalizedChatQuery
+                    ? "No matching side chats."
+                    : "No side chats yet."}
+                </Text>
+              ) : null}
+            </WorkspaceSidebarSection>
           </View>
         ) : null}
 
-        <View className="mt-5 border-t border-border/70 pt-4">
-          <View className="mb-2 flex-row items-center justify-between px-2">
-            <View className="flex-row items-center gap-2">
-              <Folder size={16} className="text-muted-foreground" />
-              <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Projects</Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Create a new project"
-              onPress={() => router.push({
-                pathname: '/(app)/new-project',
-                params: primarySessionId ? { chatSessionId: primarySessionId } : {},
-              } as any)}
-              className="h-7 w-7 items-center justify-center rounded-lg border border-border/70 active:bg-muted"
-            >
-              <Plus size={15} className="text-foreground" />
-            </Pressable>
-          </View>
-          {workspaceProjects.map((project: any) => {
-            const chats = projectChats[project.id]
-            const matchingProjectChats = chats?.sessions.filter((chat) => (
-              !normalizedChatQuery || projectChatLabel(chat).toLowerCase().includes(normalizedChatQuery)
-            )) ?? []
-            const projectNameMatches = String(project.name || '').toLowerCase().includes(normalizedChatQuery)
-            const projectMatches = !normalizedChatQuery
-              || projectNameMatches
-              || matchingProjectChats.length > 0
-              || chats?.loading
-            if (!projectMatches) return null
-            const expanded = expandedProjectIds.has(project.id)
-              || (!!normalizedChatQuery && !!chats)
-            const visibleChats = normalizedChatQuery ? matchingProjectChats : chats?.sessions
-            return (
-              <View key={project.id} className="mb-1">
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} chats for ${project.name || 'Untitled project'}`}
-                  accessibilityState={{ expanded }}
-                  onPress={() => toggleProject(project.id)}
-                  className="flex-row items-center gap-2 rounded-lg px-2.5 py-2 active:bg-muted"
-                >
-                  {expanded ? (
-                    <ChevronDown size={15} className="text-muted-foreground" />
-                  ) : (
-                    <ChevronRight size={15} className="text-muted-foreground" />
-                  )}
-                  <Folder size={16} className="text-primary" />
-                  <Text className="min-w-0 flex-1 text-sm font-medium text-foreground" numberOfLines={1}>
-                    {project.name || 'Untitled project'}
-                  </Text>
-                </Pressable>
-                {expanded ? (
-                  <View className="ml-5 border-l border-border/70 pl-2">
-                    {chats?.loading ? (
-                      <View className="items-start px-2 py-2">
-                        <ActivityIndicator size="small" />
-                      </View>
-                    ) : visibleChats?.length ? (
-                      <ScrollView
-                        nestedScrollEnabled
-                        showsVerticalScrollIndicator={visibleChats.length > 5}
-                        style={{ maxHeight: 154 }}
-                        scrollEventThrottle={16}
-                        onScroll={({ nativeEvent }) => {
-                          const reachedEnd = (
-                            nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height
-                            >= nativeEvent.contentSize.height - 24
-                          )
-                          if (reachedEnd && chats.hasMore && !chats.loadingMore) {
-                            void loadProjectChats(project.id, chats.sessions.length)
-                          }
-                        }}
-                      >
-                        {visibleChats.map((chat) => (
-                          <Pressable
-                            key={chat.id}
-                            accessibilityRole="link"
-                            accessibilityLabel={`Open project chat ${projectChatLabel(chat)}`}
-                            onPress={() => router.push({
-                              pathname: '/(app)/projects/[id]',
-                              params: { id: project.id, chatSessionId: chat.id },
-                            } as any)}
-                            className="flex-row items-center gap-2 rounded-md px-2 py-1.5 active:bg-muted"
-                          >
-                            <MessageCircle size={14} className="text-muted-foreground" />
-                            <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={1}>
-                              {projectChatLabel(chat)}
-                            </Text>
-                          </Pressable>
-                        ))}
-                        {chats.loadingMore ? (
-                          <View className="items-center py-2">
-                            <ActivityIndicator size="small" />
-                          </View>
-                        ) : null}
-                      </ScrollView>
-                    ) : (
-                      <Text className="px-2 py-2 text-xs text-muted-foreground">
-                        {normalizedChatQuery ? 'No matching chats.' : 'No project chats yet.'}
-                      </Text>
+        <View className="mt-4">
+          <WorkspaceSidebarSection
+            label="Projects"
+            count={workspaceProjects.length}
+            expanded={projectsExpanded}
+            onExpandedChange={setProjectsExpanded}
+            action={
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Create a new project"
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/new-project",
+                    params: primarySessionId
+                      ? { chatSessionId: primarySessionId }
+                      : {},
+                  } as any)
+                }
+                className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted"
+              >
+                <Plus size={17} className="text-foreground" />
+              </Pressable>
+            }
+          >
+            {workspaceProjects.map((project: any) => {
+              const chats = projectChats[project.id];
+              const matchingProjectChats =
+                chats?.sessions.filter(
+                  (chat) =>
+                    !normalizedChatQuery ||
+                    projectChatLabel(chat)
+                      .toLowerCase()
+                      .includes(normalizedChatQuery)
+                ) ?? [];
+              const projectNameMatches = String(project.name || "")
+                .toLowerCase()
+                .includes(normalizedChatQuery);
+              const projectMatches =
+                !normalizedChatQuery ||
+                projectNameMatches ||
+                matchingProjectChats.length > 0 ||
+                chats?.loading;
+              if (!projectMatches) return null;
+              const expanded =
+                expandedProjectIds.has(project.id) ||
+                (!!normalizedChatQuery && !!chats);
+              const visibleChats = normalizedChatQuery
+                ? matchingProjectChats
+                : chats?.sessions;
+              const activeProject = project.id === activeProjectId;
+              return (
+                <View key={project.id} className="mb-1">
+                  <View
+                    className={cn(
+                      "group flex-row items-center rounded-lg",
+                      activeProject && "bg-primary/10"
                     )}
+                  >
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${
+                        expanded ? "Collapse" : "Expand"
+                      } chats for ${project.name || "Untitled project"}`}
+                      accessibilityState={{ expanded }}
+                      onPress={() => toggleProject(project.id)}
+                      className="min-w-0 flex-1 flex-row items-center gap-2 px-2.5 py-2 active:bg-muted"
+                    >
+                      {expanded ? (
+                        <ChevronDown
+                          size={15}
+                          className="text-muted-foreground"
+                        />
+                      ) : (
+                        <ChevronRight
+                          size={15}
+                          className="text-muted-foreground"
+                        />
+                      )}
+                      <Folder size={16} className="text-primary" />
+                      <Text
+                        className="min-w-0 flex-1 text-sm font-medium text-foreground"
+                        numberOfLines={1}
+                      >
+                        {project.name || "Untitled project"}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Create a new chat in ${
+                        project.name || "this project"
+                      }`}
+                      onPress={() => startProjectChat(project.id)}
+                      className="mr-1 hidden h-9 w-9 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
+                    >
+                      <Plus size={16} className="text-muted-foreground" />
+                    </Pressable>
                   </View>
-                ) : null}
-              </View>
-            )
-          })}
-          {workspaceProjects.length === 0 ? (
-            <Text className="px-2 py-2 text-xs text-muted-foreground">No projects yet.</Text>
-          ) : null}
-          {normalizedChatQuery && workspaceProjects.length > 0 && !workspaceProjects.some((project: any) => (
-            String(project.name || '').toLowerCase().includes(normalizedChatQuery)
-            || projectChats[project.id]?.sessions.some((chat) => (
-              projectChatLabel(chat).toLowerCase().includes(normalizedChatQuery)
-            ))
-            || projectChats[project.id]?.loading
-          )) ? (
-            <Text className="px-2 py-2 text-xs text-muted-foreground">No matching project chats.</Text>
-          ) : null}
+                  {expanded ? (
+                    <View className="ml-5 pl-2">
+                      {chats?.loading ? (
+                        <View className="items-start px-2 py-2">
+                          <ActivityIndicator size="small" />
+                        </View>
+                      ) : visibleChats?.length ? (
+                        <ScrollView
+                          nestedScrollEnabled
+                          showsVerticalScrollIndicator={visibleChats.length > 5}
+                          style={{ maxHeight: 154 }}
+                          scrollEventThrottle={16}
+                          onScroll={({ nativeEvent }) => {
+                            const reachedEnd =
+                              nativeEvent.contentOffset.y +
+                                nativeEvent.layoutMeasurement.height >=
+                              nativeEvent.contentSize.height - 24;
+                            if (
+                              reachedEnd &&
+                              chats.hasMore &&
+                              !chats.loadingMore
+                            ) {
+                              void loadProjectChats(
+                                project.id,
+                                chats.sessions.length
+                              );
+                            }
+                          }}
+                        >
+                          {visibleChats.map((chat) => (
+                            <ChatTreeItem
+                              key={chat.id}
+                              session={chat}
+                              onSelect={() =>
+                                router.push({
+                                  pathname: "/(app)/projects/[id]",
+                                  params: {
+                                    id: project.id,
+                                    chatSessionId: chat.id,
+                                  },
+                                } as any)
+                              }
+                              onTogglePin={(id, isPinned) =>
+                                void updateProjectChat(project.id, id, {
+                                  isPinned,
+                                })
+                              }
+                              onRename={(id, name) =>
+                                void updateProjectChat(project.id, id, { name })
+                              }
+                              onToggleArchive={(id, isArchived) =>
+                                void updateProjectChat(project.id, id, {
+                                  isArchived,
+                                })
+                              }
+                              onRequestDelete={(id) =>
+                                requestDelete(
+                                  () => void deleteProjectChat(project.id, id)
+                                )
+                              }
+                            />
+                          ))}
+                          {chats.loadingMore ? (
+                            <View className="items-center py-2">
+                              <ActivityIndicator size="small" />
+                            </View>
+                          ) : null}
+                        </ScrollView>
+                      ) : (
+                        <Text className="px-2 py-2 text-xs text-muted-foreground">
+                          {normalizedChatQuery
+                            ? "No matching chats."
+                            : "No project chats yet."}
+                        </Text>
+                      )}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+            {workspaceProjects.length === 0 ? (
+              <Text className="px-2 py-2 text-xs text-muted-foreground">
+                No projects yet.
+              </Text>
+            ) : null}
+            {normalizedChatQuery &&
+            workspaceProjects.length > 0 &&
+            !workspaceProjects.some(
+              (project: any) =>
+                String(project.name || "")
+                  .toLowerCase()
+                  .includes(normalizedChatQuery) ||
+                projectChats[project.id]?.sessions.some((chat) =>
+                  projectChatLabel(chat)
+                    .toLowerCase()
+                    .includes(normalizedChatQuery)
+                ) ||
+                projectChats[project.id]?.loading
+            ) ? (
+              <Text className="px-2 py-2 text-xs text-muted-foreground">
+                No matching project chats.
+              </Text>
+            ) : null}
+          </WorkspaceSidebarSection>
         </View>
       </ScrollView>
     </View>
-  )
+  );
 }
