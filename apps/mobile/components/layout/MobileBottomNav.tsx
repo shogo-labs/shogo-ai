@@ -20,6 +20,7 @@ import {
   Target,
 } from "lucide-react-native";
 import { NativePhoneBottomFade } from "../phone/NativePhoneBottomFade";
+import { MobileSettingsSheet } from "./MobileSettingsSheet";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useResolvedTheme } from "../../contexts/theme";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
@@ -102,6 +103,7 @@ export function MobileBottomNav() {
   const { width } = useWindowDimensions();
   const isDark = useResolvedTheme() === "dark";
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const lastProjectContext = useLastProjectContext();
 
   const routeProjectId = firstParam(params.id);
@@ -163,6 +165,7 @@ export function MobileBottomNav() {
   }, []);
 
   const active = useMemo(() => {
+    if (settingsOpen) return "more";
     if (pathname.includes("/tasks")) return "tasks";
     if (pathname.includes("/goals")) return "goals";
     if (pathname.includes("/activity")) return "activity";
@@ -170,7 +173,7 @@ export function MobileBottomNav() {
     if (pathname.includes("/settings")) return "more";
     if (pathname.includes("/marketplace")) return "none";
     return "chat";
-  }, [pathname]);
+  }, [pathname, settingsOpen]);
 
   if (Platform.OS === "web" && width >= WEB_WIDE_MIN_WIDTH) return null;
   if (isHiddenPath(pathname) || keyboardOpen) return null;
@@ -264,7 +267,7 @@ export function MobileBottomNav() {
     id: "more",
     label: "More",
     Icon: Settings,
-    onPress: () => router.push("/(app)/settings" as any),
+    onPress: () => setSettingsOpen(true),
   };
 
   // The team vs. personal tab set (and order) is owned by the experience
@@ -290,81 +293,87 @@ export function MobileBottomNav() {
   const items = experience.bottomTabs.map((id) => tabsById[id]);
 
   return (
-    <View
-      className="bg-transparent pt-1"
-      style={{
-        position: "relative",
-        // The composer already reserves bottom padding. Offset the nav by
-        // that amount so the resulting visible gap is one compact text line.
-        marginTop: -12,
-        // Home is edge-to-edge in the root shell, while project chat is
-        // already inside the shell's bottom safe area. Reserve the home
-        // inset here so the composer and this capsule move up together and
-        // match the project-chat dock position.
-        paddingBottom: isHomePath(pathname) ? insets.bottom + 8 : 8,
-        paddingHorizontal: NATIVE_PHONE_GUTTER,
-      }}
-      testID="mobile-bottom-nav"
-    >
-      {!isProjectPath(pathname) ? (
-        <NativePhoneBottomFade
-          isDark={isDark}
-          canvasHex={
-            isHomePath(pathname) && isDark
-              ? NATIVE_PHONE_HOME_CANVAS
-              : undefined
-          }
-          height={
-            NATIVE_PHONE_DOCK_FADE + NATIVE_PHONE_COMPOSER_PILL_HEIGHT + 16
-          }
-          style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
-        />
-      ) : null}
+    <>
       <View
-        className="w-full flex-row items-center gap-1 border border-border bg-card/95 px-1.5 shadow-sm"
+        className="bg-transparent pt-1"
         style={{
-          height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
-          maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
-          alignSelf: "center",
-          borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
+          position: "relative",
+          // The composer already reserves bottom padding. Offset the nav by
+          // that amount so the resulting visible gap is one compact text line.
+          marginTop: -12,
+          // Home is edge-to-edge in the root shell, while project chat is
+          // already inside the shell's bottom safe area. Reserve the home
+          // inset here so the composer and this capsule move up together and
+          // match the project-chat dock position.
+          paddingBottom: isHomePath(pathname) ? insets.bottom + 8 : 8,
+          paddingHorizontal: NATIVE_PHONE_GUTTER,
         }}
+        testID="mobile-bottom-nav"
       >
-        {items.map(({ id, label, Icon, onPress }) => {
-          const selected = active === id;
-          return (
-            <Pressable
-              key={id}
-              onPress={onPress}
-              accessibilityRole="tab"
-              accessibilityState={{ selected }}
-              accessibilityLabel={label}
-              className={cn(
-                "flex-1 items-center justify-center rounded-full",
-                selected && "bg-primary/10"
-              )}
-              style={{
-                height:
-                  NATIVE_PHONE_COMPOSER_PILL_HEIGHT -
-                  NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2,
-              }}
-            >
-              <Icon
-                size={23}
-                color={
-                  selected
-                    ? isDark
-                      ? "#F09050"
-                      : "#E27927"
-                    : isDark
-                    ? "#a1a1aa"
-                    : "#6b7280"
-                }
-                strokeWidth={selected ? 2.2 : 1.9}
-              />
-            </Pressable>
-          );
-        })}
+        {!isProjectPath(pathname) ? (
+          <NativePhoneBottomFade
+            isDark={isDark}
+            canvasHex={
+              isHomePath(pathname) && isDark
+                ? NATIVE_PHONE_HOME_CANVAS
+                : undefined
+            }
+            height={
+              NATIVE_PHONE_DOCK_FADE + NATIVE_PHONE_COMPOSER_PILL_HEIGHT + 16
+            }
+            style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+          />
+        ) : null}
+        <View
+          className="w-full flex-row items-center gap-1 border border-border bg-card/95 px-1.5 shadow-sm"
+          style={{
+            height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+            maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+            alignSelf: "center",
+            borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
+          }}
+        >
+          {items.map(({ id, label, Icon, onPress }) => {
+            const selected = active === id;
+            return (
+              <Pressable
+                key={id}
+                onPress={onPress}
+                accessibilityRole="tab"
+                accessibilityState={{ selected }}
+                accessibilityLabel={label}
+                className={cn(
+                  "flex-1 items-center justify-center rounded-full",
+                  selected && "bg-primary/10"
+                )}
+                style={{
+                  height:
+                    NATIVE_PHONE_COMPOSER_PILL_HEIGHT -
+                    NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2,
+                }}
+              >
+                <Icon
+                  size={23}
+                  color={
+                    selected
+                      ? isDark
+                        ? "#F09050"
+                        : "#E27927"
+                      : isDark
+                      ? "#a1a1aa"
+                      : "#6b7280"
+                  }
+                  strokeWidth={selected ? 2.2 : 1.9}
+                />
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
-    </View>
+      <MobileSettingsSheet
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+    </>
   );
 }

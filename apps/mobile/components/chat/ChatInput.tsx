@@ -3000,7 +3000,7 @@ function ChatInputImpl({
                   >
                     <Mic
                       className={cn(
-                        "h-4 w-4",
+                        useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
                         !useProminentComposer &&
                           (disabled || isProcessingFiles
                             ? "text-muted-foreground/40"
