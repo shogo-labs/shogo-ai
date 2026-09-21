@@ -512,6 +512,7 @@ export const IMAGE_MODEL_CATALOG = {
   'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2' },
   'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1' },
   'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5' },
+  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare' },
   'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4' },
   'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra' },
   'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast' },

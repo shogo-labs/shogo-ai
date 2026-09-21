@@ -90,11 +90,13 @@ describe('Image Usage Cost (USD)', () => {
     expect(dalle2.rawUsd).toBeLessThan(dalle3.rawUsd)
   })
 
-  test('unknown model falls back to dall-e-3 pricing', () => {
+  // dall-e-3 is retired (OpenAI, 2026-09); the fallback moved to the
+  // current-generation gpt-image-1 pricing profile.
+  test('unknown model falls back to gpt-image-1 pricing', () => {
     const unknown = calculateImageUsageCost('unknown-model', 'standard', '1024x1024')
-    const dalle3 = calculateImageUsageCost('dall-e-3', 'standard', '1024x1024')
-    expect(unknown.rawUsd).toBe(dalle3.rawUsd)
-    expect(unknown.billedUsd).toBeCloseTo(dalle3.billedUsd, 10)
+    const gptImage1 = calculateImageUsageCost('gpt-image-1', 'standard', '1024x1024')
+    expect(unknown.rawUsd).toBe(gptImage1.rawUsd)
+    expect(unknown.billedUsd).toBeCloseTo(gptImage1.billedUsd, 10)
   })
 
   test('billed = raw * MARKUP_MULTIPLIER for every registered model', () => {

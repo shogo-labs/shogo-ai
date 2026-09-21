@@ -3878,8 +3878,8 @@ export function aiProxyRoutes() {
       }
 
       // dall-e-3 is retired (OpenAI, 2026-09) — "The model 'dall-e-3' does
-      // not exist." gpt-image-1 is the supported default now.
-      const model = body.model || 'gpt-image-1'
+      // not exist." gpt-image-2.5-flare is the current default.
+      const model = body.model || 'gpt-image-2.5-flare'
       const imageModel = resolveImageModel(model)
       if (!imageModel) {
         return c.json(
@@ -3966,7 +3966,7 @@ export function aiProxyRoutes() {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
       const imageFile = formData.get('image') as File | null
-      const model = (formData.get('model') as string) || 'gpt-image-1'
+      const model = (formData.get('model') as string) || 'gpt-image-2.5-flare'
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
       const quality = (formData.get('quality') as string) || 'standard'
