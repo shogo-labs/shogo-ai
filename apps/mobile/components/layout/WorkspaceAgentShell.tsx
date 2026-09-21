@@ -17,10 +17,11 @@ import {
   Boxes,
   CirclePlus,
   FolderKanban,
-  LayoutTemplate,
   ListTodo,
+  MessageSquare,
   Search,
   Settings,
+  Store,
   Target,
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../contexts/domain'
@@ -31,6 +32,7 @@ import {
   subscribePrimaryWorkspaceSession,
 } from '../workspace/workspace-agent-session-bus'
 import { api } from '../../lib/api'
+import { ShogoLogoMark } from '../branding/ShogoLogoMark'
 import { cn } from '@shogo/shared-ui/primitives'
 
 interface NavItem {
@@ -40,13 +42,13 @@ interface NavItem {
 }
 
 const primaryNav: NavItem[] = [
-  { label: 'Chat', href: '/(app)', icon: Bot },
+  { label: 'Chat', href: '/(app)', icon: MessageSquare },
   { label: 'Projects', href: '/(app)/projects', icon: FolderKanban },
   { label: 'Tasks', href: '/(app)/tasks', icon: ListTodo },
   { label: 'Goals', href: '/(app)/goals', icon: Target },
   { label: 'Activity', href: '/(app)/activity', icon: Activity },
   { label: 'Canvases', href: '/(app)/canvases', icon: Boxes },
-  { label: 'Explore', href: '/(app)/marketplace', icon: LayoutTemplate },
+  { label: 'Marketplace', href: '/(app)/marketplace', icon: Store },
 ]
 
 function routeIsActive(pathname: string, href: string): boolean {
@@ -120,24 +122,19 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
     }
   }
 
-  const visibleNav = primaryNav.filter((item) => {
-    if (item.href === '/(app)/marketplace') return experience.showMarketplace
-    return true
-  })
-
   return (
     <View className="flex-row flex-1 bg-background">
       <View className="w-14 shrink-0 items-center border-r border-border/70 bg-card py-3">
         <Pressable
           accessibilityRole="link"
-          accessibilityLabel="Workspace Agent Chat"
+          accessibilityLabel="Shogo home"
           onPress={() => router.push('/(app)' as any)}
-          className="mb-5 h-9 w-9 items-center justify-center rounded-xl bg-primary"
+          className="mb-5 h-9 w-9 items-center justify-center rounded-xl active:bg-muted"
         >
-          <Bot size={18} color="#fff" />
+          <ShogoLogoMark className="h-6 w-6" />
         </Pressable>
         <View className="items-center gap-2">
-          {visibleNav.map(({ href, label, icon: Icon }) => {
+          {primaryNav.map(({ href, label, icon: Icon }) => {
             const active = routeIsActive(pathname, href)
             return (
               <Pressable
