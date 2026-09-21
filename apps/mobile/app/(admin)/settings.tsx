@@ -159,6 +159,8 @@ function CloudModelSettingsPage() {
 
         <TitleGenerationModelCard platform={platform} />
 
+        <PersonalCompanionModelCard platform={platform} />
+
         <CustomProvidersCard platform={platform} />
       </View>
     </ScrollView>
@@ -438,6 +440,8 @@ function LocalSettingsPage() {
                 <AutoTierModelsCard platform={platform} />
 
                 <TitleGenerationModelCard platform={platform} />
+
+                <PersonalCompanionModelCard platform={platform} />
               </>
             ) : (
               <>
@@ -455,6 +459,8 @@ function LocalSettingsPage() {
                 <AutoTierModelsCard platform={platform} />
 
                 <TitleGenerationModelCard platform={platform} />
+
+                <PersonalCompanionModelCard platform={platform} />
 
                 <CustomProvidersCard platform={platform} />
               </>
@@ -479,6 +485,8 @@ function LocalSettingsPage() {
             <AutoTierModelsCard platform={platform} />
 
             <TitleGenerationModelCard platform={platform} />
+
+            <PersonalCompanionModelCard platform={platform} />
 
             <CustomProvidersCard platform={platform} />
           </>
@@ -718,6 +726,123 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
         </View>
         <Text className="text-xs text-muted-foreground">
           The model used to generate short titles for new chats and projects. Defaults to Hoshi 2.0.
+        </Text>
+      </View>
+      <View className="px-5 py-4" style={{ zIndex: 10 }}>
+        <View style={{ position: 'relative', zIndex: showDropdown ? 100 : 1 }}>
+          <Pressable
+            onPress={() => setShowDropdown((v) => !v)}
+            disabled={isLoading}
+            className="flex-row items-center justify-between bg-background border border-border rounded-lg px-3 py-2.5"
+          >
+            <Text className="text-sm text-foreground">{isLoading ? 'Loading…' : selectedLabel}</Text>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Pressable>
+
+          {showDropdown && (
+            <View
+              className="bg-card border border-border rounded-lg shadow-lg max-h-64 overflow-hidden"
+              style={{ position: 'absolute', top: 48, left: 0, right: 0, zIndex: 999 }}
+            >
+              <ScrollView>
+                <Pressable
+                  onPress={() => save('')}
+                  className={cn(
+                    'px-3 py-2.5 border-b border-border/50 active:bg-muted',
+                    selected === '' && 'bg-primary/5'
+                  )}
+                >
+                  <Text className="text-sm font-medium text-foreground">Default (Hoshi 2.0)</Text>
+                  <Text className="text-[11px] text-muted-foreground">
+                    Use the platform default model
+                  </Text>
+                </Pressable>
+                {models.map((m) => (
+                  <Pressable
+                    key={m.id}
+                    onPress={() => save(m.id)}
+                    className={cn(
+                      'px-3 py-2.5 border-b border-border/50 active:bg-muted',
+                      selected === m.id && 'bg-primary/5'
+                    )}
+                  >
+                    <Text className="text-sm text-foreground">{m.displayName}</Text>
+                  </Pressable>
+                ))}
+                {models.length === 0 && (
+                  <View className="px-3 py-2.5">
+                    <Text className="text-xs text-muted-foreground italic">
+                      No models available. Add or enable models above first.
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
+  )
+}
+
+// =============================================================================
+// Personal Companion Model Card — super-admin selectable model powering the
+// personal companion's interactive chat. Its picker is hidden from end users
+// (one companion per person, not a per-conversation pick), so this is the
+// only way to change what model it runs on. Self-contained: loads and saves
+// its own value via the PlatformApi, same pattern as TitleGenerationModelCard.
+// =============================================================================
+
+function PersonalCompanionModelCard({ platform }: { platform: PlatformApi }) {
+  const models = useModelPickerList()
+  const [selected, setSelected] = useState('')
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    platform.getPersonalCompanionModel()
+      .then((data) => setSelected(data.model || ''))
+      .catch(() => {})
+      .finally(() => setIsLoading(false))
+    return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current) }
+  }, [platform])
+
+  const save = useCallback(async (value: string) => {
+    setSelected(value)
+    setShowDropdown(false)
+    setSaveStatus('saving')
+    try {
+      await platform.putPersonalCompanionModel(value || null)
+      setSaveStatus('saved')
+    } catch {
+      setSaveStatus('error')
+    }
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+    statusTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
+  }, [platform])
+
+  const selectedLabel = selected
+    ? (models.find((m) => m.id === selected)?.displayName || selected)
+    : 'Default (Hoshi 2.0)'
+
+  return (
+    <View
+      className="bg-card border border-border rounded-xl"
+      style={{ position: 'relative', zIndex: showDropdown ? 50 : undefined }}
+    >
+      <View className="px-5 py-4 border-b border-border">
+        <View className="flex-row items-center justify-between mb-1">
+          <View className="flex-row items-center gap-2.5">
+            <Pencil size={16} className="text-foreground" />
+            <Text className="text-base font-semibold text-foreground">Personal Companion Model</Text>
+          </View>
+          <AutoSaveIndicator status={saveStatus} />
+        </View>
+        <Text className="text-xs text-muted-foreground">
+          The model that powers everyone's personal companion. Its picker is hidden from
+          users, so this is platform-wide. Defaults to Hoshi 2.0.
         </Text>
       </View>
       <View className="px-5 py-4" style={{ zIndex: 10 }}>

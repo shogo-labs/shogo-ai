@@ -26,6 +26,7 @@ import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { stampModelProvider } from '../lib/stamp-model-provider'
+import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import {
@@ -590,9 +591,23 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       return mapSessionError(c, err)
     }
 
-    // Model-tier guard: downgrade non-economy models for workspaces without
-    // advanced access (server-side enforcement, same as project chat).
-    if (parsedBody.agentMode) {
+    // Personal companions hide the model picker — one companion per person,
+    // not a per-message user pick (see `useWorkspaceExperience`'s
+    // `showModelPicker: !isPersonal`) — so the model is a platform-wide
+    // super-admin choice (default: Hoshi 2.0; see
+    // `lib/personal-companion-model.ts`). It overrides whatever `agentMode`
+    // the client sent and is intentionally exempt from the
+    // advanced-model-access tier gate below: that gate exists to stop a user
+    // from picking an expensive model their plan doesn't cover, which
+    // doesn't apply to an explicit admin decision (same reasoning as the
+    // title-generation model override, which also ignores plan tier).
+    if (auth.kind === 'personal') {
+      parsedBody.agentMode = getPersonalCompanionModelId()
+      stampModelProvider(parsedBody)
+      body = JSON.stringify(parsedBody)
+    } else if (parsedBody.agentMode) {
+      // Model-tier guard: downgrade non-economy models for workspaces without
+      // advanced access (server-side enforcement, same as project chat).
       const resolvedModel = resolveModelId(parsedBody.agentMode)
       if (getModelTier(resolvedModel) !== 'economy') {
         if (!(await billingService.hasAdvancedModelAccess(workspaceId))) {
