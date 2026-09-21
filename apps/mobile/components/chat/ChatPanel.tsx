@@ -1161,6 +1161,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   /** Mirrors stick/at-bottom into React so we can show the "Jump to latest"
    * pill. Source of truth for streaming follow remains the refs above. */
   const [isFollowing, setIsFollowing] = useState(true);
+  const [hasScrollableTranscript, setHasScrollableTranscript] = useState(false);
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false);
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false);
   const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP);
@@ -1291,6 +1292,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
   const currentSessionId = chatSessionId ?? null;
+
+  useEffect(() => {
+    setHasScrollableTranscript(false);
+  }, [currentSessionId]);
 
   // Native push notifications are still useful when another project is open,
   // or when the app is backgrounded. Suppress only the notification for the
@@ -4355,6 +4360,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (Date.now() < programmaticScrollUntilRef.current) return;
 
       const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+      const overflows = contentSize.height > layoutMeasurement.height + 1;
+      setHasScrollableTranscript((current) =>
+        current === overflows ? current : overflows
+      );
       const isAtBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height <
         SCROLL_NEAR_BOTTOM_PX;
@@ -6970,7 +6979,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   style={chatMessagesScrollStyles.scroll}
                   contentContainerClassName={cn(
                     isPhoneViewport
-                      ? "px-4 pt-2 pb-36"
+                      ? "px-4 pt-16 pb-36"
                       : presentation === "agent"
                       ? "px-6 pt-8 pb-[48px]"
                       : "p-2 pb-[40px]",
@@ -7035,6 +7044,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     }
                   }}
                   onContentSizeChange={(_w, h) => {
+                    setHasScrollableTranscript(h > messagesAreaHeight + 1);
                     if (isLoadingOlderRef.current) {
                       const delta = h - contentHeightBeforeLoadRef.current;
                       if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
@@ -7144,33 +7154,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
               from the bottom during streaming. Re-engages follow on press.
               Positioned at the bottom of the scroll area (just above the
               chat input). */}
-                {!isFollowing && displayMessages.length > 0 && (
-                  <View
-                    pointerEvents="box-none"
-                    style={{
-                      position: "absolute",
-                      left: 0,
-                      right: 0,
-                      bottom: 8,
-                    }}
-                    className="items-center"
-                  >
-                    <Pressable
-                      onPress={jumpToLatest}
-                      accessibilityRole="button"
-                      accessibilityLabel="Jump to latest message"
-                      className="flex-row items-center gap-1 rounded-full bg-primary px-3 py-1.5 shadow-md active:opacity-80"
+                {hasScrollableTranscript &&
+                  !isFollowing &&
+                  displayMessages.length > 0 && (
+                    <View
+                      pointerEvents="box-none"
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        bottom: 8,
+                      }}
+                      className="items-center"
                     >
-                      <ChevronDown
-                        size={14}
-                        className="text-primary-foreground"
-                      />
-                      <Text className="text-xs font-medium text-primary-foreground">
-                        Latest
-                      </Text>
-                    </Pressable>
-                  </View>
-                )}
+                      <Pressable
+                        onPress={jumpToLatest}
+                        accessibilityRole="button"
+                        accessibilityLabel="Jump to latest message"
+                        className="flex-row items-center gap-1 rounded-full bg-primary px-3 py-1.5 shadow-md active:opacity-80"
+                      >
+                        <ChevronDown
+                          size={14}
+                          className="text-primary-foreground"
+                        />
+                        <Text className="text-xs font-medium text-primary-foreground">
+                          Latest
+                        </Text>
+                      </Pressable>
+                    </View>
+                  )}
               </View>
 
               {/* Input — hidden on native while a historical bubble is being

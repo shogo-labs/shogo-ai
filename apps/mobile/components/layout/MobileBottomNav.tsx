@@ -340,7 +340,7 @@ export function MobileBottomNav() {
               accessibilityLabel={label}
               className={cn(
                 "flex-1 items-center justify-center rounded-full",
-                selected && "bg-muted"
+                selected && "bg-primary/10"
               )}
               style={{
                 height:
@@ -353,8 +353,8 @@ export function MobileBottomNav() {
                 color={
                   selected
                     ? isDark
-                      ? "#ffffff"
-                      : "#111827"
+                      ? "#F09050"
+                      : "#E27927"
                     : isDark
                     ? "#a1a1aa"
                     : "#6b7280"
