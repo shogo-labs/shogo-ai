@@ -32,6 +32,7 @@ import {
 } from "../../lib/native-phone-layout";
 import { WorkspaceSidebarSection } from "./WorkspaceSidebarSection";
 import { MobileWorkspaceChromeProvider } from "./MobileWorkspaceChromeContext";
+import { ShogoLogoMark } from "../branding/ShogoLogoMark";
 
 interface MobileWorkspaceShellProps {
   children: ReactNode;
@@ -205,20 +206,23 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                 className="h-full bg-card"
                 style={{ paddingTop: insets.top + 12 }}
               >
-                <View className="mx-4 flex-row items-center gap-2 rounded-2xl border border-border/70 bg-background px-3 py-2">
-                  <Search
-                    size={16}
-                    color={icon.color}
-                    strokeWidth={icon.strokeWidth}
-                  />
-                  <TextInput
-                    value={sessionSearch}
-                    onChangeText={setSessionSearch}
-                    placeholder="Search chats"
-                    placeholderTextColor="#8a8a8f"
-                    accessibilityLabel="Search chats"
-                    className="min-w-0 flex-1 text-sm text-foreground"
-                  />
+                <View className="mx-4 flex-row items-center gap-2">
+                  <ShogoLogoMark className="h-5 w-5" />
+                  <View className="min-w-0 flex-1 flex-row items-center gap-2 rounded-2xl border border-border/70 bg-background px-3 py-2">
+                    <Search
+                      size={16}
+                      color={icon.color}
+                      strokeWidth={icon.strokeWidth}
+                    />
+                    <TextInput
+                      value={sessionSearch}
+                      onChangeText={setSessionSearch}
+                      placeholder="Search chats"
+                      placeholderTextColor="#8a8a8f"
+                      accessibilityLabel="Search chats"
+                      className="min-w-0 flex-1 text-sm text-foreground"
+                    />
+                  </View>
                 </View>
                 <ScrollView
                   className="mt-3 flex-1"

@@ -7185,6 +7185,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   restPad={restComposerPad}
                   applyKeyboardPad={isPhoneViewport || isNativePhoneLayout}
                   native={isNative}
+                  phoneViewport={isPhoneViewport}
                 >
                   <ChatDock availableHeight={messagesAreaHeight} />
                   <PendingPlanComposerBar />

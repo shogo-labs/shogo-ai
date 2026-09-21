@@ -28,6 +28,7 @@ export function ProjectComposerDock({
   restPad,
   applyKeyboardPad,
   native,
+  phoneViewport,
   children,
 }: {
   columnWidth?: number;
@@ -37,9 +38,12 @@ export function ProjectComposerDock({
   restPad: number;
   applyKeyboardPad: boolean;
   native: boolean;
+  /** Narrow web uses the same transcript-to-composer dissolve as native. */
+  phoneViewport?: boolean;
   children: ReactNode;
 }) {
   const isDark = useResolvedTheme() === "dark";
+  const showPhoneFade = native || phoneViewport;
   const nativeColumnWidth =
     native && columnWidth != null
       ? Math.max(0, columnWidth - NATIVE_PHONE_GUTTER * 2)
@@ -63,7 +67,7 @@ export function ProjectComposerDock({
           webOverflowVisible: applyKeyboardPad && !native,
         })}
       >
-        {native ? (
+        {showPhoneFade ? (
           <NativePhoneBottomFade
             isDark={isDark}
             height={
