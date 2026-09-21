@@ -3877,7 +3877,9 @@ export function aiProxyRoutes() {
         )
       }
 
-      const model = body.model || 'dall-e-3'
+      // dall-e-3 is retired (OpenAI, 2026-09) — "The model 'dall-e-3' does
+      // not exist." gpt-image-1 is the supported default now.
+      const model = body.model || 'gpt-image-1'
       const imageModel = resolveImageModel(model)
       if (!imageModel) {
         return c.json(
@@ -3964,7 +3966,7 @@ export function aiProxyRoutes() {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
       const imageFile = formData.get('image') as File | null
-      const model = (formData.get('model') as string) || 'dall-e-2'
+      const model = (formData.get('model') as string) || 'gpt-image-1'
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
       const quality = (formData.get('quality') as string) || 'standard'
@@ -3992,15 +3994,21 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
 
-      // OpenAI edits endpoint only supports dall-e-2
-      const editModel = 'dall-e-2'
+      // dall-e-2 (the previous edits-only model) is retired (OpenAI,
+      // 2026-09). gpt-image-1 supports /v1/images/edits too, so honor the
+      // caller's model instead of hardcoding a dead one — but gpt-image
+      // models reject `response_format` (400 unknown_parameter) and use
+      // different size tokens, same as the generations path above.
+      const editModel = model
       const forwardForm = new FormData()
       forwardForm.append('image', imageFile)
       forwardForm.append('prompt', prompt)
       forwardForm.append('model', editModel)
-      forwardForm.append('size', size)
+      forwardForm.append('size', normalizeSizeForModel(editModel, size))
       forwardForm.append('n', String(n))
-      forwardForm.append('response_format', 'b64_json')
+      const editQuality = normalizeQualityForModel(editModel, quality)
+      if (editQuality) forwardForm.append('quality', editQuality)
+      if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
 
       const response = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',

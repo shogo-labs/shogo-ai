@@ -266,6 +266,51 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     return fetch(`${resolved.url}${path}`, { ...init, headers })
   }
 
+  // Generic agent-proxy passthrough for the project-less workspace runtime
+  // (today, exclusively the free personal-companion chat — see
+  // build-workspace-env.ts). Mirrors `/api/projects/:projectId/agent-proxy/*`
+  // in server.ts, but resolves the pod by workspaceId directly instead of
+  // via a Project row, since a personal companion has none.
+  //
+  // Added for `GenerateImageWidget` (apps/mobile), which fetches a
+  // generated image's bytes back from the pod's workspace filesystem via
+  // `GET .../agent-proxy/agent/workspace/download/:path`. Before this
+  // route existed, the client had no way to build a working `agentUrl` for
+  // a project-less chat (`resolvedAgentUrl` in ChatPanel.tsx falls back to
+  // `/api/projects/:projectId/agent-proxy`, which requires a projectId that
+  // doesn't exist here) — so a successfully generated avatar image showed
+  // only the "Image generated" placeholder, never the actual picture.
+  router.all('/workspaces/:workspaceId/agent-proxy/*', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+    const path = c.req.path.replace(`/api/workspaces/${workspaceId}/agent-proxy`, '') || '/'
+    const qs = new URL(c.req.url).search
+
+    const runtimeRes = await resolveOr501(c, workspaceId, [], 'WorkspaceAgentProxy', undefined, auth.kind)
+    if ('res' in runtimeRes) return runtimeRes.res
+
+    const headers = new Headers()
+    const contentType = c.req.header('content-type')
+    if (contentType) headers.set('content-type', contentType)
+    headers.set('x-runtime-token', deriveWorkspaceRuntimeToken(workspaceId))
+
+    try {
+      const method = c.req.method
+      const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.arrayBuffer()
+      const response = await fetch(`${runtimeRes.url}${path}${qs}`, { method, headers, body })
+      const responseHeaders = new Headers()
+      const respContentType = response.headers.get('content-type')
+      if (respContentType) responseHeaders.set('content-type', respContentType)
+      const respContentLength = response.headers.get('content-length')
+      if (respContentLength) responseHeaders.set('content-length', respContentLength)
+      return new Response(response.body, { status: response.status, headers: responseHeaders })
+    } catch (err: any) {
+      console.warn(`[WorkspaceAgentProxy] proxy error for ${workspaceId}${path}:`, err?.message || err)
+      return c.json({ error: { code: 'proxy_error', message: 'Failed to reach the workspace runtime' } }, 502)
+    }
+  })
+
   // List workspace-scoped chat sessions.
   router.get('/workspaces/:workspaceId/sessions', async (c) => {
     const auth = await authorize(c)

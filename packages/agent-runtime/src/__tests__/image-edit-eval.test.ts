@@ -8,14 +8,15 @@
  * 2. Take that image as a reference and produce a modified version
  *
  * This exercises the full generate_image tool including:
- * - AI proxy generation endpoint (dall-e-2 for speed/cost)
+ * - AI proxy generation endpoint (gpt-image-1)
  * - File saving to workspace
  * - Reference image reading from workspace
- * - AI proxy edit endpoint (dall-e-2 — only model supporting edits)
+ * - AI proxy edit endpoint (gpt-image-1 — dall-e-2, the previous
+ *   edits-only model, was retired by OpenAI in 2026-09)
  * - Output file creation
  *
- * Note: OpenAI's image edit API requires RGBA format PNGs. DALL-E 2
- * generates RGB PNGs, so we use a pre-built RGBA PNG for the edit tests.
+ * Note: OpenAI's image edit API requires RGBA format PNGs, so we use a
+ * pre-built RGBA PNG for the edit tests.
  *
  * Requires OPENAI_API_KEY in environment. Skipped otherwise.
  *
@@ -101,11 +102,10 @@ async function generateImageDirect(params: {
 }): Promise<{ b64_json: string; revised_prompt?: string }> {
   const apiKey = process.env.OPENAI_API_KEY!
   const body = {
-    model: params.model || 'dall-e-2',
+    model: params.model || 'gpt-image-1',
     prompt: params.prompt,
-    size: params.size || '256x256',
+    size: params.size || '1024x1024',
     n: 1,
-    response_format: 'b64_json',
   }
 
   const response = await fetch('https://api.openai.com/v1/images/generations', {
@@ -137,10 +137,9 @@ async function editImageDirect(params: {
   const form = new FormData()
   form.append('image', new Blob([new Uint8Array(params.imageBuffer)], { type: 'image/png' }), 'reference.png')
   form.append('prompt', params.prompt)
-  form.append('model', params.model || 'dall-e-2')
-  form.append('size', params.size || '256x256')
+  form.append('model', params.model || 'gpt-image-1')
+  form.append('size', params.size || '1024x1024')
   form.append('n', '1')
-  form.append('response_format', 'b64_json')
 
   const response = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
@@ -175,11 +174,11 @@ describe('Image Edit E2E Eval', () => {
         return
       }
 
-      console.log('[Eval] Step 1: Generating initial image (dall-e-2 256x256)...')
+      console.log('[Eval] Step 1: Generating initial image (gpt-image-1 1024x1024)...')
       const result = await generateImageDirect({
         prompt: 'A simple yellow star on a dark blue background, flat design, centered',
-        model: 'dall-e-2',
-        size: '256x256',
+        model: 'gpt-image-1',
+        size: '1024x1024',
       })
 
       expect(result.b64_json).toBeTruthy()
@@ -210,13 +209,13 @@ describe('Image Edit E2E Eval', () => {
       writeFileSync(rgbaPath, rgbaPng)
       expect(existsSync(rgbaPath)).toBe(true)
 
-      console.log('[Eval] Step 2: Editing RGBA image (dall-e-2, change color to red)...')
+      console.log('[Eval] Step 2: Editing RGBA image (gpt-image-1, change color to red)...')
 
       const result = await editImageDirect({
         imageBuffer: rgbaPng,
         prompt: 'Change the color from yellow to red',
-        model: 'dall-e-2',
-        size: '256x256',
+        model: 'gpt-image-1',
+        size: '1024x1024',
       })
 
       expect(result.b64_json).toBeTruthy()
@@ -266,10 +265,9 @@ describe('Image Edit E2E Eval', () => {
       const form = new FormData()
       form.append('image', new Blob([refBuffer], { type: 'image/png' }), 'reference.png')
       form.append('prompt', 'Add a small white circle in the center')
-      form.append('model', 'dall-e-2')
-      form.append('size', '256x256')
+      form.append('model', 'gpt-image-1')
+      form.append('size', '1024x1024')
       form.append('n', '1')
-      form.append('response_format', 'b64_json')
 
       const response = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
