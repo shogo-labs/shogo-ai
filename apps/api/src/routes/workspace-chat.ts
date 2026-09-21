@@ -197,7 +197,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
      */
     precomputedKind?: WorkspaceKind,
   ): Promise<{ url: string; mode: string } | { res: Response }> {
-    const workspaceKind = precomputedKind ?? (await getWorkspaceKind(workspaceId))
+    let workspaceKind: WorkspaceKind | undefined = precomputedKind
+    if (!workspaceKind) {
+      try {
+        workspaceKind = await getWorkspaceKind(workspaceId)
+      } catch {
+        // The resolver can still return the normal feature-gate response when
+        // the kind lookup is unavailable.
+      }
+    }
     try {
       const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
         attachedProjectIds,
