@@ -40,6 +40,26 @@ export function fallbackGenerateProjectName(prompt: string): string {
   return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
 }
 
+/**
+ * The literal placeholder name assigned to a project at creation time
+ * (see `apps/mobile/app/(app)/index.tsx` and `fallbackGenerateProjectName`
+ * above) before it has been auto-named from its first chat message.
+ */
+export const PLACEHOLDER_PROJECT_NAME = 'New Project'
+
+/**
+ * Whether a freshly generated project name/description should be persisted
+ * onto a project record. `/api/generate-project-name` is called for every
+ * "Untitled" chat session's first assistant response — including "New Chat"
+ * / debug threads started inside an already-named project — so this guards
+ * against every subsequent chat clobbering a project's real title. Mirrors
+ * the client-side guard in `ChatPanel.tsx`'s auto-naming effect
+ * (`project.name === 'New Project'`).
+ */
+export function shouldPersistGeneratedProjectName(currentName: string | null | undefined): boolean {
+  return !currentName || currentName === PLACEHOLDER_PROJECT_NAME
+}
+
 function cleanModelText(text: string): string {
   return text
     .trim()

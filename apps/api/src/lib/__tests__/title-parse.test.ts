@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { fallbackGenerateProjectName, parseTitleResponse } from '../title-parse'
+import {
+  fallbackGenerateProjectName,
+  parseTitleResponse,
+  shouldPersistGeneratedProjectName,
+} from '../title-parse'
 
 describe('parseTitleResponse', () => {
   test('parses valid JSON', () => {
@@ -63,5 +67,25 @@ describe('fallbackGenerateProjectName', () => {
 
   test('falls back for filler-only prompts', () => {
     expect(fallbackGenerateProjectName('build a simple web app')).toBe('New Project')
+  })
+})
+
+describe('shouldPersistGeneratedProjectName', () => {
+  test('allows renaming a project that still has the placeholder name', () => {
+    expect(shouldPersistGeneratedProjectName('New Project')).toBe(true)
+  })
+
+  test('allows naming a project with no name yet', () => {
+    expect(shouldPersistGeneratedProjectName(null)).toBe(true)
+    expect(shouldPersistGeneratedProjectName(undefined)).toBe(true)
+    expect(shouldPersistGeneratedProjectName('')).toBe(true)
+  })
+
+  test('does not rename a project that already has a real name', () => {
+    // Regression test: every "New Chat" / debug thread's first assistant
+    // response used to unconditionally overwrite an already-named project's
+    // title via `/api/generate-project-name`, even though the client-side
+    // guard correctly skipped the local rename.
+    expect(shouldPersistGeneratedProjectName('Recipe Book')).toBe(false)
   })
 })
