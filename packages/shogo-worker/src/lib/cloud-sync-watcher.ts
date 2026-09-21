@@ -19,7 +19,12 @@
 
 import { watch, type FSWatcher, statSync } from 'node:fs';
 import { relative, sep, posix } from 'node:path';
-import type { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
+// Import from source (not the built `@shogo-ai/sdk` dist) to match
+// runtime-manager.ts's CloudFileTransport import — mixing the two module
+// resolution paths makes TypeScript treat them as distinct nominal types
+// ("Types have separate declarations of a private property 'apiUrl'"),
+// since one and the same class gets loaded from two different files.
+import type { CloudFileTransport } from '../../../sdk/src/projects/cloud-file-transport';
 // commitAndPush is dynamically imported so this file does NOT eagerly
 // pull in git-cloner.ts at module-load. git-cloner.ts captures
 // `node:child_process` via `const execFileAsync = promisify(execFile)`

@@ -13,7 +13,12 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import pc from 'picocolors';
-import { CloudFileTransport, type ProgressEvent, type SyncStats } from '@shogo-ai/sdk/cloud-file-transport';
+// Import from source (not the built `@shogo-ai/sdk` dist) to match
+// runtime-manager.ts's CloudFileTransport import — mixing the two module
+// resolution paths makes TypeScript treat the class as two distinct
+// nominal types when both flow into the same program (e.g. via
+// CloudSyncWatcher's `transport` field).
+import { CloudFileTransport, type ProgressEvent, type SyncStats } from '../../../sdk/src/projects/cloud-file-transport';
 import { resolveConfig } from '../lib/config.ts';
 import { projectDirFor } from '../lib/paths.ts';
 
