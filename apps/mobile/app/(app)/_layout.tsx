@@ -103,7 +103,10 @@ export default function AppLayout() {
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
   const isWorkspaceChatRoute =
-    isHomePage || isProjectDetail || pathname.includes("/side-chats/");
+    isHomePage ||
+    isProjectDetail ||
+    pathname.includes("/side-chats/") ||
+    pathname.includes("/project-chat/");
   const useMobileWorkspaceShell =
     !isWide && !isIdeEmbed && mobileAgentShellEnabled && isWorkspaceChatRoute;
 

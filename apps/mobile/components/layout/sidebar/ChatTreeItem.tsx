@@ -212,7 +212,7 @@ export function ChatTreeItem({
               }`
             : "gap-1 px-1 py-1.5",
           rowClassName,
-          active ? "bg-accent" : "active:bg-accent/50"
+          active ? "bg-primary/10" : "active:bg-accent/50"
         )}
         {...(Platform.OS === "web"
           ? ({ onContextMenu: handleContextMenu } as any)

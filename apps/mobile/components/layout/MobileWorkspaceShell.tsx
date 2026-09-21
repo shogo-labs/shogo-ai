@@ -7,8 +7,15 @@
  * focused transcript with a session drawer trigger and compact workspace
  * identity.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  ActivityIndicator,
   Animated,
   Modal,
   Pressable,
@@ -25,6 +32,11 @@ import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { api } from "../../lib/api";
+import {
+  fetchProjectChatSessions,
+  projectChatLabel,
+  type ProjectChatListItem,
+} from "../../lib/project-chat-sessions";
 import { NotificationBell } from "../notifications/NotificationBell";
 import {
   NATIVE_PHONE_HEADER_ICON_SIZE,
@@ -37,6 +49,11 @@ import { ShogoLogoMark } from "../branding/ShogoLogoMark";
 interface MobileWorkspaceShellProps {
   children: ReactNode;
 }
+
+type ProjectChatState = {
+  sessions: ProjectChatListItem[];
+  loading: boolean;
+};
 
 export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const router = useRouter();
@@ -63,6 +80,12 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const [sideChatsExpanded, setSideChatsExpanded] = useState(true);
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [showAllSideChats, setShowAllSideChats] = useState(false);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [projectChats, setProjectChats] = useState<
+    Record<string, ProjectChatState>
+  >({});
   const filteredSessions = sessions.filter((session) => {
     const label = session.name || session.inferredName || "Untitled side chat";
     return label.toLowerCase().includes(sessionSearch.trim().toLowerCase());
@@ -117,6 +140,11 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   }, [http, sessionsOpen, workspace?.id]);
 
   useEffect(() => {
+    setExpandedProjectIds(new Set());
+    setProjectChats({});
+  }, [workspace?.id]);
+
+  useEffect(() => {
     if (!sessionsOpen || !workspace?.id) return;
     void projects.loadAll({ workspaceId: workspace.id }).catch(() => undefined);
   }, [projects, sessionsOpen, workspace?.id]);
@@ -137,6 +165,53 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
       setCreatingSession(false);
     }
   };
+
+  const loadProjectChats = useCallback(
+    async (projectId: string) => {
+      setProjectChats((current) => ({
+        ...current,
+        [projectId]: {
+          sessions: current[projectId]?.sessions ?? [],
+          loading: true,
+        },
+      }));
+      try {
+        const result = await fetchProjectChatSessions(http, projectId);
+        setProjectChats((current) => ({
+          ...current,
+          [projectId]: {
+            sessions: result.sessions,
+            loading: false,
+          },
+        }));
+      } catch {
+        setProjectChats((current) => ({
+          ...current,
+          [projectId]: {
+            sessions: current[projectId]?.sessions ?? [],
+            loading: false,
+          },
+        }));
+      }
+    },
+    [http]
+  );
+
+  const toggleProjectChats = useCallback(
+    (projectId: string) => {
+      const expanded = expandedProjectIds.has(projectId);
+      setExpandedProjectIds((current) => {
+        const next = new Set(current);
+        if (next.has(projectId)) next.delete(projectId);
+        else next.add(projectId);
+        return next;
+      });
+      if (!expanded && !projectChats[projectId]) {
+        void loadProjectChats(projectId);
+      }
+    },
+    [expandedProjectIds, loadProjectChats, projectChats]
+  );
 
   return (
     <MobileWorkspaceChromeProvider>
@@ -349,31 +424,74 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                         </Pressable>
                       }
                     >
-                      {workspaceProjects.map((project: any) => (
-                        <Pressable
-                          key={project.id}
-                          accessibilityRole="link"
-                          accessibilityLabel={`Open project ${
-                            project.name || "Untitled project"
-                          }`}
-                          onPress={() => {
-                            closeSessions();
-                            router.push({
-                              pathname: "/(app)/projects/[id]",
-                              params: { id: project.id },
-                            } as any);
-                          }}
-                          className="flex-row items-center gap-2 rounded-xl px-3 py-3 active:bg-muted"
-                        >
-                          <Folder size={16} color={icon.color} />
-                          <Text
-                            className="flex-1 text-sm font-medium text-foreground"
-                            numberOfLines={1}
-                          >
-                            {project.name || "Untitled project"}
-                          </Text>
-                        </Pressable>
-                      ))}
+                      {workspaceProjects.map((project: any) => {
+                        const expanded = expandedProjectIds.has(project.id);
+                        const chats = projectChats[project.id];
+                        return (
+                          <View key={project.id}>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`${
+                                expanded ? "Collapse" : "Expand"
+                              } chats for ${
+                                project.name || "Untitled project"
+                              }`}
+                              accessibilityState={{ expanded }}
+                              onPress={() => toggleProjectChats(project.id)}
+                              className="flex-row items-center gap-2 rounded-xl px-3 py-3 active:bg-muted"
+                            >
+                              <Folder size={16} className="text-primary" />
+                              <Text
+                                className="flex-1 text-sm font-medium text-foreground"
+                                numberOfLines={1}
+                              >
+                                {project.name || "Untitled project"}
+                              </Text>
+                            </Pressable>
+                            {expanded ? (
+                              <View className="ml-5 pl-2">
+                                {chats?.loading ? (
+                                  <View className="px-2 py-2">
+                                    <ActivityIndicator size="small" />
+                                  </View>
+                                ) : chats?.sessions.length ? (
+                                  chats.sessions.map((chat) => (
+                                    <Pressable
+                                      key={chat.id}
+                                      accessibilityRole="link"
+                                      accessibilityLabel={`Open ${projectChatLabel(
+                                        chat
+                                      )}`}
+                                      onPress={() => {
+                                        closeSessions();
+                                        router.push({
+                                          pathname: "/(app)/project-chat/[id]",
+                                          params: {
+                                            id: project.id,
+                                            chatSessionId: chat.id,
+                                          },
+                                        } as any);
+                                      }}
+                                      className="rounded-lg px-2 py-2 active:bg-muted"
+                                    >
+                                      <Text
+                                        className="text-sm text-foreground"
+                                        numberOfLines={1}
+                                      >
+                                        {projectChatLabel(chat)}
+                                      </Text>
+                                    </Pressable>
+                                  ))
+                                ) : (
+                                  <Text className="px-2 py-2 text-xs text-muted-foreground">
+                                    No project chats yet.
+                                  </Text>
+                                )}
+                              </View>
+                            ) : null}
+                          </View>
+                        );
+                      })}
                       {workspaceProjects.length === 0 ? (
                         <Text className="px-3 py-3 text-sm text-muted-foreground">
                           No projects yet.
