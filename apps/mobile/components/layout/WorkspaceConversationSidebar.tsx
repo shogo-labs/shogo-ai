@@ -26,7 +26,6 @@ import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { api } from "../../lib/api";
-import { chatSessionEvents } from "../../lib/chat-session-events";
 import {
   fetchProjectChatSessions,
   PROJECT_CHAT_PAGE_SIZE,
@@ -294,20 +293,15 @@ export function WorkspaceConversationSidebar() {
 
   const startProjectChat = useCallback(
     (projectId: string) => {
-      if (activeProjectId === projectId) {
-        chatSessionEvents.requestNewChat({ projectId });
-        return;
-      }
       router.push({
-        pathname: "/(app)/projects/[id]",
+        pathname: "/(app)/project-chat/[id]",
         params: {
           id: projectId,
-          newChat: "1",
           newChatNonce: String(Date.now()),
         },
       } as any);
     },
-    [activeProjectId, router]
+    [router]
   );
 
   const updateWorkspaceChat = useCallback(
@@ -698,7 +692,7 @@ export function WorkspaceConversationSidebar() {
                               rowClassName="px-2 py-2"
                               onSelect={() =>
                                 router.push({
-                                  pathname: "/(app)/projects/[id]",
+                                  pathname: "/(app)/project-chat/[id]",
                                   params: {
                                     id: project.id,
                                     chatSessionId: chat.id,

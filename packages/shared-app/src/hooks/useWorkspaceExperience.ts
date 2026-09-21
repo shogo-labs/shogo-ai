@@ -103,7 +103,7 @@ export function workspaceExperience(
     showGoalsNav: isPersonal,
     showSideChatsNav: isPersonal,
     bottomTabs: isPersonal
-      ? ['chat', 'goals', 'activity', 'more']
+      ? ['chat', 'canvases', 'activity', 'goals', 'more']
       : ['chat', 'tasks', 'activity', 'canvases', 'more'],
     chatReturnsToProjectContext: !isPersonal,
     composer: {

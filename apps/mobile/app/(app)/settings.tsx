@@ -50,6 +50,9 @@ import {
   Monitor as MonitorIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
+  KeyRound as KeyRoundIcon,
+  LogOut as LogOutIcon,
+  Plus as PlusIcon,
 } from "lucide-react-native";
 import {
   Text,
@@ -61,6 +64,7 @@ import { useAuth } from "../../contexts/auth";
 import {
   useDomain,
   useWorkspaceCollection,
+  useProjectCollection,
   useMemberCollection,
   useInvitationCollection,
   useDomainHttp,
@@ -120,7 +124,8 @@ import {
   isNativePhoneIntegrationsLayout,
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
-import { DOCS_URL } from "../../lib/theme-choices";
+import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
+import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace";
 import {
   SETTINGS_TABS,
   settingsNavItems,
@@ -338,11 +343,6 @@ function SettingsSidebar({
   });
 
   const workspaceItems: SidebarItem[] = [
-    {
-      ...tabItem("workspace"),
-      label: workspaceName || settingsTab("workspace").label,
-      avatar: (workspaceName?.[0] || "W").toUpperCase(),
-    },
     ...(!(localMode || !showBilling)
       ? [tabItem("people"), tabItem("models")]
       : []),
@@ -361,7 +361,6 @@ function SettingsSidebar({
   const sections: SidebarSection[] = [
     {
       id: "workspace",
-      label: "Workspace",
       items: workspaceItems,
     },
     {
@@ -380,7 +379,11 @@ function SettingsSidebar({
   ];
 
   return (
-    <View className="w-[232px] px-3 pb-5 pt-5">
+    <ScrollView
+      className="w-[232px]"
+      contentContainerClassName="px-3 pb-5 pt-5"
+      showsVerticalScrollIndicator={false}
+    >
       <Pressable
         onPress={onExit}
         className="mb-5 flex-row items-center gap-1.5 self-start rounded-lg px-2 py-1.5 active:bg-muted"
@@ -388,6 +391,12 @@ function SettingsSidebar({
         <ArrowLeft size={14} className="text-muted-foreground" />
         <Text className="text-sm text-muted-foreground">Go back</Text>
       </Pressable>
+      <WorkspaceAccountActions
+        onSelectTab={onTabChange}
+        showActions={false}
+        showSignOut={false}
+        variant="sidebar"
+      />
 
       {sections.map((section, sectionIdx) => (
         <View key={section.id} className={sectionIdx > 0 ? "mt-6" : ""}>
@@ -434,7 +443,12 @@ function SettingsSidebar({
           </View>
         </View>
       ))}
-    </View>
+      <WorkspaceAccountActions
+        onSelectTab={onTabChange}
+        showWorkspace={false}
+        variant="sidebar"
+      />
+    </ScrollView>
   );
 }
 
@@ -3987,12 +4001,255 @@ function WorkspaceCostTab() {
 // MAIN SETTINGS PAGE
 // ============================================================================
 
+export function WorkspaceAccountActions({
+  onSelectTab,
+  showWorkspace = true,
+  showActions = true,
+  showSignOut = true,
+  showActionsHeading = true,
+  variant = "default",
+}: {
+  onSelectTab?: (tab: TabId) => void;
+  showWorkspace?: boolean;
+  showActions?: boolean;
+  showSignOut?: boolean;
+  showActionsHeading?: boolean;
+  variant?: "default" | "sidebar";
+}) {
+  const router = useRouter();
+  const { signOut } = useAuth();
+  const { features, localMode } = usePlatformConfig();
+  const workspaces = useWorkspaceCollection();
+  const projects = useProjectCollection();
+  const currentWorkspace = useActiveWorkspace();
+  const allWorkspaces = workspaces?.all ?? [];
+
+  useEffect(() => {
+    void workspaces.loadAll().catch(() => undefined);
+  }, [workspaces]);
+
+  const switchWorkspace = useCallback(
+    (workspaceId: string) => {
+      if (workspaceId === currentWorkspace?.id) return;
+      scheduleWorkspaceSwitch(workspaceId, projects);
+    },
+    [currentWorkspace?.id, projects]
+  );
+
+  const createWorkspace = useCallback(() => {
+    router.push("/(app)/new-workspace" as any);
+  }, [router]);
+
+  const go = useCallback((href: string) => router.push(href as any), [router]);
+  const sidebar = variant === "sidebar";
+
+  return (
+    <View className={cn(sidebar ? "gap-0.5" : "mb-8 gap-4")}>
+      {showWorkspace ? (
+        <View>
+          <Text
+            className={cn(
+              "text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+              sidebar && "mb-2 px-2"
+            )}
+          >
+            Workspace
+          </Text>
+          <View
+            className={cn(
+              !sidebar && "mt-2 gap-1 rounded-xl bg-muted/40 p-1",
+              sidebar && "gap-0.5"
+            )}
+          >
+            {allWorkspaces.map((workspace: any) => {
+              const isCurrent = workspace.id === currentWorkspace?.id;
+              return (
+                <Pressable
+                  key={workspace.id}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isCurrent }}
+                  accessibilityLabel={`Switch to ${
+                    workspace.name || "workspace"
+                  }`}
+                  onPress={() =>
+                    isCurrent
+                      ? onSelectTab?.("workspace")
+                      : switchWorkspace(workspace.id)
+                  }
+                  className={cn(
+                    sidebar
+                      ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                      : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted",
+                    isCurrent &&
+                      (sidebar
+                        ? "border border-primary/20 bg-primary/5"
+                        : "bg-background")
+                  )}
+                >
+                  <View
+                    className={cn(
+                      "items-center justify-center rounded-lg bg-primary/10",
+                      sidebar ? "h-5 w-5" : "h-8 w-8"
+                    )}
+                  >
+                    <Text
+                      className={cn(
+                        "font-semibold text-primary",
+                        sidebar ? "text-[10px]" : "text-sm"
+                      )}
+                    >
+                      {workspace.name?.[0]?.toUpperCase() || "W"}
+                    </Text>
+                  </View>
+                  <Text
+                    className="flex-1 text-sm font-medium text-foreground"
+                    numberOfLines={1}
+                  >
+                    {workspace.name || "Untitled workspace"}
+                  </Text>
+                  {isCurrent ? (
+                    <Text
+                      className={cn(
+                        "font-medium text-primary",
+                        sidebar ? "text-[10px]" : "text-xs"
+                      )}
+                    >
+                      Current
+                    </Text>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Create new workspace"
+              onPress={createWorkspace}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <PlusIcon size={18} className="text-muted-foreground" />
+              <Text className="text-sm font-medium text-foreground">
+                Create new workspace
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {showActions ? (
+        <View className={cn(sidebar && "mt-6")}>
+          {showActionsHeading ? (
+            <Text
+              className={cn(
+                "text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+                sidebar && "mb-2 px-2"
+              )}
+            >
+              Workspace actions
+            </Text>
+          ) : null}
+          <View className={cn(!sidebar && "mt-2 gap-1", sidebar && "gap-0.5")}>
+            {!localMode && features.billing ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Invite workspace members"
+                onPress={() => onSelectTab?.("people")}
+                className={cn(
+                  sidebar
+                    ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                    : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+                )}
+              >
+                <UserPlusIcon size={18} className="text-muted-foreground" />
+                <Text className="flex-1 text-sm text-foreground">Invite</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Manage API keys"
+              onPress={() => go("/(app)/api-keys")}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <KeyRoundIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">API Keys</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open documentation"
+              onPress={() => void Linking.openURL(DOCS_URL)}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <ExternalLinkIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">Docs</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open What's New"
+              onPress={() => void Linking.openURL(CHANGELOG_URL)}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <ZapIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">What's New</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open Creator"
+              onPress={() => go("/(app)/creator")}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <BoxesIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">Creator</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {showSignOut ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+          onPress={() => void signOut()}
+          className={cn(
+            sidebar
+              ? "mt-6 flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-destructive/10"
+              : "flex-row items-center gap-3 rounded-lg py-2.5 active:bg-destructive/10"
+          )}
+        >
+          <LogOutIcon size={18} className="text-destructive" />
+          <Text className="text-sm font-medium text-destructive">Sign out</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false,
+  onSelectTab,
 }: {
   activeTab: TabId;
   localMode?: boolean;
+  onSelectTab?: (tab: TabId) => void;
 }) {
   const isLocal = localMode;
   return (
@@ -4118,6 +4375,7 @@ export default observer(function SettingsPage({
             <SettingsContent
               activeTab={activeTab}
               localMode={localMode || !features.billing}
+              onSelectTab={setActiveTab}
             />
           </View>
         </ScrollView>
@@ -4167,6 +4425,7 @@ export default observer(function SettingsPage({
           <SettingsContent
             activeTab={activeTab}
             localMode={localMode || !features.billing}
+            onSelectTab={setActiveTab}
           />
         </View>
       </ScrollView>

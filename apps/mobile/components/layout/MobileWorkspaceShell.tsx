@@ -25,8 +25,8 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { useRouter } from "expo-router";
-import { Folder, Menu, Plus, Search } from "lucide-react-native";
+import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
+import { Folder, Menu, Plus, Search, Settings } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
@@ -57,6 +57,8 @@ type ProjectChatState = {
 
 export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const routeParams = useLocalSearchParams<{ chatSessionId?: string }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const icon = useNativePhoneIconChrome();
@@ -98,6 +100,8 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const workspaceProjects = projects.all.filter(
     (project: any) => project.workspaceId === workspace?.id
   );
+  const activeProjectId =
+    pathname.match(/\/(?:projects|project-chat)\/([^/?]+)/)?.[1] ?? null;
   const drawerWidth = Math.min(width * 0.86, 360);
 
   const openSessions = () => {
@@ -295,7 +299,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                       placeholder="Search chats"
                       placeholderTextColor="#8a8a8f"
                       accessibilityLabel="Search chats"
-                      className="min-w-0 flex-1 text-sm text-foreground"
+                      className="min-w-0 flex-1 text-sm text-foreground web:outline-none no-focus-ring"
                     />
                   </View>
                 </View>
@@ -427,6 +431,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                       {workspaceProjects.map((project: any) => {
                         const expanded = expandedProjectIds.has(project.id);
                         const chats = projectChats[project.id];
+                        const projectIsActive = activeProjectId === project.id;
                         return (
                           <View key={project.id}>
                             <Pressable
@@ -447,6 +452,37 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                               >
                                 {project.name || "Untitled project"}
                               </Text>
+                              {projectIsActive ? (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Open settings for ${
+                                    project.name || "this project"
+                                  }`}
+                                  onPress={(event) => {
+                                    event.stopPropagation?.();
+                                    closeSessions();
+                                    router.replace({
+                                      pathname: "/(app)/project-chat/[id]",
+                                      params: {
+                                        id: project.id,
+                                        ...(routeParams.chatSessionId
+                                          ? {
+                                              chatSessionId:
+                                                routeParams.chatSessionId,
+                                            }
+                                          : {}),
+                                        projectSettings: String(Date.now()),
+                                      },
+                                    } as any);
+                                  }}
+                                  className="h-8 w-8 items-center justify-center rounded-lg active:bg-muted"
+                                >
+                                  <Settings
+                                    size={16}
+                                    className="text-muted-foreground"
+                                  />
+                                </Pressable>
+                              ) : null}
                             </Pressable>
                             {expanded ? (
                               <View className="ml-5 pl-2">

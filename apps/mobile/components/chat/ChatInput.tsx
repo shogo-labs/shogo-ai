@@ -2228,6 +2228,13 @@ function ChatInputImpl({
                   zIndex: 1,
                   fontSize: 14,
                   lineHeight: 20,
+                  ...(Platform.OS === "web"
+                    ? ({
+                        outlineWidth: 0,
+                        outlineStyle: "none",
+                        boxShadow: "none",
+                      } as any)
+                    : null),
                 }}
                 className={cn(
                   isNative

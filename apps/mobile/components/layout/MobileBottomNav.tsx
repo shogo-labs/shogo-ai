@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Keyboard,
   Platform,
@@ -13,6 +13,8 @@ import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Activity,
+  ClipboardList,
+  FileText,
   LayoutGrid,
   ListTodo,
   MessageCircle,
@@ -44,7 +46,7 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 }
 
 function isProjectPath(pathname: string) {
-  return pathname.includes("/projects/") && !pathname.endsWith("/projects");
+  return /\/(?:projects|project-chat|project-surface)\/[^/?]+/.test(pathname);
 }
 
 function isHomePath(pathname: string) {
@@ -63,7 +65,9 @@ function isBottomTabPath(pathname: string) {
 }
 
 function projectIdFromPath(pathname: string): string | undefined {
-  const match = pathname.match(/\/projects\/([^/]+)/);
+  const match = pathname.match(
+    /\/(?:projects|project-chat|project-surface)\/([^/?]+)/
+  );
   return match?.[1] ? decodeURIComponent(match[1]) : undefined;
 }
 
@@ -98,12 +102,17 @@ export function MobileBottomNav() {
     projectId?: string;
     returnProjectId?: string;
     returnChatSessionId?: string;
+    tab?: string;
+    surface?: string;
+    projectSettings?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isDark = useResolvedTheme() === "dark";
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openProjectSettings, setOpenProjectSettings] = useState(false);
+  const handledProjectSettingsRef = useRef<string | null>(null);
   const lastProjectContext = useLastProjectContext();
 
   const routeProjectId = firstParam(params.id);
@@ -113,6 +122,16 @@ export function MobileBottomNav() {
   const activeProjectId = routeProjectId ?? pathnameProjectId;
   const chatSessionId =
     firstParam(params.chatSessionId) ?? firstParam(params.returnChatSessionId);
+  const projectMode = isProjectPath(pathname) && !!activeProjectId;
+
+  useEffect(() => {
+    const request = firstParam(params.projectSettings);
+    if (!request || !projectMode || !activeProjectId) return;
+    if (handledProjectSettingsRef.current === request) return;
+    handledProjectSettingsRef.current = request;
+    setOpenProjectSettings(true);
+    setSettingsOpen(true);
+  }, [activeProjectId, params.projectSettings, projectMode]);
 
   useEffect(() => {
     if (activeProjectId && isProjectPath(pathname)) {
@@ -166,6 +185,11 @@ export function MobileBottomNav() {
 
   const active = useMemo(() => {
     if (settingsOpen) return "more";
+    if (projectMode) {
+      const tab = firstParam(params.surface) ?? firstParam(params.tab);
+      if (tab === "canvas" || tab === "files" || tab === "plans") return tab;
+      return "chat";
+    }
     if (pathname.includes("/tasks")) return "tasks";
     if (pathname.includes("/goals")) return "goals";
     if (pathname.includes("/activity")) return "activity";
@@ -173,7 +197,7 @@ export function MobileBottomNav() {
     if (pathname.includes("/settings")) return "more";
     if (pathname.includes("/marketplace")) return "none";
     return "chat";
-  }, [pathname, settingsOpen]);
+  }, [params.surface, params.tab, pathname, projectMode, settingsOpen]);
 
   if (Platform.OS === "web" && width >= WEB_WIDE_MIN_WIDTH) return null;
   if (isHiddenPath(pathname) || keyboardOpen) return null;
@@ -184,7 +208,7 @@ export function MobileBottomNav() {
       currentProjectContext?.projectId
     ) {
       router.replace({
-        pathname: "/(app)/projects/[id]" as any,
+        pathname: "/(app)/project-chat/[id]" as any,
         params: {
           id: currentProjectContext.projectId,
           ...(currentProjectContext.chatSessionId
@@ -195,6 +219,29 @@ export function MobileBottomNav() {
     } else {
       router.replace("/(app)" as any);
     }
+  };
+
+  const goProjectChat = () => {
+    if (!activeProjectId) return;
+    router.replace({
+      pathname: "/(app)/project-chat/[id]" as any,
+      params: {
+        id: activeProjectId,
+        ...(chatSessionId ? { chatSessionId } : {}),
+      },
+    } as any);
+  };
+
+  const openProjectSurface = (tab: "canvas" | "files" | "plans") => {
+    if (!activeProjectId) return;
+    router.replace({
+      pathname: "/(app)/project-surface/[id]" as any,
+      params: {
+        id: activeProjectId,
+        ...(chatSessionId ? { chatSessionId } : {}),
+        surface: tab,
+      },
+    } as any);
   };
 
   const taskItem = {
@@ -267,8 +314,38 @@ export function MobileBottomNav() {
     id: "more",
     label: "More",
     Icon: Settings,
-    onPress: () => setSettingsOpen(true),
+    onPress: () => {
+      setOpenProjectSettings(false);
+      setSettingsOpen(true);
+    },
   };
+  const projectItems = [
+    {
+      id: "chat",
+      label: "Chat",
+      Icon: MessageCircle,
+      onPress: goProjectChat,
+    },
+    {
+      id: "canvas",
+      label: "Canvas",
+      Icon: LayoutGrid,
+      onPress: () => openProjectSurface("canvas"),
+    },
+    {
+      id: "files",
+      label: "Files",
+      Icon: FileText,
+      onPress: () => openProjectSurface("files"),
+    },
+    {
+      id: "plans",
+      label: "Plans",
+      Icon: ClipboardList,
+      onPress: () => openProjectSurface("plans"),
+    },
+    moreItem,
+  ];
 
   // The team vs. personal tab set (and order) is owned by the experience
   // descriptor (`bottomTabs`); this map just supplies the onPress/icon for
@@ -290,7 +367,9 @@ export function MobileBottomNav() {
     goals: goalsItem,
     more: moreItem,
   };
-  const items = experience.bottomTabs.map((id) => tabsById[id]);
+  const items = projectMode
+    ? projectItems
+    : experience.bottomTabs.map((id) => tabsById[id]);
 
   return (
     <>
@@ -372,7 +451,12 @@ export function MobileBottomNav() {
       </View>
       <MobileSettingsSheet
         visible={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        projectId={projectMode ? activeProjectId : undefined}
+        openProjectSettings={openProjectSettings}
+        onClose={() => {
+          setSettingsOpen(false);
+          setOpenProjectSettings(false);
+        }}
       />
     </>
   );
