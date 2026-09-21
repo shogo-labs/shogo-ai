@@ -2401,9 +2401,10 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     name: 'publish',
     description: [
       'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
+      'First publish to a subdomain requires the Pro plan or higher. If the user may be on Free/Basic, tell them about this BEFORE starting deploy work so they are not surprised after you have already done the work — do not just attempt the tool call and hope. If the tool nonetheless returns `plan_not_allowed`, point the user to Settings > Billing to upgrade.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
-      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. If the user still sees an old version, first distinguish the stable preview URL from the published URL, then refresh after cache propagation before changing code.',
+      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -2495,8 +2496,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         republished: wasRepublish,
         verified,
         note: verified
-          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers, but a browser or edge may take a short while to revalidate; refresh once if an old version remains.`
-          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version, distinguish preview from published URL and refresh after propagation before changing code.`,
+          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers and the runtime self-heals stale bundles automatically — do not tell the user to hard-refresh or clear their cache.`
+          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version after ~30s, distinguish preview from published URL and republish rather than asking them to hard-refresh or clear their cache — the runtime already self-heals stale bundles.`,
       })
     },
   }

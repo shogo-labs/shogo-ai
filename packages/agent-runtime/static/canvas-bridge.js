@@ -497,6 +497,49 @@
     } catch (_err) { /* ignore */ }
   }
 
+  // -------------------------------------------------------------------------
+  // Stale-bundle self-heal — a browser tab (especially a standalone
+  // `*.preview.shogo.ai` / `*.shogo.one` tab, not embedded in an iframe, so
+  // `reportErrorToParent` above has nowhere to send the error) can hold an
+  // old `index.html` whose <script>/<link> tags point at content-hashed
+  // filenames an atomic rebuild has since deleted. Rather than leave the
+  // user staring at a blank page, do exactly one reload per distinct failed
+  // hashed URL: the fresh `index.html` the reload fetches points at the
+  // *current* hashes, so this self-heals the common case. Guarded by
+  // sessionStorage (not just an in-memory flag) so it survives the reload
+  // and still stops after one attempt if the SAME url keeps failing —
+  // i.e. this is a real deploy issue, not a stale cache.
+  // -------------------------------------------------------------------------
+
+  var STALE_ASSET_RELOAD_KEY = '__shogoStaleAssetReloadUrl'
+  var staleAssetReloadAttemptedInMemory = false
+
+  // Mirrors `isContentHashedFilename` in
+  // packages/shared-runtime/src/static-asset-cache.ts. Only recognized
+  // hashed bundle URLs are eligible for auto-reload — an unrelated broken
+  // image or third-party resource should not trigger a page reload.
+  function isContentHashedAssetUrl(url) {
+    var path = String(url).split('?')[0].split('#')[0]
+    var base = path.split('/').pop() || path
+    return /[-_][A-Za-z0-9]{8,}\.[A-Za-z0-9]+$/.test(base)
+  }
+
+  function tryRecoverFromStaleAsset(url) {
+    if (!url || !isContentHashedAssetUrl(url)) return false
+    try {
+      if (sessionStorage.getItem(STALE_ASSET_RELOAD_KEY) === url) return false
+      sessionStorage.setItem(STALE_ASSET_RELOAD_KEY, url)
+    } catch (_err) {
+      // sessionStorage unavailable (e.g. a sandboxed iframe without
+      // storage access) — fall back to an in-memory, once-per-page-load
+      // guard so we still never loop within a single session.
+      if (staleAssetReloadAttemptedInMemory) return false
+      staleAssetReloadAttemptedInMemory = true
+    }
+    try { window.location.reload() } catch (_err) { /* ignore */ }
+    return true
+  }
+
   // Capture phase is required: a <script>/<link>/<img> that fails to fetch fires
   // a non-bubbling error event on the element, so a listener registered without
   // `true` never sees it. Without this, a main bundle that 404s or hangs leaves
@@ -508,6 +551,7 @@
       reportErrorToParent(
         'Failed to load ' + target.tagName.toLowerCase() + (url ? ': ' + url : ''),
       )
+      tryRecoverFromStaleAsset(url)
       return
     }
     var stack = (e.error && e.error.stack) || ''

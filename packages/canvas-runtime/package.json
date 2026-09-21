@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "bun --no-env-file ../../scripts/run-tests-isolated.ts ."
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -14,7 +15,11 @@
     "tailwind-merge": "^3.3.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.0",
     "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "happy-dom": "^20.0.0",
+    "react-dom": "19.2.4",
     "typescript": "^6.0.2"
   },
   "peerDependencies": {

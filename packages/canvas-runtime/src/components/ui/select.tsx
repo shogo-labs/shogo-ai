@@ -2,12 +2,32 @@ import { useState, createContext, useContext, useRef, useEffect, type HTMLAttrib
 import { cn } from '@/lib/cn'
 import { ChevronDown } from 'lucide-react'
 
-const SelectContext = createContext<{
+interface SelectContextValue {
   value: string
   onValueChange: (v: string) => void
   open: boolean
   setOpen: (v: boolean) => void
-}>({ value: '', onValueChange: () => {}, open: false, setOpen: () => {} })
+  // Maps a SelectItem's `value` to the label it rendered as children, so
+  // SelectValue can show a human-readable label instead of the raw value
+  // (typically a database id) once it has been seen. Registered by
+  // SelectItem on mount (see `registerLabel`); intentionally NOT
+  // unregistered on unmount, because SelectContent unmounts every item the
+  // moment the dropdown closes (including immediately after a selection —
+  // see `Select`'s handleChange below), and SelectValue must keep showing
+  // the just-selected item's label after that unmount.
+  labels: Map<string, ReactNode>
+  registerLabel: (value: string, label: ReactNode) => void
+}
+
+const noopLabels = new Map<string, ReactNode>()
+const SelectContext = createContext<SelectContextValue>({
+  value: '',
+  onValueChange: () => {},
+  open: false,
+  setOpen: () => {},
+  labels: noopLabels,
+  registerLabel: () => {},
+})
 
 interface SelectProps {
   value?: string
@@ -20,6 +40,22 @@ export function Select({ value: controlledValue, defaultValue = '', onValueChang
   const [internalValue, setInternalValue] = useState(defaultValue)
   const [open, setOpen] = useState(false)
   const value = controlledValue ?? internalValue
+
+  // Label map lives in a ref (not state) so registering a label doesn't
+  // itself force a render; `labelVersion` is bumped only when a label
+  // actually changes, which re-renders this Provider (and therefore every
+  // context consumer, since the Provider's `value` object is recreated
+  // below) without looping — a SelectItem that re-registers the same
+  // value/label pair is a no-op.
+  const labelsRef = useRef<Map<string, ReactNode>>(new Map())
+  const [, setLabelVersion] = useState(0)
+
+  const registerLabel = (itemValue: string, label: ReactNode) => {
+    if (Object.is(labelsRef.current.get(itemValue), label)) return
+    labelsRef.current.set(itemValue, label)
+    setLabelVersion((v) => v + 1)
+  }
+
   const handleChange = (v: string) => {
     setInternalValue(v)
     onValueChange?.(v)
@@ -27,7 +63,9 @@ export function Select({ value: controlledValue, defaultValue = '', onValueChang
   }
 
   return (
-    <SelectContext.Provider value={{ value, onValueChange: handleChange, open, setOpen }}>
+    <SelectContext.Provider
+      value={{ value, onValueChange: handleChange, open, setOpen, labels: labelsRef.current, registerLabel }}
+    >
       <div className="relative">{children}</div>
     </SelectContext.Provider>
   )
@@ -51,8 +89,9 @@ export function SelectTrigger({ className, children, ...props }: HTMLAttributes<
 }
 
 export function SelectValue({ placeholder }: { placeholder?: string }) {
-  const { value } = useContext(SelectContext)
-  return <span className={cn(!value && 'text-muted-foreground')}>{value || placeholder}</span>
+  const { value, labels } = useContext(SelectContext)
+  const label = value ? labels.get(value) ?? value : undefined
+  return <span className={cn(!value && 'text-muted-foreground')}>{label ?? placeholder}</span>
 }
 
 export function SelectContent({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
@@ -90,6 +129,16 @@ interface SelectItemProps extends HTMLAttributes<HTMLDivElement> {
 
 export function SelectItem({ value, className, children, ...props }: SelectItemProps) {
   const ctx = useContext(SelectContext)
+
+  // Register this item's label whenever it is mounted (i.e. whenever the
+  // dropdown is open) so SelectValue can resolve `value` -> the label the
+  // user actually sees, instead of falling back to the raw id. See
+  // `SelectContext.labels` for why registration outlives this component's
+  // unmount.
+  useEffect(() => {
+    ctx.registerLabel(value, children)
+  }, [value, children])
+
   return (
     <div
       className={cn(

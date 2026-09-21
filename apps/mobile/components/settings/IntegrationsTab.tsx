@@ -382,7 +382,7 @@ export function IntegrationsTab() {
       setDisconnecting(connectionId)
       setError(null)
       try {
-        await api.disconnectIntegration(http, connectionId)
+        await api.disconnectIntegration(http, connectionId, { workspaceId })
         await loadConnections()
       } catch (err: any) {
         setError(err?.message ?? String(err))
@@ -390,7 +390,7 @@ export function IntegrationsTab() {
         setDisconnecting(null)
       }
     },
-    [http, loadConnections],
+    [http, workspaceId, loadConnections],
   )
 
   const filteredProviders = useMemo(() => {

@@ -102,7 +102,7 @@ import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
-import { staticAssetCacheControl } from './static-asset-cache'
+import { staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import {
   walkFilesTree,
   WORKSPACE_TREE_HIDDEN_DIRS,
@@ -5708,7 +5708,12 @@ function serveDistResponse(
       return new Response(html, {
         headers: {
           'Content-Type': mime,
-          'Cache-Control': 'no-cache',
+          // no-store (not no-cache): no-cache still allows a client to keep a
+          // cached copy and revalidate, and browsers commonly serve a
+          // stale-while-revalidate copy on flaky preview connections. HTML is
+          // the one response that points at content-hashed asset URLs, so it
+          // must never be served from cache once those hashes change.
+          'Cache-Control': 'no-store',
           [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
         },
       })
@@ -5722,6 +5727,18 @@ function serveDistResponse(
     })
   }
 
+  // The file doesn't exist. Static-asset paths (hashed JS/CSS, images,
+  // fonts, etc.) must 404 here rather than silently fall back to
+  // `index.html` — see `shouldServeSpaFallback` for why: a stale HTML
+  // document requesting an asset hash that an atomic rebuild already
+  // removed would otherwise get a 200 HTML body back for what the browser
+  // expects to be a JS module, producing a blank white page with no
+  // visible error. Only real SPA routes (extension-less paths, `.html`)
+  // fall back below.
+  if (!shouldServeSpaFallback(safePath)) {
+    return null
+  }
+
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
@@ -5729,7 +5746,7 @@ function serveDistResponse(
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-store',
         [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
       },
     })

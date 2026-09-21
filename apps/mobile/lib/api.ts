@@ -1065,8 +1065,27 @@ export const api = {
     return res.data
   },
 
-  async disconnectIntegration(http: HttpClient, connectionId: string) {
-    await http.delete(`/api/integrations/connections/${connectionId}`)
+  /**
+   * Disconnect a Composio connected account. Pass whichever scope
+   * (`projectId` or `workspaceId`) the caller has on hand — the server
+   * uses it to resolve every lookup-candidate user ID for the toolkit
+   * (workspace-scoped, project-scoped, legacy) and prune all of them, not
+   * just the single connectionId. Without a scope, only the exact id is
+   * removed, which can leave an expired sibling account "ACTIVE" forever.
+   */
+  async disconnectIntegration(
+    http: HttpClient,
+    connectionId: string,
+    scope?: { projectId?: string; workspaceId?: string },
+  ) {
+    await http.delete(
+      `/api/integrations/connections/${connectionId}`,
+      scope?.projectId
+        ? { projectId: scope.projectId }
+        : scope?.workspaceId
+          ? { workspaceId: scope.workspaceId }
+          : undefined,
+    )
   },
 
   /**

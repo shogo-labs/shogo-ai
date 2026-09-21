@@ -314,6 +314,39 @@ function buildLookupCandidates(
   return Array.from(new Set(candidates))
 }
 
+/**
+ * Delete every connected account for `toolkit` across every lookup-candidate
+ * user ID (workspace-scoped, project-scoped, and legacy). A disconnect or
+ * reconnect that only touches the single ID the caller happens to know about
+ * leaves sibling accounts (e.g. a stale legacy-scoped account from before a
+ * workspace migrated to workspace-scoped Composio IDs) `ACTIVE`, and
+ * `checkComposioAuth` (packages/agent-runtime/src/composio.ts) treats any
+ * ACTIVE match across the same candidate set as "connected" — so the expired
+ * sibling keeps winning forever and the user can never actually reconnect.
+ *
+ * Best-effort: an individual delete failing (e.g. the account was already
+ * gone) does not abort pruning the rest.
+ */
+async function pruneToolkitConnections(
+  composio: Composio,
+  userIds: string[],
+  toolkit: string,
+): Promise<void> {
+  try {
+    const accounts = await composio.connectedAccounts.list({ userIds, toolkitSlugs: [toolkit] })
+    const items = (accounts as any)?.items || (accounts as any)?.data || []
+    await Promise.all(
+      items.map((acc: any) =>
+        composio.connectedAccounts.delete(acc.id).catch((err: any) => {
+          console.error(`[Integrations] Prune delete failed for ${acc.id}:`, err?.message)
+        }),
+      ),
+    )
+  } catch (err: any) {
+    console.error(`[Integrations] Prune lookup failed for toolkit ${toolkit}:`, err?.message)
+  }
+}
+
 export function integrationRoutes() {
   loadAuthConfigs()
 
@@ -398,6 +431,13 @@ export function integrationRoutes() {
     if (!ctx.ok) return c.json({ error: ctx.error }, ctx.status)
     const composioUserId = buildComposioUserId(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
     const authConfigOverride = TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit]
+
+    // Prune any existing connected accounts for this toolkit (across every
+    // lookup-candidate ID) before authorizing a new one — reconnect replaces
+    // rather than accumulates, so a dead/expired sibling can't keep winning
+    // the ACTIVE check after the user thinks they've reconnected.
+    const pruneCandidates = buildLookupCandidates(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
+    await pruneToolkitConnections(composio, pruneCandidates, toolkit)
 
     try {
       const sessionOpts = authConfigOverride
@@ -502,14 +542,50 @@ export function integrationRoutes() {
     }
 
     const connectionId = c.req.param('id')
+    const projectId = c.req.query('projectId')
+    const workspaceIdParam = c.req.query('workspaceId')
 
     if (shouldForwardToCloud()) {
-      return forwardIntegrationsToCloud('DELETE', `integrations/connections/${connectionId}`, c.req.raw)
+      const qs = new URLSearchParams()
+      if (projectId) qs.set('projectId', projectId)
+      if (workspaceIdParam) qs.set('workspaceId', workspaceIdParam)
+      const suffix = qs.toString() ? `?${qs.toString()}` : ''
+      return forwardIntegrationsToCloud('DELETE', `integrations/connections/${connectionId}${suffix}`, c.req.raw)
     }
 
     const composio = getComposio()
     if (!composio) {
       return c.json({ error: 'Composio integration not configured' }, 503)
+    }
+
+    // With scope context we can resolve the connection's toolkit and prune
+    // every sibling account for it across the lookup-candidate user IDs —
+    // otherwise a workspace-scoped disconnect leaves a legacy-scoped (or
+    // vice versa) ACTIVE account behind, which keeps winning the ACTIVE
+    // check in packages/agent-runtime/src/composio.ts forever. Without a
+    // projectId/workspaceId (older clients) we fall back to the single
+    // delete-by-id behavior.
+    if (projectId || workspaceIdParam) {
+      const ctx = await resolveComposioAuthContext(auth.userId, auth.workspaceId, {
+        projectId,
+        workspaceId: workspaceIdParam,
+      })
+      if (ctx.ok) {
+        const candidates = buildLookupCandidates(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
+        try {
+          const accounts = await composio.connectedAccounts.list({ userIds: candidates })
+          const items = (accounts as any)?.items || (accounts as any)?.data || []
+          const target = items.find((acc: any) => acc.id === connectionId)
+          const toolkit = target?.toolkit?.slug ?? target?.appName ?? target?.app_name
+          if (toolkit) {
+            await pruneToolkitConnections(composio, candidates, toolkit)
+            return c.json({ ok: true })
+          }
+        } catch (err: any) {
+          console.error(`[Integrations] Disconnect scoped lookup failed:`, err.message)
+          // Fall through to the plain single-id delete below.
+        }
+      }
     }
 
     try {
