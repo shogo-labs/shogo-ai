@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Re-export shim. The implementation now lives in `packages/cli/src/pkg.ts`
+ * Re-export shim. The implementation now lives in `@shogo-ai/sdk/cli/pkg`
  * under MIT, lifted from this file in
  * https://github.com/shogo-labs/shogo-ai (commit lifting `platform-pkg.ts`
  * into the SDK to remove an AGPL runtime dependency from the published
@@ -11,7 +11,7 @@
  * This shim exists so existing consumers (`agent-runtime`,
  * `apps/api`, etc.) that import from `@shogo/shared-runtime` keep working
  * without churn. New code should import directly from
- * `packages/cli/src/pkg.ts`.
+ * `@shogo-ai/sdk/cli/pkg`.
  *
  * Note: SDK build artifacts (`packages/sdk/dist/cli/pkg.*`) must exist
  * for this re-export to resolve. `bun run build` in `packages/sdk` if
@@ -28,4 +28,4 @@ export {
   NodeMissingError,
   type PkgInstallOptions,
   type PkgExecOptions,
-} from '../../cli/src/pkg'
+} from '@shogo-ai/sdk/cli/pkg'
