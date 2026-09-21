@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
 import { ChevronRight } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
@@ -35,6 +35,7 @@ export function WorkspaceSidebarSection({
 }: WorkspaceSidebarSectionProps) {
   const prefersReducedMotion = useReducedMotion();
   const progress = useRef(new Animated.Value(expanded ? 1 : 0)).current;
+  const [hovered, setHovered] = useState(false);
 
   useEffect(() => {
     Animated.timing(progress, {
@@ -46,7 +47,15 @@ export function WorkspaceSidebarSection({
 
   return (
     <View className="pt-2">
-      <View className="group flex-row items-center">
+      <View
+        className="flex-row items-center"
+        {...(collapseOnHover
+          ? ({
+              onMouseEnter: () => setHovered(true),
+              onMouseLeave: () => setHovered(false),
+            } as any)
+          : {})}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${label}`}
@@ -62,30 +71,29 @@ export function WorkspaceSidebarSection({
               ({count})
             </Text>
           ) : null}
-          <Animated.View
-            className={cn(
-              "ml-auto",
-              collapseOnHover && "hidden group-hover:flex"
-            )}
-            style={{
-              transform: [
-                {
-                  rotate: progress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ["0deg", "90deg"],
-                  }),
-                },
-              ],
-            }}
-          >
-            <ChevronRight size={15} className="text-muted-foreground" />
-          </Animated.View>
+          {!collapseOnHover || hovered ? (
+            <Animated.View
+              className="ml-auto"
+              style={{
+                transform: [
+                  {
+                    rotate: progress.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ["0deg", "90deg"],
+                    }),
+                  },
+                ],
+              }}
+            >
+              <ChevronRight size={15} className="text-muted-foreground" />
+            </Animated.View>
+          ) : null}
         </Pressable>
         {action ? (
           <View
             className={cn(
               "ml-1",
-              actionVisibility === "hover" && "hidden group-hover:flex"
+              actionVisibility === "hover" && !hovered && "hidden"
             )}
           >
             {action}

@@ -8,9 +8,15 @@
  * project, billing, permissions, and deep-link behavior remain unchanged.
  */
 
-import { useState, type ReactNode } from 'react'
-import { Modal, Pressable, Text, View, useWindowDimensions } from 'react-native'
-import { usePathname, useRouter } from 'expo-router'
+import { useState, type ReactNode } from "react";
+import {
+  Modal,
+  Pressable,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import { usePathname, useRouter } from "expo-router";
 import {
   Activity,
   Bot,
@@ -23,58 +29,61 @@ import {
   Store,
   Target,
   X,
-} from 'lucide-react-native'
-import { ShogoLogoMark } from '../branding/ShogoLogoMark'
-import SettingsPage from '../../app/(app)/settings'
-import { CommandPalette } from './CommandPalette'
-import { WorkspaceConversationSidebar } from './WorkspaceConversationSidebar'
-import { cn } from '@shogo/shared-ui/primitives'
+} from "lucide-react-native";
+import { ShogoLogoMark } from "../branding/ShogoLogoMark";
+import SettingsPage from "../../app/(app)/settings";
+import { CommandPalette } from "./CommandPalette";
+import { WorkspaceConversationSidebar } from "./WorkspaceConversationSidebar";
+import { cn } from "@shogo/shared-ui/primitives";
 
 interface NavItem {
-  label: string
-  href?: string
-  icon: typeof Bot
-  action?: 'search'
+  label: string;
+  href?: string;
+  icon: typeof Bot;
+  action?: "search";
 }
 
 const primaryNav: NavItem[] = [
-  { label: 'Chat', href: '/(app)', icon: MessageSquare },
-  { label: 'Search', icon: Search, action: 'search' },
-  { label: 'Projects', href: '/(app)/projects', icon: FolderKanban },
-  { label: 'Tasks', href: '/(app)/tasks', icon: ListTodo },
-  { label: 'Goals', href: '/(app)/goals', icon: Target },
-  { label: 'Activity', href: '/(app)/activity', icon: Activity },
-  { label: 'Canvases', href: '/(app)/canvases', icon: Boxes },
-  { label: 'Marketplace', href: '/(app)/marketplace', icon: Store },
-]
+  { label: "Chat", href: "/(app)", icon: MessageSquare },
+  { label: "Search", icon: Search, action: "search" },
+  { label: "Projects", href: "/(app)/projects", icon: FolderKanban },
+  { label: "Tasks", href: "/(app)/tasks", icon: ListTodo },
+  { label: "Goals", href: "/(app)/goals", icon: Target },
+  { label: "Activity", href: "/(app)/activity", icon: Activity },
+  { label: "Canvases", href: "/(app)/canvases", icon: Boxes },
+  { label: "Marketplace", href: "/(app)/marketplace", icon: Store },
+];
 
 function routeIsActive(pathname: string, href: string): boolean {
-  if (href === '/(app)') return pathname === '/' || pathname === '/(app)' || pathname === '/(app)/index'
-  const normalized = href.replace('/(app)', '')
-  return pathname === normalized || pathname.startsWith(`${normalized}/`)
+  if (href === "/(app)")
+    return (
+      pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index"
+    );
+  const normalized = href.replace("/(app)", "");
+  return pathname === normalized || pathname.startsWith(`${normalized}/`);
 }
 
 export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
-  const router = useRouter()
-  const pathname = usePathname()
-  const { width, height } = useWindowDimensions()
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
+  const router = useRouter();
+  const pathname = usePathname();
+  const { width, height } = useWindowDimensions();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const openSettings = () => {
-    setSettingsOpen(true)
-  }
+    setSettingsOpen(true);
+  };
 
   const openSearch = () => {
     // On web, mounting a full-screen modal during the rail button's press can
     // let the new backdrop receive that same interaction and dismiss itself.
     // Open on the next frame once the originating press has fully finished.
-    requestAnimationFrame(() => setSearchOpen(true))
-  }
+    requestAnimationFrame(() => setSearchOpen(true));
+  };
 
   const closeSearch = () => {
-    setSearchOpen(false)
-  }
+    setSearchOpen(false);
+  };
 
   return (
     <View className="relative flex-row flex-1 bg-background">
@@ -82,7 +91,7 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
         <Pressable
           accessibilityRole="link"
           accessibilityLabel="Shogo home"
-          onPress={() => router.push('/(app)' as any)}
+          onPress={() => router.push("/(app)" as any)}
           className="mb-5 h-9 w-9 items-center justify-center rounded-xl active:bg-muted"
         >
           <ShogoLogoMark className="h-6 w-6" />
@@ -90,24 +99,36 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
         <View className="flex-1 items-center justify-center">
           <View className="items-center gap-2">
             {primaryNav.map(({ href, label, icon: Icon, action }) => {
-              const active = action === 'search'
-                ? searchOpen
-                : href ? routeIsActive(pathname, href) : false
+              const active =
+                action === "search"
+                  ? searchOpen
+                  : href
+                  ? routeIsActive(pathname, href)
+                  : false;
               return (
                 <Pressable
                   key={href ?? action}
-                  accessibilityRole={action ? 'button' : 'link'}
+                  accessibilityRole={action ? "button" : "link"}
                   accessibilityLabel={label}
                   accessibilityState={{ selected: active }}
-                  onPress={() => action === 'search' ? openSearch() : router.push(href as any)}
+                  onPress={() =>
+                    action === "search"
+                      ? openSearch()
+                      : router.push(href as any)
+                  }
                   className={cn(
-                    'h-9 w-9 items-center justify-center rounded-lg',
-                    active ? 'bg-primary/12' : 'active:bg-muted',
+                    "h-9 w-9 items-center justify-center rounded-lg",
+                    active ? "bg-primary/12" : "active:bg-muted"
                   )}
                 >
-                  <Icon size={18} className={active ? 'text-primary' : 'text-muted-foreground'} />
+                  <Icon
+                    size={18}
+                    className={
+                      active ? "text-primary" : "text-muted-foreground"
+                    }
+                  />
                 </Pressable>
-              )
+              );
             })}
           </View>
         </View>
@@ -117,13 +138,15 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
             accessibilityLabel="Open settings"
             onPress={openSettings}
             className={cn(
-              'h-9 w-9 items-center justify-center rounded-lg',
-              settingsOpen ? 'bg-primary/12' : 'active:bg-muted',
+              "h-9 w-9 items-center justify-center rounded-lg",
+              settingsOpen ? "bg-primary/12" : "active:bg-muted"
             )}
           >
             <Settings
               size={18}
-              className={settingsOpen ? 'text-primary' : 'text-muted-foreground'}
+              className={
+                settingsOpen ? "text-primary" : "text-muted-foreground"
+              }
             />
           </Pressable>
         </View>
@@ -135,7 +158,12 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
 
       <CommandPalette visible={searchOpen} onClose={closeSearch} />
 
-      <Modal visible={settingsOpen} transparent animationType="fade" onRequestClose={() => setSettingsOpen(false)}>
+      <Modal
+        visible={settingsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSettingsOpen(false)}
+      >
         <View className="flex-1 items-center justify-center bg-black/45 p-6">
           <Pressable
             accessibilityRole="button"
@@ -149,13 +177,13 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
             style={{
               width: Math.min(width - 48, 1000),
               height: Math.min(height - 48, 760),
-              shadowColor: '#000',
+              shadowColor: "#000",
               shadowOpacity: 0.24,
               shadowRadius: 30,
               elevation: 20,
             }}
           >
-            <SettingsPage />
+            <SettingsPage onClose={() => setSettingsOpen(false)} />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Close settings"
@@ -168,5 +196,5 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
         </View>
       </Modal>
     </View>
-  )
+  );
 }

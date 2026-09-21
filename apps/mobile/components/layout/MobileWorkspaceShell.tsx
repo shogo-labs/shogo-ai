@@ -19,7 +19,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { Folder, Menu, Plus, Search, X } from "lucide-react-native";
+import { Folder, Menu, Plus, Search } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
@@ -205,20 +205,6 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                 className="h-full bg-card"
                 style={{ paddingTop: insets.top + 12 }}
               >
-                <View className="flex-row justify-end px-4 pb-3">
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Close chat drawer"
-                    onPress={closeSessions}
-                    className="h-9 w-9 items-center justify-center rounded-full active:bg-muted"
-                  >
-                    <X
-                      size={18}
-                      color={icon.color}
-                      strokeWidth={icon.strokeWidth}
-                    />
-                  </Pressable>
-                </View>
                 <View className="mx-4 flex-row items-center gap-2 rounded-2xl border border-border/70 bg-background px-3 py-2">
                   <Search
                     size={16}
@@ -326,9 +312,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                           className="min-h-11 justify-center rounded-lg px-3 active:bg-muted"
                         >
                           <Text className="text-xs font-medium text-primary">
-                            {showAllSideChats
-                              ? "Show less"
-                              : `Show all chats (${sideChats.length})`}
+                            {showAllSideChats ? "Show less" : "Show more"}
                           </Text>
                         </Pressable>
                       ) : null}

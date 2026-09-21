@@ -448,8 +448,8 @@ export function MessageContent({
         <Text
           className={
             userBubble
-              ? "text-base leading-6 text-white"
-              : "text-base leading-6 text-foreground"
+              ? "text-sm leading-5 text-white"
+              : "text-sm leading-5 text-foreground"
           }
           selectable={!userBubble}
         >

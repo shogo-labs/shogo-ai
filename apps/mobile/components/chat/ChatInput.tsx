@@ -1525,7 +1525,7 @@ function ChatInputImpl({
           : "p-3 pt-0",
         presentation === "agent" &&
           !flush &&
-          "w-full self-center px-4 pb-4 pt-0"
+          "w-full self-center px-6 pb-4 pt-0"
       )}
     >
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
@@ -2074,23 +2074,23 @@ function ChatInputImpl({
               top (zIndex) so typed text stays crisp and the caret is native;
               only the pill backgrounds show through its transparent fill. The
               mirror MUST match the TextInput's font/line-height/padding (shared
-              `text-base leading-6` + `px-4 pt-4`) or the pills drift off the words. */}
+              `text-sm leading-5` + `px-4 pt-3`) or the pills drift off the words. */}
               <View
                 pointerEvents="none"
                 className={cn(
                   "absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4",
-                  isNative ? "pt-3" : "pt-4"
+                  "pt-3"
                 )}
                 style={{ zIndex: 0 }}
               >
                 <Text
-                  className="text-base leading-6"
+                  className="text-sm leading-5"
                   style={[
                     {
                       color: "transparent",
                       transform: [{ translateY: -overlayScrollY }],
-                      fontSize: 16,
-                      lineHeight: 24,
+                      fontSize: 14,
+                      lineHeight: 20,
                     },
                     Platform.OS === "web"
                       ? ({
@@ -2104,11 +2104,11 @@ function ChatInputImpl({
                     seg.mention ? (
                       <Text
                         key={idx}
-                        className="rounded bg-primary/20 text-base leading-6"
+                        className="rounded bg-primary/20 text-sm leading-5"
                         style={{
                           color: "transparent",
-                          fontSize: 16,
-                          lineHeight: 24,
+                          fontSize: 14,
+                          lineHeight: 20,
                         }}
                       >
                         {seg.text}
@@ -2116,11 +2116,11 @@ function ChatInputImpl({
                     ) : (
                       <Text
                         key={idx}
-                        className="text-base leading-6"
+                        className="text-sm leading-5"
                         style={{
                           color: "transparent",
-                          fontSize: 16,
-                          lineHeight: 24,
+                          fontSize: 14,
+                          lineHeight: 20,
                         }}
                       >
                         {seg.text}
@@ -2226,17 +2226,17 @@ function ChatInputImpl({
                 style={{
                   height: inputHeight,
                   zIndex: 1,
-                  fontSize: 16,
-                  lineHeight: 24,
+                  fontSize: 14,
+                  lineHeight: 20,
                 }}
                 className={cn(
                   isNative
                     ? "min-h-[52px] max-h-[160px] w-full"
-                    : "min-h-[60px] max-h-[200px] w-full",
+                    : "min-h-[48px] max-h-[160px] w-full",
                   "bg-transparent",
                   isNative
-                    ? "px-4 pt-3 text-base leading-6 text-foreground"
-                    : "px-4 pt-4 text-base leading-6 text-foreground",
+                    ? "px-4 pt-3 text-sm leading-5 text-foreground"
+                    : "px-4 pt-3 text-sm leading-5 text-foreground",
                   disabled && dimWhenDisabled && "opacity-50",
                   Platform.OS === "web" && "outline-none no-focus-ring"
                 )}

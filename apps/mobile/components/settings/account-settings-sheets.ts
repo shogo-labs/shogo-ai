@@ -12,14 +12,14 @@ import {
   visibleSettingsTabs,
   type SettingsTabId,
   type SettingsTabDefinition,
-} from "../../lib/settings-tabs"
+} from "../../lib/settings-tabs";
 
-export type AccountSettingsSheetTab = Exclude<SettingsTabId, "compute">
+export type AccountSettingsSheetTab = Exclude<SettingsTabId, "compute">;
 
-type SheetTabId = Exclude<AccountSettingsSheetTab, "appearance" | "account">
+type SheetTabId = Exclude<AccountSettingsSheetTab, "appearance" | "account">;
 type SheetTabDef = Pick<SettingsTabDefinition, "id" | "Icon"> & {
-  id: SheetTabId
-}
+  id: SheetTabId;
+};
 
 const SHEET_TAB_IDS = new Set<SheetTabId>([
   "workspace",
@@ -31,23 +31,24 @@ const SHEET_TAB_IDS = new Set<SheetTabId>([
   "analytics",
   "costs",
   "security",
-  "support",
-])
+]);
 
 function isSheetTab(id: SettingsTabId): id is SheetTabId {
-  return SHEET_TAB_IDS.has(id as SheetTabId)
+  return SHEET_TAB_IDS.has(id as SheetTabId);
 }
 
-export function accountSettingsSheetTitle(tab: AccountSettingsSheetTab): string {
-  return settingsTab(tab).label
+export function accountSettingsSheetTitle(
+  tab: AccountSettingsSheetTab
+): string {
+  return settingsTab(tab).label;
 }
 
 export function accountSettingsSheetGroups({
   localMode,
   showBilling,
 }: {
-  localMode?: boolean
-  showBilling?: boolean
+  localMode?: boolean;
+  showBilling?: boolean;
 }): Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> {
   const tabs = visibleSettingsTabs({ localMode, showBilling })
     .filter((tab) => isSheetTab(tab.id))
@@ -55,11 +56,16 @@ export function accountSettingsSheetGroups({
       id: tab.id as SheetTabId,
       Icon: tab.Icon,
       label: tab.label,
-    }))
-  const settings = tabs.filter((tab) => settingsTab(tab.id).group === "settings")
-  const plan = tabs.filter((tab) => settingsTab(tab.id).group === "plan")
-  const groups: Array<{ title: string; tabs: Array<SheetTabDef & { label: string }> }> = []
-  if (settings.length) groups.push({ title: "Settings", tabs: settings })
-  if (plan.length) groups.push({ title: "Plan", tabs: plan })
-  return groups
+    }));
+  const settings = tabs.filter(
+    (tab) => settingsTab(tab.id).group === "settings"
+  );
+  const plan = tabs.filter((tab) => settingsTab(tab.id).group === "plan");
+  const groups: Array<{
+    title: string;
+    tabs: Array<SheetTabDef & { label: string }>;
+  }> = [];
+  if (settings.length) groups.push({ title: "Settings", tabs: settings });
+  if (plan.length) groups.push({ title: "Plan", tabs: plan });
+  return groups;
 }

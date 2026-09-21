@@ -92,6 +92,8 @@ export function WorkspaceConversationSidebar() {
 
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
   const [primarySessionId, setPrimarySessionId] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const [creatingSideChat, setCreatingSideChat] = useState(false);
   const [chatQuery, setChatQuery] = useState("");
   const [sideChatsExpanded, setSideChatsExpanded] = useState(true);
@@ -107,16 +109,34 @@ export function WorkspaceConversationSidebar() {
   const loadWorkspaceSessions = useCallback(
     async (publishedPrimaryId?: string | null) => {
       if (!workspace?.id) return;
-      const nextSessions = await api.listWorkspaceSessions(http, workspace.id);
-      setSessions(nextSessions);
-      setPrimarySessionId(
-        publishedPrimaryId ??
-          nextSessions.find((session) => session.isPrimary)?.id ??
-          null
-      );
+      setSessionsLoading(true);
+      try {
+        const nextSessions = await api.listWorkspaceSessions(
+          http,
+          workspace.id
+        );
+        setSessions(nextSessions);
+        setPrimarySessionId(
+          publishedPrimaryId ??
+            nextSessions.find((session) => session.isPrimary)?.id ??
+            null
+        );
+      } finally {
+        setSessionsLoading(false);
+      }
     },
     [http, workspace?.id]
   );
+
+  const loadWorkspaceProjects = useCallback(async () => {
+    if (!workspace?.id) return;
+    setProjectsLoading(true);
+    try {
+      await projects.loadAll({ workspaceId: workspace.id });
+    } finally {
+      setProjectsLoading(false);
+    }
+  }, [projects, workspace?.id]);
 
   useEffect(() => {
     if (!workspace?.id) {
@@ -135,12 +155,12 @@ export function WorkspaceConversationSidebar() {
       setSessions([]);
       setPrimarySessionId(null);
     });
-    void projects.loadAll({ workspaceId: workspace.id }).catch(() => undefined);
+    void loadWorkspaceProjects().catch(() => undefined);
 
     return subscribePrimaryWorkspaceSession(workspace.id, (sessionId) => {
       void loadWorkspaceSessions(sessionId).catch(() => undefined);
     });
-  }, [loadWorkspaceSessions, projects, workspace?.id]);
+  }, [loadWorkspaceProjects, loadWorkspaceSessions, workspace?.id]);
 
   const sideChats = useMemo(
     () =>
@@ -415,6 +435,22 @@ export function WorkspaceConversationSidebar() {
     [http, projectChats]
   );
 
+  const handleSideChatsExpandedChange = useCallback(
+    (expanded: boolean) => {
+      setSideChatsExpanded(expanded);
+      if (expanded) void loadWorkspaceSessions().catch(() => undefined);
+    },
+    [loadWorkspaceSessions]
+  );
+
+  const handleProjectsExpandedChange = useCallback(
+    (expanded: boolean) => {
+      setProjectsExpanded(expanded);
+      if (expanded) void loadWorkspaceProjects().catch(() => undefined);
+    },
+    [loadWorkspaceProjects]
+  );
+
   return (
     <View className="w-64 shrink-0 border-r border-border/70 bg-card/60">
       <View className="px-3 py-3">
@@ -433,7 +469,7 @@ export function WorkspaceConversationSidebar() {
 
       <ScrollView
         className="flex-1"
-        contentContainerClassName="px-3 py-3"
+        contentContainerClassName="px-3 py-2"
         showsVerticalScrollIndicator
       >
         <Pressable
@@ -442,7 +478,7 @@ export function WorkspaceConversationSidebar() {
           accessibilityState={{ selected: routeIsActive(pathname, "/(app)") }}
           onPress={() => router.push("/(app)" as any)}
           className={cn(
-            "rounded-xl px-3 py-2.5",
+            "rounded-xl px-3 py-2",
             routeIsActive(pathname, "/(app)")
               ? "bg-primary/10"
               : "active:bg-muted"
@@ -454,12 +490,12 @@ export function WorkspaceConversationSidebar() {
         </Pressable>
 
         {experience.workspaceAgent.sideChats ? (
-          <View className="mt-4">
+          <View className="mt-2">
             <WorkspaceSidebarSection
               label="Side chats"
-              count={matchingSideChats.length}
+              count={sessionsLoading ? undefined : matchingSideChats.length}
               expanded={sideChatsExpanded}
-              onExpandedChange={setSideChatsExpanded}
+              onExpandedChange={handleSideChatsExpandedChange}
               collapseOnHover
               action={
                 <Pressable
@@ -517,16 +553,14 @@ export function WorkspaceConversationSidebar() {
                       : "Show all side chats"
                   }
                   onPress={() => setShowAllSideChats((showAll) => !showAll)}
-                  className="mt-1 min-h-11 justify-center rounded-lg px-2.5 active:bg-muted"
+                  className="mt-0.5 self-start rounded-md px-2 py-1 active:bg-muted"
                 >
                   <Text className="text-xs font-medium text-primary">
-                    {showAllSideChats
-                      ? "Show less"
-                      : `Show all chats (${matchingSideChats.length})`}
+                    {showAllSideChats ? "Show less" : "Show more"}
                   </Text>
                 </Pressable>
               ) : null}
-              {matchingSideChats.length === 0 ? (
+              {!sessionsLoading && matchingSideChats.length === 0 ? (
                 <Text className="px-2 py-2 text-xs text-muted-foreground">
                   {normalizedChatQuery
                     ? "No matching side chats."
@@ -537,12 +571,12 @@ export function WorkspaceConversationSidebar() {
           </View>
         ) : null}
 
-        <View className="mt-4">
+        <View className="mt-2">
           <WorkspaceSidebarSection
             label="Projects"
-            count={workspaceProjects.length}
+            count={projectsLoading ? undefined : workspaceProjects.length}
             expanded={projectsExpanded}
-            onExpandedChange={setProjectsExpanded}
+            onExpandedChange={handleProjectsExpandedChange}
             actionVisibility="hover"
             collapseOnHover
             action={
@@ -709,7 +743,7 @@ export function WorkspaceConversationSidebar() {
                 </View>
               );
             })}
-            {workspaceProjects.length === 0 ? (
+            {!projectsLoading && workspaceProjects.length === 0 ? (
               <Text className="px-2 py-2 text-xs text-muted-foreground">
                 No projects yet.
               </Text>
