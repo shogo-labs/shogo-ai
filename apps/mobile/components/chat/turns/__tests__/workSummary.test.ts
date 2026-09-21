@@ -42,6 +42,27 @@ function tool(toolName: string, args: Record<string, unknown> = {}): MessagePart
   }
 }
 
+/** Like `tool()`, but lets tests pin the id/state to exercise the diff cache. */
+function toolWithId(
+  id: string,
+  toolName: string,
+  args: Record<string, unknown> = {},
+  state: ToolCallData["state"] = "success",
+): MessagePart {
+  return {
+    type: "tool",
+    id,
+    tool: {
+      id,
+      toolName,
+      category: "other",
+      state,
+      args,
+      timestamp: Date.now(),
+    } as ToolCallData,
+  }
+}
+
 const emptyCounts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
 
 describe("tallyWork", () => {
@@ -114,6 +135,63 @@ describe("tallyWork", () => {
     expect(counts).toEqual(emptyCounts)
     expect(added).toBe(0)
     expect(removed).toBe(0)
+  })
+
+  test("includeDiffCounts=false skips the diff entirely (added/removed stay 0)", () => {
+    const parts = [tool("edit_file", { path: "/a.ts", old_string: "a\nb\nc", new_string: "a\nx\ny\nc" })]
+    const { counts, added, removed } = tallyWork(parts, false)
+    // editedFiles still tallies (cheap, no diff needed) — only the diff is skipped.
+    expect(counts.editedFiles).toBe(1)
+    expect(added).toBe(0)
+    expect(removed).toBe(0)
+  })
+})
+
+describe("tallyWork diff caching (perf regression guard)", () => {
+  test("a finalized edit's diff is cached by tool id — a later call with the same id reuses it", () => {
+    const id = nextId("cache-hit")
+    const first = tallyWork([toolWithId(id, "edit_file", { old_string: "a\nb", new_string: "a\nc" })])
+    expect(first.added).toBe(1)
+    expect(first.removed).toBe(1)
+
+    // Same id, but args now claim a much bigger (fabricated) diff. If the
+    // real implementation recomputed instead of reading the cache, this
+    // would return the mutated counts instead of the original ones — this
+    // is exactly the bug the cache exists to avoid re-triggering (see
+    // `groupWorkParts` producing a fresh `items` array every streaming
+    // tick even when the underlying tool call hasn't changed).
+    const mutated = tallyWork([
+      toolWithId(id, "edit_file", { old_string: "totally\ndifferent\ncontent", new_string: "x\ny\nz\nw" }),
+    ])
+    expect(mutated.added).toBe(1)
+    expect(mutated.removed).toBe(1)
+  })
+
+  test("a still-streaming edit's diff is NOT cached — it recomputes as content grows", () => {
+    const id = nextId("cache-streaming")
+    const partial = tallyWork([
+      toolWithId(id, "edit_file", { old_string: "a", new_string: "a\nb" }, "streaming"),
+    ])
+    expect(partial.added).toBe(1)
+    expect(partial.removed).toBe(0)
+
+    // Same id, still streaming, content has grown — must reflect the new
+    // content, not a cached snapshot from the partial call above.
+    const grown = tallyWork([
+      toolWithId(id, "edit_file", { old_string: "a", new_string: "a\nb\nc\nd" }, "streaming"),
+    ])
+    expect(grown.added).toBe(3)
+
+    // Once finalized, the result is computed fresh one more time and THEN
+    // cached (the in-flight streaming reads above must not have poisoned it).
+    const finalized = tallyWork([
+      toolWithId(id, "edit_file", { old_string: "a", new_string: "a\nb\nc" }, "success"),
+    ])
+    expect(finalized.added).toBe(2)
+
+    // Now cached: a mutated re-call with the same id returns the finalized result.
+    const cached = tallyWork([toolWithId(id, "edit_file", { old_string: "a", new_string: "a\nz" }, "success")])
+    expect(cached.added).toBe(2)
   })
 })
 
@@ -196,6 +274,20 @@ describe("summarizeWork", () => {
     expect(summary.kind).toBe("explored")
     expect(summary.added).toBe(0)
     expect(summary.removed).toBe(0)
+  })
+
+  test("present tense (actively streaming) skips the diff — WorkGroup never renders the badge in that state", () => {
+    const parts = [tool("edit_file", { path: "/b.ts", old_string: "a\nb", new_string: "a\nc\nd\ne" })]
+    const streaming = summarizeWork(parts, "present")
+    expect(streaming.kind).toBe("edited")
+    expect(streaming.added).toBe(0)
+    expect(streaming.removed).toBe(0)
+
+    // Same parts, past tense: the real diff is computed ("a\nb" -> "a\nc\nd\ne"
+    // keeps "a" as context, drops "b", adds "c"/"d"/"e").
+    const settled = summarizeWork(parts, "past")
+    expect(settled.added).toBe(3)
+    expect(settled.removed).toBe(1)
   })
 })
 

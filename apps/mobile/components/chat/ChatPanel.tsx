@@ -6122,13 +6122,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
             style={chatMessagesScrollStyles.scroll}
             contentContainerClassName={cn(
               isPhoneViewport ? "px-4 pt-2 pb-36" : "p-2 pb-[40px]",
-              "max-w-3xl w-full self-center",
+              "max-w-2xl w-full self-center",
             )}
             contentContainerStyle={
               nativePhoneColumnWidth
                 ? { width: nativePhoneColumnWidth }
                 : // Same belt-and-suspenders cap as the composer below —
-                  // pins the `max-w-3xl` width even if the className
+                  // pins the `max-w-2xl` width even if the className
                   // doesn't resolve on this content container.
                   {
                     maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,

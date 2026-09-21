@@ -17,7 +17,7 @@
  * `ProjectComposerDock` is the ONE place that caps/measures the shared
  * composer column's width (`chatComposerDockStyle`), so the inner column
  * here deliberately stays plain `w-full` rather than re-applying its own
- * `max-w-3xl`/measured-width cap. A second, independent cap used to live
+ * `max-w-2xl`/measured-width cap. A second, independent cap used to live
  * here and would silently drift from `ChatInput` — which has no cap of
  * its own and just inherits the shared column — whenever the composer
  * rendered somewhere narrower/wider than `useWindowDimensions()` (e.g. a

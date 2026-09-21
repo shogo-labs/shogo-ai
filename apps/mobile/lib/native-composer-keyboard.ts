@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { WEB_WIDE_MIN_WIDTH } from './native-phone-layout'
-
 /** Space between the pill/search bar and the keyboard so the oval stays readable. */
 export const NATIVE_COMPOSER_KEYBOARD_GAP = 12
-/** NativeWind `max-w-3xl` — same token as the web wide breakpoint. */
-export const CHAT_TRANSCRIPT_MAX_WIDTH = WEB_WIDE_MIN_WIDTH
+/**
+ * NativeWind `max-w-2xl` (672px). Deliberately its own constant rather than
+ * reusing `WEB_WIDE_MIN_WIDTH` (the phone/wide layout breakpoint, 768px) —
+ * those two values used to be equal by coincidence, which briefly caused a
+ * regression where widening the phone/wide breakpoint's underlying token
+ * silently widened the chat transcript/composer column too. Keep them
+ * independent even if the numbers ever happen to match again.
+ */
+export const CHAT_TRANSCRIPT_MAX_WIDTH = 672
 /** Ignore tiny pad deltas so rest safe-area padding is not treated as a keyboard. */
 export const NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP = 8
 /** Fallback when iOS omits duration or reports it as 0. */
