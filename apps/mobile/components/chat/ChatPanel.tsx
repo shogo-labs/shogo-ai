@@ -97,7 +97,11 @@ import {
   decideRetryAction,
   lastAssistantHasResumableWork,
 } from "./retry-triage";
-import { decideStallRecovery, computeRecoveryBackoff } from "./stall-recovery";
+import {
+  computeRecoveryBackoff,
+  getStallRecoveryEffects,
+  markStuckToolsInterrupted,
+} from "./stall-recovery";
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker";
 import {
   runResumeStreamSingleFlight,
@@ -1899,39 +1903,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         );
       }
 
-      setMessages((prev) =>
-        prev.map((msg) => {
-          if (msg.role !== "assistant" || !msg.parts) return msg;
-          const hasStuckTool = msg.parts.some(
-            (p: any) =>
-              (p.type === "tool-invocation" || p.type === "dynamic-tool") &&
-              (p.state === "partial-call" ||
-                p.state === "call" ||
-                p.state === "input-streaming" ||
-                p.state === "input-available")
-          );
-          if (!hasStuckTool) return msg;
-          return {
-            ...msg,
-            parts: msg.parts.map((p: any) => {
-              if (
-                (p.type === "tool-invocation" || p.type === "dynamic-tool") &&
-                (p.state === "partial-call" ||
-                  p.state === "call" ||
-                  p.state === "input-streaming" ||
-                  p.state === "input-available")
-              ) {
-                return {
-                  ...p,
-                  state: "error",
-                  output: { error: "Interrupted" },
-                };
-              }
-              return p;
-            }),
-          };
-        })
-      );
+      setMessages((prev) => markStuckToolsInterrupted(prev));
     },
     onData: async (dataPart) => {
       // Any `data-*` frame (including `data-turn-start`, `data-turn-seq`,
@@ -3082,6 +3054,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [stoppedMessages, setStoppedMessages] = useState<UIMessage[] | null>(
     null
   );
+  // Keep the stop control visible while the transport is recovering a turn
+  // whose server-side agent may still be running.
+  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
@@ -3098,8 +3073,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     lastNonEmptyMessagesRef.current = messages;
   }
 
-  const isStreaming =
+  const isTransportStreaming =
     (status === "streaming" || status === "submitted") &&
+    stoppedMessages === null;
+  const isStreaming =
+    (isTransportStreaming || streamAutoRecovering) &&
     stoppedMessages === null;
 
   // Watch messages for tool-invocation state transitions during a live
@@ -3280,11 +3258,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false);
   const [errorDismissed, setErrorDismissed] = useState(false);
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false);
-  // True while the panel is automatically probing `/turn` + reattaching to a
-  // turn that ended without `data-turn-complete` (auto-resume budget spent,
-  // app backgrounded, transport blip) but is still running server-side. Drives
-  // a transient "Reconnecting…" banner instead of a dead-end "tap Retry".
-  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false);
   // Non-null while the runtime's agent loop is "parked" waiting for internet
   // connectivity to return (see `data-connectivity-wait` handling in
   // `onData` above). Distinct from `streamAutoRecovering`: that one is the
@@ -3506,7 +3479,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   );
 
   const isStreamingRef = useRef(false);
+  const isTransportStreamingRef = useRef(false);
   isStreamingRef.current = isStreaming;
+  isTransportStreamingRef.current = isTransportStreaming;
 
   // A task started from the Tasks tab runs its turn on the server before this
   // screen mounts. The first history-load probe can therefore legitimately
@@ -5862,7 +5837,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           if (
             userInitiatedStopRef.current ||
             currentSessionIdRef.current !== recoverySessionId ||
-            isStreamingRef.current
+            isTransportStreamingRef.current
           ) {
             return;
           }
@@ -5889,26 +5864,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
           // Re-check liveness after the await — the world may have changed.
           if (
             currentSessionIdRef.current !== recoverySessionId ||
-            isStreamingRef.current
+            isTransportStreamingRef.current
           ) {
             return;
           }
 
-          const action = decideStallRecovery({
+          const effects = getStallRecoveryEffects({
             turnStatus,
             attempt,
             maxAttempts: MAX_ATTEMPTS,
           });
-          if (action === "reconnect") {
+          if (effects.action === "reconnect") {
             console.log(
               `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`
             );
             guardedAutoResumeStream("stall-recovery");
             return;
           }
-          if (action === "give-up") {
-            // Terminal or persistently-unknown: leave the manual Retry banner
-            // for the user. `handleRetry` will still triage continue/resend.
+          if (effects.interruptStuckTools) {
+            // Terminal or persistently-unknown: close the UI-side tool
+            // invocations as interrupted. Previously the stream status fell
+            // back to "ready" while these parts stayed input-available,
+            // leaving permanent spinners with no Stop button.
+            setMessages((prev) =>
+              markStuckToolsInterrupted(prev, "Connection interrupted"),
+            );
+            if (effects.showRetryBanner) {
+              setErrorDismissed(false);
+              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE);
+            }
             return;
           }
           // retry-later: brief backoff, then probe again.

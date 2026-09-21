@@ -2169,6 +2169,8 @@ export class AgentGateway {
       delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
     }
 
+    const commandRegistry = sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined
+    const persistedProgressMessages = new Set<Message>()
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
@@ -2213,7 +2215,7 @@ export class AgentGateway {
         getCwd: () => this.shellCwd.get(sessionId!) || sessionWorkspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
-      commandRegistry: sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined,
+      commandRegistry,
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
@@ -3085,6 +3087,27 @@ export class AgentGateway {
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
+        onIterationMessages: (liveMessages) => {
+          const notes = commandRegistry?.consumeCompletionNotes() ?? []
+          if (notes.length === 0) return
+          const note = {
+            role: 'user',
+            content: `[Shogo process update]\n${notes.join('\n')}\nContinue the current task using this result.`,
+            timestamp: Date.now(),
+            __shogoBackgroundNote: true,
+          } as unknown as Message & { __shogoBackgroundNote: boolean }
+          liveMessages.push(note)
+        },
+        onProgress: (progressMessages) => {
+          const durableMessages = progressMessages.filter((message) => {
+            const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
+            return !tagged && !persistedProgressMessages.has(message)
+          })
+          if (durableMessages.length > 0) {
+            this.sessionManager.addMessages(sessionId, ...durableMessages)
+            for (const message of durableMessages) persistedProgressMessages.add(message)
+          }
+        },
         onThinkingStart: () => {
           if (uiWriter) {
             uiReasoningId = `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -3418,7 +3441,10 @@ export class AgentGateway {
         contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
         result = contResult
       }
-      result.newMessages = accumulatedNewMessages
+      result.newMessages = accumulatedNewMessages.filter((message) => {
+        const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
+        return !tagged && !persistedProgressMessages.has(message)
+      })
 
       // Defense-in-depth: rewrite any localhost link the model emitted into the
       // public preview URL in the persisted history + returned text too (the

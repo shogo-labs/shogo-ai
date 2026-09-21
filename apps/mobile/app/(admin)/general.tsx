@@ -65,6 +65,8 @@ export default function AdminGeneralPage() {
   const [loginError, setLoginError] = useState('')
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [cloudKeyRejected, setCloudKeyRejected] = useState(false)
+  const [lastHeartbeatOk, setLastHeartbeatOk] = useState<boolean | null>(null)
+  const [lastHeartbeatError, setLastHeartbeatError] = useState<string | null>(null)
   // Browser-preview fallback: when no Electron bridge is present we can't
   // drive the device-flow, so the user pastes a `shogo_sk_` API key minted
   // from the cloud dashboard. We POST it to PUT /api/local/shogo-key, which
@@ -103,6 +105,8 @@ export default function AdminGeneralPage() {
       setShogoWorkspaceName(status.workspace?.name || '')
       setShogoKeyMask(status.keyPrefix ? `${status.keyPrefix}…` : '')
       setCloudKeyRejected(!!status.cloudKeyRejected)
+      setLastHeartbeatOk(status.lastHeartbeatOk ?? null)
+      setLastHeartbeatError(status.lastHeartbeatError || null)
       if (status.cloudUrl) {
         setCloudUrl(status.cloudUrl)
       }
@@ -155,9 +159,16 @@ export default function AdminGeneralPage() {
     // desktop heartbeat. This surfaces key-rejected warnings without
     // signing the user out.
     const desktopExt = desktop as any
-    desktopExt?.onCloudConnectionStatus?.((status: { connected: boolean; cloudKeyRejected: boolean; error?: string }) => {
+    desktopExt?.onCloudConnectionStatus?.((status: {
+      connected: boolean
+      cloudKeyRejected: boolean
+      error?: string
+      lastHeartbeatOk?: boolean | null
+    }) => {
       if (cancelled) return
       setCloudKeyRejected(status.cloudKeyRejected)
+      setLastHeartbeatOk(status.lastHeartbeatOk ?? (status.connected ? true : false))
+      setLastHeartbeatError(status.error || null)
     })
 
     return () => {
@@ -178,7 +189,7 @@ export default function AdminGeneralPage() {
         const result = await (window as any).shogoDesktop.startCloudLogin()
         if (!result?.ok) {
           setLoginStatus('error')
-          setLoginError(result?.error || 'Could not start sign-in')
+          setLoginError(result?.error || 'Could not start the API-key connection')
         }
         return
       }
@@ -187,7 +198,7 @@ export default function AdminGeneralPage() {
       // to drive the poll loop and persist the minted key.
       setLoginStatus('error')
       setLoginError(
-        'Browser preview can\u2019t complete sign-in. Use the Shogo Desktop app, or run `shogo login` in your terminal.',
+        'Browser preview can\u2019t mint the key. Use Shogo Desktop, or run `shogo login` in your terminal.',
       )
     } catch (err: any) {
       setLoginStatus('error')
@@ -365,23 +376,30 @@ export default function AdminGeneralPage() {
         {/* Shogo Cloud Connection */}
         <SectionCard
           icon={Cloud}
-          title="Shogo Cloud"
-          description="Connect this machine to your Shogo Cloud account"
+          title="Shogo Cloud API key"
+          description="Link this machine to a Shogo Cloud workspace by minting an API key for cloud LLMs and remote access. This is not an in-app account session."
         >
           {shogoKeyConnected ? (
             <View className="gap-3">
               <View className={cn(
                 'flex-row items-center gap-2 rounded-lg p-3',
-                cloudKeyRejected ? 'bg-orange-500/10 border border-orange-500/20' : 'bg-green-500/10',
+                cloudKeyRejected || lastHeartbeatOk === false
+                  ? 'bg-orange-500/10 border border-orange-500/20'
+                  : 'bg-green-500/10',
               )}>
-                {cloudKeyRejected ? (
+                {cloudKeyRejected || lastHeartbeatOk === false ? (
                   <AlertTriangle size={16} className="text-orange-500" />
                 ) : (
                   <CheckCircle size={16} className="text-green-500" />
                 )}
                 <View className="flex-1">
                   <Text className="text-sm font-medium text-foreground">
-                    Signed in{shogoEmail ? ` as ${shogoEmail}` : ''}
+                    {cloudKeyRejected
+                      ? 'API key rejected by Shogo Cloud'
+                      : lastHeartbeatOk === false
+                        ? 'API key stored; cloud is unreachable'
+                        : 'API key connected'}
+                    {shogoEmail ? ` · minted for ${shogoEmail}` : ''}
                   </Text>
                   {shogoWorkspaceName ? (
                     <Text className="text-xs text-muted-foreground">
@@ -390,16 +408,16 @@ export default function AdminGeneralPage() {
                   ) : null}
                 </View>
               </View>
-              {cloudKeyRejected && (
+              {(cloudKeyRejected || lastHeartbeatOk === false) && (
                 <View className="flex-row items-start gap-2 bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
                   <AlertTriangle size={16} className="text-orange-500 mt-0.5" />
                   <View className="flex-1">
                     <Text className="text-sm font-medium text-foreground">
-                      Cloud connection issue
+                      Shogo Cloud API key needs attention
                     </Text>
                     <Text className="text-xs text-muted-foreground mt-0.5">
-                      Your API key may have been revoked or expired on the cloud.
-                      Sign out and sign in again to refresh your connection.
+                      {lastHeartbeatError ||
+                        'The key may have been revoked or expired. Disconnect and connect again to mint a fresh key.'}
                     </Text>
                   </View>
                 </View>
@@ -430,7 +448,7 @@ export default function AdminGeneralPage() {
                       <RefreshCw size={14} className="text-foreground" />
                     )}
                     <Text className="text-sm text-foreground">
-                      {loginStatus === 'connecting' ? 'Switching…' : 'Switch workspace'}
+                      {loginStatus === 'connecting' ? 'Minting…' : 'Mint key for another workspace'}
                     </Text>
                   </Pressable>
                 )}
@@ -444,7 +462,7 @@ export default function AdminGeneralPage() {
                 >
                   <Unplug size={14} className="text-destructive" />
                   <Text className="text-sm text-destructive">
-                    {isDisconnecting ? 'Signing out...' : 'Sign out'}
+                    {isDisconnecting ? 'Disconnecting...' : 'Disconnect (forget key)'}
                   </Text>
                 </Pressable>
               </View>
@@ -463,8 +481,9 @@ export default function AdminGeneralPage() {
           ) : (
             <View className="gap-3">
               <Text className="text-sm text-muted-foreground">
-                Sign in with your Shogo Cloud account to use cloud models, share
-                instances, and manage this machine from your dashboard.
+                Connect this machine to Shogo Cloud to use cloud LLMs and remote
+                access. Approval mints a durable API key stored locally for this
+                app; it does not create an account session inside Shogo.
               </Text>
               {hasDesktopBridge() ? (
                 <>
@@ -491,7 +510,7 @@ export default function AdminGeneralPage() {
                     >
                       {loginStatus === 'connecting'
                         ? 'Waiting for browser…'
-                        : 'Sign in to Shogo Cloud'}
+                        : 'Connect (mint API key in browser)'}
                     </Text>
                   </Pressable>
                   {loginError ? (
@@ -502,7 +521,8 @@ export default function AdminGeneralPage() {
                   ) : null}
                   <Text className="text-xs text-muted-foreground">
                     Your browser will open to {cloudUrl.replace(/^https?:\/\//, '')}. After
-                    you sign in, this app will automatically reconnect.
+                    you approve the connection, this app stores the API key and
+                    automatically reconnects.
                   </Text>
                 </>
               ) : (

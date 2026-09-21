@@ -28,6 +28,8 @@ export interface CommandEntry {
   runId: string
   command: string
   handle: CommandHandle
+  /** Set once exec has returned a background run_id to the agent. */
+  backgrounded?: boolean
   finishedAt?: number
   finalResult?: { exitCode: number; stdout: string; stderr: string; killed: boolean }
   /**
@@ -66,6 +68,8 @@ type ChangeListener = (running: RunningProcess[]) => void
 export class CommandRegistry {
   private entries = new Map<string, CommandEntry>()
   private listeners = new Set<ChangeListener>()
+  private pendingWaits = new Set<string>()
+  private completionNotes = new Map<string, string>()
 
   /** Register a freshly spawned handle and return its run id. */
   register(command: string, handle: CommandHandle): CommandEntry {
@@ -76,11 +80,17 @@ export class CommandRegistry {
     handle.done.then((result) => {
       entry.finishedAt = Date.now()
       entry.finalResult = result
+      if (entry.backgrounded && !this.pendingWaits.has(runId)) {
+        this.completionNotes.set(
+          runId,
+          `Background command "${command}" (${runId}) exited with code ${result.exitCode}.`,
+        )
+      }
       this.emitChange()
       const cleanupTimer = setTimeout(() => {
         this.entries.delete(runId)
       }, COMPLETED_RETENTION_MS)
-      cleanupTimer.unref?.()
+      ;(cleanupTimer as any)?.unref?.()
     }).catch(() => {
       entry.finishedAt = Date.now()
       this.emitChange()
@@ -88,6 +98,38 @@ export class CommandRegistry {
 
     this.emitChange()
     return entry
+  }
+
+  /** Mark a run as one the agent was told to poll after a soft timeout. */
+  markBackgrounded(runId: string): void {
+    const entry = this.entries.get(runId)
+    if (!entry) return
+    entry.backgrounded = true
+    if (entry.finalResult && !this.pendingWaits.has(runId)) {
+      this.completionNotes.set(
+        runId,
+        `Background command "${entry.command}" (${runId}) exited with code ${entry.finalResult.exitCode}.`,
+      )
+    }
+  }
+
+  /**
+   * Mark an exec_wait call as observing a run. Completion during this window
+   * is returned by exec_wait itself rather than injected as a duplicate note.
+   */
+  beginWait(runId: string): () => void {
+    this.pendingWaits.add(runId)
+    this.completionNotes.delete(runId)
+    return () => {
+      this.pendingWaits.delete(runId)
+    }
+  }
+
+  /** Take completion notes that happened while the model was between tools. */
+  consumeCompletionNotes(): string[] {
+    const notes = [...this.completionNotes.values()]
+    this.completionNotes.clear()
+    return notes
   }
 
   get(runId: string): CommandEntry | undefined {
@@ -211,6 +253,7 @@ function makeStaleHandle(snap: RunningProcessSnapshot): CommandHandle {
     sandboxed: snap.sandboxed,
     stdout: () => '',
     stderr: () => '',
+    recentOutput: () => '',
     done: Promise.resolve({ exitCode: -1, stdout: '', stderr: '', killed: false }),
     kill: () => { /* stale: the OS child is gone, nothing to signal */ },
     exited: () => true,

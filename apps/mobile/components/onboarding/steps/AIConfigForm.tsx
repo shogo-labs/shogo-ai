@@ -143,7 +143,7 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
         const result = await (window as any).shogoDesktop.startCloudLogin()
         if (!result?.ok) {
           setShogoLoginStatus('idle')
-          setShogoKeyError(result?.error || 'Could not start sign-in')
+          setShogoKeyError(result?.error || 'Could not start the API-key connection')
         }
         return
       }
@@ -151,7 +151,7 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
       // the desktop shell or the `shogo` CLI to drive the poll loop.
       setShogoLoginStatus('idle')
       setShogoKeyError(
-        'Browser preview can\u2019t complete sign-in. Open the Shogo Desktop app, or run `shogo login` in your terminal.',
+        'Browser preview can\u2019t mint the key. Open Shogo Desktop, or run `shogo login` in your terminal.',
       )
     } catch (err: any) {
       setShogoLoginStatus('idle')
@@ -184,8 +184,8 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
       <View className="gap-2.5">
         <ModeCard
           icon={Cloud}
-          label="Shogo Cloud"
-          description="No API keys needed"
+          label="Shogo Cloud API key"
+          description="Mint a key for cloud LLMs"
           isSelected={aiMode === 'shogo-cloud'}
           onPress={() => setAiMode('shogo-cloud')}
         />
@@ -206,7 +206,7 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
               <CheckCircle size={16} className="text-green-500" />
               <View className="flex-1">
                 <Text className="text-sm font-medium text-foreground">
-                  Signed in{shogoEmail ? ` as ${shogoEmail}` : ''}
+                  API key connected{shogoEmail ? ` · minted for ${shogoEmail}` : ''}
                 </Text>
                 {shogoWorkspace ? (
                   <Text className="text-xs text-muted-foreground">
@@ -218,8 +218,9 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
           ) : (
             <>
               <Text className="text-xs text-muted-foreground leading-4">
-                Sign in with your Shogo Cloud account. Your browser will open to
-                complete the login, then this app will reconnect automatically.
+                Connect this machine to a Shogo Cloud workspace. Your browser
+                will open to approve minting an API key used for cloud LLMs;
+                this is not an in-app account session.
               </Text>
               <Pressable
                 onPress={handleStartShogoLogin}
@@ -244,7 +245,7 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
                 >
                   {shogoLoginStatus === 'connecting'
                     ? 'Waiting for browser…'
-                    : 'Sign in to Shogo Cloud'}
+                    : 'Connect (mint API key in browser)'}
                 </Text>
               </Pressable>
             </>

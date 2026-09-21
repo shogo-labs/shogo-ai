@@ -60,6 +60,11 @@ const mockInstance = {
 }
 
 const chatMessageCreate = mock(async (args: any) => ({ id: 'msg-x', ...args.data }))
+const chatMessageUpdate = mock(async (args: any) => {
+  const created = chatMessageCreate.mock.calls[0]?.[0]
+  if (created) Object.assign(created.data, args.data)
+  return { id: args?.where?.id ?? 'msg-x', ...args.data }
+})
 const chatSessionFindUnique = mock(async () => ({ id: CHAT_SESSION_ID }))
 const projectFindUnique = mock(async () => ({
   id: PROJECT_ID,
@@ -80,7 +85,7 @@ const mockPrisma = {
       Promise.resolve({ id: 'm-1', userId: 'user-1', workspaceId: 'ws-1' }),
     ),
   },
-  chatMessage: { create: chatMessageCreate },
+  chatMessage: { create: chatMessageCreate, update: chatMessageUpdate },
   chatSession: { findUnique: chatSessionFindUnique },
   project: { findUnique: projectFindUnique, update: mock(async () => ({})) },
   toolCallLog: { createMany: mock(async () => ({ count: 0 })) },

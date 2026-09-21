@@ -15,7 +15,12 @@
  * Run: bun test apps/mobile/components/chat/__tests__/stall-recovery.test.ts
  */
 import { describe, expect, test } from "bun:test"
-import { computeRecoveryBackoff, decideStallRecovery } from "../stall-recovery"
+import {
+  computeRecoveryBackoff,
+  decideStallRecovery,
+  getStallRecoveryEffects,
+  markStuckToolsInterrupted,
+} from "../stall-recovery"
 
 describe("decideStallRecovery", () => {
   test("active turn -> reconnect (agent still running, transport drop)", () => {
@@ -51,6 +56,55 @@ describe("decideStallRecovery", () => {
     // never silently restart a turn behind the user's back.
     expect(actions).not.toContain("resend" as never)
     expect(actions).not.toContain("continue" as never)
+  })
+
+  test("give-up interrupts stuck tools and exposes the retry banner", () => {
+    expect(
+      getStallRecoveryEffects({
+        turnStatus: "unknown",
+        attempt: 5,
+        maxAttempts: 5,
+      }),
+    ).toEqual({
+      action: "give-up",
+      interruptStuckTools: true,
+      showRetryBanner: true,
+    })
+  })
+
+  test("active recovery keeps tool parts live", () => {
+    expect(
+      getStallRecoveryEffects({
+        turnStatus: "active",
+        attempt: 1,
+        maxAttempts: 5,
+      }),
+    ).toMatchObject({
+      action: "reconnect",
+      interruptStuckTools: false,
+      showRetryBanner: false,
+    })
+  })
+
+  test("stuck input-available tools become terminal errors", () => {
+    const messages = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [
+          {
+            type: "dynamic-tool",
+            state: "input-available",
+            toolCallId: "call-1",
+          },
+        ],
+      },
+    ]
+    expect(markStuckToolsInterrupted(messages, "Connection interrupted")[0]?.parts?.[0])
+      .toMatchObject({
+        state: "error",
+        output: { error: "Connection interrupted" },
+      })
   })
 })
 

@@ -404,8 +404,8 @@ function notifyCloudKeyRejected(): void {
   cloudKeyRejectionNotified = true
   if (!Notification.isSupported()) return
   const n = new Notification({
-    title: 'Shogo Cloud sign-in needed',
-    body: 'Your cloud connection was rejected — click to reconnect in Settings.',
+    title: 'Shogo Cloud API key needs attention',
+    body: 'Shogo Cloud rejected this device API key — open Settings to mint a fresh key.',
     silent: false,
   })
   n.on('click', () => {
@@ -416,7 +416,8 @@ function notifyCloudKeyRejected(): void {
 
 function startCloudLoginHeartbeat(): void {
   if (heartbeatTimer) return
-  const tick = async (): Promise<void> => {
+  let bootRetryScheduled = false
+  const tick = async (isBootRetry = false): Promise<void> => {
     try {
       const res = await fetch(`${getApiUrl()}/api/local/cloud-login/heartbeat`, {
         method: 'POST',
@@ -424,7 +425,13 @@ function startCloudLoginHeartbeat(): void {
         body: JSON.stringify({ deviceAppVersion: app.getVersion() }),
       })
       const body = (await res.json().catch(() => ({}))) as CloudLoginBody
-      if (body?.cloudKeyRejected) {
+      if (body?.cloudKeyRejected && !isBootRetry && !bootRetryScheduled) {
+        bootRetryScheduled = true
+        console.warn(
+          `[CloudLogin] Initial heartbeat rejected API key (keyPrefix=${(body as any)?.keyPrefix || 'unknown'}); retrying in 10s before notifying`,
+        )
+        setTimeout(() => { void tick(true) }, 10_000)
+      } else if (body?.cloudKeyRejected) {
         notifyCloudKeyRejected()
       } else if (body?.ok) {
         // Key is healthy again — a future rejection is a new, distinct

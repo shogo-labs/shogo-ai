@@ -94,6 +94,11 @@ mock.module('../lib/prisma', () => ({
         prismaCalls.chatMessageCreate.push(args)
         return chatMessageCreateImpl(args)
       },
+      update: async (args: any) => {
+        const created = prismaCalls.chatMessageCreate[0]
+        if (created) Object.assign(created.data, args.data)
+        return { id: args?.where?.id ?? 'msg-1', ...args.data }
+      },
     },
     chatSession: {
       findUnique: async (args: any) => {

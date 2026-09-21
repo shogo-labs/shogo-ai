@@ -92,13 +92,25 @@ export async function createProjectInWorkspace(input: CreateProjectInput): Promi
       }
     : input.settings
 
+  // Delegate-builder projects created inside a `personal` workspace (the
+  // companion agent building something on the user's behalf) are always
+  // hidden from user-facing lists, regardless of what the caller passed —
+  // see the module doc on the `hidden` flag and
+  // e2e/personal-shell-hidden-project.test.ts. `team` workspaces only hide a
+  // project when explicitly asked (input.hidden).
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: input.workspaceId },
+    select: { kind: true },
+  })
+  const hidden = input.hidden === true || workspace?.kind === 'personal'
+
   const draft: Record<string, unknown> = {
     workspaceId: input.workspaceId,
     name,
     description: input.description ?? null,
     ...(input.templateId ? { templateId: input.templateId } : {}),
     ...(input.workingMode ? { workingMode: input.workingMode } : {}),
-    hidden: input.hidden === true,
+    hidden,
     ...(settings ? { settings } : {}),
   }
 

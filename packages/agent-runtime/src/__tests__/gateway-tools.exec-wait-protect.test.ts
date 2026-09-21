@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
+import type { CommandHandle } from '../sandbox-exec'
 import { FileStateCache } from '../file-state-cache'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
@@ -45,6 +46,22 @@ function tool(ctx: ToolContext, name: string) {
 async function run(ctx: ToolContext, name: string, params: Record<string, any>) {
   const result = await tool(ctx, name).execute('test-call', params)
   return result.details
+}
+
+function registerOutput(registry: CommandRegistry, output: string) {
+  let exited = false
+  const handle: CommandHandle = {
+    pid: 4242,
+    sandboxed: false,
+    stdout: () => output,
+    stderr: () => '',
+    recentOutput: () => output,
+    done: new Promise(() => {}),
+    kill: () => { exited = true },
+    exited: () => exited,
+    startedAt: Date.now(),
+  }
+  return registry.register('fixture command', handle)
 }
 
 describe('exec_wait', () => {
@@ -151,27 +168,45 @@ describe('exec_wait', () => {
     expect(result.exitCode).toBe(0)
   })
 
-  test.skip('pattern hit returns the running snapshot once the regex matches stdout', async () => {
-    // SKIP: Tests pattern-on-stdout. Under bun:test the pi-agent-core import
-    // chain closes the child stdout pipe — `echo MAGIC_TOKEN` never reaches
-    // the gateway-tools stream buffer in this environment. The pattern-match
-    // *logic* itself is small (regex.test against accumulated stdout/stderr)
-    // and is covered by the regex-validation test above. Restore this test
-    // when pi-agent-core / bun-test stdio interaction is resolved upstream.
+  test('pattern hit has a distinct status from a timeout', async () => {
     const registry = new CommandRegistry()
     const ctx = makeCtx({ commandRegistry: registry })
-    const launched = await run(ctx, 'exec', {
-      command: 'echo MAGIC_TOKEN && sleep 5',
-      timeout: 100,
-    })
-    expect(launched.status).toBe('running')
+    const launched = registerOutput(registry, 'MAGIC_TOKEN')
     const result = await run(ctx, 'exec_wait', {
-      run_id: launched.run_id,
+      run_id: launched.runId,
       timeout_ms: 5000,
       pattern: 'MAGIC_TOKEN',
     })
     expect(result.stdout).toContain('MAGIC_TOKEN')
-    try { registry.get(launched.run_id)?.handle.kill('SIGKILL') } catch { /* ignore */ }
+    expect(result.status).toBe('pattern_matched')
+    expect(result.matched).toBe('MAGIC_TOKEN')
+    try { registry.get(launched.runId)?.handle.kill('SIGKILL') } catch { /* ignore */ }
+  })
+
+  test('pattern matching ignores ANSI color codes', async () => {
+    const registry = new CommandRegistry()
+    const ctx = makeCtx({ commandRegistry: registry })
+    const launched = registerOutput(registry, '\u001b[32mREADY\u001b[0m\n')
+    const result = await run(ctx, 'exec_wait', {
+      run_id: launched.runId,
+      timeout_ms: 5000,
+      pattern: 'READY',
+    })
+    expect(result.status).toBe('pattern_matched')
+    try { registry.get(launched.runId)?.handle.kill('SIGKILL') } catch { /* ignore */ }
+  })
+
+  test('pattern matching retains a marker from the recent noisy-output window', async () => {
+    const registry = new CommandRegistry()
+    const ctx = makeCtx({ commandRegistry: registry })
+    const launched = registerOutput(registry, `${'x'.repeat(70_000)}MARKER${'x'.repeat(70_000)}`)
+    const result = await run(ctx, 'exec_wait', {
+      run_id: launched.runId,
+      timeout_ms: 5000,
+      pattern: 'MARKER',
+    })
+    expect(result.status).toBe('pattern_matched')
+    try { registry.get(launched.runId)?.handle.kill('SIGKILL') } catch { /* ignore */ }
   })
 })
 

@@ -39,6 +39,11 @@ const mockPrisma = {
       persistedMessages.push(msg)
       return msg
     }),
+    update: mock(async (args: any) => {
+      const message = persistedMessages.find((entry) => entry.id === args?.where?.id)
+      if (message) Object.assign(message, args.data)
+      return message
+    }),
   },
   toolCallLog: {
     createMany: mock(async (args: any) => {

@@ -547,8 +547,9 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
             </Text>
           </View>
           <Text className="text-sm text-muted-foreground">
-            Connect to Shogo Cloud to control this desktop from your phone or
-            another computer.
+            Connect this desktop to Shogo Cloud with an API key to control it
+            from your phone or another computer. You can paste a `shogo_sk_…`
+            key here or provide `SHOGO_API_KEY` when launching the app.
           </Text>
         </View>
 
@@ -559,7 +560,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
             <View className="flex-row items-center gap-2">
               <View className="h-2.5 w-2.5 rounded-full bg-green-500" />
               <Text className="text-sm font-medium text-foreground">
-                Connected to Shogo Cloud
+                Shogo Cloud API key connected
               </Text>
             </View>
 

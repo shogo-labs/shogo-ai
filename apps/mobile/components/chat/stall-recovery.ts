@@ -25,6 +25,12 @@ import type { ChatTurnStatus } from "./probe-turn-status"
 
 export type StallRecoveryAction = "reconnect" | "retry-later" | "give-up"
 
+export interface StallRecoveryEffects {
+  action: StallRecoveryAction
+  interruptStuckTools: boolean
+  showRetryBanner: boolean
+}
+
 export interface StallRecoveryInput {
   /** Status from the runtime's read-only `/turn` probe. */
   turnStatus: ChatTurnStatus
@@ -59,6 +65,42 @@ export function decideStallRecovery({
   if (turnStatus === "active") return "reconnect"
   if (turnStatus === "unknown" && attempt < maxAttempts) return "retry-later"
   return "give-up"
+}
+
+/** UI side effects for a recovery decision, kept pure for component tests. */
+export function getStallRecoveryEffects(
+  input: StallRecoveryInput,
+): StallRecoveryEffects {
+  const action = decideStallRecovery(input)
+  return {
+    action,
+    interruptStuckTools: action === "give-up",
+    showRetryBanner: action === "give-up",
+  }
+}
+
+/** Pure message transform shared by stream-error and stall-recovery paths. */
+export function markStuckToolsInterrupted<
+  T extends { role: string; parts?: unknown[] },
+>(messages: T[], reason = "Interrupted"): T[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !message.parts) return message
+    let changed = false
+    const parts = message.parts.map((part: any) => {
+      if (
+        (part.type === "tool-invocation" || part.type === "dynamic-tool") &&
+        (part.state === "partial-call" ||
+          part.state === "call" ||
+          part.state === "input-streaming" ||
+          part.state === "input-available")
+      ) {
+        changed = true
+        return { ...part, state: "error", output: { error: reason } }
+      }
+      return part
+    })
+    return changed ? ({ ...message, parts } as T) : message
+  })
 }
 
 export interface RecoveryBackoffOptions {

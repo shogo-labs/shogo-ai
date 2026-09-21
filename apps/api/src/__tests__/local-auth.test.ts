@@ -77,6 +77,7 @@ afterAll(() => {
 })
 
 beforeEach(() => {
+  delete process.env.SHOGO_API_KEY
   findUniqueMock.mockReset()
   findUniqueMock.mockImplementation(async () => null)
   deleteManyMock.mockReset()
@@ -86,6 +87,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete process.env.SHOGO_API_KEY
   globalThis.fetch = (async () => {
     throw new Error('fetch was not mocked')
   }) as any
@@ -177,6 +179,29 @@ describe('POST /local/cloud-login/heartbeat', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  test('REPRO: uses the active environment key instead of a stale localConfig key', async () => {
+    process.env.SHOGO_API_KEY = 'shogo_sk_valid'
+    findUniqueMock.mockImplementation(async (args: any) => {
+      if (args.where.key === 'SHOGO_API_KEY') return { value: 'shogo_sk_stale' }
+      return null
+    })
+    const spy = mockFetch((_url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.key === 'shogo_sk_valid') return bridgeOk({ ok: true })
+      return bridgeErr(401, { ok: false, error: 'revoked' })
+    })
+
+    const app = mountApp()
+    const res = await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(spy.mock.calls[0][1].body).key).toBe('shogo_sk_valid')
+
+    const status = await (await app.request('/api/local/cloud-login/status')).json()
+    expect(status.signedIn).toBe(true)
+    expect(status.lastHeartbeatOk).toBe(true)
+    expect(status.lastHeartbeatAt).toEqual(expect.any(Number))
   })
 
   test('forwards deviceAppVersion when provided in the body', async () => {

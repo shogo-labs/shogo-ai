@@ -182,10 +182,11 @@ describe('exec soft-timeout', () => {
       timeout_ms: 4000,
       pattern: 'TARGET',
     })
-    // Pattern hit returns the running shape (process still alive); kill it
-    // so afterEach doesn't have to wait for the long sleep.
+    // Pattern hit returns a distinct `pattern_matched` status (process still
+    // alive); kill it so afterEach doesn't have to wait for the long sleep.
     expect(waited.run_id).toBe(start.run_id)
-    expect(['running', undefined]).toContain(waited.status)
+    expect(waited.status).toBe('pattern_matched')
+    expect(waited.matched).toBe('TARGET')
   })
 })
 

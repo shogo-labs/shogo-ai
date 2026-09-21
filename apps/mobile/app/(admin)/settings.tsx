@@ -431,14 +431,14 @@ function LocalSettingsPage() {
                 <View className="flex-row items-center gap-2 bg-green-500/10 rounded-lg p-3">
                   <CheckCircle size={16} className="text-green-500" />
                   <Text className="text-sm font-medium text-foreground">
-                    Cloud LLMs active. Manage this device's sign-in from General settings.
+                    Cloud LLMs active through this device's Shogo Cloud API key. Manage the key from General settings.
                   </Text>
                 </View>
               ) : (
                 <View className="flex-row items-center gap-2 bg-amber-500/10 rounded-lg p-3">
                   <AlertTriangle size={16} className="text-amber-500" />
                   <Text className="text-sm text-foreground">
-                    Not signed in to Shogo Cloud. Sign in from General settings first.
+                    No Shogo Cloud API key is connected. Connect one from General settings first.
                   </Text>
                 </View>
               )}

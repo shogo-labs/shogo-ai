@@ -10,6 +10,7 @@ import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 const projects = new Map<string, any>()
 const folders = new Map<string, any>()
+const chatSessions = new Map<string, any>()
 let projectSeq = 1
 let folderSeq = 1
 let workspaceFindFirstResult: any = { id: 'workspace-1' }
@@ -58,6 +59,17 @@ function makeTx() {
         return { count }
       }),
     },
+    chatSession: {
+      updateMany: mock(async ({ where, data }: any) => {
+        let count = 0
+        for (const session of chatSessions.values()) {
+          if (!where?.contextId?.in?.includes(session.contextId)) continue
+          session.contextId = data.contextId
+          count++
+        }
+        return { count }
+      }),
+    },
   }
 }
 
@@ -91,6 +103,10 @@ const prisma = {
       folders.set(row.id, row)
       return row
     }),
+    findFirst: mock(async ({ where }: any) => {
+      return [...folders.values()].find((folder) => folder.path === where?.path) ?? null
+    }),
+    findMany: mock(async () => [...folders.values()]),
     findUnique: mock(async ({ where }: any) => folders.get(where.id) ?? null),
     delete: mock(async ({ where }: any) => {
       const row = folders.get(where.id)
@@ -118,6 +134,7 @@ let otherDir = ''
 beforeEach(async () => {
   projects.clear()
   folders.clear()
+  chatSessions.clear()
   projectSeq = 1
   folderSeq = 1
   workspaceFindFirstResult = { id: 'workspace-1' }
@@ -266,6 +283,48 @@ describe('localProjectsRoutes from folders', () => {
     expect(JSON.parse(readFileSync(join(rootDir, '.shogo', 'project.json'), 'utf-8')).projectId).toBe('project-1')
     expect(readFileSync(join(rootDir, '.gitignore'), 'utf-8')).toContain('.shogo/local/')
     expect([...folders.values()]).toHaveLength(2)
+  })
+
+  test('reuses the folder project when project.json was removed', async () => {
+    const first = await appWithAuth().request('http://api.test/from-folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paths: [rootDir], acceptedGitRoot: false }),
+    })
+    expect(first.status).toBe(201)
+    const firstBody = await json(first)
+    const firstProjectId = firstBody.project.id
+    rmSync(join(rootDir, '.shogo', 'project.json'))
+
+    const reopened = await appWithAuth().request('http://api.test/from-folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paths: [rootDir], acceptedGitRoot: false }),
+    })
+    expect(reopened.status).toBe(200)
+    expect((await json(reopened)).project.id).toBe(firstProjectId)
+    expect(JSON.parse(readFileSync(join(rootDir, '.shogo', 'project.json'), 'utf-8')).projectId)
+      .toBe(firstProjectId)
+  })
+
+  test('migrates surviving orphan chats when a stale folder row has no project', async () => {
+    folders.set('orphan-folder', {
+      id: 'orphan-folder',
+      projectId: 'deleted-project',
+      path: rootDir,
+      isPrimary: true,
+      lastOpenedAt: null,
+    })
+    chatSessions.set('chat-1', { id: 'chat-1', contextId: 'deleted-project' })
+
+    const reopened = await appWithAuth().request('http://api.test/from-folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paths: [rootDir], acceptedGitRoot: false }),
+    })
+    expect(reopened.status).toBe(201)
+    const projectId = (await json(reopened)).project.id
+    expect(chatSessions.get('chat-1').contextId).toBe(projectId)
   })
 
   test('returns no-workspace and bootstrap-partial responses for creation edge cases', async () => {

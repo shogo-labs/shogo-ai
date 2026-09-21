@@ -163,6 +163,9 @@ export interface CloudLoginStatus {
   email?: string | null
   workspace?: { id?: string; name?: string; slug?: string } | null
   deviceId?: string | null
+  lastHeartbeatOk?: boolean | null
+  lastHeartbeatAt?: number | null
+  lastHeartbeatError?: string | null
   keyPrefix?: string
   /** True when the cloud has rejected the stored API key (revoked / expired).
    * The user remains signed in locally; the UI should show a warning banner
