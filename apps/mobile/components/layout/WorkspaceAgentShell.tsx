@@ -21,7 +21,6 @@ import {
   Activity,
   Bot,
   Boxes,
-  FolderKanban,
   ListTodo,
   MessageSquare,
   Search,
@@ -46,7 +45,6 @@ interface NavItem {
 const primaryNav: NavItem[] = [
   { label: "Chat", href: "/(app)", icon: MessageSquare },
   { label: "Search", icon: Search, action: "search" },
-  { label: "Projects", href: "/(app)/projects", icon: FolderKanban },
   { label: "Tasks", href: "/(app)/tasks", icon: ListTodo },
   { label: "Goals", href: "/(app)/goals", icon: Target },
   { label: "Activity", href: "/(app)/activity", icon: Activity },
@@ -96,43 +94,37 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
         >
           <ShogoLogoMark className="h-6 w-6" />
         </Pressable>
-        <View className="flex-1 items-center justify-center">
-          <View className="items-center gap-2">
-            {primaryNav.map(({ href, label, icon: Icon, action }) => {
-              const active =
-                action === "search"
-                  ? searchOpen
-                  : href
-                  ? routeIsActive(pathname, href)
-                  : false;
-              return (
-                <Pressable
-                  key={href ?? action}
-                  accessibilityRole={action ? "button" : "link"}
-                  accessibilityLabel={label}
-                  accessibilityState={{ selected: active }}
-                  onPress={() =>
-                    action === "search"
-                      ? openSearch()
-                      : router.push(href as any)
-                  }
-                  className={cn(
-                    "h-9 w-9 items-center justify-center rounded-lg",
-                    active ? "bg-primary/12" : "active:bg-muted"
-                  )}
-                >
-                  <Icon
-                    size={18}
-                    className={
-                      active ? "text-primary" : "text-muted-foreground"
-                    }
-                  />
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
         <View className="items-center gap-2">
+          {primaryNav.map(({ href, label, icon: Icon, action }) => {
+            const active =
+              action === "search"
+                ? searchOpen
+                : href
+                ? routeIsActive(pathname, href)
+                : false;
+            return (
+              <Pressable
+                key={href ?? action}
+                accessibilityRole={action ? "button" : "link"}
+                accessibilityLabel={label}
+                accessibilityState={{ selected: active }}
+                onPress={() =>
+                  action === "search" ? openSearch() : router.push(href as any)
+                }
+                className={cn(
+                  "h-9 w-9 items-center justify-center rounded-lg",
+                  active ? "bg-primary/12" : "active:bg-muted"
+                )}
+              >
+                <Icon
+                  size={18}
+                  className={active ? "text-primary" : "text-muted-foreground"}
+                />
+              </Pressable>
+            );
+          })}
+        </View>
+        <View className="mt-auto items-center gap-2">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Open settings"

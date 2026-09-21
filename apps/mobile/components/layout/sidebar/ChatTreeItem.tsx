@@ -16,6 +16,7 @@ import {
   ArchiveRestore,
   Check,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
@@ -29,6 +30,16 @@ import {
 } from "../SidebarContextMenu";
 import { densityFor } from "../../../lib/phone-density";
 import { projectChatLabel } from "../../../lib/project-chat-sessions";
+import { formatRelativeTime } from "../../chat/turns/turnShaping";
+
+function sessionActivityLabel(session: any): string | null {
+  const value = session.lastMessageAt ?? session.updatedAt ?? session.createdAt;
+  if (!value) return null;
+
+  const timestamp =
+    typeof value === "number" ? value : new Date(value as string).getTime();
+  return Number.isFinite(timestamp) ? formatRelativeTime(timestamp) : null;
+}
 
 // ─── ChatTreeItem (a single chat nested under a project) ────
 
@@ -70,6 +81,7 @@ export function ChatTreeItem({
   const isNative = Platform.OS !== "web";
   const density = densityFor(isNative);
   const label = projectChatLabel(session);
+  const activityLabel = sessionActivityLabel(session);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   // Web-only right-click menu anchor (viewport coords).
@@ -235,52 +247,28 @@ export function ChatTreeItem({
         >
           {label}
         </Text>
-        {/* Hover-reveal actions (web). Always mounted; visibility is purely
-          CSS-driven via the row's `group` + `group-hover:flex` so moving the
-          cursor between icons never tears down the hover target. */}
+        {/* Keep secondary metadata and management controls out of the resting
+          state. The one overflow menu replaces the previously exposed actions. */}
         {!isNative && (
           <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+            {activityLabel ? (
+              <Text className="mr-1 text-[11px] text-muted-foreground">
+                {activityLabel}
+              </Text>
+            ) : null}
             <Pressable
               onPress={(e) => {
                 stop(e);
-                onTogglePin(session.id, !session.isPinned);
+                const event = e.nativeEvent as any;
+                setMenu({
+                  x: event.clientX ?? event.pageX ?? 0,
+                  y: event.clientY ?? event.pageY ?? 0,
+                });
               }}
               className="p-0.5"
-              accessibilityLabel={
-                session.isPinned ? `Unpin ${label}` : `Pin ${label}`
-              }
+              accessibilityLabel={`Manage ${label}`}
             >
-              {session.isPinned ? (
-                <PinOff size={11} className="text-muted-foreground" />
-              ) : (
-                <Pin size={11} className="text-muted-foreground" />
-              )}
-            </Pressable>
-            <Pressable
-              onPress={(e) => {
-                stop(e);
-                onToggleArchive(session.id, !session.isArchived);
-              }}
-              className="p-0.5"
-              accessibilityLabel={
-                session.isArchived ? `Unarchive ${label}` : `Archive ${label}`
-              }
-            >
-              {session.isArchived ? (
-                <ArchiveRestore size={11} className="text-muted-foreground" />
-              ) : (
-                <Archive size={11} className="text-muted-foreground" />
-              )}
-            </Pressable>
-            <Pressable
-              onPress={(e) => {
-                stop(e);
-                startEdit();
-              }}
-              className="p-0.5"
-              accessibilityLabel={`Rename ${label}`}
-            >
-              <Pencil size={11} className="text-muted-foreground" />
+              <MoreHorizontal size={14} className="text-muted-foreground" />
             </Pressable>
           </View>
         )}
