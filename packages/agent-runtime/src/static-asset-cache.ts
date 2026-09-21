@@ -4,4 +4,5 @@
 export {
   isContentHashedFilename,
   staticAssetCacheControl,
+  shouldServeSpaFallback,
 } from '@shogo/shared-runtime'

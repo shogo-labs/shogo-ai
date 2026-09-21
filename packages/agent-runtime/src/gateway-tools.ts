@@ -792,16 +792,17 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       const softTimeoutMs = Math.max(0, timeout)
       const SOFT_TIMEOUT = Symbol('soft-timeout')
-      let timer: NodeJS.Timeout | undefined
+      let timer: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<typeof SOFT_TIMEOUT>((resolve) => {
         timer = setTimeout(() => resolve(SOFT_TIMEOUT), softTimeoutMs)
-        timer.unref?.()
+        ;(timer as any)?.unref?.()
       })
 
       const winner = await Promise.race([handle.done, timeoutPromise])
       if (timer) clearTimeout(timer)
 
       if (winner === SOFT_TIMEOUT) {
+        registry.markBackgrounded(entry.runId)
         return buildSoftTimeoutResult(entry, softTimeoutMs)
       }
 
@@ -810,11 +811,17 @@ function createExecTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function stripAnsiForPattern(value: string): string {
+  // Covers CSI color/control sequences (the common source of a readiness
+  // token being invisible to a plain `/Ready/` pattern).
+  return value.replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+}
+
 function createExecWaitTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec_wait',
     description:
-      `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive the same { status: "running", run_id, pid, ... } shape and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` resolves early as soon as the regex matches accumulated stdout or stderr.`,
+      `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive { status: "running", run_id, pid, ... } and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` returns { status: "pattern_matched", matched: <pattern>, ... } as soon as the regex matches recent combined output; this is distinct from a timeout.`,
     label: 'Wait for Command',
     parameters: Type.Object({
       run_id: Type.String({ description: 'The run_id returned by a previous exec or exec_wait call' }),
@@ -822,7 +829,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). Set to 0 for an immediate non-blocking status check.`,
       })),
       pattern: Type.Optional(Type.String({
-        description: 'Optional regex (JavaScript syntax). Resolves as soon as the regex matches accumulated stdout or stderr.',
+        description: 'Optional regex (JavaScript syntax). Resolves as soon as the regex matches ANSI-stripped recent combined stdout/stderr.',
       })),
     }),
     execute: async (_toolCallId, params) => {
@@ -872,39 +879,69 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       const SOFT_TIMEOUT = Symbol('soft-timeout')
       const PATTERN_HIT = Symbol('pattern-hit')
 
-      let timer: NodeJS.Timeout | undefined
+      let timer: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<typeof SOFT_TIMEOUT>((resolve) => {
         if (softTimeoutMs === 0) {
           resolve(SOFT_TIMEOUT)
           return
         }
         timer = setTimeout(() => resolve(SOFT_TIMEOUT), softTimeoutMs)
-        timer.unref?.()
+        ;(timer as any)?.unref?.()
       })
 
       // Pattern polling: ~250ms tick. Cheap and avoids hooking into the
       // child stream from a different tool than the one that owns it.
-      let patternTimer: NodeJS.Timeout | undefined
+      let patternTimer: ReturnType<typeof setTimeout> | undefined
       const patternPromise = regex
         ? new Promise<typeof PATTERN_HIT>((resolve) => {
             const tick = () => {
               if (entry.handle.exited()) return // `done` will win
-              if (regex!.test(entry.handle.stdout()) || regex!.test(entry.handle.stderr())) {
+              const stdout = stripAnsiForPattern(entry.handle.stdout())
+              const stderr = stripAnsiForPattern(entry.handle.stderr())
+              const recent = stripAnsiForPattern(entry.handle.recentOutput())
+              const combined = `${stdout}\n${stderr}\n${recent}`
+              if (
+                regex!.test(stdout) ||
+                regex!.test(stderr) ||
+                regex!.test(recent) ||
+                regex!.test(combined)
+              ) {
                 resolve(PATTERN_HIT)
                 return
               }
               patternTimer = setTimeout(tick, 250)
-              patternTimer.unref?.()
+              ;(patternTimer as any)?.unref?.()
             }
             tick()
           })
         : new Promise<never>(() => {}) // never resolves
 
-      const winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise])
+      const endWait = registry.beginWait(run_id)
+      let winner: { exitCode: number; stdout: string; stderr: string; killed: boolean } | typeof SOFT_TIMEOUT | typeof PATTERN_HIT
+      try {
+        winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise])
+      } finally {
+        endWait()
+      }
       if (timer) clearTimeout(timer)
       if (patternTimer) clearTimeout(patternTimer)
 
-      if (winner === SOFT_TIMEOUT || winner === PATTERN_HIT) {
+      if (winner === PATTERN_HIT) {
+        return textResult({
+          status: 'pattern_matched',
+          run_id: entry.runId,
+          pid: entry.handle.pid,
+          sandboxed: entry.handle.sandboxed || undefined,
+          container_name: entry.handle.containerName,
+          matched: pattern,
+          elapsedMs: Date.now() - entry.handle.startedAt,
+          stdout: truncateExecOutput(entry.handle.stdout().trim()),
+          stderr: truncateExecOutput(entry.handle.stderr().trim()),
+          hint: 'Pattern matched while the command is still running. Call exec_wait without a pattern to wait for exit.',
+        })
+      }
+
+      if (winner === SOFT_TIMEOUT) {
         // Re-check completion in case the process exited between the race
         // resolving and us building the result, so we always prefer the
         // final result when available.
@@ -2364,9 +2401,10 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     name: 'publish',
     description: [
       'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
+      'First publish to a subdomain requires the Pro plan or higher. If the user may be on Free/Basic, tell them about this BEFORE starting deploy work so they are not surprised after you have already done the work — do not just attempt the tool call and hope. If the tool nonetheless returns `plan_not_allowed`, point the user to Settings > Billing to upgrade.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
-      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. If the user still sees an old version, first distinguish the stable preview URL from the published URL, then refresh after cache propagation before changing code.',
+      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -2458,8 +2496,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         republished: wasRepublish,
         verified,
         note: verified
-          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers, but a browser or edge may take a short while to revalidate; refresh once if an old version remains.`
-          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version, distinguish preview from published URL and refresh after propagation before changing code.`,
+          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers and the runtime self-heals stale bundles automatically — do not tell the user to hard-refresh or clear their cache.`
+          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version after ~30s, distinguish preview from published URL and republish rather than asking them to hard-refresh or clear their cache — the runtime already self-heals stale bundles.`,
       })
     },
   }

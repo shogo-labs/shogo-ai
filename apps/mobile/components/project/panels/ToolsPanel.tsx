@@ -329,14 +329,14 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
     setDisconnecting(connectionId)
     setError(null)
     try {
-      await api.disconnectIntegration(http, connectionId)
+      await api.disconnectIntegration(http, connectionId, { projectId })
       await loadInstalledTools()
     } catch (err: any) {
       setError(err.message)
     } finally {
       setDisconnecting(null)
     }
-  }, [http, loadInstalledTools])
+  }, [http, projectId, loadInstalledTools])
 
   const connectionEntries = Object.entries(composioConnections)
   const expiredConnections = connectionEntries.filter(([, info]) =>

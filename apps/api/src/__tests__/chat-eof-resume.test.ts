@@ -46,6 +46,8 @@ let persistedMessages: PersistedMessage[] = []
 let persistedToolCalls: any[] = []
 let projectUpdates: any[] = []
 let messageIdCounter = 0
+let firstAssistantPersisted: Promise<void>
+let resolveFirstAssistantPersisted: () => void
 
 const mockPrisma = {
   chatSession: {
@@ -61,7 +63,13 @@ const mockPrisma = {
         ...args.data,
       }
       persistedMessages.push(msg)
+      resolveFirstAssistantPersisted?.()
       return msg
+    }),
+    update: mock(async (args: any) => {
+      const row = persistedMessages.find((message) => message.id === args.where.id)
+      if (row) Object.assign(row, args.data)
+      return row
     }),
   },
   toolCallLog: {
@@ -122,6 +130,9 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     projectUpdates = []
     consumeUsageCalls = []
     messageIdCounter = 0
+    firstAssistantPersisted = new Promise((resolve) => {
+      resolveFirstAssistantPersisted = resolve
+    })
   })
 
   test('clean stream with data-turn-complete persists and bills as today', async () => {
@@ -156,6 +167,42 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(persistedMessages.length).toBe(1)
     expect(persistedMessages[0].content).toBe('hello world')
     expect(persistedMessages[0].sessionId).toBe(chatSessionId)
+  })
+
+  test('creates the assistant row before a long turn reaches completion', async () => {
+    const projectId = 'proj-incremental'
+    const chatSessionId = 'sess-incremental'
+    await openSession(projectId, 'ws-incremental', 'user-incremental')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 10, 2)
+
+    let releaseTurn!: () => void
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          dataFrame({ type: 'text-delta', delta: 'partial before completion' }),
+        ))
+        await new Promise<void>((resolve) => {
+          releaseTurn = resolve
+        })
+        await firstAssistantPersisted
+        controller.enqueue(new TextEncoder().encode(
+          dataFrame({ type: 'data-turn-complete', data: { status: 'completed' } }),
+        ))
+        controller.close()
+      },
+    })
+
+    const turn = trackUsageFromStream(
+      stream,
+      { chatSessionId, agentMode: 'sonnet' },
+      { id: projectId, workspaceId: 'ws-incremental' },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    releaseTurn()
+    await firstAssistantPersisted
+    expect(persistedMessages).toHaveLength(1)
+    expect(persistedMessages[0]?.content).toBe('partial before completion')
+    await turn
   })
 
   test('EOF without turn-complete + resume(200) re-drains full turn from buffer', async () => {

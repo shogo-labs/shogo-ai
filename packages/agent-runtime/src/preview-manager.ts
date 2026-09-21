@@ -18,7 +18,8 @@
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
 import { join } from 'path'
-import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
+import { homedir } from 'os'
+import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
@@ -39,6 +40,43 @@ import {
  * runtimes are not flooded with every raw vite-watch build line.
  */
 const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-desktop-runtime'
+
+/**
+ * Matches the "disk is full" build failure mode (09-21 prod pain point:
+ * a workspace `emptyDir` reported "14GB/14GB"). vite/esbuild/bun all
+ * surface this the same way in stderr regardless of which step hit it.
+ */
+const ENOSPC_PATTERN = /ENOSPC|no space left on device/i
+
+/**
+ * Best-effort emergency disk reclaim when a build fails with ENOSPC.
+ * Deletes only rebuildable caches — never source, `dist/`, or the
+ * database — so a follow-up install/build just re-populates them from
+ * scratch (slower, but correct). Each candidate is removed independently;
+ * a missing path or a permissions failure on one never blocks the others.
+ * Returns the paths that existed and were actually removed, so the
+ * caller can name them in the operator-facing error message.
+ */
+function bestEffortReclaimDiskSpace(cwd: string): string[] {
+  const candidates = [
+    join(cwd, 'node_modules', '.vite'),
+    join(cwd, DEFAULT_STAGING_DIR),
+    join(homedir(), '.bun', 'install', 'cache'),
+    join(homedir(), '.npm', '_cacache'),
+  ]
+  const removed: string[] = []
+  for (const dir of candidates) {
+    try {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true })
+        removed.push(dir)
+      }
+    } catch {
+      /* best-effort — a failed reclaim of one path shouldn't block the rest */
+    }
+  }
+  return removed
+}
 
 /** Derive the project id from a `<root>/.shogo/logs/build.log` path (best-effort). */
 function projectIdFromLogPath(logPath: string): string | undefined {
@@ -2514,11 +2552,19 @@ export class PreviewManager {
    * spinner that never resolves.
    *
    * A preview that already reached `ready` (e.g. a prebuilt dist serving while a
-   * later background step blows up) is left untouched — the static preview still
-   * works, so we must not flip it to failed.
+   * later background step blows up) is left untouched by default — the static
+   * preview still works, so we must not flip it to failed.
+   *
+   * `force: true` overrides that guard. Used by the one-shot vite build failure
+   * path: a prebuilt template `dist/` marks `_phase = 'ready'` before the FIRST
+   * real build ever runs, so without `force` a genuine build failure (e.g.
+   * ENOSPC) would be silently swallowed forever — the preview keeps serving the
+   * stale template while reporting itself healthy. Once a build has actually
+   * failed, staying "ready" is a lie, so this is not the same case the
+   * ready-guard exists to protect.
    */
-  private markSetupFailed(err: unknown): void {
-    if (this._phase === 'ready') return
+  private markSetupFailed(err: unknown, opts: { force?: boolean } = {}): void {
+    if (this._phase === 'ready' && !opts.force) return
     const msg = err instanceof Error ? err.message : String(err)
     this.lastSetupError = msg || 'setup failed'
     this._phase = 'failed'
@@ -2712,6 +2758,10 @@ export class PreviewManager {
     // the shim's `#!/usr/bin/env node` shebang fails with code 127. See
     // resolveBinInvocation() doc-block for the full story.
     const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
+    // Tail of stderr (bounded so a runaway build can't grow this
+    // unbounded) — used to classify the failure (ENOSPC vs. a normal
+    // build error) and to surface a useful excerpt in `errors.setup`.
+    let stderrTail = ''
     const exitCode = await new Promise<number | null>((resolveBuild) => {
       let proc: ChildProcess
       try {
@@ -2746,6 +2796,7 @@ export class PreviewManager {
       proc.stderr?.on('data', (data: Buffer) => {
         const line = data.toString().trim()
         emitBuildLine(buildLogPath, '[stderr]', line, 'stderr')
+        stderrTail = (stderrTail + '\n' + line).slice(-4000)
       })
       proc.on('exit', (code) => resolveBuild(code))
     })
@@ -2760,6 +2811,21 @@ export class PreviewManager {
     } else {
       console.warn(`[${LOG_PREFIX}] One-shot vite build failed (code=${exitCode})`)
       cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+
+      let message = `Build failed (vite exited with code ${exitCode}).${stderrTail ? ` ${stderrTail.trim().slice(-500)}` : ''}`
+      if (ENOSPC_PATTERN.test(stderrTail)) {
+        const reclaimed = bestEffortReclaimDiskSpace(cwd)
+        message = reclaimed.length
+          ? `Workspace disk is full (build failed with ENOSPC). Freed cache space at: ${reclaimed.join(', ')}. Run \`du -sh\` to find large files, delete what you don't need, then rebuild.`
+          : `Workspace disk is full (build failed with ENOSPC). Could not free any cache automatically. Run \`du -sh\` to find large files, delete what you don't need, then rebuild.`
+      }
+      // A prebuilt dist/ (template seed) already marked `_phase = 'ready'`
+      // before this — the first REAL — build ran (see start()'s fast-path
+      // doc-block). Without `force`, markSetupFailed would no-op here and
+      // the preview would keep silently serving the stale prebuilt dist
+      // forever while reporting itself healthy. Force the transition so
+      // `errors.setup` (and the "failed" phase/overlay) become visible.
+      this.markSetupFailed(new Error(message), { force: true })
     }
   }
 

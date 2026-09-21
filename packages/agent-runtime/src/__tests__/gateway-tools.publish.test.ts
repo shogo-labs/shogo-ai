@@ -200,3 +200,43 @@ describe('publish tool', () => {
     expect(details.verified).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Repro for two of the "latest issues" production pain points (AI Insights
+// digest, 2026-09-15..21): "hard refresh" advice appearing daily (148
+// assistant messages in the last 7 days on prod, per a read-only
+// `chat_messages` count) and a Pro-plan paywall surprise AFTER the agent
+// has already attempted to deploy (40 sessions/7d on prod where a Pro-plan
+// mention lands in the same assistant message as "publish" — i.e.
+// reactively, post-attempt, not disclosed upfront).
+//
+// The tool's own copy is the root cause for both: the description never
+// tells the agent about the Pro-plan gate before it tries to deploy, and
+// the success `note` explicitly tells the user to "refresh once" — advice
+// that stopped being necessary once `serveDistResponse`/canvas-bridge.js
+// self-heal stale bundles (see static-asset-cache.test.ts /
+// canvas-bridge-stale-asset-recovery.test.ts) and that actively
+// contradicts the self-healing behavior.
+// ---------------------------------------------------------------------------
+describe('publish tool copy (Pro-plan disclosure + no hard-refresh advice)', () => {
+  test('the tool description discloses the Pro-plan requirement upfront, before any deploy attempt', () => {
+    const description = publishTool(baseCtx()).description
+    expect(description).toMatch(/\bpro\b.*\bplan\b/i)
+    // Must be actionable pre-attempt guidance, not just present anywhere —
+    // tie it to telling the user before/first, not merely mentioning "Pro".
+    expect(description).toMatch(/before|first publish|upfront|may (be on|need)/i)
+  })
+
+  test('a successful publish response never tells the user to (hard) refresh or clear their cache', async () => {
+    const details = await run(baseCtx(), { subdomain: 'foo' })
+    const note = String(details.note ?? '')
+    expect(note).not.toMatch(/hard refresh|ctrl\+shift\+r|cmd\+shift\+r|clear (your )?cache|refresh once|refresh after/i)
+  })
+
+  test('a "did not respond to verification fetch" response never tells the user to (hard) refresh or clear their cache', async () => {
+    fetchStatus = 503
+    const details = await run(baseCtx(), { subdomain: 'cold' })
+    const note = String(details.note ?? '')
+    expect(note).not.toMatch(/hard refresh|ctrl\+shift\+r|cmd\+shift\+r|clear (your )?cache|refresh once|refresh after/i)
+  }, 15000)
+})
