@@ -278,6 +278,90 @@ describe('resolveWorkspaceRuntimeUrl', () => {
     expect(leaseCalls).toEqual(['proj:anchor'])
   })
 
+  // Regression coverage for the persistent "Project Ready" placeholder
+  // (staging, 2026-09-22, project a0bea431-... and its 27 workspace
+  // siblings): `resolveAnchorSpawnOpts` (runtime/manager.ts) only returns
+  // the anchor's OTHER attachments in `attachedProjectIds` — never the
+  // anchor itself — so an anchor with no other attachments (the common
+  // case) previously produced a member list that omitted it entirely. The
+  // guest's `getWorkspacePreviewManager()` treats "not an attached member"
+  // as "don't start this project's preview", permanently serving the
+  // placeholder even though the runtime was otherwise healthy.
+  it('metal branch includes the anchor in the member list even when it has no other attachments', async () => {
+    let seenIds: string[] | undefined
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: [],
+      anchorProjectId: 'anchor',
+      _isEnabled: enabled,
+      _isMetalEnabled: () => true,
+      _isKubernetes: () => true,
+      _spawnLease: passthroughLease,
+      _metalResolver: async (_wsId, ids) => {
+        seenIds = ids
+        return 'http://metal-ws/anchor'
+      },
+    })
+    expect(res.mode).toBe('metal')
+    expect(seenIds).toEqual(['anchor'])
+  })
+
+  it('k8s branch includes the anchor in the member list even when it has no other attachments', async () => {
+    let seenIds: string[] | undefined
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: [],
+      anchorProjectId: 'anchor',
+      _isEnabled: enabled,
+      _isKubernetes: () => true,
+      _spawnLease: passthroughLease,
+      _k8sResolver: async (_wsId, ids) => {
+        seenIds = ids
+        return 'http://workspace-proj-anchor.svc'
+      },
+    })
+    expect(res.mode).toBe('k8s')
+    expect(seenIds).toEqual(['anchor'])
+  })
+
+  it('does not duplicate the anchor when it is already present in attachedProjectIds', async () => {
+    let seenIds: string[] | undefined
+    await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: ['anchor', 'p2'],
+      anchorProjectId: 'anchor',
+      _isEnabled: enabled,
+      _isMetalEnabled: () => true,
+      _isKubernetes: () => true,
+      _spawnLease: passthroughLease,
+      _metalResolver: async (_wsId, ids) => {
+        seenIds = ids
+        return 'http://metal-ws/anchor'
+      },
+    })
+    expect(seenIds).toEqual(['anchor', 'p2'])
+  })
+
+  it('host + anchor path also receives the anchor-inclusive member list', async () => {
+    let seenIds: string[] | undefined
+    const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+      attachedProjectIds: [],
+      anchorProjectId: 'anchor',
+      _isEnabled: enabled,
+      _isKubernetes: () => false,
+      _hostStartProject: async (anchorProjectId, opts) => {
+        seenIds = opts.attachedProjectIds
+        return {
+          projectId: `ws:proj:${anchorProjectId}`,
+          port: 37000,
+          agentPort: 38000,
+          status: 'running' as const,
+          url: 'http://localhost:37000',
+          startedAt: Date.now(),
+        }
+      },
+    })
+    expect(res.mode).toBe('host')
+    expect(seenIds).toEqual(['anchor'])
+  })
+
   it('metal branch throws not-configured when no resolver injected (never silent Knative fallthrough)', async () => {
     await expect(
       resolveWorkspaceRuntimeUrl('ws-1', {
