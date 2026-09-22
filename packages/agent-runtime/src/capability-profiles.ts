@@ -96,7 +96,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
  * still remove these; `CAPABILITY_PROFILES` never does.
  */
 export const CORE_TOOL_NAMES = [
-  'ask_user', 'notify_user_error', 'skill', 'quick_action', 'generate_image',
+  'ask_user', 'skill', 'quick_action', 'generate_image',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
   'project_list', 'project_create', 'project_call', 'project_configure',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list', 'set_status',
