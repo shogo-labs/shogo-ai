@@ -24,6 +24,30 @@ import { getPeer, HOST_HEADER_FOR_PEERS } from './region'
  */
 export const HOME_REGION_PROXY_HEADER = 'x-shogo-home-region-proxy'
 
+/**
+ * How long we wait for the peer to answer with response headers before
+ * treating the hop as dead. This bounds *connect + time-to-first-byte* only —
+ * once `fetch` resolves with a Response, the abort timer is cleared before the
+ * body is ever read, so a slow-but-alive SSE/chat stream is never cut off by
+ * this budget (that's governed by the much longer stream-idle timeouts
+ * elsewhere, e.g. `CHAT_STREAM_IDLE_TIMEOUT_MS`).
+ *
+ * Previously this fetch had NO timeout at all: a hung connection rode the
+ * ~125s Cloudflare edge timeout before failing (see
+ * docs/prod-e2e-findings-2026-08.md §A3). That turns any transient blip on the
+ * cross-region hop into a near-full-minute stall for the caller instead of a
+ * fast, retryable failure.
+ */
+const CONNECT_TIMEOUT_MS = parseInt(process.env.REGION_PROXY_CONNECT_TIMEOUT_MS || '10000', 10)
+
+/** True for fetch failures worth retrying once on a fresh connection: our own
+ * connect-timeout firing, or a lower-level connection error (refused, reset,
+ * DNS blip) — as opposed to the peer answering with a real (if unwelcome)
+ * HTTP status, which is not a transport failure. */
+function isRetryableProxyError(err: any): boolean {
+  return err?.name === 'TimeoutError' || err?.name === 'AbortError' || err?.name === 'ConnectionRefused'
+}
+
 /** Request headers we forward verbatim to the peer (lower-cased). */
 const FORWARD_REQUEST_HEADERS = [
   'content-type',
@@ -106,42 +130,74 @@ export async function proxyToPeer(
 
   const method = c.req.method
   const hasBody = method !== 'GET' && method !== 'HEAD'
+  // A request body stream can only be read once, so only bodyless methods
+  // (the admin console's GETs, resume polls, SSE reconnects) are safe to
+  // retry on a fresh connection after a connect-timeout/transport error.
+  const retryable = !hasBody
+
+  async function attempt(): Promise<Response> {
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(new DOMException('Peer connect timed out', 'TimeoutError')), CONNECT_TIMEOUT_MS)
+    try {
+      return await fetch(targetUrl.toString(), {
+        method,
+        headers,
+        signal: ac.signal,
+        // Stream the request body straight through (duplex required for streams).
+        //
+        // `keepalive: false` is load-bearing, not a tuning knob. When a peer
+        // answers before it has read the streamed body — any early reject: 401,
+        // 404, 413, a validation error — Bun stops the upload but still returns
+        // the socket to the keep-alive pool MID-REQUEST-MESSAGE. The next proxied
+        // request to that peer is then written INTO the abandoned request's
+        // chunked body, so the peer's HTTP parser never sees a request line and
+        // answers a bare 400 that never reaches a route handler. The victim is
+        // the FOLLOWING request, which is what makes it so confusing: a chat POST
+        // rejected upstream makes the unrelated resume GET after it fail.
+        // See oven-sh/bun#32847; unfixed as of Bun 1.3.14.
+        //
+        // It has to apply to EVERY hop, not just body-carrying ones. The victim
+        // is whatever request is written to the socket next, and proxied GETs —
+        // the SSE stream reads and the resume polls — draw from the same pool, so
+        // scoping this to `hasBody` left exactly the requests chat recovery
+        // depends on unprotected. Costs one connection setup per proxy hop, which
+        // is cheap next to the SSE turn it precedes. Revisit once the runtime
+        // carries the upstream fix.
+        keepalive: false,
+        ...(hasBody ? { body: c.req.raw.body, duplex: 'half' } : {}),
+        // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
+        ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
+      } as any)
+    } finally {
+      // Headers have arrived (or the attempt threw) — release the timer so it
+      // can never fire against the response body stream we're about to
+      // return/re-stream. This is what keeps a healthy-but-slow SSE turn safe
+      // past CONNECT_TIMEOUT_MS.
+      clearTimeout(timer)
+    }
+  }
 
   let resp: Response
   try {
-    resp = await fetch(targetUrl.toString(), {
-      method,
-      headers,
-      // Stream the request body straight through (duplex required for streams).
-      //
-      // `keepalive: false` is load-bearing, not a tuning knob. When a peer
-      // answers before it has read the streamed body — any early reject: 401,
-      // 404, 413, a validation error — Bun stops the upload but still returns
-      // the socket to the keep-alive pool MID-REQUEST-MESSAGE. The next proxied
-      // request to that peer is then written INTO the abandoned request's
-      // chunked body, so the peer's HTTP parser never sees a request line and
-      // answers a bare 400 that never reaches a route handler. The victim is
-      // the FOLLOWING request, which is what makes it so confusing: a chat POST
-      // rejected upstream makes the unrelated resume GET after it fail.
-      // See oven-sh/bun#32847; unfixed as of Bun 1.3.14.
-      //
-      // It has to apply to EVERY hop, not just body-carrying ones. The victim
-      // is whatever request is written to the socket next, and proxied GETs —
-      // the SSE stream reads and the resume polls — draw from the same pool, so
-      // scoping this to `hasBody` left exactly the requests chat recovery
-      // depends on unprotected. Costs one connection setup per proxy hop, which
-      // is cheap next to the SSE turn it precedes. Revisit once the runtime
-      // carries the upstream fix.
-      keepalive: false,
-      ...(hasBody ? { body: c.req.raw.body, duplex: 'half' } : {}),
-      // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
-      ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
-    } as any)
+    resp = await attempt()
   } catch (err: any) {
-    return c.json(
-      { error: `Proxy to ${peer.label || regionId} failed: ${err?.message || String(err)}` },
-      502,
-    )
+    if (retryable && isRetryableProxyError(err)) {
+      try {
+        resp = await attempt()
+      } catch (retryErr: any) {
+        return c.json(
+          {
+            error: `Proxy to ${peer.label || regionId} failed after retry: ${retryErr?.message || String(retryErr)}`,
+          },
+          502,
+        )
+      }
+    } else {
+      return c.json(
+        { error: `Proxy to ${peer.label || regionId} failed: ${err?.message || String(err)}` },
+        502,
+      )
+    }
   }
 
   const respHeaders = new Headers()
@@ -196,10 +252,15 @@ export async function callPeerInternal<T = unknown>(
   const secret = process.env.SHOGO_INTERNAL_SECRET
   if (secret) headers['x-shogo-internal-secret'] = secret
 
+  // Bound connect + time-to-first-byte the same way proxyToPeer does (see
+  // CONNECT_TIMEOUT_MS) — this call always sends a small, fully-buffered JSON
+  // body, so unlike proxyToPeer it's always safe to just let the caller's own
+  // retry policy (if any) re-invoke us rather than retrying internally here.
   const resp = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
     // Peers terminate TLS behind the same cert; tolerate self-signed in-mesh.
     ...(typeof Bun !== 'undefined' ? { tls: { rejectUnauthorized: false } } : {}),
   } as any)

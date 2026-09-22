@@ -33,6 +33,7 @@ import {
   getContentAnalytics,
 } from '../services/affiliate-content.service'
 import { prisma } from '../lib/prisma'
+import { RAW_REGION_ID } from '../lib/region'
 
 /** Human-readable message for a failed {@link payoutAffiliate} outcome. */
 function payoutReasonMessage(reason: Extract<PayoutAffiliateResult, { ok: false }>['reason']): string {
@@ -444,8 +445,23 @@ export function adminRoutes(): Hono {
       const ms = infraPeriodMs[period] ?? infraPeriodMs['24h']
       const since = new Date(Date.now() - ms)
 
+      // Scope to snapshots THIS region wrote. `infra_snapshots` is replicated to
+      // every region via the bidirectional logical-replication mesh (see
+      // docs/oci-multi-region-production-guide.md), so an unscoped query
+      // returns the blended history of every region no matter which one is
+      // asked — the Infrastructure page's region selector picked a peer but
+      // got back the exact same global chart every region gets. Rows written
+      // before the `region` column existed have no tag; include those too so
+      // history doesn't go blank for the retention window right after this
+      // migration ships. In single-region/local mode (RAW_REGION_ID null)
+      // this stays unscoped, matching the previous behavior.
+      const where =
+        RAW_REGION_ID != null
+          ? { timestamp: { gte: since }, OR: [{ region: RAW_REGION_ID }, { region: null }] }
+          : { timestamp: { gte: since } }
+
       const snapshots = await prisma.infraSnapshot.findMany({
-        where: { timestamp: { gte: since } },
+        where,
         orderBy: { timestamp: 'asc' },
         select: {
           timestamp: true,

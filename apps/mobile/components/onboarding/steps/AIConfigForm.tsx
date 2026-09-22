@@ -245,7 +245,7 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
                 >
                   {shogoLoginStatus === 'connecting'
                     ? 'Waiting for browser…'
-                    : 'Connect (mint API key in browser)'}
+                    : 'Connect'}
                 </Text>
               </Pressable>
             </>

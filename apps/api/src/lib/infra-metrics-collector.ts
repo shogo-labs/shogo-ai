@@ -13,6 +13,7 @@
  */
 
 import type { PrismaClient } from './prisma'
+import { RAW_REGION_ID } from './region'
 
 const SNAPSHOT_INTERVAL_MS = 60_000
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -78,6 +79,12 @@ async function collectSnapshot(prisma: PrismaClient): Promise<void> {
 
     await prisma.infraSnapshot.create({
       data: {
+        // Stamp the writer's region so `/analytics/infra-history` can scope a
+        // region's chart to its own snapshots instead of the blended global
+        // set replicated to every region (see the migration that added this
+        // column). Null in single-region/local mode, matching every other
+        // RAW_REGION_ID consumer in this codebase (see lib/region.ts).
+        region: RAW_REGION_ID,
         totalNodes: extended.cluster?.totalNodes ?? 0,
         asgDesired: extended.cluster?.asgDesired ?? 0,
         asgMax: extended.cluster?.asgMax ?? 0,
