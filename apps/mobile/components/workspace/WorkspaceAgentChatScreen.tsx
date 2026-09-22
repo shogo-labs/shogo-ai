@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { observer } from "mobx-react-lite";
 import { Sparkles, X } from "lucide-react-native";
@@ -21,11 +22,9 @@ import { ChatPanel } from "../chat/ChatPanel";
 import type { RestoreDraftRequest } from "../chat/ChatInput";
 import { NativePhoneSheet } from "../phone/NativePhoneSheet";
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader";
+import { PersonalAgentMobileHeader } from "../personal/PersonalAgentMobileHeader";
 import { useWelcomeMessage } from "../personal/useWelcomeMessage";
-import {
-  buildDefaultProfileActions,
-  ProfileActionSheet,
-} from "../personal/ProfileActionSheet";
+import { buildDefaultProfileActions } from "../personal/ProfileActionMenu";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 import {
   publishPrimaryWorkspaceSession,
@@ -42,12 +41,12 @@ export const WorkspaceAgentChatScreen = observer(
     const projects = useProjectCollection();
     const experience = useWorkspaceExperience();
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+    const insets = useSafeAreaInsets();
     const [profile, setProfile] = useState<PersonalAgentProfile | null>(null);
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [prefillRequest, setPrefillRequest] =
       useState<RestoreDraftRequest | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [showProfileSheet, setShowProfileSheet] = useState(false);
     const [attachments, setAttachments] = useState<
       Array<{
         id: string;
@@ -336,12 +335,23 @@ export const WorkspaceAgentChatScreen = observer(
 
     return (
       <View className="flex-1 bg-background">
-        {!usesMobileWorkspaceChrome ? (
-          <PersonalAgentHeader
+        {usesMobileWorkspaceChrome ? (
+          <PersonalAgentMobileHeader
             profile={profile}
-            onProfilePress={() => setShowProfileSheet(true)}
-            compact
+            actions={profileActions}
+            onStatusPress={() => router.push("/(app)/activity" as any)}
           />
+        ) : (
+          <PersonalAgentHeader profile={profile} actions={profileActions} compact />
+        )}
+        {usesMobileWorkspaceChrome &&
+        ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
+          // `PersonalAgentMobileHeader` floats above this content instead of
+          // reserving layout space, so the welcome card / working-set chip —
+          // the first normal-flow content on this screen — need their own
+          // clearance to avoid starting underneath the avatar/name/status
+          // cluster (and the shell's floating menu/bell buttons).
+          <View style={{ height: insets.top + 112 }} />
         ) : null}
         {isPersonalWorkspace && showWelcome ? (
           <View className="mx-auto mt-3 w-full max-w-2xl px-4">
@@ -408,15 +418,11 @@ export const WorkspaceAgentChatScreen = observer(
             onPrefillConsumed={handlePrefillConsumed}
             className="flex-1"
             isActive
+            phoneTranscriptTopPadding={
+              usesMobileWorkspaceChrome ? "floating-agent" : "chrome"
+            }
           />
         </View>
-        <ProfileActionSheet
-          visible={showProfileSheet}
-          onClose={() => setShowProfileSheet(false)}
-          title={profile.name}
-          subtitle={profile.tagline || undefined}
-          actions={profileActions}
-        />
         <NativePhoneSheet
           visible={scopeSheetOpen}
           onClose={() => setScopeSheetOpen(false)}
