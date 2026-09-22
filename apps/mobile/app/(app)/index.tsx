@@ -271,7 +271,10 @@ export const HomeScreen = observer(function HomeScreen({
   const restComposerSidePad = NATIVE_PHONE_GUTTER
   const iosComposerAvoiding = Platform.OS === 'ios'
   const composerKeyboardPad = useNativeComposerDockPad({
-    enabled: Platform.OS !== 'web' && isNativePhone,
+    // `isNativePhone` here is viewport-based (`isPhoneLayout`), so this
+    // already covers narrow mobile web — the keyboard subscription itself
+    // switches to `visualViewport` on web (see use-native-composer-keyboard.ts).
+    enabled: isNativePhone,
     restPad: restComposerPad,
     iosKeyboardAvoiding: iosComposerAvoiding,
   })

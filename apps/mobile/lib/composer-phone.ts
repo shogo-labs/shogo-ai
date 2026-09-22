@@ -7,13 +7,21 @@ import type { NativeAttachAction } from './native-attachment-picker'
 import { NATIVE_PHONE_ICON } from './native-phone-layout'
 import { SURFACE_COLORS } from './surface-tokens'
 
-/** Multiline composer input behavior: Return inserts a newline on native. */
+/**
+ * Multiline composer input behavior: Return inserts a newline on native.
+ *
+ * On web this also suppresses the browser's autofill hinting: without an
+ * explicit `off`, Chrome/Safari heuristically treat a generic empty text
+ * field as a login/payment field and show a suggestion row (key/card/pin
+ * icons) above the on-screen keyboard, crowding the chat composer.
+ */
 export function composerKeyboardProps(
   platform: string = Platform.OS,
-): Pick<TextInputProps, 'blurOnSubmit' | 'returnKeyType'> {
+): Pick<TextInputProps, 'blurOnSubmit' | 'returnKeyType' | 'autoComplete'> {
   return {
     blurOnSubmit: false,
     returnKeyType: platform === 'web' ? undefined : 'default',
+    autoComplete: platform === 'web' ? 'off' : undefined,
   }
 }
 

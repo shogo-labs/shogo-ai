@@ -48,6 +48,63 @@ export function subscribeNativeComposerKeyboard(
   }
 }
 
+/**
+ * Web has no `Keyboard` bridge — RN-Web's `Keyboard.addListener` never fires.
+ * The virtual keyboard's presence instead shows up as the browser's
+ * `visualViewport` shrinking or shifting (RN-Web's own `Dimensions`/
+ * `useWindowDimensions` already reads `visualViewport` on web for the same
+ * reason — see react-native-web#2430/#2438). Synthesize a
+ * `NativeComposerKeyboardEvent` from it so callers can reuse the exact same
+ * overlap/pad math as native (`nativeComposerKeyboardOverlap` etc.) instead
+ * of a parallel implementation.
+ *
+ * Both `resize` and `scroll` are needed: most browsers shrink
+ * `visualViewport.height` when the keyboard opens, but iOS Safari can
+ * instead (or additionally) shift `visualViewport.offsetTop` — scrolling the
+ * visual viewport down without a height change — which only fires `scroll`.
+ */
+function subscribeWebViewportKeyboard(
+  listener: (event: NativeComposerKeyboardEvent, source: NativeComposerKeyboardSource) => void,
+): () => void {
+  if (
+    Platform.OS !== 'web' ||
+    typeof window === 'undefined' ||
+    !window.visualViewport
+  ) {
+    return () => {}
+  }
+  const viewport = window.visualViewport
+
+  const handle = () => {
+    // How much of the full layout viewport is now covered by the keyboard
+    // (or address-bar chrome resize) — the visible area's bottom edge,
+    // reported as `screenY`, so `nativeComposerKeyboardOverlap` computes the
+    // same "viewportHeight - screenY" overlap it does from native coordinates.
+    const visibleBottom = viewport.height + viewport.offsetTop
+    listener(
+      {
+        duration: 200,
+        endCoordinates: { screenY: visibleBottom },
+      },
+      'change',
+    )
+  }
+
+  viewport.addEventListener('resize', handle)
+  viewport.addEventListener('scroll', handle)
+  return () => {
+    viewport.removeEventListener('resize', handle)
+    viewport.removeEventListener('scroll', handle)
+  }
+}
+
+function subscribeComposerKeyboard(
+  listener: (event: NativeComposerKeyboardEvent, source: NativeComposerKeyboardSource) => void,
+): () => void {
+  if (Platform.OS === 'web') return subscribeWebViewportKeyboard(listener)
+  return subscribeNativeComposerKeyboard(listener)
+}
+
 /** Subscribe once; the latest `onFrame` is read from a ref so callers can close over rest pads. */
 export function useNativeComposerKeyboard(
   enabled: boolean,
@@ -57,7 +114,7 @@ export function useNativeComposerKeyboard(
   onFrameRef.current = onFrame
   useEffect(() => {
     if (!enabled) return
-    return subscribeNativeComposerKeyboard((event, source) => {
+    return subscribeComposerKeyboard((event, source) => {
       onFrameRef.current(event, source)
     })
   }, [enabled])

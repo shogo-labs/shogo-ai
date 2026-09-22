@@ -22,6 +22,27 @@ export default function Root({ children }: PropsWithChildren) {
             tags from this file during export. */}
 
         <ScrollViewStyleReset />
+        {/*
+         * `ScrollViewStyleReset` only sets `overflow:hidden` on `body`, not
+         * `html`. On mobile Safari/Chrome that's not enough: per spec,
+         * `overflow` on the root element only clips the viewport when set on
+         * `html` (`overflow:clip`/hidden on `body` alone does not propagate)
+         * — https://github.com/w3c/csswg-drafts (root vs. body overflow
+         * propagation). Any descendant that's even slightly wider than the
+         * viewport (an unclamped file-tree row, a wide table, etc.) can make
+         * the browser widen its *layout viewport* to fit that content,
+         * which flips `window.innerWidth`/`useWindowDimensions().width` past
+         * the `isWide`/tablet breakpoint on an otherwise normal phone —
+         * swapping in the desktop sidebar and hiding the bottom nav. Setting
+         * `overflow-x: hidden` on `html` is the standard fix (`overflow-x:
+         * clip` is not enough; it isn't propagated to the viewport either).
+         */}
+        <style
+          id="shogo-html-overflow-fix"
+          dangerouslySetInnerHTML={{
+            __html: `html{overflow-x:hidden;max-width:100vw}`,
+          }}
+        />
       </head>
       <body>
         {children}

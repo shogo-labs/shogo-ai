@@ -17,17 +17,20 @@ describe('composerKeyboardProps', () => {
     expect(composerKeyboardProps('ios')).toEqual({
       blurOnSubmit: false,
       returnKeyType: 'default',
+      autoComplete: undefined,
     })
     expect(composerKeyboardProps('android')).toEqual({
       blurOnSubmit: false,
       returnKeyType: 'default',
+      autoComplete: undefined,
     })
   })
 
-  test('leaves the web keyboard behavior to the browser', () => {
+  test('leaves the web keyboard behavior to the browser but suppresses autofill', () => {
     expect(composerKeyboardProps('web')).toEqual({
       blurOnSubmit: false,
       returnKeyType: undefined,
+      autoComplete: 'off',
     })
   })
 })

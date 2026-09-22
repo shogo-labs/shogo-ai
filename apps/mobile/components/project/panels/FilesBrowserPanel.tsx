@@ -41,6 +41,7 @@ import { useResolvedTheme } from '../../../contexts/theme'
 import {
   nativePhoneCanvas,
   useNativePhoneWindow,
+  usePhoneLayout,
 } from '../../../lib/native-phone-layout';
 import { densityFor } from "../../../lib/phone-density"
 
@@ -110,8 +111,10 @@ function FileTreeItem({
   onNewFolderInDir: (dirPath: string) => void
   onUploadToDir: (dirPath: string) => void
 }) {
-  const isNative = Platform.OS !== 'web'
-  const density = densityFor(isNative);
+  // Viewport-based, not Platform-gated: narrow mobile web gets the same
+  // comfortable row/text/icon density as the native app.
+  const comfortable = usePhoneLayout()
+  const density = densityFor(comfortable);
   const isDir = entry.type === 'directory'
   const isExpanded = expandedDirs.has(entry.path)
   const isSelected = selectedPath === entry.path
@@ -124,7 +127,7 @@ function FileTreeItem({
         <View
           className={cn(
             'flex-row items-center gap-0.5 pr-2 rounded-md',
-            isNative ? 'min-h-10 py-1.5' : 'py-1',
+            comfortable ? 'min-h-10 py-1.5' : 'py-1',
             treeIndentClass(depth),
           )}
         >
@@ -132,23 +135,23 @@ function FileTreeItem({
             onPress={() => onToggleDir(entry.path)}
             className={cn(
               'flex-row flex-1 min-w-0 items-center gap-1.5 pl-0 pr-1 rounded-md',
-              isNative ? 'min-h-9 py-1' : 'py-0.5',
+              comfortable ? 'min-h-9 py-1' : 'py-0.5',
               isSelected ? 'bg-primary/10' : 'active:bg-muted',
             )}
           >
             {isExpanded ? (
-              <ChevronDown size={isNative ? 14 : 10} className="text-muted-foreground shrink-0" />
+              <ChevronDown size={comfortable ? 14 : 10} className="text-muted-foreground shrink-0" />
             ) : (
-              <ChevronRight size={isNative ? 14 : 10} className="text-muted-foreground shrink-0" />
+              <ChevronRight size={comfortable ? 14 : 10} className="text-muted-foreground shrink-0" />
             )}
             {isExpanded ? (
-              <FolderOpen size={isNative ? 16 : 12} className="text-amber-500 shrink-0" />
+              <FolderOpen size={comfortable ? 16 : 12} className="text-amber-500 shrink-0" />
             ) : (
-              <Folder size={isNative ? 16 : 12} className="text-amber-500 shrink-0" />
+              <Folder size={comfortable ? 16 : 12} className="text-amber-500 shrink-0" />
             )}
             <Text
               className={cn(
-                isNative ? 'text-sm flex-1 min-w-0' : 'text-xs flex-1 min-w-0',
+                comfortable ? 'text-sm flex-1 min-w-0' : 'text-xs flex-1 min-w-0',
                 isSelected ? 'text-primary font-medium' : 'text-foreground',
               )}
               numberOfLines={1}
@@ -160,24 +163,24 @@ function FileTreeItem({
             <View className="flex-row items-center shrink-0 gap-0.5">
               <Pressable
                 onPress={() => onNewFileInDir(entry.path)}
-                className={cn('rounded-md active:bg-muted', isNative ? 'h-8 w-8 items-center justify-center' : 'p-1')}
+                className={cn('rounded-md active:bg-muted', comfortable ? 'h-8 w-8 items-center justify-center' : 'p-1')}
                 accessibilityLabel={`New file in ${entry.name}`}
               >
-                <FilePlus size={isNative ? 15 : 11} className="text-muted-foreground" />
+                <FilePlus size={comfortable ? 15 : 11} className="text-muted-foreground" />
               </Pressable>
               <Pressable
                 onPress={() => onNewFolderInDir(entry.path)}
-                className={cn('rounded-md active:bg-muted', isNative ? 'h-8 w-8 items-center justify-center' : 'p-1')}
+                className={cn('rounded-md active:bg-muted', comfortable ? 'h-8 w-8 items-center justify-center' : 'p-1')}
                 accessibilityLabel={`New folder in ${entry.name}`}
               >
-                <FolderPlus size={isNative ? 15 : 11} className="text-muted-foreground" />
+                <FolderPlus size={comfortable ? 15 : 11} className="text-muted-foreground" />
               </Pressable>
               <Pressable
                 onPress={() => onUploadToDir(entry.path)}
-                className={cn('rounded-md active:bg-muted', isNative ? 'h-8 w-8 items-center justify-center' : 'p-1')}
+                className={cn('rounded-md active:bg-muted', comfortable ? 'h-8 w-8 items-center justify-center' : 'p-1')}
                 accessibilityLabel={`Upload into ${entry.name}`}
               >
-                <Upload size={isNative ? 15 : 11} className="text-muted-foreground" />
+                <Upload size={comfortable ? 15 : 11} className="text-muted-foreground" />
               </Pressable>
             </View>
           ) : null}
@@ -206,12 +209,12 @@ function FileTreeItem({
         onPress={() => onSelect(entry.path)}
         className={cn(
           'flex-row items-center gap-1.5 pr-2 rounded-md active:bg-muted',
-          isNative ? 'min-h-10 py-1.5' : 'py-1',
+          comfortable ? 'min-h-10 py-1.5' : 'py-1',
           treeIndentClass(depth),
           isSelected ? 'bg-primary/10' : '',
         )}
       >
-        <View className={isNative ? 'w-3.5 shrink-0' : 'w-2.5 shrink-0'} />
+        <View className={comfortable ? 'w-3.5 shrink-0' : 'w-2.5 shrink-0'} />
         <FileText
           size={density.icon.sm}
           className={cn(
@@ -272,8 +275,10 @@ const NARROW_BREAKPOINT = 600
 export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
   const { width, height, isPhone: isNativePhone } = useNativePhoneWindow()
   const isNarrow = width < NARROW_BREAKPOINT
-  const isNative = Platform.OS !== 'web'
-  const density = densityFor(isNative)
+  // Viewport-based, not Platform-gated: narrow mobile web gets the same
+  // comfortable row/text/icon density as the native app.
+  const comfortable = usePhoneLayout()
+  const density = densityFor(comfortable)
   const isDark = useResolvedTheme() === 'dark'
   const phoneCanvas = isNativePhone ? nativePhoneCanvas(isDark) : undefined
   const [showEditorOnNarrow, setShowEditorOnNarrow] = useState(false)
@@ -775,13 +780,13 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
       >
         {/* Search bar */}
         <View className={cn(
-          isNativePhone ? 'px-3 pt-2 pb-3' : cn('border-b border-border', isNative ? 'p-3' : 'p-2'),
+          isNativePhone ? 'px-3 pt-2 pb-3' : cn('border-b border-border', comfortable ? 'p-3' : 'p-2'),
         )}>
           <View className={cn(
             'flex-row items-center rounded-md',
             isNativePhone
               ? 'min-h-11 px-3 border border-border'
-              : cn('bg-background border border-border', isNative ? 'min-h-11 px-3' : 'px-2'),
+              : cn('bg-background border border-border', comfortable ? 'min-h-11 px-3' : 'px-2'),
           )}>
             <Search size={density.icon.sm} className="text-muted-foreground" />
             <TextInput
@@ -790,7 +795,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               onSubmitEditing={handleSearch}
               placeholder="Search files..."
               className={cn('flex-1 px-2 text-foreground placeholder:text-muted-foreground',
-                density.text.body, isNative ? "py-2" : "py-1.5")}
+                density.text.body, comfortable ? "py-2" : "py-1.5")}
               autoCapitalize="none"
               returnKeyType="search"
             />
@@ -851,7 +856,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                 PROJECT FILES
               </Text>
               {tree.length === 0 ? (
-                <Text className={cn('text-muted-foreground px-2 py-2 italic', isNative ? 'text-sm' : 'text-xs')}>
+                <Text className={cn('text-muted-foreground px-2 py-2 italic', comfortable ? 'text-sm' : 'text-xs')}>
                   No files yet. Upload or create one.
                 </Text>
               ) : (
@@ -885,15 +890,15 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
         </ScrollView>
 
         {/* Bottom actions */}
-        <View className={cn('border-t border-border', isNative ? 'p-3 gap-2' : 'p-2 gap-1')}>
-          <View className={cn('flex-row', isNative ? 'gap-2' : 'gap-1')}>
+        <View className={cn('border-t border-border', comfortable ? 'p-3 gap-2' : 'p-2 gap-1')}>
+          <View className={cn('flex-row', comfortable ? 'gap-2' : 'gap-1')}>
             <Pressable
               onPress={() => {
                 setNewItemParentDir(null)
                 setShowNewDialog('file')
                 setNewName('')
               }}
-              className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', isNative ? 'min-h-11 py-2' : 'py-1.5')}
+              className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', comfortable ? 'min-h-11 py-2' : 'py-1.5')}
             >
               <FilePlus size={density.icon.md} className="text-muted-foreground" />
               <Text className={cn(density.text.label, "text-muted-foreground")}>New File</Text>
@@ -904,7 +909,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
                 setShowNewDialog('folder')
                 setNewName('')
               }}
-              className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', isNative ? 'min-h-11 py-2' : 'py-1.5')}
+              className={cn('flex-1 flex-row items-center justify-center gap-1 px-2 rounded-md active:bg-muted border border-border', comfortable ? 'min-h-11 py-2' : 'py-1.5')}
             >
               <FolderPlus size={density.icon.md} className="text-muted-foreground" />
               <Text className={cn(density.text.label, "text-muted-foreground")}>New Folder</Text>
@@ -912,7 +917,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
           </View>
           <Pressable
             onPress={() => handleUpload(null)}
-            className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
+            className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', comfortable ? 'min-h-11 py-2' : 'py-1.5')}
           >
             <Upload size={density.icon.md} className="text-muted-foreground" />
             <Text className={cn(density.text.label, "text-muted-foreground")}>Upload Files</Text>
@@ -921,7 +926,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             <Pressable
               onPress={handleDownloadProjectZip}
               disabled={isDownloadingZip}
-              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
+              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', comfortable ? 'min-h-11 py-2' : 'py-1.5')}
             >
               <FolderArchive size={density.icon.md} className="text-muted-foreground" />
               <Text className={cn(density.text.label, "text-muted-foreground")}>
@@ -931,7 +936,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             <Pressable
               onPress={handleExport}
               disabled={isExporting}
-              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
+              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', comfortable ? 'min-h-11 py-2' : 'py-1.5')}
             >
               <Upload size={density.icon.md} className="text-muted-foreground" />
               <Text className={cn(density.text.label, "text-muted-foreground")}>
@@ -940,7 +945,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
             </Pressable>
             <Pressable
               onPress={handleImport}
-              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', isNative ? 'min-h-11 py-2' : 'py-1.5')}
+              className={cn('flex-row items-center gap-2 px-2 rounded-md active:bg-muted', comfortable ? 'min-h-11 py-2' : 'py-1.5')}
             >
               <Download size={density.icon.md} className="text-muted-foreground" />
               <Text className={cn(density.text.label, "text-muted-foreground")}>Import Agent</Text>

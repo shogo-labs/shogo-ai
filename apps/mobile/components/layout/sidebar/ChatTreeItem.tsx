@@ -29,6 +29,7 @@ import {
   type SidebarMenuEntry,
 } from "../SidebarContextMenu";
 import { densityFor } from "../../../lib/phone-density";
+import { usePhoneLayout } from "../../../lib/native-phone-layout";
 import { projectChatLabel } from "../../../lib/project-chat-sessions";
 import { formatRelativeTime } from "../../chat/turns/turnShaping";
 
@@ -78,8 +79,11 @@ export function ChatTreeItem({
   /** Override row density for a distinct sidebar presentation. */
   rowClassName?: string;
 }) {
-  const isNative = Platform.OS !== "web";
-  const density = densityFor(isNative);
+  // Viewport-based, not Platform-gated: narrow mobile web gets the same
+  // comfortable row/text/icon density as the native app, not the compact
+  // desktop-web sizing (that used to make chat names render tiny on phones).
+  const comfortable = usePhoneLayout();
+  const density = densityFor(comfortable);
   const label = projectChatLabel(session);
   const activityLabel = sessionActivityLabel(session);
   const [editing, setEditing] = useState(false);
@@ -154,7 +158,7 @@ export function ChatTreeItem({
       <View
         className={cn(
           "flex-row items-center rounded-md",
-          isNative
+          comfortable
             ? `${density.rowMin} gap-2 px-2 py-1.5${
                 mobileProjectDetail ? " pl-12" : ""
               }`
@@ -169,7 +173,7 @@ export function ChatTreeItem({
           autoFocus
           className={cn(
             "flex-1 px-2 rounded border border-border bg-background text-foreground",
-            isNative ? `${density.text.body} h-11` : "h-6 text-xs"
+            comfortable ? `${density.text.body} h-11` : "h-6 text-xs"
           )}
         />
         <Pressable
@@ -178,7 +182,7 @@ export function ChatTreeItem({
           accessibilityLabel="Save name"
         >
           <Check
-            size={isNative ? density.icon.md : 12}
+            size={comfortable ? density.icon.md : 12}
             className="text-primary"
           />
         </Pressable>
@@ -188,7 +192,7 @@ export function ChatTreeItem({
           accessibilityLabel="Cancel rename"
         >
           <X
-            size={isNative ? density.icon.md : 12}
+            size={comfortable ? density.icon.md : 12}
             className="text-muted-foreground"
           />
         </Pressable>
@@ -206,7 +210,7 @@ export function ChatTreeItem({
         aria-current={active ? "page" : undefined}
         className={cn(
           "group flex-row items-center rounded-md",
-          isNative
+          comfortable
             ? `${density.rowMin} gap-2 px-2 py-2${
                 mobileProjectDetail ? " pl-12" : ""
               }`
@@ -220,7 +224,7 @@ export function ChatTreeItem({
       >
         {isStreaming ? (
           <Loader2
-            size={isNative ? density.icon.sm + 1 : 11}
+            size={comfortable ? density.icon.sm + 1 : 11}
             className="text-primary animate-spin shrink-0"
             accessibilityLabel="Chat running"
           />
@@ -229,15 +233,15 @@ export function ChatTreeItem({
             className="h-1.5 w-1.5 rounded-full bg-primary shrink-0"
             accessibilityLabel="Chat has new activity"
           />
-        ) : session.isPinned && !isNative ? (
+        ) : session.isPinned && !comfortable ? (
           <Pin
-            size={isNative ? density.icon.sm : 10}
+            size={comfortable ? density.icon.sm : 10}
             className="text-muted-foreground shrink-0"
           />
         ) : null}
         <Text
           className={cn(
-            textClassName ?? (isNative ? density.text.body : "text-xs"),
+            textClassName ?? (comfortable ? density.text.body : "text-xs"),
             "flex-1",
             active
               ? "text-foreground"
@@ -248,8 +252,11 @@ export function ChatTreeItem({
           {label}
         </Text>
         {/* Keep secondary metadata and management controls out of the resting
-          state. The one overflow menu replaces the previously exposed actions. */}
-        {!isNative && (
+          state. The one overflow menu replaces the previously exposed actions.
+          Gated on web (hover-only), not on comfortable density — a touch-only
+          narrow web viewport still gets no functional hover affordance here
+          either way, same as before this density fix. */}
+        {Platform.OS === "web" && (
           <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
             {activityLabel ? (
               <Text className="mr-1 text-[11px] text-muted-foreground">
