@@ -38,7 +38,6 @@ export const CONCURRENT_SAFE_TOOLS = new Set([
   'read_lints',
   'search_integrations',
   'web_search',
-  'notify_user_error',
   'task',
   'task_status',
   'agent_spawn',
