@@ -33,7 +33,10 @@ import { nativePhoneCanvas, NATIVE_ACCOUNT_SCROLL_EXTRA_PAD, NATIVE_ACCOUNT_TITL
 import { PHONE_DENSITY } from "../../lib/phone-density"
 import { usePlatformConfig } from "../../lib/platform-config"
 import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route"
-import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace"
+import {
+  reloadAfterWorkspaceSwitch,
+  scheduleWorkspaceSwitch,
+} from "../../lib/switch-workspace"
 import { setActiveWorkspaceId } from "../../lib/workspace-store"
 import { SettingsContent } from "./settings"
 
@@ -106,7 +109,7 @@ export default observer(function AccountPage() {
       if (workspaceId === (pendingWorkspaceId ?? currentWorkspace?.id)) return
       setPendingWorkspaceId(workspaceId)
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED)
-      scheduleWorkspaceSwitch(workspaceId, projects)
+      scheduleWorkspaceSwitch(workspaceId, projects, reloadAfterWorkspaceSwitch)
     },
     [currentWorkspace?.id, pendingWorkspaceId, posthog, projects],
   )

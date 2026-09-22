@@ -46,23 +46,19 @@ export interface WorkspaceMenuSectionProps {
   isNative?: boolean;
 }
 
-function workspaceListPlanBadge(
-  wsId: string,
-  allPlans: Record<string, { planId: string; status: string | null }>,
-  currentWorkspaceId: string | undefined,
-  subscriptionPlanId: string | undefined,
-): { isPaid: boolean; label: string } {
-  const wsPlanId =
-    (allPlans[wsId]?.planId ??
-      (wsId === currentWorkspaceId && subscriptionPlanId)) ||
-    "free";
-  const isPaid = wsPlanId !== "free";
-  return {
-    isPaid,
-    label: isPaid
-      ? wsPlanId.charAt(0).toUpperCase() + wsPlanId.slice(1)
-      : "Free",
-  };
+/**
+ * The per-row badge in the workspace switcher used to show the billing
+ * plan (Free/Pro/Business). That's redundant with the workspace's own name
+ * and settings, and doesn't help users tell workspaces apart. Show the
+ * structural `kind` instead — "Personal" vs "Team" — which is what
+ * actually determines the sidebar/shell chrome (`useWorkspaceExperience`).
+ */
+function workspaceKindBadge(ws: { kind?: string }): {
+  highlighted: boolean;
+  label: string;
+} {
+  const isPersonal = ws.kind === "personal";
+  return { highlighted: isPersonal, label: isPersonal ? "Personal" : "Team" };
 }
 
 export function WorkspaceMenuSection({
@@ -231,14 +227,7 @@ export function WorkspaceMenuSection({
       {workspaces.map((ws: any, index: number) => {
         const isCurrent = ws.id === currentWorkspace?.id;
         const isLast = index === workspaces.length - 1 && localMode;
-        const badge = showBilling
-          ? workspaceListPlanBadge(
-              ws.id,
-              allPlans,
-              currentWorkspace?.id,
-              billingData.subscription?.planId,
-            )
-          : null;
+        const badge = workspaceKindBadge(ws);
         return (
           <Pressable
             key={ws.id}
@@ -272,25 +261,23 @@ export function WorkspaceMenuSection({
             >
               {ws.name}
             </Text>
-            {badge ? (
-              <View
+            <View
+              className={cn(
+                "rounded px-1.5 py-0.5",
+                badge.highlighted ? "bg-primary/10" : "bg-muted",
+              )}
+            >
+              <Text
                 className={cn(
-                  "rounded px-1.5 py-0.5",
-                  badge.isPaid ? "bg-primary/10" : "bg-muted",
+                  density.text.caption,
+                  badge.highlighted
+                    ? "text-primary font-medium"
+                    : "text-muted-foreground",
                 )}
               >
-                <Text
-                  className={cn(
-                    density.text.caption,
-                    badge.isPaid
-                      ? "text-primary font-medium"
-                      : "text-muted-foreground",
-                  )}
-                >
-                  {badge.label}
-                </Text>
-              </View>
-            ) : null}
+                {badge.label}
+              </Text>
+            </View>
             {isCurrent && <Check size={16} className="text-primary" />}
           </Pressable>
         );

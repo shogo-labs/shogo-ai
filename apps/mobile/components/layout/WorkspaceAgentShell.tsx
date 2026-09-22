@@ -33,6 +33,7 @@ import { ShogoLogoMark } from "../branding/ShogoLogoMark";
 import SettingsPage from "../../app/(app)/settings";
 import { CommandPalette } from "./CommandPalette";
 import { WorkspaceConversationSidebar } from "./WorkspaceConversationSidebar";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { cn } from "@shogo/shared-ui/primitives";
 
 interface NavItem {
@@ -41,16 +42,6 @@ interface NavItem {
   icon: typeof Bot;
   action?: "search";
 }
-
-const primaryNav: NavItem[] = [
-  { label: "Chat", href: "/(app)", icon: MessageSquare },
-  { label: "Search", icon: Search, action: "search" },
-  { label: "Tasks", href: "/(app)/tasks", icon: ListTodo },
-  { label: "Goals", href: "/(app)/goals", icon: Target },
-  { label: "Activity", href: "/(app)/activity", icon: Activity },
-  { label: "Canvases", href: "/(app)/canvases", icon: Boxes },
-  { label: "Marketplace", href: "/(app)/marketplace", icon: Store },
-];
 
 function routeIsActive(pathname: string, href: string): boolean {
   if (href === "/(app)")
@@ -67,6 +58,30 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
   const { width, height } = useWindowDimensions();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const experience = useWorkspaceExperience();
+  const primaryNav: NavItem[] = [
+    { label: "Chat", href: "/(app)", icon: MessageSquare },
+    { label: "Search", icon: Search, action: "search" },
+    ...(experience.kind === "team"
+      ? [{ label: "Tasks", href: "/(app)/tasks", icon: ListTodo } as NavItem]
+      : []),
+    ...(experience.showGoalsNav
+      ? [
+          { label: "Goals", href: "/(app)/goals", icon: Target },
+          { label: "Activity", href: "/(app)/activity", icon: Activity },
+        ]
+      : []),
+    { label: "Canvases", href: "/(app)/canvases", icon: Boxes },
+    ...(experience.showMarketplace
+      ? [
+          {
+            label: "Marketplace",
+            href: "/(app)/marketplace",
+            icon: Store,
+          } as NavItem,
+        ]
+      : []),
+  ];
 
   const openSettings = () => {
     setSettingsOpen(true);

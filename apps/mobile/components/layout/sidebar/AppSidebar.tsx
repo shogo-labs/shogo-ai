@@ -72,7 +72,10 @@ import {
   resolveActiveWorkspaceId,
   subscribeActiveWorkspaceId,
 } from "../../../lib/workspace-store";
-import { scheduleWorkspaceSwitch } from "../../../lib/switch-workspace";
+import {
+  reloadAfterWorkspaceSwitch,
+  scheduleWorkspaceSwitch,
+} from "../../../lib/switch-workspace";
 import { workspaceProjectFilter } from "../../../lib/project-load";
 import { usePlatformConfig } from "../../../lib/platform-config";
 import { useCloudBillingSummary } from "../../../hooks/useCloudBillingSummary";
@@ -644,7 +647,7 @@ export const AppSidebar = observer(function AppSidebar({
     (workspaceId: string) => {
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
       setSelectedWorkspaceId(workspaceId);
-      scheduleWorkspaceSwitch(workspaceId, projects);
+      scheduleWorkspaceSwitch(workspaceId, projects, reloadAfterWorkspaceSwitch);
     },
     [projects, posthog],
   );
@@ -1191,16 +1194,19 @@ export const AppSidebar = observer(function AppSidebar({
                           : "Show all projects"
                       }
                       className={cn(
-                        "flex-row items-center rounded-md px-2 active:bg-accent/50",
-                        isNativeDrawer
-                          ? `${drawerDensity.rowMin} gap-2.5 py-2`
-                          : "gap-1.5 py-1.5",
+                        "flex-row items-center rounded-md active:bg-accent/50",
+                        isNativeDrawer ? "py-1.5" : "py-1",
                       )}
+                      // No leading chevron/folder glyph here (unlike each
+                      // project row) — indent to line up with those rows'
+                      // *text*, not their icon column, instead of adding an
+                      // icon of its own just to fill the slot.
+                      style={{
+                        paddingLeft:
+                          (isNativeDrawer ? drawerDensity.icon.md : 12) + 10,
+                        paddingRight: 8,
+                      }}
                     >
-                      <SectionDisclosureChevron
-                        expanded={showAllProjects}
-                        size={sectionChevronSize}
-                      />
                       <Text
                         className={cn(
                           "text-muted-foreground flex-1",

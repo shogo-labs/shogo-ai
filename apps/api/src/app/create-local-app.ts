@@ -43,6 +43,7 @@ import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
 import { localSystemRoutes } from '../routes/local-system'
 import { localPlatformRoutes } from '../routes/local-platform'
+import { marketplaceRoutes } from '../routes/marketplace'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 
@@ -113,6 +114,12 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', toolsProxyRoutes())
   app.route('/api', techStackRoutes())
   app.route('/api', apiKeyRoutes())
+  // `marketplaceRoutes()` already branches on `SHOGO_LOCAL_MODE` internally
+  // (reads served from the local DB, writes proxied to Shogo Cloud when a
+  // key is connected) — it just wasn't mounted here, so every
+  // `/api/marketplace/*` call 404'd in local/desktop mode even though the
+  // sidebar always shows the Marketplace nav item.
+  app.route('/api/marketplace', marketplaceRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionFeedbackRoutes())
