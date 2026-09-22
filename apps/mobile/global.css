@@ -139,6 +139,23 @@
   padding: 1px 4px !important;
 }
 
+/* The companion chat is presented in a compact desktop window as well as
+   narrow viewports. Its primary conversation copy stays at 16px regardless
+   of the outer window width. */
+.chat-md.chat-md-mobile p,
+.chat-md.chat-md-mobile [data-streamdown="list-item"] {
+  font-size: 1rem !important;
+  line-height: 1.5 !important;
+}
+
+.chat-md.chat-md-mobile [data-streamdown="heading-1"],
+.chat-md.chat-md-mobile [data-streamdown="heading-2"],
+.chat-md.chat-md-mobile [data-streamdown="heading-3"],
+.chat-md.chat-md-mobile [data-streamdown="heading-4"] {
+  font-size: 1.125rem !important;
+  line-height: 1.333333 !important;
+}
+
 :root {
   --color-background: 255 255 255;
   --color-foreground: 10 10 10;

@@ -21,6 +21,8 @@ import { FileViewerModal } from "../FileViewerModal";
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal";
 import { VideoPreviewModal } from "../VideoPreviewModal";
 import { downloadImage, isShogoDesktop } from "../chatImageActions";
+import { usePhoneLayout } from "../../../lib/native-phone-layout";
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
 
 export interface MessageContentProps {
   message: UIMessage;
@@ -384,6 +386,10 @@ export function MessageContent({
   className,
   variant = "default",
 }: MessageContentProps) {
+  const isPhoneLayout = usePhoneLayout();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+  const usesMobileChatTypography =
+    isPhoneLayout || usesMobileWorkspaceChrome;
   const content = extractTextContent(message);
   const images = extractImageParts(message);
   const files = extractFileParts(message);
@@ -448,8 +454,12 @@ export function MessageContent({
         <Text
           className={
             userBubble
-              ? "text-sm leading-5 text-white"
-              : "text-sm leading-5 text-foreground"
+              ? usesMobileChatTypography
+                ? "text-base leading-6 text-white"
+                : "text-sm leading-5 text-white"
+              : usesMobileChatTypography
+                ? "text-base leading-6 text-foreground"
+                : "text-sm leading-5 text-foreground"
           }
           selectable={!userBubble}
         >

@@ -56,7 +56,6 @@ import { useNativeSheetDrawer } from "../../lib/use-native-drawer-swipe";
 import { useNativePhoneSheetOpen } from "../../lib/native-phone-sheet-lock";
 import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell";
 import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
-import { WorkspaceAgentShell } from "../../components/layout/WorkspaceAgentShell";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { projectSidebarEvents } from "../../lib/project-sidebar-events";
 
@@ -65,13 +64,12 @@ csMark("app:layout:module-load");
 function AppLayoutInner() {
   csMark("app:layout:render");
   const { isAuthenticated, isLoading, user, refreshSession } = useAuth();
-  const { localMode, features } = usePlatformConfig();
-  // The workspace agent shell (new sidebar + WorkspaceAgentShell/
-  // MobileWorkspaceShell chrome) is personal-workspace-only — team
-  // workspaces always keep the classic AppSidebar + plain project view,
-  // on both web and local desktop. `useWorkspaceExperience()` defaults to
-  // `'team'` until the active workspace has loaded, which is the correct
-  // fail-safe here too (never flash the new shell before we know better).
+  const { localMode } = usePlatformConfig();
+  // The workspace agent chrome is mobile-only. Wide web surfaces always keep
+  // the established AppSidebar + plain project view, regardless of workspace
+  // kind. `useWorkspaceExperience()` defaults to `'team'` until the active
+  // workspace has loaded, so narrow surfaces also avoid flashing the new
+  // mobile chrome before their workspace is known.
   const experience = useWorkspaceExperience();
   const router = useRouter();
   const pathname = usePathname();
@@ -100,25 +98,17 @@ function AppLayoutInner() {
     /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, "/")) &&
     pathname !== "/projects" &&
     pathname !== "/(app)/projects";
-  // The shell is coupled to the workspace runtime: without it, the legacy
-  // home remains available instead of exposing a chat that cannot run turns.
-  // Desktop and narrow/native rollouts are deliberately independent. Gated
-  // to personal workspaces only — see `experience` above.
-  const isPersonalWorkspace = experience.kind === "personal";
-  const desktopAgentShellEnabled =
-    isWorkspaceRuntimeEnabled() &&
-    isPersonalWorkspace &&
-    (localMode || features.agentShell);
-  const mobileAgentShellEnabled =
-    isWorkspaceRuntimeEnabled() &&
-    isPersonalWorkspace &&
-    (localMode || features.mobileAgentShell);
-  const useAgentShell = isWide && !isIdeEmbed && desktopAgentShellEnabled;
+  // The mobile shell is coupled to the workspace runtime: without it, the
+  // legacy home remains available instead of exposing a chat that cannot run
+  // turns. All workspace kinds share this mobile chrome; wide web and IDE
+  // surfaces remain on the established classic presentation.
+  const mobileAgentShellEnabled = isWorkspaceRuntimeEnabled();
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
   const isWorkspaceChatRoute =
     isHomePage ||
     isProjectDetail ||
+    pathname.includes("/new-project") ||
     pathname.includes("/side-chats/") ||
     pathname.includes("/project-chat/") ||
     pathname.includes("/project-surface/");
@@ -144,6 +134,14 @@ function AppLayoutInner() {
   const isSearchPage = pathname === "/search" || pathname === "/(app)/search";
   const isProjectChatsPage =
     pathname === "/project-chats" || pathname === "/(app)/project-chats";
+  const isAIModelsPage =
+    pathname === "/ai-models" || pathname === "/(app)/ai-models";
+  const isNonChatWorkspacePage = [
+    "/tasks",
+    "/activity",
+    "/canvases",
+    "/goals",
+  ].some((segment) => pathname.includes(segment));
 
   usePostHogIdentify();
   const posthog = usePostHogSafe();
@@ -236,16 +234,20 @@ function AppLayoutInner() {
     isProfilePage ||
     isAccountPage ||
     isSearchPage ||
-    isProjectChatsPage;
-  // Project chat has its own header, but it still uses the same native drawer
-  // underneath. Keep horizontal drawer gestures enabled there so the sheet
-  // can be opened and dismissed by swiping just like Home.
+    isProjectChatsPage ||
+    isAIModelsPage ||
+    isNonChatWorkspacePage;
+  // The companion mobile shell owns its own drawer and swipe gesture. Keep
+  // the legacy sheet drawer inactive there so an edge swipe cannot reveal the
+  // old AppSidebar behind the new chat chrome.
   const nativeDrawerSwipe =
     !isWide &&
     !isIdeEmbed &&
+    !useMobileWorkspaceShell &&
     !phoneSheetOpen &&
     (!suppressNarrowAppHeader || isProjectDetail);
-  const nativeSheetDrawer = !isWide && !isIdeEmbed;
+  const nativeSheetDrawer =
+    !isWide && !isIdeEmbed && !useMobileWorkspaceShell;
   const drawer = useNativeSheetDrawer({
     windowWidth: width,
     isDark,
@@ -262,7 +264,7 @@ function AppLayoutInner() {
   useEffect(() => {
     let pendingFrame: number | null = null;
     const unsubscribe = projectSidebarEvents.subscribeOpenProject(() => {
-      if (isWide || isIdeEmbed) return;
+      if (isWide || isIdeEmbed || useMobileWorkspaceShell) return;
       if (drawerOpen) {
         closeDrawer();
         return;
@@ -280,12 +282,23 @@ function AppLayoutInner() {
       if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
       unsubscribe();
     };
-  }, [closeDrawer, drawerOpen, isIdeEmbed, isWide, openDrawer]);
+  }, [
+    closeDrawer,
+    drawerOpen,
+    isIdeEmbed,
+    isWide,
+    openDrawer,
+    useMobileWorkspaceShell,
+  ]);
 
   useEffect(() => {
     if (!isWide && !isAccountPage) return;
     resetDrawer();
   }, [isAccountPage, isWide, resetDrawer]);
+
+  useEffect(() => {
+    if (useMobileWorkspaceShell) resetDrawer();
+  }, [resetDrawer, useMobileWorkspaceShell]);
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
@@ -359,7 +372,6 @@ function AppLayoutInner() {
 
   const showSidebar =
     isWide &&
-    !useAgentShell &&
     !isIdeEmbed &&
     !isSettingsPage &&
     !isBillingPage;
@@ -391,15 +403,13 @@ function AppLayoutInner() {
           <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
         ) : null
       }
-      bottomNav={!isWide && !isIdeEmbed ? <MobileBottomNav /> : null}
+      bottomNav={
+        !isWide && !isIdeEmbed && !isAIModelsPage ? <MobileBottomNav /> : null
+      }
       drawer={drawer}
     >
       {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
-      {useAgentShell ? (
-        <WorkspaceAgentShell>
-          <Slot />
-        </WorkspaceAgentShell>
-      ) : useMobileWorkspaceShell ? (
+      {useMobileWorkspaceShell ? (
         <MobileWorkspaceShell>
           <Slot />
         </MobileWorkspaceShell>

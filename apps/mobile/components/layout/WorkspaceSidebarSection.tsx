@@ -15,6 +15,7 @@ interface WorkspaceSidebarSectionProps {
   action?: ReactNode;
   actionVisibility?: "always" | "hover";
   collapseOnHover?: boolean;
+  headerClassName?: string;
   children: ReactNode;
 }
 
@@ -31,6 +32,7 @@ export function WorkspaceSidebarSection({
   action,
   actionVisibility = "always",
   collapseOnHover = false,
+  headerClassName,
   children,
 }: WorkspaceSidebarSectionProps) {
   const prefersReducedMotion = useReducedMotion();
@@ -61,7 +63,10 @@ export function WorkspaceSidebarSection({
           accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${label}`}
           accessibilityState={{ expanded }}
           onPress={() => onExpandedChange(!expanded)}
-          className="min-h-11 flex-1 flex-row items-center rounded-lg px-2 active:bg-muted"
+          className={cn(
+            "min-h-11 flex-1 flex-row items-center rounded-lg px-2 active:bg-muted",
+            headerClassName
+          )}
         >
           <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {label}

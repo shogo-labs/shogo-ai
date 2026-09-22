@@ -11,6 +11,8 @@ import {
   type ColorValue,
   type ViewStyle,
 } from "react-native";
+import { usePhoneLayout } from "../../lib/native-phone-layout";
+import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 
 interface ThemeColors {
   text: ColorValue;
@@ -50,6 +52,17 @@ const baseStyles: MarkedStyles = {
   link: { textDecorationLine: "underline" },
   hr: { height: 1, marginVertical: 8 },
   image: { borderRadius: 6 },
+};
+
+/** Larger, readable body copy for the phone chat surface. */
+const phoneChatStyles: MarkedStyles = {
+  ...baseStyles,
+  text: { fontSize: 16, lineHeight: 24 },
+  h1: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 6 },
+  h2: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 5 },
+  h3: { fontSize: 18, lineHeight: 24, fontWeight: "600", marginBottom: 4 },
+  h4: { fontSize: 18, lineHeight: 24, fontWeight: "500" },
+  li: { fontSize: 16, lineHeight: 24 },
 };
 
 const thinkingStyles: MarkedStyles = {
@@ -210,6 +223,8 @@ export const MarkdownText = memo(function MarkdownText({
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
+  const isPhoneLayout = usePhoneLayout();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
 
   const isThinking = variant === "thinking";
   const colors =
@@ -220,7 +235,11 @@ export const MarkdownText = memo(function MarkdownText({
       : isThinking
       ? lightThinkingColors
       : lightColors;
-  const styles = isThinking ? thinkingStyles : baseStyles;
+  const styles = isThinking
+    ? thinkingStyles
+    : isPhoneLayout || usesMobileWorkspaceChrome
+    ? phoneChatStyles
+    : baseStyles;
 
   const value = useMemo(() => children || "", [children]);
   const renderer = useMemo(

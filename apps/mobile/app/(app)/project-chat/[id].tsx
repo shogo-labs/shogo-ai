@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { observer } from "mobx-react-lite";
 import { useAuth } from "../../../contexts/auth";
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../../hooks/useActiveWorkspace";
+import { useMobileWorkspaceChrome } from "../../../components/layout/MobileWorkspaceChromeContext";
 import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
 import { ChatPanel } from "../../../components/chat/ChatPanel";
 
@@ -27,9 +28,24 @@ export default observer(function ProjectChatScreen() {
   const { user } = useAuth();
   const workspace = useActiveWorkspace();
   const experience = useWorkspaceExperience();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
   const actions = useDomainActions();
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     requestedSessionId ?? null
+  );
+  // Personal main and side chats intentionally stay Agent-only. A project
+  // chat has its own model/runtime, so mobile exposes Ask and Plan from the
+  // existing composer plus-sheet without changing desktop presentation.
+  const composer = useMemo(
+    () =>
+      usesMobileWorkspaceChrome
+        ? {
+            ...experience.composer,
+            showInteractionModes: true,
+            forcedMode: undefined,
+          }
+        : experience.composer,
+    [experience.composer, usesMobileWorkspaceChrome]
   );
 
   useEffect(() => {
@@ -81,7 +97,7 @@ export default observer(function ProjectChatScreen() {
         chatScope="project"
         chatSessionId={chatSessionId}
         onChatSessionChange={setChatSessionId}
-        composer={experience.composer}
+        composer={composer}
         presentation="agent"
         className="flex-1"
         isActive

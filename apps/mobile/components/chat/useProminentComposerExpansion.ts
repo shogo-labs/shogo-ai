@@ -26,7 +26,7 @@ import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT } from "../../lib/native-phone-layout
 
 export const PROMINENT_COMPOSER_MIN_HEIGHT = 24
 export const PROMINENT_COMPOSER_MAX_HEIGHT = 132
-export const PROMINENT_COMPOSER_LINE_HEIGHT = 22
+export const PROMINENT_COMPOSER_LINE_HEIGHT = 24
 export const PROMINENT_COMPOSER_FONT_SIZE = 16
 export const PROMINENT_COMPOSER_PADDING_TOP = 14
 export const PROMINENT_COMPOSER_PADDING_HORIZONTAL = 16
@@ -45,6 +45,8 @@ export const PROMINENT_COMPOSER_WRAP_SLOP = 8
 export const PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH = 10000
 /** Keep the native compact field centered in the 45px toolbar row. */
 export const PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET = 0
+/** Optical correction for browser text metrics in the compact toolbar row. */
+export const PROMINENT_COMPOSER_WEB_COMPACT_TEXT_OFFSET = -1
 /** Keep the iOS placeholder centered with the compact composer controls. */
 export const PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP = 0
 export const PROMINENT_COMPOSER_OVERLAY_Z_INDEX = 4
@@ -183,7 +185,9 @@ export function useProminentComposerExpansion({
   const compactTop =
     chromeHeight +
     (toolbarMinHeight - minHeight) / 2 +
-    (Platform.OS === "web" ? 0 : PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET)
+    (Platform.OS === "web"
+      ? PROMINENT_COMPOSER_WEB_COMPACT_TEXT_OFFSET
+      : PROMINENT_COMPOSER_NATIVE_COMPACT_TEXT_OFFSET)
   const stackedTop = chromeHeight + paddingTop
 
   useEffect(() => {

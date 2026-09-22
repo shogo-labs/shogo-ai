@@ -3,7 +3,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, View, useWindowDimensions } from "react-native";
-import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
+import {
+  useGlobalSearchParams,
+  usePathname,
+  useRouter,
+} from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Activity,
@@ -101,7 +105,10 @@ export function MobileBottomNav() {
   const router = useRouter();
   const pathname = usePathname();
   const experience = useWorkspaceExperience();
-  const params = useLocalSearchParams<{
+  // This component lives in the app layout rather than in the leaf project
+  // surface route. Local params therefore remain stale after switching to a
+  // canvas/files/plans surface; global params track the focused route.
+  const params = useGlobalSearchParams<{
     id?: string;
     chatSessionId?: string;
     projectId?: string;
@@ -109,10 +116,6 @@ export function MobileBottomNav() {
     returnChatSessionId?: string;
     tab?: string;
     surface?: string;
-    // Mirrors the project layout's currently-visible pane (kept separate from
-    // `tab`, which drives that screen's own tab-intent/deep-link handling) so
-    // the highlight stays correct even when the pane changes via in-page
-    // controls rather than a bottom-nav tap.
     navTab?: string;
     projectSettings?: string;
   }>();
@@ -257,6 +260,7 @@ export function MobileBottomNav() {
         id: activeProjectId,
         ...(chatSessionId ? { chatSessionId } : {}),
         surface: tab,
+        navTab: tab,
       },
     } as any);
   };

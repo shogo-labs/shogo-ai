@@ -55,6 +55,7 @@ import { observer } from "mobx-react-lite";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
 import { DefaultChatTransport } from "ai";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
@@ -87,6 +88,7 @@ import {
   useProjectCollection,
 } from "@shogo/shared-app/domain";
 import { decideMessagesPropagation } from "./messages-propagation";
+import { useResolvedTheme } from "../../contexts/theme";
 import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete";
 import {
   probeChatTurnStatus,
@@ -956,6 +958,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   } = useNativePhoneWindow();
   const insets = useSafeAreaInsets();
   const isPhoneViewport = isPhoneLayout(windowWidth, windowHeight);
+  const isDark = useResolvedTheme() === "dark";
   const ideBridge = useIdeBridge(ideMode);
 
   const { studioChat } = useSDKDomains();
@@ -7147,6 +7150,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 column and report 0, so this spacer stays unused. */}
                   {dockHeight > 0 && <View style={{ height: dockHeight }} />}
                 </ScrollView>
+                {presentation === "agent" &&
+                phoneTranscriptTopPadding === "floating-agent" ? (
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={
+                      isDark
+                        ? [
+                            "rgba(16,16,16,0.94)",
+                            "rgba(16,16,16,0.62)",
+                            "rgba(16,16,16,0)",
+                          ]
+                        : [
+                            "rgba(255,255,255,0.94)",
+                            "rgba(255,255,255,0.62)",
+                            "rgba(255,255,255,0)",
+                          ]
+                    }
+                    locations={[0, 0.48, 1]}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 116,
+                      zIndex: 5,
+                    }}
+                  />
+                ) : null}
 
                 {/* "Jump to latest" pill — shown when the user has scrolled away
               from the bottom during streaming. Re-engages follow on press.
