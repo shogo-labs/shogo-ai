@@ -2024,6 +2024,14 @@ export const api = {
     return res.data
   },
 
+  async markAnnouncementSeen(http: HttpClient, version: string) {
+    const res = await http.post<{ ok: boolean; version: string }>(
+      '/api/me/announcements/seen',
+      { version },
+    )
+    return res.data
+  },
+
   // ─── License keys ─────────────────────────────────────────
 
   /**

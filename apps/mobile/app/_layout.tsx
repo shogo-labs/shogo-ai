@@ -78,6 +78,8 @@ import { captureAttribution } from '../lib/attribution'
 import { safeSetItem } from '../lib/safe-storage'
 import { setPendingLicenseCode } from '../lib/pending-license'
 import * as ExpoLinking from 'expo-linking'
+import { useWhatsNew } from '../lib/whats-new/use-whats-new'
+import { WhatsNewModal } from '../components/whats-new/WhatsNewModal'
 
 import { isNoiseEvent } from '../lib/sentry-noise-filter'
 
@@ -178,6 +180,31 @@ function useCaptureRedeemDeepLink() {
   }, [nativeUrl])
 }
 
+function AuthenticatedAppShell({ statusBarScheme }: { statusBarScheme: 'light' | 'dark' }) {
+  const whatsNew = useWhatsNew()
+
+  return (
+    <ActiveInstanceProvider>
+      <InstanceOfflineWatcher />
+      <UpdateBanner />
+      <WhatsNewModal
+        release={whatsNew.release}
+        visible={whatsNew.visible}
+        onDismiss={whatsNew.dismiss}
+      />
+      <StatusBar style={statusBarScheme === 'dark' ? 'light' : 'dark'} />
+      <Stack screenOptions={{ headerShown: false, lazy: true }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="(auth)" />
+        <Stack.Screen name="invite/[token]" />
+        <Stack.Screen name="(onboarding)" />
+        <Stack.Screen name="(app)" />
+        <Stack.Screen name="(admin)" />
+      </Stack>
+    </ActiveInstanceProvider>
+  )
+}
+
 function RootLayoutInner() {
   csMark('root:layout:render')
   useEffect(() => { csMark('root:layout:mounted') }, [])
@@ -195,19 +222,7 @@ function RootLayoutInner() {
     <GluestackUIProvider mode={theme}>
       <PostHogProvider>
         <AuthProvider>
-          <ActiveInstanceProvider>
-            <InstanceOfflineWatcher />
-            <UpdateBanner />
-            <StatusBar style={statusBarScheme === 'dark' ? 'light' : 'dark'} />
-            <Stack screenOptions={{ headerShown: false, lazy: true }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="invite/[token]" />
-              <Stack.Screen name="(onboarding)" />
-              <Stack.Screen name="(app)" />
-              <Stack.Screen name="(admin)" />
-            </Stack>
-          </ActiveInstanceProvider>
+          <AuthenticatedAppShell statusBarScheme={statusBarScheme} />
         </AuthProvider>
       </PostHogProvider>
     </GluestackUIProvider>

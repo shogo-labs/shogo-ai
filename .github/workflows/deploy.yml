@@ -123,6 +123,7 @@ jobs:
       environment: ${{ steps.set-env.outputs.environment }}
       is_production: ${{ steps.set-env.outputs.is_production }}
       build_only: ${{ steps.set-env.outputs.build_only }}
+      app_version: ${{ steps.resolve-version.outputs.version }}
     steps:
       - name: Determine environment from trigger
         id: set-env
@@ -150,6 +151,20 @@ jobs:
           echo "build_only=$BUILD_ONLY" >> $GITHUB_OUTPUT
           echo "Deploying to: $ENV (is_production=$IS_PROD, build_only=$BUILD_ONLY)"
 
+      - name: Checkout release tags
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-tags: true
+
+      - name: Resolve app version
+        id: resolve-version
+        env:
+          # The web bundle should identify the release it belongs to even for
+          # a staging deploy from main, so resolve the latest production tag
+          # when the current ref is not itself a version tag.
+          MOBILE_RELEASE_ENV: production
+        run: bash scripts/ci/resolve-mobile-app-version.sh
+
   # ===========================================================================
   # Stage 0.1: Resolve Config - Read environment-scoped variables
   # For production, this resolves the US (primary) region config.
@@ -162,6 +177,7 @@ jobs:
     outputs:
       environment: ${{ needs.setup.outputs.environment }}
       is_production: ${{ needs.setup.outputs.is_production }}
+      app_version: ${{ needs.setup.outputs.app_version }}
       ocir_registry: ${{ steps.registry.outputs.ocir_registry }}
       oke_cluster_ocid: ${{ vars.OKE_CLUSTER_OCID }}
       node_pool_ocid: ${{ vars.NODE_POOL_OCID }}
@@ -590,6 +606,7 @@ jobs:
             ${{ matrix.build_args == 'api' && format('BUILD_HASH={0}', github.sha) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_API_URL={0}', vars.EXPO_PUBLIC_API_URL) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_BUILD_HASH={0}', github.sha) || '' }}
+            ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_APP_VERSION={0}', needs.resolve-config.outputs.app_version) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_APP_ENV={0}_web', needs.resolve-config.outputs.environment) || '' }}
             ${{ matrix.build_args == 'web' && format('EXPO_PUBLIC_SENTRY_DSN_WEB={0}', secrets.EXPO_PUBLIC_SENTRY_DSN_WEB) || '' }}
             ${{ matrix.build_args == 'web' && format('SENTRY_AUTH_TOKEN={0}', secrets.SENTRY_AUTH_TOKEN) || '' }}
@@ -648,6 +665,7 @@ jobs:
             --build-arg WORKSPACE_DEPS="${OCIR_REGISTRY}/shogo/shogo-workspace-deps:${{ github.sha }}" \
             --build-arg EXPO_PUBLIC_API_URL="${{ vars.EXPO_PUBLIC_API_URL }}" \
             --build-arg EXPO_PUBLIC_BUILD_HASH="${{ github.sha }}" \
+            --build-arg EXPO_PUBLIC_APP_VERSION="${{ needs.resolve-config.outputs.app_version }}" \
             --build-arg EXPO_PUBLIC_APP_ENV="${{ needs.resolve-config.outputs.environment }}_web" \
             --build-arg EXPO_PUBLIC_SENTRY_DSN_WEB="${{ secrets.EXPO_PUBLIC_SENTRY_DSN_WEB }}" \
             --build-arg SENTRY_AUTH_TOKEN="${{ secrets.SENTRY_AUTH_TOKEN }}" \

@@ -275,6 +275,7 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
           # `Sentry.init({ release: process.env.EXPO_PUBLIC_BUILD_HASH || 'dev' })`
           # in apps/mobile/app/_layout.tsx reads this at bundle time. Without it
@@ -306,6 +307,7 @@ jobs:
           SENTRY_LOG_LEVEL: info
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
         run: |
@@ -480,6 +482,7 @@ jobs:
         env:
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
