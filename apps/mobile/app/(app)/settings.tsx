@@ -53,6 +53,7 @@ import {
   KeyRound as KeyRoundIcon,
   LogOut as LogOutIcon,
   Plus as PlusIcon,
+  Sparkles as SparklesIcon,
 } from "lucide-react-native";
 import {
   Text,
@@ -125,10 +126,12 @@ import {
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
 import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
+import whatsNewCatalog from "../../lib/whats-new/releases.generated.json";
 import {
   reloadAfterWorkspaceSwitch,
   scheduleWorkspaceSwitch,
 } from "../../lib/switch-workspace";
+
 import {
   SETTINGS_TABS,
   settingsNavItems,
@@ -156,6 +159,8 @@ import {
 } from "@shogo/shared-ui/primitives";
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
 import { useDualPlan } from "../../lib/dual-plan-preference";
+
+const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
 const SETTINGS_ICON_MAP = {
   ArrowLeft: ArrowLeftIcon,
@@ -4210,6 +4215,28 @@ export function WorkspaceAccountActions({
               <ZapIcon size={18} className="text-muted-foreground" />
               <Text className="flex-1 text-sm text-foreground">What's New</Text>
             </Pressable>
+            {latestAnnouncedRelease && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Replay What's New"
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/settings",
+                    params: { whatsNew: latestAnnouncedRelease.version },
+                  } as any)
+                }
+                className={cn(
+                  sidebar
+                    ? "ml-8 flex-row items-center gap-2 rounded-lg px-2.5 py-2 active:bg-muted"
+                    : "ml-9 flex-row items-center gap-3 rounded-lg px-3 py-2 active:bg-muted"
+                )}
+              >
+                <SparklesIcon size={16} className="text-primary-500" />
+                <Text className="flex-1 text-xs text-muted-foreground">
+                  Replay latest announcement
+                </Text>
+              </Pressable>
+            )}
             <Pressable
               accessibilityRole="link"
               accessibilityLabel="Open Creator"

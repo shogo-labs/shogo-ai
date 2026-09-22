@@ -33,6 +33,7 @@ model User {
   // String[] so adminScopes is stored as JSON-encoded TEXT (`["analytics:read"]`).
   adminScopes         String   @default("[]")
   onboardingCompleted Boolean  @default(false)
+  lastSeenAnnouncementVersion String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
