@@ -21,6 +21,7 @@ import {
   Hammer,
   CheckCircle,
   MessageSquare,
+  Sparkles,
 } from "lucide-react-native"
 
 const PHASE_SUGGESTIONS: Record<string, string[]> = {
@@ -91,8 +92,30 @@ const PHASE_TITLES: Record<string, string> = {
   complete: "Feature Complete",
 }
 
+/**
+ * Suggestions shown for `presentation === "agent"` surfaces (Workspace/
+ * Personal Agent Chat, side chats, project chat). These are general
+ * companion prompts, not tied to the project Studio's discovery -> ... ->
+ * complete feature workflow, so they intentionally don't come from
+ * `PHASE_SUGGESTIONS`/`PHASE_TITLES`/`PHASE_ICONS` above.
+ */
+const AGENT_TITLE = "Start Chatting"
+const AGENT_ICON = Sparkles
+const AGENT_SUGGESTIONS = [
+  "What can you help me with?",
+  "Turn this into a goal",
+  "Catch me up on my goals",
+  "What have you been working on?",
+]
+
 export interface PhaseEmptyStateProps {
   phase: string | null
+  /**
+   * `agent` renders the generic companion suggestions above regardless of
+   * `phase`. `studio` (default) keeps the existing phase-keyed feature
+   * discovery/analysis/... suggestions.
+   */
+  presentation?: "agent" | "studio"
   onSuggestionClick?: (suggestion: string) => void
   quickActions?: { label: string; prompt: string }[]
   className?: string
@@ -100,16 +123,24 @@ export interface PhaseEmptyStateProps {
 
 export function PhaseEmptyState({
   phase,
+  presentation = "studio",
   onSuggestionClick,
   quickActions,
   className,
 }: PhaseEmptyStateProps) {
+  const isAgentPresentation = presentation === "agent"
   const phaseKey = phase || "discovery"
-  const colors = usePhaseColor(phaseKey)
+  const colors = usePhaseColor(isAgentPresentation ? "agent" : phaseKey)
 
-  const Icon = PHASE_ICONS[phaseKey] || MessageSquare
-  const title = PHASE_TITLES[phaseKey] || "Start Chatting"
-  const suggestions = PHASE_SUGGESTIONS[phaseKey] || ["Type a message"]
+  const Icon = isAgentPresentation
+    ? AGENT_ICON
+    : PHASE_ICONS[phaseKey] || MessageSquare
+  const title = isAgentPresentation
+    ? AGENT_TITLE
+    : PHASE_TITLES[phaseKey] || "Start Chatting"
+  const suggestions = isAgentPresentation
+    ? AGENT_SUGGESTIONS
+    : PHASE_SUGGESTIONS[phaseKey] || ["Type a message"]
 
   return (
     <View

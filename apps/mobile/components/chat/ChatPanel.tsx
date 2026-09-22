@@ -7130,6 +7130,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   ) : !isStreaming ? (
                     <PhaseEmptyState
                       phase={phase}
+                      presentation={presentation}
                       onSuggestionClick={handleSendMessage}
                       quickActions={quickActions}
                     />
