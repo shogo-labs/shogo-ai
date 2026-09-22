@@ -442,10 +442,11 @@ describe('gateway-tools', () => {
     test('createTools returns expected tools', () => {
       // Base tool count with every feature flag at its production default
       // (notably SHOGO_SEARCH_ENABLED unset, so `search` is not registered).
-      // 62 = 53 + `search_history` + `read_history` (chat/plan history search)
+      // 61 = 52 + `search_history` + `read_history` (chat/plan history search)
       // + the 7 project-lifecycle tools (project_list/create/attach/detach/
       // configure/call, system_apply — see project-tools.ts).
-      expect(createTools(createCtx())).toHaveLength(62)
+      // (`notify_user_error` was removed along with the noisy error toast UI.)
+      expect(createTools(createCtx())).toHaveLength(61)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

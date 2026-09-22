@@ -263,6 +263,7 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
           # Becomes the `release` tag for every Sentry event captured from
           # this OTA bundle (see apps/mobile/app/_layout.tsx). Without it
@@ -291,6 +292,7 @@ jobs:
           SENTRY_LOG_LEVEL: info
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
         run: |
@@ -448,6 +450,7 @@ jobs:
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
+          EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
 

@@ -117,6 +117,24 @@ describe("groupWorkParts", () => {
     expect(grouped[1].type).toBe("tool")
   })
 
+  test("hides legacy error notifications and preserves the surrounding work group", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("notify_user_error", { title: "Read failed", message: "Try again" }),
+      tool("Read", { path: "/b.ts" }),
+    ]
+    const grouped = groupWorkParts(parts)
+    expect(grouped).toHaveLength(1)
+    expect(grouped[0].type).toBe("work-group")
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(2)
+    }
+  })
+
+  test("hides a standalone legacy error notification", () => {
+    expect(groupWorkParts([tool("notify_user_error")])).toEqual([])
+  })
+
   test("repeated same-name non-work tool calls collapse into a tool-group", () => {
     const parts = [
       tool("mcp__shogo__store_get", { model: "a" }),

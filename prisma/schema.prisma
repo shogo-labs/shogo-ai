@@ -40,6 +40,7 @@ model User {
   // access. Validated against the catalog in apps/api/src/lib/admin-scopes.ts.
   adminScopes         String[] @default([])
   onboardingCompleted Boolean  @default(false)
+  lastSeenAnnouncementVersion String?
   // Write-ownership region for this user's identity-scoped rows (the user row
   // itself, notifications, etc.). Identity writes are routed to this region so
   // a given user is only ever written in one place, keeping active-active

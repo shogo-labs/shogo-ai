@@ -188,16 +188,6 @@ describe('ask_user', () => {
   })
 })
 
-describe('notify_user_error', () => {
-  test('returns acknowledged shape so the agent can continue', async () => {
-    const result = await call(createCtx(), 'notify_user_error', {
-      title: 'GitHub Auth Error',
-      message: 'Token expired. Reconnect via connect.',
-    })
-    expect(result.acknowledged).toBe(true)
-  })
-})
-
 describe('channel_list', () => {
   test('returns connected + configured lists with no config.json', async () => {
     const result = await call(createCtx(), 'channel_list')

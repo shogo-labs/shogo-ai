@@ -22,7 +22,7 @@ import {
 } from "./ConnectToolWidget"
 import { AskUserQuestionWidget, AskUserQuestionBar } from "./AskUserQuestionWidget"
 import { askUserStreamVariant } from "./pendingQuestion"
-import { TodoWidget } from "./TodoWidget"
+import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
 import { WorkGroup } from "./WorkGroup"
 import { WorkedForGroup } from "./WorkedForGroup"
@@ -43,12 +43,12 @@ import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
 import { GenerateImageWidget } from "./GenerateImageWidget"
 import { BrowserWidget } from "./BrowserWidget"
-import { NotifyErrorWidget } from "./NotifyErrorWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
+import { extractPlanFilepath } from "./plan-tool"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
 import { useTodoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
@@ -628,13 +628,10 @@ export const AssistantContent = memo(
           }
 
           if (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write") {
-            const userToggled = expandedTools.has(part.id)
             return (
-              <TodoWidget
+              <TodoRow
                 key={part.id}
                 tool={part.tool}
-                userToggled={userToggled}
-                onToggle={getToggle(part.id)}
               />
             )
           }
@@ -698,6 +695,10 @@ export const AssistantContent = memo(
               !!matchingConfirmedPlan &&
               ((matchingConfirmedPlan.toolCallId && matchingConfirmedPlan.toolCallId === toolCallId) ||
                 (!!matchingConfirmedPlan.filepath && matchingConfirmedPlan.filepath === planData.filepath))
+            const planFilepath =
+              planData.filepath ??
+              (typeof args?.filepath === "string" ? args.filepath : undefined) ??
+              extractPlanFilepath(part.tool.result)
             // Native: the live pending plan is the oval above the composer, not a
             // second card in the transcript.
             if (nativePhone && matchingPendingPlan) return null
@@ -707,21 +708,15 @@ export const AssistantContent = memo(
                 plan={planData}
                 isConfirmed={isConfirmed}
                 isUpdate={part.tool.toolName === "update_plan"}
+                isStreaming={part.tool.state === "streaming"}
                 onViewPlan={
-                  chatContext?.openPlan && planData.filepath
-                    ? () => chatContext.openPlan?.(planData.filepath)
+                  chatContext?.openPlan
+                    ? () => chatContext.openPlan?.(planFilepath ?? null)
                     : undefined
                 }
                 onBuild={isConfirmed ? null : chatContext?.buildPlan}
                 selectedModel={chatContext?.selectedModel}
-                isPro={chatContext?.isPro}
               />
-            )
-          }
-
-          if (part.tool.toolName === "notify_user_error") {
-            return (
-              <NotifyErrorWidget key={part.id} tool={part.tool} />
             )
           }
 
