@@ -92,7 +92,7 @@ export function LocalCloudBillingTab() {
             )}
             <Button onPress={handleSignIn} disabled={loginState === 'connecting'}>
               <Text className="text-primary-foreground font-medium">
-                {loginState === 'connecting' ? 'Minting key…' : 'Connect (mint API key in browser)'}
+                {loginState === 'connecting' ? 'Minting key…' : 'Connect'}
               </Text>
             </Button>
             {Platform.OS === 'web' && (

@@ -510,7 +510,7 @@ export default function AdminGeneralPage() {
                     >
                       {loginStatus === 'connecting'
                         ? 'Waiting for browser…'
-                        : 'Connect (mint API key in browser)'}
+                        : 'Connect'}
                     </Text>
                   </Pressable>
                   {loginError ? (
