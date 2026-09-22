@@ -552,6 +552,13 @@ export interface ChatPanelProps {
    * Desktop provides this via ContextAggregator; mobile passes nothing (no-op).
    */
   enrichMessage?: (text: string) => Promise<string>;
+  /**
+   * Phone transcript top inset. `"chrome"` (default) reserves room for
+   * `MobileWorkspaceShell`'s floating menu/bell buttons. `"floating-agent"`
+   * reserves extra room for the Muse-style avatar/name/status overlay
+   * (`PersonalAgentMobileHeader`) that floats above those same buttons.
+   */
+  phoneTranscriptTopPadding?: "chrome" | "floating-agent";
 }
 
 // ============================================================
@@ -938,6 +945,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   isActive = true,
   ideMode = false,
   enrichMessage,
+  phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER;
   const chatDockStore = useChatDockStore();
@@ -6963,7 +6971,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   style={chatMessagesScrollStyles.scroll}
                   contentContainerClassName={cn(
                     isPhoneViewport
-                      ? "px-4 pt-16 pb-36"
+                      ? phoneTranscriptTopPadding === "floating-agent"
+                        ? "px-4 pt-32 pb-36"
+                        : "px-4 pt-16 pb-36"
                       : presentation === "agent"
                       ? "px-6 pt-8 pb-[48px]"
                       : "p-2 pb-[40px]",
