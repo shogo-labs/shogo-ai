@@ -197,7 +197,27 @@ export async function resolveWorkspaceRuntimeUrl(
   const tag = opts.logTag ?? 'WorkspaceRuntime'
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
   const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
-  const attachedProjectIds = opts.attachedProjectIds ?? []
+  // The anchor project is always a member of its own merged-root workspace —
+  // it owns the root path, so its guest-side PreviewManager can only ever
+  // come up if the runtime's member list includes it. `startProjectWorkspace`
+  // (host mode) already defensively prepends the anchor for this reason, but
+  // the metal and k8s branches below previously forwarded `opts.attachedProjectIds`
+  // verbatim, which only lists the anchor's OTHER attachments (see
+  // `resolveAnchorSpawnOpts` in runtime/manager.ts — it never includes the
+  // anchor itself). That left every anchor project with no OTHER attachments
+  // — i.e. every project in an otherwise-empty workspace, which is the common
+  // case — booting a workspace runtime whose guest never recognizes the
+  // anchor as an attached member, so `getWorkspacePreviewManager()` on the
+  // guest returns null and the preview never starts, permanently stuck on
+  // the "Project Ready" placeholder (staging incident, 2026-09-22, project
+  // a0bea431-... and its 27 workspace siblings). Computing the deduped
+  // member list once, here, fixes metal + k8s uniformly and makes the
+  // host branch's own prepend a harmless no-op.
+  const attachedProjectIds = opts.anchorProjectId
+    ? [opts.anchorProjectId, ...(opts.attachedProjectIds ?? [])].filter(
+        (id, i, arr) => !!id && arr.indexOf(id) === i,
+      )
+    : opts.attachedProjectIds ?? []
   // Cloud branches serialize spawns across replicas with an advisory lease.
   const spawnLease =
     opts._spawnLease ?? (<T>(id: string, fn: () => Promise<T>) => withWorkspaceSpawnLease(id, fn, { logTag: tag }))
