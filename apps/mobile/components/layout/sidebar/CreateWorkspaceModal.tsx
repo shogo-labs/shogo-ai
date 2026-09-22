@@ -17,7 +17,7 @@ import {
 
 const X = accountSheetIcon(XIcon);
 
-// ─── CreateWorkspaceModal (free — first workspace only) ────
+// ─── CreateWorkspaceModal (free — shown until the account owns a team workspace) ────
 
 export function CreateWorkspaceModal({
   visible,

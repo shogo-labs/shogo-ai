@@ -222,15 +222,24 @@ export async function createPaidWorkspace(
 }
 
 /**
- * Count workspaces owned by a user.
- * Used to enforce the one-free-workspace-per-user limit.
+ * Count workspaces owned by a user, optionally scoped to a single `kind`.
+ *
+ * Used to enforce the one-free-workspace-per-`kind`-per-user limit: every
+ * account may own up to one free `personal` workspace *and* one free `team`
+ * workspace; anything beyond that requires a paid subscription (see
+ * `workspaceHooks.beforeCreate`). Passing no `kind` preserves the original
+ * "any kind" count, still used by the child-workspace bypass check.
  */
-export async function getUserOwnedWorkspaceCount(userId: string): Promise<number> {
+export async function getUserOwnedWorkspaceCount(
+  userId: string,
+  kind?: WorkspaceKind,
+): Promise<number> {
   return prisma.member.count({
     where: {
       userId,
       role: 'owner',
       workspaceId: { not: null },
+      ...(kind ? { workspace: { kind } } : {}),
     },
   });
 }
