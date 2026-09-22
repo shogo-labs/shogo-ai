@@ -119,6 +119,9 @@ jobs:
       - name: Check replication publication is self-maintaining
         run: bun run check:publication
 
+      - name: Check generated What's New catalog
+        run: bun run check:whats-new
+
       - name: Check multi-region cron locks + unique-key classification
         # Guards against the 2026-05-21 analytics_digests poison-pill class
         # of failure: an in-process cron upserting on a non-PK unique index

@@ -1,0 +1,38 @@
+[
+  {
+    "version": "1.12",
+    "slug": "v1-12",
+    "title": "Shogo 1.12",
+    "date": "2026-06-26",
+    "announce": true,
+    "intro": "The 1.12 release brings a built-in code editor with AI chat, big improvements to publishing your apps, and a smoother billing and usage experience.",
+    "highlights": [
+      {
+        "title": "Local Shogo IDE",
+        "description": "Edit your project in a full code editor with an AI chat that understands your files.",
+        "icon": "code"
+      },
+      {
+        "title": "Publish apps from local",
+        "description": "Publish an app directly from the desktop app in local mode.",
+        "icon": "rocket"
+      },
+      {
+        "title": "Server-backed published apps",
+        "description": "Run published apps with durable data, always-on servers, and password protection.",
+        "icon": "server"
+      },
+      {
+        "title": "Tech stacks at project creation",
+        "description": "Pick your stack when creating a project to get started faster.",
+        "icon": "layers"
+      },
+      {
+        "title": "Smoother billing and usage",
+        "description": "Track usage and remaining credits with a unified, live-updating experience.",
+        "icon": "activity"
+      }
+    ],
+    "url": "https://docs.shogo.ai/changelog/v1-12"
+  }
+]

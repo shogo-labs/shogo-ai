@@ -28,6 +28,7 @@ model User {
   image               String?
   role                String   @default("user")
   onboardingCompleted Boolean  @default(false)
+  lastSeenAnnouncementVersion String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
