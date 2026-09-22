@@ -12,6 +12,7 @@
 import { resolve, join, dirname } from 'path'
 import { existsSync, lstatSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
+import { dedupeRoots, isWithinAnyRoot, isWithinRoot } from './path-boundary'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { createLogger } from '@shogo/shared-runtime'
 import type {
@@ -816,15 +817,17 @@ export function assertWithinWorkspace(workspaceDir: string, filePath: string): s
     } catch {
       /* fall through */
     }
-    const roots = [workspaceDir, ...linkedFolders].map((r) => resolve(r))
-    const realRoots = roots.map((r) => {
-      try {
-        return realpathSync(r)
-      } catch {
-        return r
-      }
-    })
-    const ok = realRoots.some((root) => resolved === root || resolved.startsWith(root + '/'))
+    const roots = dedupeRoots([workspaceDir, ...linkedFolders].map((r) => resolve(r)))
+    const realRoots = dedupeRoots(
+      roots.map((r) => {
+        try {
+          return realpathSync(r)
+        } catch {
+          return r
+        }
+      }),
+    )
+    const ok = isWithinAnyRoot(realRoots, resolved)
     if (!ok) {
       throw new Error(
         `Path is outside the project's allowed folders: ${filePath}\n` +
@@ -839,7 +842,7 @@ export function assertWithinWorkspace(workspaceDir: string, filePath: string): s
       } catch {
         return resolved
       }
-      const realOk = realRoots.some((root) => real === root || real.startsWith(root + '/'))
+      const realOk = isWithinAnyRoot(realRoots, real)
       if (!realOk) {
         throw new Error(`Symlink target outside allowed roots: ${filePath}`)
       }
@@ -848,13 +851,13 @@ export function assertWithinWorkspace(workspaceDir: string, filePath: string): s
   }
 
   if (process.env.SHOGO_LOCAL_MODE === 'true') return resolved
-  if (!resolved.startsWith(workspaceDir)) {
+  if (!isWithinRoot(workspaceDir, resolved)) {
     throw new Error(`Path outside workspace: ${filePath}`)
   }
   if (existsSync(resolved)) {
     const realWorkspace = realpathSync(workspaceDir)
     const real = realpathSync(resolved)
-    if (!real.startsWith(realWorkspace) && !real.startsWith(workspaceDir)) {
+    if (!isWithinRoot(realWorkspace, real) && !isWithinRoot(workspaceDir, real)) {
       throw new Error(`Symlink target outside workspace: ${filePath}`)
     }
   }

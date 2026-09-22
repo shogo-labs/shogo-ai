@@ -31,7 +31,8 @@
  */
 
 import { existsSync, realpathSync } from 'fs'
-import { resolve, sep } from 'path'
+import { resolve } from 'path'
+import { isWithinAnyRoot } from './path-boundary'
 
 import {
   getResolvedTrust,
@@ -215,10 +216,9 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
     }
   }
 
-  const inAllowedRoot = roots.some((root) => {
-    const normalized = root.endsWith(sep) ? root : root + sep
-    return real === root || real.startsWith(normalized)
-  })
+  // Shared helper so this guard and permission-engine's cannot drift apart
+  // again — that drift is why `exec` worked while the file tools did not.
+  const inAllowedRoot = isWithinAnyRoot(roots, real)
   if (!inAllowedRoot) {
     return {
       ok: false,
@@ -268,10 +268,9 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
           return resolved
         }
       })
-    const underReadonly = readonlyRoots.some((root) => {
-      const normalized = root.endsWith(sep) ? root : root + sep
-      return real === root || real.startsWith(normalized)
-    })
+    // Case-folded on Windows/macOS so the guard cannot be bypassed by case
+    // alone (a root attached as 'Foo' must still match a path resolving to 'foo').
+    const underReadonly = isWithinAnyRoot(readonlyRoots, real)
     if (underReadonly) {
       return {
         ok: false,

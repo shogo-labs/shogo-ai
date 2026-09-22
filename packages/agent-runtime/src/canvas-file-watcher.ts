@@ -467,9 +467,12 @@ export class CanvasFileWatcher {
   }
 
   private handleChokidarFileEvent(op: 'add' | 'change' | 'unlink', absPath: string): void {
-    const rel = relative(this.workspaceDir, absPath)
-    if (shouldIgnore(rel)) return
-    const path = normalizeRelativePath(rel)
+    // Normalise to POSIX separators BEFORE the ignore check: shouldIgnore()
+    // compares against forward-slash prefixes like 'src/generated', and on
+    // Windows path.relative() returns backslashes, so nested paths under an
+    // ignored prefix never matched and were watched anyway (SHOG-749).
+    const path = normalizeRelativePath(relative(this.workspaceDir, absPath))
+    if (shouldIgnore(path)) return
 
     if (op === 'unlink') {
       // LSP bridge fires regardless of dedupe — the deletion event is
