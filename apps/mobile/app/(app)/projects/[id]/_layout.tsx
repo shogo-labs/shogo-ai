@@ -586,6 +586,10 @@ export default observer(function ProjectLayout() {
   }, [project?.settings]);
 
   const canvasEnabled = projectSettings.canvasEnabled !== false;
+  // Hoisted above the `useAgentUrl()` call below (was previously derived
+  // much later, near `handleTechStackChange`) so the stall-threshold
+  // wiring can react to it as soon as `projectSettings` resolves.
+  const techStackId = projectSettings.techStackId as string | undefined;
   const [iframeRefreshKey, setIframeRefreshKey] = useState(0);
   const [canvasThemeSupported, setCanvasThemeSupported] = useState<
     boolean | null
@@ -956,6 +960,14 @@ export default observer(function ProjectLayout() {
   } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === "web" ? "include" : "omit",
     headers: openRequestHeaders,
+    // Expo/Metro-based stacks measurably cold-boot slower than Vite
+    // (~2.5-3 min vs. well under 45s typically, per the staging
+    // investigation into project a0bea431-...) — give them a longer
+    // runway before the "taking longer than expected" recovery card
+    // replaces the loading spinner. `techStackId` is unknown (undefined)
+    // until `projectSettings` resolves, so this starts at the default
+    // 45s and re-arms once the real value is known.
+    stallThresholdMs: techStackId === "expo-app" ? 150_000 : undefined,
   });
 
   // Pre-warm on intent: reaching for "open preview in new tab" is a strong
@@ -2223,8 +2235,6 @@ export default observer(function ProjectLayout() {
     },
     [updateProjectSettings, agentUrl, nativeHeaders, params.tab, router]
   );
-
-  const techStackId = projectSettings.techStackId as string | undefined;
 
   const handleTechStackChange = useCallback(
     async (stackId: string, capabilities?: Record<string, boolean>) => {

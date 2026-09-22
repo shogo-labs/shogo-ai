@@ -232,6 +232,43 @@ describe('PreviewManager.runExpoExportWeb (private)', () => {
   })
 })
 
+// --- startApiServer in-flight guard ---------------------------------------
+//
+// Mirrors the `expoExportInFlight` reentrancy test directly above. Without
+// this guard, callers reachable outside `start()`/`restart()`'s
+// `lifecycleInFlight` gate — `sync()`, the schema-change handler,
+// `restartApiServerOnly()`, `handleCrash()`'s retry, and
+// `maybeRecoverApiServer()` — could each trigger their own concurrent
+// `startApiServer()` spawn attempt, with each one's fresh sidecar looking
+// like a "stale" port squatter to the others (the SIGKILL crash-loop
+// observed in staging on project `a0bea431-...`, 2026-09).
+describe('PreviewManager.startApiServer (private) — in-flight guard', () => {
+  it('reentrancy — concurrent calls share the same in-flight promise', async () => {
+    const m = mk() as any
+    let calls = 0
+    m._startApiServerImpl = async () => {
+      calls++
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    const a = m.startApiServer()
+    const b = m.startApiServer()
+    await Promise.all([a, b])
+    expect(calls).toBe(1)
+  })
+
+  it('a call after the in-flight one settles runs a fresh spawn attempt', async () => {
+    const m = mk() as any
+    let calls = 0
+    m._startApiServerImpl = async () => {
+      calls++
+    }
+    await m.startApiServer()
+    expect(m.apiServerStartInFlight).toBeNull()
+    await m.startApiServer()
+    expect(calls).toBe(2)
+  })
+})
+
 // --- restartApiServerOnly -------------------------------------------------
 
 describe('PreviewManager.restartApiServerOnly', () => {
