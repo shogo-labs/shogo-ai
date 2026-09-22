@@ -139,7 +139,14 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        # `GITHUB_TOKEN` is required so `@vscode/ripgrep`'s postinstall
+        # authenticates its `api.github.com/repos/microsoft/ripgrep-prebuilt`
+        # lookup. Without it, GitHub-hosted runners share the 60/hr anon
+        # quota and this 403s intermittently. See
+        # `scripts/check-ci-bun-install-token.ts` for the full writeup.
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve fingerprint
         id: fingerprint
@@ -210,7 +217,11 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        # See the "Install dependencies" comment in the `check-fingerprint`
+        # job for why GITHUB_TOKEN is required here.
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Sync app version
         working-directory: apps/mobile
@@ -378,7 +389,11 @@ jobs:
           restore-keys: bun-
 
       - name: Install dependencies
+        # See the "Install dependencies" comment in the `check-fingerprint`
+        # job for why GITHUB_TOKEN is required here.
         run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         run: bun run build
