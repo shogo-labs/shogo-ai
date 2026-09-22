@@ -42,8 +42,8 @@ export function PlanDockPanel({
   const isConfirmed = !!confirmedPlan && !pendingPlan
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
-    // Native phone uses the Cursor-style Plan Ready oval above the composer,
-    // not this expanded Technical/Summary dock card.
+    // Native phone uses the compact plan summary above the composer, not this
+    // expanded Technical/Summary dock card.
     if (nativePhone || !plan) return null
     return {
       id: "plan",

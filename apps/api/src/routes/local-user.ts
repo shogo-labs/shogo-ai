@@ -15,6 +15,12 @@ function userIdFrom(c: any): string | null {
   return auth?.isAuthenticated && auth.userId ? auth.userId : null
 }
 
+function compareAnnouncementVersions(a: string, b: string): number {
+  const [aMajor, aMinor] = a.split('.').map(Number)
+  const [bMajor, bMinor] = b.split('.').map(Number)
+  return aMajor - bMajor || aMinor - bMinor
+}
+
 /**
  * User/profile routes shared by the local composer.
  *
@@ -42,6 +48,7 @@ export function userProfileRoutes(): Hono {
         role: true,
         adminScopes: true,
         onboardingCompleted: true,
+        lastSeenAnnouncementVersion: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -54,6 +61,43 @@ export function userProfileRoutes(): Hono {
       ok: true,
       data: { ...user, adminScopes: normalizeAdminScopes(user.adminScopes) },
     })
+  })
+
+  router.post('/me/announcements/seen', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    let body: { version?: unknown }
+    try {
+      body = await c.req.json<{ version?: unknown }>()
+    } catch {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const version = typeof body.version === 'string' ? body.version : ''
+    if (!/^\d+\.\d+$/.test(version)) {
+      return c.json({
+        error: { code: 'invalid_version', message: 'version must look like 1.12' },
+      }, 400)
+    }
+
+    const current = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { lastSeenAnnouncementVersion: true },
+    })
+    if (
+      !current?.lastSeenAnnouncementVersion ||
+      compareAnnouncementVersions(version, current.lastSeenAnnouncementVersion) > 0
+    ) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { lastSeenAnnouncementVersion: version },
+      })
+    }
+
+    return c.json({ ok: true, version })
   })
 
   router.post('/onboarding/complete', async (c) => {

@@ -17,6 +17,9 @@ reading the markdown files in this directory.
   (`v1.11.1` … `v1.11.24`) is rolled up into the next minor entry.
 - Entries are **curated highlights**, written for users in benefit-oriented
   language — not a raw commit dump. Drop infra/CI/deploy/internal changes.
+- An entry may opt into an in-app announcement with `announce: true` and a
+  `highlights` list. Only releases explicitly marked this way are shown in the
+  mobile app.
 
 ## How to add an entry when cutting a new minor/major
 
@@ -44,6 +47,13 @@ reading the markdown files in this directory.
    ```
 
 4. Commit the curated entry. It ships with the next docs deploy.
+5. Generate the mobile announcement catalog and commit the generated file:
+
+   ```bash
+   bun scripts/generate-whats-new.ts
+   ```
+
+   Run `bun run check:whats-new` to verify the generated file is current.
 
 ## File format
 
@@ -57,6 +67,11 @@ title: Shogo 1.12
 authors: [shogo-team]
 tags: [release]
 date: 2026-06-26
+announce: false
+highlights:
+  - title: A user-facing highlight
+    description: Explain the benefit in one sentence.
+    icon: sparkles
 ---
 
 Short intro line shown as the excerpt.
