@@ -75,6 +75,7 @@ import {
 } from "../../../../lib/native-phone-layout";
 import {
   resolveApiReady,
+  resolveRunning,
   shouldStopPreviewPoll,
   shouldShowCanvas,
   isPreviewFailed,
@@ -5222,7 +5223,13 @@ function usePreviewPhase(
           if (data.phase) setPhase(data.phase);
           if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase);
           setApiReady(resolveApiReady(data));
-          if (data.running) setRunning(true);
+          // `resolveRunning` folds in `hydrateRebuildPending`: a cold-miss
+          // assign's `data.running` reflects the warm-pool TEMPLATE until the
+          // post-hydrate rebuild finishes, and this is a one-way latch (never
+          // resets to false), so treating that as "running" would mount the
+          // canvas iframe against the template and never revisit it once the
+          // real content comes up. See preview-gate.ts for the full story.
+          if (resolveRunning(data)) setRunning(true);
           if (!data.running && !kickedStartRef.current) {
             kickedStartRef.current = true;
             void agentFetch(`${statusBase}/preview/start`, {

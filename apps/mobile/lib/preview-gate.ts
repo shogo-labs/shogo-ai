@@ -26,6 +26,17 @@ export interface PreviewStatusLike {
   apiReady?: boolean
   apiServerPhase?: string
   phase?: string
+  /**
+   * Added 2026-09: true from the moment a metal cold-miss hydrate schedules
+   * a rebuild (`scheduleHydrateRebuild()` in `packages/agent-runtime/src/server.ts`)
+   * until that rebuild actually completes. While true, `running`/`apiReady`
+   * still describe the warm-pool TEMPLATE that's about to be replaced by the
+   * project's real, hydrated content — see {@link resolveRunning}. Absent
+   * (undefined) on runtimes that never went through a hydrate (snapshot
+   * resume, non-metal modes, older runtimes predating the field) — those
+   * degrade to the pre-existing `running`-only behaviour.
+   */
+  hydrateRebuildPending?: boolean
 }
 
 /**
@@ -35,6 +46,25 @@ export interface PreviewStatusLike {
  */
 export function resolveApiReady(status: PreviewStatusLike): boolean {
   return status.apiReady ?? true
+}
+
+/**
+ * Resolve the effective "the dev server is serving the project's real
+ * content" signal.
+ *
+ * Folds in `hydrateRebuildPending`: while a post-hydrate rebuild is pending,
+ * the raw `running` flag reflects the warm-pool TEMPLATE (a cold-miss assign
+ * boots a blank template, then hydrates the real source and schedules a
+ * rebuild — see `pool.ts`'s `workspaceOrigin: 'template'` and
+ * `scheduleHydrateRebuild()` in `server.ts`). Reporting that as "running" lets
+ * `usePreviewReadiness`'s one-way latch mount the canvas iframe against the
+ * template and never revisit it once the real rebuild lands — the project
+ * appears permanently stuck on the "Project Ready" placeholder even though
+ * the backend has since finished booting the real app.
+ */
+export function resolveRunning(status: PreviewStatusLike): boolean {
+  if (status.hydrateRebuildPending) return false
+  return !!status.running
 }
 
 /**
@@ -55,11 +85,16 @@ export function isPreviewFailed(status: PreviewStatusLike): boolean {
  * We keep polling while the preview is `running` but the API isn't ready yet:
  * the prebuilt-`dist/` start path flips `running` true immediately, well
  * before the sidecar comes up, so `running` alone is not a safe stop signal.
- * Stop once the API is ready (or absent), OR once setup has terminally failed.
+ * We also keep polling for the whole `hydrateRebuildPending` window (see
+ * {@link resolveRunning}) so a cold-miss assign doesn't stop polling — and
+ * therefore never notice the real content coming up — while it's still
+ * looking at the warm-pool template. Stop once the API is ready (or absent)
+ * AND the (hydrate-aware) preview is running, OR once setup has terminally
+ * failed.
  */
 export function shouldStopPreviewPoll(status: PreviewStatusLike): boolean {
   if (isPreviewFailed(status)) return true
-  return !!status.running && resolveApiReady(status)
+  return resolveRunning(status) && resolveApiReady(status)
 }
 
 /**

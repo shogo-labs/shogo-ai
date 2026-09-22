@@ -13,6 +13,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   resolveApiReady,
+  resolveRunning,
   shouldStopPreviewPoll,
   shouldShowCanvas,
   isPreviewFailed,
@@ -34,6 +35,30 @@ describe('resolveApiReady', () => {
     // must not permanently block the UI.
     expect(resolveApiReady({})).toBe(true)
     expect(resolveApiReady({ running: true })).toBe(true)
+  })
+})
+
+describe('resolveRunning', () => {
+  // Regression coverage for the persistent "Project Ready" placeholder
+  // (staging, 2026-09-22, project a0bea431-...): a metal cold-miss assign
+  // boots a warm-pool TEMPLATE, hydrates the real source, then schedules a
+  // rebuild (`scheduleHydrateRebuild()` in server.ts). `/pool/assign` returns
+  // — and the API's `/sandbox/url` reports `ready: true` — well before that
+  // rebuild finishes, so `running: true` at that point still describes the
+  // template, not the project.
+  test('reports not-running while a hydrate rebuild is pending, even if the raw flag is true', () => {
+    expect(resolveRunning({ running: true, hydrateRebuildPending: true })).toBe(false)
+  })
+
+  test('passes through the raw flag once no hydrate rebuild is pending', () => {
+    expect(resolveRunning({ running: true, hydrateRebuildPending: false })).toBe(true)
+    expect(resolveRunning({ running: false, hydrateRebuildPending: false })).toBe(false)
+  })
+
+  test('degrades to the raw flag on runtimes that never report hydrateRebuildPending', () => {
+    expect(resolveRunning({ running: true })).toBe(true)
+    expect(resolveRunning({ running: false })).toBe(false)
+    expect(resolveRunning({})).toBe(false)
   })
 })
 
@@ -66,6 +91,21 @@ describe('shouldStopPreviewPoll', () => {
     // polling and let the UI render the error instead of spinning forever.
     expect(shouldStopPreviewPoll({ phase: 'failed' })).toBe(true)
     expect(shouldStopPreviewPoll({ phase: 'failed', running: false })).toBe(true)
+  })
+
+  test('keeps polling while a post-hydrate rebuild is pending, even though running+apiReady already look satisfied', () => {
+    // Without this, a metal cold-miss assign latches onto the warm-pool
+    // template's own quick running=true/apiReady=true and stops polling
+    // before the real, post-hydrate rebuild ever runs — see resolveRunning.
+    expect(
+      shouldStopPreviewPoll({ running: true, apiReady: true, hydrateRebuildPending: true }),
+    ).toBe(false)
+  })
+
+  test('stops once the hydrate rebuild has finished and running+apiReady are (still) true', () => {
+    expect(
+      shouldStopPreviewPoll({ running: true, apiReady: true, hydrateRebuildPending: false }),
+    ).toBe(true)
   })
 })
 
