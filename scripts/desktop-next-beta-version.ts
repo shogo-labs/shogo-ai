@@ -26,13 +26,30 @@
  * pushes, which Squirrel/NuGet's version comparison requires in order to
  * treat each new beta as "newer" than the last.
  *
- * The timestamp is a fixed-width 14-digit string (no `.`) because
- * `electron-winstaller`'s `convertVersion()` strips dots from the
- * prerelease when deriving the NuGet package id
- * (`-beta.20260919233000` becomes `-beta20260919233000`), and NuGet then
- * compares that trailing string LEXICALLY. A fixed width keeps lexical
- * order equal to chronological order forever; a variable-width or
- * dotted counter would not.
+ * The timestamp is a fixed-width `<YYYYMMDD>t<HHMMSS>` string (no `.`)
+ * because two separate constraints apply at once:
+ *
+ *   1. `electron-winstaller`'s `convertVersion()` strips dots from the
+ *      prerelease when deriving the NuGet package id
+ *      (`-beta.20260919t233000` becomes `-beta20260919t233000`), and NuGet
+ *      then compares that trailing string LEXICALLY. A fixed width keeps
+ *      lexical order equal to chronological order forever; a variable-width
+ *      or dotted counter would not.
+ *   2. Squirrel.Windows bundles the legacy NuGet `SemanticVersion`, whose
+ *      comparison path runs `Int32.Parse` over the numeric runs in the
+ *      version. A single 14-digit run (`20260922093736`) is ~9,400x larger
+ *      than `Int32.MaxValue` (2147483647) and threw
+ *      `System.OverflowException` inside `ReleaseEntry.WriteReleaseFile`,
+ *      which failed EVERY Windows beta build — 0 of 30 runs on `main`
+ *      produced an installer (SHOG-750).
+ *
+ * Splitting the stamp with a literal `t` keeps it human-readable and
+ * fixed-width while capping every maximal digit run well inside `Int32`:
+ * the date run maxes at `99991231` and the time run at `235959`. Because
+ * `t` (0x74) sorts above every digit (0x30-0x39), a new stamp also always
+ * compares GREATER than the legacy purely-numeric 14-digit stamps that
+ * were already published, so existing beta installs still see an upgrade
+ * rather than a downgrade.
  *
  * Pure/testable: every function below takes explicit inputs instead of
  * reaching into `process.env` / shelling out to `git`, so
@@ -79,17 +96,19 @@ export function nextPatchVersion(stableTag: string): string {
   return `${major}.${minor}.${patch + 1}`
 }
 
-/** 14-digit fixed-width UTC timestamp, e.g. "20260919233000". */
+/**
+ * Fixed-width UTC timestamp `<YYYYMMDD>t<HHMMSS>`, e.g. "20260919t233000".
+ *
+ * The `t` separator is load-bearing: it splits the stamp into two digit runs
+ * that each fit comfortably in `Int32`, which Squirrel/NuGet requires (see the
+ * module docstring). Do not remove it or merge the runs back together.
+ */
 export function formatBetaTimestamp(date: Date): string {
   const p = (n: number, w = 2) => String(n).padStart(w, '0')
-  return (
-    String(date.getUTCFullYear()) +
-    p(date.getUTCMonth() + 1) +
-    p(date.getUTCDate()) +
-    p(date.getUTCHours()) +
-    p(date.getUTCMinutes()) +
-    p(date.getUTCSeconds())
-  )
+  const datePart =
+    String(date.getUTCFullYear()) + p(date.getUTCMonth() + 1) + p(date.getUTCDate())
+  const timePart = p(date.getUTCHours()) + p(date.getUTCMinutes()) + p(date.getUTCSeconds())
+  return `${datePart}t${timePart}`
 }
 
 export function resolveBetaVersion(tags: string[], commitDate: Date): string {

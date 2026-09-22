@@ -56,26 +56,26 @@ describe('nextPatchVersion', () => {
 })
 
 describe('formatBetaTimestamp', () => {
-  test('formats as a fixed-width 14-digit UTC string', () => {
+  test('formats as a fixed-width <date>t<time> UTC string', () => {
     const d = new Date(Date.UTC(2026, 8, 19, 23, 30, 0)) // 2026-09-19T23:30:00Z
-    expect(formatBetaTimestamp(d)).toBe('20260919233000')
+    expect(formatBetaTimestamp(d)).toBe('20260919t233000')
   })
 
   test('zero-pads every component', () => {
     const d = new Date(Date.UTC(2026, 0, 1, 1, 2, 3)) // 2026-01-01T01:02:03Z
-    expect(formatBetaTimestamp(d)).toBe('20260101010203')
+    expect(formatBetaTimestamp(d)).toBe('20260101t010203')
   })
 })
 
 describe('resolveBetaVersion', () => {
   test('bumps the newest stable tag and appends the timestamp', () => {
     const d = new Date(Date.UTC(2026, 8, 19, 23, 30, 0))
-    expect(resolveBetaVersion(['v1.14.9', 'v1.14.8'], d)).toBe('1.14.10-beta.20260919233000')
+    expect(resolveBetaVersion(['v1.14.9', 'v1.14.8'], d)).toBe('1.14.10-beta.20260919t233000')
   })
 
   test('falls back to 0.0.1 when there is no stable tag yet', () => {
     const d = new Date(Date.UTC(2026, 0, 1, 0, 0, 0))
-    expect(resolveBetaVersion([], d)).toBe('0.0.1-beta.20260101000000')
+    expect(resolveBetaVersion([], d)).toBe('0.0.1-beta.20260101t000000')
   })
 
   test('is monotonic across ordered commit timestamps for a fixed base', () => {
@@ -151,7 +151,7 @@ describe('resolveVersion', () => {
       tags,
       commitDate,
     })
-    expect(result).toEqual({ version: '1.14.10-beta.20260919233000', channel: 'beta' })
+    expect(result).toEqual({ version: '1.14.10-beta.20260919t233000', channel: 'beta' })
   })
 
   test('push to an unrelated branch falls back to the 0.0.0-dev placeholder', () => {
@@ -164,5 +164,86 @@ describe('resolveVersion', () => {
       commitDate,
     })
     expect(result).toEqual({ version: '0.0.0-dev', channel: 'stable' })
+  })
+})
+
+describe('beta version is Squirrel/NuGet safe (SHOG-750)', () => {
+  const INT32_MAX = 2147483647
+
+  /**
+   * Mirrors `electron-winstaller`'s `convertVersion()`, which strips dots from
+   * the prerelease when deriving the NuGet package id. Squirrel then compares
+   * that string, and the legacy NuGet `SemanticVersion` runs `Int32.Parse`
+   * over its numeric runs — a 14-digit run overflowed and failed every
+   * Windows beta build.
+   */
+  const convertVersion = (version: string): string => {
+    const parts = version.split('-')
+    const mainVersion = parts.shift() as string
+    return parts.length > 0
+      ? [mainVersion, parts.join('-').replace(/\./g, '')].join('-')
+      : mainVersion
+  }
+
+  const maxDigitRun = (s: string): number =>
+    Math.max(0, ...(s.match(/\d+/g) ?? []).map(Number))
+
+  const dates = [
+    Date.UTC(2026, 8, 22, 9, 37, 36),
+    Date.UTC(2026, 0, 1, 0, 0, 0),
+    Date.UTC(2026, 11, 31, 23, 59, 59),
+    Date.UTC(2030, 5, 15, 12, 30, 45),
+    Date.UTC(9999, 11, 31, 23, 59, 59),
+  ]
+
+  test('every numeric run in the NuGet-converted version fits in Int32', () => {
+    for (const ms of dates) {
+      const converted = convertVersion(resolveBetaVersion(['v1.14.9'], new Date(ms)))
+      expect(maxDigitRun(converted)).toBeLessThanOrEqual(INT32_MAX)
+    }
+  })
+
+  test('the legacy 14-digit stamp would NOT have fit — guards against regressing', () => {
+    // Documents the actual failure: 20260922093736 is ~9,400x Int32.MaxValue.
+    expect(maxDigitRun('beta20260922093736')).toBeGreaterThan(INT32_MAX)
+  })
+
+  test('the stamp keeps a fixed width so lexical order equals chronological order', () => {
+    const widths = new Set(dates.map((ms) => formatBetaTimestamp(new Date(ms)).length))
+    expect(widths.size).toBe(1)
+  })
+
+  test('the stamp splits into exactly two digit runs around a literal t', () => {
+    expect(formatBetaTimestamp(new Date(dates[0]))).toMatch(/^\d{8}t\d{6}$/)
+  })
+
+  test('stays ordered after dot-stripping across a year boundary', () => {
+    const tags = ['v1.14.9']
+    const dec = convertVersion(resolveBetaVersion(tags, new Date(Date.UTC(2026, 11, 31, 23, 59, 59))))
+    const jan = convertVersion(resolveBetaVersion(tags, new Date(Date.UTC(2027, 0, 1, 0, 0, 0))))
+    expect(dec < jan).toBe(true)
+  })
+
+  test('any future build outranks the last published legacy 14-digit beta', () => {
+    // Upgrade continuity: the newest legacy beta published before this change
+    // was 1.14.10-beta.20260922093736. Every build from that commit date
+    // onward must compare GREATER, or existing beta installs would see a
+    // downgrade and stop updating. `t` (0x74) sorts above every digit.
+    const legacy = 'beta20260922093736'
+    const sameSecond = Date.UTC(2026, 8, 22, 9, 37, 36)
+    for (const ms of [sameSecond, sameSecond + 1000, Date.UTC(2027, 0, 1, 0, 0, 0)]) {
+      const converted = convertVersion(resolveBetaVersion(['v1.14.9'], new Date(ms)))
+      const prerelease = converted.split('-')[1]
+      expect(prerelease > legacy).toBe(true)
+    }
+  })
+
+  test('both release workflows derive the identical string from one commit date', () => {
+    // macOS and Windows run this script in separate jobs for the same push and
+    // must agree, or they race to create two different releases for one commit.
+    const commitDate = new Date(Date.UTC(2026, 8, 22, 9, 37, 36))
+    const macos = resolveBetaVersion(['v1.14.9'], commitDate)
+    const windows = resolveBetaVersion(['v1.14.9'], new Date(commitDate.getTime()))
+    expect(macos).toBe(windows)
   })
 })
