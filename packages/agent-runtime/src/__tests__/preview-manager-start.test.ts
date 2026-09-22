@@ -144,20 +144,91 @@ describe('PreviewManager.start (non-blocking)', () => {
     expect(hits.length).toBe(4)
   })
 
-  test('second start() short-circuits via the already-started guard', async () => {
+  test('second start() (after the first fully settles) re-runs the lifecycle rather than short-circuiting', async () => {
+    // The old `if (this.started) return already-running` guard only
+    // protected against a caller re-entering after a prior start() had
+    // already resolved — it did nothing for true concurrent overlap
+    // (see the single-flight tests below). That guard is now replaced by
+    // the `lifecycleInFlight` gate, which only coalesces calls that
+    // overlap in time; a start() issued well after the previous one
+    // settled has nothing in flight to join, so it runs its own fresh
+    // lifecycle body.
     const root = makeWorkspace({ prebuiltDist: true, hasPrisma: false })
     workspaces.push(root)
 
     const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
     stubBackgroundWork(pm, 50, [])
 
-    await pm.start()
+    const first = await pm.start()
+    expect(first.mode).toBe('prebuilt-dist')
+
     const t0 = Date.now()
     const second = await pm.start()
     const elapsed = Date.now() - t0
 
-    expect(second.mode).toBe('already-running')
-    expect(elapsed).toBeLessThan(50)
+    expect(second.mode).toBe('prebuilt-dist')
+    // Still a fast return — the second run schedules its own background
+    // work rather than blocking on it.
+    expect(elapsed).toBeLessThan(250)
+  })
+
+  test('concurrent start() calls coalesce onto the same in-flight lifecycle run', async () => {
+    const root = makeWorkspace({ prebuiltDist: false, hasPrisma: false })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    let apiSpawnCount = 0
+    stubBackgroundWork(pm, 100, [])
+    const origStartApi = (pm as any).startApiServer.bind(pm)
+    ;(pm as any).startApiServer = async () => {
+      apiSpawnCount++
+      return origStartApi()
+    }
+
+    // Fire two start() calls back-to-back without awaiting the first —
+    // this is the shape of the real race (auto-start + a near-simultaneous
+    // second trigger), and both must resolve to the SAME in-flight promise
+    // rather than each independently kicking off backgroundSetup().
+    const p1 = pm.start()
+    const p2 = pm.start()
+
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1).toEqual(r2)
+
+    // backgroundSetup() awaits install -> prisma -> build -> api in
+    // sequence, each stubbed at 100ms, so give the chain enough headroom
+    // to reach the (stubbed) startApiServer call.
+    await new Promise((r) => setTimeout(r, 600))
+    expect(apiSpawnCount).toBe(1)
+  })
+
+  test('a restart() requested mid-flight triggers exactly one trailing-edge follow-up run', async () => {
+    const root = makeWorkspace({ prebuiltDist: false, hasPrisma: false })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    let lifecycleRuns = 0
+    stubBackgroundWork(pm, 100, [])
+    const origRunOnce = (pm as any)._runLifecycleOnce.bind(pm)
+    ;(pm as any)._runLifecycleOnce = async (kind: 'start' | 'restart') => {
+      lifecycleRuns++
+      return origRunOnce(kind)
+    }
+
+    // Kick off the initial start(), then — while it's still in flight —
+    // request a restart(). The restart() must not be dropped (it may be
+    // carrying fresh state, e.g. a post-hydrate rebuild) but must also not
+    // spawn its own concurrent lifecycle; exactly one follow-up run should
+    // execute after the first settles.
+    const p1 = pm.start()
+    const p2 = pm.restart()
+    await Promise.all([p1, p2])
+
+    // Give the trailing-edge follow-up (scheduled in a `.finally()`) a
+    // chance to run and settle.
+    await new Promise((r) => setTimeout(r, 400))
+
+    expect(lifecycleRuns).toBe(2)
   })
 
   test('no package.json → start() returns mode=no-project without scheduling bg work', async () => {

@@ -91,16 +91,6 @@ class FakeProc extends EventEmitter {
 // --- start() — all 4 entry points ---------------------------------------
 
 describe('PreviewManager.start — fast-bail returns', () => {
-  it('returns already-running when started=true', async () => {
-    const m = mk() as any
-    m.started = true
-    expect(await m.start()).toEqual({
-      mode: 'already-running',
-      port: 38306,
-      timings: {},
-    })
-  })
-
   it('returns no-project when bundlerCwd has no package.json', async () => {
     const log = mock(() => {}); console.log = log as any
     try {

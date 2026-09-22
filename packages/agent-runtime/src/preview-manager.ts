@@ -816,6 +816,9 @@ export type PreviewPhase =
 
 export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'restarting' | 'crashed' | 'stopped'
 
+/** Shared return shape for {@link PreviewManager.start} and {@link PreviewManager.restart}. */
+export type PreviewStartResult = { mode: string; port: number | null; timings: Record<string, number> }
+
 /**
  * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
  * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
@@ -950,6 +953,31 @@ export class PreviewManager {
   private started = false
   private _phase: PreviewPhase = 'idle'
   /**
+   * Single-flight guard for the `start()`/`restart()` lifecycle body.
+   *
+   * Without it, a cold boot can see 3+ independent triggers call into
+   * `start()`/`restart()` concurrently — `initializeEssentials()`'s
+   * auto-start, `scheduleHydrateRebuild()`'s post-hydrate restart, and
+   * `onRefreshEnv`'s env-change restart all raced in staging on
+   * project `a0bea431-...` (2026-09). Each racer's `startApiServer()`
+   * saw the other's freshly-spawned sidecar as a "stale" port squatter
+   * and SIGKILLed it, tripping `handleCrash()` and burning through
+   * `MAX_CRASH_RESTARTS` — a genuine "never loads" outcome, not just a
+   * slow one.
+   *
+   * `lifecycleInFlight` holds the promise for whichever `start()`/
+   * `restart()` call is currently running its body; concurrent callers
+   * await that same promise instead of spawning their own. `lifecyclePending`
+   * records that at least one more `restart()` was requested while the
+   * in-flight one was running — since the caller who lost the race may
+   * need the *fresh* rebuild it asked for (e.g. the hydrate-restart case,
+   * where silently dropping the request would leave the project serving
+   * stale content), exactly one trailing-edge follow-up run is scheduled
+   * once the in-flight run finishes.
+   */
+  private lifecycleInFlight: Promise<PreviewStartResult> | null = null
+  private lifecyclePending = false
+  /**
    * Reentrancy guard for `runExpoExportWeb`. Without it, the staging-pod
    * boot path can spawn `expo export --platform web` twice in parallel:
    *   - Once via `start() -> backgroundSetupMetro()` (fire-and-forget).
@@ -963,6 +991,29 @@ export class PreviewManager {
    * strictly serial — concurrent callers receive the in-flight promise.
    */
   private expoExportInFlight: Promise<void> | null = null
+  /**
+   * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
+   * above. `startApiServer()` is reachable from many independent entry
+   * points — `backgroundSetup()`/`backgroundSetupMetro()` (via `start()`/
+   * `restart()`'s `lifecycleInFlight` gate), `sync()`, the schema-change
+   * handler, `restartApiServerOnly()`, `handleCrash()`'s retry, and
+   * `maybeRecoverApiServer()`. The `lifecycleInFlight` gate on `start()`/
+   * `restart()` only coalesces calls that overlap the (near-instant)
+   * synchronous portion of those methods; it does NOT stop one of these
+   * *other* entry points from calling `startApiServer()` while a
+   * previously-triggered spawn is still mid-flight (reaping the port,
+   * spawning `server.tsx`, and polling `/health` for up to
+   * `HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS`).
+   *
+   * Without this guard, two overlapping `startApiServer()` calls each ran
+   * their own `reapStaleApiSidecars()` / force-kill-port / spawn sequence,
+   * so each one's freshly-spawned sidecar looked like a "stale" squatter to
+   * the other and got SIGKILLed — the exact crash-loop observed in staging
+   * on project `a0bea431-...` (2026-09). This guard keeps the spawn
+   * attempt strictly serial; concurrent callers await the same in-flight
+   * promise instead of racing their own.
+   */
+  private apiServerStartInFlight: Promise<void> | null = null
   /**
    * Port the spawned project API server (`server.tsx`) binds to. Resolved
    * once in the constructor — subsequent `process.env` mutations don't
@@ -1858,9 +1909,53 @@ export class PreviewManager {
   }
 
   /**
-   * Start the preview server. ALWAYS returns immediately and runs the
-   * expensive work (install deps, prisma generate, vite build watch, api
-   * server) in `backgroundSetup`.
+   * Start the preview server. Thin wrapper around {@link runLifecycle} —
+   * see that method and {@link lifecycleInFlight} for the single-flight
+   * coalescing guarantee. See {@link _runLifecycleOnce} for the actual
+   * start/restart body and its "always returns immediately" contract.
+   */
+  async start(): Promise<PreviewStartResult> {
+    return this.runLifecycle('start')
+  }
+
+  /**
+   * Restart: stop, reinstall, rebuild. Thin wrapper around
+   * {@link runLifecycle} — see that method and {@link lifecycleInFlight}
+   * for the single-flight coalescing guarantee.
+   */
+  async restart(): Promise<PreviewStartResult> {
+    return this.runLifecycle('restart')
+  }
+
+  /**
+   * Single-flight gate for {@link start} / {@link restart}. At most one
+   * `_runLifecycleOnce()` body runs at a time; a caller that arrives while
+   * one is already in flight joins that same promise instead of triggering
+   * its own `backgroundSetup()`/`startApiServer()` call (the concurrency
+   * bug — see {@link lifecycleInFlight} doc). If any joiner's call was a
+   * `restart()` (i.e. it specifically needed a fresh rebuild, not just to
+   * observe the in-flight one), `lifecyclePending` records that and exactly
+   * one trailing-edge `restart()` runs immediately after the in-flight one
+   * settles.
+   */
+  private async runLifecycle(kind: 'start' | 'restart'): Promise<PreviewStartResult> {
+    if (this.lifecycleInFlight) {
+      if (kind === 'restart') this.lifecyclePending = true
+      return this.lifecycleInFlight
+    }
+    this.lifecycleInFlight = this._runLifecycleOnce(kind).finally(() => {
+      const pending = this.lifecyclePending
+      this.lifecyclePending = false
+      this.lifecycleInFlight = null
+      if (pending) void this.runLifecycle('restart')
+    })
+    return this.lifecycleInFlight
+  }
+
+  /**
+   * Start (or restart) the preview server. ALWAYS returns immediately and
+   * runs the expensive work (install deps, prisma generate, vite build
+   * watch, api server) in `backgroundSetup`.
    *
    * Why always background? The previous behavior was:
    *   - prebuilt-dist branch: backgroundSetup (fast)
@@ -1883,10 +1978,13 @@ export class PreviewManager {
    * - Skips `prisma generate` when the generated client already exists.
    * - Marks _phase = 'ready' immediately when dist/ is prebuilt so the
    *   preview iframe can render while background work continues.
+   *
+   * Only ever invoked through {@link runLifecycle} — never call directly,
+   * or the single-flight guarantee above is bypassed.
    */
-  async start(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
-    if (this.started) {
-      return { mode: 'already-running', port: this.runtimePort, timings: {} }
+  private async _runLifecycleOnce(kind: 'start' | 'restart'): Promise<PreviewStartResult> {
+    if (kind === 'restart') {
+      this.stop()
     }
 
     // One-shot migration: delete the legacy `<workspace>/.build.log` and
@@ -2532,14 +2630,6 @@ export class PreviewManager {
     }
   }
 
-  /**
-   * Restart: stop, reinstall, rebuild.
-   */
-  async restart(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
-    this.stop()
-    return this.start()
-  }
-
   get phase(): PreviewPhase {
     return this._phase
   }
@@ -3010,7 +3100,25 @@ export class PreviewManager {
     await this.waitForPortRelease()
   }
 
+  /**
+   * Spawn (or re-spawn) the API sidecar. Thin single-flight wrapper —
+   * see {@link apiServerStartInFlight} — around {@link _startApiServerImpl},
+   * which does the actual reap/generate/drift-check/spawn/health-check
+   * work. Concurrent callers join the same in-flight promise rather than
+   * each attempting their own spawn.
+   */
   private async startApiServer(): Promise<void> {
+    if (this.apiServerStartInFlight) {
+      console.log(`[${LOG_PREFIX}] API server start already in flight — awaiting it instead of spawning a second one`)
+      return this.apiServerStartInFlight
+    }
+    this.apiServerStartInFlight = this._startApiServerImpl().finally(() => {
+      this.apiServerStartInFlight = null
+    })
+    return this.apiServerStartInFlight
+  }
+
+  private async _startApiServerImpl(): Promise<void> {
     const cwd = this.bundlerCwd
 
     // Clear any orphaned sidecar squatting our port BEFORE the (slower)
