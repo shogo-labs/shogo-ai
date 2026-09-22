@@ -642,43 +642,78 @@ export class S3Sync {
    * 
    * This provides backward compatibility while enabling fast cold starts
    * for projects that have been synced with the new format.
+   *
+   * Bounded by `DOWNLOAD_ALL_TIMEOUT_MS`: every caller of this method
+   * `await`s it with no timeout of its own (`hydrateWorkspaceMembers` at
+   * boot and `mountWorkspaceMember` on a live attach, both in
+   * `packages/agent-runtime/src`), and at least one of those sits behind a
+   * single-flight promise queue — one stuck call there permanently wedges
+   * every subsequent mount/unmount on that runtime. A legitimate archive
+   * (~2-10MB, or the ~162MB legacy worst case) finishes in low tens of
+   * seconds at most (see the module header); anything past the timeout is
+   * a hung network/credential-resolution call (observed: an 18-minute stall
+   * on a metal guest — staging, 2026-09-22), not a slow-but-real transfer.
+   * Racing it here turns that into the same fast, logged, non-fatal
+   * "download failed" outcome the existing catch below already produces
+   * for any other S3 error, instead of an indefinite hang.
+   *
+   * Overridable via `S3_DOWNLOAD_TIMEOUT_MS` for ops tuning (and so tests
+   * can exercise the timeout path without a real 90s wait).
    */
   async downloadAll(): Promise<SyncStats> {
     const totalStart = Date.now()
+    const timeoutMs = parseInt(process.env.S3_DOWNLOAD_TIMEOUT_MS || '', 10) || 90_000
+    let timer: ReturnType<typeof setTimeout> | undefined
 
     try {
-      // Step 1: Try new layered format first
-      const projectKey = this.getProjectArchiveKey()
-      console.log(`[S3Sync] [downloadAll] Checking for layered archive: s3://${this.config.bucket}/${projectKey}`)
-      const checkLayeredStart = Date.now()
-      const hasLayeredArchive = await this.objectExists(projectKey)
-      console.log(`[S3Sync] [downloadAll] Layered archive check: ${hasLayeredArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLayeredStart}ms)`)
-
-      if (hasLayeredArchive) {
-        return await this.downloadLayered(totalStart)
-      }
-
-      // Step 2: Fall back to legacy format
-      const legacyKey = this.getLegacyArchiveKey()
-      console.log(`[S3Sync] [downloadAll] Checking for legacy archive: s3://${this.config.bucket}/${legacyKey}`)
-      const checkLegacyStart = Date.now()
-      const hasLegacyArchive = await this.objectExists(legacyKey)
-      console.log(`[S3Sync] [downloadAll] Legacy archive check: ${hasLegacyArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLegacyStart}ms)`)
-
-      if (hasLegacyArchive) {
-        console.log(`[S3Sync] Using legacy archive format (will migrate on next upload)`)
-        return await this.downloadLegacy(totalStart)
-      }
-
-      // No archive at all — new project
-      console.log(`[S3Sync] [downloadAll] No archive found in S3 (new project) — total check time: ${Date.now() - totalStart}ms`)
-      return this.getStats()
-
+      return await new Promise<SyncStats>((resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(
+              `downloadAll timed out after ${timeoutMs}ms ` +
+                `(bucket=${this.config.bucket}, prefix=${this.config.prefix}) — ` +
+                'S3 unreachable or credential resolution stalled',
+            ),
+          )
+        }, timeoutMs)
+        this.downloadAllUnbounded(totalStart).then(resolve, reject)
+      })
     } catch (error: any) {
       console.error(`[S3Sync] [downloadAll] Download failed after ${Date.now() - totalStart}ms:`, error)
       this.stats.errors.push(`Download failed: ${error.message}`)
       return this.getStats()
+    } finally {
+      if (timer) clearTimeout(timer)
     }
+  }
+
+  private async downloadAllUnbounded(totalStart: number): Promise<SyncStats> {
+    // Step 1: Try new layered format first
+    const projectKey = this.getProjectArchiveKey()
+    console.log(`[S3Sync] [downloadAll] Checking for layered archive: s3://${this.config.bucket}/${projectKey}`)
+    const checkLayeredStart = Date.now()
+    const hasLayeredArchive = await this.objectExists(projectKey)
+    console.log(`[S3Sync] [downloadAll] Layered archive check: ${hasLayeredArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLayeredStart}ms)`)
+
+    if (hasLayeredArchive) {
+      return await this.downloadLayered(totalStart)
+    }
+
+    // Step 2: Fall back to legacy format
+    const legacyKey = this.getLegacyArchiveKey()
+    console.log(`[S3Sync] [downloadAll] Checking for legacy archive: s3://${this.config.bucket}/${legacyKey}`)
+    const checkLegacyStart = Date.now()
+    const hasLegacyArchive = await this.objectExists(legacyKey)
+    console.log(`[S3Sync] [downloadAll] Legacy archive check: ${hasLegacyArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLegacyStart}ms)`)
+
+    if (hasLegacyArchive) {
+      console.log(`[S3Sync] Using legacy archive format (will migrate on next upload)`)
+      return await this.downloadLegacy(totalStart)
+    }
+
+    // No archive at all — new project
+    console.log(`[S3Sync] [downloadAll] No archive found in S3 (new project) — total check time: ${Date.now() - totalStart}ms`)
+    return this.getStats()
   }
 
   /**
