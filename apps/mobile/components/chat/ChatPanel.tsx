@@ -1484,7 +1484,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const planStream = usePlanStreamSafe();
 
   // Per-panel TodoWrite store. Each open chat tab gets its own
-  // instance so descendants (AssistantContent, TodoWidget) read
+  // instance so descendants (AssistantContent, TodoRow) read
   // and write isolated state — see todo-state-store.ts. Stable
   // for the panel's lifetime; the clear() below is a defensive
   // reset for the rare case where a panel switches sessions.

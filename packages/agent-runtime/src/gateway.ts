@@ -3921,24 +3921,6 @@ export class AgentGateway {
       ].join('\n'))
     }
 
-    // 5. Error notification guide (always the same)
-    pushStable('error-notification-guide', [
-      '## CRITICAL: Error Notifications (MUST follow)',
-      '',
-      'You have a tool called `notify_user_error`. You MUST call it whenever:',
-      '- A tool returns an error, 404, or access denied',
-      '- You cannot complete the task the user asked for',
-      '- An integration (GitHub, Slack, Google, etc.) is not working properly',
-      '- You detect a configuration or permission issue the user needs to fix',
-      '',
-      'Usage: `notify_user_error({ title: "GitHub Access Error", message: "The repository CodeGlo/shogo-ai is private or not accessible. Your organization may have OAuth App restrictions enabled. Go to GitHub org Settings > Third-party access to approve." })`',
-      '',
-      'ALWAYS call notify_user_error BEFORE writing the error explanation in chat.',
-      'The title should be short (e.g. "GitHub Access Error", "Slack Auth Expired").',
-      'The message should explain what went wrong AND how to fix it.',
-      'This shows a prominent toast notification that the user will not miss.',
-    ].join('\n'))
-
     // Separator tells the AI proxy to split the system prompt into two Anthropic
     // system blocks: the stable prefix gets cache_control, the dynamic suffix
     // does not. Without this, the entire prompt is one block whose cache is

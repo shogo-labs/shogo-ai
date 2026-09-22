@@ -3,10 +3,9 @@
 
 /**
  * Live todo checklist — reads straight from the per-chat `todoStateStore`,
- * the same source `TodoWidget` subscribes to, so the dock always shows the
- * latest snapshot regardless of which in-stream `TodoWrite` card wrote it
- * last. In-stream `TodoWidget`s stay put as milestone markers ("you were at
- * 4/10 here").
+ * the same source the in-stream task row subscribes to, so the dock always
+ * shows the latest snapshot regardless of which `TodoWrite` call wrote it
+ * last.
  */
 
 import { useMemo, useSyncExternalStore } from "react"

@@ -165,7 +165,7 @@ export function createTodoStateStore(): TodoStateStore {
 
 export const TodoStateStoreContext = createContext<TodoStateStore | null>(null)
 
-// Lazily-created fallback used when a `TodoWidget` is rendered outside
+// Lazily-created fallback used when a task row is rendered outside
 // any `TodoStateStoreContext.Provider` (tests, storybook, isolated
 // previews). Production chat trees always supply a per-`ChatPanel`
 // instance, so this never gets reached in the app.

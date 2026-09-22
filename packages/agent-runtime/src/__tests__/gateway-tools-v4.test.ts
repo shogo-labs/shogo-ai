@@ -488,13 +488,6 @@ describe('createTools', () => {
     }
   })
 
-  test('notify_user_error always returns ok ack', async () => {
-    const ctx = makeCtx()
-    const tool = createTools(ctx).find(t => t.name === 'notify_user_error')!
-    const r = await tool.execute('c', { title: 't', message: 'm' })
-    expect((r as any).details?.ok ?? (r as any).details).toBeTruthy()
-  })
-
   test('ask_user always acks', async () => {
     const ctx = makeCtx()
     const tool = createTools(ctx).find(t => t.name === 'ask_user')!
