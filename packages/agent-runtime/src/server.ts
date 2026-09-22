@@ -2760,7 +2760,11 @@ function notifyCanvasWorkspaceDelete(relativePath: string): void {
 
 app.get('/preview/status', (c) => {
   const pm = getPreviewManager()
-  return c.json(pm.getStatus())
+  // `hydrateRebuildPending` — see its declaration below `scheduleHydrateRebuild()`
+  // — tells the client not to latch onto `running`/`apiReady` yet: those
+  // still describe the warm-pool TEMPLATE on a cold-miss assign until this
+  // flips back to false once the post-hydrate rebuild actually lands.
+  return c.json({ ...pm.getStatus(), hydrateRebuildPending: hydrateRebuildInFlight })
 })
 
 app.post('/preview/restart', async (c) => {
@@ -2807,8 +2811,30 @@ app.post('/preview/stop', (c) => {
 // the window simply degrade to the old behavior, which is still correct.
 const HYDRATE_REBUILD_DEBOUNCE_MS = 300
 let hydrateRebuildTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * True from the moment a hydrate schedules a rebuild until that rebuild's
+ * `PreviewManager.restart()` actually resolves. Exposed on `/preview/status`
+ * as `hydrateRebuildPending`.
+ *
+ * Why this exists: `assign()` (metal-agent's `pool.ts`) awaits the *hydrate*
+ * HTTP call (bytes landing in the workspace) but NOT the rebuild it schedules
+ * here — that's intentionally fire-and-forget so `/pool/assign`'s 30s budget
+ * isn't blown by a multi-minute Expo/Metro rebuild. So `assign()` returns,
+ * and the API's `/sandbox/url` reports `ready: true`, while this guest is
+ * still serving the warm-pool TEMPLATE (`workspaceOrigin: 'template'` in
+ * `pool.ts` — literally the "Project Ready" placeholder). The client's
+ * `usePreviewPhase`/`usePreviewReadiness` poll (`apps/mobile/lib/preview-gate.ts`)
+ * would otherwise latch onto that template's own quick `running: true` and
+ * STOP polling before the real, post-hydrate rebuild ever runs — mounting the
+ * canvas iframe against the template and never revisiting it once the real
+ * content comes up moments (or minutes) later. Root cause of the "Project
+ * Ready" placeholder persisting on a freshly cold-booted project
+ * (`a0bea431-...`, staging, 2026-09-22).
+ */
+let hydrateRebuildInFlight = false
 function scheduleHydrateRebuild(): void {
   if (hydrateRebuildTimer) clearTimeout(hydrateRebuildTimer)
+  hydrateRebuildInFlight = true
   hydrateRebuildTimer = setTimeout(() => {
     hydrateRebuildTimer = null
     // Fire-and-forget: readiness is reported through the normal preview/gateway
@@ -2816,6 +2842,9 @@ function scheduleHydrateRebuild(): void {
     getPreviewManager()
       .restart()
       .catch((e: any) => console.error('[pool/hydrate] rebuild failed:', e?.message ?? e))
+      .finally(() => {
+        hydrateRebuildInFlight = false
+      })
   }, HYDRATE_REBUILD_DEBOUNCE_MS)
 }
 
