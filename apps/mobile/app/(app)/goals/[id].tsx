@@ -3,7 +3,7 @@
 
 import { useCallback, useState } from 'react'
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
+import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
   ArrowLeft,
@@ -20,6 +20,7 @@ import { isGoalEventApprovalPending, parseGoalDeliverables, parseGoalPlan } from
 import { ArtifactCardList } from '../../../components/personal/ArtifactCard'
 import { useDomainHttp } from '../../../contexts/domain'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { setChatPrefill } from '../../../hooks/useChatPrefill'
 import { api, type PersonalGoal, type PersonalGoalEvent, type PersonalAgentTaskSummary } from '../../../lib/api'
 
@@ -30,6 +31,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
   const router = useRouter()
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
+  const experience = useWorkspaceExperience()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const [goal, setGoal] = useState<GoalWithDetail | null>(null)
@@ -39,7 +41,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
   const [decidingEventId, setDecidingEventId] = useState<string | null>(null)
 
   const load = useCallback(async (refresh = false) => {
-    if (!workspace?.id || !id) return
+    if (!workspace?.id || !id || experience.kind !== 'personal') return
     if (refresh) setRefreshing(true)
     try {
       setError(null)
@@ -56,7 +58,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [http, id, workspace?.id])
+  }, [experience.kind, http, id, workspace?.id])
 
   useFocusEffect(useCallback(() => {
     void load()
@@ -94,6 +96,12 @@ const GoalDetailPage = observer(function GoalDetailPage() {
   }, [router])
 
   const contentWidth = isWide ? 760 : undefined
+
+  // A team workspace may reach this deep link from browser history, but
+  // goals belong to the personal workspace experience only.
+  if (workspace?.id && experience.kind !== 'personal') {
+    return <Redirect href="/(app)" />
+  }
 
   if (loading) {
     return (

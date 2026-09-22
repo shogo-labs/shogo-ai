@@ -125,7 +125,10 @@ import {
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
 import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
-import { scheduleWorkspaceSwitch } from "../../lib/switch-workspace";
+import {
+  reloadAfterWorkspaceSwitch,
+  scheduleWorkspaceSwitch,
+} from "../../lib/switch-workspace";
 import {
   SETTINGS_TABS,
   settingsNavItems,
@@ -4032,7 +4035,7 @@ export function WorkspaceAccountActions({
   const switchWorkspace = useCallback(
     (workspaceId: string) => {
       if (workspaceId === currentWorkspace?.id) return;
-      scheduleWorkspaceSwitch(workspaceId, projects);
+      scheduleWorkspaceSwitch(workspaceId, projects, reloadAfterWorkspaceSwitch);
     },
     [currentWorkspace?.id, projects]
   );

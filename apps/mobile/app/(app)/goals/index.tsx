@@ -3,13 +3,14 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
-import { useFocusEffect, useRouter } from 'expo-router'
+import { Redirect, useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { CheckCircle2, ChevronRight, CircleDot, PauseCircle, Target } from 'lucide-react-native'
 import { isApprovalPending } from '@shogo/shared-app'
 import { NeedsYourOkSection } from '../../../components/personal/NeedsYourOkSection'
 import { useDomainHttp } from '../../../contexts/domain'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { api, type PersonalGoal, type PersonalWorkspaceActivity } from '../../../lib/api'
 
 function GoalStatusIcon({ status }: { status: PersonalGoal['status'] }) {
@@ -22,6 +23,7 @@ const GoalsPage = observer(function GoalsPage() {
   const http = useDomainHttp()
   const router = useRouter()
   const workspace = useActiveWorkspace()
+  const experience = useWorkspaceExperience()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
   const [goals, setGoals] = useState<PersonalGoal[]>([])
@@ -31,7 +33,7 @@ const GoalsPage = observer(function GoalsPage() {
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async (refresh = false) => {
-    if (!workspace?.id) return
+    if (!workspace?.id || experience.kind !== 'personal') return
     if (refresh) setRefreshing(true)
     try {
       setError(null)
@@ -47,7 +49,7 @@ const GoalsPage = observer(function GoalsPage() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [http, workspace?.id])
+  }, [experience.kind, http, workspace?.id])
 
   useFocusEffect(useCallback(() => {
     void load()
@@ -67,6 +69,13 @@ const GoalsPage = observer(function GoalsPage() {
   )
 
   const contentWidth = isWide ? 760 : undefined
+
+  // Goals are a personal-workspace surface. A team workspace can still be
+  // opened through a stale URL or browser history, but must not call the
+  // personal goals API and show a misleading "No access" error.
+  if (workspace?.id && experience.kind !== 'personal') {
+    return <Redirect href="/(app)" />
+  }
 
   return (
     <View className="flex-1 bg-background">

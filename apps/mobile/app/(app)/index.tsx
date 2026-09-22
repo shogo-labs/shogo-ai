@@ -343,6 +343,7 @@ export const HomeScreen = observer(function HomeScreen({
   }, [])
 
   const currentWorkspace = useActiveWorkspace()
+  const currentExperience = workspaceExperience(currentWorkspace?.kind)
 
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces `CreatePersonalSpaceBanner` below — see that component for why
@@ -901,11 +902,12 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
-  // Never route hosted users into a workspace chat that cannot execute. The
-  // wide and narrow/native shells ship independently, while local review
-  // keeps both enabled once the workspace runtime is explicitly available.
+  // The workspace agent chat surface (and its sidebar chrome in the app
+  // layout) is personal-workspace-only — team workspaces keep the classic
+  // builder home. The wide and narrow/native shells ship independently.
   const workspaceAgentChatEnabled =
     isWorkspaceRuntimeEnabled() &&
+    currentExperience.kind === 'personal' &&
     (localMode || (isNarrowAgentSurface ? features.mobileAgentShell : features.agentShell))
   if (!forceBuilder && workspaceAgentChatEnabled) {
     return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
@@ -919,7 +921,7 @@ export const HomeScreen = observer(function HomeScreen({
     !forceBuilder &&
     isWorkspaceRuntimeEnabled() &&
     features.personalShell &&
-    workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion'
+    currentExperience.homeScreen === 'companion'
   ) {
     return <WorkspaceAgentChatScreen />
   }

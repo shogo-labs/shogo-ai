@@ -98,6 +98,18 @@ for (const pkg of SINGLETON_PACKAGES) {
   } catch {}
 }
 
+// Metro requests React Native Web internals using package subpaths such as
+// `react-native-web/dist/index`. Matching only the bare package name lets
+// those subpaths resolve through a different Bun store entry, which creates
+// a second copy of `Text`/`View`. CSS interop registers against one copy
+// while the app renders another, so every `className` silently loses its
+// NativeWind styles on web.
+function singletonPackageFor(moduleName) {
+  return Object.keys(singletonPaths).find(
+    (pkg) => moduleName === pkg || moduleName.startsWith(`${pkg}/`),
+  )
+}
+
 // =====================================================================
 // Reanimated / Worklets stub aliases (App Review hotfix — May 2026)
 // =====================================================================
@@ -218,7 +230,7 @@ function resolveSdkSourceJsAsTs(context, moduleName, platform) {
 
 const originalResolveRequest = config.resolver.resolveRequest
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  if (singletonPaths[moduleName]) {
+  if (singletonPackageFor(moduleName)) {
     return context.resolveRequest(
       { ...context, originModulePath: path.join(__dirname, '_virtual.js') },
       moduleName,

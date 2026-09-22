@@ -38,6 +38,7 @@ import { API_URL } from "../../lib/api";
 import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider } from "../../contexts/domain";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -61,10 +62,17 @@ import { projectSidebarEvents } from "../../lib/project-sidebar-events";
 
 csMark("app:layout:module-load");
 
-export default function AppLayout() {
+function AppLayoutInner() {
   csMark("app:layout:render");
   const { isAuthenticated, isLoading, user, refreshSession } = useAuth();
   const { localMode, features } = usePlatformConfig();
+  // The workspace agent shell (new sidebar + WorkspaceAgentShell/
+  // MobileWorkspaceShell chrome) is personal-workspace-only — team
+  // workspaces always keep the classic AppSidebar + plain project view,
+  // on both web and local desktop. `useWorkspaceExperience()` defaults to
+  // `'team'` until the active workspace has loaded, which is the correct
+  // fail-safe here too (never flash the new shell before we know better).
+  const experience = useWorkspaceExperience();
   const router = useRouter();
   const pathname = usePathname();
   const isIdeEmbed = useMemo(() => {
@@ -94,11 +102,17 @@ export default function AppLayout() {
     pathname !== "/(app)/projects";
   // The shell is coupled to the workspace runtime: without it, the legacy
   // home remains available instead of exposing a chat that cannot run turns.
-  // Desktop and narrow/native rollouts are deliberately independent.
+  // Desktop and narrow/native rollouts are deliberately independent. Gated
+  // to personal workspaces only — see `experience` above.
+  const isPersonalWorkspace = experience.kind === "personal";
   const desktopAgentShellEnabled =
-    isWorkspaceRuntimeEnabled() && (localMode || features.agentShell);
+    isWorkspaceRuntimeEnabled() &&
+    isPersonalWorkspace &&
+    (localMode || features.agentShell);
   const mobileAgentShellEnabled =
-    isWorkspaceRuntimeEnabled() && (localMode || features.mobileAgentShell);
+    isWorkspaceRuntimeEnabled() &&
+    isPersonalWorkspace &&
+    (localMode || features.mobileAgentShell);
   const useAgentShell = isWide && !isIdeEmbed && desktopAgentShellEnabled;
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
@@ -353,47 +367,59 @@ export default function AppLayout() {
     isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage);
 
   return (
-    <DomainProvider>
-      <NativeSheetDrawerShell
-        isWide={isWide}
-        nativeSheetDrawer={nativeSheetDrawer}
-        canvas={
-          isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas
-        }
-        safeAreaEdges={nativeEdgeToEdgeChrome ? ["left", "right"] : undefined}
-        sidebarWide={showSidebar ? <AppSidebar /> : null}
-        sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
-        sidebarOverlay={
-          <AppSidebar
-            isOpen={drawerOpen}
-            onClose={closeDrawer}
-            isNativeDrawer={false}
-          />
-        }
-        header={
-          !isWide &&
-          !isIdeEmbed &&
-          !suppressNarrowAppHeader &&
-          !useMobileWorkspaceShell ? (
-            <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
-          ) : null
-        }
-        bottomNav={!isWide && !isIdeEmbed ? <MobileBottomNav /> : null}
-        drawer={drawer}
-      >
-        {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
-        {useAgentShell ? (
-          <WorkspaceAgentShell>
-            <Slot />
-          </WorkspaceAgentShell>
-        ) : useMobileWorkspaceShell ? (
-          <MobileWorkspaceShell>
-            <Slot />
-          </MobileWorkspaceShell>
-        ) : (
+    <NativeSheetDrawerShell
+      isWide={isWide}
+      nativeSheetDrawer={nativeSheetDrawer}
+      canvas={
+        isHomePage && isDark ? NATIVE_PHONE_HOME_CANVAS : nativeDrawerCanvas
+      }
+      safeAreaEdges={nativeEdgeToEdgeChrome ? ["left", "right"] : undefined}
+      sidebarWide={showSidebar ? <AppSidebar /> : null}
+      sidebarSheet={<AppSidebar isOpen={drawerOpen} onClose={closeDrawer} />}
+      sidebarOverlay={
+        <AppSidebar
+          isOpen={drawerOpen}
+          onClose={closeDrawer}
+          isNativeDrawer={false}
+        />
+      }
+      header={
+        !isWide &&
+        !isIdeEmbed &&
+        !suppressNarrowAppHeader &&
+        !useMobileWorkspaceShell ? (
+          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+        ) : null
+      }
+      bottomNav={!isWide && !isIdeEmbed ? <MobileBottomNav /> : null}
+      drawer={drawer}
+    >
+      {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
+      {useAgentShell ? (
+        <WorkspaceAgentShell>
           <Slot />
-        )}
-      </NativeSheetDrawerShell>
+        </WorkspaceAgentShell>
+      ) : useMobileWorkspaceShell ? (
+        <MobileWorkspaceShell>
+          <Slot />
+        </MobileWorkspaceShell>
+      ) : (
+        <Slot />
+      )}
+    </NativeSheetDrawerShell>
+  );
+}
+
+/**
+ * `AppLayoutInner` needs `useWorkspaceExperience()` (workspace kind) to
+ * decide personal-vs-team chrome, which requires the domain store context.
+ * Mount `DomainProvider` here, one level up, rather than inside
+ * `AppLayoutInner` itself — matching `(admin)/_layout.tsx`'s split.
+ */
+export default function AppLayout() {
+  return (
+    <DomainProvider>
+      <AppLayoutInner />
     </DomainProvider>
   );
 }

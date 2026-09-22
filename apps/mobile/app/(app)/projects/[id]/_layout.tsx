@@ -497,6 +497,10 @@ export default observer(function ProjectLayout() {
   // chat for the current project, so we only force it once (the user can
   // switch tabs afterwards).
   const pinnedSessionAppliedRef = useRef(false);
+  // Tracks whether we've already attempted the optimistic last-session-cache
+  // restore (below) for the current project, so it only runs once per
+  // project load.
+  const lastSessionCacheAppliedRef = useRef(false);
 
   // Project state
   const [project, setProject] = useState<any>(null);
@@ -1005,6 +1009,7 @@ export default observer(function ProjectLayout() {
     if (!workspaceRuntimeEnabled || !projectId) return;
     // New project → re-pin from scratch.
     pinnedSessionAppliedRef.current = false;
+    lastSessionCacheAppliedRef.current = false;
     setPinnedWorkspaceSessionId(null);
     setPinnedResolveFailed(false);
     let cancelled = false;
@@ -1028,6 +1033,53 @@ export default observer(function ProjectLayout() {
       cancelled = true;
     };
   }, [workspaceRuntimeEnabled, projectId, http]);
+
+  // Optimistic restore: the pinned-session resolve above is a network round
+  // trip, so on every refresh `chatSessionId` would otherwise sit at `null`
+  // (and the chat panel would fall through to its empty-chat-list state)
+  // until that call returns. While it's in flight, replay this exact
+  // project's last-selected chat session id from local storage — the same id
+  // the "persist last chat session" effect above already writes on every
+  // `chatSessionId` change — so the chat that was open before the refresh
+  // renders immediately instead of flashing the chat list.
+  //
+  // This is deliberately narrower than the (disabled, see below) legacy
+  // auto-select effects: it only ever replays an id this project previously
+  // set as its own `chatSessionId`. It never lists or creates a
+  // project-scoped session, so it can't race the pinned-session promotion
+  // effect below the way those effects could. If the cached id is stale (or
+  // the project has since moved to a different anchor workspace), the
+  // promotion effect below applies unconditionally once the network resolve
+  // completes and silently corrects it.
+  useEffect(() => {
+    if (!workspaceRuntimeEnabled || !projectId) return;
+    if (chatSessionId) return;
+    if (params.chatSessionId) return;
+    // A pending "+ new chat" arrival owns session creation on this arrival —
+    // don't race it with a stale cached session id.
+    if (params.newChat === "1") return;
+    if (lastSessionCacheAppliedRef.current) return;
+    lastSessionCacheAppliedRef.current = true;
+    let cancelled = false;
+    void AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`)
+      .then((cachedId) => {
+        if (cancelled || !cachedId) return;
+        // Functional update: guards against a race where the pinned-session
+        // promotion effect already set the (authoritative) chatSessionId
+        // while this read was in flight.
+        setChatSessionId((current) => current ?? cachedId);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    workspaceRuntimeEnabled,
+    projectId,
+    chatSessionId,
+    params.chatSessionId,
+    params.newChat,
+  ]);
 
   // Make the pinned workspace session the project's canonical chat (flag-on
   // only). Under the "always workspace runtime" model every project is driven
@@ -1574,10 +1626,15 @@ export default observer(function ProjectLayout() {
       if (params.newChat === "1") return;
       // Under the always-on workspace runtime, the project-pinned workspace
       // session owns active-session selection (see the pinned-session
-      // promotion effect). Auto-selecting / auto-creating a project-scoped
-      // session here would race that promotion and strand the visible chat on
-      // the wrong (project) session — and boot the legacy single-project
-      // runtime instead of the anchor merged root.
+      // promotion effect). Auto-selecting / auto-creating a *project-scoped*
+      // session here — by listing `store.chatSessionCollection` or calling
+      // `actions.createChatSession` below — would race that promotion and
+      // strand the visible chat on the wrong (project) session, and boot the
+      // legacy single-project runtime instead of the anchor merged root. That
+      // stays disabled here. (Simply replaying this project's last-selected
+      // *session id* from local storage is safe and handled separately by
+      // the optimistic-restore effect above the pinned-session promotion
+      // effect — it doesn't list or create anything, so it can't race it.)
       if (workspaceRuntimeEnabled) return;
       // Wait for restore to finish so we know which branch to take.
       if (tabsHydration === "loading") return;
@@ -1642,7 +1699,11 @@ export default observer(function ProjectLayout() {
   const pickedFromRestoreRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!projectId) return;
-    // Flag-on: pinned workspace session owns selection (see above).
+    // Flag-on: pinned workspace session owns selection (see above), and the
+    // optimistic-restore effect already covers the "replay last-selected
+    // session id" behavior this picker would otherwise duplicate — without
+    // this picker's `openChatTabIds`-restore/multi-tab machinery, which is
+    // legacy-project-scoped and disabled under the workspace runtime.
     if (workspaceRuntimeEnabled) return;
     if (pickedFromRestoreRef.current.has(projectId)) return;
     if (tabsHydration !== "restored-with-tabs") return;

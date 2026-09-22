@@ -3,7 +3,12 @@
 
 import { Hono } from 'hono'
 import { createUserRoutes, setPrisma as setPrismaUser } from './user.routes'
-import { createWorkspaceRoutes, setPrisma as setPrismaWorkspace } from './workspace.routes'
+import {
+  createWorkspaceRoutes,
+  setPrisma as setPrismaWorkspace,
+  setWorkspaceHooks,
+} from './workspace.routes'
+import type { WorkspaceHooks } from './workspace.hooks'
 import { createProjectRoutes, setPrisma as setPrismaProject } from './project.routes'
 import { createProjectFolderRoutes, setPrisma as setPrismaProjectFolder } from './project-folder.routes'
 import { createStarredProjectRoutes, setPrisma as setPrismaStarredProject } from './starred-project.routes'
@@ -25,13 +30,16 @@ import { createFeatureSessionRoutes, setPrisma as setPrismaFeatureSession } from
 /**
  * Local generated CRUD surface without the cloud hook aggregator.
  *
- * The route files default to empty hooks, which is appropriate for the
- * single-user SQLite desktop database and keeps billing/marketplace hooks out
- * of the local API dependency graph.
+ * Most route files intentionally use empty hooks because the desktop database
+ * is local. Workspaces are different now that local mode supports both team
+ * and personal workspaces: the picker must only receive workspaces for the
+ * signed-in user, and a stale/deep-linked workspace must not be readable just
+ * because it exists in the local SQLite file.
  */
 export function createLocalGeneratedRoutes(prisma: any): Hono {
   setPrismaUser(prisma)
   setPrismaWorkspace(prisma)
+  setWorkspaceHooks(localWorkspaceHooks)
   setPrismaProject(prisma)
   setPrismaProjectFolder(prisma)
   setPrismaStarredProject(prisma)
@@ -71,4 +79,50 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   router.route('/tool-call-logs', createToolCallLogRoutes())
   router.route('/feature-sessions', createFeatureSessionRoutes())
   return router
+}
+
+/**
+ * Keep local workspace discovery/access aligned with the workspace-scoped
+ * APIs. We deliberately do not install the full cloud hook set here: local
+ * workspace creation has different limits and does not need cloud billing
+ * checks. Listing and reading still need membership scoping so a team row
+ * cannot be mistaken for the user's personal workspace (or vice versa).
+ */
+export const localWorkspaceHooks: WorkspaceHooks = {
+  beforeList: async (ctx) => {
+    if (!ctx.userId) {
+      return {
+        ok: false,
+        error: { code: 'unauthorized', message: 'Authentication required' },
+      }
+    }
+    return {
+      ok: true,
+      data: {
+        where: {
+          members: {
+            some: { userId: ctx.userId },
+          },
+        },
+      },
+    }
+  },
+
+  beforeGet: async (id, ctx) => {
+    if (!ctx.userId) {
+      return {
+        ok: false,
+        error: { code: 'unauthorized', message: 'Authentication required' },
+      }
+    }
+    const member = await ctx.prisma.member.findFirst({
+      where: { userId: ctx.userId, workspaceId: id },
+    })
+    return member
+      ? { ok: true }
+      : {
+          ok: false,
+          error: { code: 'forbidden', message: 'Access denied to this workspace' },
+        }
+  },
 }

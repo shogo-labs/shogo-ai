@@ -744,17 +744,26 @@ export function localProjectsRoutes(): Hono {
     }
 
     // Workspace resolution: caller-supplied (multi-workspace UI) or the
-    // current user's personal workspace (single-tenant local mode).
+    // current user's personal workspace when one exists. A local user may
+    // legitimately have only a team workspace, so do not silently treat the
+    // first membership as personal.
     let workspaceId = body.workspaceId
     if (!workspaceId) {
       const personal = await prisma.workspace.findFirst({
+        where: {
+          kind: 'personal',
+          members: { some: { userId } },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      const fallback = personal ?? await prisma.workspace.findFirst({
         where: { members: { some: { userId } } },
         orderBy: { createdAt: 'asc' },
       })
-      if (!personal) {
+      if (!fallback) {
         return c.json({ error: 'no_workspace_for_user' }, 400)
       }
-      workspaceId = personal.id
+      workspaceId = fallback.id
     }
 
     const name = (body.name && body.name.trim()) || folderDisplayName(finalPrimary)
