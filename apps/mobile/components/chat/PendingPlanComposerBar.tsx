@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Native-phone Plan Ready oval above the composer. Web/desktop keep the
- * dock PlanCard via PlanDockPanel.
+ * Native-phone plan summary above the composer. Web/desktop keep the dock
+ * PlanCard via PlanDockPanel.
  */
 import { useChatContextSafe } from "./ChatContext"
 import { useIsNativePhoneLayout } from "../../lib/native-phone-layout"
@@ -22,10 +22,9 @@ export function PendingPlanComposerBar() {
       isUpdate={plan.isUpdate === true}
       onBuild={chat.buildPlan}
       onViewPlan={
-        chat.openPlan && plan.filepath ? () => chat.openPlan?.(plan.filepath) : undefined
+        chat.openPlan ? () => chat.openPlan?.(plan.filepath ?? null) : undefined
       }
       selectedModel={chat.selectedModel}
-      isPro={chat.isPro}
     />
   )
 }
