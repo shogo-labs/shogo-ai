@@ -72,7 +72,17 @@ jobs:
         # the default `prisma/` symlink to `prisma-pg`. Without this,
         # `@prisma/client` imports in apps/api fail to resolve under
         # typecheck and test.
+        #
+        # `GITHUB_TOKEN` is required so `@vscode/ripgrep`'s postinstall
+        # (a transitive dep via packages/agent-runtime) authenticates its
+        # `api.github.com/repos/microsoft/ripgrep-prebuilt` lookup. Without
+        # it, GitHub-hosted runners share the 60/hr anon quota across ALL
+        # repos and this 403s intermittently. Guarded by
+        # `check:ci-bun-install-token`; see that script for the full
+        # writeup and the other workflows with the same fix.
         run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         # Required before typecheck so cross-package imports of
@@ -91,6 +101,14 @@ jobs:
 
       - name: Lint
         run: bun run lint
+
+      - name: Check CI `bun install` steps authenticate ripgrep-prebuilt
+        # Guards against the `@vscode/ripgrep` 403 flake — see
+        # scripts/check-ci-bun-install-token.ts for the full writeup.
+        # Runs before any `bun install` in THIS job could 403, but its
+        # real job is catching a new/edited workflow elsewhere in the repo
+        # that forgets the fix.
+        run: bun run check:ci-bun-install-token
 
       - name: Verify SDK license isolation (no AGPL leak)
         # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
@@ -182,6 +200,8 @@ jobs:
         # identical rationale, duplicated here because each job gets its own
         # fresh runner filesystem.
         run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
         # See the "Build workspace packages" comment in the `typecheck` job.
@@ -216,6 +236,14 @@ jobs:
           bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
           (cd templates/runtime-template && bun install && bun run build)
           git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
+        # This `bun install` doesn't currently pull in @vscode/ripgrep (the
+        # template's own package.json has no such dependency, direct or
+        # transitive), but set GITHUB_TOKEN anyway for the same reason as
+        # the "Install dependencies" step above — cheap insurance against
+        # the 403 flake if that ever changes, and keeps
+        # `check:ci-bun-install-token` happy without an allowlist.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build one agent template (sales-bdr-pipeline) for overlay tests
         # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.

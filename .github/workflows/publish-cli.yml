@@ -58,7 +58,16 @@ jobs:
 
       - name: Install deps
         working-directory: packages/shogo-worker
+        # `GITHUB_TOKEN` is required so `@vscode/ripgrep`'s postinstall
+        # (a transitive dep via packages/agent-runtime, part of the same
+        # bun workspace) authenticates its
+        # `api.github.com/repos/microsoft/ripgrep-prebuilt` lookup. Without
+        # it, GitHub-hosted runners share the 60/hr anon quota and this
+        # 403s intermittently. See `scripts/check-ci-bun-install-token.ts`
+        # for the full writeup.
         run: bun install --frozen-lockfile || bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compile binary
         working-directory: packages/shogo-worker
