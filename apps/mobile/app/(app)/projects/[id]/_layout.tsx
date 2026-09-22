@@ -1726,6 +1726,16 @@ export default observer(function ProjectLayout() {
   // (root cause of the "chat is always fullscreen" bug).
   const [attentionTab, setAttentionTab] = useState<string | null>(null);
   const effectiveTab = attentionTab ?? previewTab;
+  // Mirror the visible pane into a dedicated (non-consumed) route param so
+  // MobileBottomNav can highlight the right tab even when the pane changed
+  // via in-page controls rather than a bottom-nav tap. Deliberately a
+  // separate key from `tab`/`tabNonce` (which drive the tab-intent state
+  // machine above) so this one-way sync can never race or loop with that
+  // logic — nothing else reads `navTab`.
+  useEffect(() => {
+    if (!projectId) return;
+    router.setParams({ navTab: effectiveTab } as any);
+  }, [projectId, effectiveTab]);
   // Set when the user (or Agent Type switch) explicitly asks for canvas this
   // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
   // from the sidebar from snapping them back to chat-only. Declared before the

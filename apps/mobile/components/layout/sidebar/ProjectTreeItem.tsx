@@ -45,6 +45,7 @@ import {
   chatSessionEvents,
 } from "../../../lib/chat-session-events";
 import { densityFor } from "../../../lib/phone-density";
+import { isNativePlatform, usePhoneLayout } from "../../../lib/native-phone-layout";
 import {
   SidebarContextMenu,
   type SidebarMenuEntry,
@@ -133,8 +134,13 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   mobileProjectDetail?: boolean;
 }) {
   const router = useRouter();
-  const isNative = Platform.OS !== "web";
-  const density = densityFor(isNative);
+  // Viewport-based, not Platform-gated: narrow mobile web gets the same
+  // comfortable row/text/icon density as the native app. `nativeLongPress`
+  // stays Platform-gated below — the long-press project-actions sheet is a
+  // genuinely native-only interaction pattern, unrelated to row density.
+  const comfortable = usePhoneLayout();
+  const nativeLongPress = isNativePlatform();
+  const density = densityFor(comfortable);
   const pathname = usePathname();
   const params = useLocalSearchParams<{ chatSessionId?: string }>();
   const http = useDomainHttp();
@@ -319,28 +325,27 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     onNavPress?.();
   }, [router, project, onNavPress, isActive, mobileProjectFirstTapShowsChats, http]);
 
+  // The primary tap always opens the project directly (Canvas/Chat, landing
+  // on its most-recently-used chat) — it no longer detours through an inline
+  // chat-picker expansion or the `/project-chats` screen. That detour is now
+  // only reachable via the explicit chevron affordance below
+  // (`handleBrowseChats`), for anyone who wants to pick a specific chat
+  // instead of the auto-selected most-recent one.
   const handleProjectPress = useCallback(() => {
-    if (mobileProjectFirstTapShowsChats) {
-      if (onMobileProjectExpand) {
-        onMobileProjectExpand(project.id);
-        return;
-      }
-      router.push({
-        pathname: "/(app)/project-chats",
-        params: { id: project.id },
-      } as any);
-      onNavPress?.();
+    openProject();
+  }, [openProject]);
+
+  const handleBrowseChats = useCallback(() => {
+    if (onMobileProjectExpand) {
+      onMobileProjectExpand(project.id);
       return;
     }
-    openProject();
-  }, [
-    mobileProjectFirstTapShowsChats,
-    onMobileProjectExpand,
-    onNavPress,
-    openProject,
-    project.id,
-    router,
-  ]);
+    router.push({
+      pathname: "/(app)/project-chats",
+      params: { id: project.id },
+    } as any);
+    onNavPress?.();
+  }, [onMobileProjectExpand, onNavPress, project.id, router]);
 
   // Select a chat. If its project is already open, switch IN PLACE via the
   // event bus (no navigation / remount). Otherwise navigate to the project
@@ -475,13 +480,13 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   }, []);
 
   const openNativeActions = useCallback(() => {
-    if (!isNative) return;
+    if (!nativeLongPress) return;
     // React Native can deliver onPress after onLongPress on release. Without
     // suppressing that follow-up press, the normal project navigation calls
     // onNavPress and closes the drawer underneath this sheet.
     suppressNextProjectPressRef.current = true;
     setNativeActionsOpen(true);
-  }, [isNative]);
+  }, [nativeLongPress]);
 
   const closeNativeActions = useCallback(() => {
     suppressNextProjectPressRef.current = false;
@@ -708,11 +713,11 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         <View
           className={cn(
             "flex-row items-center rounded-md px-2",
-            isNative ? `${density.rowMin} gap-2 py-1.5` : "gap-1.5 py-1.5",
+            comfortable ? `${density.rowMin} gap-2 py-1.5` : "gap-1.5 py-1.5",
           )}
         >
           <Folder
-            size={isNative ? density.icon.md : 12}
+            size={comfortable ? density.icon.md : 12}
             className="text-muted-foreground"
           />
           <TextInput
@@ -724,7 +729,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             selectTextOnFocus
             className={cn(
               "flex-1 px-2 rounded border border-border bg-background text-foreground",
-              isNative ? `h-11 ${density.text.body}` : "h-6 text-xs",
+              comfortable ? `h-11 ${density.text.body}` : "h-6 text-xs",
             )}
           />
           <Pressable
@@ -733,7 +738,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             accessibilityLabel="Save name"
           >
             <Check
-              size={isNative ? density.icon.md : 12}
+              size={comfortable ? density.icon.md : 12}
               className="text-primary"
             />
           </Pressable>
@@ -743,7 +748,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             accessibilityLabel="Cancel rename"
           >
             <X
-              size={isNative ? density.icon.md : 12}
+              size={comfortable ? density.icon.md : 12}
               className="text-muted-foreground"
             />
           </Pressable>
@@ -752,22 +757,18 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         <View
           className={cn(
             "group flex-row items-center rounded-md pr-1",
-            isNative ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
+            comfortable ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
             isActive ? "bg-accent" : "active:bg-accent/50",
           )}
         >
           <Pressable
             onPress={handleProjectRowPress}
-            onLongPress={isNative ? openNativeActions : undefined}
-            delayLongPress={isNative ? 400 : undefined}
+            onLongPress={nativeLongPress ? openNativeActions : undefined}
+            delayLongPress={nativeLongPress ? 400 : undefined}
             role="link"
             accessibilityLabel={`Project: ${project.name || "Untitled"}`}
             accessibilityHint={
-              mobileProjectFirstTapShowsChats
-                ? "Opens this project's chats"
-                : isNative
-                  ? "Long press for project actions"
-                  : undefined
+              nativeLongPress ? "Long press for project actions" : undefined
             }
             className="flex-1 flex-row items-center gap-2 px-2 active:opacity-70 min-w-0"
             {...(Platform.OS === "web"
@@ -775,12 +776,12 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               : {})}
           >
             <Folder
-              size={isNative ? density.icon.md : 12}
+              size={comfortable ? density.icon.md : 12}
               className={isActive ? "text-foreground" : "text-muted-foreground"}
             />
             <Text
               className={cn(
-                isNative ? `${density.text.body} flex-1` : "text-xs flex-1",
+                comfortable ? `${density.text.body} flex-1` : "text-xs flex-1",
                 isActive ? "text-foreground" : "text-foreground",
               )}
               numberOfLines={1}
@@ -789,29 +790,33 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             </Text>
           </Pressable>
           {mobileProjectFirstTapShowsChats ? (
+            // Explicit "browse chats" affordance. The row itself now always
+            // opens the project directly (landing on its most-recent chat);
+            // this chevron is the one remaining way to see the full chat
+            // list before picking one.
             <Pressable
-              onPress={handleProjectPress}
+              onPress={handleBrowseChats}
               accessibilityLabel={`Show chats for ${project.name || "Untitled"}`}
               accessibilityHint="Opens the project's chats"
               className="h-11 w-10 items-center justify-center rounded-md active:opacity-70"
             >
               <ChevronRight
-                size={isNative ? density.icon.sm : 16}
+                size={comfortable ? density.icon.sm : 16}
                 className="text-muted-foreground shrink-0"
               />
             </Pressable>
           ) : null}
-          {/* Persistent pin glyph when pinned (web). Hidden on native — the
-              Pinned section already groups these rows, and hover-reveal
-              actions do not exist on phone. */}
-          {isPinned && !isNative && (
+          {/* Persistent pin glyph when pinned (comfortable phone density).
+              Hidden there — the Pinned section already groups these rows,
+              and hover-reveal actions do not exist on touch. */}
+          {isPinned && !comfortable && (
             <View className="group-hover:hidden pr-1 shrink-0">
               <Pin size={10} className="text-muted-foreground" />
             </View>
           )}
           {/* Hover-reveal actions (web). Siblings of the project Pressable, so
               tapping one never triggers the project-open press. */}
-          {!isNative && (
+          {Platform.OS === "web" && (
           <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
             <Pressable
               onPress={handleCreateChat}
@@ -848,7 +853,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           onClose={() => setMenu(null)}
         />
       )}
-      {isNative && (
+      {nativeLongPress && (
         <NativeProjectActionsSheet
           visible={nativeActionsOpen}
           projectName={project.name || "Untitled"}

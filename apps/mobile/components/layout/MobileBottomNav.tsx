@@ -2,13 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Keyboard,
-  Platform,
-  Pressable,
-  View,
-  useWindowDimensions,
-} from "react-native";
+import { Platform, Pressable, View, useWindowDimensions } from "react-native";
 import { useLocalSearchParams, usePathname, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -35,7 +29,14 @@ import {
   useLastProjectContext,
 } from "../../hooks/useLastProjectContext";
 import type { BottomTabId } from "@shogo/shared-app";
-import { CHAT_TRANSCRIPT_MAX_WIDTH } from "../../lib/native-composer-keyboard";
+import {
+  CHAT_TRANSCRIPT_MAX_WIDTH,
+  nativeComposerKeyboardOpenFromSource,
+} from "../../lib/native-composer-keyboard";
+import {
+  nativeComposerKeyboardOverlapFromEvent,
+  useNativeComposerKeyboard,
+} from "../../lib/use-native-composer-keyboard";
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
   NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET,
@@ -108,6 +109,11 @@ export function MobileBottomNav() {
     returnChatSessionId?: string;
     tab?: string;
     surface?: string;
+    // Mirrors the project layout's currently-visible pane (kept separate from
+    // `tab`, which drives that screen's own tab-intent/deep-link handling) so
+    // the highlight stays correct even when the pane changes via in-page
+    // controls rather than a bottom-nav tap.
+    navTab?: string;
     projectSettings?: string;
   }>();
   const insets = useSafeAreaInsets();
@@ -172,27 +178,26 @@ export function MobileBottomNav() {
       ? { projectId: tabProjectId, ...(chatSessionId ? { chatSessionId } : {}) }
       : lastProjectContext;
 
-  useEffect(() => {
-    const show = () => setKeyboardOpen(true);
-    const hide = () => setKeyboardOpen(false);
-    const subscriptions =
-      Platform.OS === "ios"
-        ? [
-            Keyboard.addListener("keyboardWillShow", show),
-            Keyboard.addListener("keyboardWillHide", hide),
-          ]
-        : [
-            Keyboard.addListener("keyboardDidShow", show),
-            Keyboard.addListener("keyboardDidHide", hide),
-          ];
-    return () => subscriptions.forEach((subscription) => subscription.remove());
-  }, []);
+  // On native this mirrors RN `Keyboard` show/hide 1:1. On web (no `Keyboard`
+  // bridge) the same hook tracks `visualViewport` shrinking instead — see
+  // use-native-composer-keyboard.ts — so the nav hides for the on-screen
+  // keyboard on mobile web too, not just the native app.
+  useNativeComposerKeyboard(true, (event, source) => {
+    const overlap = nativeComposerKeyboardOverlapFromEvent(event);
+    const open = nativeComposerKeyboardOpenFromSource(source, overlap, 0);
+    if (open != null) setKeyboardOpen(open);
+  });
 
   const active = useMemo(() => {
     if (settingsOpen) return "more";
     if (projectMode) {
-      const tab = firstParam(params.surface) ?? firstParam(params.tab);
-      if (tab === "canvas" || tab === "files" || tab === "plans") return tab;
+      const tab =
+        firstParam(params.navTab) ??
+        firstParam(params.surface) ??
+        firstParam(params.tab);
+      if (tab === "canvas" || tab === "external-preview" || tab === "app-preview")
+        return "canvas";
+      if (tab === "files" || tab === "plans") return tab;
       return "chat";
     }
     if (pathname.includes("/tasks")) return "tasks";
@@ -202,7 +207,14 @@ export function MobileBottomNav() {
     if (pathname.includes("/settings")) return "more";
     if (pathname.includes("/marketplace")) return "none";
     return "chat";
-  }, [params.surface, params.tab, pathname, projectMode, settingsOpen]);
+  }, [
+    params.navTab,
+    params.surface,
+    params.tab,
+    pathname,
+    projectMode,
+    settingsOpen,
+  ]);
 
   if (Platform.OS === "web" && width >= WEB_WIDE_MIN_WIDTH) return null;
   if (isHiddenPath(pathname) || keyboardOpen) return null;

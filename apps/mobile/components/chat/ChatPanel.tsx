@@ -1182,7 +1182,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // adjustments, which can leave it behind the keyboard in project chat.
   const iosComposerAvoiding = Platform.OS === "ios" && !isNativePhoneLayout;
   const composerKeyboardPad = useNativeComposerDockPad({
-    enabled: Platform.OS !== "web" && isNativePhoneLayout,
+    // Native phone uses the RN `Keyboard` bridge; mobile web has no such
+    // bridge but tracks the same overlap via `visualViewport` (see
+    // `use-native-composer-keyboard.ts`), so enable this for narrow web too.
+    enabled: isNativePhoneLayout || (Platform.OS === "web" && isPhoneViewport),
     restPad: restComposerPad,
     safeAreaBottom: insets.bottom,
     iosKeyboardAvoiding: iosComposerAvoiding,
