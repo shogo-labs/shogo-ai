@@ -164,6 +164,7 @@ mock.module('../config/instance-sizes', () => ({
     techStackId === 'expo-app' ? 'mobile-floor' : 'small',
   getMobileDiskSizeLimit: (size: string) => `${size}-mobile-disk`,
   isMobileTechStack: (techStackId: string | null) => techStackId === 'expo-app',
+  meetsMinimumInstanceSize: () => true,
 }))
 
 mock.module('../lib/warm-pool-controller', () => ({
@@ -227,7 +228,6 @@ const {
   getKnativeProjectManager,
   getPreviewSubdomain,
   getPreviewUrl,
-  getProjectPodUrl,
   mergePatchKnativeService,
   jsonPatchKnativeService,
 } = await import('../lib/knative-project-manager')
@@ -746,83 +746,6 @@ describe('mergePatch / jsonPatch helpers', () => {
     await jsonPatchKnativeService('shogo-test', 'project-p1', [{ op: 'add', path: '/x', value: 1 }])
     expect(lastInit.headers['Content-Type']).toBe('application/json-patch+json')
     globalThis.fetch = (async () => nextFetch() as any) as any
-  })
-})
-
-// =========================================================================
-// Top-level getProjectPodUrl helper
-// =========================================================================
-
-describe('getProjectPodUrl (module-level helper)', () => {
-  test('returns localhost when KUBERNETES_SERVICE_HOST is unset', async () => {
-    const saved = process.env.KUBERNETES_SERVICE_HOST
-    delete process.env.KUBERNETES_SERVICE_HOST
-    try {
-      const url = await getProjectPodUrl('p1')
-      expect(url).toContain('localhost')
-    } finally {
-      process.env.KUBERNETES_SERVICE_HOST = saved
-    }
-  })
-
-  test('claims and assigns a warm pod when no DB mapping or legacy service exists', async () => {
-    customGetError = Object.assign(new Error('not found'), { code: 404 })
-    const pod = {
-      id: 'warm-1',
-      serviceName: 'warm-pod-1',
-      url: 'http://warm-pod-1.shogo-test.svc.cluster.local',
-      ready: true,
-      createdAt: Date.now(),
-    }
-    const assignCalls: any[] = []
-    warmPoolMock = {
-      getAssignedPod: () => null,
-      getStatus: () => ({ enabled: true }),
-      buildProjectEnv: async (projectId: string) => ({ PROJECT_ID: projectId, EXTRA: '1' }),
-      claim: () => pod,
-      assign: async (...args: any[]) => { assignCalls.push(args) },
-      evictProject: async () => ({ evicted: true }),
-    }
-
-    const url = await getProjectPodUrl('p-warm')
-
-    expect(url).toBe(pod.url)
-    expect(assignCalls[0]).toEqual([pod, 'p-warm', { PROJECT_ID: 'p-warm', EXTRA: '1' }])
-    // The claim ran under the dedicated-connection advisory lock.
-    expect(advisoryLockCalls.length).toBeGreaterThan(0)
-    expect(capture.some((c) => c.method === 'createNamespacedCustomObject' && c.args[0].plural === 'domainmappings')).toBe(true)
-  })
-
-  test('returns a recent assigned warm pod without probing health', async () => {
-    const assigned = {
-      id: 'warm-2',
-      serviceName: 'warm-pod-2',
-      url: 'http://warm-pod-2.shogo-test.svc.cluster.local',
-      ready: true,
-      createdAt: Date.now(),
-      assignedAt: Date.now(),
-    }
-    warmPoolMock = {
-      ...warmPoolMock,
-      getAssignedPod: () => assigned,
-    }
-
-    const url = await getProjectPodUrl('p-assigned')
-
-    expect(url).toBe(assigned.url)
-    expect(capture).toEqual([])
-  })
-
-  test('uses DB knativeServiceName mapping when mapped service still exists', async () => {
-    projectKnativeServiceName = 'warm-db-1'
-    customGetResponse = {
-      status: { conditions: [{ type: 'Ready', status: 'True' }], actualReplicas: 1 },
-      metadata: { generation: 1 },
-    }
-
-    const url = await getProjectPodUrl('p-db')
-
-    expect(url).toBe('http://warm-db-1.shogo-test.svc.cluster.local')
   })
 })
 

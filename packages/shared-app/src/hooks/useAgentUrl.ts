@@ -122,6 +122,16 @@ export function useAgentUrl(
     localAgentUrl?: string | null
     headers?: () => Record<string, string>
     fetch?: typeof globalThis.fetch
+    /**
+     * Override for the soft-stall threshold (ms) — see {@link STALL_THRESHOLD_MS}
+     * for the default's rationale. Callers that know up front a project is
+     * dependency-heavy (e.g. an Expo/Metro tech stack measured at 2.5-3 min
+     * cold boot vs. Vite's well-under-45s typical) should pass a higher
+     * value so the "taking longer than expected" recovery UI doesn't fire
+     * on an otherwise-healthy, still-booting runtime. Defaults to
+     * `STALL_THRESHOLD_MS` when omitted.
+     */
+    stallThresholdMs?: number
   },
 ) {
   // Warm switch-back: seed initial state from the last successful resolution
@@ -149,6 +159,7 @@ export function useAgentUrl(
   // to navigate away and back.
   const [retryNonce, setRetryNonce] = useState<number>(0)
   const abortRef = useRef<AbortController | null>(null)
+  const stallThresholdMs = options?.stallThresholdMs ?? STALL_THRESHOLD_MS
 
   const retry = useCallback(() => {
     abortRef.current?.abort()
@@ -209,7 +220,7 @@ export function useAgentUrl(
         setStalled(true)
         csMark('useAgentUrl:stalled', { projectId, attempts: attempt })
       }
-    }, STALL_THRESHOLD_MS)
+    }, stallThresholdMs)
 
     const cleanup = () => {
       if (retryTimer) {
@@ -365,7 +376,14 @@ export function useAgentUrl(
     void poll()
 
     return cleanup
-  }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials, retryNonce])
+    // `stallThresholdMs` is intentionally included: callers commonly only
+    // learn the stack-specific value after `loadProject()` resolves (later
+    // than this hook's first render), so the poll effect must re-run once
+    // the real threshold is known — otherwise the stall timer that already
+    // fired at the default 45s would never be corrected. This costs one
+    // extra `/sandbox/url` poll restart shortly after mount when the value
+    // flips from default to stack-specific, same as an ordinary retry cycle.
+  }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials, retryNonce, stallThresholdMs])
 
   return { agentUrl, previewUrl, canvasBaseUrl, loaderUrl, ready, error, stalled, lastStatus, retry }
 }

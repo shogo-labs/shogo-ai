@@ -26,6 +26,7 @@ import {
   ArrowLeft, AlertTriangle, CheckCircle2, Clock, Copy, Trash2, Eye,
   ShieldCheck, XCircle, Send,
 } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, CardContent, Button, Badge, Input } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import {
@@ -61,6 +62,7 @@ function describeAddError(code: string): string {
 export default function AffiliateContentScreen() {
   const router = useRouter()
   const http = useDomainHttp()
+  const insets = useSafeAreaInsets()
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -181,90 +183,143 @@ export default function AffiliateContentScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+      <View
+        className="flex-row items-center gap-3 px-5 pb-3 border-b border-border"
+        style={{ paddingTop: Math.max(insets.top, 12) }}
+      >
         <Pressable onPress={() => router.back()} hitSlop={8}>
           <ArrowLeft size={22} className="text-foreground" />
         </Pressable>
-        <Text className="text-lg font-semibold text-foreground">Content earnings</Text>
+        <View className="flex-1">
+          <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+            Creator earnings
+          </Text>
+          <Text className="text-lg font-semibold text-foreground">Content earnings</Text>
+        </View>
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 16, gap: 16 }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 20,
+          paddingBottom: Math.max(insets.bottom, 16) + 28,
+          flexGrow: 1,
+        }}
         refreshControl={
           Platform.OS !== 'web' ? (
             <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load() }} />
           ) : undefined
         }
       >
-        {loading ? (
-          <View className="py-16 items-center"><ActivityIndicator /></View>
-        ) : errorMsg ? (
-          <Card>
-            <CardContent className="flex-row items-start gap-3 p-4">
-              <AlertTriangle size={20} className="text-yellow-500 mt-0.5" />
-              <Text className="text-sm text-foreground flex-1">{errorMsg}</Text>
-            </CardContent>
-          </Card>
-        ) : summary && summary.programStatus === 'pending' ? (
-          <PendingReview summary={summary} />
-        ) : summary ? (
-          <>
-            <ProgramStatusCard
-              summary={summary}
-              hasVerified={summary.accounts.some((a) => a.verificationStatus === 'verified')}
-              applying={applying}
-              applyError={applyError}
-              onApply={applyToProgram}
-            />
-            <EarningsCard summary={summary} />
-            {summary.programStatus === 'approved' ? (
-              <ContentAnalyticsPanel fetcher={analyticsFetcher} />
-            ) : null}
-            <AddHandleCard
-              platform={platform}
-              setPlatform={setPlatform}
-              handle={handle}
-              setHandle={setHandle}
-              adding={adding}
-              addError={addError}
-              onAdd={addHandle}
-            />
-            <View className="gap-2">
-              <Text className="text-xs uppercase text-muted-foreground tracking-wide">Connected accounts</Text>
-              {summary.accounts.length === 0 ? (
-                <Text className="text-sm text-muted-foreground">No handles connected yet.</Text>
-              ) : (
-                summary.accounts.map((a) => (
-                  <AccountCard
-                    key={a.id}
-                    account={a}
-                    busy={busyId === a.id}
-                    copied={copiedId === a.id}
-                    onVerify={() => verify(a.id)}
-                    onRemove={() => remove(a.id)}
-                    onCopyCode={() => copyCode(a)}
-                  />
-                ))
-              )}
-            </View>
-
-            {summary.posts.length > 0 ? (
-              <View className="gap-2">
-                <Text className="text-xs uppercase text-muted-foreground tracking-wide">Tracked posts</Text>
-                {summary.posts.slice(0, 25).map((p) => (
-                  <PostRow key={p.id} post={p} />
-                ))}
+        <View className="w-full max-w-5xl self-center gap-5">
+          {loading ? (
+            <View className="py-16 items-center"><ActivityIndicator /></View>
+          ) : errorMsg ? (
+            <Card>
+              <CardContent className="flex-row items-start gap-3 p-4">
+                <AlertTriangle size={20} className="text-yellow-500 mt-0.5" />
+                <Text className="text-sm text-foreground flex-1">{errorMsg}</Text>
+              </CardContent>
+            </Card>
+          ) : summary && summary.programStatus === 'pending' ? (
+            <PendingReview summary={summary} />
+          ) : summary ? (
+            <>
+              <View className="gap-1">
+                <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+                  Creator program
+                </Text>
+                <Text className="text-2xl font-semibold tracking-tight text-foreground">
+                  Make every view count
+                </Text>
+                <Text className="text-sm text-muted-foreground leading-5">
+                  Connect your public handles, track paid views, and keep earnings moving with your referrals.
+                </Text>
               </View>
-            ) : null}
+              <View className="gap-4 md:flex-row">
+                <View className="flex-1">
+                  <ProgramStatusCard
+                    summary={summary}
+                    hasVerified={summary.accounts.some((a) => a.verificationStatus === 'verified')}
+                    applying={applying}
+                    applyError={applyError}
+                    onApply={applyToProgram}
+                  />
+                </View>
+                <View className="flex-1">
+                  <EarningsCard summary={summary} />
+                </View>
+              </View>
+              {summary.programStatus === 'approved' ? (
+                <ContentAnalyticsPanel fetcher={analyticsFetcher} />
+              ) : null}
+              <View className="gap-3">
+                <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+                  Connected accounts
+                </Text>
+                <View className="gap-4 md:flex-row">
+                  <View className="flex-1">
+                    <AddHandleCard
+                      platform={platform}
+                      setPlatform={setPlatform}
+                      handle={handle}
+                      setHandle={setHandle}
+                      adding={adding}
+                      addError={addError}
+                      onAdd={addHandle}
+                    />
+                  </View>
+                  <View className="flex-1 gap-2">
+                    {summary.accounts.length === 0 ? (
+                      <Card>
+                        <CardContent className="p-4">
+                          <Text className="text-sm font-medium text-foreground">No handles connected</Text>
+                          <Text className="text-xs text-muted-foreground mt-1">
+                            Add a TikTok or Instagram handle to begin verification.
+                          </Text>
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      summary.accounts.map((a) => (
+                        <AccountCard
+                          key={a.id}
+                          account={a}
+                          busy={busyId === a.id}
+                          copied={copiedId === a.id}
+                          onVerify={() => verify(a.id)}
+                          onRemove={() => remove(a.id)}
+                          onCopyCode={() => copyCode(a)}
+                        />
+                      ))
+                    )}
+                  </View>
+                </View>
+              </View>
 
-            <Text className="text-[10px] text-muted-foreground text-center px-4 leading-4">
-              The video-creator program is approval-only. Connect and verify a
-              handle, then apply. Once an admin approves you and sets your CPM,
-              new views are checked hourly and earnings are paid out manually
-              with your other commissions.
-            </Text>
-          </>
-        ) : null}
+              {summary.posts.length > 0 ? (
+                <View className="gap-3">
+                  <View className="gap-1">
+                    <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+                      Tracked posts
+                    </Text>
+                    <Text className="text-sm text-muted-foreground">Latest view checks across your connected accounts.</Text>
+                  </View>
+                  <View className="gap-2">
+                    {summary.posts.slice(0, 25).map((p) => (
+                      <PostRow key={p.id} post={p} />
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              <Text className="text-[10px] text-muted-foreground text-center px-4 leading-4">
+                The video-creator program is approval-only. Connect and verify a handle, then apply.
+                Once an admin approves you and sets your CPM, new views are checked hourly and
+                earnings are paid out manually with your other commissions.
+              </Text>
+            </>
+          ) : null}
+        </View>
       </ScrollView>
     </View>
   )
@@ -284,11 +339,14 @@ function PendingReview({ summary }: { summary: AffiliateContentSummary }) {
     { label: 'Approved — start earning on new views', done: false },
   ]
   return (
-    <View className="gap-5 pt-8">
+    <View className="gap-5 pt-6">
       <View className="items-center gap-3">
         <View className="h-16 w-16 rounded-full bg-amber-500/10 items-center justify-center">
           <Clock size={30} className="text-amber-500" />
         </View>
+        <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+          Creator program
+        </Text>
         <Text className="text-xl font-semibold text-foreground text-center">Application under review</Text>
         <Text className="text-sm text-muted-foreground text-center max-w-sm leading-5">
           Thanks for applying to the video-creator program. An admin is reviewing
@@ -360,8 +418,8 @@ function ProgramStatusCard({
 
   if (status === 'approved') {
     return (
-      <Card>
-        <CardContent className="flex-row items-center gap-3 p-4">
+      <Card className="border-emerald-500/20">
+        <CardContent className="flex-row items-center gap-3 p-5">
           <View className="h-9 w-9 rounded-full bg-emerald-500/10 items-center justify-center">
             <ShieldCheck size={18} className="text-emerald-500" />
           </View>
@@ -398,8 +456,8 @@ function ProgramStatusCard({
   // none | rejected → apply / re-apply CTA.
   const rejected = status === 'rejected'
   return (
-    <Card>
-      <CardContent className="gap-3 p-4">
+    <Card className={rejected ? 'border-red-500/20' : 'border-primary/20'}>
+      <CardContent className="gap-3 p-5">
         <View className="flex-row items-center gap-2">
           {rejected ? (
             <XCircle size={16} className="text-red-500" />
@@ -454,10 +512,10 @@ function ProgramStatusCard({
 function EarningsCard({ summary }: { summary: AffiliateContentSummary }) {
   const { totals } = summary
   return (
-    <Card>
+    <Card className="border-primary/20">
       <CardContent className="gap-1 p-5">
-        <Text className="text-xs uppercase text-muted-foreground tracking-wide">Content earnings (pending)</Text>
-        <Text className="text-3xl font-bold text-foreground">{dollars(totals.pendingCents)}</Text>
+        <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">Content earnings</Text>
+        <Text className="text-3xl font-semibold tracking-tight text-foreground">{dollars(totals.pendingCents)}</Text>
         <Text className="text-sm text-muted-foreground">
           Approved {dollars(totals.approvedCents)} · Paid {dollars(totals.paidCents)}
         </Text>

@@ -34,7 +34,7 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
-import { resolveAgentModelEnv } from './agent-model-defaults'
+import { resolveAgentModelEnv } from './agent-model-defaults-runtime'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'

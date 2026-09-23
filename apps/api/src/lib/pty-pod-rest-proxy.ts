@@ -26,8 +26,8 @@ export interface ProxyDeps {
   resolvePodUrl: (projectId: string) => Promise<string>
   /**
    * Derives the `x-runtime-token` for the runtime's auth middleware. May be
-   * async — under `SHOGO_WORKSPACE_RUNTIME` the host path resolves the
-   * project's `workspaceId` to mint a workspace-scoped token.
+   * async — the anchored workspace runtime resolves the project's
+   * `workspaceId` to mint a workspace-scoped token.
    */
   deriveRuntimeToken: (projectId: string) => string | Promise<string>
   /** Guard against path-traversal / weird ids before we hit the resolver. */

@@ -11,9 +11,12 @@ import {
   TextInput,
   FlatList,
   useWindowDimensions,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native'
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   AlertCircle,
@@ -143,6 +146,7 @@ export default observer(function EditListingScreen() {
     projectId?: string
   }>()
   const http = useDomainHttp()
+  const insets = useSafeAreaInsets()
   const { width } = useWindowDimensions()
   const isWide = width >= 1024
 
@@ -546,29 +550,49 @@ export default observer(function EditListingScreen() {
   if (showProjectPicker) {
     return (
       <View className="flex-1 bg-background">
-        <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-          <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-            <ArrowLeft size={20} color="#71717a" />
+        <View
+          className="flex-row items-center gap-3 px-5 pb-3 border-b border-border/80"
+          style={{ paddingTop: Math.max(insets.top, 12) }}
+        >
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={8}
+            className="w-9 h-9 items-center justify-center rounded-full border border-border bg-card active:opacity-70"
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
+            <ArrowLeft size={18} color="#71717a" />
           </Pressable>
-          <Text className="text-base font-semibold text-foreground flex-1">
-            Select an agent
-          </Text>
+          <View className="flex-1">
+            <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
+              New listing
+            </Text>
+            <Text className="text-lg font-semibold tracking-tight text-foreground">
+              Choose an agent
+            </Text>
+          </View>
         </View>
-        <Text className="px-5 text-sm text-muted-foreground mb-3">
-          Choose which agent project you want to publish on the marketplace.
-        </Text>
-        <View className="px-5 pb-3">
-          <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11">
-            <Search size={16} color="#71717a" />
-            <TextInput
-              className="flex-1 ml-2 text-sm text-foreground web:outline-none"
-              placeholder="Search your agents…"
-              placeholderTextColor="#71717a"
-              value={projectSearch}
-              onChangeText={setProjectSearch}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
+        <View className="px-5 pt-5 pb-3">
+          <View className="mx-auto w-full max-w-3xl">
+            <Text className="text-2xl font-semibold tracking-tight text-foreground">
+              Start with the work you&apos;ve made.
+            </Text>
+            <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+              Select the agent project you want to introduce to the marketplace.
+            </Text>
+            <View className="mt-5 flex-row items-center bg-card border border-input rounded-2xl px-4 h-12">
+              <Search size={16} color="#71717a" />
+              <TextInput
+                className="flex-1 ml-2 text-sm text-foreground web:outline-none"
+                placeholder="Search your agents…"
+                placeholderTextColor="#71717a"
+                value={projectSearch}
+                onChangeText={setProjectSearch}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+            </View>
           </View>
         </View>
         {projectsLoading ? (
@@ -591,7 +615,10 @@ export default observer(function EditListingScreen() {
           <FlatList
             data={filteredProjects}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
+            contentContainerStyle={{
+              paddingHorizontal: 20,
+              paddingBottom: Math.max(insets.bottom + 24, 40),
+            }}
             ItemSeparatorComponent={() => <View className="h-2" />}
             renderItem={({ item }) => (
               <Pressable
@@ -606,7 +633,7 @@ export default observer(function EditListingScreen() {
                     }))
                   }
                 }}
-                className="p-4 rounded-2xl border border-border bg-card active:bg-muted flex-row items-center gap-3"
+                className="mx-auto w-full max-w-3xl p-4 rounded-2xl border border-border bg-card active:bg-muted flex-row items-center gap-3"
               >
                 <View className="w-10 h-10 rounded-xl bg-primary/10 items-center justify-center">
                   <Bot size={18} color="#e27927" />
@@ -654,55 +681,74 @@ export default observer(function EditListingScreen() {
   const formColumn = (
     <ScrollView
       className="flex-1"
-      contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 100 }}
+      contentContainerStyle={{
+        paddingHorizontal: 20,
+        paddingTop: 24,
+        paddingBottom: Math.max(insets.bottom + 128, 160),
+      }}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
     >
-      {/* Feedback */}
-      {error && (
-        <View className="flex-row items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-destructive/10">
-          <AlertCircle size={16} color="#dc2626" />
-          <Text className="text-sm text-destructive flex-1">{error}</Text>
-        </View>
-      )}
-      {success && (
-        <View className="flex-row items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-emerald-500/10">
-          <Check size={16} color="#16a34a" />
-          <Text className="text-sm text-emerald-700 dark:text-emerald-400 flex-1">
-            {success}
+      <View className={cn('mx-auto w-full', isWide && 'max-w-[780px]')}>
+        <View className="mb-6">
+          <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
+            Creator studio / {isNew ? 'Draft' : 'Listing'}
+          </Text>
+          <Text className="mt-1 text-3xl font-semibold tracking-tight text-foreground">
+            {isNew ? 'Shape the first impression.' : 'Refine your storefront.'}
+          </Text>
+          <Text className="mt-2 max-w-xl text-sm leading-5 text-muted-foreground">
+            Give buyers a clear reason to try your agent. Save anytime; publishing
+            stays under your control.
           </Text>
         </View>
-      )}
 
-      {/* Project pick (new only) */}
-      {isNew && selectedProjectId && (
-        <Pressable
-          onPress={() => setShowProjectPicker(true)}
-          className="flex-row items-center gap-3 p-3 rounded-2xl border border-primary/30 bg-primary/5 mb-4"
+        {/* Feedback */}
+        {error && (
+          <View className="flex-row items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-destructive/10">
+            <AlertCircle size={16} color="#dc2626" />
+            <Text className="text-sm text-destructive flex-1">{error}</Text>
+          </View>
+        )}
+        {success && (
+          <View className="flex-row items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-emerald-500/10">
+            <Check size={16} color="#16a34a" />
+            <Text className="text-sm text-emerald-700 dark:text-emerald-400 flex-1">
+              {success}
+            </Text>
+          </View>
+        )}
+
+        {/* Project pick (new only) */}
+        {isNew && selectedProjectId && (
+          <Pressable
+            onPress={() => setShowProjectPicker(true)}
+            className="flex-row items-center gap-3 p-4 rounded-2xl border border-primary/20 bg-primary/5 mb-5 active:opacity-80"
+          >
+            <View className="w-10 h-10 rounded-xl bg-primary/15 items-center justify-center">
+              <Bot size={17} color="#e27927" />
+            </View>
+            <View className="flex-1 min-w-0">
+              <Text className="text-[10px] font-semibold uppercase tracking-[1px] text-primary mb-0.5">
+                Publishing from
+              </Text>
+              <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                {selectedProject?.name || selectedProjectId}
+              </Text>
+            </View>
+            <Text className="text-xs text-primary font-semibold">Change</Text>
+          </Pressable>
+        )}
+
+        {/* Basics */}
+        <Section
+          title="Basics"
+          subtitle="Title, descriptions, and category"
+          done={sectionDone.basics}
+          open={openSections.basics}
+          onToggle={() => toggleSection('basics')}
         >
-          <View className="w-9 h-9 rounded-xl bg-primary/15 items-center justify-center">
-            <Bot size={16} color="#e27927" />
-          </View>
-          <View className="flex-1 min-w-0">
-            <Text className="text-[10px] font-semibold uppercase text-primary mb-0.5">
-              Agent
-            </Text>
-            <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
-              {selectedProject?.name || selectedProjectId}
-            </Text>
-          </View>
-          <Text className="text-xs text-primary font-medium">Change</Text>
-        </Pressable>
-      )}
-
-      {/* Basics */}
-      <Section
-        title="Basics"
-        subtitle="Title, descriptions, and category"
-        done={sectionDone.basics}
-        open={openSections.basics}
-        onToggle={() => toggleSection('basics')}
-      >
         <FormField label="Title" error={fieldErrors.title} hint={`${form.title.length}/60`}>
           <TextInput
             value={form.title}
@@ -771,10 +817,10 @@ export default observer(function EditListingScreen() {
             ))}
           </View>
         </FormField>
-      </Section>
+        </Section>
 
-      {/* Pricing */}
-      <Section
+        {/* Pricing */}
+        <Section
         title="Pricing"
         subtitle="How buyers pay"
         done={sectionDone.pricing}
@@ -880,10 +926,10 @@ export default observer(function EditListingScreen() {
               />
             )}
         </View>
-      </Section>
+        </Section>
 
-      {/* Install model */}
-      <Section
+        {/* Install model */}
+        <Section
         title="Install model"
         subtitle="How buyers receive your agent"
         done={sectionDone.install}
@@ -928,10 +974,10 @@ export default observer(function EditListingScreen() {
             </Pressable>
           ))}
         </View>
-      </Section>
+        </Section>
 
-      {/* Tags & integrations */}
-      <Section
+        {/* Tags & integrations */}
+        <Section
         title="Tags & integrations"
         subtitle="Drives the 'Works with' strip and search"
         done={sectionDone.tags}
@@ -1000,10 +1046,10 @@ export default observer(function EditListingScreen() {
             </View>
           )}
         </FormField>
-      </Section>
+        </Section>
 
-      {/* Publish status / actions */}
-      <Section
+        {/* Publish status / actions */}
+        <Section
         title="Publish"
         subtitle={
           existingStatus === 'published'
@@ -1135,7 +1181,8 @@ export default observer(function EditListingScreen() {
             you're ready and an admin will review your submission.
           </Text>
         </View>
-      </Section>
+        </Section>
+      </View>
     </ScrollView>
   )
 
@@ -1234,15 +1281,33 @@ export default observer(function EditListingScreen() {
   )
 
   return (
-    <View className="flex-1 bg-background">
+    <KeyboardAvoidingView
+      className="flex-1 bg-background"
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      enabled={Platform.OS !== 'web'}
+    >
       {/* Top bar */}
-      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2 border-b border-border">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-          <ArrowLeft size={20} color="#71717a" />
+      <View
+        className="flex-row items-center gap-3 px-5 pb-3 border-b border-border/80 bg-background"
+        style={{ paddingTop: Math.max(insets.top, 12) }}
+      >
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          className="w-9 h-9 items-center justify-center rounded-full border border-border bg-card active:opacity-70"
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+        >
+          <ArrowLeft size={18} color="#71717a" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1">
-          {isNew ? 'New listing' : 'Edit listing'}
-        </Text>
+        <View className="flex-1">
+          <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
+            Marketplace publishing
+          </Text>
+          <Text className="text-lg font-semibold tracking-tight text-foreground">
+            {isNew ? 'New listing' : 'Edit listing'}
+          </Text>
+        </View>
         {!isWide && (
           <Pressable
             onPress={() => setPreviewVisible((v) => !v)}
@@ -1276,8 +1341,9 @@ export default observer(function EditListingScreen() {
 
       {/* Sticky save / publish bar */}
       <View
-        className="flex-row items-center gap-2 px-5 py-3 border-t border-border bg-background"
+        className="flex-row items-center gap-2 px-5 pt-3 border-t border-border bg-background"
         style={{
+          paddingBottom: Math.max(insets.bottom, 12),
           shadowColor: '#000',
           shadowOpacity: 0.04,
           shadowRadius: 12,
@@ -1355,7 +1421,7 @@ export default observer(function EditListingScreen() {
           </Pressable>
         )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   )
 })
 
@@ -1377,10 +1443,10 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <View className="rounded-2xl border border-border bg-card overflow-hidden mb-4">
+    <View className="rounded-2xl border border-border/80 bg-card overflow-hidden mb-4 shadow-sm">
       <Pressable
         onPress={onToggle}
-        className="flex-row items-center gap-3 px-4 py-3 active:bg-muted/40"
+        className="flex-row items-center gap-3 px-5 py-4 active:bg-muted/40"
       >
         <View
           className={cn(
@@ -1407,7 +1473,7 @@ function Section({
         />
       </Pressable>
       {open && (
-        <View className="px-4 pb-4 gap-4 border-t border-border">{children}</View>
+        <View className="px-5 pt-4 pb-5 gap-4 border-t border-border/70">{children}</View>
       )}
     </View>
   )

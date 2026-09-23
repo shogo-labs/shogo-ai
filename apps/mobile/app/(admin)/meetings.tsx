@@ -12,7 +12,9 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Radio,
   Languages,
@@ -21,6 +23,7 @@ import {
   AlertTriangle,
   Download,
   Users,
+  SlidersHorizontal,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { createHttpClient } from '../../lib/api'
@@ -54,6 +57,10 @@ const WHISPER_MODELS = [
 ]
 
 export default function AdminMeetingsPage() {
+  const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  const isWide = width >= 900
+  const pagePadding = isWide ? 32 : 16
   const [config, setConfig] = useState<MeetingConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -116,21 +123,45 @@ export default function AdminMeetingsPage() {
 
   if (loading) {
     return (
-      <View className="flex-1 items-center justify-center">
-        <ActivityIndicator size="large" />
+      <View className="flex-1 bg-background px-4 items-center justify-center">
+        <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
+          <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
+            <ActivityIndicator size="small" />
+          </View>
+          <Text className="text-sm font-semibold text-foreground mt-3">Loading meeting controls</Text>
+          <Text className="text-xs text-muted-foreground mt-1 text-center">
+            Checking recording and transcription capabilities.
+          </Text>
+        </View>
       </View>
     )
   }
 
   if (!config) {
     return (
-      <ScrollView className="flex-1 bg-background" contentContainerClassName="p-6 pb-20">
-        <View className="max-w-2xl w-full mx-auto gap-4">
-          <Text className="text-2xl font-bold text-foreground">Meetings</Text>
-          <View className="bg-amber-500/10 rounded-lg p-4 flex-row items-center gap-3">
+      <ScrollView
+        className="flex-1 bg-background"
+        contentContainerStyle={{
+          paddingTop: Math.max(insets.top, 12) + 12,
+          paddingHorizontal: pagePadding,
+          paddingBottom: Math.max(insets.bottom, 16) + 32,
+          width: '100%',
+        }}
+      >
+        <View className="max-w-2xl w-full self-center gap-4">
+          <ContextHeader isWide={isWide} saving={false} />
+          <View className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex-row items-center gap-3">
             <AlertTriangle size={18} className="text-amber-500" />
-            <Text className="text-sm text-foreground flex-1">
-              Failed to load meeting configuration.
+            <View className="flex-1">
+              <Text className="text-sm font-medium text-foreground">Meeting controls are unavailable</Text>
+              <Text className="text-xs text-muted-foreground mt-1">
+                The local meeting service did not return its configuration. Check that the service is running, then reopen this page.
+              </Text>
+            </View>
+          </View>
+          <View className="rounded-xl bg-muted/50 p-3">
+            <Text className="text-xs text-muted-foreground">
+              No settings were changed while the configuration was unavailable.
             </Text>
           </View>
         </View>
@@ -139,28 +170,24 @@ export default function AdminMeetingsPage() {
   }
 
   return (
-    <ScrollView className="flex-1 bg-background" contentContainerClassName="p-6 pb-20">
-      <View className="max-w-2xl w-full mx-auto gap-8">
+    <ScrollView
+      className="flex-1 bg-background"
+      contentContainerStyle={{
+        paddingTop: Math.max(insets.top, 12) + 12,
+        paddingHorizontal: pagePadding,
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
+        width: '100%',
+      }}
+    >
+      <View className="max-w-2xl w-full self-center gap-6">
         {/* Header */}
-        <View className="flex-row items-center gap-3">
-          <View className="flex-1">
-            <Text className="text-2xl font-bold text-foreground">Meetings</Text>
-            <Text className="text-sm text-muted-foreground mt-1">
-              Configure meeting recording, transcription, and speaker diarization.
-            </Text>
-          </View>
-          {saving && (
-            <View className="flex-row items-center gap-1.5">
-              <ActivityIndicator size="small" />
-              <Text className="text-xs text-muted-foreground">Saving...</Text>
-            </View>
-          )}
-        </View>
+        <ContextHeader isWide={isWide} saving={saving} />
 
         {/* Status */}
         {transcriptionStatus && (
           <View className="gap-3">
-            <View className="flex-row gap-3 flex-wrap">
+            <SectionLabel title="Service readiness" detail="Local and cloud capabilities" />
+            <View className="flex-row gap-3 flex-wrap rounded-2xl border border-border bg-card p-3">
               <View className={cn(
                 'flex-1 flex-row items-center gap-2 rounded-lg p-3 min-w-[140px]',
                 transcriptionStatus.localAvailable ? 'bg-green-500/10' : 'bg-amber-500/10'
@@ -387,7 +414,7 @@ function SectionCard({
   children: React.ReactNode
 }) {
   return (
-    <View className="bg-card border border-border rounded-xl overflow-hidden">
+    <View className="bg-card border border-border rounded-2xl overflow-hidden">
       <View className="px-5 py-4 border-b border-border">
         <View className="flex-row items-center gap-2.5 mb-1">
           <Icon size={16} className="text-foreground" />
@@ -396,6 +423,43 @@ function SectionCard({
         <Text className="text-xs text-muted-foreground">{description}</Text>
       </View>
       <View className="px-5 py-4">{children}</View>
+    </View>
+  )
+}
+
+function ContextHeader({ isWide, saving }: { isWide: boolean; saving: boolean }) {
+  return (
+    <View className="rounded-2xl border border-border bg-card p-4">
+      <View className="flex-row items-center gap-3">
+        <View className="h-9 w-9 rounded-xl bg-primary/10 items-center justify-center">
+          <SlidersHorizontal size={17} className="text-primary" />
+        </View>
+        <View className="flex-1">
+          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>Meetings</Text>
+          <Text className="text-xs text-muted-foreground mt-0.5">
+            Recording, transcription, and speaker recognition for local meetings.
+          </Text>
+        </View>
+        {saving ? (
+          <View className="flex-row items-center gap-1.5 rounded-full bg-muted px-2.5 py-1.5">
+            <ActivityIndicator size="small" />
+            <Text className="text-[11px] text-muted-foreground">Saving</Text>
+          </View>
+        ) : (
+          <View className="rounded-full bg-muted px-2.5 py-1.5">
+            <Text className="text-[11px] text-muted-foreground">Local only</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  )
+}
+
+function SectionLabel({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline justify-between px-1">
+      <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      <Text className="text-[11px] text-muted-foreground">{detail}</Text>
     </View>
   )
 }

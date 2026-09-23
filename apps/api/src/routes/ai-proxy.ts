@@ -1584,6 +1584,16 @@ function buildOpenAICompatibleBody(
     else body.max_tokens = max_tokens
   }
 
+  // Chat Completions is the compatibility fallback for native OpenAI models.
+  // OpenAI rejects reasoning_effort on older GPT models outright and rejects
+  // it on GPT-5+ whenever function tools are present. Reasoning-capable
+  // runtime turns should use /v1/responses; if a caller still reaches this
+  // endpoint, omitting the field preserves tool calling instead of failing
+  // before the first tool invocation.
+  if (modelConfig.provider === 'openai') {
+    delete body.reasoning_effort
+  }
+
   const isDeepSeek =
     modelConfig.upstream === 'deepseek' ||
     (modelConfig.provider === 'custom' && modelConfig.baseUrl?.includes('api.deepseek.com') === true)
@@ -1904,9 +1914,9 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 // =============================================================================
 
 import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session'
+import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 
 /**
  * Build the time-gating detail attached to a 402 "usage limit reached"
@@ -2889,7 +2899,28 @@ export function aiProxyRoutes() {
       // non-billable completions (e.g. server-initiated title generation) also
       // bypass tier gating: the admin picks the title model and it is never
       // billed to or restricted by the end user's plan.
-      if (modelConfig.provider !== 'local' && modelConfig.provider !== 'openrouter' && !isLocalDev && !internalUsage) {
+      //
+      // The `'workspace'` sentinel identifies a project-less workspace
+      // runtime — in practice, exclusively the free personal-companion chat
+      // (see build-workspace-env.ts). Its model is never end-user-chosen: the
+      // client's `agentMode` is force-overridden server-side in
+      // workspace-chat.ts to the super-admin-configured personal companion
+      // model (default `hoshi-2-0`, an intentionally low-cost model picked
+      // *because* personal spaces are free). Gating it on the workspace's
+      // own Stripe plan made the free personal companion 403 for every
+      // non-economy-tier admin choice — surfaced to users as "The model
+      // provider rejected the request" (403 classifies as `auth` in
+      // retry-classifier.ts) even though DeepSeek/the provider never saw the
+      // call. Bypass tier gating here the same way `internalUsage` does,
+      // rather than requiring every free personal space to carry a Pro plan.
+      const isPersonalCompanionRuntime = tokenPayload.projectId === 'workspace'
+      if (
+        modelConfig.provider !== 'local' &&
+        modelConfig.provider !== 'openrouter' &&
+        !isLocalDev &&
+        !internalUsage &&
+        !isPersonalCompanionRuntime
+      ) {
         const tier = resolveModelTier(request.model)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -3430,9 +3461,9 @@ export function aiProxyRoutes() {
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.
-      // Internal, non-billable completions bypass tier gating (see
-      // chat/completions for rationale).
-      if (!isLocal && !isLocalDev && !internalUsage) {
+      // Internal, non-billable completions and the free personal-companion
+      // runtime bypass tier gating (see chat/completions for rationale).
+      if (!isLocal && !isLocalDev && !internalUsage && tokenPayload.projectId !== 'workspace') {
         const tier = resolveModelTier(resolvedModel)
         if (tier !== 'economy') {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
@@ -3856,7 +3887,9 @@ export function aiProxyRoutes() {
         )
       }
 
-      const model = body.model || 'dall-e-3'
+      // dall-e-3 is retired (OpenAI, 2026-09) — "The model 'dall-e-3' does
+      // not exist." gpt-image-2.5-flare is the current default.
+      const model = body.model || 'gpt-image-2.5-flare'
       const imageModel = resolveImageModel(model)
       if (!imageModel) {
         return c.json(
@@ -3943,7 +3976,7 @@ export function aiProxyRoutes() {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
       const imageFile = formData.get('image') as File | null
-      const model = (formData.get('model') as string) || 'dall-e-2'
+      const model = (formData.get('model') as string) || 'gpt-image-2.5-flare'
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
       const quality = (formData.get('quality') as string) || 'standard'
@@ -3971,15 +4004,21 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
 
-      // OpenAI edits endpoint only supports dall-e-2
-      const editModel = 'dall-e-2'
+      // dall-e-2 (the previous edits-only model) is retired (OpenAI,
+      // 2026-09). gpt-image-1 supports /v1/images/edits too, so honor the
+      // caller's model instead of hardcoding a dead one — but gpt-image
+      // models reject `response_format` (400 unknown_parameter) and use
+      // different size tokens, same as the generations path above.
+      const editModel = model
       const forwardForm = new FormData()
       forwardForm.append('image', imageFile)
       forwardForm.append('prompt', prompt)
       forwardForm.append('model', editModel)
-      forwardForm.append('size', size)
+      forwardForm.append('size', normalizeSizeForModel(editModel, size))
       forwardForm.append('n', String(n))
-      forwardForm.append('response_format', 'b64_json')
+      const editQuality = normalizeQualityForModel(editModel, quality)
+      if (editQuality) forwardForm.append('quality', editQuality)
+      if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
 
       const response = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',

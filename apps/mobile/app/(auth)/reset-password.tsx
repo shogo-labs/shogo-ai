@@ -3,10 +3,10 @@
 import { useCallback, useMemo, useState } from 'react'
 import { View, Text, ActivityIndicator, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { SafeAreaView } from 'react-native-safe-area-context'
 import { Eye, EyeOff } from 'lucide-react-native'
 import { api, createHttpClient } from '../../lib/api'
 import { Button, Input, Alert, AlertDescription } from '@shogo/shared-ui/primitives'
+import { AuthSurface } from './AuthSurface'
 
 const TOGGLE_ICON = '#71717a'
 const ACTIVITY_ON_BRAND = '#ffffff'
@@ -56,21 +56,26 @@ export default function ResetPasswordScreen() {
 
   if (!token && !queryError) {
     return (
-      <SafeAreaView className="flex-1 bg-background justify-center px-6">
-        <Text className="text-base text-muted-foreground text-center">
-          Open the reset link from your email, or go back to sign in.
-        </Text>
-        <Button variant="brand" className="mt-6" onPress={() => router.replace('/(auth)/sign-in')}>
+      <AuthSurface
+        eyebrow="Password recovery"
+        title="Open your reset link"
+        description="Use the secure link in your email to choose a new password."
+      >
+        <Button variant="brand" onPress={() => router.replace('/(auth)/sign-in')}>
           Back to sign in
         </Button>
-      </SafeAreaView>
+      </AuthSurface>
     )
   }
 
   if (invalidToken || !token) {
     return (
-      <SafeAreaView className="flex-1 bg-background justify-center px-6">
-        <Alert variant="destructive" className="mb-4">
+      <AuthSurface
+        eyebrow="Password recovery"
+        title="That link has expired"
+        description="Request a fresh reset link from the sign-in screen to continue."
+      >
+        <Alert variant="destructive" className="mb-5">
           <AlertDescription>
             This reset link is invalid or has expired. Request a new one from the sign-in page.
           </AlertDescription>
@@ -78,19 +83,17 @@ export default function ResetPasswordScreen() {
         <Button variant="brand" onPress={() => router.replace('/(auth)/sign-in')}>
           Back to sign in
         </Button>
-      </SafeAreaView>
+      </AuthSurface>
     )
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
-      <View className="flex-1 justify-center px-6 max-w-md self-center w-full">
-        <Text className="text-2xl font-bold text-foreground mb-1">Set a new password</Text>
-        <Text className="text-sm text-muted-foreground mb-6">
-          Choose a strong password for your account.
-        </Text>
-
-        <View className="gap-1.5 mb-4">
+    <AuthSurface
+      eyebrow="Password recovery"
+      title="Choose a new password"
+      description="Make it at least eight characters. You’ll be signed in securely when you’re done."
+    >
+      <View className="gap-1.5 mb-5">
           <Text className="text-sm font-medium text-foreground">New password</Text>
           <View className="relative">
             <Input
@@ -128,10 +131,9 @@ export default function ResetPasswordScreen() {
           {submitting ? <ActivityIndicator color={ACTIVITY_ON_BRAND} size="small" /> : 'Update password'}
         </Button>
 
-        <Pressable onPress={() => router.replace('/(auth)/sign-in')} className="mt-6 self-center py-2">
+        <Pressable onPress={() => router.replace('/(auth)/sign-in')} className="mt-5 self-center py-2">
           <Text className="text-sm text-brand-landing">Back to sign in</Text>
         </Pressable>
-      </View>
-    </SafeAreaView>
+    </AuthSurface>
   )
 }

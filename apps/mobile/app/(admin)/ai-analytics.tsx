@@ -12,10 +12,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   View,
+  Text,
   ScrollView,
   RefreshControl,
   useWindowDimensions,
 } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { BrainCircuit, Gauge, Sparkles } from 'lucide-react-native'
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -44,7 +47,9 @@ import { fetchAdminJson, AnalyticsHeader } from './_analytics-shared'
 
 export default function AdminAIAnalyticsPage() {
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
+  const pagePadding = isWide ? 32 : 16
 
   const [period, setPeriod] = useState<AnalyticsPeriod>('30d')
   const [logPage, setLogPage] = useState(1)
@@ -114,86 +119,122 @@ export default function AdminAIAnalyticsPage() {
     <ScrollView
       className="flex-1 bg-background"
       contentContainerStyle={{
-        padding: isWide ? 32 : 16,
-        paddingBottom: 40,
+        paddingTop: Math.max(insets.top, 12) + 12,
+        paddingHorizontal: pagePadding,
+        paddingBottom: Math.max(insets.bottom, 16) + 32,
         width: '100%',
         alignSelf: 'center' as const,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <AnalyticsHeader
-        title="AI Analytics"
-        subtitle="Model spend, quality, and usage metrics"
-        isWide={isWide}
-        period={period}
-        onPeriodChange={setPeriod}
-        excludeInternal={excludeInternal}
-        onExcludeInternalChange={setExcludeInternal}
-      />
+      <View className="w-full max-w-[1320px] self-center">
+        <View className="rounded-2xl border border-border bg-card px-4 py-4 mb-5 overflow-hidden">
+          <View className="flex-row items-center gap-2 mb-2">
+            <View className="h-7 w-7 rounded-lg bg-primary/10 items-center justify-center">
+              <BrainCircuit size={15} className="text-primary" />
+            </View>
+            <Text className="text-[11px] font-semibold tracking-[1.2px] text-primary uppercase">
+              AI operations
+            </Text>
+            <View className="ml-auto flex-row items-center gap-1 rounded-full bg-muted px-2 py-1">
+              <Sparkles size={11} className="text-muted-foreground" />
+              <Text className="text-[10px] text-muted-foreground">Usage intelligence</Text>
+            </View>
+          </View>
+          <AnalyticsHeader
+            title="AI Analytics"
+            subtitle="Model spend, quality, and usage signals for confident operations"
+            isWide={isWide}
+            period={period}
+            onPeriodChange={setPeriod}
+            excludeInternal={excludeInternal}
+            onExcludeInternalChange={setExcludeInternal}
+          />
+        </View>
 
-      {/* Consumption by model / workspace */}
-      <View className="mb-4">
-        <UsageTimeseriesChart
-          data={spendTs.data}
-          loading={spendTs.loading}
-          groupBy={spendGroupBy}
-          metric={spendMetric}
-          onGroupByChange={setSpendGroupBy}
-          onMetricChange={setSpendMetric}
-          title="Consumption Over Time"
-          subtitle="Daily usage by model, workspace, user, or source"
-        />
-      </View>
+        {/* Consumption by model / workspace */}
+        <View className="mb-5">
+          <SectionLabel title="Spend trajectory" detail="Consumption by model, workspace, user, or source" />
+          <UsageTimeseriesChart
+            data={spendTs.data}
+            loading={spendTs.loading}
+            groupBy={spendGroupBy}
+            metric={spendMetric}
+            onGroupByChange={setSpendGroupBy}
+            onMetricChange={setSpendMetric}
+            title="Consumption Over Time"
+            subtitle="Daily usage by model, workspace, user, or source"
+          />
+        </View>
 
-      {/* Quality & efficiency trend */}
-      <View className="mb-4">
-        <QualityTimeseriesChart data={qualityTs.data} loading={qualityTs.loading} />
-      </View>
+        {/* Quality & efficiency trend */}
+        <View className="mb-5">
+          <SectionLabel title="Quality watch" detail="Efficiency and quality trends" />
+          <QualityTimeseriesChart data={qualityTs.data} loading={qualityTs.loading} />
+        </View>
 
-      {/* Workspace Activity Table */}
-      <View className="mb-4">
-        <WorkspaceActivityTable
-          data={workspaceActivity.data}
-          loading={workspaceActivity.loading}
-          page={workspacePage}
-          onPageChange={setWorkspacePage}
-        />
-      </View>
+        {/* Workspace Activity Table */}
+        <View className="mb-5">
+          <SectionLabel title="Workspace activity" detail="Where AI work is happening" />
+          <WorkspaceActivityTable
+            data={workspaceActivity.data}
+            loading={workspaceActivity.loading}
+            page={workspacePage}
+            onPageChange={setWorkspacePage}
+          />
+        </View>
 
-      {/* Tool call analytics */}
-      <View className="mb-4">
-        <ToolCallAnalyticsPanel
-          data={toolCalls.data}
-          loading={toolCalls.loading}
-          page={toolPage}
-          onPageChange={setToolPage}
-        />
-      </View>
+        {/* Tool call analytics */}
+        <View className="mb-5">
+          <SectionLabel title="Tools" detail="Invocation volume and reliability" />
+          <ToolCallAnalyticsPanel
+            data={toolCalls.data}
+            loading={toolCalls.loading}
+            page={toolPage}
+            onPageChange={setToolPage}
+          />
+        </View>
 
-      {/* Usage table (summary + event log) */}
-      <View className="mb-4">
-        <UsageTableSection
-          summaryData={usageSummary.data}
-          logData={usageLog.data}
-          summaryLoading={usageSummary.loading}
-          logLoading={usageLog.loading}
-          onLogPageChange={setLogPage}
-          logPage={logPage}
-          onSummaryPageChange={setSummaryPage}
-          summaryPage={summaryPage}
-        />
-      </View>
+        {/* Usage table (summary + event log) */}
+        <View className="mb-5">
+          <SectionLabel title="Usage ledger" detail="Aggregate and raw model events" />
+          <UsageTableSection
+            summaryData={usageSummary.data}
+            logData={usageLog.data}
+            summaryLoading={usageSummary.loading}
+            logLoading={usageLog.loading}
+            onLogPageChange={setLogPage}
+            logPage={logPage}
+            onSummaryPageChange={setSummaryPage}
+            summaryPage={summaryPage}
+          />
+        </View>
 
-      {/* Chat analytics */}
-      <View className="mb-4">
-        <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
-      </View>
+        {/* Chat analytics */}
+        <View className="mb-5">
+          <SectionLabel title="Conversation health" detail="Chat usage and outcomes" />
+          <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
+        </View>
 
-      {/* Usage breakdown */}
-      <View>
-        <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+        {/* Usage breakdown */}
+        <View>
+          <SectionLabel title="Distribution" detail="Usage across the stack" />
+          <UsageBreakdownSection data={usage.data} loading={usage.loading} />
+        </View>
       </View>
     </ScrollView>
+  )
+}
+
+function SectionLabel({ title, detail }: { title: string; detail: string }) {
+  return (
+    <View className="flex-row items-baseline justify-between mb-2 px-1">
+      <View className="flex-row items-center gap-1.5">
+        <Gauge size={13} className="text-muted-foreground" />
+        <Text className="text-sm font-semibold text-foreground">{title}</Text>
+      </View>
+      <Text className="text-[11px] text-muted-foreground">{detail}</Text>
+    </View>
   )
 }

@@ -11,7 +11,7 @@ import {
 import { startLiveSidebandMeter } from '../lib/live-session-relay'
 import { validateLiveSessionStart, type LiveSessionStart } from '../lib/live-session'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 
 const isLocalDev = process.env.SHOGO_LOCAL_MODE === 'true'
 

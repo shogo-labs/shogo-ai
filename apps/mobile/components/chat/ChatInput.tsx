@@ -14,7 +14,15 @@
  * Native: Expo ImagePicker + DocumentPicker (AttachSourceSheet + native-attachment-picker).
  */
 
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react"
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from "react";
 import {
   View,
   Text,
@@ -24,31 +32,38 @@ import {
   ScrollView,
   Platform,
   Animated,
-} from "react-native"
-import { cn } from "@shogo/shared-ui/primitives"
-import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+} from "react-native";
+import { cn } from "@shogo/shared-ui/primitives";
+import {
+  NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
   NATIVE_PHONE_ICON_STROKE,
-  NATIVE_PHONE_SHEET_COMPACT_RATIO } from "../../lib/native-phone-layout"
+  NATIVE_PHONE_SHEET_COMPACT_RATIO,
+} from "../../lib/native-phone-layout";
 import {
   Popover,
   PopoverBackdrop,
   PopoverContent,
-} from "@/components/ui/popover"
-import { usePlatformConfig } from "../../lib/platform-config"
-import { AttachSourceSheet } from "./AttachSourceSheet"
-import { ContextTracker } from "./ContextTracker"
-import type { ContextBreakdownData } from "./ContextBreakdownPanel"
-import { resolveShortName, resolveTier } from "../../lib/visible-models"
-import { ComposerModelPicker } from "./ModelPickerMenu"
-import { WebTooltip } from "./WebTooltip"
-import { DockChip } from "./dock/DockChip"
-import { DockChipRail } from "./dock/DockChipRail"
-import { QueueDockPanel } from "./dock/panels/QueueDockPanel"
-import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel"
-import { workspaceExperience, type WorkspaceExperienceComposer } from "@shogo/shared-app"
+} from "@/components/ui/popover";
+import { usePlatformConfig } from "../../lib/platform-config";
+import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
+import { AttachSourceSheet } from "./AttachSourceSheet";
+import { ContextTracker } from "./ContextTracker";
+import type { ContextBreakdownData } from "./ContextBreakdownPanel";
+import { resolveShortName, resolveTier } from "../../lib/visible-models";
+import { ComposerModelPicker } from "./ModelPickerMenu";
+import { WebTooltip } from "./WebTooltip";
+import { DockChip } from "./dock/DockChip";
+import { DockChipRail } from "./dock/DockChipRail";
+import { QueueDockPanel } from "./dock/panels/QueueDockPanel";
+import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel";
+import {
+  workspaceExperience,
+  type WorkspaceExperienceComposer,
+} from "@shogo/shared-app";
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for any caller that doesn't pass `composer`. */
-const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer = workspaceExperience("team").composer
+const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer =
+  workspaceExperience("team").composer;
 import {
   Plus,
   Square,
@@ -66,18 +81,23 @@ import {
   Languages,
   Play,
   Cloud,
-} from "lucide-react-native"
-import { useVoiceInput } from "./useVoiceInput"
-import { VoiceWaveform } from "./VoiceWaveform"
+  SlidersHorizontal,
+} from "lucide-react-native";
+import { useVoiceInput } from "./useVoiceInput";
+import { VoiceWaveform } from "./VoiceWaveform";
+import { kindLabel, buildPastedAttachments } from "./long-text-utils";
 import {
-  kindLabel,
-  buildPastedAttachments,
-} from "./long-text-utils"
-import { resolveChatInputTextChange, type ChatInputTextChange } from "./chat-input-text-change"
-import { FileViewerModal } from "./FileViewerModal"
-import { ImagePreviewModal } from "./ImagePreviewModal"
-import { VideoPreviewModal } from "./VideoPreviewModal"
-import { PastedTextChip } from "./PastedTextChip"
+  resolveChatInputTextChange,
+  type ChatInputTextChange,
+} from "./chat-input-text-change";
+import { FileViewerModal } from "./FileViewerModal";
+import { ImagePreviewModal } from "./ImagePreviewModal";
+import { VideoPreviewModal } from "./VideoPreviewModal";
+import { PastedTextChip } from "./PastedTextChip";
+import {
+  LiquidGlassBackdrop,
+  supportsLiquidGlass,
+} from "../ui/LiquidGlassBackdrop";
 import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
   PROMINENT_COMPOSER_HEIGHT_EASING,
@@ -91,25 +111,23 @@ import {
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
   nextProminentComposerHeight,
-} from "./useProminentComposerExpansion"
-import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext"
-import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent"
-import { agentFetch } from "../../lib/agent-fetch"
-import { useChatContextSafe } from "./ChatContext"
-import type { IdeContextState, IdeFileResult } from "./ideBridge"
+} from "./useProminentComposerExpansion";
+import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext";
+import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent";
+import { agentFetch } from "../../lib/agent-fetch";
+import { useChatContextSafe } from "./ChatContext";
+import type { IdeContextState, IdeFileResult } from "./ideBridge";
 
-export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6"
-export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001"
+export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6";
+export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001";
 
-import { EnvironmentPicker } from "./EnvironmentPicker"
+import { EnvironmentPicker } from "./EnvironmentPicker";
 import {
   COMPOSER_KEYBOARD_PROPS,
   NATIVE_COMPOSER_MIC_IDLE_CLASS,
   composerSendChrome,
-} from "../../lib/composer-phone"
-import {
-  executeNativeAttachAction,
-} from "../../lib/native-attachment-picker"
+} from "../../lib/composer-phone";
+import { executeNativeAttachAction } from "../../lib/native-attachment-picker";
 import {
   ComposerPlusModeList,
   ComposerPlusSection,
@@ -131,15 +149,15 @@ import {
   composerModelPickerProps,
   useComposerLayoutMode,
   useProminentComposerHeight,
-} from "./composer"
+} from "./composer";
 
-export type InteractionMode = "agent" | "plan" | "ask"
+export type InteractionMode = "agent" | "plan" | "ask";
 
 export interface InteractionModeConfig {
-  id: InteractionMode
-  label: string
-  description: string
-  Icon: ComponentType<{ size?: number; className?: string }>
+  id: InteractionMode;
+  label: string;
+  description: string;
+  Icon: ComponentType<{ size?: number; className?: string }>;
 }
 
 export const INTERACTION_MODES: InteractionModeConfig[] = [
@@ -161,9 +179,9 @@ export const INTERACTION_MODES: InteractionModeConfig[] = [
     description: "Just answer questions, no tools or changes",
     Icon: MessageCircleQuestion,
   },
-]
+];
 
-const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
+const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"];
 
 /**
  * Show a native browser tooltip on hover (web only). Wraps children in a
@@ -174,9 +192,9 @@ const INTERACTION_MODE_ORDER: InteractionMode[] = ["agent", "plan", "ask"]
  */
 
 export interface FileAttachment {
-  dataUrl: string
-  name: string
-  type: string
+  dataUrl: string;
+  name: string;
+  type: string;
 }
 
 /**
@@ -191,14 +209,36 @@ export type ChatReference =
   | { type: "file"; path: string; name: string; label?: string }
   | { type: "folder"; path: string; name: string; label?: string }
   | { type: "project"; id: string; name: string; label?: string }
-  | { type: "chat"; id: string; name: string; projectId?: string; label?: string; transcript?: string }
-  | { type: "plan"; planId: string; filename: string; name: string; projectId?: string; label?: string; content?: string }
-  | { type: "workspace"; id: string; name: string; slug: string; summary?: string; label?: string }
+  | {
+      type: "chat";
+      id: string;
+      name: string;
+      projectId?: string;
+      label?: string;
+      transcript?: string;
+    }
+  | {
+      type: "plan";
+      planId: string;
+      filename: string;
+      name: string;
+      projectId?: string;
+      label?: string;
+      content?: string;
+    }
+  | {
+      type: "workspace";
+      id: string;
+      name: string;
+      slug: string;
+      summary?: string;
+      label?: string;
+    };
 
 /** Lightweight sibling-project shape the composer needs for the "@" menu. */
 export interface ProjectMentionOption {
-  id: string
-  name: string
+  id: string;
+  name: string;
 }
 
 /** One selectable row in the "@" menu (files first, then projects). */
@@ -206,20 +246,33 @@ type MentionItem =
   | { kind: "file"; path: string; name: string }
   | { kind: "folder"; path: string; name: string }
   | { kind: "project"; id: string; name: string }
-  | { kind: "chat"; id: string; name: string; projectId?: string; result: AgentHistoryResult }
-  | { kind: "plan"; id: string; name: string; filename: string; projectId?: string; result: AgentHistoryResult }
+  | {
+      kind: "chat";
+      id: string;
+      name: string;
+      projectId?: string;
+      result: AgentHistoryResult;
+    }
+  | {
+      kind: "plan";
+      id: string;
+      name: string;
+      filename: string;
+      projectId?: string;
+      result: AgentHistoryResult;
+    };
 
-const MAX_MENTION_FILE_RESULTS = 8
-const MAX_IDE_MENTION_FILE_RESULTS = 80
-const MAX_MENTION_PROJECT_RESULTS = 8
+const MAX_MENTION_FILE_RESULTS = 8;
+const MAX_IDE_MENTION_FILE_RESULTS = 80;
+const MAX_MENTION_PROJECT_RESULTS = 8;
 
 function referenceKey(ref: ChatReference): string {
-  if (ref.type === "file") return `file:${ref.path}`
-  if (ref.type === "folder") return `folder:${ref.path}`
-  if (ref.type === "project") return `project:${ref.id}`
-  if (ref.type === "chat") return `chat:${ref.id}`
-  if (ref.type === "plan") return `plan:${ref.planId}`
-  return `workspace:${ref.id}`
+  if (ref.type === "file") return `file:${ref.path}`;
+  if (ref.type === "folder") return `folder:${ref.path}`;
+  if (ref.type === "project") return `project:${ref.id}`;
+  if (ref.type === "chat") return `chat:${ref.id}`;
+  if (ref.type === "plan") return `plan:${ref.planId}`;
+  return `workspace:${ref.id}`;
 }
 
 /**
@@ -233,13 +286,13 @@ function slugifyMention(name: string): string {
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-  return slug || "project"
+    .replace(/^-+|-+$/g, "");
+  return slug || "project";
 }
 
 function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean)
-  return parts[parts.length - 1] || path
+  const parts = path.split("/").filter(Boolean);
+  return parts[parts.length - 1] || path;
 }
 
 /**
@@ -249,18 +302,18 @@ function basename(path: string): string {
  * decide what the inline-highlight overlay should pill.
  */
 function labelPresent(text: string, label: string): boolean {
-  if (!label) return false
-  let from = 0
+  if (!label) return false;
+  let from = 0;
   for (;;) {
-    const idx = text.indexOf(label, from)
-    if (idx === -1) return false
-    if (idx === 0 || /\s/.test(text[idx - 1])) return true
-    from = idx + 1
+    const idx = text.indexOf(label, from);
+    if (idx === -1) return false;
+    if (idx === 0 || /\s/.test(text[idx - 1])) return true;
+    from = idx + 1;
   }
 }
 
 /** A run of composer text: either plain or a tagged "@mention". */
-type MentionSegment = { text: string; mention: boolean }
+type MentionSegment = { text: string; mention: boolean };
 
 /**
  * Split `text` into plain / mention runs by matching known reference `labels`
@@ -268,33 +321,40 @@ type MentionSegment = { text: string; mention: boolean }
  * the transparent overlay that draws an inline pill behind each "@mention"
  * while the real (crisp) text stays in the TextInput on top.
  */
-function buildMentionSegments(text: string, labels: string[]): MentionSegment[] {
-  const unique = Array.from(new Set(labels.filter(Boolean))).sort((a, b) => b.length - a.length)
-  if (unique.length === 0) return [{ text, mention: false }]
-  const segments: MentionSegment[] = []
-  let i = 0
-  let plainStart = 0
+function buildMentionSegments(
+  text: string,
+  labels: string[]
+): MentionSegment[] {
+  const unique = Array.from(new Set(labels.filter(Boolean))).sort(
+    (a, b) => b.length - a.length
+  );
+  if (unique.length === 0) return [{ text, mention: false }];
+  const segments: MentionSegment[] = [];
+  let i = 0;
+  let plainStart = 0;
   while (i < text.length) {
-    let matched: string | null = null
+    let matched: string | null = null;
     if (i === 0 || /\s/.test(text[i - 1])) {
       for (const lab of unique) {
         if (text.startsWith(lab, i)) {
-          matched = lab
-          break
+          matched = lab;
+          break;
         }
       }
     }
     if (matched) {
-      if (plainStart < i) segments.push({ text: text.slice(plainStart, i), mention: false })
-      segments.push({ text: matched, mention: true })
-      i += matched.length
-      plainStart = i
+      if (plainStart < i)
+        segments.push({ text: text.slice(plainStart, i), mention: false });
+      segments.push({ text: matched, mention: true });
+      i += matched.length;
+      plainStart = i;
     } else {
-      i++
+      i++;
     }
   }
-  if (plainStart < text.length) segments.push({ text: text.slice(plainStart), mention: false })
-  return segments
+  if (plainStart < text.length)
+    segments.push({ text: text.slice(plainStart), mention: false });
+  return segments;
 }
 
 /**
@@ -307,38 +367,38 @@ function detectMentionToken(
   text: string,
   caret: number
 ): { start: number; query: string } | null {
-  const safeCaret = Math.max(0, Math.min(caret, text.length))
-  const upToCaret = text.slice(0, safeCaret)
-  const match = /(^|\s)@([^\s@]*)$/.exec(upToCaret)
-  if (!match) return null
-  const query = match[2]
-  return { start: safeCaret - query.length - 1, query }
+  const safeCaret = Math.max(0, Math.min(caret, text.length));
+  const upToCaret = text.slice(0, safeCaret);
+  const match = /(^|\s)@([^\s@]*)$/.exec(upToCaret);
+  if (!match) return null;
+  const query = match[2];
+  return { start: safeCaret - query.length - 1, query };
 }
 
 export type RestoreDraftRequest = {
-  nonce: number
-  content: string
-  files?: FileAttachment[]
-}
+  nonce: number;
+  content: string;
+  files?: FileAttachment[];
+};
 
 interface SkillOption {
-  name: string
-  description: string
+  name: string;
+  description: string;
 }
 
-const SKILLS: SkillOption[] = []
+const SKILLS: SkillOption[] = [];
 
 export type QueuedMessage = {
-  id: string
-  content: string
-  files?: FileAttachment[]
-  selectedModel?: string
+  id: string;
+  content: string;
+  files?: FileAttachment[];
+  selectedModel?: string;
   /** True when queued because a send failed on a network error, rather than
    * because it was typed while a turn was streaming. Rendered with a
    * distinct "waiting for connection" style so it's obvious nothing was
    * lost and it'll retry automatically. */
-  offline?: boolean
-}
+  offline?: boolean;
+};
 
 export interface ChatInputProps {
   onSubmit: (
@@ -346,37 +406,40 @@ export interface ChatInputProps {
     files?: FileAttachment[],
     modelId?: string,
     references?: ChatReference[]
-  ) => void
-  disabled?: boolean
-  placeholder?: string
-  isStreaming?: boolean
-  onStop?: () => void
-  selectedModel?: string
-  onModelChange?: (modelId: string) => void
-  isPro?: boolean
-  onUpgradeClick?: () => void
-  queuedMessages?: QueuedMessage[]
-  onRemoveQueuedMessage?: (messageId: string) => void
-  onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
-  onEditQueuedMessage?: (messageId: string) => void
-  onSendQueuedMessageNow?: (messageId: string) => void
-  interactionMode?: InteractionMode
-  onInteractionModeChange?: (mode: InteractionMode) => void
+  ) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  isStreaming?: boolean;
+  onStop?: () => void;
+  selectedModel?: string;
+  onModelChange?: (modelId: string) => void;
+  isPro?: boolean;
+  onUpgradeClick?: () => void;
+  queuedMessages?: QueuedMessage[];
+  onRemoveQueuedMessage?: (messageId: string) => void;
+  onReorderQueuedMessage?: (
+    messageId: string,
+    direction: "up" | "down"
+  ) => void;
+  onEditQueuedMessage?: (messageId: string) => void;
+  onSendQueuedMessageNow?: (messageId: string) => void;
+  interactionMode?: InteractionMode;
+  onInteractionModeChange?: (mode: InteractionMode) => void;
   /**
    * Composer capability descriptor (`workspaceExperience(kind).composer`).
    * Defaults to the full composer (model picker + interaction modes shown).
    * Pass `workspaceExperience('personal').composer` to hide plan/ask and
    * model controls for the companion shell.
    */
-  composer?: WorkspaceExperienceComposer
-  dualPlan?: boolean
-  onDualPlanChange?: (enabled: boolean) => void
-  contextUsage?: { inputTokens: number; contextWindowTokens: number } | null
+  composer?: WorkspaceExperienceComposer;
+  dualPlan?: boolean;
+  onDualPlanChange?: (enabled: boolean) => void;
+  contextUsage?: { inputTokens: number; contextWindowTokens: number } | null;
   /** Per-turn category rollup from `data-prompt-breakdown`, shown in the popover opened by clicking the context ring. Null before the first turn. */
-  contextBreakdown?: ContextBreakdownData | null
-  quickActions?: { label: string; prompt: string }[]
-  onQuickActionClick?: (prompt: string) => void
-  restoreDraftRequest?: RestoreDraftRequest | null
+  contextBreakdown?: ContextBreakdownData | null;
+  quickActions?: { label: string; prompt: string }[];
+  onQuickActionClick?: (prompt: string) => void;
+  restoreDraftRequest?: RestoreDraftRequest | null;
   /**
    * Called synchronously once `restoreDraftRequest` has been applied to the
    * input (draft text + files staged), with the nonce that was consumed.
@@ -384,12 +447,12 @@ export interface ChatInputProps {
    * on a timer — a fixed-delay `setTimeout` races this effect and can clear
    * (or fail to clear) the request at the wrong time.
    */
-  onDraftRestored?: (nonce: number) => void
+  onDraftRestored?: (nonce: number) => void;
   /**
    * Current project id. Enables the "@" menu's Files section (file
    * references are scoped to this project's agent workspace).
    */
-  projectId?: string
+  projectId?: string;
   /**
    * Sibling projects (same workspace, excluding the current one) the user can
    * tag via the "@" menu's Projects section. Tagging one durably attaches it to
@@ -397,14 +460,17 @@ export interface ChatInputProps {
    * files. Pass a referentially-stable array (memoized) so the memoized
    * ChatInput doesn't re-render every render.
    */
-  projects?: ProjectMentionOption[]
-  chatSessionId?: string | null
-  workspaceHistorySearch?: (query: string, kind?: "chat" | "plan") => Promise<AgentHistoryResult[]>
-  ideMode?: boolean
-  ideContext?: IdeContextState
-  ideFileSearch?: (query?: string) => Promise<IdeFileResult[]>
-  onOpenIdeFile?: (path: string) => void
-  dimWhenDisabled?: boolean
+  projects?: ProjectMentionOption[];
+  chatSessionId?: string | null;
+  workspaceHistorySearch?: (
+    query: string,
+    kind?: "chat" | "plan"
+  ) => Promise<AgentHistoryResult[]>;
+  ideMode?: boolean;
+  ideContext?: IdeContextState;
+  ideFileSearch?: (query?: string) => Promise<IdeFileResult[]>;
+  onOpenIdeFile?: (path: string) => void;
+  dimWhenDisabled?: boolean;
   /**
    * When true, draws an accent-colored ring on the visible input
    * container to mark this composer as the active edit target
@@ -416,7 +482,7 @@ export interface ChatInputProps {
    * View carries `p-3 pt-0` of its own. Drag-over state still wins
    * over this prop.
    */
-  highlighted?: boolean
+  highlighted?: boolean;
   /**
    * Strip the outer wrapper's horizontal padding so the visible
    * input box sits flush against its parent's left/right edges.
@@ -435,7 +501,9 @@ export interface ChatInputProps {
    * messages) deliberately keep the default to preserve the gap
    * between the composer's bordered box and the panel edges.
    */
-  flush?: boolean
+  flush?: boolean;
+  /** The workspace-agent shell uses a quieter, focused composer. */
+  presentation?: "agent" | "studio";
 }
 
 function ChatInputImpl({
@@ -475,29 +543,42 @@ function ChatInputImpl({
   dimWhenDisabled = true,
   highlighted = false,
   flush = false,
+  presentation = "studio",
 }: ChatInputProps) {
-  const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
-  const { features } = usePlatformConfig()
-  const effectiveIsPro = features.billing ? isPro : true
-  const { isNative,
-    isPhoneChrome, useProminentComposer, chatgptComposer,
+  const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER;
+  const { features } = usePlatformConfig();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+  const effectiveIsPro = features.billing ? isPro : true;
+  const {
+    isNative,
+    isPhoneChrome,
+    useProminentComposer,
+    chatgptComposer,
     sizes,
     modelTriggerMaxWidth,
     nativeModelMenuWidth,
     windowHeight,
   } = useComposerLayoutMode({
-    prominent : true,
+    prominent: true,
     flush,
-  })
-  const sendChrome = composerSendChrome(isNative || useProminentComposer)
-  const inputMinHeight = sizes.inputMinHeight
-  const inputMaxHeight = sizes.inputMaxHeight
-  const bridge = useChatBridgeOptional()
-  const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge
-  const ezActive = bridge?.ezModeActive ?? false
+  });
+  const liquidGlass = useProminentComposer && supportsLiquidGlass();
+  const sendChrome = composerSendChrome(isNative || useProminentComposer);
+  const mobileChatText = usesMobileWorkspaceChrome || useProminentComposer;
+  const showModelPicker =
+    composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId);
+  const showInlineMobileModelPicker =
+    showModelPicker && (useProminentComposer || usesMobileWorkspaceChrome);
+  const composerFontSize = mobileChatText ? 16 : 14;
+  const composerLineHeight = mobileChatText ? 24 : 20;
+  const inputMinHeight = sizes.inputMinHeight;
+  const inputMaxHeight = sizes.inputMaxHeight;
+  const bridge = useChatBridgeOptional();
+  const ezAvailable = Platform.OS === "web" && features.ezMode && !!bridge;
+  const ezActive = bridge?.ezModeActive ?? false;
 
-  const textInputRef = useRef<TextInput>(null)
-  const inputValueRef = useRef("")
+  const textInputRef = useRef<TextInput>(null);
+  const inputValueRef = useRef("");
   // Guards against the DOM paste listener AND onChangeText both firing for
   // the same clipboard event, which would create duplicate chips.
   const {
@@ -513,7 +594,8 @@ function ChatInputImpl({
     setViewingPastedId,
     viewingPasted,
     fileInputRef,
-    dropZoneRef, pasteHandledRef,
+    dropZoneRef,
+    pasteHandledRef,
     handleRemoveFile,
     applyPickedFiles,
     handleWebFileChange,
@@ -521,7 +603,7 @@ function ChatInputImpl({
     handleRemovePastedText,
     handleUpdatePastedText,
     resetAttachments,
-  } = useComposerAttachments()
+  } = useComposerAttachments();
   // Coalesced-flush scaffolding for `handleChangeText` (declared here, ahead
   // of `composerDisplayValue` below, so the rendered TextInput can always
   // show the freshest typed text even on a render that fires BEFORE the
@@ -530,109 +612,121 @@ function ChatInputImpl({
   const pendingTextChangeRef = useRef<Extract<
     ChatInputTextChange,
     { type: "text" }
-  > | null>(null)
-  const textChangeFlushHandleRef = useRef<number | null>(null)
+  > | null>(null);
+  const textChangeFlushHandleRef = useRef<number | null>(null);
   // Counts consecutive SYNCHRONOUS text commits since the last settled
   // animation frame — see `handleChangeText`'s "fast path vs. slow path"
   // comment for why this exists.
-  const syncBurstCountRef = useRef(0)
+  const syncBurstCountRef = useRef(0);
 
-  const [inputValue, setInputValue] = useState("")
+  const [inputValue, setInputValue] = useState("");
   // Cancels a pending coalesced text-change flush (see `handleChangeText`)
   // before any DISCRETE, immediate write to `inputValue` (submit, mention
   // insertion, skill insertion, draft restore, voice transcript append) so a
   // stale buffered keystroke can never fire afterward and clobber it.
   const cancelPendingTextChangeFlush = useCallback(() => {
-    pendingTextChangeRef.current = null
-    syncBurstCountRef.current = 0
+    pendingTextChangeRef.current = null;
+    syncBurstCountRef.current = 0;
     if (textChangeFlushHandleRef.current != null) {
-      cancelAnimationFrame(textChangeFlushHandleRef.current)
-      textChangeFlushHandleRef.current = null
+      cancelAnimationFrame(textChangeFlushHandleRef.current);
+      textChangeFlushHandleRef.current = null;
     }
-  }, [])
-  const [inputHeight, setInputHeight] = useState(inputMinHeight)
-  const inputHeightRef = useRef(inputMinHeight)
-  const inputHeightAnimation = useRef(new Animated.Value(inputMinHeight)).current
-  const placeholderOpacity = useRef(new Animated.Value(1)).current
+  }, []);
+  const [inputHeight, setInputHeight] = useState(inputMinHeight);
+  const inputHeightRef = useRef(inputMinHeight);
+  const inputHeightAnimation = useRef(
+    new Animated.Value(inputMinHeight)
+  ).current;
+  const placeholderOpacity = useRef(new Animated.Value(1)).current;
   const setInputHeightTarget = useCallback((nextHeight: number) => {
-    inputHeightRef.current = nextHeight
-    setInputHeight(nextHeight)
-  }, [])
-  const [interactionModeOpen, setInteractionModeOpen] = useState(false)
-  const [attachSheetOpen, setAttachSheetOpen] = useState(false)
-  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
-  const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null)
+    inputHeightRef.current = nextHeight;
+    setInputHeight(nextHeight);
+  }, []);
+  const [interactionModeOpen, setInteractionModeOpen] = useState(false);
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const [plusExpandedId, setPlusExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
-    inputValueRef.current = inputValue
-  }, [inputValue])
+    inputValueRef.current = inputValue;
+  }, [inputValue]);
 
   const [internalModel, setInternalModel] = useState<string>(
     effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
-  )
-  const currentModelId = controlledModel ?? internalModel
+  );
+  const currentModelId = controlledModel ?? internalModel;
 
   const handleModelChange = useCallback(
     (modelId: string) => {
-      const tier = resolveTier(modelId)
+      const tier = resolveTier(modelId);
       if (tier !== "economy" && !effectiveIsPro) {
-        onUpgradeClick?.()
-        return
+        onUpgradeClick?.();
+        return;
       }
 
       if (onModelChange) {
-        onModelChange(modelId)
+        onModelChange(modelId);
       } else {
-        setInternalModel(modelId)
+        setInternalModel(modelId);
       }
     },
     [onModelChange, effectiveIsPro, onUpgradeClick]
-  )
+  );
 
-  const [internalInteractionMode, setInternalInteractionMode] = useState<InteractionMode>("agent")
-  const interactionMode = controlledInteractionMode ?? internalInteractionMode
+  const [internalInteractionMode, setInternalInteractionMode] =
+    useState<InteractionMode>("agent");
+  const interactionMode = controlledInteractionMode ?? internalInteractionMode;
 
   const handleInteractionModeChange = useCallback(
     (mode: InteractionMode) => {
       if (onInteractionModeChange) {
-        onInteractionModeChange(mode)
+        onInteractionModeChange(mode);
       } else {
-        setInternalInteractionMode(mode)
+        setInternalInteractionMode(mode);
       }
     },
     [onInteractionModeChange]
-  )
+  );
 
   const cycleInteractionMode = useCallback(() => {
-    if (disabled) return
-    const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode)
-    const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length
-    handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex])
-  }, [disabled, handleInteractionModeChange, interactionMode])
+    if (disabled) return;
+    const currentIndex = INTERACTION_MODE_ORDER.indexOf(interactionMode);
+    const nextIndex = (currentIndex + 1) % INTERACTION_MODE_ORDER.length;
+    handleInteractionModeChange(INTERACTION_MODE_ORDER[nextIndex]);
+  }, [disabled, handleInteractionModeChange, interactionMode]);
 
   const currentInteractionConfig = useMemo(
-    () => INTERACTION_MODES.find((m) => m.id === interactionMode) || INTERACTION_MODES[0],
+    () =>
+      INTERACTION_MODES.find((m) => m.id === interactionMode) ||
+      INTERACTION_MODES[0],
     [interactionMode]
-  )
+  );
 
-  const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
+  const [agentControlsOpen, setAgentControlsOpen] = useState(false);
 
   // Long-text pastes are extracted out of the TextInput and rendered as
   // compact ChatGPT-style file chips. The input stays editable so the user
   // can keep typing and paste additional long blocks (each becomes its own
   // chip).
-  const [previewVideoFile, setPreviewVideoFile] = useState<{ url: string; name: string } | null>(null)
-  const [previewImageFile, setPreviewImageFile] = useState<{ url: string; name: string } | null>(null)
-  const lastRestoredDraftNonceRef = useRef<number | null>(null)
+  const [previewVideoFile, setPreviewVideoFile] = useState<{
+    url: string;
+    name: string;
+  } | null>(null);
+  const [previewImageFile, setPreviewImageFile] = useState<{
+    url: string;
+    name: string;
+  } | null>(null);
+  const lastRestoredDraftNonceRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!restoreDraftRequest) return
-    if (restoreDraftRequest.nonce === lastRestoredDraftNonceRef.current) return
+    if (!restoreDraftRequest) return;
+    if (restoreDraftRequest.nonce === lastRestoredDraftNonceRef.current) return;
 
-    lastRestoredDraftNonceRef.current = restoreDraftRequest.nonce
-    cancelPendingTextChangeFlush()
-    inputValueRef.current = restoreDraftRequest.content
-    setInputValue(restoreDraftRequest.content)
+    lastRestoredDraftNonceRef.current = restoreDraftRequest.nonce;
+    cancelPendingTextChangeFlush();
+    inputValueRef.current = restoreDraftRequest.content;
+    setInputValue(restoreDraftRequest.content);
     setPendingFiles(
       (restoreDraftRequest.files ?? []).map((file, index) => ({
         id: `restored-${restoreDraftRequest.nonce}-${index}`,
@@ -641,104 +735,112 @@ function ChatInputImpl({
         type: file.type,
         size: estimateDataUrlSize(file.dataUrl),
       }))
-    )
-    setPastedTexts([])
-    setViewingPastedId(null)
-    setFileError(null)
-    setTimeout(() => textInputRef.current?.focus(), 0)
-    onDraftRestored?.(restoreDraftRequest.nonce)
-  }, [restoreDraftRequest, cancelPendingTextChangeFlush, onDraftRestored])
+    );
+    setPastedTexts([]);
+    setViewingPastedId(null);
+    setFileError(null);
+    setTimeout(() => textInputRef.current?.focus(), 0);
+    onDraftRestored?.(restoreDraftRequest.nonce);
+  }, [restoreDraftRequest, cancelPendingTextChangeFlush, onDraftRestored]);
 
-  const [showSkillPicker, setShowSkillPicker] = useState(false)
-  const [filterText, setFilterText] = useState("")
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const [filterText, setFilterText] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
 
   const filteredSkills = useMemo(() => {
-    if (!filterText) return SKILLS
-    const lower = filterText.toLowerCase()
+    if (!filterText) return SKILLS;
+    const lower = filterText.toLowerCase();
     return SKILLS.filter(
       (s) =>
         s.name.toLowerCase().includes(lower) ||
         s.description.toLowerCase().includes(lower)
-    )
-  }, [filterText])
+    );
+  }, [filterText]);
 
   // ---- "@" mention menu (files + sibling projects) --------------------------
-  const chatContext = useChatContextSafe()
-  const agentUrl = chatContext?.agentUrl ?? null
+  const chatContext = useChatContextSafe();
+  const agentUrl = chatContext?.agentUrl ?? null;
   const agentClient = useMemo(
     () =>
-      agentUrl ? new AgentClient({ baseUrl: agentUrl.replace(/\/$/, ""), fetch: agentFetch }) : null,
+      agentUrl
+        ? new AgentClient({
+            baseUrl: agentUrl.replace(/\/$/, ""),
+            fetch: agentFetch,
+          })
+        : null,
     [agentUrl]
-  )
+  );
 
-  const [references, setReferences] = useState<ChatReference[]>([])
-  const [showMentionMenu, setShowMentionMenu] = useState(false)
-  const [mentionQuery, setMentionQuery] = useState("")
-  const [mentionIndex, setMentionIndex] = useState(0)
-  const [fileResults, setFileResults] = useState<IdeFileResult[]>([])
-  const [historyResults, setHistoryResults] = useState<AgentHistoryResult[]>([])
+  const [references, setReferences] = useState<ChatReference[]>([]);
+  const [showMentionMenu, setShowMentionMenu] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [fileResults, setFileResults] = useState<IdeFileResult[]>([]);
+  const [historyResults, setHistoryResults] = useState<AgentHistoryResult[]>(
+    []
+  );
   // Per-project cache of the workspace file list, so name matching as the user
   // types is instant and doesn't refetch the tree on every keystroke.
   const treeFilesRef = useRef<{
-    projectId: string | null
-    files: { path: string; name: string }[]
-  }>({ projectId: null, files: [] })
+    projectId: string | null;
+    files: { path: string; name: string }[];
+  }>({ projectId: null, files: [] });
   // The active "@" token's range in the input, so selecting an item can strip
   // exactly that token regardless of where the caret is.
-  const mentionTokenRef = useRef<{ start: number; end: number } | null>(null)
-  const activeMentionStateRef = useRef<{ start: number; end: number; query: string } | null>(null)
+  const mentionTokenRef = useRef<{ start: number; end: number } | null>(null);
+  const activeMentionStateRef = useRef<{
+    start: number;
+    end: number;
+    query: string;
+  } | null>(null);
   // One-shot caret override: after inserting an inline "@mention" we move the
   // caret to just past it, then release control so normal typing isn't pinned.
   const [selectionOverride, setSelectionOverride] = useState<
     { start: number; end: number } | undefined
-  >(undefined)
+  >(undefined);
   // Mirror the TextInput's internal scroll so the highlight overlay tracks it
   // once the composer grows past its max height and starts scrolling.
-  const [overlayScrollY, setOverlayScrollY] = useState(0)
+  const [overlayScrollY, setOverlayScrollY] = useState(0);
 
   const closeMentionMenu = useCallback(() => {
-    setShowMentionMenu(false)
-    setMentionQuery("")
-    setMentionIndex(0)
-    mentionTokenRef.current = null
-    activeMentionStateRef.current = null
-  }, [])
+    setShowMentionMenu(false);
+    setMentionQuery("");
+    setMentionIndex(0);
+    mentionTokenRef.current = null;
+    activeMentionStateRef.current = null;
+  }, []);
 
   // Re-evaluate the active "@" token whenever the text or caret changes.
-  const updateMentionState = useCallback(
-    (text: string, caret: number) => {
-      const token = detectMentionToken(text, caret)
-      if (!token) {
-        if (mentionTokenRef.current) {
-          mentionTokenRef.current = null
-          activeMentionStateRef.current = null
-          setShowMentionMenu(false)
-          setMentionQuery("")
-          setMentionIndex(0)
-        }
-        return
+  const updateMentionState = useCallback((text: string, caret: number) => {
+    const token = detectMentionToken(text, caret);
+    if (!token) {
+      if (mentionTokenRef.current) {
+        mentionTokenRef.current = null;
+        activeMentionStateRef.current = null;
+        setShowMentionMenu(false);
+        setMentionQuery("");
+        setMentionIndex(0);
       }
+      return;
+    }
 
-      const nextState = { start: token.start, end: caret, query: token.query }
-      const currentState = activeMentionStateRef.current
-      if (
-        currentState &&
-        currentState.start === nextState.start &&
-        currentState.end === nextState.end &&
-        currentState.query === nextState.query
-      ) {
-        return
-      }
+    const nextState = { start: token.start, end: caret, query: token.query };
+    const currentState = activeMentionStateRef.current;
+    if (
+      currentState &&
+      currentState.start === nextState.start &&
+      currentState.end === nextState.end &&
+      currentState.query === nextState.query
+    ) {
+      return;
+    }
 
-      activeMentionStateRef.current = nextState
-      mentionTokenRef.current = { start: token.start, end: caret }
-      setShowMentionMenu(true)
-      setMentionIndex(0)
-      setMentionQuery((prev) => (prev === token.query ? prev : token.query))
-    },
-    []
-  )
+    activeMentionStateRef.current = nextState;
+    mentionTokenRef.current = { start: token.start, end: caret };
+    setShowMentionMenu(true);
+    setMentionIndex(0);
+    setMentionQuery((prev) => (prev === token.query ? prev : token.query));
+  }, []);
 
   // Debounced file search against the project's agent workspace, matched by
   // FILE NAME (the composer "@" menu is a name picker, not a content search).
@@ -749,77 +851,90 @@ function ChatInputImpl({
   // project composer (and stays empty in the inline-edit composer).
   useEffect(() => {
     if (!showMentionMenu) {
-      setFileResults([])
-      return
+      setFileResults([]);
+      return;
     }
     if (ideMode && !ideFileSearch) {
-      setFileResults([])
-      return
+      setFileResults([]);
+      return;
     }
     if (!ideMode && (!agentClient || !projectId)) {
-      setFileResults([])
-      return
+      setFileResults([]);
+      return;
     }
-    let cancelled = false
-    const q = mentionQuery.trim().toLowerCase()
+    let cancelled = false;
+    const q = mentionQuery.trim().toLowerCase();
     const filterIdeItems = (items: IdeFileResult[]) => {
-      const seen = new Set<string>()
-      return items.filter((item) => {
-        if (!item?.path || !item?.name || seen.has(item.path)) return false
-        seen.add(item.path)
-        return ( !q || item.path.toLowerCase().includes(q) || item.name.toLowerCase().includes(q)
-          )
-      }).slice(0, MAX_IDE_MENTION_FILE_RESULTS)
-    }
-    const contextItems = ideMode && Array.isArray(ideContext?.workspaceItems)
-      ? filterIdeItems(ideContext.workspaceItems)
-      : []
-    if (ideMode && contextItems.length > 0) setFileResults(contextItems)
+      const seen = new Set<string>();
+      return items
+        .filter((item) => {
+          if (!item?.path || !item?.name || seen.has(item.path)) return false;
+          seen.add(item.path);
+          return (
+            !q ||
+            item.path.toLowerCase().includes(q) ||
+            item.name.toLowerCase().includes(q)
+          );
+        })
+        .slice(0, MAX_IDE_MENTION_FILE_RESULTS);
+    };
+    const contextItems =
+      ideMode && Array.isArray(ideContext?.workspaceItems)
+        ? filterIdeItems(ideContext.workspaceItems)
+        : [];
+    if (ideMode && contextItems.length > 0) setFileResults(contextItems);
     const timer = setTimeout(async () => {
       try {
         if (ideMode && ideFileSearch) {
-          const results = await ideFileSearch(mentionQuery.trim())
+          const results = await ideFileSearch(mentionQuery.trim());
           if (!cancelled) {
-            const liveResults = filterIdeItems(results)
-            setFileResults(liveResults.length > 0 ? liveResults : contextItems)
+            const liveResults = filterIdeItems(results);
+            setFileResults(liveResults.length > 0 ? liveResults : contextItems);
           }
-          return
+          return;
         }
 
         // Load + cache the workspace file list once per project. The tree route
         // is shallow (eager-depth), so this covers the common top-level files;
         // the content-index backfill below reaches deeper ones.
         if (treeFilesRef.current.projectId !== projectId) {
-          const tree = await agentClient?.getWorkspaceTree("")
-          const files: { path: string; name: string }[] = []
+          const tree = await agentClient?.getWorkspaceTree("");
+          const files: { path: string; name: string }[] = [];
           const walk = (nodes: any[]) => {
             for (const node of nodes) {
               if (node?.type === "file" && node.path) {
-                files.push({ path: node.path, name: node.name || basename(node.path) })
-              } else if (node?.type === "directory" && Array.isArray(node.children)) {
-                walk(node.children)
+                files.push({
+                  path: node.path,
+                  name: node.name || basename(node.path),
+                });
+              } else if (
+                node?.type === "directory" &&
+                Array.isArray(node.children)
+              ) {
+                walk(node.children);
               }
             }
-          }
-          walk(Array.isArray(tree) ? tree : [])
-          treeFilesRef.current = { projectId: projectId ?? null, files }
+          };
+          walk(Array.isArray(tree) ? tree : []);
+          treeFilesRef.current = { projectId: projectId ?? null, files };
         }
 
-        const seen = new Set<string>()
-        const results: IdeFileResult[] = []
+        const seen = new Set<string>();
+        const results: IdeFileResult[] = [];
         const push = (f: { path: string; name: string }) => {
-          if (results.length >= MAX_MENTION_FILE_RESULTS || seen.has(f.path)) return
-          seen.add(f.path)
-          results.push({ type: "file", path: f.path, name: f.name })
-        }
+          if (results.length >= MAX_MENTION_FILE_RESULTS || seen.has(f.path))
+            return;
+          seen.add(f.path);
+          results.push({ type: "file", path: f.path, name: f.name });
+        };
 
         if (!q) {
           // No query yet: show the first cached files as suggestions.
-          for (const f of treeFilesRef.current.files) push(f)
+          for (const f of treeFilesRef.current.files) push(f);
         } else {
           // Name match against the cached list first…
           for (const f of treeFilesRef.current.files) {
-            if (f.name.toLowerCase().includes(q)) push(f)
+            if (f.name.toLowerCase().includes(q)) push(f);
           }
           // …then backfill deeper files from the content index, keeping only
           // those whose basename matches the typed query.
@@ -827,34 +942,43 @@ function ChatInputImpl({
             try {
               const hits = await agentClient?.searchFiles(mentionQuery.trim(), {
                 limit: MAX_MENTION_FILE_RESULTS * 4,
-              })
+              });
               for (const hit of hits ?? []) {
-                if (!hit?.path) continue
-                const name = basename(hit.path)
-                if (name.toLowerCase().includes(q)) push({ path: hit.path, name })
+                if (!hit?.path) continue;
+                const name = basename(hit.path);
+                if (name.toLowerCase().includes(q))
+                  push({ path: hit.path, name });
               }
             } catch {
               /* name matches from the cache already populated results */
             }
           }
         }
-        if (!cancelled) setFileResults(results)
+        if (!cancelled) setFileResults(results);
       } catch {
-        if (!cancelled) setFileResults([])
+        if (!cancelled) setFileResults([]);
       }
-    }, 150)
+    }, 150);
     return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [showMentionMenu, mentionQuery, agentClient, projectId, ideMode, ideFileSearch, ideContext?.workspaceItems])
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    showMentionMenu,
+    mentionQuery,
+    agentClient,
+    projectId,
+    ideMode,
+    ideFileSearch,
+    ideContext?.workspaceItems,
+  ]);
 
   useEffect(() => {
     if (!showMentionMenu || ideMode) {
-      setHistoryResults([])
-      return
+      setHistoryResults([]);
+      return;
     }
-    let cancelled = false
+    let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         const local = agentClient
@@ -863,50 +987,80 @@ function ChatInputImpl({
               limit: 8,
               exclude: chatSessionId || undefined,
             })
-          : []
+          : [];
         const remote = workspaceHistorySearch
           ? await workspaceHistorySearch(mentionQuery.trim())
-          : []
+          : [];
         if (!cancelled) {
-          const seen = new Set<string>()
-          setHistoryResults([...local, ...remote].filter((result) => {
-            const key = `${result.kind}:${result.id}`
-            if (seen.has(key) || (result.kind === "chat" && result.id === chatSessionId)) return false
-            seen.add(key)
-            return true
-          }).slice(0, 12))
+          const seen = new Set<string>();
+          setHistoryResults(
+            [...local, ...remote]
+              .filter((result) => {
+                const key = `${result.kind}:${result.id}`;
+                if (
+                  seen.has(key) ||
+                  (result.kind === "chat" && result.id === chatSessionId)
+                )
+                  return false;
+                seen.add(key);
+                return true;
+              })
+              .slice(0, 12)
+          );
         }
       } catch {
-        if (!cancelled) setHistoryResults([])
+        if (!cancelled) setHistoryResults([]);
       }
-    }, 180)
+    }, 180);
     return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [showMentionMenu, mentionQuery, agentClient, chatSessionId, workspaceHistorySearch, ideMode])
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    showMentionMenu,
+    mentionQuery,
+    agentClient,
+    chatSessionId,
+    workspaceHistorySearch,
+    ideMode,
+  ]);
 
   const filteredProjects = useMemo(() => {
-    if (ideMode) return []
-    const q = mentionQuery.trim().toLowerCase()
-    const list = projects ?? []
+    if (ideMode) return [];
+    const q = mentionQuery.trim().toLowerCase();
+    const list = projects ?? [];
     const matched = q
       ? list.filter(
           (p) =>
-            p.name.toLowerCase().includes(q) || slugifyMention(p.name).includes(q)
+            p.name.toLowerCase().includes(q) ||
+            slugifyMention(p.name).includes(q)
         )
-      : list
-    return matched.slice(0, MAX_MENTION_PROJECT_RESULTS)
-  }, [projects, mentionQuery, ideMode])
+      : list;
+    return matched.slice(0, MAX_MENTION_PROJECT_RESULTS);
+  }, [projects, mentionQuery, ideMode]);
 
   const historyItems = useMemo<MentionItem[]>(
-    () => historyResults.map((result) =>
-      result.kind === "chat"
-        ? { kind: "chat", id: result.id, name: result.title, projectId: result.projectId, result }
-        : { kind: "plan", id: result.id, name: result.title, filename: result.filename || result.id, projectId: result.projectId, result }
-    ),
-    [historyResults],
-  )
+    () =>
+      historyResults.map((result) =>
+        result.kind === "chat"
+          ? {
+              kind: "chat",
+              id: result.id,
+              name: result.title,
+              projectId: result.projectId,
+              result,
+            }
+          : {
+              kind: "plan",
+              id: result.id,
+              name: result.title,
+              filename: result.filename || result.id,
+              projectId: result.projectId,
+              result,
+            }
+      ),
+    [historyResults]
+  );
 
   // Flat, ordered list backing keyboard navigation (files, projects, chats, plans).
   const mentionItems = useMemo<MentionItem[]>(
@@ -920,13 +1074,15 @@ function ChatInputImpl({
       ...historyItems,
     ],
     [fileResults, filteredProjects, historyItems]
-  )
+  );
 
   const addReference = useCallback((ref: ChatReference) => {
     setReferences((prev) =>
-      prev.some((r) => referenceKey(r) === referenceKey(ref)) ? prev : [...prev, ref]
-    )
-  }, [])
+      prev.some((r) => referenceKey(r) === referenceKey(ref))
+        ? prev
+        : [...prev, ref]
+    );
+  }, []);
 
   const selectMention = useCallback(
     (item: MentionItem) => {
@@ -937,34 +1093,47 @@ function ChatInputImpl({
       // A mention is a discrete selection (click/Enter), not a keystroke —
       // cancel any still-pending coalesced text flush so it can't fire
       // afterward and overwrite the inline "@token" we're about to insert.
-      cancelPendingTextChangeFlush()
-      const base = inputValueRef.current
-      const token = mentionTokenRef.current
-      const label = `@${item.kind === "project" ? slugifyMention(item.name) : item.kind === "chat" ? `chat:${item.id}` : item.kind === "plan" ? `plan:${slugifyMention(item.name)}` : item.name}`
-      let caret: number
+      cancelPendingTextChangeFlush();
+      const base = inputValueRef.current;
+      const token = mentionTokenRef.current;
+      const label = `@${
+        item.kind === "project"
+          ? slugifyMention(item.name)
+          : item.kind === "chat"
+          ? `chat:${item.id}`
+          : item.kind === "plan"
+          ? `plan:${slugifyMention(item.name)}`
+          : item.name
+      }`;
+      let caret: number;
       if (token) {
-        const start = Math.max(0, Math.min(token.start, base.length))
-        const end = Math.max(start, Math.min(token.end, base.length))
-        const insert = `${label} `
-        const next = base.slice(0, start) + insert + base.slice(end)
-        inputValueRef.current = next
-        setInputValue(next)
-        caret = start + insert.length
+        const start = Math.max(0, Math.min(token.start, base.length));
+        const end = Math.max(start, Math.min(token.end, base.length));
+        const insert = `${label} `;
+        const next = base.slice(0, start) + insert + base.slice(end);
+        inputValueRef.current = next;
+        setInputValue(next);
+        caret = start + insert.length;
       } else {
-        const sep = base.length === 0 || base.endsWith(" ") ? "" : " "
-        const insert = `${sep}${label} `
-        const next = base + insert
-        inputValueRef.current = next
-        setInputValue(next)
-        caret = next.length
+        const sep = base.length === 0 || base.endsWith(" ") ? "" : " ";
+        const insert = `${sep}${label} `;
+        const next = base + insert;
+        inputValueRef.current = next;
+        setInputValue(next);
+        caret = next.length;
       }
 
       if (item.kind === "file") {
-        addReference({ type: "file", path: item.path, name: item.name, label })
+        addReference({ type: "file", path: item.path, name: item.name, label });
       } else if (item.kind === "folder") {
-        addReference({ type: "folder", path: item.path, name: item.name, label })
+        addReference({
+          type: "folder",
+          path: item.path,
+          name: item.name,
+          label,
+        });
       } else if (item.kind === "project") {
-        addReference({ type: "project", id: item.id, name: item.name, label })
+        addReference({ type: "project", id: item.id, name: item.name, label });
       } else if (item.kind === "chat") {
         addReference({
           type: "chat",
@@ -972,8 +1141,10 @@ function ChatInputImpl({
           name: item.name,
           projectId: item.projectId,
           label,
-          ...(item.result.transcript ? { transcript: item.result.transcript } : {}),
-        })
+          ...(item.result.transcript
+            ? { transcript: item.result.transcript }
+            : {}),
+        });
       } else {
         addReference({
           type: "plan",
@@ -982,77 +1153,85 @@ function ChatInputImpl({
           name: item.name,
           projectId: item.projectId,
           label,
-        })
+        });
       }
 
-      closeMentionMenu()
-      setSelectionOverride({ start: caret, end: caret })
+      closeMentionMenu();
+      setSelectionOverride({ start: caret, end: caret });
       setTimeout(() => {
-        textInputRef.current?.focus()
-        setSelectionOverride(undefined)
-      }, 0)
+        textInputRef.current?.focus();
+        setSelectionOverride(undefined);
+      }, 0);
     },
     [addReference, closeMentionMenu, cancelPendingTextChangeFlush]
-  )
+  );
 
   // Keep references in sync with what's actually visible: if the user edits or
   // deletes a mention's inline "@token", drop the matching reference so we
   // don't ship context the composer no longer shows.
   useEffect(() => {
     setReferences((prev) => {
-      const next = prev.filter((r) => !r.label || labelPresent(inputValue, r.label))
-      return next.length === prev.length ? prev : next
-    })
-  }, [inputValue])
+      const next = prev.filter(
+        (r) => !r.label || labelPresent(inputValue, r.label)
+      );
+      return next.length === prev.length ? prev : next;
+    });
+  }, [inputValue]);
 
   const handleAttachClick = useCallback(() => {
     if (Platform.OS === "web") {
-      fileInputRef.current?.click()
-      return
+      fileInputRef.current?.click();
+      return;
     }
-    setAttachSheetOpen(true)
-  }, [])
+    setAttachSheetOpen(true);
+  }, []);
 
   const closePlusMenu = useCallback(() => {
-    setPlusMenuOpen(false)
-    setPlusExpandedId(null)
-  }, [])
+    setPlusMenuOpen(false);
+    setPlusExpandedId(null);
+  }, []);
 
   const togglePlusSection = useCallback((id: string) => {
-    setPlusExpandedId((current) => (current === id ? null : id))
-  }, [])
+    setPlusExpandedId((current) => (current === id ? null : id));
+  }, []);
 
-  const handlePlusAttach = useCallback((action: Parameters<typeof executeNativeAttachAction>[0]) => {
-    closePlusMenu()
-    executeNativeAttachAction(action, {
-      currentCount: pendingFiles.length,
-      maxFiles: MAX_FILES,
-      maxFileSizeBytes: MAX_FILE_SIZE,
-      onFiles: applyPickedFiles,
-      onError: (message) => setFileError(message),
-    })
-  }, [applyPickedFiles, closePlusMenu, pendingFiles.length])
+  const handlePlusAttach = useCallback(
+    (action: Parameters<typeof executeNativeAttachAction>[0]) => {
+      closePlusMenu();
+      executeNativeAttachAction(action, {
+        currentCount: pendingFiles.length,
+        maxFiles: MAX_FILES,
+        maxFileSizeBytes: MAX_FILE_SIZE,
+        onFiles: applyPickedFiles,
+        onError: (message) => setFileError(message),
+      });
+    },
+    [applyPickedFiles, closePlusMenu, pendingFiles.length]
+  );
 
-  const appendTranscriptToInput = useCallback((transcript: string) => {
-    const normalized = transcript.trim()
-    if (!normalized) return
+  const appendTranscriptToInput = useCallback(
+    (transcript: string) => {
+      const normalized = transcript.trim();
+      if (!normalized) return;
 
-    cancelPendingTextChangeFlush()
-    setInputValue((current) => {
-      const prefix =
-        current.length === 0 || /\s$/.test(current) ? current : `${current} `
-      const next = `${prefix}${normalized}`
-      inputValueRef.current = next
-      return next
-    })
-    setShowSkillPicker(false)
-    setFilterText("")
-    setTimeout(() => textInputRef.current?.focus(), 0)
-  }, [cancelPendingTextChangeFlush])
+      cancelPendingTextChangeFlush();
+      setInputValue((current) => {
+        const prefix =
+          current.length === 0 || /\s$/.test(current) ? current : `${current} `;
+        const next = `${prefix}${normalized}`;
+        inputValueRef.current = next;
+        return next;
+      });
+      setShowSkillPicker(false);
+      setFilterText("");
+      setTimeout(() => textInputRef.current?.focus(), 0);
+    },
+    [cancelPendingTextChangeFlush]
+  );
 
   const voiceInput = useVoiceInput({
     onTranscript: appendTranscriptToInput,
-  })
+  });
 
   // Inline "@mention" highlight overlay. Mirror EXACTLY what the TextInput
   // shows (including the live voice transcript) so the pills line up with the
@@ -1063,32 +1242,35 @@ function ChatInputImpl({
   const composerDisplayValue =
     voiceInput.isRecording && voiceInput.liveTranscript
       ? voiceInput.liveTranscript
-      : ( pendingTextChangeRef.current?.text ?? inputValue)
-  const composerEmpty = !composerDisplayValue.trim()
+      : pendingTextChangeRef.current?.text ?? inputValue;
+  const composerEmpty = !composerDisplayValue.trim();
   useEffect(() => {
-    if (!useProminentComposer) return
+    if (!useProminentComposer) return;
 
     Animated.timing(placeholderOpacity, {
       toValue: composerEmpty ? 1 : 0,
       duration: PROMINENT_COMPOSER_PLACEHOLDER_FADE_DURATION,
       easing: PROMINENT_COMPOSER_HEIGHT_EASING,
       useNativeDriver: true,
-    }).start()
+    }).start();
   }, [composerEmpty, placeholderOpacity, useProminentComposer]);
 
-  const animateProminentHeight = useCallback((
+  const animateProminentHeight = useCallback(
+    (
       value: Animated.Value,
       toValue: number,
       duration: number,
-      easing: (value: number) => number) => {
-
-    Animated.timing(value, {
-      toValue,
-      duration,
-      easing,
-      useNativeDriver: false,
-    }).start()
-  }, [])
+      easing: (value: number) => number
+    ) => {
+      Animated.timing(value, {
+        toValue,
+        duration,
+        easing,
+        useNativeDriver: false,
+      }).start();
+    },
+    []
+  );
 
   const prominentExpansion = useProminentComposerHeight({
     enabled: useProminentComposer,
@@ -1104,16 +1286,16 @@ function ChatInputImpl({
     inputHeightAnimation,
     setInputHeight: setInputHeightTarget,
     animate: animateProminentHeight,
-  })
+  });
 
   const mentionLabels = useMemo(
     () => references.map((r) => r.label).filter((l): l is string => !!l),
     [references]
-  )
+  );
   const mentionSegments = useMemo(
     () => buildMentionSegments(composerDisplayValue, mentionLabels),
     [composerDisplayValue, mentionLabels]
-  )
+  );
 
   const selectSkill = useCallback(
     (skill: SkillOption) => {
@@ -1121,18 +1303,18 @@ function ChatInputImpl({
       // freshest keystroke even if a coalesced flush (see `handleChangeText`)
       // hasn't committed to state yet, then cancel it — this discrete
       // selection should win over any buffered typing.
-      const current = inputValueRef.current
-      cancelPendingTextChangeFlush()
-      const spaceIndex = current.indexOf(" ")
-      const afterPrefix = spaceIndex === -1 ? "" : current.slice(spaceIndex)
-      const next = `/${skill.name}${afterPrefix || " "}`
-      inputValueRef.current = next
-      setInputValue(next)
-      setShowSkillPicker(false)
-      textInputRef.current?.focus()
+      const current = inputValueRef.current;
+      cancelPendingTextChangeFlush();
+      const spaceIndex = current.indexOf(" ");
+      const afterPrefix = spaceIndex === -1 ? "" : current.slice(spaceIndex);
+      const next = `/${skill.name}${afterPrefix || " "}`;
+      inputValueRef.current = next;
+      setInputValue(next);
+      setShowSkillPicker(false);
+      textInputRef.current?.focus();
     },
     [cancelPendingTextChangeFlush]
-  )
+  );
 
   const handleSubmit = useCallback(() => {
     // Submit exactly what the composer is painting: same precedence as
@@ -1141,7 +1323,9 @@ function ChatInputImpl({
     // state here meant an Enter that landed inside a coalesced flush saw the
     // pre-keystroke value — empty on the first word — tripped the guard below and
     // silently did nothing while the text stayed on screen.
-    const trimmedContent = (pendingTextChangeRef.current?.text ?? inputValueRef.current).trim()
+    const trimmedContent = (
+      pendingTextChangeRef.current?.text ?? inputValueRef.current
+    ).trim();
     if (
       (!trimmedContent &&
         pendingFiles.length === 0 &&
@@ -1151,65 +1335,83 @@ function ChatInputImpl({
       isProcessingFiles ||
       voiceInput.isBusy
     ) {
-      return
+      return;
     }
 
     // Pasted long-text blocks are shipped as file attachments (ChatGPT-style).
     // The typed text is sent as the message body; the model receives both the
     // text part and the file parts so it sees everything.
-    const pastedAttachments: FileAttachment[] = buildPastedAttachments(pastedTexts)
+    const pastedAttachments: FileAttachment[] =
+      buildPastedAttachments(pastedTexts);
     const combinedFiles: FileAttachment[] = [
-      ...pendingFiles.map((f) => ({ dataUrl: f.dataUrl, name: f.name, type: f.type })),
+      ...pendingFiles.map((f) => ({
+        dataUrl: f.dataUrl,
+        name: f.name,
+        type: f.type,
+      })),
       ...pastedAttachments,
-    ]
-    const fileData = combinedFiles.length > 0 ? combinedFiles : undefined
-    const refData = references.length > 0 ? references : undefined
+    ];
+    const fileData = combinedFiles.length > 0 ? combinedFiles : undefined;
+    const refData = references.length > 0 ? references : undefined;
 
-    onSubmit(trimmedContent, fileData, currentModelId, refData)
+    onSubmit(trimmedContent, fileData, currentModelId, refData);
     // Drop any still-pending coalesced text-change flush (see
     // `handleChangeText`) so it can't fire AFTER this clear and resurrect
     // text the user already sent.
-    cancelPendingTextChangeFlush()
-    inputValueRef.current = ""
-    setInputValue("")
+    cancelPendingTextChangeFlush();
+    inputValueRef.current = "";
+    setInputValue("");
     setInputHeightTarget(inputMinHeight);
-    resetAttachments()
-    setReferences([])
-    closeMentionMenu()
+    resetAttachments();
+    setReferences([]);
+    closeMentionMenu();
 
-    textInputRef.current?.focus()
-  }, [disabled, onSubmit, pendingFiles, isProcessingFiles, currentModelId, pastedTexts, references, voiceInput.isBusy, closeMentionMenu, cancelPendingTextChangeFlush, inputMinHeight, setInputHeightTarget,
-    resetAttachments])
+    textInputRef.current?.focus();
+  }, [
+    disabled,
+    onSubmit,
+    pendingFiles,
+    isProcessingFiles,
+    currentModelId,
+    pastedTexts,
+    references,
+    voiceInput.isBusy,
+    closeMentionMenu,
+    cancelPendingTextChangeFlush,
+    inputMinHeight,
+    setInputHeightTarget,
+    resetAttachments,
+  ]);
 
   const handleSubmitEditing = useCallback(() => {
     if (Platform.OS === "web") {
-      handleSubmit()
-      return
+      handleSubmit();
+      return;
     }
-    textInputRef.current?.blur()
-  }, [handleSubmit])
+    textInputRef.current?.blur();
+  }, [handleSubmit]);
 
   // Applies a resolved "text" change's state commits. Shared by the fast
   // (synchronous) and slow (coalesced) paths in `handleChangeText`.
   const applyTextChange = useCallback(
     (change: Extract<ChatInputTextChange, { type: "text" }>) => {
-      setInputValue(change.text)
+      setInputValue(change.text);
       if (change.resetHeight) {
-        setInputHeightTarget(inputMinHeight)
+        setInputHeightTarget(inputMinHeight);
       }
 
       if (change.skillPicker.open) {
-        setShowSkillPicker(true)
-        setFilterText(change.skillPicker.filterText ?? "")
-        setSelectedIndex(0)
+        setShowSkillPicker(true);
+        setFilterText(change.skillPicker.filterText ?? "");
+        setSelectedIndex(0);
       } else {
-        setShowSkillPicker(false)
+        setShowSkillPicker(false);
       }
 
-      updateMentionState(change.text, change.mentionCaret)
+      updateMentionState(change.text, change.mentionCaret);
     },
     [updateMentionState, inputMinHeight, setInputHeightTarget]
-  )
+  );
 
   // Settles the current animation frame for `handleChangeText`'s burst
   // guard: resets the consecutive-synchronous-commit counter, and — only if
@@ -1218,20 +1420,20 @@ function ChatInputImpl({
   // is always null here (every change already committed synchronously), so
   // this is just a counter reset.
   const settleTextChangeFrame = useCallback(() => {
-    textChangeFlushHandleRef.current = null
-    syncBurstCountRef.current = 0
-    const change = pendingTextChangeRef.current
-    pendingTextChangeRef.current = null
-    if (change) applyTextChange(change)
-  }, [applyTextChange])
+    textChangeFlushHandleRef.current = null;
+    syncBurstCountRef.current = 0;
+    const change = pendingTextChangeRef.current;
+    pendingTextChangeRef.current = null;
+    if (change) applyTextChange(change);
+  }, [applyTextChange]);
 
   useEffect(() => {
     return () => {
       if (textChangeFlushHandleRef.current != null) {
-        cancelAnimationFrame(textChangeFlushHandleRef.current)
+        cancelAnimationFrame(textChangeFlushHandleRef.current);
       }
-    }
-  }, [])
+    };
+  }, []);
 
   // A controlled `TextInput`'s `value` echo landing even ONE frame later
   // than its `onChangeText` event visibly breaks the caret: on native
@@ -1261,69 +1463,85 @@ function ChatInputImpl({
   // update depth exceeded" safety limit (Sentry JAVASCRIPT-REACT-3C; see
   // `ChatInput.max-update-depth-repro.test.tsx`). The guard resets every
   // settled frame, so it never trips during normal use.
-  const SYNC_BURST_LIMIT = 20
+  const SYNC_BURST_LIMIT = 20;
 
   const handleChangeText = useCallback(
     (text: string) => {
       const change = resolveChatInputTextChange(
         inputValueRef.current,
         text,
-        pasteHandledRef.current,
-      )
-      pasteHandledRef.current = false
+        pasteHandledRef.current
+      );
+      pasteHandledRef.current = false;
 
       if (change.type === "paste-handled" || change.type === "unchanged") {
-        return
+        return;
       }
 
       if (change.type === "long-paste") {
         // Rare, one-shot event (a real paste) — never arrives in a burst,
         // so it can flush immediately. Also drop any still-pending coalesced
         // "text" change so a stale, smaller value doesn't clobber this one.
-        cancelPendingTextChangeFlush()
-        addPastedText(change.inserted)
-        inputValueRef.current = change.restored
-        setInputValue(change.restored)
-        setShowSkillPicker(false)
-        closeMentionMenu()
-        return
+        cancelPendingTextChangeFlush();
+        addPastedText(change.inserted);
+        inputValueRef.current = change.restored;
+        setInputValue(change.restored);
+        setShowSkillPicker(false);
+        closeMentionMenu();
+        return;
       }
 
-      inputValueRef.current = change.text
+      inputValueRef.current = change.text;
 
-      if (pendingTextChangeRef.current == null && syncBurstCountRef.current < SYNC_BURST_LIMIT) {
+      if (
+        pendingTextChangeRef.current == null &&
+        syncBurstCountRef.current < SYNC_BURST_LIMIT
+      ) {
         // Fast path (the overwhelming majority of keystrokes): commit now.
-        syncBurstCountRef.current += 1
-        applyTextChange(change)
+        syncBurstCountRef.current += 1;
+        applyTextChange(change);
       } else {
         // Slow path: only reached once the burst guard has actually
         // tripped within the current unyielded turn — buffer instead of
         // committing synchronously.
-        pendingTextChangeRef.current = change
+        pendingTextChangeRef.current = change;
       }
 
       if (textChangeFlushHandleRef.current == null) {
-        textChangeFlushHandleRef.current = requestAnimationFrame(settleTextChangeFrame)
+        textChangeFlushHandleRef.current = requestAnimationFrame(
+          settleTextChangeFrame
+        );
       }
     },
-    [addPastedText, applyTextChange, closeMentionMenu, settleTextChangeFrame, cancelPendingTextChangeFlush]
-  )
+    [
+      addPastedText,
+      applyTextChange,
+      closeMentionMenu,
+      settleTextChangeFrame,
+      cancelPendingTextChangeFlush,
+    ]
+  );
 
   const removeReference = useCallback((key: string) => {
-    setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key))
-  }, [])
-      return (
-        <View className={cn(
+    setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key));
+  }, []);
+  return (
+    <View
+      className={cn(
         flush
-        ? "pb-3"
-        : useProminentComposer
+          ? "pb-3"
+          : useProminentComposer
           ? isNative
             ? "pt-0"
             : "px-3 pb-2 pt-0"
           : isNative
-            ? "px-2 pb-4 pt-0"
-            : "p-3 pt-0",
-        )}>
+          ? "px-2 pb-4 pt-0"
+          : "p-3 pt-0",
+        presentation === "agent" &&
+          !flush &&
+          "w-full self-center px-6 pb-4 pt-0"
+      )}
+    >
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
           {ideContext?.activeFile && (
@@ -1332,19 +1550,27 @@ function ChatInputImpl({
                 Context
               </Text>
               <Pressable
-                onPress={() => onOpenIdeFile?.(ideContext.activeFile?.path ?? "")}
+                onPress={() =>
+                  onOpenIdeFile?.(ideContext.activeFile?.path ?? "")
+                }
                 className="flex-row items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-1"
               >
                 <FileText className="h-3 w-3 text-muted-foreground" size={12} />
-                <Text className="max-w-[220px] text-[11px] text-foreground" numberOfLines={1}>
+                <Text
+                  className="max-w-[220px] text-[11px] text-foreground"
+                  numberOfLines={1}
+                >
                   {ideContext.activeFile.path}
                 </Text>
               </Pressable>
               {ideContext.activeFile.selection && (
                 <View className="rounded-full border border-border bg-muted/50 px-2 py-1">
                   <Text className="text-[11px] text-muted-foreground">
-                    lines {ideContext.activeFile.selection.startLine}-{ideContext.activeFile.selection.endLine}
-                    {ideContext.activeFile.selection.truncated ? " · truncated" : ""}
+                    lines {ideContext.activeFile.selection.startLine}-
+                    {ideContext.activeFile.selection.endLine}
+                    {ideContext.activeFile.selection.truncated
+                      ? " · truncated"
+                      : ""}
                   </Text>
                 </View>
               )}
@@ -1353,26 +1579,46 @@ function ChatInputImpl({
           {references.length > 0 && (
             <View className="flex-row flex-wrap gap-1.5">
               {references.map((ref) => {
-                const key = referenceKey(ref)
-                const isFolder = ref.type === "folder"
-                const isFile = ref.type === "file"
+                const key = referenceKey(ref);
+                const isFolder = ref.type === "folder";
+                const isFile = ref.type === "file";
                 return (
-                  <View key={key} className="flex-row items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-1">
+                  <View
+                    key={key}
+                    className="flex-row items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-1"
+                  >
                     {isFolder ? (
-                      <FolderGit2 className="h-3 w-3 text-muted-foreground" size={12} />
+                      <FolderGit2
+                        className="h-3 w-3 text-muted-foreground"
+                        size={12}
+                      />
                     ) : isFile ? (
-                      <FileText className="h-3 w-3 text-muted-foreground" size={12} />
+                      <FileText
+                        className="h-3 w-3 text-muted-foreground"
+                        size={12}
+                      />
                     ) : (
-                      <FolderGit2 className="h-3 w-3 text-muted-foreground" size={12} />
+                      <FolderGit2
+                        className="h-3 w-3 text-muted-foreground"
+                        size={12}
+                      />
                     )}
-                    <Text className="max-w-[180px] text-[11px] text-foreground" numberOfLines={1}>
-                      {ref.type === "file" || ref.type === "folder" ? ref.path : ref.name}
+                    <Text
+                      className="max-w-[180px] text-[11px] text-foreground"
+                      numberOfLines={1}
+                    >
+                      {ref.type === "file" || ref.type === "folder"
+                        ? ref.path
+                        : ref.name}
                     </Text>
-                    <Pressable onPress={() => removeReference(key)} className="h-4 w-4 items-center justify-center rounded-full">
+                    <Pressable
+                      onPress={() => removeReference(key)}
+                      className="h-4 w-4 items-center justify-center rounded-full"
+                    >
                       <X className="h-3 w-3 text-muted-foreground" size={12} />
                     </Pressable>
                   </View>
-                )
+                );
               })}
             </View>
           )}
@@ -1385,7 +1631,9 @@ function ChatInputImpl({
       )}
 
       {voiceInput.error && (
-        <Text className="text-sm text-destructive mb-2">{voiceInput.error}</Text>
+        <Text className="text-sm text-destructive mb-2">
+          {voiceInput.error}
+        </Text>
       )}
 
       {/* Queued messages, live browser, running tasks, plan, checklist,
@@ -1400,7 +1648,10 @@ function ChatInputImpl({
         onEditQueuedMessage={onEditQueuedMessage}
         onSendQueuedMessageNow={onSendQueuedMessageNow}
       />
-      <ContextUsageDockPanel contextUsage={contextUsage} contextBreakdown={contextBreakdown} />
+      <ContextUsageDockPanel
+        contextUsage={contextUsage}
+        contextBreakdown={contextBreakdown}
+      />
 
       {/* Dropdown + input layer.
 
@@ -1448,30 +1699,45 @@ function ChatInputImpl({
                     {ideMode ? "Files and folders" : "Files"}
                   </Text>
                   {fileResults.map((file, i) => {
-                    const active = i === mentionIndex
-                    const Icon = file.type === "folder" ? FolderGit2 : FileText
+                    const active = i === mentionIndex;
+                    const Icon = file.type === "folder" ? FolderGit2 : FileText;
                     return (
                       <Pressable
                         key={`mention-${file.type}-${file.path}`}
-                        onPress={() => selectMention({ kind: file.type, path: file.path, name: file.name })}
+                        onPress={() =>
+                          selectMention({
+                            kind: file.type,
+                            path: file.path,
+                            name: file.name,
+                          })
+                        }
                         className={cn(
                           "w-full flex-row items-center gap-2 px-3 py-1.5",
                           active && "bg-accent"
                         )}
                       >
-                        <Icon className="h-3.5 w-3.5 text-muted-foreground" size={14} />
+                        <Icon
+                          className="h-3.5 w-3.5 text-muted-foreground"
+                          size={14}
+                        />
                         <View className="flex-1 min-w-0">
-                          <Text className="text-xs text-foreground" numberOfLines={1}>
+                          <Text
+                            className="text-xs text-foreground"
+                            numberOfLines={1}
+                          >
                             {file.name}
                           </Text>
                           {ideMode && (
-                            <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                            <Text
+                              className="text-[10px] text-muted-foreground"
+                              numberOfLines={1}
+                            >
                               {file.path}
                             </Text>
                           )}
                         </View>
                       </Pressable>
-                    )
+                    );
                   })}
                 </>
               )}
@@ -1482,73 +1748,138 @@ function ChatInputImpl({
                     Projects
                   </Text>
                   {filteredProjects.map((proj, i) => {
-                    const idx = fileResults.length + i
-                    const active = idx === mentionIndex
+                    const idx = fileResults.length + i;
+                    const active = idx === mentionIndex;
                     return (
                       <Pressable
                         key={`mention-project-${proj.id}`}
-                        onPress={() => selectMention({ kind: "project", id: proj.id, name: proj.name })}
+                        onPress={() =>
+                          selectMention({
+                            kind: "project",
+                            id: proj.id,
+                            name: proj.name,
+                          })
+                        }
                         className={cn(
                           "w-full flex-row items-center gap-2 px-3 py-1.5",
                           active && "bg-accent"
                         )}
                       >
-                        <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-                        <Text className="flex-1 text-xs text-foreground" numberOfLines={1}>
+                        <FolderGit2
+                          className="h-3.5 w-3.5 text-muted-foreground"
+                          size={14}
+                        />
+                        <Text
+                          className="flex-1 text-xs text-foreground"
+                          numberOfLines={1}
+                        >
                           {proj.name}
                         </Text>
                       </Pressable>
-                    )
+                    );
                   })}
                 </>
               )}
 
-              {historyItems.filter((item) => item.kind === "chat").length > 0 && (
+              {historyItems.filter((item) => item.kind === "chat").length >
+                0 && (
                 <>
                   <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                     Chats
                   </Text>
-                  {historyItems.filter((item): item is Extract<MentionItem, { kind: "chat" }> => item.kind === "chat").map((chat, i) => {
-                    const idx = fileResults.length + filteredProjects.length + i
-                    return (
-                      <Pressable
-                        key={`mention-chat-${chat.id}`}
-                        onPress={() => selectMention(chat)}
-                        className={cn("w-full flex-row items-center gap-2 px-3 py-1.5", idx === mentionIndex && "bg-accent")}
-                      >
-                        <Bot className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-                        <View className="flex-1 min-w-0">
-                          <Text className="text-xs text-foreground" numberOfLines={1}>{chat.name}</Text>
-                          {chat.result.projectName && <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>{chat.result.projectName}</Text>}
-                        </View>
-                      </Pressable>
+                  {historyItems
+                    .filter(
+                      (item): item is Extract<MentionItem, { kind: "chat" }> =>
+                        item.kind === "chat"
                     )
-                  })}
+                    .map((chat, i) => {
+                      const idx =
+                        fileResults.length + filteredProjects.length + i;
+                      return (
+                        <Pressable
+                          key={`mention-chat-${chat.id}`}
+                          onPress={() => selectMention(chat)}
+                          className={cn(
+                            "w-full flex-row items-center gap-2 px-3 py-1.5",
+                            idx === mentionIndex && "bg-accent"
+                          )}
+                        >
+                          <Bot
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            size={14}
+                          />
+                          <View className="flex-1 min-w-0">
+                            <Text
+                              className="text-xs text-foreground"
+                              numberOfLines={1}
+                            >
+                              {chat.name}
+                            </Text>
+                            {chat.result.projectName && (
+                              <Text
+                                className="text-[10px] text-muted-foreground"
+                                numberOfLines={1}
+                              >
+                                {chat.result.projectName}
+                              </Text>
+                            )}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
                 </>
               )}
 
-              {historyItems.filter((item) => item.kind === "plan").length > 0 && (
+              {historyItems.filter((item) => item.kind === "plan").length >
+                0 && (
                 <>
                   <Text className="px-3 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                     Plans
                   </Text>
-                  {historyItems.filter((item): item is Extract<MentionItem, { kind: "plan" }> => item.kind === "plan").map((plan, i) => {
-                    const chatCount = historyItems.filter((item) => item.kind === "chat").length
-                    const idx = fileResults.length + filteredProjects.length + chatCount + i
-                    return (
-                      <Pressable
-                        key={`mention-plan-${plan.id}`}
-                        onPress={() => selectMention(plan)}
-                        className={cn("w-full flex-row items-center gap-2 px-3 py-1.5", idx === mentionIndex && "bg-accent")}
-                      >
-                        <ClipboardList className="h-3.5 w-3.5 text-muted-foreground" size={14} />
-                        <View className="flex-1 min-w-0">
-                          <Text className="text-xs text-foreground" numberOfLines={1}>{plan.name}</Text>
-                          <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>{plan.filename}</Text>
-                        </View>
-                      </Pressable>
+                  {historyItems
+                    .filter(
+                      (item): item is Extract<MentionItem, { kind: "plan" }> =>
+                        item.kind === "plan"
                     )
-                  })}
+                    .map((plan, i) => {
+                      const chatCount = historyItems.filter(
+                        (item) => item.kind === "chat"
+                      ).length;
+                      const idx =
+                        fileResults.length +
+                        filteredProjects.length +
+                        chatCount +
+                        i;
+                      return (
+                        <Pressable
+                          key={`mention-plan-${plan.id}`}
+                          onPress={() => selectMention(plan)}
+                          className={cn(
+                            "w-full flex-row items-center gap-2 px-3 py-1.5",
+                            idx === mentionIndex && "bg-accent"
+                          )}
+                        >
+                          <ClipboardList
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            size={14}
+                          />
+                          <View className="flex-1 min-w-0">
+                            <Text
+                              className="text-xs text-foreground"
+                              numberOfLines={1}
+                            >
+                              {plan.name}
+                            </Text>
+                            <Text
+                              className="text-[10px] text-muted-foreground"
+                              numberOfLines={1}
+                            >
+                              {plan.filename}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      );
+                    })}
                 </>
               )}
 
@@ -1557,8 +1888,8 @@ function ChatInputImpl({
                   {ideMode && !ideFileSearch
                     ? "IDE file bridge unavailable"
                     : !agentClient && !ideMode && (projects?.length ?? 0) === 0
-                      ? "Nothing to reference yet"
-                      : "No matches"}
+                    ? "Nothing to reference yet"
+                    : "No matches"}
                 </Text>
               )}
             </ScrollView>
@@ -1568,12 +1899,23 @@ function ChatInputImpl({
         {/* Main input container */}
         <View
           ref={dropZoneRef as any}
-          onLayout={useProminentComposer ? prominentExpansion.onPillLayout : undefined}
+          onLayout={
+            useProminentComposer ? prominentExpansion.onPillLayout : undefined
+          }
           className={cn(
             "relative overflow-hidden",
             !useProminentComposer && "border bg-muted/30 rounded-xl",
-            !useProminentComposer && (isDragOver ? "border-primary border-dashed" : "border-border/60"),
-            !useProminentComposer && highlighted && !isDragOver && "ring-2 ring-primary/70"
+            !useProminentComposer &&
+              (isDragOver
+                ? "border-primary border-dashed"
+                : "border-border/60"),
+            !useProminentComposer &&
+              highlighted &&
+              !isDragOver &&
+              "ring-2 ring-primary/70",
+            presentation === "agent" &&
+              !useProminentComposer &&
+              "rounded-2xl border-border bg-card"
           )}
           style={
             useProminentComposer
@@ -1582,859 +1924,1223 @@ function ChatInputImpl({
                     ? PROMINENT_COMPOSER_NATIVE_RADIUS
                     : PROMINENT_COMPOSER_RADIUS,
                   borderWidth: 1,
-                  borderColor: chatgptComposer.border,
-                  backgroundColor: chatgptComposer.fill,
+                  borderColor: liquidGlass
+                    ? "rgba(255,255,255,0.25)"
+                    : chatgptComposer.border,
+                  backgroundColor: liquidGlass
+                    ? "transparent"
+                    : chatgptComposer.fill,
                 }
               : undefined
           }
         >
-        {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
-        {Platform.OS === "web" && (
-          <input
-            ref={fileInputRef as any}
-            type="file"
-            multiple
-            capture={undefined}
-            onChange={handleWebFileChange}
-            tabIndex={-1}
-            aria-hidden="true"
-            className="sr-only"
-          />
-        )}
+          {useProminentComposer ? (
+            <LiquidGlassBackdrop
+              style={{
+                borderRadius: isNative
+                  ? PROMINENT_COMPOSER_NATIVE_RADIUS
+                  : PROMINENT_COMPOSER_RADIUS,
+              }}
+            />
+          ) : null}
+          {/* Hidden file input for web (including mobile-web on Android/iOS browsers) */}
+          {Platform.OS === "web" && (
+            <input
+              ref={fileInputRef as any}
+              type="file"
+              multiple
+              capture={undefined}
+              onChange={handleWebFileChange}
+              tabIndex={-1}
+              aria-hidden="true"
+              className="sr-only"
+            />
+          )}
 
-        <View onLayout={useProminentComposer ? prominentExpansion.onChromeLayout : undefined}>
-        {/* Pasted long-text chips (ChatGPT-style). Multiple allowed. */}
-        {pastedTexts.length > 0 && (
-          <View className="flex-row flex-wrap gap-2 px-3 pt-3">
-            {pastedTexts.map((entry) => (
-              <PastedTextChip
-                key={entry.id}
-                entry={entry}
-                onOpen={() => setViewingPastedId(entry.id)}
-                onRemove={() => handleRemovePastedText(entry.id)}
-              />
-            ))}
-          </View>
-        )}
-
-        {/* File attachment previews — compact thumbnails inside the input box */}
-        {(pendingFiles.length > 0 || isProcessingFiles) && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4, alignItems: 'flex-end' }}
+          <View
+            onLayout={
+              useProminentComposer
+                ? prominentExpansion.onChromeLayout
+                : undefined
+            }
           >
-            {pendingFiles.map((file) => {
-              const isImage = file.type.startsWith("image/")
-              const isVideo = file.type.startsWith("video/")
-              return (
-                <View key={file.id} className="relative">
-                  {isImage ? (
-                    <Pressable
-                      onPress={() => setPreviewImageFile({ url: file.dataUrl, name: file.name })}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Preview image ${file.name}`}
-                    >
-                      <View className="rounded-lg overflow-hidden border border-border/60" style={{ width: 72, height: 72 }}>
-                        <Image
-                          source={{ uri: file.dataUrl }}
-                          style={{ width: 72, height: 72 }}
-                          resizeMode="cover"
-                        />
-                      </View>
-                    </Pressable>
-                  ) : isVideo ? (
-                    <Pressable
-                      onPress={() => setPreviewVideoFile({ url: file.dataUrl, name: file.name })}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Preview video ${file.name}`}
-                    >
-                      <View className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center" style={{ width: 72, height: 72 }}>
-                        <View className="absolute inset-0 items-center justify-center">
-                          <View className="rounded-full bg-white/20 items-center justify-center" style={{ width: 32, height: 32 }}>
-                            <Play size={16} className="text-white" fill="white" />
-                          </View>
-                        </View>
-                        <Text className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center" numberOfLines={1}>
-                          {file.name}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  ) : (
-                    <View
-                      className="flex-row items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2"
-                      style={{ height: 36, maxWidth: 160 }}
-                    >
-                      <View className="flex-shrink-0">{getFileIcon(file.type)}</View>
-                      <Text className="text-xs text-foreground flex-1 min-w-0" numberOfLines={1}>
-                        {file.name}
-                      </Text>
-                    </View>
-                  )}
-                  <Pressable
-                    onPress={() => handleRemoveFile(file.id)}
-                    disabled={isProcessingFiles}
-                    className="absolute -right-1.5 -top-1.5 h-5 w-5 rounded-full bg-background border border-border items-center justify-center"
-                    style={{ zIndex: 10 }}
-                  >
-                    <X className="text-foreground" size={10} />
-                  </Pressable>
-                </View>
-              )
-            })}
-            {isProcessingFiles && (
-              <View
-                className="rounded-lg overflow-hidden border border-border/60 bg-muted/30 animate-pulse"
-                style={{ width: 72, height: 72 }}
-              />
+            {/* Pasted long-text chips (ChatGPT-style). Multiple allowed. */}
+            {pastedTexts.length > 0 && (
+              <View className="flex-row flex-wrap gap-2 px-3 pt-3">
+                {pastedTexts.map((entry) => (
+                  <PastedTextChip
+                    key={entry.id}
+                    entry={entry}
+                    onOpen={() => setViewingPastedId(entry.id)}
+                    onRemove={() => handleRemovePastedText(entry.id)}
+                  />
+                ))}
+              </View>
             )}
-          </ScrollView>
-        )}
-        </View>
 
-        {/* Tagged files / projects now render INLINE as "@mention" pills via
+            {/* File attachment previews — compact thumbnails inside the input box */}
+            {(pendingFiles.length > 0 || isProcessingFiles) && (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{
+                  gap: 8,
+                  paddingHorizontal: 12,
+                  paddingTop: 12,
+                  paddingBottom: 4,
+                  alignItems: "flex-end",
+                }}
+              >
+                {pendingFiles.map((file) => {
+                  const isImage = file.type.startsWith("image/");
+                  const isVideo = file.type.startsWith("video/");
+                  return (
+                    <View key={file.id} className="relative">
+                      {isImage ? (
+                        <Pressable
+                          onPress={() =>
+                            setPreviewImageFile({
+                              url: file.dataUrl,
+                              name: file.name,
+                            })
+                          }
+                          accessibilityRole="button"
+                          accessibilityLabel={`Preview image ${file.name}`}
+                        >
+                          <View
+                            className="rounded-lg overflow-hidden border border-border/60"
+                            style={{ width: 72, height: 72 }}
+                          >
+                            <Image
+                              source={{ uri: file.dataUrl }}
+                              style={{ width: 72, height: 72 }}
+                              resizeMode="cover"
+                            />
+                          </View>
+                        </Pressable>
+                      ) : isVideo ? (
+                        <Pressable
+                          onPress={() =>
+                            setPreviewVideoFile({
+                              url: file.dataUrl,
+                              name: file.name,
+                            })
+                          }
+                          accessibilityRole="button"
+                          accessibilityLabel={`Preview video ${file.name}`}
+                        >
+                          <View
+                            className="rounded-lg overflow-hidden border border-border/60 bg-black/80 items-center justify-center"
+                            style={{ width: 72, height: 72 }}
+                          >
+                            <View className="absolute inset-0 items-center justify-center">
+                              <View
+                                className="rounded-full bg-white/20 items-center justify-center"
+                                style={{ width: 32, height: 32 }}
+                              >
+                                <Play
+                                  size={16}
+                                  className="text-white"
+                                  fill="white"
+                                />
+                              </View>
+                            </View>
+                            <Text
+                              className="text-[9px] text-white/50 absolute bottom-1.5 left-0 right-0 text-center"
+                              numberOfLines={1}
+                            >
+                              {file.name}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      ) : (
+                        <View
+                          className="flex-row items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2"
+                          style={{ height: 36, maxWidth: 160 }}
+                        >
+                          <View className="flex-shrink-0">
+                            {getFileIcon(file.type)}
+                          </View>
+                          <Text
+                            className="text-xs text-foreground flex-1 min-w-0"
+                            numberOfLines={1}
+                          >
+                            {file.name}
+                          </Text>
+                        </View>
+                      )}
+                      <Pressable
+                        onPress={() => handleRemoveFile(file.id)}
+                        disabled={isProcessingFiles}
+                        className="absolute -right-1.5 -top-1.5 h-5 w-5 rounded-full bg-background border border-border items-center justify-center"
+                        style={{ zIndex: 10 }}
+                      >
+                        <X className="text-foreground" size={10} />
+                      </Pressable>
+                    </View>
+                  );
+                })}
+                {isProcessingFiles && (
+                  <View
+                    className="rounded-lg overflow-hidden border border-border/60 bg-muted/30 animate-pulse"
+                    style={{ width: 72, height: 72 }}
+                  />
+                )}
+              </ScrollView>
+            )}
+          </View>
+
+          {/* Tagged files / projects now render INLINE as "@mention" pills via
             the highlight overlay below, so the old chip row above the box is
             gone. References themselves are still tracked + sent on submit. */}
 
-        {!useProminentComposer ? (
-        <View className="relative">
-          {/* Highlight backdrop: a transparent mirror of the composer text that
+          {!useProminentComposer ? (
+            <View className="relative">
+              {/* Highlight backdrop: a transparent mirror of the composer text that
               paints a pill behind each "@mention". The real TextInput sits on
               top (zIndex) so typed text stays crisp and the caret is native;
               only the pill backgrounds show through its transparent fill. The
-              mirror MUST match the TextInput's font/line-height/padding (shared
-              `text-xs` + `px-4 pt-4`) or the pills drift off the words. */}
-          <View
-            pointerEvents="none"
-            className={cn(
-              "absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4",
-              isNative ? "pt-3" : "pt-4",
-            )}
-            style={{ zIndex: 0 }}
-          >
-            <Text
-              className={isNative ? "text-base" : "text-xs"}
-              style={[
-                {
-                  color: "transparent",
-                  transform: [{ translateY: -overlayScrollY }],
-                  ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}),
-                },
-                Platform.OS === "web"
-                  ? ({ whiteSpace: "pre-wrap", wordBreak: "break-word" } as any)
-                  : null,
-              ]}
-            >
-              {mentionSegments.map((seg, idx) =>
-                seg.mention ? (
-                  <Text
-                    key={idx}
-                    className={cn(isNative ? "text-base" : "text-xs", "rounded bg-primary/20")}
-                    style={{ color: "transparent", ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}) }}
-                  >
-                    {seg.text}
-                  </Text>
-                ) : (
-                  <Text
-                    key={idx}
-                    className={isNative ? "text-base" : "text-xs"}
-                    style={{ color: "transparent", ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}) }}
-                  >
-                    {seg.text}
-                  </Text>
-                )
-              )}
-            </Text>
-          </View>
-
-        <TextInput
-          ref={textInputRef}
-          value={composerDisplayValue}
-          selection={selectionOverride}
-          onChangeText={handleChangeText}
-          onSelectionChange={(e) => {
-            // Re-detect against the freshest text (kept in inputValueRef by
-            // handleChangeText) using the authoritative caret position.
-            updateMentionState(inputValueRef.current, e.nativeEvent.selection.start)
-          }}
-          onScroll={(e) => {
-            // Keep the inline-mention overlay aligned once the box scrolls.
-            setOverlayScrollY((e.nativeEvent as any)?.contentOffset?.y ?? 0)
-          }}
-          onSubmitEditing={handleSubmitEditing}
-          onKeyPress={(e: any) => {
-            // While the "@" menu is open, intercept navigation keys so they
-            // drive the menu instead of the textarea / message submit.
-            if (
-              Platform.OS === "web" &&
-              showMentionMenu &&
-              mentionItems.length > 0
-            ) {
-              const key = e.nativeEvent.key
-              if (key === "ArrowDown") {
-                e.preventDefault()
-                setMentionIndex((i) => (i + 1) % mentionItems.length)
-                return
-              }
-              if (key === "ArrowUp") {
-                e.preventDefault()
-                setMentionIndex((i) => (i - 1 + mentionItems.length) % mentionItems.length)
-                return
-              }
-              if (key === "Enter" || key === "Tab") {
-                e.preventDefault()
-                const item = mentionItems[Math.min(mentionIndex, mentionItems.length - 1)]
-                if (item) selectMention(item)
-                return
-              }
-              if (key === "Escape") {
-                e.preventDefault()
-                closeMentionMenu()
-                return
-              }
-            }
-            if (composer.showInteractionModes && Platform.OS === "web" && e.nativeEvent.key === "Tab" && e.nativeEvent.shiftKey) {
-              e.preventDefault()
-              cycleInteractionMode()
-              return
-            }
-            if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
-              e.preventDefault()
-              handleSubmit()
-            }
-          }}
-          placeholder={placeholder}
-          placeholderTextColor={chatgptComposer.placeholder}
-          testID="project-composer-input"
-          accessibilityLabel="Chat message input"
-          editable={!disabled && !voiceInput.isRecording}
-          multiline
-          {...COMPOSER_KEYBOARD_PROPS}
-          onContentSizeChange={(e) => {
-            const h = e.nativeEvent.contentSize.height
-            const clamped = Math.min(inputMaxHeight, Math.max(inputMinHeight, h))
-            if (clamped !== inputHeightRef.current) {
-              setInputHeightTarget(clamped)
-            }
-          }}
-          style={{
-            height: inputHeight,
-            zIndex: 1,
-            ...(isNative ? { fontSize: 16, lineHeight: 22 } : {}),
-          }}
-          className={cn(
-            isNative
-              ? "min-h-[52px] max-h-[160px] w-full"
-              : "min-h-[60px] max-h-[200px] w-full",
-            "bg-transparent",
-            isNative ? "px-4 pt-3 text-base text-foreground" : "px-4 pt-4 text-xs text-foreground",
-            disabled && dimWhenDisabled && "opacity-50",
-            Platform.OS === "web" && "outline-none no-focus-ring"
-          )}
-          textAlignVertical="top"
-        />
-        </View>
-        ) : (
-          <Animated.View pointerEvents="none" style={prominentExpansion.spacerStyle} />
-        )}
-
-        {/* Bottom toolbar */}
-        <View
-          className={cn(
-            "flex-row items-center justify-between",
-            useProminentComposer
-              ? "py-1 pl-2.5 pr-1.5 overflow-hidden"
-              : isNative
-                ? "min-h-12 px-2 py-1"
-                : "p-1.5",
-            !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
-          )}
-          style={
-            useProminentComposer
-              ? {
-                  zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
-                  ...(isNative ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT } : {}),
-                }
-              : undefined
-          }
-          pointerEvents={useProminentComposer ? "box-none" : undefined}
-        >
-          {/* Left side buttons */}
-          <View
-            className={cn(
-              "flex-row items-center",
-              useProminentComposer
-                ? "flex-shrink-0 gap-1"
-                : isNative
-                  ? "gap-1.5"
-                  : "gap-1",
-              !useProminentComposer &&
-                  isPhoneChrome && "min-w-0 flex-1 flex-wrap"
-            )}
-            style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}
-          >
-            {useProminentComposer ? (
-              <>
-                {/* Capsule plus-menu: attach, mode, environment */}
-                <ComposerPlusTrigger
-                  onPress={() => setPlusMenuOpen(true)}
-                  disabled={disabled || isProcessingFiles}
-                  testID="project-composer-plus"
-                    color={chatgptComposer.icon}
-                  />
-                <ComposerPlusSheet
-                  visible={plusMenuOpen}
-                  onClose={closePlusMenu}
-                  expandedId={plusExpandedId}
-                  onToggleSection={togglePlusSection}
-                  maxHeight={Math.round(windowHeight * NATIVE_PHONE_SHEET_COMPACT_RATIO)}
-                  onAttach={handlePlusAttach}
-                  attachDisabled={pendingFiles.length >= MAX_FILES}
-                >
-                  {composer.showInteractionModes ? (
-                    <ComposerPlusSection
-                      id="mode"
-                      label="Mode"
-                      value={currentInteractionConfig.label}
-                      Icon={currentInteractionConfig.Icon}
-                    >
-                      <ComposerPlusModeList
-                        modes={INTERACTION_MODES}
-                        selectedId={interactionMode}
-                        onSelect={handleInteractionModeChange}
-                        dualPlan={dualPlan}
-                        onDualPlanChange={onDualPlanChange}
-                        dualPlanDisabled={disabled}
-                        dualPlanTestId="dual-plan-toggle"
-                      />
-                    </ComposerPlusSection>
-                  ) : null}
-                  <ComposerPlusSection
-                    id="environment"
-                    label="Environment"
-                    Icon={Cloud}
-                  >
-                    <EnvironmentPicker
-                      disabled={disabled}
-                      presentation="list"
-                      listActive={plusExpandedId === "environment"}
-                    />
-                  </ComposerPlusSection>
-                  {quickActions.length > 0 ? (
-                    <ComposerPlusSection
-                      id="quick-actions"
-                      label="Quick actions"
-                      Icon={Zap}
-                    >
-                      <View className="py-1">
-                        {quickActions.map((action) => (
-                          <Pressable
-                            key={action.label}
-                            onPress={() => {
-                              onQuickActionClick?.(action.prompt)
-                              closePlusMenu()
-                            }}
-                            className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
-                          >
-                            <View className="w-8 items-center">
-                              <Zap className="h-3.5 w-3.5 text-amber-400" size={14} />
-                            </View>
-                            <View className="flex-1">
-                              <Text className="font-medium text-sm text-foreground">
-                                {action.label}
-                              </Text>
-                              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                                {action.prompt}
-                              </Text>
-                            </View>
-                          </Pressable>
-                        ))}
-                      </View>
-                    </ComposerPlusSection>
-                  ) : null}
-                </ComposerPlusSheet>
-              </>
-            ) : (
-              <>
-            {composer.showInteractionModes ? (
-              <>
-            {/* Interaction mode selector (Agent / Plan / Ask) */}
-            <Popover
-              placement="top"
-              size="xs"
-              isOpen={interactionModeOpen}
-              onOpen={() => setInteractionModeOpen(true)}
-              onClose={() => setInteractionModeOpen(false)}
-              trigger={(triggerProps) => (
-                <WebTooltip label={`Mode: ${currentInteractionConfig.label}`}>
-                  <Pressable
-                    {...triggerProps}
-                    hitSlop={isNative ? 6 : undefined}
-                    disabled={disabled}
-                    accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
-                    className={cn(
-                      isNative
-                        ? "h-8 w-8 items-center justify-center rounded-lg"
-                        : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                      interactionMode === "agent" && "bg-muted/50",
-                      interactionMode === "plan" &&
-                        "border border-amber-500/45 bg-amber-500/12",
-                      interactionMode === "ask" &&
-                        "border border-emerald-500/45 bg-emerald-500/12"
-                    )}
-                    testID="interaction-mode-trigger"
-                  >
-                    <currentInteractionConfig.Icon
-                      className={cn(
-                        "h-3.5 w-3.5",
-                        interactionMode === "agent" && "text-muted-foreground",
-                        interactionMode === "plan" && "text-amber-400",
-                        interactionMode === "ask" && "text-emerald-400"
-                      )}
-                      size={isNative ? 16 : 14}
-                    />
-                  </Pressable>
-                </WebTooltip>
-              )}
-            >
-              <PopoverBackdrop />
-              <PopoverContent className="w-[140px] p-0">
-                <View className="py-1">
-                  {INTERACTION_MODES.map((mode) => {
-                    const isSelected = mode.id === interactionMode
-                    return (
-                      <Pressable
-                        key={mode.id}
-                        onPress={() => {
-                          handleInteractionModeChange(mode.id)
-                          setInteractionModeOpen(false)
-                        }}
-                        className={cn(
-                          "flex-row items-center p-1 rounded-lg mb-1",
-                          isSelected &&
-                            mode.id === "agent" &&
-                            "bg-accent",
-                          isSelected &&
-                            mode.id === "plan" &&
-                            "border border-amber-500/35 bg-amber-500/12",
-                          isSelected &&
-                            mode.id === "ask" &&
-                            "border border-emerald-500/35 bg-emerald-500/12"
-                        )}
-                      >
-                        <View className="w-8 items-center">
-                          <mode.Icon
-                            className={cn(
-                              "h-3.5 w-3.5",
-                              isSelected &&
-                                mode.id === "plan" &&
-                                "text-amber-400",
-                              isSelected &&
-                                mode.id === "ask" &&
-                                "text-emerald-400",
-                              (!isSelected || mode.id === "agent") &&
-                                "text-muted-foreground"
-                            )}
-                            size={6}
-                          />
-                        </View>
-                        <View className="flex-1">
-                          <Text
-                            className={cn(
-                              "text-xs",
-                              isSelected &&
-                                mode.id === "plan" &&
-                                "text-amber-400",
-                              isSelected &&
-                                mode.id === "ask" &&
-                                "text-emerald-400",
-                              (!isSelected || mode.id === "agent") &&
-                                "text-foreground"
-                            )}
-                          >
-                            {mode.label}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    )
-                  })}
-                  {ezAvailable && (
-                    <>
-                      <View className="h-px bg-border/50 mx-2 my-1" />
-                      <Pressable
-                        testID="ez-mode-toggle"
-                        onPress={() => {
-                          bridge?.toggleEzMode()
-                          setInteractionModeOpen(false)
-                        }}
-                        className={cn(
-                          "flex-row items-center p-1 rounded-lg mb-1",
-                          ezActive &&
-                            "border border-violet-500/35 bg-violet-500/12"
-                        )}
-                      >
-                        <View className="w-8 items-center">
-                          <Sparkles
-                            className={cn(
-                              "h-3.5 w-3.5",
-                              ezActive
-                                ? "text-violet-400"
-                                : "text-muted-foreground"
-                            )}
-                            size={6}
-                          />
-                        </View>
-                        <View className="flex-1">
-                          <Text
-                            className={cn(
-                              "text-xs",
-                              ezActive
-                                ? "text-violet-400"
-                                : "text-foreground"
-                            )}
-                          >
-                            EZ Mode
-                          </Text>
-                        </View>
-                      </Pressable>
-                    </>
-                  )}
-                </View>
-              </PopoverContent>
-            </Popover>
-              </>
-            ) : null}
-
-            {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
-                per-device preference: once on, every plan generated in Plan
-                mode also produces a stakeholder summary. */}
-            {interactionMode === "plan" && (
-              <WebTooltip label="Also generate a stakeholder summary">
-                <Pressable
-                  testID="dual-plan-toggle"
-                  hitSlop={isNative ? 6 : undefined}
-                  disabled={disabled}
-                  onPress={() => onDualPlanChange?.(!dualPlan)}
-                  accessibilityLabel="Also generate a stakeholder summary"
-                  className={cn(
-                    isNative
-                      ? "h-8 w-8 items-center justify-center rounded-lg"
-                      : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                    dualPlan
-                      ? "border border-sky-500/45 bg-sky-500/12"
-                      : "bg-muted/50"
-                  )}
-                >
-                  <Languages
-                    className={cn(
-                      "h-3.5 w-3.5",
-                      dualPlan ? "text-sky-400" : "text-muted-foreground"
-                    )}
-                    size={isNative ? 16 : 14}
-                  />
-                </Pressable>
-              </WebTooltip>
-            )}
-
-            {/* Quick Actions selector */}
-            {quickActions.length > 0 && (
-              <Popover
-                placement="top"
-                size="xs"
-                isOpen={quickActionsOpen}
-                onOpen={() => setQuickActionsOpen(true)}
-                onClose={() => setQuickActionsOpen(false)}
-                trigger={(triggerProps) => (
-                  <WebTooltip label="Quick actions">
-                    <Pressable
-                      {...triggerProps}
-                      hitSlop={isNative ? 6 : undefined}
-                      disabled={disabled}
-                      accessibilityLabel="Quick actions"
-                      className={cn(
-                        isNative
-                          ? "h-8 w-8 items-center justify-center rounded-lg"
-                          : "h-[22px] w-[22px] items-center justify-center rounded-md",
-                        quickActionsOpen
-                          ? "border border-amber-500/45 bg-amber-500/12"
-                          : "bg-muted/50"
-                      )}
-                    >
-                      <Zap
-                        className={cn(
-                          "h-3.5 w-3.5",
-                          quickActionsOpen ? "text-amber-400" : "text-muted-foreground"
-                        )}
-                        size={isNative ? 16 : 14}
-                      />
-                    </Pressable>
-                  </WebTooltip>
-                )}
-              >
-                <PopoverBackdrop />
-                <PopoverContent className="w-[280px] p-0">
-                  <View className="py-1">
-                    {quickActions.map((action) => (
-                      <Pressable
-                        key={action.label}
-                        onPress={() => {
-                          onQuickActionClick?.(action.prompt)
-                          setQuickActionsOpen(false)
-                        }}
-                        className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
-                      >
-                        <View className="w-8 items-center">
-                          <Zap className="h-3.5 w-3.5 text-amber-400" size={14} />
-                        </View>
-                        <View className="flex-1">
-                          <Text className="font-medium text-sm text-foreground">
-                            {action.label}
-                          </Text>
-                          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                            {action.prompt}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    ))}
-                  </View>
-                </PopoverContent>
-              </Popover>
-            )}
-
-            {/* Environment selector — pick Cloud or a paired machine */}
-            <EnvironmentPicker disabled={disabled} prominentMobile={isNative} />
-              </>
-            )}
-
-            {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-            {composer.showModelPicker ? <ComposerModelPicker{...composerModelPickerProps({currentModelId,
-              effectiveIsPro,
-              disabled,
-              nativeSheet: isPhoneChrome,
-              triggerClassName:cn(
-                useProminentComposer
-                  ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
-                  : isNative
-                    ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
-                    : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                    isPhoneChrome && !useProminentComposer && "min-w-0"
-              ),
-              triggerStyle: isPhoneChrome ? { maxWidth: modelTriggerMaxWidth } : undefined,
-              labelClassName:
-                useProminentComposer
-                  ? "text-[12px] text-foreground"
-                  : isNative
-                    ? "text-sm text-foreground"
-                    : "text-xs text-muted-foreground",
-              chevronSize:isNative ? 12 : 8,
-              chevronColor:useProminentComposer ? chatgptComposer.icon : undefined,
-              chevronStrokeWidth:useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined,
-              hitSlop:isNative ? 6 : undefined,
-              label: isPhoneChrome ? compactNativeModelLabel(currentModelId) : resolveShortName(currentModelId),
-              menuWidth:nativeModelMenuWidth,
-              onSelect:handleModelChange})}
-            /> : null}
-
-          </View>
-
-          {useProminentComposer ? (
-            <View
-              pointerEvents="none"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                marginLeft: 4,
-                marginRight: 4,
-              }}
-              onLayout={prominentExpansion.onCompactSlotLayout}
-            />
-          ) : null}
-
-          {/* Right side buttons */}
-          {voiceInput.isRecording ? (
-            <View className="flex-row flex-shrink-0 items-center gap-2" style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}>
-              <VoiceWaveform />
-              <Pressable
-                onPress={() => voiceInput.toggleRecording().catch(() => {})}
-                hitSlop={isNative ? 4 : undefined}
-                role="button"
-                accessibilityLabel="Stop voice recording"
+              mirror MUST match the TextInput's font/line-height/padding or the
+              pills drift off the words. */}
+              <View
+                pointerEvents="none"
                 className={cn(
-                  "rounded-full bg-foreground/90 items-center justify-center active:opacity-70",
-                  isNative ? "h-9 w-9" : "h-6 w-6",
+                  "absolute top-0 bottom-0 left-0 right-0 overflow-hidden px-4",
+                  "pt-3"
                 )}
+                style={{ zIndex: 0 }}
               >
-                <Square className="text-background" size={isNative ? 14 : 10} fill="currentColor" />
-              </Pressable>
+                <Text
+                  className={mobileChatText ? "text-base leading-6" : "text-sm leading-5"}
+                  style={[
+                    {
+                      color: "transparent",
+                      transform: [{ translateY: -overlayScrollY }],
+                      fontSize: composerFontSize,
+                      lineHeight: composerLineHeight,
+                    },
+                    Platform.OS === "web"
+                      ? ({
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        } as any)
+                      : null,
+                  ]}
+                >
+                  {mentionSegments.map((seg, idx) =>
+                    seg.mention ? (
+                      <Text
+                        key={idx}
+                        className={cn(
+                          "rounded bg-primary/20",
+                          mobileChatText
+                            ? "text-base leading-6"
+                            : "text-sm leading-5"
+                        )}
+                        style={{
+                          color: "transparent",
+                          fontSize: composerFontSize,
+                          lineHeight: composerLineHeight,
+                        }}
+                      >
+                        {seg.text}
+                      </Text>
+                    ) : (
+                      <Text
+                        key={idx}
+                        className={
+                          mobileChatText
+                            ? "text-base leading-6"
+                            : "text-sm leading-5"
+                        }
+                        style={{
+                          color: "transparent",
+                          fontSize: composerFontSize,
+                          lineHeight: composerLineHeight,
+                        }}
+                      >
+                        {seg.text}
+                      </Text>
+                    )
+                  )}
+                </Text>
+              </View>
+
+              <TextInput
+                ref={textInputRef}
+                value={composerDisplayValue}
+                selection={selectionOverride}
+                onChangeText={handleChangeText}
+                onSelectionChange={(e) => {
+                  // Re-detect against the freshest text (kept in inputValueRef by
+                  // handleChangeText) using the authoritative caret position.
+                  updateMentionState(
+                    inputValueRef.current,
+                    e.nativeEvent.selection.start
+                  );
+                }}
+                onScroll={(e) => {
+                  // Keep the inline-mention overlay aligned once the box scrolls.
+                  setOverlayScrollY(
+                    (e.nativeEvent as any)?.contentOffset?.y ?? 0
+                  );
+                }}
+                onSubmitEditing={handleSubmitEditing}
+                onKeyPress={(e: any) => {
+                  // While the "@" menu is open, intercept navigation keys so they
+                  // drive the menu instead of the textarea / message submit.
+                  if (
+                    Platform.OS === "web" &&
+                    showMentionMenu &&
+                    mentionItems.length > 0
+                  ) {
+                    const key = e.nativeEvent.key;
+                    if (key === "ArrowDown") {
+                      e.preventDefault();
+                      setMentionIndex((i) => (i + 1) % mentionItems.length);
+                      return;
+                    }
+                    if (key === "ArrowUp") {
+                      e.preventDefault();
+                      setMentionIndex(
+                        (i) =>
+                          (i - 1 + mentionItems.length) % mentionItems.length
+                      );
+                      return;
+                    }
+                    if (key === "Enter" || key === "Tab") {
+                      e.preventDefault();
+                      const item =
+                        mentionItems[
+                          Math.min(mentionIndex, mentionItems.length - 1)
+                        ];
+                      if (item) selectMention(item);
+                      return;
+                    }
+                    if (key === "Escape") {
+                      e.preventDefault();
+                      closeMentionMenu();
+                      return;
+                    }
+                  }
+                  if (
+                    composer.showInteractionModes &&
+                    Platform.OS === "web" &&
+                    e.nativeEvent.key === "Tab" &&
+                    e.nativeEvent.shiftKey
+                  ) {
+                    e.preventDefault();
+                    cycleInteractionMode();
+                    return;
+                  }
+                  if (
+                    Platform.OS === "web" &&
+                    e.nativeEvent.key === "Enter" &&
+                    !e.nativeEvent.shiftKey
+                  ) {
+                    e.preventDefault();
+                    handleSubmit();
+                  }
+                }}
+                placeholder={placeholder}
+                placeholderTextColor={chatgptComposer.placeholder}
+                testID="project-composer-input"
+                accessibilityLabel="Chat message input"
+                editable={!disabled && !voiceInput.isRecording}
+                multiline
+                {...COMPOSER_KEYBOARD_PROPS}
+                onContentSizeChange={(e) => {
+                  const h = e.nativeEvent.contentSize.height;
+                  const clamped = Math.min(
+                    inputMaxHeight,
+                    Math.max(inputMinHeight, h)
+                  );
+                  if (clamped !== inputHeightRef.current) {
+                    setInputHeightTarget(clamped);
+                  }
+                }}
+                style={{
+                  height: inputHeight,
+                  zIndex: 1,
+                  fontSize: composerFontSize,
+                  lineHeight: composerLineHeight,
+                  ...(Platform.OS === "web"
+                    ? ({
+                        outlineWidth: 0,
+                        outlineStyle: "none",
+                        boxShadow: "none",
+                      } as any)
+                    : null),
+                }}
+                className={cn(
+                  isNative
+                    ? "min-h-[52px] max-h-[160px] w-full"
+                    : "min-h-[48px] max-h-[160px] w-full",
+                  "bg-transparent",
+                  mobileChatText
+                    ? "px-4 pt-3 text-base leading-6 text-foreground"
+                    : "px-4 pt-3 text-sm leading-5 text-foreground",
+                  disabled && dimWhenDisabled && "opacity-50",
+                  Platform.OS === "web" && "outline-none no-focus-ring"
+                )}
+                textAlignVertical="top"
+              />
             </View>
           ) : (
-          <View className={cn("flex-row flex-shrink-0 items-center", useProminentComposer ? "ml-1 gap-1" : "gap-1")} style={useProminentComposer ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX } : undefined}>
-            {useProminentComposer ? null : (
-              <>
-            <DockChipRail isNative={isNative} />
-            {contextUsage && (
-              <DockChip panelId="context-usage" accessibilityLabel="Context usage">
-                <ContextTracker
-                  inputTokens={contextUsage.inputTokens}
-                  contextWindowTokens={contextUsage.contextWindowTokens}
-                />
-              </DockChip>
-            )}
+            <Animated.View
+              pointerEvents="none"
+              style={prominentExpansion.spacerStyle}
+            />
+          )}
 
-            <Pressable
-              onPress={handleAttachClick}
-              hitSlop={isNative ? 4 : undefined}
-              disabled={disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES}
-              role="button"
-              accessibilityLabel="Attach file"
+          {/* Bottom toolbar */}
+          <View
+            className={cn(
+              "flex-row items-center justify-between",
+              useProminentComposer
+                ? "py-1 pl-2.5 pr-1.5 overflow-hidden"
+                : isNative
+                ? "min-h-12 px-2 py-1"
+                : "p-1.5",
+              !useProminentComposer && isPhoneChrome && "items-end gap-y-1"
+            )}
+            style={
+              useProminentComposer
+                ? {
+                    zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                    ...(isNative
+                      ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT }
+                      : {}),
+                  }
+                : undefined
+            }
+            pointerEvents={useProminentComposer ? "box-none" : undefined}
+          >
+            {/* Left side buttons */}
+            <View
               className={cn(
-                "rounded-full items-center justify-center active:opacity-70",
-                isNative ? "h-9 w-9 border border-border/45 bg-muted/30" : "min-h-5 min-w-5",
+                "flex-row items-center",
+                useProminentComposer
+                  ? "flex-shrink-0 gap-1"
+                  : isNative
+                  ? "gap-1.5"
+                  : "gap-1",
+                !useProminentComposer &&
+                  isPhoneChrome &&
+                  "min-w-0 flex-1 flex-wrap"
               )}
-              android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+              style={
+                useProminentComposer
+                  ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX }
+                  : undefined
+              }
             >
-              <Plus
-                className={cn(
-                  "h-4 w-4",
-                  disabled || isProcessingFiles || pendingFiles.length >= MAX_FILES
-                    ? "text-muted-foreground/40"
-                    : "text-muted-foreground"
-                )}
-                size={isNative ? 18 : 12}
-              />
-            </Pressable>
-              </>
-            )}
+              {useProminentComposer ? (
+                <>
+                  {/* Capsule plus-menu: attach, mode, environment */}
+                  <ComposerPlusTrigger
+                    onPress={() => setPlusMenuOpen(true)}
+                    disabled={disabled || isProcessingFiles}
+                    testID="project-composer-plus"
+                    color={chatgptComposer.icon}
+                  />
+                  <ComposerPlusSheet
+                    visible={plusMenuOpen}
+                    onClose={closePlusMenu}
+                    expandedId={plusExpandedId}
+                    onToggleSection={togglePlusSection}
+                    maxHeight={Math.round(
+                      windowHeight * NATIVE_PHONE_SHEET_COMPACT_RATIO
+                    )}
+                    onAttach={handlePlusAttach}
+                    attachDisabled={pendingFiles.length >= MAX_FILES}
+                  >
+                    {composer.showInteractionModes ? (
+                      <ComposerPlusSection
+                        id="mode"
+                        label="Mode"
+                        value={currentInteractionConfig.label}
+                        Icon={currentInteractionConfig.Icon}
+                      >
+                        <ComposerPlusModeList
+                          modes={INTERACTION_MODES}
+                          selectedId={interactionMode}
+                          onSelect={handleInteractionModeChange}
+                          dualPlan={dualPlan}
+                          onDualPlanChange={onDualPlanChange}
+                          dualPlanDisabled={disabled}
+                          dualPlanTestId="dual-plan-toggle"
+                        />
+                      </ComposerPlusSection>
+                    ) : null}
+                    <ComposerPlusSection
+                      id="environment"
+                      label="Environment"
+                      Icon={Cloud}
+                    >
+                      <EnvironmentPicker
+                        disabled={disabled}
+                        presentation="list"
+                        listActive={plusExpandedId === "environment"}
+                      />
+                    </ComposerPlusSection>
+                    {quickActions.length > 0 ? (
+                      <ComposerPlusSection
+                        id="quick-actions"
+                        label="Quick actions"
+                        Icon={Zap}
+                      >
+                        <View className="py-1">
+                          {quickActions.map((action) => (
+                            <Pressable
+                              key={action.label}
+                              onPress={() => {
+                                onQuickActionClick?.(action.prompt);
+                                closePlusMenu();
+                              }}
+                              className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
+                            >
+                              <View className="w-8 items-center">
+                                <Zap
+                                  className="h-3.5 w-3.5 text-amber-400"
+                                  size={14}
+                                />
+                              </View>
+                              <View className="flex-1">
+                                <Text className="font-medium text-sm text-foreground">
+                                  {action.label}
+                                </Text>
+                                <Text
+                                  className="text-xs text-muted-foreground"
+                                  numberOfLines={1}
+                                >
+                                  {action.prompt}
+                                </Text>
+                              </View>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </ComposerPlusSection>
+                    ) : null}
+                  </ComposerPlusSheet>
+                </>
+              ) : (
+                <>
+                  {presentation === "agent" ? (
+                    <Popover
+                      placement="top"
+                      size="xs"
+                      isOpen={agentControlsOpen}
+                      onOpen={() => setAgentControlsOpen(true)}
+                      onClose={() => setAgentControlsOpen(false)}
+                      trigger={(triggerProps) => (
+                        <WebTooltip label="Advanced controls">
+                          <Pressable
+                            {...triggerProps}
+                            disabled={disabled}
+                            accessibilityLabel="Advanced controls"
+                            className={cn(
+                              "h-[22px] w-[22px] items-center justify-center rounded-md",
+                              agentControlsOpen
+                                ? "bg-primary/12"
+                                : "bg-muted/50"
+                            )}
+                          >
+                            <SlidersHorizontal
+                              className={
+                                agentControlsOpen
+                                  ? "text-primary"
+                                  : "text-muted-foreground"
+                              }
+                              size={14}
+                            />
+                          </Pressable>
+                        </WebTooltip>
+                      )}
+                    >
+                      <PopoverBackdrop />
+                      <PopoverContent className="w-[248px] p-2">
+                        {composer.showInteractionModes ? (
+                          <>
+                            <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Mode
+                            </Text>
+                            <View className="flex-row gap-1">
+                              {INTERACTION_MODES.map((mode) => (
+                                <Pressable
+                                  key={mode.id}
+                                  onPress={() => {
+                                    handleInteractionModeChange(mode.id);
+                                    setAgentControlsOpen(false);
+                                  }}
+                                  className={cn(
+                                    "flex-1 items-center rounded-md px-1.5 py-1.5",
+                                    interactionMode === mode.id
+                                      ? "bg-primary/12"
+                                      : "bg-muted/50"
+                                  )}
+                                >
+                                  <Text
+                                    className={cn(
+                                      "text-xs",
+                                      interactionMode === mode.id
+                                        ? "text-primary"
+                                        : "text-muted-foreground"
+                                    )}
+                                  >
+                                    {mode.label}
+                                  </Text>
+                                </Pressable>
+                              ))}
+                            </View>
+                          </>
+                        ) : null}
+                        <View className="mt-2 border-t border-border/60 pt-2">
+                          <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                            Model
+                          </Text>
+                          {showModelPicker ? (
+                            <ComposerModelPicker
+                              {...composerModelPickerProps({
+                                currentModelId,
+                                effectiveIsPro,
+                                disabled,
+                                nativeSheet: false,
+                                triggerClassName:
+                                  "h-8 w-full flex-row items-center justify-between rounded-md bg-muted px-2",
+                                labelClassName: "text-xs text-foreground",
+                                chevronSize: 12,
+                                label: resolveShortName(currentModelId),
+                                menuWidth: nativeModelMenuWidth,
+                                onSelect: handleModelChange,
+                              })}
+                            />
+                          ) : null}
+                        </View>
+                        <View className="mt-2 border-t border-border/60 pt-2">
+                          <EnvironmentPicker disabled={disabled} />
+                        </View>
+                        {quickActions.length > 0 ? (
+                          <View className="mt-2 border-t border-border/60 pt-2">
+                            {quickActions.map((action) => (
+                              <Pressable
+                                key={action.label}
+                                onPress={() => {
+                                  onQuickActionClick?.(action.prompt);
+                                  setAgentControlsOpen(false);
+                                }}
+                                className="rounded-md px-2 py-1.5 active:bg-muted"
+                              >
+                                <Text className="text-xs text-foreground">
+                                  {action.label}
+                                </Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : null}
+                      </PopoverContent>
+                    </Popover>
+                  ) : null}
+                  {composer.showInteractionModes && presentation !== "agent" ? (
+                    <>
+                      {/* Interaction mode selector (Agent / Plan / Ask) */}
+                      <Popover
+                        placement="top"
+                        size="xs"
+                        isOpen={interactionModeOpen}
+                        onOpen={() => setInteractionModeOpen(true)}
+                        onClose={() => setInteractionModeOpen(false)}
+                        trigger={(triggerProps) => (
+                          <WebTooltip
+                            label={`Mode: ${currentInteractionConfig.label}`}
+                          >
+                            <Pressable
+                              {...triggerProps}
+                              hitSlop={isNative ? 6 : undefined}
+                              disabled={disabled}
+                              accessibilityLabel={`Mode: ${currentInteractionConfig.label}`}
+                              className={cn(
+                                isNative
+                                  ? "h-8 w-8 items-center justify-center rounded-lg"
+                                  : "h-[22px] w-[22px] items-center justify-center rounded-md",
+                                interactionMode === "agent" && "bg-muted/50",
+                                interactionMode === "plan" &&
+                                  "border border-amber-500/45 bg-amber-500/12",
+                                interactionMode === "ask" &&
+                                  "border border-emerald-500/45 bg-emerald-500/12"
+                              )}
+                              testID="interaction-mode-trigger"
+                            >
+                              <currentInteractionConfig.Icon
+                                className={cn(
+                                  "h-3.5 w-3.5",
+                                  interactionMode === "agent" &&
+                                    "text-muted-foreground",
+                                  interactionMode === "plan" &&
+                                    "text-amber-400",
+                                  interactionMode === "ask" &&
+                                    "text-emerald-400"
+                                )}
+                                size={isNative ? 16 : 14}
+                              />
+                            </Pressable>
+                          </WebTooltip>
+                        )}
+                      >
+                        <PopoverBackdrop />
+                        <PopoverContent className="w-[140px] p-0">
+                          <View className="py-1">
+                            {INTERACTION_MODES.map((mode) => {
+                              const isSelected = mode.id === interactionMode;
+                              return (
+                                <Pressable
+                                  key={mode.id}
+                                  onPress={() => {
+                                    handleInteractionModeChange(mode.id);
+                                    setInteractionModeOpen(false);
+                                  }}
+                                  className={cn(
+                                    "flex-row items-center p-1 rounded-lg mb-1",
+                                    isSelected &&
+                                      mode.id === "agent" &&
+                                      "bg-accent",
+                                    isSelected &&
+                                      mode.id === "plan" &&
+                                      "border border-amber-500/35 bg-amber-500/12",
+                                    isSelected &&
+                                      mode.id === "ask" &&
+                                      "border border-emerald-500/35 bg-emerald-500/12"
+                                  )}
+                                >
+                                  <View className="w-8 items-center">
+                                    <mode.Icon
+                                      className={cn(
+                                        "h-3.5 w-3.5",
+                                        isSelected &&
+                                          mode.id === "plan" &&
+                                          "text-amber-400",
+                                        isSelected &&
+                                          mode.id === "ask" &&
+                                          "text-emerald-400",
+                                        (!isSelected || mode.id === "agent") &&
+                                          "text-muted-foreground"
+                                      )}
+                                      size={6}
+                                    />
+                                  </View>
+                                  <View className="flex-1">
+                                    <Text
+                                      className={cn(
+                                        "text-xs",
+                                        isSelected &&
+                                          mode.id === "plan" &&
+                                          "text-amber-400",
+                                        isSelected &&
+                                          mode.id === "ask" &&
+                                          "text-emerald-400",
+                                        (!isSelected || mode.id === "agent") &&
+                                          "text-foreground"
+                                      )}
+                                    >
+                                      {mode.label}
+                                    </Text>
+                                  </View>
+                                </Pressable>
+                              );
+                            })}
+                            {ezAvailable && (
+                              <>
+                                <View className="h-px bg-border/50 mx-2 my-1" />
+                                <Pressable
+                                  testID="ez-mode-toggle"
+                                  onPress={() => {
+                                    bridge?.toggleEzMode();
+                                    setInteractionModeOpen(false);
+                                  }}
+                                  className={cn(
+                                    "flex-row items-center p-1 rounded-lg mb-1",
+                                    ezActive &&
+                                      "border border-violet-500/35 bg-violet-500/12"
+                                  )}
+                                >
+                                  <View className="w-8 items-center">
+                                    <Sparkles
+                                      className={cn(
+                                        "h-3.5 w-3.5",
+                                        ezActive
+                                          ? "text-violet-400"
+                                          : "text-muted-foreground"
+                                      )}
+                                      size={6}
+                                    />
+                                  </View>
+                                  <View className="flex-1">
+                                    <Text
+                                      className={cn(
+                                        "text-xs",
+                                        ezActive
+                                          ? "text-violet-400"
+                                          : "text-foreground"
+                                      )}
+                                    >
+                                      EZ Mode
+                                    </Text>
+                                  </View>
+                                </Pressable>
+                              </>
+                            )}
+                          </View>
+                        </PopoverContent>
+                      </Popover>
+                    </>
+                  ) : null}
 
-            {isStreaming ? (
-              <>
+                  {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
+                per-device preference: once on, every plan generated in Plan
+                mode also produces a stakeholder summary. */}
+                  {interactionMode === "plan" && presentation !== "agent" && (
+                    <WebTooltip label="Also generate a stakeholder summary">
+                      <Pressable
+                        testID="dual-plan-toggle"
+                        hitSlop={isNative ? 6 : undefined}
+                        disabled={disabled}
+                        onPress={() => onDualPlanChange?.(!dualPlan)}
+                        accessibilityLabel="Also generate a stakeholder summary"
+                        className={cn(
+                          isNative
+                            ? "h-8 w-8 items-center justify-center rounded-lg"
+                            : "h-[22px] w-[22px] items-center justify-center rounded-md",
+                          dualPlan
+                            ? "border border-sky-500/45 bg-sky-500/12"
+                            : "bg-muted/50"
+                        )}
+                      >
+                        <Languages
+                          className={cn(
+                            "h-3.5 w-3.5",
+                            dualPlan ? "text-sky-400" : "text-muted-foreground"
+                          )}
+                          size={isNative ? 16 : 14}
+                        />
+                      </Pressable>
+                    </WebTooltip>
+                  )}
+
+                  {/* Quick Actions selector */}
+                  {quickActions.length > 0 && presentation !== "agent" && (
+                    <Popover
+                      placement="top"
+                      size="xs"
+                      isOpen={quickActionsOpen}
+                      onOpen={() => setQuickActionsOpen(true)}
+                      onClose={() => setQuickActionsOpen(false)}
+                      trigger={(triggerProps) => (
+                        <WebTooltip label="Quick actions">
+                          <Pressable
+                            {...triggerProps}
+                            hitSlop={isNative ? 6 : undefined}
+                            disabled={disabled}
+                            accessibilityLabel="Quick actions"
+                            className={cn(
+                              isNative
+                                ? "h-8 w-8 items-center justify-center rounded-lg"
+                                : "h-[22px] w-[22px] items-center justify-center rounded-md",
+                              quickActionsOpen
+                                ? "border border-amber-500/45 bg-amber-500/12"
+                                : "bg-muted/50"
+                            )}
+                          >
+                            <Zap
+                              className={cn(
+                                "h-3.5 w-3.5",
+                                quickActionsOpen
+                                  ? "text-amber-400"
+                                  : "text-muted-foreground"
+                              )}
+                              size={isNative ? 16 : 14}
+                            />
+                          </Pressable>
+                        </WebTooltip>
+                      )}
+                    >
+                      <PopoverBackdrop />
+                      <PopoverContent className="w-[280px] p-0">
+                        <View className="py-1">
+                          {quickActions.map((action) => (
+                            <Pressable
+                              key={action.label}
+                              onPress={() => {
+                                onQuickActionClick?.(action.prompt);
+                                setQuickActionsOpen(false);
+                              }}
+                              className="flex-row items-center gap-3 p-3 rounded-lg mb-1"
+                            >
+                              <View className="w-8 items-center">
+                                <Zap
+                                  className="h-3.5 w-3.5 text-amber-400"
+                                  size={14}
+                                />
+                              </View>
+                              <View className="flex-1">
+                                <Text className="font-medium text-sm text-foreground">
+                                  {action.label}
+                                </Text>
+                                <Text
+                                  className="text-xs text-muted-foreground"
+                                  numberOfLines={1}
+                                >
+                                  {action.prompt}
+                                </Text>
+                              </View>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </PopoverContent>
+                    </Popover>
+                  )}
+
+                  {/* Environment selector — pick Cloud or a paired machine */}
+                  {presentation !== "agent" ? (
+                    <EnvironmentPicker
+                      disabled={disabled}
+                      prominentMobile={isNative}
+                    />
+                  ) : null}
+                </>
+              )}
+
+              {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
+              {showModelPicker &&
+              presentation !== "agent" &&
+              !showInlineMobileModelPicker ? (
+                <ComposerModelPicker
+                  {...composerModelPickerProps({
+                    currentModelId,
+                    effectiveIsPro,
+                    disabled,
+                    nativeSheet: isPhoneChrome,
+                    triggerClassName: cn(
+                      useProminentComposer
+                        ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
+                        : isNative
+                        ? "h-8 flex-row items-center gap-1 rounded-lg px-2"
+                        : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                      isPhoneChrome && !useProminentComposer && "min-w-0"
+                    ),
+                    triggerStyle: isPhoneChrome
+                      ? { maxWidth: modelTriggerMaxWidth }
+                      : undefined,
+                    labelClassName: useProminentComposer
+                      ? "text-[12px] text-foreground"
+                      : isNative
+                      ? "text-sm text-foreground"
+                      : "text-xs text-muted-foreground",
+                    chevronSize: isNative ? 12 : 8,
+                    chevronColor: useProminentComposer
+                      ? chatgptComposer.icon
+                      : undefined,
+                    chevronStrokeWidth: useProminentComposer
+                      ? NATIVE_PHONE_ICON_STROKE
+                      : undefined,
+                    hitSlop: isNative ? 6 : undefined,
+                    label: isPhoneChrome
+                      ? compactNativeModelLabel(currentModelId)
+                      : resolveShortName(currentModelId),
+                    menuWidth: nativeModelMenuWidth,
+                    onSelect: handleModelChange,
+                  })}
+                />
+              ) : null}
+            </View>
+
+            {useProminentComposer ? (
+              <View
+                pointerEvents="none"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+                  marginLeft: 4,
+                  marginRight: 4,
+                }}
+                onLayout={prominentExpansion.onCompactSlotLayout}
+              />
+            ) : null}
+
+            {/* Right side buttons */}
+            {voiceInput.isRecording ? (
+              <View
+                className="flex-row flex-shrink-0 items-center gap-2"
+                style={
+                  useProminentComposer
+                    ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX }
+                    : undefined
+                }
+              >
+                <VoiceWaveform />
                 <Pressable
-                  onPress={onStop}
+                  onPress={() => voiceInput.toggleRecording().catch(() => {})}
                   hitSlop={isNative ? 4 : undefined}
-                  accessibilityLabel="Stop"
-                  testID="stop-streaming"
+                  role="button"
+                  accessibilityLabel="Stop voice recording"
                   className={cn(
-                    "rounded-full bg-destructive items-center justify-center active:opacity-70",
-                    sendChrome.sizeClassName,
+                    "rounded-full bg-foreground/90 items-center justify-center active:opacity-70",
+                    isNative ? "h-9 w-9" : "h-6 w-6"
                   )}
                 >
                   <Square
-                    className="text-destructive-foreground m-auto"
-                    size={isNative || useProminentComposer ? 18 : 10}
+                    className="text-background"
+                    size={isNative ? 14 : 10}
+                    fill="currentColor"
                   />
                 </Pressable>
+              </View>
+            ) : (
+              <View
+                className={cn(
+                  "flex-row flex-shrink-0 items-center",
+                  useProminentComposer ? "ml-1 gap-1" : "gap-1"
+                )}
+                style={
+                  useProminentComposer
+                    ? { zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX }
+                    : undefined
+                }
+              >
+                {showInlineMobileModelPicker ? (
+                  <ComposerModelPicker
+                    {...composerModelPickerProps({
+                      currentModelId,
+                      effectiveIsPro,
+                      disabled,
+                      nativeSheet: isPhoneChrome,
+                      triggerClassName:
+                        "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5",
+                      triggerStyle: { maxWidth: modelTriggerMaxWidth },
+                      labelClassName: "text-[12px] text-foreground",
+                      chevronSize: 12,
+                      chevronColor: chatgptComposer.icon,
+                      chevronStrokeWidth: NATIVE_PHONE_ICON_STROKE,
+                      hitSlop: 6,
+                      label: compactNativeModelLabel(currentModelId),
+                      menuWidth: nativeModelMenuWidth,
+                      onSelect: handleModelChange,
+                    })}
+                  />
+                ) : null}
+                {useProminentComposer ? null : (
+                  <>
+                    <DockChipRail isNative={isNative} />
+                    {contextUsage && (
+                      <DockChip
+                        panelId="context-usage"
+                        accessibilityLabel="Context usage"
+                      >
+                        <ContextTracker
+                          inputTokens={contextUsage.inputTokens}
+                          contextWindowTokens={contextUsage.contextWindowTokens}
+                        />
+                      </DockChip>
+                    )}
+
+                    <Pressable
+                      onPress={handleAttachClick}
+                      hitSlop={isNative ? 4 : undefined}
+                      disabled={
+                        disabled ||
+                        isProcessingFiles ||
+                        pendingFiles.length >= MAX_FILES
+                      }
+                      role="button"
+                      accessibilityLabel="Attach file"
+                      className={cn(
+                        "rounded-full items-center justify-center active:opacity-70",
+                        isNative
+                          ? "h-9 w-9 border border-border/45 bg-muted/30"
+                          : "min-h-5 min-w-5"
+                      )}
+                      android_ripple={{ color: "rgba(128,128,128,0.25)" }}
+                    >
+                      <Plus
+                        className={cn(
+                          "h-4 w-4",
+                          disabled ||
+                            isProcessingFiles ||
+                            pendingFiles.length >= MAX_FILES
+                            ? "text-muted-foreground/40"
+                            : "text-muted-foreground"
+                        )}
+                        size={isNative ? 18 : 12}
+                      />
+                    </Pressable>
+                  </>
+                )}
+
+                {isStreaming ? (
+                  <>
+                    <Pressable
+                      onPress={onStop}
+                      hitSlop={isNative ? 4 : undefined}
+                      accessibilityLabel="Stop"
+                      testID="stop-streaming"
+                      className={cn(
+                        "rounded-full bg-destructive items-center justify-center active:opacity-70",
+                        sendChrome.sizeClassName
+                      )}
+                    >
+                      <Square
+                        className="text-destructive-foreground m-auto"
+                        size={isNative || useProminentComposer ? 18 : 10}
+                      />
+                    </Pressable>
                     <ComposerSendButton
-                      canSend=
-                {Boolean(inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0)}
-                    onPress={handleSubmit}
-                    disabled={disabled || isProcessingFiles}
+                      canSend={Boolean(
+                        inputValue.trim() ||
+                          pendingFiles.length > 0 ||
+                          pastedTexts.length > 0
+                      )}
+                      onPress={handleSubmit}
+                      disabled={disabled || isProcessingFiles}
                       prominent={useProminentComposer}
                       sizeClassName={sendChrome.sizeClassName}
                       iconSize={sendChrome.iconSize}
-                      fillClassName={useProminentComposer ? "": "bg-primary" }
-                      iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
-                      fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}
-                      iconColor={useProminentComposer ? chatgptComposer.sendIcon : undefined}
+                      fillClassName={useProminentComposer ? "" : "bg-primary"}
+                      iconClassName={
+                        useProminentComposer ? "" : "text-primary-foreground"
+                      }
+                      fillColor={
+                        useProminentComposer
+                          ? chatgptComposer.sendFill
+                          : undefined
+                      }
+                      iconColor={
+                        useProminentComposer
+                          ? chatgptComposer.sendIcon
+                          : undefined
+                      }
                       accessibilityLabel="Queue message"
                     />
                   </>
-            ) :inputValue.trim() || pendingFiles.length > 0 || pastedTexts.length > 0 || references.length > 0 ? (
-              <ComposerSendButton
+                ) : inputValue.trim() ||
+                  pendingFiles.length > 0 ||
+                  pastedTexts.length > 0 ||
+                  references.length > 0 ? (
+                  <ComposerSendButton
                     canSend
-                onPress={handleSubmit}
-                disabled={disabled || isProcessingFiles}
+                    onPress={handleSubmit}
+                    disabled={disabled || isProcessingFiles}
                     prominent={useProminentComposer}
                     sizeClassName={sendChrome.sizeClassName}
                     iconSize={sendChrome.iconSize}
-                    fillClassName={useProminentComposer ? "": "bg-primary" }
-                    iconClassName={useProminentComposer ? "" : "text-primary-foreground"}
-                    fillColor={useProminentComposer ? chatgptComposer.sendFill : undefined}
-                    iconColor={useProminentComposer ? chatgptComposer.sendIcon : undefined}
-                />
-            ) : voiceInput.canRecord ? (
-              <Pressable
-                onPress={() => {
-                  voiceInput.clearError()
-                  voiceInput.toggleRecording().catch(() => {})
-                }}
-                hitSlop={isNative ? 4 : undefined}
-                disabled={disabled || isProcessingFiles}
-                role="button"
-                accessibilityLabel="Start voice recording"
-                className={cn(
-                  "rounded-full items-center justify-center active:opacity-70",
-                  isNative && !useProminentComposer
-                    ? NATIVE_COMPOSER_MIC_IDLE_CLASS
-                    : sendChrome.sizeClassName,
-                )}
-              >
-                <Mic
-                  className={cn(
-                    "h-4 w-4",
-                    !useProminentComposer && (disabled || isProcessingFiles
-                      ? "text-muted-foreground/40"
-                      : "text-muted-foreground")
-                  )}
-                  color={useProminentComposer ?disabled || isProcessingFiles ? chatgptComposer.placeholder : chatgptComposer.icon : undefined}
-                  strokeWidth={useProminentComposer ? NATIVE_PHONE_ICON_STROKE : undefined}
-                  size={useProminentComposer ? 20 : isNative ? 18 : 14}
-                />
-              </Pressable>
-            ) : null}
+                    fillClassName={useProminentComposer ? "" : "bg-primary"}
+                    iconClassName={
+                      useProminentComposer ? "" : "text-primary-foreground"
+                    }
+                    fillColor={
+                      useProminentComposer
+                        ? chatgptComposer.sendFill
+                        : undefined
+                    }
+                    iconColor={
+                      useProminentComposer
+                        ? chatgptComposer.sendIcon
+                        : undefined
+                    }
+                  />
+                ) : voiceInput.canRecord ? (
+                  <Pressable
+                    onPress={() => {
+                      voiceInput.clearError();
+                      voiceInput.toggleRecording().catch(() => {});
+                    }}
+                    hitSlop={isNative ? 4 : undefined}
+                    disabled={disabled || isProcessingFiles}
+                    role="button"
+                    accessibilityLabel="Start voice recording"
+                    className={cn(
+                      "rounded-full items-center justify-center active:opacity-70",
+                      isNative && !useProminentComposer
+                        ? NATIVE_COMPOSER_MIC_IDLE_CLASS
+                        : sendChrome.sizeClassName
+                    )}
+                  >
+                    <Mic
+                      className={cn(
+                        useProminentComposer ? "h-[18px] w-[18px]" : "h-4 w-4",
+                        !useProminentComposer &&
+                          (disabled || isProcessingFiles
+                            ? "text-muted-foreground/40"
+                            : "text-muted-foreground")
+                      )}
+                      color={
+                        useProminentComposer
+                          ? disabled || isProcessingFiles
+                            ? chatgptComposer.placeholder
+                            : chatgptComposer.icon
+                          : undefined
+                      }
+                      strokeWidth={
+                        useProminentComposer
+                          ? NATIVE_PHONE_ICON_STROKE
+                          : undefined
+                      }
+                      size={useProminentComposer ? 20 : isNative ? 18 : 14}
+                    />
+                  </Pressable>
+                ) : null}
+              </View>
+            )}
           </View>
-          )}
-        </View>
 
-        {useProminentComposer ? (
-          <ProminentComposerField
-            ref={textInputRef}
-            value={composerDisplayValue}
-            placeholder={placeholder}
-            empty={composerEmpty}
-            stacked={prominentExpansion.stacked}
-            disabled={disabled || voiceInput.isRecording}
-            dimWhenDisabled={dimWhenDisabled}
-            inputHeight={inputHeight}
-            inputHeightAnimation={inputHeightAnimation}
-            slotStyle={prominentExpansion.slotStyle}
-            inputComponent={TextInput}
-            textColor={chatgptComposer.text}
-            placeholderColor={chatgptComposer.placeholder}
-            onMeasureTextLayout={prominentExpansion.onMeasureTextLayout}
-            placeholderOpacity={placeholderOpacity}
-            testID="project-composer-input"
-            accessibilityLabel="Chat message input"
-            selection={selectionOverride}
-            onChangeText={handleChangeText}
-            onSelectionChange={(e) => {
-              updateMentionState(
-                inputValueRef.current,
-                e.nativeEvent.selection.start,
-              )
-            }}
-            onSubmitEditing={handleSubmitEditing}
-            scrollEnabled={
-              prominentExpansion.stacked &&
-              inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT
-            }
-            onContentSizeChange={(e) => {
-              const currentText =
-                pendingTextChangeRef.current?.text ?? inputValueRef.current
-              const h = e.nativeEvent.contentSize.height
-              prominentExpansion.reportContentHeight(h)
-              const next = nextProminentComposerHeight(h, {
-                empty: !currentText.trim(),
-                minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                maxHeight: inputMaxHeight,
-                lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-              })
-              if (next !== inputHeightRef.current) {
-                setInputHeightTarget(next)
+          {useProminentComposer ? (
+            <ProminentComposerField
+              ref={textInputRef}
+              value={composerDisplayValue}
+              placeholder={placeholder}
+              empty={composerEmpty}
+              stacked={prominentExpansion.stacked}
+              disabled={disabled || voiceInput.isRecording}
+              dimWhenDisabled={dimWhenDisabled}
+              inputHeight={inputHeight}
+              inputHeightAnimation={inputHeightAnimation}
+              slotStyle={prominentExpansion.slotStyle}
+              inputComponent={TextInput}
+              textColor={chatgptComposer.text}
+              placeholderColor={chatgptComposer.placeholder}
+              onMeasureTextLayout={prominentExpansion.onMeasureTextLayout}
+              placeholderOpacity={placeholderOpacity}
+              testID="project-composer-input"
+              accessibilityLabel="Chat message input"
+              selection={selectionOverride}
+              onChangeText={handleChangeText}
+              onSelectionChange={(e) => {
+                updateMentionState(
+                  inputValueRef.current,
+                  e.nativeEvent.selection.start
+                );
+              }}
+              onSubmitEditing={handleSubmitEditing}
+              scrollEnabled={
+                prominentExpansion.stacked &&
+                inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT
               }
-            }}
-          />
-        ) : null}
+              onContentSizeChange={(e) => {
+                const currentText =
+                  pendingTextChangeRef.current?.text ?? inputValueRef.current;
+                const h = e.nativeEvent.contentSize.height;
+                prominentExpansion.reportContentHeight(h);
+                const next = nextProminentComposerHeight(h, {
+                  empty: !currentText.trim(),
+                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+                  maxHeight: inputMaxHeight,
+                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
+                });
+                if (next !== inputHeightRef.current) {
+                  setInputHeightTarget(next);
+                }
+              }}
+            />
+          ) : null}
         </View>
       </View>
 
@@ -2477,7 +3183,7 @@ function ChatInputImpl({
         />
       )}
     </View>
-  )
+  );
 }
 
 /**
@@ -2489,6 +3195,6 @@ function ChatInputImpl({
  * primitive props are compared by value, and inline arrows would defeat
  * memo if any reappear.
  */
-export const ChatInput = memo(ChatInputImpl)
+export const ChatInput = memo(ChatInputImpl);
 
-export default ChatInput
+export default ChatInput;

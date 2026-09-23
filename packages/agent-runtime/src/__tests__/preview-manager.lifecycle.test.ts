@@ -285,19 +285,24 @@ describe('PreviewManager.stop', () => {
 // --- restart() ------------------------------------------------------------
 
 describe('PreviewManager.restart', () => {
-  it('calls stop() then start() exactly once each', async () => {
+  // restart() no longer delegates to the public start() method directly —
+  // both are thin wrappers around the single-flight `runLifecycle()`, which
+  // invokes the private `_runLifecycleOnce('restart')` body. That body
+  // calls `stop()` once up front, then runs the same logic `start()` would.
+  // No package.json exists in this test's workspace, so the body fast-bails
+  // with mode: 'no-project' — a lightweight way to assert `stop()` ran
+  // exactly once without spawning any real subprocesses.
+  it('calls stop() exactly once then runs the start body, returning its result', async () => {
     const m = mk() as any
     let stopCalls = 0
-    let startCalls = 0
-    m.stop = function () { stopCalls++ }
-    m.start = async function () {
-      startCalls++
-      return { mode: 'none', port: null, timings: {} }
+    const origStop = m.stop.bind(m)
+    m.stop = function () {
+      stopCalls++
+      return origStop()
     }
     const r = await m.restart()
     expect(stopCalls).toBe(1)
-    expect(startCalls).toBe(1)
-    expect(r).toEqual({ mode: 'none', port: null, timings: {} })
+    expect(r.mode).toBe('no-project')
   })
 })
 

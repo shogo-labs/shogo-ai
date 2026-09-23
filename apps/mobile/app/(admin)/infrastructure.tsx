@@ -34,6 +34,7 @@ import {
   Globe,
   ChevronDown,
 } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
 import { nativeActivePill } from '../../lib/native-active-shadow'
@@ -387,7 +388,7 @@ function InfraStatCard({
   color?: string
 }) {
   return (
-    <View className="flex-1 min-w-[140px] bg-card border border-border rounded-xl p-3">
+    <View className="flex-1 min-w-[140px] bg-card border border-border/70 rounded-2xl p-4">
       <View className="flex-row items-center gap-2 mb-1">
         <Icon size={14} className={color} />
         <Text className="text-xs text-muted-foreground">{label}</Text>
@@ -1131,6 +1132,7 @@ function InfraSettingsPanel({
 
 export default function InfrastructurePage() {
   const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const isWide = width >= 900
 
   const [regions, setRegions] = useState<RegionsResponse | null>(null)
@@ -1300,45 +1302,57 @@ export default function InfrastructurePage() {
     <ScrollView
       className="flex-1 bg-background"
       contentContainerStyle={{
-        padding: isWide ? 32 : 16,
-        paddingBottom: 40,
+        paddingHorizontal: isWide ? 32 : 16,
+        paddingTop: isWide ? 32 : 16,
+        paddingBottom: Math.max(insets.bottom + 24, 40),
         width: '100%',
         alignSelf: 'center' as const,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      {/* Header */}
-      <View className="flex-row items-center justify-between mb-2">
-        <View className="flex-row items-center gap-2">
-          <Server size={isWide ? 22 : 18} className="text-primary" />
-          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
-            Infrastructure
-          </Text>
-        </View>
-        <View className="flex-row items-center gap-2">
-          <Pressable
-            onPress={onRunGc}
-            disabled={gcRunning}
-            className={cn(
-              'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border',
-              gcRunning ? 'bg-muted border-border' : 'bg-red-500/10 border-red-500/20'
-            )}
-          >
-            {gcRunning ? (
-              <ActivityIndicator size="small" />
-            ) : (
-              <Trash2 size={13} className="text-red-400" />
-            )}
-            <Text className={cn('text-xs font-medium', gcRunning ? 'text-muted-foreground' : 'text-red-400')}>
-              Run GC
+      <View className="w-full self-center max-w-[1280px]">
+        {/* Header */}
+        <View className={cn('mb-5 gap-4 rounded-2xl border border-border/70 bg-card p-4', isWide && 'flex-row items-center justify-between p-5')}>
+          <View className="flex-1 gap-1">
+            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Platform operations
             </Text>
-          </Pressable>
-          <View className="bg-muted/50 px-2 py-1 rounded-md">
-            <Text className="text-[10px] text-muted-foreground">Auto-refresh 15s</Text>
+            <View className="flex-row items-center gap-2">
+              <View className="h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+                <Server size={18} className="text-primary" />
+              </View>
+              <Text className={cn('font-bold tracking-tight text-foreground', isWide ? 'text-2xl' : 'text-xl')}>
+                Infrastructure
+              </Text>
+            </View>
+            <Text className="text-xs leading-5 text-muted-foreground">
+              Monitor fleet capacity, warm pools, and project runtime health.
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-2">
+            <Pressable
+              onPress={onRunGc}
+              disabled={gcRunning}
+              className={cn(
+                'min-h-10 flex-row items-center gap-1.5 rounded-xl border px-3',
+                gcRunning ? 'bg-muted border-border' : 'bg-red-500/10 border-red-500/20'
+              )}
+            >
+              {gcRunning ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Trash2 size={13} className="text-red-400" />
+              )}
+              <Text className={cn('text-xs font-medium', gcRunning ? 'text-muted-foreground' : 'text-red-400')}>
+                Run GC
+              </Text>
+            </Pressable>
+            <View className="rounded-xl border border-border/70 bg-muted/30 px-2.5 py-2">
+              <Text className="text-[10px] text-muted-foreground">Auto-refresh 15s</Text>
+            </View>
           </View>
         </View>
-      </View>
 
       {/* Region Selector */}
       {regions && regions.peers.length > 0 && (
@@ -1457,6 +1471,7 @@ export default function InfrastructurePage() {
           evicting={evicting}
           onEvict={onEvict}
         />
+      </View>
       </View>
     </ScrollView>
   )

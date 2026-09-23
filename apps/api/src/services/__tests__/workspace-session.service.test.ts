@@ -9,6 +9,7 @@ interface State {
   // chatSession.findUnique result for getSessionWorkspaceId
   sessionRow: { contextType?: string; workspaceId?: string | null } | null
   primarySession: any
+  primaryCreateErrorCode: string | null
   createCalls: any[]
   upsertCalls: any[]
   deleteManyCount: number
@@ -19,6 +20,7 @@ const s: State = {
   projectsInWorkspace: new Set(),
   sessionRow: null,
   primarySession: null,
+  primaryCreateErrorCode: null,
   createCalls: [],
   upsertCalls: [],
   deleteManyCount: 0,
@@ -30,6 +32,17 @@ mock.module('../../lib/prisma', () => ({
     chatSession: {
       create: async (args: any) => {
         s.createCalls.push(args)
+        if (s.primaryCreateErrorCode) {
+          s.primarySession = {
+            id: 'sess-primary-raced',
+            workspaceId: args.data.workspaceId,
+            contextType: 'workspace',
+            isPrimary: true,
+            attachedProjects: [],
+          }
+          const error = Object.assign(new Error('unique constraint'), { code: s.primaryCreateErrorCode })
+          throw error
+        }
         const attached = args.data.attachedProjects?.create ?? []
         return {
           id: 'sess-1',
@@ -71,6 +84,7 @@ beforeEach(() => {
   s.projectsInWorkspace = new Set()
   s.sessionRow = null
   s.primarySession = null
+  s.primaryCreateErrorCode = null
   s.createCalls = []
   s.upsertCalls = []
   s.deleteManyCount = 0
@@ -125,6 +139,13 @@ describe('getOrCreatePrimaryWorkspaceSession', () => {
     const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-personal')
     expect(session.id).toBe('sess-primary')
     expect(s.createCalls).toHaveLength(0)
+  })
+
+  it('returns the primary created by another API pod after a unique-index race', async () => {
+    s.primaryCreateErrorCode = 'P2002'
+    const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-raced')
+    expect(session.id).toBe('sess-primary-raced')
+    expect(s.createCalls).toHaveLength(1)
   })
 })
 

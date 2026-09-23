@@ -15,7 +15,13 @@
  * - AsyncStorage for chat session persistence instead of localStorage
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import {
   View,
   Text,
@@ -27,61 +33,89 @@ import {
   Keyboard,
   Alert,
   useColorScheme,
-} from 'react-native'
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useLocalSearchParams, useRouter, Stack } from 'expo-router'
-import { observer } from 'mobx-react-lite'
-import AsyncStorage from '@react-native-async-storage/async-storage'
-import { LinearGradient } from 'expo-linear-gradient'
+} from "react-native";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { observer } from "mobx-react-lite";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   useSDKDomain,
   useSDKReady,
   useDomainActions,
   useProjectCollection,
   getChatMessageCollectionForSession,
-} from '@shogo/shared-app/domain'
-import type { IDomainStore } from '@shogo/domain-stores'
-import { cn } from '@shogo/shared-ui/primitives'
-import { useAgentUrl, useBillingData } from '@shogo/shared-app/hooks'
-import { getPlanDisplayName } from '../../../../lib/billing-config'
-import { useAuth } from '../../../../contexts/auth'
-import { useDomainHttp } from '../../../../contexts/domain'
-import { authClient } from '../../../../lib/auth-client'
-import { API_URL, api } from '../../../../lib/api'
-import { openWebAppSession } from '../../../../lib/openWebAppSession'
-import { chatSessionEvents, chatActivityEvents } from '../../../../lib/chat-session-events'
-import { projectSidebarEvents } from '../../../../lib/project-sidebar-events'
-import { workspaceProjectFilter } from '../../../../lib/project-load'
-import { canvasDisabledRedirect } from '../../../../lib/project-preview-tab'
-import { resolveActiveWorkspaceId } from '../../../../lib/workspace-store'
-import { usePlatformConfig } from '../../../../lib/platform-config'
-import { consumePendingFiles } from '../../../../lib/pending-image-store'
-import { isPhoneLayout, nativePhoneFillStyle,
-  useNativePhoneWindow } from '../../../../lib/native-phone-layout'
-import { resolveApiReady, shouldStopPreviewPoll, shouldShowCanvas, isPreviewFailed, previewStatusPollBase, nativeCanvasBaseReady, projectIdFromAgentProxyUrl, previewWakeUrl } from '../../../../lib/preview-gate'
-import { ChatPanel } from '../../../../components/chat/ChatPanel'
-import { PlanStreamProvider } from '../../../../components/chat/PlanStreamContext'
+} from "@shogo/shared-app/domain";
+import type { IDomainStore } from "@shogo/domain-stores";
+import { cn } from "@shogo/shared-ui/primitives";
+import { useAgentUrl, useBillingData } from "@shogo/shared-app/hooks";
+import { getPlanDisplayName } from "../../../../lib/billing-config";
+import { useAuth } from "../../../../contexts/auth";
+import { useDomainHttp } from "../../../../contexts/domain";
+import { authClient } from "../../../../lib/auth-client";
+import { API_URL, api } from "../../../../lib/api";
+import { openWebAppSession } from "../../../../lib/openWebAppSession";
+import {
+  chatSessionEvents,
+  chatActivityEvents,
+} from "../../../../lib/chat-session-events";
+import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
+import { workspaceProjectFilter } from "../../../../lib/project-load";
+import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
+import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
+import { usePlatformConfig } from "../../../../lib/platform-config";
+import { consumePendingFiles } from "../../../../lib/pending-image-store";
+import {
+  isPhoneLayout,
+  nativePhoneFillStyle,
+  useNativePhoneWindow,
+} from "../../../../lib/native-phone-layout";
+import {
+  resolveApiReady,
+  resolveRunning,
+  shouldStopPreviewPoll,
+  shouldShowCanvas,
+  isPreviewFailed,
+  previewStatusPollBase,
+  nativeCanvasBaseReady,
+  projectIdFromAgentProxyUrl,
+  previewWakeUrl,
+} from "../../../../lib/preview-gate";
+import { ChatPanel } from "../../../../components/chat/ChatPanel";
+import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
 import {
   ChatBridgeProvider,
   useChatBridge,
-} from '../../../../components/voice-mode/ChatBridgeContext'
-import { EzModeChatPanel } from '../../../../components/voice-mode/EzModeChatPanel'
-import type { InteractionMode } from '../../../../components/chat/ChatInput'
-import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../../../components/chat/ChatInput'
-import { loadModelPreference, saveModelPreference } from '../../../../lib/agent-mode-preference'
+} from "../../../../components/voice-mode/ChatBridgeContext";
+import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
+import type { InteractionMode } from "../../../../components/chat/ChatInput";
+import {
+  DEFAULT_MODEL_PRO,
+  DEFAULT_MODEL_FREE,
+} from "../../../../components/chat/ChatInput";
+import {
+  loadModelPreference,
+  saveModelPreference,
+} from "../../../../lib/agent-mode-preference";
 import {
   resolveReasoningEffort,
   resolveProvider,
   useVisibleModels,
   useReconcileStaleModelSelection,
-} from '../../../../lib/visible-models'
-import { agentFetch } from '../../../../lib/agent-fetch'
-import { useActiveInstance } from '../../../../contexts/active-instance'
-import { ChatSessionSidebar, type ChatSession } from '../../../../components/chat/ChatSessionPicker'
-import { CanvasWebView } from '../../../../components/canvas/CanvasWebView'
-import { ExternalPreviewWebView } from '../../../../components/canvas/ExternalPreviewWebView'
-import { ProjectTopBar } from '../../../../components/project/ProjectTopBar'
-import { PanelErrorBoundary } from '../../../../components/project/panels/PanelErrorBoundary'
+} from "../../../../lib/visible-models";
+import { agentFetch } from "../../../../lib/agent-fetch";
+import { useActiveInstance } from "../../../../contexts/active-instance";
+import {
+  ChatSessionSidebar,
+  type ChatSession,
+} from "../../../../components/chat/ChatSessionPicker";
+import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
+import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
+import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
+import { PanelErrorBoundary } from "../../../../components/project/panels/PanelErrorBoundary";
 import {
   ChannelsPanel,
   FilesBrowserPanel,
@@ -98,14 +132,17 @@ import {
   AuthDatabasePanel,
   type SettingsSectionGroup,
   type SettingsSectionItem,
-} from '../../../../components/project/panels'
-import { FoldersPanel } from '../../../../components/project/panels/FoldersPanel'
-import { CustomDomainsSection } from '../../../../components/project/CustomDomainsSection'
-import { AlwaysOnSection } from '../../../../components/project/AlwaysOnSection'
-import { CheckpointGraphNative } from '../../../../components/project/panels/ide/graph/CheckpointGraphNative'
-import { TrustPrompt, type TrustDecision } from '../../../../components/project/TrustPrompt'
-import { DrawerHost } from '../../../../components/project/panels/ide/DrawerHost'
-import { loadDesktopTerminal } from '../../../../components/project/panels/ide/terminal/desktop-terminal-loader'
+} from "../../../../components/project/panels";
+import { FoldersPanel } from "../../../../components/project/panels/FoldersPanel";
+import { CustomDomainsSection } from "../../../../components/project/CustomDomainsSection";
+import { AlwaysOnSection } from "../../../../components/project/AlwaysOnSection";
+import { CheckpointGraphNative } from "../../../../components/project/panels/ide/graph/CheckpointGraphNative";
+import {
+  TrustPrompt,
+  type TrustDecision,
+} from "../../../../components/project/TrustPrompt";
+import { DrawerHost } from "../../../../components/project/panels/ide/DrawerHost";
+import { loadDesktopTerminal } from "../../../../components/project/panels/ide/terminal/desktop-terminal-loader";
 import {
   RefreshCw,
   MessageSquare,
@@ -126,17 +163,20 @@ import {
   Plus,
   History,
   Zap,
-} from 'lucide-react-native'
+} from "lucide-react-native";
 import {
   useToast,
   Toast,
   ToastTitle,
   ToastDescription,
-} from '../../../../components/ui/toast'
-import { getEntries as getRuntimeLogEntries } from '../../../../lib/runtime-logs/runtime-log-store'
-import { subagentStreamStore } from '../../../../lib/subagent-stream-store'
-import { IntegrationsCard, type TemplateIntegrationRef } from '../../../../components/project/IntegrationsCard'
-import { parseToolInstallResult } from '../../../../components/chat/turns/ConnectToolWidget'
+} from "../../../../components/ui/toast";
+import { getEntries as getRuntimeLogEntries } from "../../../../lib/runtime-logs/runtime-log-store";
+import { subagentStreamStore } from "../../../../lib/subagent-stream-store";
+import {
+  IntegrationsCard,
+  type TemplateIntegrationRef,
+} from "../../../../components/project/IntegrationsCard";
+import { parseToolInstallResult } from "../../../../components/chat/turns/ConnectToolWidget";
 import {
   AlertDialog,
   AlertDialogBackdrop,
@@ -144,39 +184,45 @@ import {
   AlertDialogHeader,
   AlertDialogBody,
   AlertDialogFooter,
-} from '@/components/ui/alert-dialog'
-import { Heading } from '@/components/ui/heading'
-import { Text as UIText } from '@/components/ui/text'
-import { Button, ButtonText } from '@/components/ui/button'
+} from "@/components/ui/alert-dialog";
+import { Heading } from "@/components/ui/heading";
+import { Text as UIText } from "@/components/ui/text";
+import { Button, ButtonText } from "@/components/ui/button";
 import {
   clearOpenAttemptId,
   createOpenAttemptId,
   mark as csMark,
   markRuntimeReadyAndFlush,
   setOpenAttemptId,
-} from '../../../../lib/cold-start-timing'
+} from "../../../../lib/cold-start-timing";
 
-csMark('project:layout:module-load')
+csMark("project:layout:module-load");
 
-type ActiveTab = 'chat' | 'canvas'
-type IdePrimarySideBarPosition = 'left' | 'right'
+type ActiveTab = "chat" | "canvas";
+type IdePrimarySideBarPosition = "left" | "right";
 
-const WIDE_BREAKPOINT = 1024
-const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const
+const WIDE_BREAKPOINT = 1024;
+const HIDDEN_HEADER_OPTIONS = { headerShown: false } as const;
 // `terminal` is intentionally absent — chat exec entries now appear in
 // the IDE bottom drawer's "Output" tab (filterable to "Exec").
-const STANDALONE_PANELS = ['ide', 'files', 'plans', 'external-preview', 'settings']
+const STANDALONE_PANELS = [
+  "ide",
+  "files",
+  "plans",
+  "external-preview",
+  "settings",
+];
 
-const DEFAULT_CHAT_PANEL_WIDTH = 480
-const MIN_CHAT_PANEL_WIDTH = 320
-const CHAT_PANEL_WIDTH_STORAGE_KEY = 'shogo:chatPanelWidth'
+const DEFAULT_CHAT_PANEL_WIDTH = 480;
+const MIN_CHAT_PANEL_WIDTH = 320;
+const CHAT_PANEL_WIDTH_STORAGE_KEY = "shogo:chatPanelWidth";
 
 /** Suppress duplicate "[canvas-error]" toasts within this many ms. */
-const CANVAS_ERROR_DEDUP_MS = 10_000
+const CANVAS_ERROR_DEDUP_MS = 10_000;
 /** How many recent runtime log entries to attach to a debug-with-EZ-Mode prompt. */
-const CANVAS_ERROR_LOG_TAIL = 30
+const CANVAS_ERROR_LOG_TAIL = 30;
 /** Cap any single error / log line so the seed prompt stays bounded. */
-const CANVAS_ERROR_MAX_LINE = 1200
+const CANVAS_ERROR_MAX_LINE = 1200;
 
 /**
  * Build the seed message that gets auto-sent into a fresh chat when the
@@ -193,352 +239,421 @@ const CANVAS_ERROR_MAX_LINE = 1200
  * router) don't, and the page route is the meaningful identifier there.
  */
 function buildCanvasErrorDebugPrompt(args: {
-  phase: 'compile' | 'runtime'
-  error: string
+  phase: "compile" | "runtime";
+  error: string;
   /** Iframe `pathname + search + hash` at the moment of the error. */
-  route?: string
+  route?: string;
   /** Recent user-interaction breadcrumb from `canvas-bridge.js`, oldest first. */
   recentActions?: ReadonlyArray<{
-    ts: number
-    kind: string
-    target?: string
-    route?: string
-  }>
+    ts: number;
+    kind: string;
+    target?: string;
+    route?: string;
+  }>;
   recentLogs: ReadonlyArray<{
-    source: string
-    level: string
-    text: string
-    ts: number
-  }>
+    source: string;
+    level: string;
+    text: string;
+    ts: number;
+  }>;
 }): string {
-  const { phase, error, route, recentActions, recentLogs } = args
+  const { phase, error, route, recentActions, recentLogs } = args;
   const truncate = (s: string, n: number) =>
-    s.length <= n ? s : `${s.slice(0, n - 1)}…`
-  const phaseLabel = phase === 'compile' ? 'compile-time' : 'runtime'
-  const pageLabel = route ? ` (page \`${route}\`)` : ''
+    s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+  const phaseLabel = phase === "compile" ? "compile-time" : "runtime";
+  const pageLabel = route ? ` (page \`${route}\`)` : "";
 
-  const lines: string[] = []
+  const lines: string[] = [];
   lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`,
-  )
-  lines.push('')
-  lines.push('**Error**')
+    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`
+  );
+  lines.push("");
+  lines.push("**Error**");
   lines.push("```");
-  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE))
-  lines.push('```')
+  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE));
+  lines.push("```");
 
   if (recentActions && recentActions.length > 0) {
-    lines.push('')
+    lines.push("");
     lines.push(
-      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`,
-    )
-    lines.push('```')
+      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`
+    );
+    lines.push("```");
     for (const a of recentActions) {
-      const ts = Number.isFinite(a.ts) ? new Date(a.ts).toISOString().slice(11, 23) : '--:--:--.---'
-      const target = a.target ? ` ${a.target}` : ''
-      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : ''
-      lines.push(truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE))
+      const ts = Number.isFinite(a.ts)
+        ? new Date(a.ts).toISOString().slice(11, 23)
+        : "--:--:--.---";
+      const target = a.target ? ` ${a.target}` : "";
+      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : "";
+      lines.push(
+        truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE)
+      );
     }
-    lines.push('```')
+    lines.push("```");
   }
 
   if (recentLogs.length > 0) {
-    lines.push('')
-    lines.push(`**Recent runtime logs** (last ${recentLogs.length}, oldest first)`)
-    lines.push('```')
+    lines.push("");
+    lines.push(
+      `**Recent runtime logs** (last ${recentLogs.length}, oldest first)`
+    );
+    lines.push("```");
     for (const e of recentLogs) {
-      const ts = new Date(e.ts).toISOString().slice(11, 23)
+      const ts = new Date(e.ts).toISOString().slice(11, 23);
       lines.push(
-        `${ts} [${e.source}] ${e.level !== 'info' ? `${e.level.toUpperCase()} ` : ''}${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`,
-      )
+        `${ts} [${e.source}] ${
+          e.level !== "info" ? `${e.level.toUpperCase()} ` : ""
+        }${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`
+      );
     }
-    lines.push('```')
+    lines.push("```");
   }
 
-  lines.push('')
+  lines.push("");
   lines.push(
-    'Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong.',
-  )
-  return lines.join('\n')
+    "Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong."
+  );
+  return lines.join("\n");
 }
 
 export default observer(function ProjectLayout() {
-  csMark('project:layout:render')
+  csMark("project:layout:render");
   const params = useLocalSearchParams<{
-    id: string
-    chatSessionId?: string
+    id: string;
+    chatSessionId?: string;
     /**
      * Routing scope for the initial chat session: 'workspace' means
      * `chatSessionId` is a workspace-scoped session (the project is attached)
      * that chats against the merged-root runtime; absent/'project' is the
      * legacy per-project session. Only applies to the initial tab.
      */
-    chatScope?: string
-    initialMessage?: string
-    initialInteractionMode?: string
-    appTemplateName?: string
-    showIntegrations?: string
+    chatScope?: string;
+    initialMessage?: string;
+    initialInteractionMode?: string;
+    appTemplateName?: string;
+    showIntegrations?: string;
     /** When '1', enter EZ Mode immediately on mount (homepage mic flow). */
-    startEzMode?: string
+    startEzMode?: string;
     /** When '1' alongside `startEzMode`, auto-connect the voice session once. */
-    autoStartVoice?: string
+    autoStartVoice?: string;
     /**
      * Landing tab requested by the sidebar project-name click
      * ('canvas' | 'chat-fullscreen' | 'external-preview'). Applied with
      * precedence over the saved last-tab init. See {@link defaultTabForProject}.
      */
-    tab?: string
+    tab?: string;
     /** When '1', a Canvases card explicitly requests the native Canvas view. */
-    openCanvas?: string
+    openCanvas?: string;
     /**
      * Bumped by the sidebar when re-selecting the SAME tab on an already-open
      * project, so the apply effect re-fires even though `tab` is unchanged.
      */
-    tabNonce?: string
+    tabNonce?: string;
     /**
      * When '1', create a fresh chat on arrival (sidebar project "+" pressed
      * for a project that isn't open yet). Consumed once per `newChatNonce`.
      */
-    newChat?: string
+    newChat?: string;
     /** Bumped alongside `newChat` so the one-shot create re-fires on re-press. */
-    newChatNonce?: string
+    newChatNonce?: string;
     /** When 'ide', render only the canonical chat for embedding in Shogo IDE. */
-    embed?: string
-  }>()
-  const projectId = params.id
-  const openAttemptId = useMemo(() => createOpenAttemptId(), [projectId])
+    embed?: string;
+  }>();
+  const projectId = params.id;
+  const openAttemptId = useMemo(() => createOpenAttemptId(), [projectId]);
 
   useEffect(() => {
-    setOpenAttemptId(openAttemptId)
-    csMark('project:open-attempt', { projectId, openAttemptId })
-    return () => clearOpenAttemptId(openAttemptId)
-  }, [openAttemptId, projectId])
-  const isIdeChatEmbed = params.embed === 'ide'
-    || (Platform.OS === 'web'
-      && typeof window !== 'undefined'
-      && new URLSearchParams(window.location.search).get('embed') === 'ide')
-  const { width, height, isPhone: nativePhone } = useNativePhoneWindow()
-  const isWide = width >= WIDE_BREAKPOINT
-  const insets = useSafeAreaInsets()
-  const phoneLayout = isPhoneLayout(width, height)
+    setOpenAttemptId(openAttemptId);
+    csMark("project:open-attempt", { projectId, openAttemptId });
+    return () => clearOpenAttemptId(openAttemptId);
+  }, [openAttemptId, projectId]);
+  const isIdeChatEmbed =
+    params.embed === "ide" ||
+    (Platform.OS === "web" &&
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("embed") === "ide");
+  const { width, height, isPhone: nativePhone } = useNativePhoneWindow();
+  const isWide = width >= WIDE_BREAKPOINT;
+  const insets = useSafeAreaInsets();
+  const phoneLayout = isPhoneLayout(width, height);
   /** Handset + narrow project layout: float integrations above the composer. Tablets/web use default placement. */
-  const liftIntegrationsAboveComposer = phoneLayout && !isWide
-  const { user } = useAuth()
-  const http = useDomainHttp()
-  const toast = useToast()
+  const liftIntegrationsAboveComposer = phoneLayout && !isWide;
+  const { user } = useAuth();
+  const http = useDomainHttp();
+  const toast = useToast();
 
-  const router = useRouter()
+  const router = useRouter();
 
   useEffect(() => {
-    if (!isIdeChatEmbed || Platform.OS !== 'web' || !projectId || typeof window === 'undefined') return
+    if (
+      !isIdeChatEmbed ||
+      Platform.OS !== "web" ||
+      !projectId ||
+      typeof window === "undefined"
+    )
+      return;
 
-    const lockedUrl = new URL(window.location.href)
-    lockedUrl.searchParams.set('tab', 'chat-fullscreen')
-    lockedUrl.searchParams.set('embed', 'ide')
-    const lockedHref = `${lockedUrl.pathname}${lockedUrl.search}${lockedUrl.hash}`
+    const lockedUrl = new URL(window.location.href);
+    lockedUrl.searchParams.set("tab", "chat-fullscreen");
+    lockedUrl.searchParams.set("embed", "ide");
+    const lockedHref = `${lockedUrl.pathname}${lockedUrl.search}${lockedUrl.hash}`;
 
-    window.history.replaceState(window.history.state, '', lockedHref)
-    window.history.pushState({ ...(window.history.state ?? {}), shogoIdeProjectChat: true }, '', lockedHref)
+    window.history.replaceState(window.history.state, "", lockedHref);
+    window.history.pushState(
+      { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
+      "",
+      lockedHref
+    );
 
     const keepProjectChatLocked = () => {
       window.history.replaceState(
         { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
-        '',
-        lockedHref,
-      )
+        "",
+        lockedHref
+      );
       window.history.pushState(
         { ...(window.history.state ?? {}), shogoIdeProjectChat: true },
-        '',
-        lockedHref,
-      )
-      router.replace(lockedHref as any)
-    }
+        "",
+        lockedHref
+      );
+      router.replace(lockedHref as any);
+    };
 
-    window.addEventListener('popstate', keepProjectChatLocked)
-    return () => window.removeEventListener('popstate', keepProjectChatLocked)
-  }, [isIdeChatEmbed, projectId, router])
+    window.addEventListener("popstate", keepProjectChatLocked);
+    return () => window.removeEventListener("popstate", keepProjectChatLocked);
+  }, [isIdeChatEmbed, projectId, router]);
 
-  const store = useSDKDomain() as IDomainStore
-  const { isReady: sdkReady } = useSDKReady()
-  const actions = useDomainActions()
-  const projects = useProjectCollection()
+  const store = useSDKDomain() as IDomainStore;
+  const { isReady: sdkReady } = useSDKReady();
+  const actions = useDomainActions();
+  const projects = useProjectCollection();
 
   // Capture initialMessage and files once so they don't re-fire on re-renders.
   // The session ID that should receive these one-time props (only the first tab).
-  const [initialPropsSessionId] = useState(() => params.chatSessionId ?? null)
-  const [capturedInitialMessage] = useState(() => params.initialMessage ?? undefined)
+  const [initialPropsSessionId] = useState(() => params.chatSessionId ?? null);
+  const [capturedInitialMessage] = useState(
+    () => params.initialMessage ?? undefined
+  );
   // Scope of the initial session tab. Only the tab matching
   // `initialPropsSessionId` chats in workspace scope; tabs created later are
   // ordinary per-project sessions.
-  const [capturedChatScope] = useState<'project' | 'workspace'>(() =>
-    params.chatScope === 'workspace' ? 'workspace' : 'project'
-  )
-  const [capturedInitialInteractionMode] = useState<InteractionMode | undefined>(() => {
-    const raw = params.initialInteractionMode
-    const m = Array.isArray(raw) ? raw[0] : raw
-    if (m === 'agent' || m === 'plan' || m === 'ask') return m as InteractionMode
-    return undefined
-  })
-  const [capturedInitialFiles] = useState(() => consumePendingFiles())
+  const [capturedChatScope] = useState<"project" | "workspace">(() =>
+    params.chatScope === "workspace" ? "workspace" : "project"
+  );
+  const [capturedInitialInteractionMode] = useState<
+    InteractionMode | undefined
+  >(() => {
+    const raw = params.initialInteractionMode;
+    const m = Array.isArray(raw) ? raw[0] : raw;
+    if (m === "agent" || m === "plan" || m === "ask")
+      return m as InteractionMode;
+    return undefined;
+  });
+  const [capturedInitialFiles] = useState(() => consumePendingFiles());
   // APP_MODE_DISABLED: capturedAppTemplateName removed
-  const [capturedShowIntegrations] = useState(() => params.showIntegrations === '1')
+  const [capturedShowIntegrations] = useState(
+    () => params.showIntegrations === "1"
+  );
   // Capture once so router param changes don't re-fire EZ Mode.
-  const [capturedStartEzMode] = useState(() => params.startEzMode === '1')
-  const [capturedAutoStartVoice] = useState(() => params.autoStartVoice === '1')
+  const [capturedStartEzMode] = useState(() => params.startEzMode === "1");
+  const [capturedAutoStartVoice] = useState(
+    () => params.autoStartVoice === "1"
+  );
 
   // Tab state for narrow screens
-  const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
-  const [idePrimarySideBarPosition, setIdePrimarySideBarPosition] = useState<IdePrimarySideBarPosition>('left')
+  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
+  const [idePrimarySideBarPosition, setIdePrimarySideBarPosition] =
+    useState<IdePrimarySideBarPosition>('left');
 
   // Imperative request to focus a specific section inside SettingsPanel
   // (e.g. when a subagent stream starts and we want to show "Agents").
   // The nonce ensures a fresh request lands even when the id doesn't change.
-  const [requestedSettingsItem, setRequestedSettingsItem] = useState<
-    { id: string; nonce: number } | null
-  >(null)
+  const [requestedSettingsItem, setRequestedSettingsItem] = useState<{
+    id: string;
+    nonce: number;
+  } | null>(null);
 
   // Chat session tracking — seed from route param if provided
   const [chatSessionId, setChatSessionId] = useState<string | null>(
     () => params.chatSessionId ?? null
-  )
+  );
 
-  // Universal workspace-runtime rollout gate. When on, a project's chat runs
-  // on its anchor-keyed merged-root runtime via a single project-pinned
-  // workspace session (mounting the project + its attachments + linked
-  // folders). Strictly flag-gated so flag-off behavior is byte-identical to
-  // the legacy single-project runtime + project-scoped chat.
-  const workspaceRuntimeEnabled = process.env.EXPO_PUBLIC_WORKSPACE_RUNTIME === 'true'
+  // Workspace runtimes are the only supported project runtime topology. Keep
+  // this local boolean because the surrounding state machine still uses it to
+  // coordinate pinned-session resolution and avoid remount races.
+  const workspaceRuntimeEnabled = true
   // The project-pinned workspace session id (resolved from the API when the
   // flag is on). Tabs whose id is this session chat in 'workspace' scope.
-  const [pinnedWorkspaceSessionId, setPinnedWorkspaceSessionId] = useState<string | null>(null)
+  const [pinnedWorkspaceSessionId, setPinnedWorkspaceSessionId] = useState<
+    string | null
+  >(null);
   // Whether the pinned-session resolve has settled (success OR failure). Used
   // to gate the chat render: while unresolved (flag on, no deep-link) we show a
   // loading state rather than the legacy empty/project-tab chat, so there is no
   // async swap/re-mount race. On failure we fall through to the legacy chat.
-  const [pinnedResolveFailed, setPinnedResolveFailed] = useState(false)
-  const [chatViewportHeight, setChatViewportHeight] = useState(0)
+  const [pinnedResolveFailed, setPinnedResolveFailed] = useState(false);
+  const [chatViewportHeight, setChatViewportHeight] = useState(0);
   // Tracks whether we've already promoted the pinned session to the active
   // chat for the current project, so we only force it once (the user can
   // switch tabs afterwards).
-  const pinnedSessionAppliedRef = useRef(false)
+  const pinnedSessionAppliedRef = useRef(false);
+  // Tracks whether we've already attempted the optimistic last-session-cache
+  // restore (below) for the current project, so it only runs once per
+  // project load.
+  const lastSessionCacheAppliedRef = useRef(false);
 
   // Project state
-  const [project, setProject] = useState<any>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const [project, setProject] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const { features } = usePlatformConfig()
-  const billingData = useBillingData(features.billing ? project?.workspaceId : undefined)
+  const { features } = usePlatformConfig();
+  const billingData = useBillingData(
+    features.billing ? project?.workspaceId : undefined
+  );
 
   const effectiveHasActiveSubscription = features.billing
     ? billingData.hasActiveSubscription
-    : true
+    : true;
 
   const workspaceName = useMemo(() => {
     try {
       const ws = store?.workspaceCollection?.all?.find(
-        (w: any) => w.id === project?.workspaceId,
-      )
-      return ws?.name || ''
+        (w: any) => w.id === project?.workspaceId
+      );
+      return ws?.name || "";
     } catch {
-      return ''
+      return "";
     }
-  }, [store?.workspaceCollection?.all, project?.workspaceId])
+  }, [store?.workspaceCollection?.all, project?.workspaceId]);
 
   const planLabel = billingData.subscription
     ? getPlanDisplayName(billingData.subscription.planId)
-    : 'Free'
+    : "Free";
 
   const isStarred = useMemo(() => {
     try {
-      return ( store?.starredProjectCollection?.all?.some(
-        (s: any) => s.projectId === projectId && s.userId === user?.id,
-      ) ?? false
-      )
+      return (
+        store?.starredProjectCollection?.all?.some(
+          (s: any) => s.projectId === projectId && s.userId === user?.id
+        ) ?? false
+      );
     } catch {
-      return false
+      return false;
     }
-  }, [store?.starredProjectCollection?.all, projectId, user?.id])
+  }, [store?.starredProjectCollection?.all, projectId, user?.id]);
 
   const folders = useMemo(() => {
     try {
-      const rawFolders = store?.folderCollection?.all
+      const rawFolders = store?.folderCollection?.all;
       return (Array.isArray(rawFolders) ? rawFolders : []).map((f: any) => ({
         id: f.id,
-        name: f.name || 'Untitled',
-      }))
+        name: f.name || "Untitled",
+      }));
     } catch {
-      return []
+      return [];
     }
-  }, [store?.folderCollection?.all])
+  }, [store?.folderCollection?.all]);
 
-  const handleRenameProject = useCallback(async (newName: string) => {
-    if (!projectId) return
-    await actions.updateProject(projectId, { name: newName })
-    setProject((prev: any) => ( prev ? { ...prev, name: newName } : prev))
-  }, [projectId, actions])
+  const handleRenameProject = useCallback(
+    async (newName: string) => {
+      if (!projectId) return;
+      await actions.updateProject(projectId, { name: newName });
+      setProject((prev: any) => (prev ? { ...prev, name: newName } : prev));
+    },
+    [projectId, actions]
+  );
 
   const handleToggleStar = useCallback(async () => {
-    if (!projectId || !user?.id) return
-    await actions.toggleStarProject(projectId, user.id, project?.workspaceId)
-  }, [projectId, user?.id, project?.workspaceId, actions])
+    if (!projectId || !user?.id) return;
+    await actions.toggleStarProject(projectId, user.id, project?.workspaceId);
+  }, [projectId, user?.id, project?.workspaceId, actions]);
 
-  const handleMoveToFolder = useCallback(async (folderId: string | null) => {
-    if (!projectId) return
-    await actions.moveProjectToFolder(projectId, folderId)
-  }, [projectId, actions])
+  const handleMoveToFolder = useCallback(
+    async (folderId: string | null) => {
+      if (!projectId) return;
+      await actions.moveProjectToFolder(projectId, folderId);
+    },
+    [projectId, actions]
+  );
 
   const projectSettings = useMemo<Record<string, unknown>>(() => {
-    if (typeof project?.settings === 'string') {
-      try { return JSON.parse(project.settings) } catch { return {} }
+    if (typeof project?.settings === "string") {
+      try {
+        return JSON.parse(project.settings);
+      } catch {
+        return {};
+      }
     }
-    if (project?.settings && typeof project.settings === 'object') {
-      return project.settings as Record<string, unknown>
+    if (project?.settings && typeof project.settings === "object") {
+      return project.settings as Record<string, unknown>;
     }
-    return {}
-  }, [project?.settings])
+    return {};
+  }, [project?.settings]);
 
-  const canvasEnabled = projectSettings.canvasEnabled !== false
-  const [iframeRefreshKey, setIframeRefreshKey] = useState(0)
-  const [canvasThemeSupported, setCanvasThemeSupported] = useState<boolean | null>(null)
+  const canvasEnabled = projectSettings.canvasEnabled !== false;
+  // Hoisted above the `useAgentUrl()` call below (was previously derived
+  // much later, near `handleTechStackChange`) so the stall-threshold
+  // wiring can react to it as soon as `projectSettings` resolves.
+  const techStackId = projectSettings.techStackId as string | undefined;
+  const [iframeRefreshKey, setIframeRefreshKey] = useState(0);
+  const [canvasThemeSupported, setCanvasThemeSupported] = useState<
+    boolean | null
+  >(null);
   // APP_MODE_DISABLED: treat 'app' as 'none' for existing projects
-  const rawMode = (projectSettings.activeMode as 'canvas' | 'app' | 'none') || (canvasEnabled ? 'canvas' : 'none')
-  const activeMode = rawMode === 'app' ? 'none' : rawMode
+  const rawMode =
+    (projectSettings.activeMode as "canvas" | "app" | "none") ||
+    (canvasEnabled ? "canvas" : "none");
+  const activeMode = rawMode === "app" ? "none" : rawMode;
 
-  const capabilitySettings = useMemo(() => ({
-    canvasEnabled: projectSettings.canvasEnabled !== false,
-    webEnabled: projectSettings.webEnabled !== false,
-    browserEnabled: projectSettings.browserEnabled !== false,
-    shellEnabled: projectSettings.shellEnabled !== false,
-    heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
-    imageGenEnabled: projectSettings.imageGenEnabled !== false,
-    memoryEnabled: projectSettings.memoryEnabled !== false,
-    quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
-    sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,
-    integrationsEnabled: projectSettings.integrationsEnabled !== false,
-    channelsEnabled: projectSettings.channelsEnabled !== false,
-    // Beta, opt-in: off unless explicitly enabled.
-    gitWorktreesEnabled: projectSettings.gitWorktreesEnabled === true,
-  }), [projectSettings])
+  const capabilitySettings = useMemo(
+    () => ({
+      canvasEnabled: projectSettings.canvasEnabled !== false,
+      webEnabled: projectSettings.webEnabled !== false,
+      browserEnabled: projectSettings.browserEnabled !== false,
+      shellEnabled: projectSettings.shellEnabled !== false,
+      heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
+      imageGenEnabled: projectSettings.imageGenEnabled !== false,
+      memoryEnabled: projectSettings.memoryEnabled !== false,
+      quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
+      sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,
+      integrationsEnabled: projectSettings.integrationsEnabled !== false,
+      channelsEnabled: projectSettings.channelsEnabled !== false,
+      // Beta, opt-in: off unless explicitly enabled.
+      gitWorktreesEnabled: projectSettings.gitWorktreesEnabled === true,
+    }),
+    [projectSettings]
+  );
 
-  const updateProjectSettings = useCallback(async (patch: Record<string, unknown>) => {
-    if (!projectId) return
-    const merged = { ...projectSettings, ...patch }
-    const settingsStr = JSON.stringify(merged)
-    // Optimistic: the canvasEnabled effect used to snap previewTab back to
-    // chat-fullscreen whenever canvasEnabled was still false. Waiting for the
-    // PATCH before updating local settings left a one-render window where
-    // clicking Canvas bounced immediately.
-    setProject((prev: any) => prev ? { ...prev, settings: settingsStr } : prev)
-    await actions.updateProject(projectId, { settings: settingsStr as any })
-  }, [projectId, projectSettings, actions])
+  const updateProjectSettings = useCallback(
+    async (patch: Record<string, unknown>) => {
+      if (!projectId) return;
+      const merged = { ...projectSettings, ...patch };
+      const settingsStr = JSON.stringify(merged);
+      // Optimistic: the canvasEnabled effect used to snap previewTab back to
+      // chat-fullscreen whenever canvasEnabled was still false. Waiting for the
+      // PATCH before updating local settings left a one-render window where
+      // clicking Canvas bounced immediately.
+      setProject((prev: any) =>
+        prev ? { ...prev, settings: settingsStr } : prev
+      );
+      await actions.updateProject(projectId, { settings: settingsStr as any });
+    },
+    [projectId, projectSettings, actions]
+  );
 
-  const handleUpdateCanvasSettings = useCallback(async (themeSettings: Record<string, unknown>) => {
-    await updateProjectSettings(themeSettings)
-  }, [updateProjectSettings])
+  const handleUpdateCanvasSettings = useCallback(
+    async (themeSettings: Record<string, unknown>) => {
+      await updateProjectSettings(themeSettings);
+    },
+    [updateProjectSettings]
+  );
 
-  const handleCanvasCapabilities = useCallback((caps: { supportsTheme: boolean }) => {
-    setCanvasThemeSupported(caps.supportsTheme)
-  }, [])
+  const handleCanvasCapabilities = useCallback(
+    (caps: { supportsTheme: boolean }) => {
+      setCanvasThemeSupported(caps.supportsTheme);
+    },
+    []
+  );
 
   // ── External preview (folder-linked / `workingMode === 'external'`) ─
   //
@@ -554,152 +669,182 @@ export default observer(function ProjectLayout() {
   //
   // We keep both in state here so the address-bar and the empty-state
   // chip can both surface the detected URL even when nothing is saved.
-  const isExternalProject = (project?.workingMode ?? 'managed') === 'external'
-  const projectTrustLevel: 'restricted' | 'trusted' = project?.trustLevel === 'trusted' ? 'trusted' : 'restricted'
+  const isExternalProject = (project?.workingMode ?? "managed") === "external";
+  const projectTrustLevel: "restricted" | "trusted" =
+    project?.trustLevel === "trusted" ? "trusted" : "restricted";
   const primaryFolderPath = useMemo<string | null>(() => {
-    const folders = (project?.projectFolders ?? []) as Array<{ path: string; isPrimary?: boolean }>
-    const primary = folders.find((f) => f.isPrimary) ?? folders[0]
-    return primary?.path ?? null
-  }, [project?.projectFolders])
-  const [externalSavedUrl, setExternalSavedUrl] = useState<string | null>(null)
-  const [externalDetectedUrl, setExternalDetectedUrl] = useState<string | null>(null)
-  const [trustPromptOpen, setTrustPromptOpen] = useState(false)
-  const [trustSubmitting, setTrustSubmitting] = useState(false)
-  const trustAutoShownRef = useRef(false)
+    const folders = (project?.projectFolders ?? []) as Array<{
+      path: string;
+      isPrimary?: boolean;
+    }>;
+    const primary = folders.find((f) => f.isPrimary) ?? folders[0];
+    return primary?.path ?? null;
+  }, [project?.projectFolders]);
+  const [externalSavedUrl, setExternalSavedUrl] = useState<string | null>(null);
+  const [externalDetectedUrl, setExternalDetectedUrl] = useState<string | null>(
+    null
+  );
+  const [trustPromptOpen, setTrustPromptOpen] = useState(false);
+  const [trustSubmitting, setTrustSubmitting] = useState(false);
+  const trustAutoShownRef = useRef(false);
 
   // Pull the saved/detected URL pair when the project resolves as
   // external. We re-fetch on `agentUrl` change because the detected URL
   // routes through the agent-runtime — once the pod URL changes, we may
   // discover a new fresher detection.
   useEffect(() => {
-    if (!projectId || !isExternalProject) return
-    let cancelled = false
+    if (!projectId || !isExternalProject) return;
+    let cancelled = false;
     const fetchState = async () => {
       try {
         const res = await fetch(
-          `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
-          { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
-        )
-        if (!res.ok) return
-        const body = await res.json()
-        if (cancelled) return
-        if (typeof body?.savedUrl === 'string') setExternalSavedUrl(body.savedUrl)
-        else setExternalSavedUrl(null)
-        if (typeof body?.detectedUrl === 'string') setExternalDetectedUrl(body.detectedUrl)
+          `${API_URL}/api/projects/${encodeURIComponent(
+            projectId
+          )}/external-preview`,
+          { credentials: Platform.OS === "web" ? "include" : "omit" }
+        );
+        if (!res.ok) return;
+        const body = await res.json();
+        if (cancelled) return;
+        if (typeof body?.savedUrl === "string")
+          setExternalSavedUrl(body.savedUrl);
+        else setExternalSavedUrl(null);
+        if (typeof body?.detectedUrl === "string")
+          setExternalDetectedUrl(body.detectedUrl);
       } catch (err) {
-        if (!cancelled) console.warn('[external-preview] fetch failed:', err)
+        if (!cancelled) console.warn("[external-preview] fetch failed:", err);
       }
-    }
-    void fetchState()
+    };
+    void fetchState();
     // Poll modestly while the user is on the project page — the SSE
     // detected-urls stream lives on the agent-runtime and isn't yet
     // proxied through the API; a 5 s poll is fine until we wire that.
-    const t = setInterval(fetchState, 5000)
+    const t = setInterval(fetchState, 5000);
     return () => {
-      cancelled = true
-      clearInterval(t)
-    }
-  }, [projectId, isExternalProject])
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [projectId, isExternalProject]);
 
-  const handleSaveExternalPreviewUrl = useCallback(async (url: string) => {
-    if (!projectId) return
-    try {
-      const res = await fetch(
-        `${API_URL}/api/projects/${encodeURIComponent(projectId)}/external-preview`,
-        {
-          method: 'PUT',
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ savedUrl: url }),
-        },
-      )
-      if (res.status === 403) {
-        const body = await res.json().catch(() => ({}))
-        if (body?.needsTrust) {
-          // Non-local URL on a restricted project → nudge the user to
-          // trust the workspace. The URL isn't saved; once they trust
-          // and retry, the same handler will persist it.
-          setTrustPromptOpen(true)
-          return
+  const handleSaveExternalPreviewUrl = useCallback(
+    async (url: string) => {
+      if (!projectId) return;
+      try {
+        const res = await fetch(
+          `${API_URL}/api/projects/${encodeURIComponent(
+            projectId
+          )}/external-preview`,
+          {
+            method: "PUT",
+            credentials: Platform.OS === "web" ? "include" : "omit",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ savedUrl: url }),
+          }
+        );
+        if (res.status === 403) {
+          const body = await res.json().catch(() => ({}));
+          if (body?.needsTrust) {
+            // Non-local URL on a restricted project → nudge the user to
+            // trust the workspace. The URL isn't saved; once they trust
+            // and retry, the same handler will persist it.
+            setTrustPromptOpen(true);
+            return;
+          }
         }
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          Alert.alert(
+            "Could not set preview URL",
+            String(body?.error ?? `HTTP ${res.status}`)
+          );
+          return;
+        }
+        const body = await res.json().catch(() => ({}));
+        if (typeof body?.savedUrl === "string")
+          setExternalSavedUrl(body.savedUrl);
+      } catch (err: any) {
+        Alert.alert("Could not set preview URL", err?.message ?? String(err));
       }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        Alert.alert('Could not set preview URL', String(body?.error ?? `HTTP ${res.status}`))
-        return
-      }
-      const body = await res.json().catch(() => ({}))
-      if (typeof body?.savedUrl === 'string') setExternalSavedUrl(body.savedUrl)
-    } catch (err: any) {
-      Alert.alert('Could not set preview URL', err?.message ?? String(err))
-    }
-  }, [projectId])
+    },
+    [projectId]
+  );
 
-  const handleTrustDecision = useCallback(async (decision: TrustDecision) => {
-    if (!projectId) return
-    setTrustSubmitting(true)
-    try {
-      // "restricted" → just close; the agent-runtime keeps blocking
-      // writes/exec server-side regardless.
-      if (decision === 'restricted') {
-        setTrustPromptOpen(false)
-        return
+  const handleTrustDecision = useCallback(
+    async (decision: TrustDecision) => {
+      if (!projectId) return;
+      setTrustSubmitting(true);
+      try {
+        // "restricted" → just close; the agent-runtime keeps blocking
+        // writes/exec server-side regardless.
+        if (decision === "restricted") {
+          setTrustPromptOpen(false);
+          return;
+        }
+        const res = await fetch(
+          `${API_URL}/api/local/projects/${encodeURIComponent(
+            projectId
+          )}/trust`,
+          {
+            method: "POST",
+            credentials: Platform.OS === "web" ? "include" : "omit",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trusted: true }),
+          }
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          Alert.alert(
+            "Could not update trust",
+            String(body?.error ?? `HTTP ${res.status}`)
+          );
+          return;
+        }
+        const body = await res.json().catch(() => ({}));
+        if (body?.project) setProject(body.project);
+        setTrustPromptOpen(false);
+      } catch (err: any) {
+        Alert.alert("Could not update trust", err?.message ?? String(err));
+      } finally {
+        setTrustSubmitting(false);
       }
-      const res = await fetch(
-        `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}/trust`,
-        {
-          method: 'POST',
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trusted: true }),
-        },
-      )
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        Alert.alert('Could not update trust', String(body?.error ?? `HTTP ${res.status}`))
-        return
-      }
-      const body = await res.json().catch(() => ({}))
-      if (body?.project) setProject(body.project)
-      setTrustPromptOpen(false)
-    } catch (err: any) {
-      Alert.alert('Could not update trust', err?.message ?? String(err))
-    } finally {
-      setTrustSubmitting(false)
-    }
-  }, [projectId])
+    },
+    [projectId]
+  );
 
   // Top-bar trust toggle: flips between restricted and trusted based on
   // the current level. Restricted -> trust this folder; trusted ->
   // restrict it again. Reuses the same /trust route as the prompt and
   // updates local state from the returned (folder-included) project.
   const handleToggleTrust = useCallback(async () => {
-    if (!projectId) return
-    const next = projectTrustLevel !== 'trusted'
-    setTrustSubmitting(true)
+    if (!projectId) return;
+    const next = projectTrustLevel !== "trusted";
+    setTrustSubmitting(true);
     try {
       const res = await fetch(
         `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}/trust`,
         {
-          method: 'POST',
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          credentials: Platform.OS === "web" ? "include" : "omit",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ trusted: next }),
-        },
-      )
+        }
+      );
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        Alert.alert('Could not update trust', String(body?.error ?? `HTTP ${res.status}`))
-        return
+        const body = await res.json().catch(() => ({}));
+        Alert.alert(
+          "Could not update trust",
+          String(body?.error ?? `HTTP ${res.status}`)
+        );
+        return;
       }
-      const body = await res.json().catch(() => ({}))
-      if (body?.project) setProject(body.project)
+      const body = await res.json().catch(() => ({}));
+      if (body?.project) setProject(body.project);
     } catch (err: any) {
-      Alert.alert('Could not update trust', err?.message ?? String(err))
+      Alert.alert("Could not update trust", err?.message ?? String(err));
     } finally {
-      setTrustSubmitting(false)
+      setTrustSubmitting(false);
     }
-  }, [projectId, projectTrustLevel])
+  }, [projectId, projectTrustLevel]);
 
   // Single source for refreshing the project WITH its projectFolders
   // relation + current workingMode / trustLevel. The generated
@@ -709,18 +854,18 @@ export default observer(function ProjectLayout() {
   // including folders — and merge the result into local state.
   // Best-effort: no-op outside SHOGO_LOCAL_MODE (the route 404s).
   const refreshLocalProject = useCallback(async () => {
-    if (!projectId) return
+    if (!projectId) return;
     try {
       const res = await fetch(
         `${API_URL}/api/local/projects/${encodeURIComponent(projectId)}`,
-        { credentials: Platform.OS === 'web' ? 'include' : 'omit' },
-      )
-      if (!res.ok) return
-      const body = await res.json().catch(() => null)
-      const lp = body?.project
-      if (!lp) return
+        { credentials: Platform.OS === "web" ? "include" : "omit" }
+      );
+      if (!res.ok) return;
+      const body = await res.json().catch(() => null);
+      const lp = body?.project;
+      if (!lp) return;
       setProject((prev: any) => {
-        if (!prev) return prev
+        if (!prev) return prev;
         return {
           ...prev,
           workingMode: lp.workingMode ?? prev.workingMode,
@@ -728,70 +873,73 @@ export default observer(function ProjectLayout() {
           projectFolders: Array.isArray(lp.projectFolders)
             ? lp.projectFolders
             : prev.projectFolders,
-        }
-      })
+        };
+      });
     } catch {
       /* best-effort; managed/cloud builds have no local-projects route */
     }
-  }, [projectId])
+  }, [projectId]);
 
   // Hydrate projectFolders (and reconcile workingMode/trustLevel) once
   // the project row has loaded. Without this, `primaryFolderPath` and the
   // TrustPrompt would see an empty folder list because the collection
   // store's loadById can't include the relation. Runs once per projectId.
-  const foldersHydratedRef = useRef<string | null>(null)
+  const foldersHydratedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!projectId || !project?.id) return
-    if (foldersHydratedRef.current === projectId) return
-    foldersHydratedRef.current = projectId
-    void refreshLocalProject()
-  }, [projectId, project?.id, refreshLocalProject])
+    if (!projectId || !project?.id) return;
+    if (foldersHydratedRef.current === projectId) return;
+    foldersHydratedRef.current = projectId;
+    void refreshLocalProject();
+  }, [projectId, project?.id, refreshLocalProject]);
 
   // Auto-show the trust prompt the first time an external + restricted
   // project lands on this layout. We track this with a ref so the modal
   // doesn't re-pop after the user has dismissed it once per session.
   useEffect(() => {
-    if (!isExternalProject) return
-    if (projectTrustLevel !== 'restricted') return
-    if (trustAutoShownRef.current) return
-    trustAutoShownRef.current = true
-    setTrustPromptOpen(true)
-  }, [isExternalProject, projectTrustLevel])
+    if (!isExternalProject) return;
+    if (projectTrustLevel !== "restricted") return;
+    if (trustAutoShownRef.current) return;
+    trustAutoShownRef.current = true;
+    setTrustPromptOpen(true);
+  }, [isExternalProject, projectTrustLevel]);
 
   // Reset theme support detection when the iframe reloads (code-mode only).
-  const prevRefreshKeyRef = useRef(iframeRefreshKey)
+  const prevRefreshKeyRef = useRef(iframeRefreshKey);
   useEffect(() => {
     if (iframeRefreshKey !== prevRefreshKeyRef.current) {
-      prevRefreshKeyRef.current = iframeRefreshKey
-      setCanvasThemeSupported(null)
+      prevRefreshKeyRef.current = iframeRefreshKey;
+      setCanvasThemeSupported(null);
     }
-  }, [iframeRefreshKey])
+  }, [iframeRefreshKey]);
 
   const allProjects = useMemo(() => {
     try {
-      const raw = projects?.all
-      const items = Array.isArray(raw) ? raw : []
+      const raw = projects?.all;
+      const items = Array.isArray(raw) ? raw : [];
       return items.map((p: any) => ({
         id: p.id,
-        name: p.name || 'Untitled',
-      }))
+        name: p.name || "Untitled",
+      }));
     } catch {
-      return []
+      return [];
     }
-  }, [projects?.all])
+  }, [projects?.all]);
 
   // Auth headers for native (Android/iOS) — cookies aren't sent automatically
   const nativeHeaders = useMemo(() => {
-    if (Platform.OS === 'web') return undefined
+    if (Platform.OS === "web") return undefined;
     return (): Record<string, string> => {
-      const cookie = (authClient as any).getCookie()
-      return cookie ? { Cookie: cookie } : {}
-    }
-  }, [])
-  const openRequestHeaders = useCallback(() => ({
-    ...(nativeHeaders?.() ?? {}),
-    'x-shogo-open-id': openAttemptId,
-  }), [nativeHeaders, openAttemptId])
+      const cookie = (authClient as any).getCookie();
+      return cookie ? { Cookie: cookie } : {};
+    };
+  }, []);
+  const openRequestHeaders = useCallback(
+    () => ({
+      ...(nativeHeaders?.() ?? {}),
+      "x-shogo-open-id": openAttemptId,
+    }),
+    [nativeHeaders, openAttemptId]
+  );
 
   // Resolve agent + preview URLs.
   //
@@ -815,34 +963,42 @@ export default observer(function ProjectLayout() {
     lastStatus: runtimeLastStatus,
     retry: retryAgentUrl,
   } = useAgentUrl(API_URL!, projectId, {
-    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    credentials: Platform.OS === "web" ? "include" : "omit",
     headers: openRequestHeaders,
-  })
+    // Expo/Metro-based stacks measurably cold-boot slower than Vite
+    // (~2.5-3 min vs. well under 45s typically, per the staging
+    // investigation into project a0bea431-...) — give them a longer
+    // runway before the "taking longer than expected" recovery card
+    // replaces the loading spinner. `techStackId` is unknown (undefined)
+    // until `projectSettings` resolves, so this starts at the default
+    // 45s and re-arms once the real value is known.
+    stallThresholdMs: techStackId === "expo-app" ? 150_000 : undefined,
+  });
 
   // Pre-warm on intent: reaching for "open preview in new tab" is a strong
   // signal a top-level visit is coming, so nudge the pod awake now instead of
   // when the loader page finally loads. The wake endpoint is anonymous and
   // deduped server-side; throttled here so a cursor crossing the toolbar can't
   // fan out requests.
-  const lastPreviewPrewarmRef = useRef(0)
+  const lastPreviewPrewarmRef = useRef(0);
   const handlePreviewPrewarm = useCallback(() => {
-    if (Platform.OS !== 'web' || !projectId || !API_URL) return
-    const now = Date.now()
-    if (now - lastPreviewPrewarmRef.current < 30_000) return
-    lastPreviewPrewarmRef.current = now
+    if (Platform.OS !== "web" || !projectId || !API_URL) return;
+    const now = Date.now();
+    if (now - lastPreviewPrewarmRef.current < 30_000) return;
+    lastPreviewPrewarmRef.current = now;
     void fetch(`${API_URL}/api/preview/${encodeURIComponent(projectId)}/wake`, {
-      cache: 'no-store',
-    }).catch(() => {})
-  }, [projectId])
+      cache: "no-store",
+    }).catch(() => {});
+  }, [projectId]);
 
   // When a remote instance is active, route project runtime traffic through
   // the instance tunnel and back into the desktop API's project agent-proxy.
-  const { remoteAgentBaseUrl } = useActiveInstance()
+  const { remoteAgentBaseUrl } = useActiveInstance();
   const remoteProjectAgentBaseUrl = useMemo(() => {
-    if (!remoteAgentBaseUrl || !projectId) return null
-    return `${remoteAgentBaseUrl}/api/projects/${projectId}/agent-proxy`
-  }, [remoteAgentBaseUrl, projectId])
-  const agentUrl = remoteProjectAgentBaseUrl ?? resolvedAgentUrl
+    if (!remoteAgentBaseUrl || !projectId) return null;
+    return `${remoteAgentBaseUrl}/api/projects/${projectId}/agent-proxy`;
+  }, [remoteAgentBaseUrl, projectId]);
+  const agentUrl = remoteProjectAgentBaseUrl ?? resolvedAgentUrl;
 
   // Resolve (or create) the project-pinned workspace session once, when the
   // workspace-runtime flag is on. This session is what routes the project's
@@ -850,30 +1006,80 @@ export default observer(function ProjectLayout() {
   // nothing. Best-effort: a failure simply leaves the project on the legacy
   // project-scoped chat.
   useEffect(() => {
-    if (!workspaceRuntimeEnabled || !projectId) return
+    if (!workspaceRuntimeEnabled || !projectId) return;
     // New project → re-pin from scratch.
-    pinnedSessionAppliedRef.current = false
-    setPinnedWorkspaceSessionId(null)
-    setPinnedResolveFailed(false)
-    let cancelled = false
+    pinnedSessionAppliedRef.current = false;
+    lastSessionCacheAppliedRef.current = false;
+    setPinnedWorkspaceSessionId(null);
+    setPinnedResolveFailed(false);
+    let cancelled = false;
     void (async () => {
-      const res = await api.getProjectWorkspaceSession(http, projectId)
-      if (cancelled) return
+      const res = await api.getProjectWorkspaceSession(http, projectId);
+      if (cancelled) return;
       if (res.session?.id) {
-        setPinnedWorkspaceSessionId(res.session.id)
+        setPinnedWorkspaceSessionId(res.session.id);
       } else {
         // Resolve failed: drop the loading gate so the project falls back to
         // the legacy project-scoped chat instead of hanging on a spinner.
         console.warn(
-          `[ProjectLayout] pinned workspace session resolve failed: ${res.error ?? 'unknown'}`,
-        )
-        setPinnedResolveFailed(true)
+          `[ProjectLayout] pinned workspace session resolve failed: ${
+            res.error ?? "unknown"
+          }`
+        );
+        setPinnedResolveFailed(true);
       }
-    })()
+    })();
     return () => {
-      cancelled = true
-    }
-  }, [workspaceRuntimeEnabled, projectId, http])
+      cancelled = true;
+    };
+  }, [workspaceRuntimeEnabled, projectId, http]);
+
+  // Optimistic restore: the pinned-session resolve above is a network round
+  // trip, so on every refresh `chatSessionId` would otherwise sit at `null`
+  // (and the chat panel would fall through to its empty-chat-list state)
+  // until that call returns. While it's in flight, replay this exact
+  // project's last-selected chat session id from local storage — the same id
+  // the "persist last chat session" effect above already writes on every
+  // `chatSessionId` change — so the chat that was open before the refresh
+  // renders immediately instead of flashing the chat list.
+  //
+  // This is deliberately narrower than the (disabled, see below) legacy
+  // auto-select effects: it only ever replays an id this project previously
+  // set as its own `chatSessionId`. It never lists or creates a
+  // project-scoped session, so it can't race the pinned-session promotion
+  // effect below the way those effects could. If the cached id is stale (or
+  // the project has since moved to a different anchor workspace), the
+  // promotion effect below applies unconditionally once the network resolve
+  // completes and silently corrects it.
+  useEffect(() => {
+    if (!workspaceRuntimeEnabled || !projectId) return;
+    if (chatSessionId) return;
+    if (params.chatSessionId) return;
+    // A pending "+ new chat" arrival owns session creation on this arrival —
+    // don't race it with a stale cached session id.
+    if (params.newChat === "1") return;
+    if (lastSessionCacheAppliedRef.current) return;
+    lastSessionCacheAppliedRef.current = true;
+    let cancelled = false;
+    void AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`)
+      .then((cachedId) => {
+        if (cancelled || !cachedId) return;
+        // Functional update: guards against a race where the pinned-session
+        // promotion effect already set the (authoritative) chatSessionId
+        // while this read was in flight.
+        setChatSessionId((current) => current ?? cachedId);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    workspaceRuntimeEnabled,
+    projectId,
+    chatSessionId,
+    params.chatSessionId,
+    params.newChat,
+  ]);
 
   // Make the pinned workspace session the project's canonical chat (flag-on
   // only). Under the "always workspace runtime" model every project is driven
@@ -886,29 +1092,31 @@ export default observer(function ProjectLayout() {
   // seeding; the "ensure active session in tabs" effect adds it to the
   // open-tabs list and ChatPanel renders it in 'workspace' scope.
   useEffect(() => {
-    if (!workspaceRuntimeEnabled || !pinnedWorkspaceSessionId) return
-    if (params.chatSessionId) return
+    if (!workspaceRuntimeEnabled || !pinnedWorkspaceSessionId) return;
+    if (params.chatSessionId) return;
     // A pending "+ new chat" arrival creates its own session — don't promote
     // the pinned session over it (it may resolve after the create and clobber
     // the fresh chat).
-    if (params.newChat === '1') return
-    if (pinnedSessionAppliedRef.current) return
-    pinnedSessionAppliedRef.current = true
-    setChatSessionId(pinnedWorkspaceSessionId)
-  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId, params.newChat])
+    if (params.newChat === "1") return;
+    if (pinnedSessionAppliedRef.current) return;
+    pinnedSessionAppliedRef.current = true;
+    setChatSessionId(pinnedWorkspaceSessionId);
+  }, [workspaceRuntimeEnabled, pinnedWorkspaceSessionId, params.chatSessionId, params.newChat]);
 
   // APP_MODE_DISABLED: app template copy effect removed
 
   // Shared model selection — shared between ChatPanel and CapabilitiesPanel
-  const hasAdvancedModelAccess = features.billing ? billingData.hasAdvancedModelAccess : true
-  const [selectedModel, setSelectedModel] = useState<string>(
-    () => hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
-  )
+  const hasAdvancedModelAccess = features.billing
+    ? billingData.hasAdvancedModelAccess
+    : true;
+  const [selectedModel, setSelectedModel] = useState<string>(() =>
+    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
+  );
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded — otherwise the reconciler fires against the initial slug default
   // (not a catalog UUID id), resets to Auto, and persists that, wiping the
   // user's saved choice on every cold load.
-  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false);
 
   // Tracks whether we've already synced the persisted preference to the
   // runtime for this (project, model). Without this sync, Capabilities shows
@@ -918,98 +1126,135 @@ export default observer(function ProjectLayout() {
   // it as an effect dependency lets the runtime sync retry once the model
   // metadata lands, so a cold first load (empty cache) still pushes the
   // persisted model's provider/effort to the agent.
-  const visibleModels = useVisibleModels()
-  const modelPrefSyncedRef = useRef<string | null>(null)
+  const visibleModels = useVisibleModels();
+  const modelPrefSyncedRef = useRef<string | null>(null);
   // Mirror of selectedModel for stable callbacks (avoids stale closures without
   // making chat-switch handlers depend on the changing selection).
-  const selectedModelRef = useRef(selectedModel)
-  selectedModelRef.current = selectedModel
+  const selectedModelRef = useRef(selectedModel);
+  selectedModelRef.current = selectedModel;
   // The global last-used model preference — the fallback when a chat has no
   // model-stamped message yet. Updated only on explicit user picks / cold load,
   // NOT when we apply a per-chat model on switch (so the fallback is preserved).
-  const globalModelPrefRef = useRef<string | null>(null)
+  const globalModelPrefRef = useRef<string | null>(null);
   // Dedups the runtime PATCH when applying a chat's model on switch.
-  const sessionModelSyncedRef = useRef<string | null>(null)
+  const sessionModelSyncedRef = useRef<string | null>(null);
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
-      if (cancelled) return
-      const next = stored ?? (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
-      globalModelPrefRef.current = next
-      setSelectedModel(next)
-      setModelPrefLoaded(true)
-      if (!agentUrl) return
-      const syncKey = `${projectId}:${next}`
-      if (modelPrefSyncedRef.current === syncKey) return
-      const provider = resolveProvider(next)
+      if (cancelled) return;
+      const next =
+        stored ??
+        (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE);
+      globalModelPrefRef.current = next;
+      setSelectedModel(next);
+      setModelPrefLoaded(true);
+      if (!agentUrl) return;
+      const syncKey = `${projectId}:${next}`;
+      if (modelPrefSyncedRef.current === syncKey) return;
+      const provider = resolveProvider(next);
       // Metadata not loaded yet — leave the guard unset so this retries when
       // `visibleModels` arrives (it's an effect dependency).
-      if (!provider) return
-      modelPrefSyncedRef.current = syncKey
-      const thinkingLevel = resolveReasoningEffort(next)
+      if (!provider) return;
+      modelPrefSyncedRef.current = syncKey;
+      const thinkingLevel = resolveReasoningEffort(next);
       agentFetch(`${agentUrl}/agent/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: { provider, name: next, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: {
+            provider,
+            name: next,
+            ...(thinkingLevel ? { thinkingLevel } : {}),
+          },
+        }),
       }).catch((err) => {
-        console.error('[ProjectLayout] Failed to sync persisted model to runtime:', err)
-        modelPrefSyncedRef.current = null
-      })
-    })
-    return () => { cancelled = true }
-  }, [hasAdvancedModelAccess, projectId, agentUrl, visibleModels])
+        console.error(
+          "[ProjectLayout] Failed to sync persisted model to runtime:",
+          err
+        );
+        modelPrefSyncedRef.current = null;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasAdvancedModelAccess, projectId, agentUrl, visibleModels]);
 
-  const handleModelChange = useCallback(async (modelId: string) => {
-    // An explicit user pick updates the global last-used preference (and thus
-    // the per-chat fallback baseline).
-    globalModelPrefRef.current = modelId
-    sessionModelSyncedRef.current = `${projectId}:${modelId}`
-    setSelectedModel(modelId)
-    saveModelPreference(modelId, projectId)
-    if (agentUrl) {
-      const provider = resolveProvider(modelId)
-      if (provider) {
-        try {
-          const thinkingLevel = resolveReasoningEffort(modelId)
-          await agentFetch(`${agentUrl}/agent/config`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: { provider, name: modelId, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
-          })
-        } catch (err) {
-          console.error('[ProjectLayout] Failed to push model config to runtime:', err)
+  const handleModelChange = useCallback(
+    async (modelId: string) => {
+      // An explicit user pick updates the global last-used preference (and thus
+      // the per-chat fallback baseline).
+      globalModelPrefRef.current = modelId;
+      sessionModelSyncedRef.current = `${projectId}:${modelId}`;
+      setSelectedModel(modelId);
+      saveModelPreference(modelId, projectId);
+      if (agentUrl) {
+        const provider = resolveProvider(modelId);
+        if (provider) {
+          try {
+            const thinkingLevel = resolveReasoningEffort(modelId);
+            await agentFetch(`${agentUrl}/agent/config`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: {
+                  provider,
+                  name: modelId,
+                  ...(thinkingLevel ? { thinkingLevel } : {}),
+                },
+              }),
+            });
+          } catch (err) {
+            console.error(
+              "[ProjectLayout] Failed to push model config to runtime:",
+              err
+            );
+          }
         }
       }
-    }
-  }, [agentUrl, projectId])
+    },
+    [agentUrl, projectId]
+  );
 
   // Apply a chat's last-used model when switching into it (reported by the
   // active ChatPanel). Updates the shared picker + runtime config WITHOUT
   // touching the global preference, so an empty chat (modelId === null) falls
   // back to the last-used global choice.
-  const handleResolveSessionModel = useCallback((modelId: string | null) => {
-    const next =
-      modelId ??
-      globalModelPrefRef.current ??
-      (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE)
-    if (selectedModelRef.current === next) return
-    setSelectedModel(next)
-    if (!agentUrl) return
-    const syncKey = `${projectId}:${next}`
-    if (sessionModelSyncedRef.current === syncKey) return
-    const provider = resolveProvider(next)
-    if (!provider) return
-    sessionModelSyncedRef.current = syncKey
-    const thinkingLevel = resolveReasoningEffort(next)
-    agentFetch(`${agentUrl}/agent/config`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: { provider, name: next, ...(thinkingLevel ? { thinkingLevel } : {}) } }),
-    }).catch((err) => {
-      console.error('[ProjectLayout] Failed to sync chat model to runtime:', err)
-      sessionModelSyncedRef.current = null
-    })
-  }, [agentUrl, projectId, hasAdvancedModelAccess])
+  const handleResolveSessionModel = useCallback(
+    (modelId: string | null) => {
+      const next =
+        modelId ??
+        globalModelPrefRef.current ??
+        (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE);
+      if (selectedModelRef.current === next) return;
+      setSelectedModel(next);
+      if (!agentUrl) return;
+      const syncKey = `${projectId}:${next}`;
+      if (sessionModelSyncedRef.current === syncKey) return;
+      const provider = resolveProvider(next);
+      if (!provider) return;
+      sessionModelSyncedRef.current = syncKey;
+      const thinkingLevel = resolveReasoningEffort(next);
+      agentFetch(`${agentUrl}/agent/config`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: {
+            provider,
+            name: next,
+            ...(thinkingLevel ? { thinkingLevel } : {}),
+          },
+        }),
+      }).catch((err) => {
+        console.error(
+          "[ProjectLayout] Failed to sync chat model to runtime:",
+          err
+        );
+        sessionModelSyncedRef.current = null;
+      });
+    },
+    [agentUrl, projectId, hasAdvancedModelAccess]
+  );
 
   // Reset a pre-UUID stored selection (an old slug that's now only a server
   // alias, so the picker can't label it) to the tier default once the catalog
@@ -1019,65 +1264,69 @@ export default observer(function ProjectLayout() {
     selectedModel,
     hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
     handleModelChange,
-    modelPrefLoaded,
-  )
+    modelPrefLoaded
+  );
 
-  const splitRowRef = useRef<View>(null)
+  const splitRowRef = useRef<View>(null);
 
   // Connection state for the canvas. The canvas iframe owns its own data
   // (SSE / HMR / API calls happen inside the workspace SPA); the parent
   // only needs to know whether the agent runtime is reachable.
-  const connected = !!agentUrl
+  const connected = !!agentUrl;
 
   // Stub `reconnect` for callers that still trigger a manual canvas refresh.
   // Bumping `iframeRefreshKey` reloads the iframe; v1's SSE reconnect path
   // is gone.
   const reconnect = useCallback(() => {
-    setIframeRefreshKey((k) => k + 1)
-  }, [])
+    setIframeRefreshKey((k) => k + 1);
+  }, []);
 
   // Load project data
-  const domainsReady = sdkReady && !!store?.projectCollection
+  const domainsReady = sdkReady && !!store?.projectCollection;
 
   useEffect(() => {
-    csMark('project:layout:mounted', { projectId })
-  }, [projectId])
+    csMark("project:layout:mounted", { projectId });
+  }, [projectId]);
 
   useEffect(() => {
-    if (sdkReady) csMark('project:sdk-ready')
-  }, [sdkReady])
+    if (sdkReady) csMark("project:sdk-ready");
+  }, [sdkReady]);
 
   useEffect(() => {
-    if (project) csMark('project:loaded', { id: project?.id })
-  }, [project])
+    if (project) csMark("project:loaded", { id: project?.id });
+  }, [project]);
 
   useEffect(() => {
-    if (runtimeReady) markRuntimeReadyAndFlush({ projectId })
-  }, [runtimeReady, projectId])
+    if (runtimeReady) markRuntimeReadyAndFlush({ projectId });
+  }, [runtimeReady, projectId]);
 
   useEffect(() => {
-    if (!projectId || !domainsReady || !user?.id) return
+    if (!projectId || !domainsReady || !user?.id) return;
 
-    let cancelled = false
-    const MAX_RETRIES = 8
-    const RETRY_DELAY_MS = 500
+    let cancelled = false;
+    const MAX_RETRIES = 8;
+    const RETRY_DELAY_MS = 500;
 
     const isAccessDenied = (err: any) => {
-      const status = err?.status
-      const code = err?.code
-      return ( status === 403 || status === 404 || code === 'FORBIDDEN' || code === 'NOT_FOUND'
-      )
-    }
+      const status = err?.status;
+      const code = err?.code;
+      return (
+        status === 403 ||
+        status === 404 ||
+        code === "FORBIDDEN" ||
+        code === "NOT_FOUND"
+      );
+    };
 
     const loadProject = async (attempt = 1): Promise<void> => {
-      if (cancelled) return
-      setIsLoading(true)
-      csMark('project:load:start', { attempt })
+      if (cancelled) return;
+      setIsLoading(true);
+      csMark("project:load:start", { attempt });
 
       try {
-        csMark('project:load:workspaces:start')
-        await store.workspaceCollection.loadAll({ userId: user!.id })
-        csMark('project:load:workspaces:end')
+        csMark("project:load:workspaces:start");
+        await store.workspaceCollection.loadAll({ userId: user!.id });
+        csMark("project:load:workspaces:end");
         // Fall back to the first workspace the user belongs to when nothing
         // has been persisted yet — otherwise the project-list preload is
         // silently skipped and the sidebar's Recent stays empty on a fresh
@@ -1085,71 +1334,91 @@ export default observer(function ProjectLayout() {
         // that isn't one of *this* user's own workspaces (e.g. left over
         // from a different account on the same browser) instead of feeding
         // it straight to the API and getting "Access denied" on everything.
-        const ownIds = (store.workspaceCollection.all ?? []).map((w: any) => w.id)
-        const wsId = resolveActiveWorkspaceId(ownIds)
-        const projectFilter = workspaceProjectFilter(wsId)
+        const ownIds = (store.workspaceCollection.all ?? []).map(
+          (w: any) => w.id
+        );
+        const wsId = resolveActiveWorkspaceId(ownIds);
+        const projectFilter = workspaceProjectFilter(wsId);
         if (projectFilter) {
           store.projectCollection
             .loadAll(projectFilter)
-            .catch((e) => console.error('[ProjectLayout] Failed to preload projects:', e))
+            .catch((e) =>
+              console.error("[ProjectLayout] Failed to preload projects:", e)
+            );
         }
-        csMark('project:load:loadById:start')
-        const proj = await store.projectCollection.loadById(projectId)
-        csMark('project:load:loadById:end')
+        csMark("project:load:loadById:start");
+        const proj = await store.projectCollection.loadById(projectId);
+        csMark("project:load:loadById:end");
 
-        if (cancelled) return
+        if (cancelled) return;
 
         if (proj) {
-          setProject(proj)
-          setIsLoading(false)
+          setProject(proj);
+          setIsLoading(false);
         } else if (attempt < MAX_RETRIES) {
-          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt))
-          return loadProject(attempt + 1)
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+          return loadProject(attempt + 1);
         } else {
-          console.warn('[ProjectLayout] Project not found after retries, redirecting home:', projectId)
-          router.replace('/(app)')
+          console.warn(
+            "[ProjectLayout] Project not found after retries, redirecting home:",
+            projectId
+          );
+          router.replace("/(app)");
         }
       } catch (err: any) {
-        if (cancelled) return
+        if (cancelled) return;
         if (isAccessDenied(err)) {
-          console.warn('[ProjectLayout] Access denied to project, redirecting home:', projectId)
-          router.replace('/(app)')
-          return
+          console.warn(
+            "[ProjectLayout] Access denied to project, redirecting home:",
+            projectId
+          );
+          router.replace("/(app)");
+          return;
         }
         const isTransient =
-          err?.message?.includes('Schema') || err?.message?.includes('not found')
+          err?.message?.includes("Schema") ||
+          err?.message?.includes("not found");
         if (isTransient && attempt < MAX_RETRIES) {
-          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt))
-          return loadProject(attempt + 1)
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+          return loadProject(attempt + 1);
         }
-        console.error('[ProjectLayout] Failed to load project:', err)
-        router.replace('/(app)')
+        console.error("[ProjectLayout] Failed to load project:", err);
+        router.replace("/(app)");
       }
-    }
+    };
 
-    loadProject()
+    loadProject();
     return () => {
-      cancelled = true
-    }
-  }, [projectId, domainsReady, store, user?.id])
+      cancelled = true;
+    };
+  }, [projectId, domainsReady, store, user?.id]);
 
   // Persist last chat session to AsyncStorage
   useEffect(() => {
     if (projectId && chatSessionId) {
-      AsyncStorage.setItem(`shogo:lastChatSession:${projectId}`, chatSessionId).catch((e) => console.error('[ProjectLayout] Failed to persist chat session:', e))
+      AsyncStorage.setItem(
+        `shogo:lastChatSession:${projectId}`,
+        chatSessionId
+      ).catch((e) =>
+        console.error("[ProjectLayout] Failed to persist chat session:", e)
+      );
     }
-  }, [projectId, chatSessionId])
+  }, [projectId, chatSessionId]);
 
   // ─── Open chat tabs state ───────────────────────────────
-  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([])
+  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([]);
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
-  const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<string | null>(null)
+  const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<
+    string | null
+  >(null);
   /**
    * Per-tab seed messages auto-sent when a freshly-created chat session mounts.
    * Used by the canvas-error → "Debug" flow to spawn a new chat that opens
    * pre-loaded with a debug prompt. Cleaned up when the tab closes.
    */
-  const [debugInitMessages, setDebugInitMessages] = useState<Record<string, string>>({})
+  const [debugInitMessages, setDebugInitMessages] = useState<
+    Record<string, string>
+  >({});
   /**
    * Tri-state hydration status for the open-tabs list:
    * - 'loading': haven't read AsyncStorage yet
@@ -1159,13 +1428,17 @@ export default observer(function ProjectLayout() {
    * Distinguishing 'restored-empty' from 'fresh' is what prevents the auto-select
    * effect from resurrecting a tab the user just closed.
    */
-  type TabsHydration = 'loading' | 'restored-with-tabs' | 'restored-empty' | 'fresh'
-  const [tabsHydration, setTabsHydration] = useState<TabsHydration>('loading')
-  const openTabsRestoredRef = useRef(false)
+  type TabsHydration =
+    | "loading"
+    | "restored-with-tabs"
+    | "restored-empty"
+    | "fresh";
+  const [tabsHydration, setTabsHydration] = useState<TabsHydration>("loading");
+  const openTabsRestoredRef = useRef(false);
 
   // Restore open tabs from AsyncStorage on mount
   useEffect(() => {
-    if (!projectId || openTabsRestoredRef.current) return
+    if (!projectId || openTabsRestoredRef.current) return;
     // Under the always-on workspace runtime, a project has exactly one chat:
     // its anchor-pinned workspace session. Restoring previously-open
     // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
@@ -1174,55 +1447,62 @@ export default observer(function ProjectLayout() {
     // the flag is on and we're not following an explicit deep-link, skip the
     // restore entirely and let the pinned-session promotion seed the sole tab.
     if (workspaceRuntimeEnabled && !params.chatSessionId) {
-      openTabsRestoredRef.current = true
-      setTabsHydration('fresh')
-      return
+      openTabsRestoredRef.current = true;
+      setTabsHydration("fresh");
+      return;
     }
-    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`).then((raw) => {
-      if (raw === null) {
-        openTabsRestoredRef.current = true
-        setTabsHydration('fresh')
-        return
-      }
-      try {
-        const ids = JSON.parse(raw)
-        if (Array.isArray(ids)) {
-          if (ids.length > 0) {
-            setOpenChatTabIds(ids)
-            openTabsRestoredRef.current = true
-            setTabsHydration('restored-with-tabs')
-            return
-          }
-          openTabsRestoredRef.current = true
-          setTabsHydration(nativePhone ? 'fresh' : 'restored-empty')
-          return
+    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`)
+      .then((raw) => {
+        if (raw === null) {
+          openTabsRestoredRef.current = true;
+          setTabsHydration("fresh");
+          return;
         }
-      } catch { /* ignore malformed data */ }
-      // Malformed payload — treat as fresh so we still auto-create.
-      openTabsRestoredRef.current = true
-      setTabsHydration('fresh')
-    }).catch(() => {
-      openTabsRestoredRef.current = true
-      setTabsHydration('fresh')
-    })
-  }, [projectId, phoneLayout, nativePhone])
+        try {
+          const ids = JSON.parse(raw);
+          if (Array.isArray(ids)) {
+            if (ids.length > 0) {
+              setOpenChatTabIds(ids);
+              openTabsRestoredRef.current = true;
+              setTabsHydration("restored-with-tabs");
+              return;
+            }
+            openTabsRestoredRef.current = true;
+            setTabsHydration(nativePhone ? "fresh" : "restored-empty");
+            return;
+          }
+        } catch {
+          /* ignore malformed data */
+        }
+        // Malformed payload — treat as fresh so we still auto-create.
+        openTabsRestoredRef.current = true;
+        setTabsHydration("fresh");
+      })
+      .catch(() => {
+        openTabsRestoredRef.current = true;
+        setTabsHydration("fresh");
+      });
+  }, [projectId, phoneLayout, nativePhone]);
 
   // Persist open tabs to AsyncStorage on every change, including `[]`.
   // Storing the explicit empty array is what lets the next mount distinguish
   // "user closed everything" from "first-ever visit".
   useEffect(() => {
-    if (!projectId || tabsHydration === 'loading') return
-    AsyncStorage.setItem(`shogo:chatTabs:${projectId}`, JSON.stringify(openChatTabIds)).catch(() => {})
-  }, [projectId, openChatTabIds, tabsHydration])
+    if (!projectId || tabsHydration === "loading") return;
+    AsyncStorage.setItem(
+      `shogo:chatTabs:${projectId}`,
+      JSON.stringify(openChatTabIds)
+    ).catch(() => {});
+  }, [projectId, openChatTabIds, tabsHydration]);
 
   // Ensure the active session is always in the open tabs list
   useEffect(() => {
-    if (!chatSessionId) return
+    if (!chatSessionId) return;
     setOpenChatTabIds((prev) => {
-      if (prev.includes(chatSessionId)) return prev
-      return [...prev, chatSessionId]
-    })
-  }, [chatSessionId])
+      if (prev.includes(chatSessionId)) return prev;
+      return [...prev, chatSessionId];
+    });
+  }, [chatSessionId]);
 
   // Apply a deep-linked chat session whenever the `chatSessionId` param
   // changes — e.g. selecting a chat in a project that isn't open yet. The
@@ -1236,84 +1516,91 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     const incoming = Array.isArray(params.chatSessionId)
       ? params.chatSessionId[0]
-      : params.chatSessionId
+      : params.chatSessionId;
     if (incoming && incoming !== chatSessionId) {
-      setChatSessionId(incoming)
-      setOpenChatTabIds((prev) =>prev.includes(incoming) ? prev : [...prev, incoming])
+      setChatSessionId(incoming);
+      setOpenChatTabIds((prev) =>
+        prev.includes(incoming) ? prev : [...prev, incoming]
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.chatSessionId])
+  }, [params.chatSessionId]);
 
-  const handleCloseTab = useCallback((tabId: string) => {
-    streamingChangeHandlersRef.current.delete(tabId)
-    prevStreamingByTabRef.current.delete(tabId)
-    setStreamingTabIds((prev) => {
-      if (!prev.has(tabId)) return prev
-      const next = new Set(prev)
-      next.delete(tabId)
-      return next
-    })
-    setCompletedTabIds((prev) => {
-      if (!prev.has(tabId)) return prev
-      const next = new Set(prev)
-      next.delete(tabId)
-      return next
-    })
-    setDebugInitMessages((prev) => {
-      if (!(tabId in prev)) return prev
-      const next = { ...prev }
-      delete next[tabId]
-      return next
-    })
-    setOpenChatTabIds((prev) => {
-      const next = prev.filter((id) => id !== tabId)
-      if (tabId === chatSessionId) {
-        const idx = prev.indexOf(tabId)
-        const neighbor = prev[idx + 1] ?? prev[idx - 1]
-        if (neighbor) {
-          setChatSessionId(neighbor)
-        } else {
-          setChatSessionId(null)
-          // Belt-and-suspenders: clear the "last chat session" pointer so a
-          // future visit (or a stray run of the auto-select effect) can't
-          // resurrect the just-closed session id.
-          if (projectId) {
-            AsyncStorage.removeItem(`shogo:lastChatSession:${projectId}`).catch(() => {})
+  const handleCloseTab = useCallback(
+    (tabId: string) => {
+      streamingChangeHandlersRef.current.delete(tabId);
+      prevStreamingByTabRef.current.delete(tabId);
+      setStreamingTabIds((prev) => {
+        if (!prev.has(tabId)) return prev;
+        const next = new Set(prev);
+        next.delete(tabId);
+        return next;
+      });
+      setCompletedTabIds((prev) => {
+        if (!prev.has(tabId)) return prev;
+        const next = new Set(prev);
+        next.delete(tabId);
+        return next;
+      });
+      setDebugInitMessages((prev) => {
+        if (!(tabId in prev)) return prev;
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
+      setOpenChatTabIds((prev) => {
+        const next = prev.filter((id) => id !== tabId);
+        if (tabId === chatSessionId) {
+          const idx = prev.indexOf(tabId);
+          const neighbor = prev[idx + 1] ?? prev[idx - 1];
+          if (neighbor) {
+            setChatSessionId(neighbor);
+          } else {
+            setChatSessionId(null);
+            // Belt-and-suspenders: clear the "last chat session" pointer so a
+            // future visit (or a stray run of the auto-select effect) can't
+            // resurrect the just-closed session id.
+            if (projectId) {
+              AsyncStorage.removeItem(
+                `shogo:lastChatSession:${projectId}`
+              ).catch(() => {});
+            }
           }
         }
-      }
-      return next
-    })
-  }, [chatSessionId, projectId])
+        return next;
+      });
+    },
+    [chatSessionId, projectId]
+  );
 
-  const SESSION_PAGE_SIZE = 10
-  const IDE_SESSION_PAGE_SIZE = 100
+  const SESSION_PAGE_SIZE = 10;
+  const IDE_SESSION_PAGE_SIZE = 100;
 
   // Tracks which projects we've already seeded via loadPage so we don't
   // re-fetch the session list on every chatSessionId change. Without this,
   // each mounted ChatPanel would fall back to its own per-session fetch
   // (the root cause of the "[ChatPanel] Loading session from API" storm
   // when a project restores many open tabs).
-  const seededProjectsRef = useRef<Set<string>>(new Set())
+  const seededProjectsRef = useRef<Set<string>>(new Set());
 
   const refreshProjectChatSessions = useCallback(async () => {
-    if (!projectId || !store?.chatSessionCollection) return
-    const pageSize = isIdeChatEmbed ? IDE_SESSION_PAGE_SIZE : SESSION_PAGE_SIZE
-    let offset = 0
+    if (!projectId || !store?.chatSessionCollection) return;
+    const pageSize = isIdeChatEmbed ? IDE_SESSION_PAGE_SIZE : SESSION_PAGE_SIZE;
+    let offset = 0;
 
     try {
       do {
         await store.chatSessionCollection.loadPage(
           { contextId: projectId },
-          { limit: pageSize, offset },
-        )
-        offset += pageSize
-      } while (isIdeChatEmbed && store.chatSessionCollection.hasMore)
-      seededProjectsRef.current.add(projectId)
+          { limit: pageSize, offset }
+        );
+        offset += pageSize;
+      } while (isIdeChatEmbed && store.chatSessionCollection.hasMore);
+      seededProjectsRef.current.add(projectId);
     } catch (err) {
-      console.error('[ProjectLayout] Failed to refresh chat sessions:', err)
+      console.error("[ProjectLayout] Failed to refresh chat sessions:", err);
     }
-  }, [projectId, store, isIdeChatEmbed])
+  }, [projectId, store, isIdeChatEmbed]);
 
   // Seed the chat session collection and, when no session is selected yet,
   // auto-select or create one. The seed always runs once per projectId; the
@@ -1322,235 +1609,300 @@ export default observer(function ProjectLayout() {
   // active tab from the restored list, and 'restored-empty' is honored as a
   // user-intent "no tabs open" state — we deliberately do NOT auto-select.
   useEffect(() => {
-    if (!projectId || !store?.chatSessionCollection) return
+    if (!projectId || !store?.chatSessionCollection) return;
 
-    let cancelled = false
+    let cancelled = false;
 
     const run = async () => {
       if (!seededProjectsRef.current.has(projectId)) {
-        await refreshProjectChatSessions()
-        if (cancelled) return
+        await refreshProjectChatSessions();
+        if (cancelled) return;
       }
 
-      if (chatSessionId) return
+      if (chatSessionId) return;
       // A pending sidebar "+ new chat" request owns session creation on this
       // arrival (handled by the one-shot newChat effect) — don't also
       // auto-select an existing chat or we'd land on the wrong one.
-      if (params.newChat === '1') return
+      if (params.newChat === "1") return;
       // Under the always-on workspace runtime, the project-pinned workspace
       // session owns active-session selection (see the pinned-session
-      // promotion effect). Auto-selecting / auto-creating a project-scoped
-      // session here would race that promotion and strand the visible chat on
-      // the wrong (project) session — and boot the legacy single-project
-      // runtime instead of the anchor merged root.
-      if (workspaceRuntimeEnabled) return
+      // promotion effect). Auto-selecting / auto-creating a *project-scoped*
+      // session here — by listing `store.chatSessionCollection` or calling
+      // `actions.createChatSession` below — would race that promotion and
+      // strand the visible chat on the wrong (project) session, and boot the
+      // legacy single-project runtime instead of the anchor merged root. That
+      // stays disabled here. (Simply replaying this project's last-selected
+      // *session id* from local storage is safe and handled separately by
+      // the optimistic-restore effect above the pinned-session promotion
+      // effect — it doesn't list or create anything, so it can't race it.)
+      if (workspaceRuntimeEnabled) return;
       // Wait for restore to finish so we know which branch to take.
-      if (tabsHydration === 'loading') return
+      if (tabsHydration === "loading") return;
       // Only auto-select / auto-create on a truly fresh visit. On
       // 'restored-with-tabs' the picker effect handles it; on 'restored-empty'
       // we honor the user's explicit close.
-      if (tabsHydration !== 'fresh') return
+      if (tabsHydration !== "fresh") return;
 
       try {
         const existing = store.chatSessionCollection.all.filter(
-          (s: any) => s.contextId === projectId,
-        )
+          (s: any) => s.contextId === projectId
+        );
 
         if (existing.length > 0) {
-          const lastId = await AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`)
-          const match = lastId ? existing.find((s: any) => s.id === lastId) : null
+          const lastId = await AsyncStorage.getItem(
+            `shogo:lastChatSession:${projectId}`
+          );
+          const match = lastId
+            ? existing.find((s: any) => s.id === lastId)
+            : null;
           const selected =
             match ??
-            [...existing].sort((a: any, b: any) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0))[0]
+            [...existing].sort(
+              (a: any, b: any) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0)
+            )[0];
           if (selected && !cancelled) {
-            setChatSessionId(selected.id)
+            setChatSessionId(selected.id);
           }
         } else {
           const newSession = await actions.createChatSession({
-            inferredName: 'Untitled',
-            contextType: 'project',
+            inferredName: "Untitled",
+            contextType: "project",
             contextId: projectId,
-          })
+          });
           if (newSession?.id && !cancelled) {
-            setChatSessionId(newSession.id)
-            chatSessionEvents.emit({ projectId, activeSessionId: newSession.id, refresh: true })
+            setChatSessionId(newSession.id);
+            chatSessionEvents.emit({
+              projectId,
+              activeSessionId: newSession.id,
+              refresh: true,
+            });
           }
         }
       } catch (err) {
-        console.error('[ProjectLayout] Failed to initialize chat session:', err)
+        console.error(
+          "[ProjectLayout] Failed to initialize chat session:",
+          err
+        );
       }
-    }
+    };
 
-    run()
+    run();
     return () => {
-      cancelled = true
-    }
-  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat, refreshProjectChatSessions])
+      cancelled = true;
+    };
+  }, [projectId, store, chatSessionId, actions, tabsHydration, params.newChat, refreshProjectChatSessions]);
 
   // After a 'restored-with-tabs' hydration, choose which restored tab is
   // active. Prefer the persisted `lastChatSession` if it's still in the list,
   // otherwise the first restored tab. Tracked per-project so navigating
   // between projects in the same mount still works.
-  const pickedFromRestoreRef = useRef<Set<string>>(new Set())
+  const pickedFromRestoreRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!projectId) return
-    // Flag-on: pinned workspace session owns selection (see above).
-    if (workspaceRuntimeEnabled) return
-    if (pickedFromRestoreRef.current.has(projectId)) return
-    if (tabsHydration !== 'restored-with-tabs') return
+    if (!projectId) return;
+    // Flag-on: pinned workspace session owns selection (see above), and the
+    // optimistic-restore effect already covers the "replay last-selected
+    // session id" behavior this picker would otherwise duplicate — without
+    // this picker's `openChatTabIds`-restore/multi-tab machinery, which is
+    // legacy-project-scoped and disabled under the workspace runtime.
+    if (workspaceRuntimeEnabled) return;
+    if (pickedFromRestoreRef.current.has(projectId)) return;
+    if (tabsHydration !== "restored-with-tabs") return;
     if (chatSessionId) {
-      pickedFromRestoreRef.current.add(projectId)
-      return
+      pickedFromRestoreRef.current.add(projectId);
+      return;
     }
-    if (openChatTabIds.length === 0) return
-    let cancelled = false
-    AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`).then((lastId) => {
-      if (cancelled) return
-      const pick = lastId && openChatTabIds.includes(lastId) ? lastId : openChatTabIds[0]
-      if (pick) {
-        pickedFromRestoreRef.current.add(projectId)
-        setChatSessionId(pick)
-      }
-    }).catch(() => {
-      if (cancelled) return
-      const pick = openChatTabIds[0]
-      if (pick) {
-        pickedFromRestoreRef.current.add(projectId)
-        setChatSessionId(pick)
-      }
-    })
-    return () => { cancelled = true }
-  }, [projectId, tabsHydration, openChatTabIds, chatSessionId])
+    if (openChatTabIds.length === 0) return;
+    let cancelled = false;
+    AsyncStorage.getItem(`shogo:lastChatSession:${projectId}`)
+      .then((lastId) => {
+        if (cancelled) return;
+        const pick =
+          lastId && openChatTabIds.includes(lastId)
+            ? lastId
+            : openChatTabIds[0];
+        if (pick) {
+          pickedFromRestoreRef.current.add(projectId);
+          setChatSessionId(pick);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const pick = openChatTabIds[0];
+        if (pick) {
+          pickedFromRestoreRef.current.add(projectId);
+          setChatSessionId(pick);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, tabsHydration, openChatTabIds, chatSessionId]);
 
   const handleChatSessionChange = useCallback((sessionId: string) => {
-    setChatSessionId(sessionId)
-  }, [])
+    setChatSessionId(sessionId);
+  }, []);
 
   const handleLoadMoreSessions = useCallback(async () => {
-    if (!store?.chatSessionCollection || store.chatSessionCollection.isLoadingMore) return
+    if (
+      !store?.chatSessionCollection ||
+      store.chatSessionCollection.isLoadingMore
+    )
+      return;
     const currentCount = store.chatSessionCollection.all.filter(
-      (s: any) => s.contextId === projectId,
-    ).length
+      (s: any) => s.contextId === projectId
+    ).length;
     try {
       await store.chatSessionCollection.loadPage(
         { contextId: projectId },
-        { limit: SESSION_PAGE_SIZE, offset: currentCount },
-      )
+        { limit: SESSION_PAGE_SIZE, offset: currentCount }
+      );
     } catch (err) {
-      console.error('[ProjectLayout] Failed to load more chat sessions:', err)
+      console.error("[ProjectLayout] Failed to load more chat sessions:", err);
     }
-  }, [store, projectId])
+  }, [store, projectId]);
 
   // Drives the sidebar right-edge fade colour below; in dark mode the
   // sidebar reads slightly darker than the chat panel and we lift it with a
   // tiny white overlay, in light mode it reads slightly lighter-grey vs.
   // pure-white and we need a full-strength white at the very edge to make
   // the seam disappear.
-  const colorScheme = useColorScheme()
-  const isDark = colorScheme === 'dark'
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
 
   // Chat panel visibility
-  const [chatCollapsed, setChatCollapsed] = useState(false)
-  const [showChatSessions, setShowChatSessions] = useState(false)
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [showChatSessions, setShowChatSessions] = useState(false);
   // Hydrated from AsyncStorage so the user's "history sidebar open/closed"
   // preference survives navigation; only read once per project mount.
-  const showChatSessionsHydratedRef = useRef<string | null>(null)
+  const showChatSessionsHydratedRef = useRef<string | null>(null);
   // Narrow (mobile) chat-session picker that temporarily replaces the chat
   // panel with the session list. Auto-closes when the user leaves the chat tab.
-  const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false)
+  const [narrowChatPickerOpen, setNarrowChatPickerOpen] = useState(false);
   const [previewTab, setPreviewTab] = useState(
-    nativePhone ? 'chat-fullscreen' : 'canvas',
-  )
+    nativePhone ? "chat-fullscreen" : "canvas"
+  );
   // Ephemeral "the app needs your attention" override (e.g. the agent called
   // ask_user). Layered ON TOP of previewTab via effectiveTab below, and never
   // persisted. Decoupling attention from previewTab is what stops transient
   // prompts from getting written to AsyncStorage and sticking across reloads
   // (root cause of the "chat is always fullscreen" bug).
-  const [attentionTab, setAttentionTab] = useState<string | null>(null)
-  const effectiveTab = attentionTab ?? previewTab
+  const [attentionTab, setAttentionTab] = useState<string | null>(null);
+  const effectiveTab = attentionTab ?? previewTab;
+  // Mirror the visible pane into a dedicated (non-consumed) route param so
+  // MobileBottomNav can highlight the right tab even when the pane changed
+  // via in-page controls rather than a bottom-nav tap. Deliberately a
+  // separate key from `tab`/`tabNonce` (which drive the tab-intent state
+  // machine above) so this one-way sync can never race or loop with that
+  // logic — nothing else reads `navTab`.
+  useEffect(() => {
+    if (!projectId) return;
+    router.setParams({ navTab: effectiveTab } as any);
+  }, [projectId, effectiveTab]);
   // Set when the user (or Agent Type switch) explicitly asks for canvas this
   // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
   // from the sidebar from snapping them back to chat-only. Declared before the
   // project-open effect so a new project can clear a leftover intent.
-  const userRequestedCanvasRef = useRef(false)
+  const userRequestedCanvasRef = useRef(false);
 
   useEffect(() => {
-    if (Platform.OS === 'web' || !phoneLayout) return
-    userRequestedCanvasRef.current = false
-    setActiveTab('chat')
-    setPreviewTab('chat-fullscreen')
-    setNarrowChatPickerOpen(false)
-  }, [projectId, phoneLayout])
+    if (Platform.OS === "web" || !phoneLayout) return;
+    userRequestedCanvasRef.current = false;
+    setActiveTab("chat");
+    setPreviewTab("chat-fullscreen");
+    setNarrowChatPickerOpen(false);
+  }, [projectId, phoneLayout]);
 
   // Close the narrow picker as soon as the layout shifts off the chat tab
   // (e.g. user switched to canvas, or the viewport widened into split mode).
   useEffect(() => {
-    if (narrowChatPickerOpen && (isWide || activeTab !== 'chat')) {
-      setNarrowChatPickerOpen(false)
+    if (narrowChatPickerOpen && (isWide || activeTab !== "chat")) {
+      setNarrowChatPickerOpen(false);
     }
-  }, [narrowChatPickerOpen, isWide, activeTab])
+  }, [narrowChatPickerOpen, isWide, activeTab]);
 
   // Tracks which project is mid-hydration so we don't fire the read twice in
   // StrictMode / under remounts. Distinct from `showChatSessionsHydratedRef`,
   // which only flips AFTER the stored value has been applied — that gating is
   // what keeps the persister effect below from clobbering the saved preference
   // with the default `false` before the read resolves.
-  const showChatSessionsLoadingRef = useRef<string | null>(null)
+  const showChatSessionsLoadingRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!projectId) return
-    if (showChatSessionsHydratedRef.current === projectId) return
-    if (showChatSessionsLoadingRef.current === projectId) return
-    showChatSessionsLoadingRef.current = projectId
-    AsyncStorage.getItem(`shogo:showChatHistory:${projectId}`).then((raw) => {
-      if (raw === '1') setShowChatSessions(true)
-      else if (raw === '0') setShowChatSessions(false)
-      showChatSessionsHydratedRef.current = projectId
-    }).catch(() => {
-      showChatSessionsHydratedRef.current = projectId
-    })
-  }, [projectId])
+    if (!projectId) return;
+    if (showChatSessionsHydratedRef.current === projectId) return;
+    if (showChatSessionsLoadingRef.current === projectId) return;
+    showChatSessionsLoadingRef.current = projectId;
+    AsyncStorage.getItem(`shogo:showChatHistory:${projectId}`)
+      .then((raw) => {
+        if (raw === "1") setShowChatSessions(true);
+        else if (raw === "0") setShowChatSessions(false);
+        showChatSessionsHydratedRef.current = projectId;
+      })
+      .catch(() => {
+        showChatSessionsHydratedRef.current = projectId;
+      });
+  }, [projectId]);
 
   useEffect(() => {
-    if (!projectId) return
-    if (showChatSessionsHydratedRef.current !== projectId) return
-    AsyncStorage.setItem(`shogo:showChatHistory:${projectId}`, showChatSessions ? '1' : '0').catch(() => {})
-  }, [projectId, showChatSessions])
+    if (!projectId) return;
+    if (showChatSessionsHydratedRef.current !== projectId) return;
+    AsyncStorage.setItem(
+      `shogo:showChatHistory:${projectId}`,
+      showChatSessions ? "1" : "0"
+    ).catch(() => {});
+  }, [projectId, showChatSessions]);
 
   // Resizable chat panel width (wide split mode only)
-  const [chatPanelWidth, setChatPanelWidth] = useState(DEFAULT_CHAT_PANEL_WIDTH)
-  const maxChatPanelWidth = Math.floor(width * 0.5)
-  const clampChatWidth = useCallback((w: number) =>
-    Math.max(MIN_CHAT_PANEL_WIDTH, Math.min(w, Math.floor(width * 0.5))),
-    [width],
-  )
+  const [chatPanelWidth, setChatPanelWidth] = useState(
+    DEFAULT_CHAT_PANEL_WIDTH
+  );
+  const maxChatPanelWidth = Math.floor(width * 0.5);
+  const clampChatWidth = useCallback(
+    (w: number) =>
+      Math.max(MIN_CHAT_PANEL_WIDTH, Math.min(w, Math.floor(width * 0.5))),
+    [width]
+  );
 
   useEffect(() => {
-    AsyncStorage.getItem(CHAT_PANEL_WIDTH_STORAGE_KEY).then((raw) => {
-      if (raw) {
-        const parsed = parseInt(raw, 10)
-        if (!isNaN(parsed) && parsed > 0) setChatPanelWidth(parsed)
-      }
-    }).catch(() => {})
-  }, [])
+    AsyncStorage.getItem(CHAT_PANEL_WIDTH_STORAGE_KEY)
+      .then((raw) => {
+        if (raw) {
+          const parsed = parseInt(raw, 10);
+          if (!isNaN(parsed) && parsed > 0) setChatPanelWidth(parsed);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const persistChatPanelWidth = useCallback((w: number) => {
-    setChatPanelWidth(w)
-    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(() => {})
-  }, [])
+    setChatPanelWidth(w);
+    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
+      () => {}
+    );
+  }, []);
 
-  const PERSISTABLE_PREVIEW_TABS = useMemo(() => new Set(['canvas', 'chat-fullscreen', 'app-preview', 'external-preview', 'ide']), [])
+  const PERSISTABLE_PREVIEW_TABS = useMemo(
+    () =>
+      new Set([
+        "canvas",
+        "chat-fullscreen",
+        "app-preview",
+        "external-preview",
+        "ide",
+      ]),
+    []
+  );
 
   // Storage key bumped to v2 to heal installs that were stuck in
   // 'chat-fullscreen' due to the pre-fix attention/preview conflation. Old v1
   // keys are intentionally orphaned (and best-effort cleared below) — a one-time
   // reset to the default tab is the correct migration.
-  const PREVIEW_TAB_STORAGE_PREFIX = 'shogo:lastPreviewTab:v2:'
+  const PREVIEW_TAB_STORAGE_PREFIX = "shogo:lastPreviewTab:v2:";
 
   // Apply the initial preview tab exactly once per project, after the project
   // (and thus its `workingMode`) is known. Tracks the project it ran for so a
   // navigation to a different project re-applies.
-  const previewTabInitForRef = useRef<string | null>(null)
+  const previewTabInitForRef = useRef<string | null>(null);
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -1559,26 +1911,28 @@ export default observer(function ProjectLayout() {
   // clobber the explicit choice. `tabNonce` lets a repeat click on the SAME
   // tab (project already open) re-fire this effect. Declared BEFORE the saved-
   // tab init effect so it runs first on mount.
-  const appliedTabIntentRef = useRef<string | null>(null)
+  const appliedTabIntentRef = useRef<string | null>(null);
   useEffect(() => {
-    const requested = params.tab
+    const requested = params.tab;
     if (
       !projectId ||
       !requested ||
-      (requested !== 'canvas' &&
-        requested !== 'chat-fullscreen' &&
-        requested !== 'external-preview' &&
-        requested !== 'ide' &&
-        requested !== 'files' &&
-        requested !== 'plans' &&
-        requested !== 'settings')
+      (requested !== "canvas" &&
+        requested !== "chat-fullscreen" &&
+        requested !== "external-preview" &&
+        requested !== "ide" &&
+        requested !== "files" &&
+        requested !== "plans" &&
+        requested !== "settings")
     ) {
-      return
+      return;
     }
-    const token = `${projectId}:${requested}:${params.tabNonce ?? ''}:${params.openCanvas ?? ''}`
-    if (appliedTabIntentRef.current === token) return
-    if (requested === 'canvas' && params.openCanvas === '1') {
-      userRequestedCanvasRef.current = true
+    const token = `${projectId}:${requested}:${params.tabNonce ?? ""}:${
+      params.openCanvas ?? ""
+    }`;
+    if (appliedTabIntentRef.current === token) return;
+    if (requested === "canvas" && params.openCanvas === "1") {
+      userRequestedCanvasRef.current = true;
     }
     // A leftover `?tab=chat-fullscreen` from opening this project while it
     // was still chat-only must not override a Canvas click this session on
@@ -1586,83 +1940,95 @@ export default observer(function ProjectLayout() {
     // if the user had Canvas open before navigating home and back.
     if (
       userRequestedCanvasRef.current &&
-      requested === 'chat-fullscreen' &&
-      (Platform.OS === 'web' || !phoneLayout)
+      requested === "chat-fullscreen" &&
+      (Platform.OS === "web" || !phoneLayout)
     ) {
-      return
+      return;
     }
-    if (phoneLayout && requested === 'chat-fullscreen') {
-      userRequestedCanvasRef.current = false
+    if (phoneLayout && requested === "chat-fullscreen") {
+      userRequestedCanvasRef.current = false;
     }
-    appliedTabIntentRef.current = token
-    previewTabInitForRef.current = projectId
-    const nativePhoneChat = nativePhone
+    appliedTabIntentRef.current = token;
+    previewTabInitForRef.current = projectId;
+    const nativePhoneChat = nativePhone;
     const landingTab =
-      requested === 'canvas' ||
-      requested === 'chat-fullscreen' ||
-      requested === 'external-preview'
+      requested === "canvas" ||
+      requested === "chat-fullscreen" ||
+      requested === "external-preview";
     // Native phone always opens on Chat. Ignore leftover `?tab=canvas` from a
     // previous visit or the sidebar's desktop landing-tab policy. Explicit
     // in-session Canvas (top-bar tap, agent-type switch) sets
     // userRequestedCanvasRef first and still applies.
     if (nativePhoneChat && landingTab && !userRequestedCanvasRef.current) {
-      setPreviewTab('chat-fullscreen')
-      setActiveTab('chat')
-      return
+      setPreviewTab("chat-fullscreen");
+      setActiveTab("chat");
+      return;
     }
-    setPreviewTab(requested)
-    if (nativePhoneChat) {
-      setActiveTab(requested === 'chat-fullscreen' ? 'chat' : 'canvas')
+    setPreviewTab(requested);
+    if (phoneLayout) {
+      setActiveTab(requested === "chat-fullscreen" ? "chat" : "canvas");
     }
-  }, [projectId, params.tab, params.tabNonce, phoneLayout,
-    nativePhone, isWide])
+  }, [projectId, params.tab, params.tabNonce, phoneLayout, nativePhone, isWide]);
 
   useEffect(() => {
-    if (!projectId || !project) return
-    if (previewTabInitForRef.current === projectId) return
-    previewTabInitForRef.current = projectId
+    if (!projectId || !project) return;
+    if (previewTabInitForRef.current === projectId) return;
+    previewTabInitForRef.current = projectId;
     if (nativePhone) {
-      setPreviewTab('chat-fullscreen')
-      AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-      return
+      setPreviewTab("chat-fullscreen");
+      AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(
+        () => {}
+      );
+      return;
     }
-    AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`).then((saved) => {
-      // Legacy values written before the v1 dynamic-app -> canvas tab rename
-      // (chore/remove-canvas-v1) get normalized on read so existing users don't
-      // land on an unknown tab and fall back to the default.
-      const normalized = saved === 'dynamic-app' ? 'canvas' : saved
-      // External (folder-linked) projects can't render their app in the agent
-      // canvas, and when live preview is off there's no canvas server at all —
-      // the canvas tab would hang forever on "Loading preview…". Their
-      // first-class surface is the embedded dev-server webview, so default to
-      // (and heal a stale persisted) 'external-preview'. The canvas tab stays
-      // available for anyone who explicitly switches to it.
-      if (isExternalProject && (!normalized || normalized === 'canvas')) {
-        setPreviewTab('external-preview')
-        return
-      }
-      if (normalized) setPreviewTab(normalized)
-    }).catch(() => {})
+    AsyncStorage.getItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`)
+      .then((saved) => {
+        // Legacy values written before the v1 dynamic-app -> canvas tab rename
+        // (chore/remove-canvas-v1) get normalized on read so existing users don't
+        // land on an unknown tab and fall back to the default.
+        const normalized = saved === "dynamic-app" ? "canvas" : saved;
+        // External (folder-linked) projects can't render their app in the agent
+        // canvas, and when live preview is off there's no canvas server at all —
+        // the canvas tab would hang forever on "Loading preview…". Their
+        // first-class surface is the embedded dev-server webview, so default to
+        // (and heal a stale persisted) 'external-preview'. The canvas tab stays
+        // available for anyone who explicitly switches to it.
+        if (isExternalProject && (!normalized || normalized === "canvas")) {
+          setPreviewTab("external-preview");
+          return;
+        }
+        if (normalized) setPreviewTab(normalized);
+      })
+      .catch(() => {});
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
-    AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(() => {})
-  }, [projectId, project, isExternalProject, phoneLayout, nativePhone, isWide])
+    AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(
+      () => {}
+    );
+  }, [projectId, project, isExternalProject, phoneLayout, nativePhone, isWide]);
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
-      AsyncStorage.setItem(`${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`, previewTab).catch(() => {})
+      AsyncStorage.setItem(
+        `${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`,
+        previewTab
+      ).catch(() => {});
     }
-  }, [projectId, previewTab, PERSISTABLE_PREVIEW_TABS])
+  }, [projectId, previewTab, PERSISTABLE_PREVIEW_TABS]);
 
-  const [chatMessages, setChatMessages] = useState<any[]>([])
-  const [streamingTabIds, setStreamingTabIds] = useState<Set<string>>(new Set())
-  const [completedTabIds, setCompletedTabIds] = useState<Set<string>>(new Set())
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [streamingTabIds, setStreamingTabIds] = useState<Set<string>>(
+    new Set()
+  );
+  const [completedTabIds, setCompletedTabIds] = useState<Set<string>>(
+    new Set()
+  );
   // Tracks the active chat tab so streaming-change callbacks (which capture an
   // older closure) can decide whether a finishing stream belongs to the tab
   // the user is currently looking at.
-  const activeChatTabIdRef = useRef<string | null>(null)
+  const activeChatTabIdRef = useRef<string | null>(null);
   useEffect(() => {
-    activeChatTabIdRef.current = chatSessionId
-  }, [chatSessionId])
+    activeChatTabIdRef.current = chatSessionId;
+  }, [chatSessionId]);
   // Per-tab cache of the last `isStreaming` value we received from each
   // ChatPanel. On panel mount the effect that publishes streaming state
   // fires once with `false` (the initial AI SDK status before any turn
@@ -1670,48 +2036,51 @@ export default observer(function ProjectLayout() {
   // would be treated as "stream just finished in the background" and
   // get the new-activity dot. We only flag a tab as completed when we
   // observe a real true -> false transition.
-  const prevStreamingByTabRef = useRef<Map<string, boolean>>(new Map())
-  const handleTabStreamingChange = useCallback((tabId: string, isStreaming: boolean) => {
-    const wasStreaming = prevStreamingByTabRef.current.get(tabId) === true
-    prevStreamingByTabRef.current.set(tabId, isStreaming)
-    setStreamingTabIds((prev) => {
-      const has = prev.has(tabId)
-      if (isStreaming && has) return prev
-      if (!isStreaming && !has) return prev
-      const next = new Set(prev)
-      if (isStreaming) next.add(tabId)
-      else next.delete(tabId)
-      return next
-    })
-    setCompletedTabIds((prev) => {
-      if (isStreaming) {
-        if (!prev.has(tabId)) return prev
-        const next = new Set(prev)
-        next.delete(tabId)
-        return next
-      }
-      // Only a real true -> false transition counts as "stream finished".
-      // Ignore the initial-mount false and any redundant false events so
-      // refresh doesn't paint a dot on every restored tab.
-      if (!wasStreaming) return prev
-      // Stream finished: only flag the tab when the user isn't looking at it.
-      if (tabId === activeChatTabIdRef.current) return prev
-      if (prev.has(tabId)) return prev
-      const next = new Set(prev)
-      next.add(tabId)
-      return next
-    })
-  }, [])
+  const prevStreamingByTabRef = useRef<Map<string, boolean>>(new Map());
+  const handleTabStreamingChange = useCallback(
+    (tabId: string, isStreaming: boolean) => {
+      const wasStreaming = prevStreamingByTabRef.current.get(tabId) === true;
+      prevStreamingByTabRef.current.set(tabId, isStreaming);
+      setStreamingTabIds((prev) => {
+        const has = prev.has(tabId);
+        if (isStreaming && has) return prev;
+        if (!isStreaming && !has) return prev;
+        const next = new Set(prev);
+        if (isStreaming) next.add(tabId);
+        else next.delete(tabId);
+        return next;
+      });
+      setCompletedTabIds((prev) => {
+        if (isStreaming) {
+          if (!prev.has(tabId)) return prev;
+          const next = new Set(prev);
+          next.delete(tabId);
+          return next;
+        }
+        // Only a real true -> false transition counts as "stream finished".
+        // Ignore the initial-mount false and any redundant false events so
+        // refresh doesn't paint a dot on every restored tab.
+        if (!wasStreaming) return prev;
+        // Stream finished: only flag the tab when the user isn't looking at it.
+        if (tabId === activeChatTabIdRef.current) return prev;
+        if (prev.has(tabId)) return prev;
+        const next = new Set(prev);
+        next.add(tabId);
+        return next;
+      });
+    },
+    []
+  );
   // Clear the "new activity" dot once the user opens that tab.
   useEffect(() => {
-    if (!chatSessionId) return
+    if (!chatSessionId) return;
     setCompletedTabIds((prev) => {
-      if (!prev.has(chatSessionId)) return prev
-      const next = new Set(prev)
-      next.delete(chatSessionId)
-      return next
-    })
-  }, [chatSessionId])
+      if (!prev.has(chatSessionId)) return prev;
+      const next = new Set(prev);
+      next.delete(chatSessionId);
+      return next;
+    });
+  }, [chatSessionId]);
 
   // Mirror this project's live streaming / new-activity state into the
   // AppSidebar (the permanent home for chats) so its chat rows can show the
@@ -1720,292 +2089,393 @@ export default observer(function ProjectLayout() {
   // list re-fetch. Only the active project's workspace is mounted, so only
   // its rows ever light up.
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId) return;
     chatActivityEvents.emit({
       projectId,
       streamingSessionIds: [...streamingTabIds],
       completedSessionIds: [...completedTabIds],
-    })
-  }, [projectId, streamingTabIds, completedTabIds])
+    });
+  }, [projectId, streamingTabIds, completedTabIds]);
 
   // Clear this project's activity when the workspace unmounts or the project
   // changes — streams stop with the panels, so stale dots would otherwise
   // linger in the sidebar after navigating away.
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId) return;
     return () => {
-      chatActivityEvents.emit({ projectId, streamingSessionIds: [], completedSessionIds: [] })
-    }
-  }, [projectId])
-  const streamingChangeHandlersRef = useRef<Map<string, (streaming: boolean) => void>>(new Map())
-  const getStreamingChangeHandler = useCallback((tabId: string) => {
-    let handler = streamingChangeHandlersRef.current.get(tabId)
-    if (!handler) {
-      handler = (streaming: boolean) => handleTabStreamingChange(tabId, streaming)
-      streamingChangeHandlersRef.current.set(tabId, handler)
-    }
-    return handler
-  }, [handleTabStreamingChange])
-  const [buildPlanRequest, setBuildPlanRequest] = useState<{ plan: any; modelId: string; nonce: number } | null>(null)
-  const buildPlanNonceRef = useRef(0)
-  const openPlanNonceRef = useRef(0)
-  const [requestedPlanPath, setRequestedPlanPath] = useState<{ filepath: string | null; nonce: number } | null>(null)
-  const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(null)
+      chatActivityEvents.emit({
+        projectId,
+        streamingSessionIds: [],
+        completedSessionIds: [],
+      });
+    };
+  }, [projectId]);
+  const streamingChangeHandlersRef = useRef<
+    Map<string, (streaming: boolean) => void>
+  >(new Map());
+  const getStreamingChangeHandler = useCallback(
+    (tabId: string) => {
+      let handler = streamingChangeHandlersRef.current.get(tabId);
+      if (!handler) {
+        handler = (streaming: boolean) =>
+          handleTabStreamingChange(tabId, streaming);
+        streamingChangeHandlersRef.current.set(tabId, handler);
+      }
+      return handler;
+    },
+    [handleTabStreamingChange]
+  );
+  const [buildPlanRequest, setBuildPlanRequest] = useState<{
+    plan: any;
+    modelId: string;
+    nonce: number;
+  } | null>(null);
+  const buildPlanNonceRef = useRef(0);
+  const openPlanNonceRef = useRef(0);
+  const [requestedPlanPath, setRequestedPlanPath] = useState<{
+    filepath: string | null;
+    nonce: number;
+  } | null>(null);
+  const [selectedAgentToolId, setSelectedAgentToolId] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     if (!canvasEnabled) {
       if (
-        activeTab === 'canvas' &&
-        previewTab !== 'app-preview' &&
-        previewTab !== 'canvas' &&
+        activeTab === "canvas" &&
+        previewTab !== "app-preview" &&
+        previewTab !== "canvas" &&
         !STANDALONE_PANELS.includes(previewTab)
       ) {
-        setActiveTab('chat')
+        setActiveTab("chat");
       }
       const bounceTo = canvasDisabledRedirect({
         canvasEnabled,
         previewTab,
         isExternalProject,
         userRequestedCanvas: userRequestedCanvasRef.current,
-      })
-      if (bounceTo) setPreviewTab(bounceTo)
+      });
+      if (bounceTo) setPreviewTab(bounceTo);
     } else if (canvasEnabled) {
-      if (previewTab === 'app-preview') setPreviewTab('canvas')
+      if (previewTab === "app-preview") setPreviewTab("canvas");
     }
-  }, [canvasEnabled, activeMode, previewTab, activeTab, isExternalProject])
+  }, [canvasEnabled, activeMode, previewTab, activeTab, isExternalProject]);
 
   // Narrow + Android: back from Settings → chat column, with Canvas preview selected when canvas is on.
   useEffect(() => {
-    if (Platform.OS !== 'android' || isWide) return
+    if (Platform.OS !== "android" || isWide) return;
 
     const onBack = () => {
-      if (previewTab !== 'settings') return false
-      setActiveTab('chat')
-      setPreviewTab('chat-fullscreen')
-      return true
-    }
+      if (previewTab !== "settings") return false;
+      setActiveTab("chat");
+      setPreviewTab("chat-fullscreen");
+      return true;
+    };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', onBack)
-    return () => sub.remove()
-  }, [isWide, previewTab, canvasEnabled])
+    const sub = BackHandler.addEventListener("hardwareBackPress", onBack);
+    return () => sub.remove();
+  }, [isWide, previewTab, canvasEnabled]);
 
-  const handlePreviewTabChange = useCallback((tabId: string) => {
-    if (Platform.OS === 'web') {
-      try {
-        ;(document.activeElement as HTMLElement)?.blur?.()
-      } catch {
-        /* ignore */
+  const handlePreviewTabChange = useCallback(
+    (tabId: string) => {
+      if (Platform.OS === "web") {
+        try {
+          (document.activeElement as HTMLElement)?.blur?.();
+        } catch {
+          /* ignore */
+        }
       }
-    }
-    // Any explicit user navigation cancels an in-flight attention override.
-    setAttentionTab(null)
-    if (tabId === 'canvas') {
-      userRequestedCanvasRef.current = true
-      if (!canvasEnabled || activeMode !== 'canvas') {
-        void updateProjectSettings({ activeMode: 'canvas', canvasEnabled: true })
+      // Any explicit user navigation cancels an in-flight attention override.
+      setAttentionTab(null);
+      if (tabId === "canvas") {
+        userRequestedCanvasRef.current = true;
+        if (!canvasEnabled || activeMode !== "canvas") {
+          void updateProjectSettings({
+            activeMode: "canvas",
+            canvasEnabled: true,
+          });
+        }
       }
-    }
-    setPreviewTab(tabId)
-    // Keep the sidebar landing-tab URL in sync. Opening this project while
-    // it was chat-only left `?tab=chat-fullscreen` in the URL; if that
-    // intent effect re-fires it would yank us back off Canvas.
-    if (typeof params.tab === 'string' && params.tab !== tabId) {
-      router.setParams({ tab: tabId } as any)
-    }
-  }, [activeMode, canvasEnabled, params.tab, router, updateProjectSettings])
+      setPreviewTab(tabId);
+      // Keep the sidebar landing-tab URL in sync. Opening this project while
+      // it was chat-only left `?tab=chat-fullscreen` in the URL; if that
+      // intent effect re-fires it would yank us back off Canvas.
+      if (typeof params.tab === "string" && params.tab !== tabId) {
+        router.setParams({ tab: tabId } as any);
+      }
+    },
+    [activeMode, canvasEnabled, params.tab, router, updateProjectSettings]
+  );
 
   useEffect(() => {
     subagentStreamStore.onRequestTabSwitch((toolId?: string) => {
-      setSelectedAgentToolId(toolId ?? null)
+      setSelectedAgentToolId(toolId ?? null);
       // Imperative navigation supersedes any in-flight attention override.
-      setAttentionTab(null)
+      setAttentionTab(null);
       // Agents lives inside the Settings panel now — open Settings and
       // imperatively focus the Agents section via the nonce-bumped request.
-      setPreviewTab('settings')
+      setPreviewTab("settings");
       setRequestedSettingsItem((prev) => ({
-        id: 'agents',
+        id: "agents",
         nonce: (prev?.nonce ?? 0) + 1,
-      }))
-      if (!isWide) setActiveTab('canvas')
-    })
-    return () => subagentStreamStore.onRequestTabSwitch(null)
-  }, [isWide])
+      }));
+      if (!isWide) setActiveTab("canvas");
+    });
+    return () => subagentStreamStore.onRequestTabSwitch(null);
+  }, [isWide]);
 
-  const handleCapabilityToggle = useCallback(async (key: string, enabled: boolean) => {
-    await updateProjectSettings({ [key]: enabled })
-    if (agentUrl) {
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-        if (nativeHeaders) Object.assign(headers, nativeHeaders())
-        await fetch(`${agentUrl}/agent/config`, {
-          method: 'PATCH',
-          headers,
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          body: JSON.stringify({ [key]: enabled }),
-        })
-      } catch (err) {
-        console.error(`[ProjectLayout] Failed to push ${key} config to runtime:`, err)
-      }
-    }
-    if (key === 'canvasEnabled' && !enabled && previewTab === 'canvas') {
-      setPreviewTab('chat-fullscreen')
-    }
-  }, [updateProjectSettings, agentUrl, nativeHeaders, previewTab])
-
-  const handleManualModeChange = useCallback(async (mode: 'canvas' | 'none') => {
-    const enableCanvas = mode === 'canvas'
-
-    await updateProjectSettings({ activeMode: mode, canvasEnabled: enableCanvas })
-
-    if (agentUrl) {
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-        if (nativeHeaders) Object.assign(headers, nativeHeaders())
-        await fetch(`${agentUrl}/agent/config`, {
-          method: 'PATCH',
-          headers,
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          body: JSON.stringify({ activeMode: mode, canvasEnabled: enableCanvas }),
-        })
-      } catch (err) {
-        console.error('[ProjectLayout] Failed to push mode config to runtime:', err)
-      }
-    }
-
-    // Chat-only hides the Canvas tab (`activeMode !== 'canvas'`). Switching
-    // the agent type has to leave `chat-fullscreen` or the user stays
-    // trapped in a full-bleed chat with no preview — the previous branch
-    // only navigated on narrow + Settings, and even then kept `activeTab`
-    // on chat.
-    setAttentionTab(null)
-    if (!enableCanvas) {
-      userRequestedCanvasRef.current = false
-      setActiveTab('chat')
-      setPreviewTab('chat-fullscreen')
-    } else {
-      userRequestedCanvasRef.current = true
-      setActiveTab('canvas')
-      setPreviewTab('canvas')
-      if (typeof params.tab === 'string' && params.tab !== 'canvas') {
-        router.setParams({ tab: 'canvas' } as any)
-      }
-    }
-  }, [updateProjectSettings, agentUrl, nativeHeaders, params.tab, router])
-
-  const techStackId = projectSettings.techStackId as string | undefined
-
-  const handleTechStackChange = useCallback(async (stackId: string, capabilities?: Record<string, boolean>) => {
-    const patch: Record<string, unknown> = { techStackId: stackId }
-    if (capabilities) Object.assign(patch, capabilities)
-    await updateProjectSettings(patch)
-
-    if (capabilities && agentUrl) {
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-        if (nativeHeaders) Object.assign(headers, nativeHeaders())
-        await fetch(`${agentUrl}/agent/config`, {
-          method: 'PATCH',
-          headers,
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          body: JSON.stringify(capabilities),
-        })
-      } catch (err) {
-        console.error('[ProjectLayout] Failed to push stack capabilities to runtime:', err)
-      }
-    }
-
-    // Destructive: replace project files with the new stack's starter. The
-    // confirmation prompt lives in CapabilitiesPanel; by the time we get here
-    // the user has already approved the wipe. The runtime preserves
-    // .shogo/, memory/, .git/, and .canvas-state.json; everything else is
-    // replaced with the new stack's starter and the preview is restarted.
-    if (agentUrl) {
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-        if (nativeHeaders) Object.assign(headers, nativeHeaders())
-        const res = await fetch(`${agentUrl}/agent/workspace/reset-stack`, {
-          method: 'POST',
-          headers,
-          credentials: Platform.OS === 'web' ? 'include' : 'omit',
-          body: JSON.stringify({ stackId }),
-        })
-        if (!res.ok) {
-          console.error('[ProjectLayout] Tech stack reset failed:', res.status, await res.text().catch(() => ''))
-        } else {
-          // Force the canvas iframe to reload so the new stack's starter
-          // shows up as soon as the preview server comes back online.
-          setIframeRefreshKey((k) => k + 1)
+  const handleCapabilityToggle = useCallback(
+    async (key: string, enabled: boolean) => {
+      await updateProjectSettings({ [key]: enabled });
+      if (agentUrl) {
+        try {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          if (nativeHeaders) Object.assign(headers, nativeHeaders());
+          await fetch(`${agentUrl}/agent/config`, {
+            method: "PATCH",
+            headers,
+            credentials: Platform.OS === "web" ? "include" : "omit",
+            body: JSON.stringify({ [key]: enabled }),
+          });
+        } catch (err) {
+          console.error(
+            `[ProjectLayout] Failed to push ${key} config to runtime:`,
+            err
+          );
         }
-      } catch (err) {
-        console.error('[ProjectLayout] Failed to reset workspace to new tech stack:', err)
       }
-    }
-  }, [updateProjectSettings, agentUrl, nativeHeaders])
+      if (key === "canvasEnabled" && !enabled && previewTab === "canvas") {
+        setPreviewTab("chat-fullscreen");
+      }
+    },
+    [updateProjectSettings, agentUrl, nativeHeaders, previewTab]
+  );
 
-  const handleBuildPlan = useCallback((plan: any, modelId: string) => {
-    buildPlanNonceRef.current += 1
-    setBuildPlanRequest({ plan, modelId, nonce: buildPlanNonceRef.current })
-    setActiveTab('chat')
-    if (canvasEnabled) {
-      setPreviewTab('canvas')
-    } else {
-      setPreviewTab('chat-fullscreen')
-    }
-  }, [canvasEnabled])
+  const handleManualModeChange = useCallback(
+    async (mode: "canvas" | "none") => {
+      const enableCanvas = mode === "canvas";
+
+      await updateProjectSettings({
+        activeMode: mode,
+        canvasEnabled: enableCanvas,
+      });
+
+      if (agentUrl) {
+        try {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          if (nativeHeaders) Object.assign(headers, nativeHeaders());
+          await fetch(`${agentUrl}/agent/config`, {
+            method: "PATCH",
+            headers,
+            credentials: Platform.OS === "web" ? "include" : "omit",
+            body: JSON.stringify({
+              activeMode: mode,
+              canvasEnabled: enableCanvas,
+            }),
+          });
+        } catch (err) {
+          console.error(
+            "[ProjectLayout] Failed to push mode config to runtime:",
+            err
+          );
+        }
+      }
+
+      // Chat-only hides the Canvas tab (`activeMode !== 'canvas'`). Switching
+      // the agent type has to leave `chat-fullscreen` or the user stays
+      // trapped in a full-bleed chat with no preview — the previous branch
+      // only navigated on narrow + Settings, and even then kept `activeTab`
+      // on chat.
+      setAttentionTab(null);
+      if (!enableCanvas) {
+        userRequestedCanvasRef.current = false;
+        setActiveTab("chat");
+        setPreviewTab("chat-fullscreen");
+      } else {
+        userRequestedCanvasRef.current = true;
+        setActiveTab("canvas");
+        setPreviewTab("canvas");
+        if (typeof params.tab === "string" && params.tab !== "canvas") {
+          router.setParams({ tab: "canvas" } as any);
+        }
+      }
+    },
+    [updateProjectSettings, agentUrl, nativeHeaders, params.tab, router]
+  );
+
+  const handleTechStackChange = useCallback(
+    async (stackId: string, capabilities?: Record<string, boolean>) => {
+      const patch: Record<string, unknown> = { techStackId: stackId };
+      if (capabilities) Object.assign(patch, capabilities);
+      await updateProjectSettings(patch);
+
+      if (capabilities && agentUrl) {
+        try {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          if (nativeHeaders) Object.assign(headers, nativeHeaders());
+          await fetch(`${agentUrl}/agent/config`, {
+            method: "PATCH",
+            headers,
+            credentials: Platform.OS === "web" ? "include" : "omit",
+            body: JSON.stringify(capabilities),
+          });
+        } catch (err) {
+          console.error(
+            "[ProjectLayout] Failed to push stack capabilities to runtime:",
+            err
+          );
+        }
+      }
+
+      // Destructive: replace project files with the new stack's starter. The
+      // confirmation prompt lives in CapabilitiesPanel; by the time we get here
+      // the user has already approved the wipe. The runtime preserves
+      // .shogo/, memory/, .git/, and .canvas-state.json; everything else is
+      // replaced with the new stack's starter and the preview is restarted.
+      if (agentUrl) {
+        try {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          if (nativeHeaders) Object.assign(headers, nativeHeaders());
+          const res = await fetch(`${agentUrl}/agent/workspace/reset-stack`, {
+            method: "POST",
+            headers,
+            credentials: Platform.OS === "web" ? "include" : "omit",
+            body: JSON.stringify({ stackId }),
+          });
+          if (!res.ok) {
+            console.error(
+              "[ProjectLayout] Tech stack reset failed:",
+              res.status,
+              await res.text().catch(() => "")
+            );
+          } else {
+            // Force the canvas iframe to reload so the new stack's starter
+            // shows up as soon as the preview server comes back online.
+            setIframeRefreshKey((k) => k + 1);
+          }
+        } catch (err) {
+          console.error(
+            "[ProjectLayout] Failed to reset workspace to new tech stack:",
+            err
+          );
+        }
+      }
+    },
+    [updateProjectSettings, agentUrl, nativeHeaders]
+  );
+
+  const handleBuildPlan = useCallback(
+    (plan: any, modelId: string) => {
+      buildPlanNonceRef.current += 1;
+      setBuildPlanRequest({ plan, modelId, nonce: buildPlanNonceRef.current });
+      setActiveTab("chat");
+      if (canvasEnabled) {
+        setPreviewTab("canvas");
+      } else {
+        setPreviewTab("chat-fullscreen");
+      }
+    },
+    [canvasEnabled]
+  );
 
   const handleBuildPlanConsumed = useCallback((nonce: number) => {
-    setBuildPlanRequest((curr) => (curr && curr.nonce === nonce ? null : curr))
-  }, [])
+    setBuildPlanRequest((curr) => (curr && curr.nonce === nonce ? null : curr));
+  }, []);
 
-  const handleOpenPlan = useCallback((filepath?: string | null) => {
-    openPlanNonceRef.current += 1
-    setRequestedPlanPath({ filepath: filepath ?? null, nonce: openPlanNonceRef.current })
-    setPreviewTab('plans')
-    if (!isWide) setActiveTab('canvas')
-  }, [isWide])
+  const handleOpenPlan = useCallback(
+    (filepath?: string | null) => {
+      openPlanNonceRef.current += 1;
+      setRequestedPlanPath({
+        filepath: filepath ?? null,
+        nonce: openPlanNonceRef.current,
+      });
+      setPreviewTab("plans");
+      if (!isWide) setActiveTab("canvas");
+    },
+    [isWide]
+  );
 
-  const [sessionNames, setSessionNames] = useState<Record<string, string>>({})
-  const [ideChatHistoryOpen, setIdeChatHistoryOpen] = useState(false)
+  const [sessionNames, setSessionNames] = useState<Record<string, string>>({});
+  const [ideChatHistoryOpen, setIdeChatHistoryOpen] = useState(false);
 
   useEffect(() => {
-    if (!(showChatSessions || ideChatHistoryOpen) || !store?.chatSessionCollection || !store?.chatMessageCollection) return
+    if (
+      !(showChatSessions || ideChatHistoryOpen) ||
+      !store?.chatSessionCollection ||
+      !store?.chatMessageCollection
+    )
+      return;
 
-    const sessions = store.chatSessionCollection.all.filter((s: any) => s.contextId === projectId)
+    const sessions = store.chatSessionCollection.all.filter(
+      (s: any) => s.contextId === projectId
+    );
 
     const loadNames = async () => {
-      const names: Record<string, string> = {}
+      const names: Record<string, string> = {};
       await Promise.all(
         sessions.map(async (s: any) => {
-          const sessionName = s.name || s.inferredName || ''
-          const isGenericName = !sessionName || sessionName.startsWith('Chat ') || sessionName.startsWith('Chat -')
+          const sessionName = s.name || s.inferredName || "";
+          const isGenericName =
+            !sessionName ||
+            sessionName.startsWith("Chat ") ||
+            sessionName.startsWith("Chat -");
 
           if (!isGenericName) {
-            names[s.id] = sessionName
-            return
+            names[s.id] = sessionName;
+            return;
           }
 
           try {
             // Per-session collection so concurrent loadAll calls don't clobber
             // each other (and don't clobber an active ChatPanel's messages).
-            const sessionMessages = getChatMessageCollectionForSession(s.id)
-            await sessionMessages.loadAll({ sessionId: s.id, agent: 'technical' })
+            const sessionMessages = getChatMessageCollectionForSession(s.id);
+            await sessionMessages.loadAll({
+              sessionId: s.id,
+              agent: "technical",
+            });
             const msgs = sessionMessages.all
-              .filter((m: any) => m.role === 'user')
-              .sort((a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0))
-            const preview = msgs[0]?.content?.trim()
+              .filter((m: any) => m.role === "user")
+              .sort(
+                (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0)
+              );
+            const preview = msgs[0]?.content?.trim();
             names[s.id] = preview
-              ?preview.length > 40 ? preview.slice(0, 40) + '…' : preview
-              : `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+              ? preview.length > 40
+                ? preview.slice(0, 40) + "…"
+                : preview
+              : `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}`;
           } catch {
-            names[s.id] = `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+            names[s.id] = `Chat · ${new Date(s.createdAt).toLocaleDateString(
+              undefined,
+              {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              }
+            )}`;
           }
         })
-      )
-      setSessionNames(names)
-    }
+      );
+      setSessionNames(names);
+    };
 
-    loadNames()
-  }, [showChatSessions, ideChatHistoryOpen, store, projectId])
+    loadNames();
+  }, [showChatSessions, ideChatHistoryOpen, store, projectId]);
 
   // Touch every field the memo below projects so MobX's observer tracks them.
   // The .all getter is reference-stable for field-only updates (no map-
@@ -2014,66 +2484,81 @@ export default observer(function ProjectLayout() {
   // activity timestamp changed — leaving the sidebar stale until the next
   // structural mutation forced a re-render (the "I have to refresh to see my
   // pin" bug).
-  let _sessionFieldsKey = ''
+  let _sessionFieldsKey = "";
   if (store?.chatSessionCollection) {
     for (const s of store.chatSessionCollection.all as any[]) {
-      if (s.contextId !== projectId) continue
+      if (s.contextId !== projectId) continue;
       _sessionFieldsKey +=
         s.name +
-        '\0' +
+        "\0" +
         s.inferredName +
-        '\0' +
-        (s.isPinned ? '1' : '0') +
-        '\0' +
-        (s.isArchived ? '1' : '0') +
-        '\0' +
+        "\0" +
+        (s.isPinned ? "1" : "0") +
+        "\0" +
+        (s.isArchived ? "1" : "0") +
+        "\0" +
         (s.lastActiveAt || s.updatedAt || s.createdAt || 0) +
-        '\n'
+        "\n";
     }
   }
 
   const chatSessions: ChatSession[] = useMemo(() => {
-    if (!store?.chatSessionCollection) return []
+    if (!store?.chatSessionCollection) return [];
     try {
-      const sessionsAll = Array.isArray(store.chatSessionCollection.all) ? store.chatSessionCollection.all : []
+      const sessionsAll = Array.isArray(store.chatSessionCollection.all)
+        ? store.chatSessionCollection.all
+        : [];
       return sessionsAll
         .filter((s: any) => s.contextId === projectId)
         .map((s: any) => ({
           id: s.id,
-          name:typeof s.name === 'string' && s.name.trim()
+          name:
+            typeof s.name === "string" && s.name.trim()
               ? s.name.trim()
               : sessionNames[s.id] ||
                 s.inferredName ||
-                `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+                `Chat · ${new Date(s.createdAt).toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}`,
           messageCount: -1,
           updatedAt: s.lastActiveAt || s.updatedAt || s.createdAt || Date.now(),
           isPinned: !!s.isPinned,
           isArchived: !!s.isArchived,
         }))
-        .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt)
+        .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt);
     } catch {
-      return []
+      return [];
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store?.chatSessionCollection?.all, sessionNames, projectId, _sessionFieldsKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    store?.chatSessionCollection?.all,
+    sessionNames,
+    projectId,
+    _sessionFieldsKey,
+  ]);
 
   useEffect(() => {
-    if (!isIdeChatEmbed || chatSessions.length === 0) return
-    const sessionIds = chatSessions.map((session) => session.id)
+    if (!isIdeChatEmbed || chatSessions.length === 0) return;
+    const sessionIds = chatSessions.map((session) => session.id);
     const nextActiveSessionId =
-      chatSessionId && sessionIds.includes(chatSessionId) ? chatSessionId : sessionIds[0]
+      chatSessionId && sessionIds.includes(chatSessionId)
+        ? chatSessionId
+        : sessionIds[0];
 
     if (!chatSessionId || chatSessionId !== nextActiveSessionId) {
-      setChatSessionId(nextActiveSessionId)
+      setChatSessionId(nextActiveSessionId);
     }
 
     setOpenChatTabIds((prev) =>
-      prev.includes(nextActiveSessionId) ? prev : [...prev, nextActiveSessionId],
-    )
-  }, [isIdeChatEmbed, chatSessions, chatSessionId])
+      prev.includes(nextActiveSessionId) ? prev : [...prev, nextActiveSessionId]
+    );
+  }, [isIdeChatEmbed, chatSessions, chatSessionId]);
 
   const handleCreateNewSession = useCallback(async () => {
-    if (!projectId) return
+    if (!projectId) return;
     try {
       if (workspaceRuntimeEnabled) {
         // Flag-on: every project chat is a workspace session bound to the
@@ -2081,224 +2566,277 @@ export default observer(function ProjectLayout() {
         // mint a fresh workspace session (with attachments synced to match the
         // pinned one) rather than re-selecting a single canonical chat.
         const res = await api.createProjectWorkspaceSession(http, projectId, {
-          inferredName: 'New chat',
-        })
-        const id = res.session?.id
+          inferredName: "New chat",
+        });
+        const id = res.session?.id;
         if (id) {
-          setOpenChatTabIds((prev) =>prev.includes(id) ? prev : [...prev, id])
-          setChatSessionId(id)
-          chatSessionEvents.emit({ projectId, activeSessionId: id, refresh: true })
+          setOpenChatTabIds((prev) =>
+            prev.includes(id) ? prev : [...prev, id]
+          );
+          setChatSessionId(id);
+          chatSessionEvents.emit({
+            projectId,
+            activeSessionId: id,
+            refresh: true,
+          });
         } else if (res.error) {
-          console.error('[ProjectLayout] Failed to create workspace chat:', res.error)
+          console.error(
+            "[ProjectLayout] Failed to create workspace chat:",
+            res.error
+          );
         }
-        return
+        return;
       }
       const newSession = await actions.createChatSession({
-        inferredName: 'Untitled',
-        contextType: 'project',
+        inferredName: "Untitled",
+        contextType: "project",
         contextId: projectId,
-      })
+      });
       if (newSession?.id) {
-        setOpenChatTabIds((prev) => prev.includes(newSession.id) ? prev : [...prev, newSession.id])
-        setChatSessionId(newSession.id)
-        chatSessionEvents.emit({ projectId, activeSessionId: newSession.id, refresh: true })
+        setOpenChatTabIds((prev) =>
+          prev.includes(newSession.id) ? prev : [...prev, newSession.id]
+        );
+        setChatSessionId(newSession.id);
+        chatSessionEvents.emit({
+          projectId,
+          activeSessionId: newSession.id,
+          refresh: true,
+        });
       }
     } catch (err) {
-      console.error('[ProjectLayout] Failed to create chat session:', err)
+      console.error("[ProjectLayout] Failed to create chat session:", err);
     }
-  }, [actions, projectId, workspaceRuntimeEnabled, http])
+  }, [actions, projectId, workspaceRuntimeEnabled, http]);
 
-  const openChatWithContextInCurrentWindow = useCallback(async (markdown: string) => {
-    if (!projectId) return
-    const initialMessage = markdown.trim()
-    if (!initialMessage) return
+  const openChatWithContextInCurrentWindow = useCallback(
+    async (markdown: string) => {
+      if (!projectId) return;
+      const initialMessage = markdown.trim();
+      if (!initialMessage) return;
 
-    try {
-      let newId: string | null = null
-      if (workspaceRuntimeEnabled) {
-        const res = await api.createProjectWorkspaceSession(http, projectId, {
-          inferredName: 'Debug with AI',
-        })
-        newId = res.session?.id ?? null
-        if (!newId && res.error) {
-          console.error('[ProjectLayout] Failed to create workspace chat for context:', res.error)
+      try {
+        let newId: string | null = null;
+        if (workspaceRuntimeEnabled) {
+          const res = await api.createProjectWorkspaceSession(http, projectId, {
+            inferredName: "Debug with AI",
+          });
+          newId = res.session?.id ?? null;
+          if (!newId && res.error) {
+            console.error(
+              "[ProjectLayout] Failed to create workspace chat for context:",
+              res.error
+            );
+          }
+        } else {
+          const newSession = await actions.createChatSession({
+            inferredName: "Debug with AI",
+            contextType: "project",
+            contextId: projectId,
+          });
+          newId = newSession?.id ?? null;
         }
-      } else {
-        const newSession = await actions.createChatSession({
-          inferredName: 'Debug with AI',
-          contextType: 'project',
-          contextId: projectId,
-        })
-        newId = newSession?.id ?? null
-      }
-      if (!newId) return
+        if (!newId) return;
 
-      setDebugInitMessages((prev) => ({ ...prev, [newId]: initialMessage }))
-      setOpenChatTabIds((prev) =>prev.includes(newId) ? prev : [...prev, newId])
-      setChatSessionId(newId)
-      setChatCollapsed(false)
-      setActiveTab('chat')
-      if (!isWide || !canvasEnabled) setPreviewTab('chat-fullscreen')
-      chatSessionEvents.emit({ projectId, activeSessionId: newId, refresh: true })
-    } catch (err) {
-      console.error('[ProjectLayout] Failed to open chat with context:', err)
-    }
-  }, [actions, canvasEnabled, http, isWide, projectId, workspaceRuntimeEnabled])
+        setDebugInitMessages((prev) => ({ ...prev, [newId]: initialMessage }));
+        setOpenChatTabIds((prev) =>
+          prev.includes(newId) ? prev : [...prev, newId]
+        );
+        setChatSessionId(newId);
+        setChatCollapsed(false);
+        setActiveTab("chat");
+        if (!isWide || !canvasEnabled) setPreviewTab("chat-fullscreen");
+        chatSessionEvents.emit({
+          projectId,
+          activeSessionId: newId,
+          refresh: true,
+        });
+      } catch (err) {
+        console.error("[ProjectLayout] Failed to open chat with context:", err);
+      }
+    },
+    [actions, canvasEnabled, http, isWide, projectId, workspaceRuntimeEnabled]
+  );
 
   useEffect(() => {
-    if (Platform.OS !== 'web') return
+    if (Platform.OS !== "web") return;
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ markdown?: string }>).detail
-      const markdown = typeof detail?.markdown === 'string' ? detail.markdown : ''
-      void openChatWithContextInCurrentWindow(markdown)
-    }
-    window.addEventListener('shogo:chat:open-with-context', handler)
-    return () => window.removeEventListener('shogo:chat:open-with-context', handler)
-  }, [openChatWithContextInCurrentWindow])
+      const detail = (event as CustomEvent<{ markdown?: string }>).detail;
+      const markdown =
+        typeof detail?.markdown === "string" ? detail.markdown : "";
+      void openChatWithContextInCurrentWindow(markdown);
+    };
+    window.addEventListener("shogo:chat:open-with-context", handler);
+    return () =>
+      window.removeEventListener("shogo:chat:open-with-context", handler);
+  }, [openChatWithContextInCurrentWindow]);
 
   // Let the sidebar switch this project's chats IN PLACE (no navigation /
   // remount) while the project is already open. The sidebar emits a select
   // request instead of router.push when its row is the active project.
   useEffect(() => {
-    if (!projectId) return
-    return chatSessionEvents.subscribeSelect(({ projectId: pid, sessionId }) => {
-      if (pid !== projectId) return
-      setOpenChatTabIds((prev) =>prev.includes(sessionId) ? prev : [...prev, sessionId])
-      setChatSessionId(sessionId)
-    })
-  }, [projectId])
+    if (!projectId) return;
+    return chatSessionEvents.subscribeSelect(
+      ({ projectId: pid, sessionId }) => {
+        if (pid !== projectId) return;
+        setOpenChatTabIds((prev) =>
+          prev.includes(sessionId) ? prev : [...prev, sessionId]
+        );
+        setChatSessionId(sessionId);
+      }
+    );
+  }, [projectId]);
 
   // Let the sidebar create a fresh chat for this project IN PLACE while it's
   // already open. Reuses `handleCreateNewSession` so workspace-runtime vs
   // project-scope session creation stays in one place.
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId) return;
     return chatSessionEvents.subscribeNewChat(({ projectId: pid }) => {
-      if (pid !== projectId) return
-      void handleCreateNewSession()
-    })
-  }, [projectId, handleCreateNewSession])
+      if (pid !== projectId) return;
+      void handleCreateNewSession();
+    });
+  }, [projectId, handleCreateNewSession]);
 
   useEffect(() => {
-    if (!projectId) return
-    return chatSessionEvents.subscribe(({ projectId: pid, activeSessionId, refresh }) => {
-      if (pid !== projectId) return
-      if (refresh) {
-        seededProjectsRef.current.delete(projectId)
-        void refreshProjectChatSessions()
+    if (!projectId) return;
+    return chatSessionEvents.subscribe(
+      ({ projectId: pid, activeSessionId, refresh }) => {
+        if (pid !== projectId) return;
+        if (refresh) {
+          seededProjectsRef.current.delete(projectId);
+          void refreshProjectChatSessions();
+        }
+        if (isIdeChatEmbed && activeSessionId) {
+          setOpenChatTabIds((prev) =>
+            prev.includes(activeSessionId) ? prev : [...prev, activeSessionId]
+          );
+          setChatSessionId(activeSessionId);
+        }
       }
-      if (isIdeChatEmbed && activeSessionId) {
-        setOpenChatTabIds((prev) =>prev.includes(activeSessionId) ? prev : [...prev, activeSessionId])
-        setChatSessionId(activeSessionId)
-      }
-    })
-  }, [projectId, isIdeChatEmbed, refreshProjectChatSessions])
+    );
+  }, [projectId, isIdeChatEmbed, refreshProjectChatSessions]);
 
   // Honor a `newChat=1` arrival (sidebar "+" pressed on a project that wasn't
   // open yet): create one fresh chat per `newChatNonce`. Ref-guarded so
   // re-renders and the param lingering in the URL never spawn duplicates.
-  const newChatAppliedRef = useRef<string | null>(null)
+  const newChatAppliedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (params.newChat !== '1' || !projectId) return
+    if (params.newChat !== "1" || !projectId) return;
     const rawNonce = Array.isArray(params.newChatNonce)
       ? params.newChatNonce[0]
-      : params.newChatNonce
-    const key = `${projectId}:${rawNonce ?? '1'}`
-    if (newChatAppliedRef.current === key) return
-    newChatAppliedRef.current = key
-    void handleCreateNewSession()
-  }, [params.newChat, params.newChatNonce, projectId, handleCreateNewSession])
+      : params.newChatNonce;
+    const key = `${projectId}:${rawNonce ?? "1"}`;
+    if (newChatAppliedRef.current === key) return;
+    newChatAppliedRef.current = key;
+    void handleCreateNewSession();
+  }, [params.newChat, params.newChatNonce, projectId, handleCreateNewSession]);
 
   // Broadcast the active chat so the sidebar highlights it — even when the
   // chat was selected via local state (e.g. the pinned/bootstrap session) and
   // never touched the URL.
   useEffect(() => {
     if (projectId && chatSessionId) {
-      chatSessionEvents.emit({ projectId, activeSessionId: chatSessionId })
+      chatSessionEvents.emit({ projectId, activeSessionId: chatSessionId });
     }
-  }, [projectId, chatSessionId])
+  }, [projectId, chatSessionId]);
 
   // ─── Canvas-error → "Debug" toast ───────────────────────────────────────
   // The canvas iframe (and its ShogoErrorBoundary) postMessage `canvas-error`
   // back to the parent on uncaught render / runtime / compile failures. We
   // surface a toast with a "Debug" button that spins up a fresh chat
   // pre-loaded with the error + recent runtime-log tail.
-  const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null)
+  const lastCanvasErrorRef = useRef<{ key: string; ts: number } | null>(null);
   const openDebugChatForCanvasError = useCallback(
     async (
-      phase: 'compile' | 'runtime',
+      phase: "compile" | "runtime",
       error: string,
       context?: {
-        route?: string
-        recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
-      },
+        route?: string;
+        recentActions?: ReadonlyArray<{
+          ts: number;
+          kind: string;
+          target?: string;
+          route?: string;
+        }>;
+      }
     ) => {
-      if (!projectId) return
+      if (!projectId) return;
       try {
-        const recentLogs = getRuntimeLogEntries(projectId).slice(-CANVAS_ERROR_LOG_TAIL)
+        const recentLogs = getRuntimeLogEntries(projectId).slice(
+          -CANVAS_ERROR_LOG_TAIL
+        );
         const prompt = buildCanvasErrorDebugPrompt({
           phase,
           error,
           route: context?.route,
           recentActions: context?.recentActions,
           recentLogs,
-        })
+        });
 
         const newSession = await actions.createChatSession({
           inferredName: `Debug: ${phase} error`,
-          contextType: 'project',
+          contextType: "project",
           contextId: projectId,
-        })
-        if (!newSession?.id) return
-        const newId = newSession.id
+        });
+        if (!newSession?.id) return;
+        const newId = newSession.id;
 
-        setDebugInitMessages((prev) => ({ ...prev, [newId]: prompt }))
+        setDebugInitMessages((prev) => ({ ...prev, [newId]: prompt }));
         setOpenChatTabIds((prev) =>
-          prev.includes(newId) ? prev : [...prev, newId],
-        )
-        setChatSessionId(newId)
-        chatSessionEvents.emit({ projectId, activeSessionId: newId, refresh: true })
+          prev.includes(newId) ? prev : [...prev, newId]
+        );
+        setChatSessionId(newId);
+        chatSessionEvents.emit({
+          projectId,
+          activeSessionId: newId,
+          refresh: true,
+        });
         // Narrow layouts hide the chat column behind the canvas tab, so flip
         // back to it. Wide layouts already show the chat column alongside the
         // canvas — leave the preview pane (canvas / IDE / etc.) untouched.
-        if (!isWide) setActiveTab('chat')
+        if (!isWide) setActiveTab("chat");
       } catch (err) {
-        console.error('[ProjectLayout] Failed to open debug chat:', err)
+        console.error("[ProjectLayout] Failed to open debug chat:", err);
       }
     },
-    [projectId, actions, isWide],
-  )
+    [projectId, actions, isWide]
+  );
 
   const handleCanvasError = useCallback(
     (
-      phase: 'compile' | 'runtime',
+      phase: "compile" | "runtime",
       error: string,
       context?: {
-        route?: string
-        recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
-      },
+        route?: string;
+        recentActions?: ReadonlyArray<{
+          ts: number;
+          kind: string;
+          target?: string;
+          route?: string;
+        }>;
+      }
     ) => {
-      if (!projectId) return
+      if (!projectId) return;
       // Dedup: the canvas iframe re-throws the same error on every retry /
       // HMR loop. One toast per unique error within the dedup window.
-      const key = `${phase}|${error}`
-      const now = Date.now()
-      const last = lastCanvasErrorRef.current
+      const key = `${phase}|${error}`;
+      const now = Date.now();
+      const last = lastCanvasErrorRef.current;
       if (last && last.key === key && now - last.ts < CANVAS_ERROR_DEDUP_MS) {
-        return
+        return;
       }
-      lastCanvasErrorRef.current = { key, ts: now }
+      lastCanvasErrorRef.current = { key, ts: now };
 
-      const phaseWord = phase === 'compile' ? 'Compile-time' : 'Runtime'
-      const where = context?.route ? ` on ${context.route}` : ''
+      const phaseWord = phase === "compile" ? "Compile-time" : "Runtime";
+      const where = context?.route ? ` on ${context.route}` : "";
       const description = where
         ? `${phaseWord} error${where}.`
-        : `${phaseWord} error in the canvas.`
-      const toastId = `canvas-error-${now}`
+        : `${phaseWord} error in the canvas.`;
+      const toastId = `canvas-error-${now}`;
 
       toast.show({
         id: toastId,
-        placement: 'top',
+        placement: "top",
         duration: 12_000,
         render: ({ id: tId }: { id: string }) => (
           <Toast nativeID={tId} variant="solid" action="error">
@@ -2316,8 +2854,8 @@ export default observer(function ProjectLayout() {
                 accessibilityRole="button"
                 accessibilityLabel="Debug this canvas error in a new chat"
                 onPress={() => {
-                  toast.close(tId)
-                  void openDebugChatForCanvasError(phase, error, context)
+                  toast.close(tId);
+                  void openDebugChatForCanvasError(phase, error, context);
                 }}
                 className="flex-row items-center gap-1.5 rounded-md bg-white/95 px-3 py-1.5 active:opacity-80"
               >
@@ -2340,98 +2878,111 @@ export default observer(function ProjectLayout() {
             </View>
           </Toast>
         ),
-      })
+      });
     },
-    [projectId, toast, openDebugChatForCanvasError],
-  )
+    [projectId, toast, openDebugChatForCanvasError]
+  );
 
   const handleRenameChatSession = useCallback(
     async (sessionId: string, newName: string) => {
       try {
-        await actions.updateChatSession(sessionId, { name: newName })
+        await actions.updateChatSession(sessionId, { name: newName });
         // Flush into the local sessionNames cache so the useMemo dep changes
         // and chatSessions recomputes immediately.
-        setSessionNames((prev) => ({ ...prev, [sessionId]: newName }))
-        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
+        setSessionNames((prev) => ({ ...prev, [sessionId]: newName }));
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true });
       } catch (err) {
-        console.error('[ProjectLayout] Failed to rename chat session:', err)
+        console.error("[ProjectLayout] Failed to rename chat session:", err);
       }
     },
-    [actions, projectId],
-  )
+    [actions, projectId]
+  );
 
   const handleTogglePinChatSession = useCallback(
     async (sessionId: string, next: boolean) => {
       try {
-        await actions.updateChatSession(sessionId, { isPinned: next })
-        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
+        await actions.updateChatSession(sessionId, { isPinned: next });
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true });
       } catch (err) {
-        console.error('[ProjectLayout] Failed to toggle pin on chat session:', err)
+        console.error(
+          "[ProjectLayout] Failed to toggle pin on chat session:",
+          err
+        );
       }
     },
-    [actions, projectId],
-  )
+    [actions, projectId]
+  );
 
   const handleToggleArchiveChatSession = useCallback(
     async (sessionId: string, next: boolean) => {
       try {
-        await actions.updateChatSession(sessionId, { isArchived: next })
-        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
+        await actions.updateChatSession(sessionId, { isArchived: next });
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true });
       } catch (err) {
-        console.error('[ProjectLayout] Failed to toggle archive on chat session:', err)
+        console.error(
+          "[ProjectLayout] Failed to toggle archive on chat session:",
+          err
+        );
       }
     },
-    [actions, projectId],
-  )
+    [actions, projectId]
+  );
 
   const performDeleteChatSession = useCallback(
     async (sessionId: string) => {
       try {
-        await actions.deleteChatSession(sessionId)
-        handleCloseTab(sessionId)
+        await actions.deleteChatSession(sessionId);
+        handleCloseTab(sessionId);
         // No client-side EZ Mode teardown needed: voice rows are stored
         // in chat_messages with agent="voice" and cascade-delete with
         // the ChatSession on the server.
-        if (projectId) chatSessionEvents.emit({ projectId, refresh: true })
+        if (projectId) chatSessionEvents.emit({ projectId, refresh: true });
       } catch (err) {
-        console.error('[ProjectLayout] Failed to delete chat session:', err)
+        console.error("[ProjectLayout] Failed to delete chat session:", err);
       }
     },
-    [actions, handleCloseTab, projectId],
-  )
+    [actions, handleCloseTab, projectId]
+  );
 
   const handleDeleteChatSession = useCallback(
     (sessionId: string) => {
-      const confirmMsg = 'Delete this chat? This cannot be undone.'
-      if (Platform.OS === 'web') {
-        setDeleteChatConfirmSessionId(sessionId)
+      const confirmMsg = "Delete this chat? This cannot be undone.";
+      if (Platform.OS === "web") {
+        setDeleteChatConfirmSessionId(sessionId);
       } else {
-        Alert.alert('Delete chat', confirmMsg, [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: () => { void performDeleteChatSession(sessionId) } },
-        ])
+        Alert.alert("Delete chat", confirmMsg, [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => {
+              void performDeleteChatSession(sessionId);
+            },
+          },
+        ]);
       }
     },
-    [performDeleteChatSession],
-  )
+    [performDeleteChatSession]
+  );
 
   const handleConfirmDeleteChatDialog = useCallback(() => {
-    if (!deleteChatConfirmSessionId) return
-    const id = deleteChatConfirmSessionId
-    setDeleteChatConfirmSessionId(null)
-    void performDeleteChatSession(id)
-  }, [deleteChatConfirmSessionId, performDeleteChatSession])
+    if (!deleteChatConfirmSessionId) return;
+    const id = deleteChatConfirmSessionId;
+    setDeleteChatConfirmSessionId(null);
+    void performDeleteChatSession(id);
+  }, [deleteChatConfirmSessionId, performDeleteChatSession]);
 
   // ─── Integrations card state ───────────────────────────────
   const [integrationsCardData, setIntegrationsCardData] = useState<{
-    integrations: TemplateIntegrationRef[]
-    templateName: string
-  } | null>(null)
-  const [integrationsCardDismissed, setIntegrationsCardDismissed] = useState(false)
+    integrations: TemplateIntegrationRef[];
+    templateName: string;
+  } | null>(null);
+  const [integrationsCardDismissed, setIntegrationsCardDismissed] =
+    useState(false);
 
   useEffect(() => {
-    if (!capturedShowIntegrations || !project?.id) return
-    let cancelled = false
+    if (!capturedShowIntegrations || !project?.id) return;
+    let cancelled = false;
 
     // After install, the marketplace install row carries the listing
     // slug. We fetch the listing's longDescription/integrations from
@@ -2441,57 +2992,78 @@ export default observer(function ProjectLayout() {
     async function lookupIntegrations() {
       try {
         const installRes = await http.get<{
-          install?: { listing?: { slug?: string } }
-        }>(`/api/marketplace/installs/by-project/${encodeURIComponent(project.id)}`)
-        if (cancelled) return
-        const slug = installRes.data?.install?.listing?.slug
-        if (!slug) return
+          install?: { listing?: { slug?: string } };
+        }>(
+          `/api/marketplace/installs/by-project/${encodeURIComponent(
+            project.id
+          )}`
+        );
+        if (cancelled) return;
+        const slug = installRes.data?.install?.listing?.slug;
+        if (!slug) return;
         const listingRes = await http.get<{
-          listing?: { title?: string; integrations?: TemplateIntegrationRef[] }
-        }>(`/api/marketplace/${encodeURIComponent(slug)}`)
-        if (cancelled) return
-        const integrations = listingRes.data?.listing?.integrations
+          listing?: { title?: string; integrations?: TemplateIntegrationRef[] };
+        }>(`/api/marketplace/${encodeURIComponent(slug)}`);
+        if (cancelled) return;
+        const integrations = listingRes.data?.listing?.integrations;
         if (integrations?.length) {
           setIntegrationsCardData({
             integrations,
-            templateName: listingRes.data?.listing?.title ?? '',
-          })
+            templateName: listingRes.data?.listing?.title ?? "",
+          });
         }
       } catch (err) {
-        console.warn('[ProjectLayout] Failed to look up listing integrations:', err)
+        console.warn(
+          "[ProjectLayout] Failed to look up listing integrations:",
+          err
+        );
       }
     }
 
-    lookupIntegrations()
-    return () => { cancelled = true }
-  }, [capturedShowIntegrations, project?.id, http])
+    lookupIntegrations();
+    return () => {
+      cancelled = true;
+    };
+  }, [capturedShowIntegrations, project?.id, http]);
 
   const pendingToolInstalls = useMemo(() => {
-    const pending: { toolkit: string; displayName: string }[] = []
-    const seen = new Set<string>()
+    const pending: { toolkit: string; displayName: string }[] = [];
+    const seen = new Set<string>();
     for (const msg of chatMessages) {
-      const parts = (msg as any).parts as any[] | undefined
-      if (!parts) continue
+      const parts = (msg as any).parts as any[] | undefined;
+      if (!parts) continue;
       for (const part of parts) {
-        if (part.type !== 'tool-invocation' && part.type !== 'dynamic-tool') continue
-        const toolName = part.toolInvocation?.toolName ?? part.toolName
-        if (toolName !== 'connect' && toolName !== 'tool_install' && toolName !== 'mcp_install') continue
-        const state = part.toolInvocation?.state ?? part.state
-        if (state !== 'result' && state !== 'output-available') continue
+        if (part.type !== "tool-invocation" && part.type !== "dynamic-tool")
+          continue;
+        const toolName = part.toolInvocation?.toolName ?? part.toolName;
+        if (
+          toolName !== "connect" &&
+          toolName !== "tool_install" &&
+          toolName !== "mcp_install"
+        )
+          continue;
+        const state = part.toolInvocation?.state ?? part.state;
+        if (state !== "result" && state !== "output-available") continue;
         const result = parseToolInstallResult(
           part.toolInvocation?.result ?? part.output
-        )
-        if (result?.authStatus === 'needs_auth' && result?.integration && !seen.has(result.integration)) {
-          seen.add(result.integration)
+        );
+        if (
+          result?.authStatus === "needs_auth" &&
+          result?.integration &&
+          !seen.has(result.integration)
+        ) {
+          seen.add(result.integration);
           pending.push({
             toolkit: result.integration,
-            displayName: result.integration.charAt(0).toUpperCase() + result.integration.slice(1),
-          })
+            displayName:
+              result.integration.charAt(0).toUpperCase() +
+              result.integration.slice(1),
+          });
         }
       }
     }
-    return pending
-  }, [chatMessages])
+    return pending;
+  }, [chatMessages]);
 
   // When Shogo emits a pending `ask_user` question, force-switch to chat so
   // the user sees the prompt regardless of which panel they're currently on.
@@ -2500,76 +3072,80 @@ export default observer(function ProjectLayout() {
   // repeatedly yanked back.
   const pendingAskUserId = useMemo<string | null>(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const msg = chatMessages[i] as any
-      if (msg?.role !== 'assistant') continue
-      const parts = msg.parts as any[] | undefined
-      if (!parts) continue
+      const msg = chatMessages[i] as any;
+      if (msg?.role !== "assistant") continue;
+      const parts = msg.parts as any[] | undefined;
+      if (!parts) continue;
       for (const p of parts) {
         // Only react when the tool's args are committed ('input-available').
         // 'input-streaming' means the model is still emitting partial args —
         // reacting then yanks the layout before the question even exists.
         if (
-          p?.type === 'dynamic-tool' &&
-          p?.toolName === 'ask_user' &&
-          p?.state === 'input-available'
+          p?.type === "dynamic-tool" &&
+          p?.toolName === "ask_user" &&
+          p?.state === "input-available"
         ) {
-          return p.toolCallId ?? p.id ?? 'pending'
+          return p.toolCallId ?? p.id ?? "pending";
         }
       }
-      break
+      break;
     }
-    return null
-  }, [chatMessages])
+    return null;
+  }, [chatMessages]);
 
-  const lastSwitchedAskUserIdRef = useRef<string | null>(null)
+  const lastSwitchedAskUserIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!pendingAskUserId) {
       // Question resolved (answered / aborted / replaced) — drop the override
       // so the user returns to whichever tab they had chosen.
-      lastSwitchedAskUserIdRef.current = null
-      setAttentionTab(null)
-      return
+      lastSwitchedAskUserIdRef.current = null;
+      setAttentionTab(null);
+      return;
     }
-    if (lastSwitchedAskUserIdRef.current === pendingAskUserId) return
-    lastSwitchedAskUserIdRef.current = pendingAskUserId
-    setActiveTab('chat')
+    if (lastSwitchedAskUserIdRef.current === pendingAskUserId) return;
+    lastSwitchedAskUserIdRef.current = pendingAskUserId;
+    setActiveTab("chat");
     // Ephemeral attention override — does NOT mutate previewTab and is NOT
     // persisted, so the user's chosen tab survives the prompt.
-    setAttentionTab('chat-fullscreen')
-  }, [pendingAskUserId])
+    setAttentionTab("chat-fullscreen");
+  }, [pendingAskUserId]);
 
   const showIntegrationsCard =
-    !integrationsCardDismissed && (
-      (capturedShowIntegrations && integrationsCardData != null) ||
-      pendingToolInstalls.length > 0
-    )
+    !integrationsCardDismissed &&
+    ((capturedShowIntegrations && integrationsCardData != null) ||
+      pendingToolInstalls.length > 0);
 
   /** Native phone + narrow layout: float only on Chat tab (not Canvas / Files / Terminal / …). Web, tablet, and wide layouts unchanged. */
   const showIntegrationsCardUi =
-    showIntegrationsCard && (!phoneLayout || isWide || activeTab === 'chat')
+    showIntegrationsCard && (!phoneLayout || isWide || activeTab === "chat");
 
-  const narrowOnCanvas = !isWide && activeTab === 'canvas'
+  const narrowOnCanvas = !isWide && activeTab === "canvas";
   /** Native-only: float above Files / Terminal / … (those layers use z-20). Omit on Expo web so web layout stays unchanged. */
-  const showNativeNarrowChatFab = narrowOnCanvas && Platform.OS !== 'web' && !phoneLayout
+  const showNativeNarrowChatFab =
+    narrowOnCanvas && Platform.OS !== "web" && !phoneLayout;
 
   /** Keeps the narrow-mode Chat FAB above the software keyboard (absolute positioning ignores keyboard inset). Web unchanged. */
-  const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0)
+  const [narrowCanvasKeyboardInset, setNarrowCanvasKeyboardInset] = useState(0);
   useEffect(() => {
     if (!showNativeNarrowChatFab) {
-      setNarrowCanvasKeyboardInset(0)
-      return
+      setNarrowCanvasKeyboardInset(0);
+      return;
     }
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+    const showEvt =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
     const subShow = Keyboard.addListener(showEvt, (e) => {
-      setNarrowCanvasKeyboardInset(e.endCoordinates.height)
-    })
-    const subHide = Keyboard.addListener(hideEvt, () => setNarrowCanvasKeyboardInset(0))
+      setNarrowCanvasKeyboardInset(e.endCoordinates.height);
+    });
+    const subHide = Keyboard.addListener(hideEvt, () =>
+      setNarrowCanvasKeyboardInset(0)
+    );
     return () => {
-      subShow.remove()
-      subHide.remove()
-    }
-  }, [showNativeNarrowChatFab])
+      subShow.remove();
+      subHide.remove();
+    };
+  }, [showNativeNarrowChatFab]);
 
   // Memoized billingData fallback — must be declared before any conditional
   // return so hook order stays stable across the loading → loaded transition.
@@ -2581,45 +3157,63 @@ export default observer(function ProjectLayout() {
   // Depend on the primitive fields ChatPanel actually consumes instead. The
   // `refetchUsageWallet` callback is wrapped in useCallback([]) inside the
   // hook, so its identity is already stable across renders.
-  const billingHasActive = features.billing ? billingData.hasActiveSubscription : true
-  const billingHasAdvanced = features.billing ? billingData.hasAdvancedModelAccess : true
-  const billingRefetch = billingData.refetchUsageWallet
+  const billingHasActive = features.billing
+    ? billingData.hasActiveSubscription
+    : true;
+  const billingHasAdvanced = features.billing
+    ? billingData.hasAdvancedModelAccess
+    : true;
+  const billingRefetch = billingData.refetchUsageWallet;
   const billingDataResolved = useMemo(
     () => ({
       hasActiveSubscription: billingHasActive,
       hasAdvancedModelAccess: billingHasAdvanced,
       refetchUsageWallet: billingRefetch,
     }),
-    [billingHasActive, billingHasAdvanced, billingRefetch],
-  )
+    [billingHasActive, billingHasAdvanced, billingRefetch]
+  );
 
   const handleOpenCodeWorkbench = useCallback(() => {
-    if (!projectId) return
+    if (!projectId) return;
     const bridge =
-      Platform.OS === 'web' && typeof window !== 'undefined'
-        ? (window as unknown as {
-            shogoDesktop?: {
-              codeWorkbench?: {
-                open?: (opts: { projectId?: string; workspacePath?: string }) => Promise<{ ok?: boolean; error?: string }>
-              }
+      Platform.OS === "web" && typeof window !== "undefined"
+        ? (
+            window as unknown as {
+              shogoDesktop?: {
+                codeWorkbench?: {
+                  open?: (opts: {
+                    projectId?: string;
+                    workspacePath?: string;
+                  }) => Promise<{ ok?: boolean; error?: string }>;
+                };
+              };
             }
-          }).shogoDesktop?.codeWorkbench
-        : undefined
+          ).shogoDesktop?.codeWorkbench
+        : undefined;
     if (bridge?.open) {
-      void bridge.open({
-        projectId: projectId!,
-        ...(primaryFolderPath ? { workspacePath: primaryFolderPath } : {}),
-      }).then((result: { ok?: boolean; error?: string } | undefined) => {
-        if (result && result.ok === false) {
-          Alert.alert('Could not open Shogo IDE', result.error ?? 'Unknown error')
-        }
-      }).catch((err: unknown) => {
-        Alert.alert('Could not open Shogo IDE', err instanceof Error ? err.message : String(err))
-      })
-      return
+      void bridge
+        .open({
+          projectId: projectId!,
+          ...(primaryFolderPath ? { workspacePath: primaryFolderPath } : {}),
+        })
+        .then((result: { ok?: boolean; error?: string } | undefined) => {
+          if (result && result.ok === false) {
+            Alert.alert(
+              "Could not open Shogo IDE",
+              result.error ?? "Unknown error"
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          Alert.alert(
+            "Could not open Shogo IDE",
+            err instanceof Error ? err.message : String(err)
+          );
+        });
+      return;
     }
-    handlePreviewTabChange('ide')
-  }, [handlePreviewTabChange, primaryFolderPath, projectId])
+    handlePreviewTabChange("ide");
+  }, [handlePreviewTabChange, primaryFolderPath, projectId]);
 
   // enrichMessage: auto-inject terminal context into every chat message.
   // Dynamically imports the desktop terminal store (no-op on mobile/web).
@@ -2629,74 +3223,90 @@ export default observer(function ProjectLayout() {
   // model sees branch/working-tree state and current errors without the user
   // pasting them. Each source is independently guarded: a failure degrades to
   // null/[] rather than dropping the user's message.
-  const enrichMessage = useCallback(async (text: string): Promise<string> => {
-    try {
-      if (Platform.OS !== 'web') return text
-      const { terminalContextStore } = await loadDesktopTerminal()
-      if (!terminalContextStore.isReady()) return text
+  const enrichMessage = useCallback(
+    async (text: string): Promise<string> => {
+      try {
+        if (Platform.OS !== "web") return text;
+        const { terminalContextStore } = await loadDesktopTerminal();
+        if (!terminalContextStore.isReady()) return text;
 
-      const git = {
-        getStatus: async () => {
-          try {
-            if (!projectId) return null
-            const { getDesktopGitBridge } = await import('@/components/project/panels/ide/git/bridge')
-            const bridge = getDesktopGitBridge()
-            if (!bridge) return null
-            const resolved = await bridge.resolveProjectRoot(projectId)
-            const root = resolved.ok ? resolved.root : null
-            if (!root) return null
-            const cur = await bridge.current(root)
-            const snap = cur.ok ? cur.snapshot : null
-            if (!snap || !snap.isRepo) return null
-            const fileCodes = Object.values(snap.fileStatus ?? {})
-            return {
-              branch: snap.branch ?? (snap.detached ? 'HEAD (detached)' : 'unknown'),
-              stagedCount: Object.keys(snap.stagedStatus ?? {}).length,
-              modifiedCount: fileCodes.filter((c) => c !== '?').length,
-              untrackedCount: fileCodes.filter((c) => c === '?').length,
-              conflictCount: snap.conflictPaths?.length ?? 0,
+        const git = {
+          getStatus: async () => {
+            try {
+              if (!projectId) return null;
+              const { getDesktopGitBridge } = await import(
+                "@/components/project/panels/ide/git/bridge"
+              );
+              const bridge = getDesktopGitBridge();
+              if (!bridge) return null;
+              const resolved = await bridge.resolveProjectRoot(projectId);
+              const root = resolved.ok ? resolved.root : null;
+              if (!root) return null;
+              const cur = await bridge.current(root);
+              const snap = cur.ok ? cur.snapshot : null;
+              if (!snap || !snap.isRepo) return null;
+              const fileCodes = Object.values(snap.fileStatus ?? {});
+              return {
+                branch:
+                  snap.branch ??
+                  (snap.detached ? "HEAD (detached)" : "unknown"),
+                stagedCount: Object.keys(snap.stagedStatus ?? {}).length,
+                modifiedCount: fileCodes.filter((c) => c !== "?").length,
+                untrackedCount: fileCodes.filter((c) => c === "?").length,
+                conflictCount: snap.conflictPaths?.length ?? 0,
+              };
+            } catch {
+              return null;
             }
-          } catch {
-            return null
-          }
-        },
-      }
+          },
+        };
 
-      const diagnostics = {
-        getDiagnostics: async () => {
-          try {
-            if (!projectId) return []
-            const { fetchDiagnostics } = await import('@/lib/diagnostics-api')
-            const res = await fetchDiagnostics(projectId)
-            if ('unchanged' in res) return []
-            return res.diagnostics.map((d) => ({
-              severity: d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info',
-              file: d.file,
-              line: d.line,
-              column: d.column,
-              message: d.message,
-            }))
-          } catch {
-            return []
-          }
-        },
-      }
+        const diagnostics = {
+          getDiagnostics: async () => {
+            try {
+              if (!projectId) return [];
+              const { fetchDiagnostics } = await import(
+                "@/lib/diagnostics-api"
+              );
+              const res = await fetchDiagnostics(projectId);
+              if ("unchanged" in res) return [];
+              return res.diagnostics.map((d) => ({
+                severity:
+                  d.severity === "error"
+                    ? "error"
+                    : d.severity === "warning"
+                    ? "warning"
+                    : "info",
+                file: d.file,
+                line: d.line,
+                column: d.column,
+                message: d.message,
+              }));
+            } catch {
+              return [];
+            }
+          },
+        };
 
-      return terminalContextStore.enrichMessage(text, { git, diagnostics })
-    } catch {
-      return text
-    }
-  }, [projectId])
+        return terminalContextStore.enrichMessage(text, { git, diagnostics });
+      } catch {
+        return text;
+      }
+    },
+    [projectId]
+  );
 
   // Loading state. We also gate on `runtimeReady` so the panels never
   // render with stale URLs — see `useAgentUrl` for the polling contract.
   // Keep this as data for the final render branch instead of returning here:
   // direct new-window loads start in this state, and returning before later
   // hooks causes React hook-order error #310 when the project finishes loading.
-  const projectRouteLoading = isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady)
-  const stillBootingRuntime = !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady
-  const showStalledRecovery = stillBootingRuntime && (runtimeStalled || !!runtimeError)
-
+  const projectRouteLoading =
+    isLoading || !project || (!remoteProjectAgentBaseUrl && !runtimeReady);
+  const stillBootingRuntime =
+    !isLoading && !!project && !remoteProjectAgentBaseUrl && !runtimeReady;
+  const showStalledRecovery =
+    stillBootingRuntime && (runtimeStalled || !!runtimeError);
 
   /**
    * No tabs are open and we've finished hydrating from storage. This is the
@@ -2717,23 +3327,27 @@ export default observer(function ProjectLayout() {
     workspaceRuntimeEnabled &&
     !params.chatSessionId &&
     !pinnedResolveFailed &&
-    openChatTabIds.length === 0
+    openChatTabIds.length === 0;
 
   const showEmptyChatState =
-    !workspaceChatLoading && tabsHydration !== 'loading' && openChatTabIds.length === 0
+    !workspaceChatLoading &&
+    tabsHydration !== "loading" &&
+    openChatTabIds.length === 0;
 
   const renderEmptyChatList = (onSelectClose?: () => void) => (
     <ChatSessionSidebar
       sessions={chatSessions}
       currentSessionId={undefined}
       onSelect={(sessionId) => {
-        setOpenChatTabIds((prev) => prev.includes(sessionId) ? prev : [...prev, sessionId])
-        setChatSessionId(sessionId)
-        onSelectClose?.()
+        setOpenChatTabIds((prev) =>
+          prev.includes(sessionId) ? prev : [...prev, sessionId]
+        );
+        setChatSessionId(sessionId);
+        onSelectClose?.();
       }}
       onCreate={() => {
-        void handleCreateNewSession()
-        onSelectClose?.()
+        void handleCreateNewSession();
+        onSelectClose?.();
       }}
       onRename={handleRenameChatSession}
       onLoadMore={handleLoadMoreSessions}
@@ -2741,35 +3355,44 @@ export default observer(function ProjectLayout() {
       isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
       hideHeader
     />
-  )
+  );
 
   const chatPanels = (
     <>
       {openChatTabIds.map((tabId) => {
-        const isActive = tabId === chatSessionId
-        const isInitialSession = tabId === initialPropsSessionId
-        const debugSeed = debugInitMessages[tabId]
+        const isActive = tabId === chatSessionId;
+        const isInitialSession = tabId === initialPropsSessionId;
+        const debugSeed = debugInitMessages[tabId];
         return (
           <View
             key={tabId}
             className="flex-1"
             style={
               !isActive
-                ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 }
+                ? {
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    opacity: 0,
+                  }
                 : nativePhone
-                  ? {
+                ? {
                     flex: 1,
                     minHeight: 0,
-                    ...(chatViewportHeight > 0 ? { height: chatViewportHeight } : {}),
-                    }
-                  : undefined
+                    ...(chatViewportHeight > 0
+                      ? { height: chatViewportHeight }
+                      : {}),
+                  }
+                : undefined
             }
-            pointerEvents={isActive ? 'auto' : 'none'}
+            pointerEvents={isActive ? "auto" : "none"}
           >
             <PanelErrorBoundary panelName="Chat">
               <ChatPanel
                 featureId={projectId ?? null}
-                featureName={project?.name ?? 'Project'}
+                featureName={project?.name ?? "Project"}
                 phase={null}
                 chatSessionId={tabId}
                 onChatSessionChange={handleChatSessionChange}
@@ -2779,21 +3402,31 @@ export default observer(function ProjectLayout() {
                 projectType="unified"
                 chatScope={
                   workspaceRuntimeEnabled
-                    ? 'workspace'
+                    ? "workspace"
                     : isInitialSession
-                      ? capturedChatScope
-                      : 'project'
+                    ? capturedChatScope
+                    : "project"
                 }
                 isActive={isActive}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
-                initialMessage={isInitialSession ? capturedInitialMessage : (debugSeed ?? undefined)}
-                initialInteractionMode={isInitialSession ? capturedInitialInteractionMode : undefined}
-                initialFiles={isInitialSession ? capturedInitialFiles : undefined}
+                initialMessage={
+                  isInitialSession
+                    ? capturedInitialMessage
+                    : debugSeed ?? undefined
+                }
+                initialInteractionMode={
+                  isInitialSession ? capturedInitialInteractionMode : undefined
+                }
+                initialFiles={
+                  isInitialSession ? capturedInitialFiles : undefined
+                }
                 billingData={billingDataResolved}
                 onMessagesChange={isActive ? setChatMessages : undefined}
                 onStreamingChange={getStreamingChangeHandler(tabId)}
                 buildPlanRequest={isActive ? buildPlanRequest : null}
-                onBuildPlanConsumed={isActive ? handleBuildPlanConsumed : undefined}
+                onBuildPlanConsumed={
+                  isActive ? handleBuildPlanConsumed : undefined
+                }
                 onOpenPlan={handleOpenPlan}
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
@@ -2804,20 +3437,28 @@ export default observer(function ProjectLayout() {
               />
             </PanelErrorBoundary>
           </View>
-        )
+        );
       })}
     </>
-  )
+  );
 
-  const hiddenTabs: string[] = ['app-preview'] // APP_MODE_DISABLED: always hide app-preview
-  if (isIdeChatEmbed) hiddenTabs.push('canvas', 'external-preview', 'ide', 'files', 'plans', 'settings')
-  if (activeMode !== 'canvas') hiddenTabs.push('canvas')
+  const hiddenTabs: string[] = ["app-preview"]; // APP_MODE_DISABLED: always hide app-preview
+  if (isIdeChatEmbed)
+    hiddenTabs.push(
+      "canvas",
+      "external-preview",
+      "ide",
+      "files",
+      "plans",
+      "settings"
+    );
+  if (activeMode !== "canvas") hiddenTabs.push("canvas");
   // Hide the external-only tabs on managed projects so the top-bar
   // stays uncluttered. The renderer/state for these panels is
   // workingMode-aware too, so even a direct deep-link won't render
   // them for managed projects.
   if (!isExternalProject) {
-    hiddenTabs.push('external-preview')
+    hiddenTabs.push("external-preview");
     // `folders` is no longer a top-level tab — it lives inside the
     // Settings panel and is gated to external projects there directly
     // (see settingsGroups below).
@@ -2825,15 +3466,22 @@ export default observer(function ProjectLayout() {
 
   // Read from effectiveTab so transient attention overrides drive the layout
   // without mutating the persisted previewTab.
-  const isChatFullscreen = isWide && effectiveTab === 'chat-fullscreen'
+  const isChatFullscreen = isWide && effectiveTab === "chat-fullscreen";
 
-  const chatHidden = isWide ?isChatFullscreen || chatCollapsed : activeTab !== 'chat'
-  const canvasAreaHidden = (!isWide && activeTab === 'chat') || isChatFullscreen
-  const nativePhoneCanvasFrame = nativePhone && activeTab === 'canvas'
-  const nativePhoneStandalonePanel = nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab)
-  const nativePhonePlansOverlay = nativePhoneCanvasFrame && effectiveTab === 'plans'
-  const nativePhoneFill = nativePhoneCanvasFrame ? nativePhoneFillStyle(width) : undefined
-  const enableNativePhoneChatPicker = nativePhone
+  const chatHidden = isWide
+    ? isChatFullscreen || chatCollapsed
+    : activeTab !== "chat";
+  const canvasAreaHidden =
+    (!isWide && activeTab === "chat") || isChatFullscreen;
+  const nativePhoneCanvasFrame = nativePhone && activeTab === "canvas";
+  const nativePhoneStandalonePanel =
+    nativePhoneCanvasFrame && STANDALONE_PANELS.includes(effectiveTab);
+  const nativePhonePlansOverlay =
+    nativePhoneCanvasFrame && effectiveTab === "plans";
+  const nativePhoneFill = nativePhoneCanvasFrame
+    ? nativePhoneFillStyle(width)
+    : undefined;
+  const enableNativePhoneChatPicker = nativePhone;
 
   // Defined after `chatHidden` so it can drive the canvas's `fullBleed`
   // prop — see comment on `fullBleed` for why the iframe's left margin
@@ -2854,10 +3502,10 @@ export default observer(function ProjectLayout() {
       onCanvasCapabilities={handleCanvasCapabilities}
       onCanvasError={handleCanvasError}
     />
-  ) : null
+  ) : null;
 
   const topBarSharedProps = {
-    projectName: project?.name ?? 'Project',
+    projectName: project?.name ?? "Project",
     projectId: projectId!,
     projects: allProjects,
     activeTab: effectiveTab,
@@ -2866,9 +3514,12 @@ export default observer(function ProjectLayout() {
     planLabel,
     usageWindows: billingData.usageWindows,
     usageOverage: billingData.effectiveBalance
-      ? { enabled: billingData.effectiveBalance.overageEnabled, accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd }
+      ? {
+          enabled: billingData.effectiveBalance.overageEnabled,
+          accumulatedUsd: billingData.effectiveBalance.overageAccumulatedUsd,
+        }
       : undefined,
-    ownerName: user?.name || '',
+    ownerName: user?.name || "",
     projectCreatedAt: project?.createdAt,
     projectModifiedAt: project?.updatedAt,
     isStarred,
@@ -2880,7 +3531,9 @@ export default observer(function ProjectLayout() {
     canvasEnabled,
     activeMode,
     // Workspace Trust badge (external/folder-linked projects only).
-    workingMode: isExternalProject ? ( 'external' as const) : ( 'managed' as const),
+    workingMode: isExternalProject
+      ? ("external" as const)
+      : ("managed" as const),
     trustLevel: projectTrustLevel,
     onToggleTrust: handleToggleTrust,
     trustBusy: trustSubmitting,
@@ -2890,7 +3543,9 @@ export default observer(function ProjectLayout() {
     showChatSessions: false,
     isChatCollapsed: isChatFullscreen ? true : chatCollapsed,
     onChatSessionsToggle: undefined,
-    onChatCollapseToggle: isChatFullscreen ? undefined : () => setChatCollapsed((c: boolean) => !c),
+    onChatCollapseToggle: isChatFullscreen
+      ? undefined
+      : () => setChatCollapsed((c: boolean) => !c),
     onCreateNewSession: isChatFullscreen ? undefined : handleCreateNewSession,
     chatPanelWidth: clampChatWidth(chatPanelWidth),
     // Web/desktop keep the app sidebar as the single chat browser. Native
@@ -2898,14 +3553,14 @@ export default observer(function ProjectLayout() {
     // conversations without leaving the project screen.
     onOpenChatSessions: enableNativePhoneChatPicker
       ? () => {
-          setAttentionTab(null)
-          setActiveTab('chat')
-          setPreviewTab('chat-fullscreen')
+          setAttentionTab(null);
+          setActiveTab("chat");
+          setPreviewTab("chat-fullscreen");
           setNarrowChatPickerOpen((open) => {
-            const next = !open
-            if (next) void refreshProjectChatSessions()
-            return next
-          })
+            const next = !open;
+            if (next) void refreshProjectChatSessions();
+            return next;
+          });
         }
       : undefined,
     chatSessionsOpen: enableNativePhoneChatPicker && narrowChatPickerOpen,
@@ -2913,33 +3568,38 @@ export default observer(function ProjectLayout() {
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,
     activeChatSessionId: isChatFullscreen ? chatSessionId : undefined,
-    activeChatSessionName: isChatFullscreen ? (chatSessions.find((s) => s.id === chatSessionId)?.name ?? null) : undefined,
-    canvasActive: canvasEnabled && effectiveTab === 'canvas',
+    activeChatSessionName: isChatFullscreen
+      ? chatSessions.find((s) => s.id === chatSessionId)?.name ?? null
+      : undefined,
+    canvasActive: canvasEnabled && effectiveTab === "canvas",
     canvasThemeSupported,
     onCanvasRefresh: () => setIframeRefreshKey((k) => k + 1),
     onCanvasOpenInNewTab:
-      Platform.OS === 'web' && (previewLoaderUrl || canvasBaseUrl || agentUrl)
+      Platform.OS === "web" && (previewLoaderUrl || canvasBaseUrl || agentUrl)
         ? () => {
             // Prefer the loader page: a new tab is a top-level navigation, so a
             // preview hostname that isn't routable yet would show the browser's
             // own error page instead of a waking state. The loader holds that
             // state on this origin and hands off when the preview answers.
-            const target = previewLoaderUrl ?? `${canvasBaseUrl || agentUrl}/`
-            window.open(target, '_blank', 'noopener,noreferrer')
+            const target = previewLoaderUrl ?? `${canvasBaseUrl || agentUrl}/`;
+            window.open(target, "_blank", "noopener,noreferrer");
           }
         : undefined,
     onCanvasPrewarm: handlePreviewPrewarm,
     onOpenCodeWorkbench:
-      Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
+      Platform.OS === "web" &&
+      typeof window !== "undefined" &&
+      !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
-    onOpenSidebar: Platform.OS !== 'web'
-      ? () => projectSidebarEvents.requestOpenProject(projectId!)
-      : undefined,
+    onOpenSidebar:
+      Platform.OS !== "web"
+        ? () => projectSidebarEvents.requestOpenProject(projectId!)
+        : undefined,
     idePrimarySideBarPosition,
     onIdePrimarySideBarPositionChange: setIdePrimarySideBarPosition,
     ideEmbed: isIdeChatEmbed,
-  }
+  };
 
   if (projectRouteLoading) {
     return (
@@ -2950,7 +3610,9 @@ export default observer(function ProjectLayout() {
             <>
               <ActivityIndicator size="large" />
               <Text className="text-muted-foreground mt-3 text-sm">
-                {stillBootingRuntime ? 'Starting your project…' : 'Loading project...'}
+                {stillBootingRuntime
+                  ? "Starting your project…"
+                  : "Loading project..."}
               </Text>
             </>
           )}
@@ -2962,8 +3624,10 @@ export default observer(function ProjectLayout() {
               </Text>
               <Text className="text-muted-foreground text-sm text-center">
                 {runtimeError
-                  ? `We couldn't reach your project's runtime${runtimeLastStatus ? ` (${runtimeLastStatus})` : ''}. Check your connection or try again.`
-                  : 'Your project runtime is still warming up. You can keep waiting, retry, or open it on the web.'}
+                  ? `We couldn't reach your project's runtime${
+                      runtimeLastStatus ? ` (${runtimeLastStatus})` : ""
+                    }. Check your connection or try again.`
+                  : "Your project runtime is still warming up. You can keep waiting, retry, or open it on the web."}
               </Text>
               <View className="flex-row flex-wrap gap-2 mt-2 justify-center">
                 <Pressable
@@ -2971,32 +3635,43 @@ export default observer(function ProjectLayout() {
                   className="px-4 py-2 rounded-md border border-border active:bg-muted"
                   accessibilityLabel="Retry connecting to your project"
                 >
-                  <Text className="text-foreground text-sm font-medium">Try again</Text>
+                  <Text className="text-foreground text-sm font-medium">
+                    Try again
+                  </Text>
                 </Pressable>
                 <Pressable
-                  onPress={() =>router.canGoBack() ? router.back() : router.replace('/(app)')}
+                  onPress={() =>
+                    router.canGoBack()
+                      ? router.back()
+                      : router.replace("/(app)")
+                  }
                   className="px-4 py-2 rounded-md border border-border active:bg-muted"
                   accessibilityLabel="Go back to projects list"
                 >
-                  <Text className="text-foreground text-sm font-medium">Go back</Text>
+                  <Text className="text-foreground text-sm font-medium">
+                    Go back
+                  </Text>
                 </Pressable>
                 <Pressable
                   onPress={() => {
-                    void openWebAppSession(`/projects/${projectId}`).catch((err) =>
-                      console.warn('[ProjectLayout] open-on-web failed:', err),
-                    )
+                    void openWebAppSession(`/projects/${projectId}`).catch(
+                      (err) =>
+                        console.warn("[ProjectLayout] open-on-web failed:", err)
+                    );
                   }}
                   className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
                   accessibilityLabel="Open this project on the web"
                 >
-                  <Text className="text-primary-foreground text-sm font-medium">Open on web</Text>
+                  <Text className="text-primary-foreground text-sm font-medium">
+                    Open on web
+                  </Text>
                 </Pressable>
               </View>
             </View>
           )}
         </View>
       </>
-    )
+    );
   }
 
   if (isIdeChatEmbed) {
@@ -3019,37 +3694,47 @@ export default observer(function ProjectLayout() {
                   horizontal
                   showsHorizontalScrollIndicator={false}
                   className="flex-1"
-                  contentContainerStyle={{ alignItems: 'center' }}
+                  contentContainerStyle={{ alignItems: "center" }}
                 >
                   {openChatTabIds.map((tabId) => {
-                    const session = chatSessions.find((candidate) => candidate.id === tabId)
-                    const isActive = tabId === chatSessionId
-                    const isStreaming = streamingTabIds.has(tabId)
-                    const isCompleted = completedTabIds.has(tabId)
+                    const session = chatSessions.find(
+                      (candidate) => candidate.id === tabId
+                    );
+                    const isActive = tabId === chatSessionId;
+                    const isStreaming = streamingTabIds.has(tabId);
+                    const isCompleted = completedTabIds.has(tabId);
                     return (
                       <Pressable
                         key={tabId}
                         onPress={() => setChatSessionId(tabId)}
                         className={cn(
-                          'h-11 min-w-[150px] max-w-[240px] flex-row items-center gap-2 border-r border-border px-3',
-                          isActive ? 'bg-background' : 'bg-muted/30 opacity-70',
+                          "h-11 min-w-[150px] max-w-[240px] flex-row items-center gap-2 border-r border-border px-3",
+                          isActive ? "bg-background" : "bg-muted/30 opacity-70"
                         )}
                         accessibilityRole="button"
-                        accessibilityLabel={`Open chat ${session?.name ?? 'Untitled chat'}`}
+                        accessibilityLabel={`Open chat ${
+                          session?.name ?? "Untitled chat"
+                        }`}
                       >
                         <MessageSquare
                           size={15}
-                          className={cn(isActive ? 'text-foreground' : 'text-muted-foreground')}
+                          className={cn(
+                            isActive
+                              ? "text-foreground"
+                              : "text-muted-foreground"
+                          )}
                         />
                         <Text
                           className={cn(
-                            'flex-1 text-sm font-medium',
-                            isActive ? 'text-foreground' : 'text-muted-foreground',
+                            "flex-1 text-sm font-medium",
+                            isActive
+                              ? "text-foreground"
+                              : "text-muted-foreground"
                           )}
                           numberOfLines={1}
                           ellipsizeMode="tail"
                         >
-                          {session?.name ?? 'New Chat'}
+                          {session?.name ?? "New Chat"}
                         </Text>
                         {isStreaming ? (
                           <View className="h-2 w-2 rounded-full bg-orange-500" />
@@ -3058,37 +3743,43 @@ export default observer(function ProjectLayout() {
                         ) : null}
                         <Pressable
                           onPress={(event) => {
-                            event.stopPropagation?.()
+                            event.stopPropagation?.();
                             setOpenChatTabIds((prev) => {
-                              const next = prev.filter((id) => id !== tabId)
+                              const next = prev.filter((id) => id !== tabId);
                               if (chatSessionId === tabId) {
-                                setChatSessionId(next[next.length - 1] ?? null)
+                                setChatSessionId(next[next.length - 1] ?? null);
                               }
-                              return next
-                            })
+                              return next;
+                            });
                           }}
                           className="h-6 w-6 items-center justify-center rounded-md active:bg-muted"
                           accessibilityRole="button"
-                          accessibilityLabel={`Close chat ${session?.name ?? 'Untitled chat'}`}
+                          accessibilityLabel={`Close chat ${
+                            session?.name ?? "Untitled chat"
+                          }`}
                         >
                           <XIcon size={14} className="text-muted-foreground" />
                         </Pressable>
                       </Pressable>
-                    )
+                    );
                   })}
                 </ScrollView>
                 <View className="relative">
                   <Pressable
                     onPress={() => {
-                      setIdeChatHistoryOpen((open) => !open)
-                      void refreshProjectChatSessions()
+                      setIdeChatHistoryOpen((open) => !open);
+                      void refreshProjectChatSessions();
                     }}
                     className={cn(
-                      'h-11 w-11 items-center justify-center border-l border-border active:bg-muted',
-                      ideChatHistoryOpen && 'bg-muted',
+                      "h-11 w-11 items-center justify-center border-l border-border active:bg-muted",
+                      ideChatHistoryOpen && "bg-muted"
                     )}
                     accessibilityRole="button"
-                    accessibilityLabel={ideChatHistoryOpen ? 'Hide chat history' : 'Show chat history'}
+                    accessibilityLabel={
+                      ideChatHistoryOpen
+                        ? "Hide chat history"
+                        : "Show chat history"
+                    }
                     accessibilityState={{ expanded: ideChatHistoryOpen }}
                   >
                     <History size={18} className="text-muted-foreground" />
@@ -3096,21 +3787,26 @@ export default observer(function ProjectLayout() {
                   {ideChatHistoryOpen && (
                     <View
                       className="absolute right-0 top-11 w-[340px] overflow-hidden rounded-lg border border-border bg-background shadow-xl"
-                      style={{ height: Math.min(520, Math.max(300, height - 80)), zIndex: 100 }}
+                      style={{
+                        height: Math.min(520, Math.max(300, height - 80)),
+                        zIndex: 100,
+                      }}
                     >
                       <ChatSessionSidebar
                         sessions={chatSessions}
                         currentSessionId={chatSessionId ?? undefined}
                         onSelect={(sessionId) => {
                           setOpenChatTabIds((prev) =>
-                            prev.includes(sessionId) ? prev : [...prev, sessionId],
-                          )
-                          setChatSessionId(sessionId)
-                          setIdeChatHistoryOpen(false)
+                            prev.includes(sessionId)
+                              ? prev
+                              : [...prev, sessionId]
+                          );
+                          setChatSessionId(sessionId);
+                          setIdeChatHistoryOpen(false);
                         }}
                         onCreate={() => {
-                          void handleCreateNewSession()
-                          setIdeChatHistoryOpen(false)
+                          void handleCreateNewSession();
+                          setIdeChatHistoryOpen(false);
                         }}
                         onRename={handleRenameChatSession}
                         onDelete={handleDeleteChatSession}
@@ -3118,7 +3814,9 @@ export default observer(function ProjectLayout() {
                         onToggleArchive={handleToggleArchiveChatSession}
                         onLoadMore={handleLoadMoreSessions}
                         hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                        isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
+                        isLoadingMore={
+                          store?.chatSessionCollection?.isLoadingMore ?? false
+                        }
                         streamingSessionIds={streamingTabIds}
                         completedSessionIds={completedTabIds}
                         projectId={projectId ?? undefined}
@@ -3128,8 +3826,8 @@ export default observer(function ProjectLayout() {
                 </View>
                 <Pressable
                   onPress={() => {
-                    void handleCreateNewSession()
-                    setIdeChatHistoryOpen(false)
+                    void handleCreateNewSession();
+                    setIdeChatHistoryOpen(false);
                   }}
                   className="h-11 w-11 items-center justify-center border-l border-border active:bg-muted"
                   accessibilityRole="button"
@@ -3143,11 +3841,16 @@ export default observer(function ProjectLayout() {
                   {workspaceChatLoading ? (
                     <View className="flex-1 items-center justify-center bg-background">
                       <ActivityIndicator size="large" />
-                      <Text className="mt-3 text-sm text-muted-foreground">Loading project chat…</Text>
+                      <Text className="mt-3 text-sm text-muted-foreground">
+                        Loading project chat…
+                      </Text>
                     </View>
                   ) : showEmptyChatState ? (
                     <View className="flex-1 bg-background items-center justify-center px-8">
-                      <MessageSquare size={28} className="text-muted-foreground" />
+                      <MessageSquare
+                        size={28}
+                        className="text-muted-foreground"
+                      />
                       <Text className="text-sm text-muted-foreground mt-3 text-center">
                         No chat open. Press + to start a new project chat.
                       </Text>
@@ -3161,7 +3864,7 @@ export default observer(function ProjectLayout() {
           </ChatBridgeProvider>
         </PlanStreamProvider>
       </>
-    )
+    );
   }
 
   return (
@@ -3169,722 +3872,814 @@ export default observer(function ProjectLayout() {
       <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
 
       <PlanStreamProvider>
-      <ChatBridgeProvider
-        chatSessionId={chatSessionId}
-        agentUrl={agentUrl}
-        initialEzModeActive={Platform.OS === 'web' && capturedStartEzMode}
-        initialAutoStartVoice={Platform.OS === 'web' && capturedStartEzMode && capturedAutoStartVoice}
-      >
-      <View className="flex-1 bg-background">
-          {isWide ? (
-            <ProjectTopBar
-              {...topBarSharedProps}
-              onTabChange={handlePreviewTabChange}
-            />
-          ) : (
-            <ProjectTopBar
-              {...topBarSharedProps}
-              narrowActiveTab={activeTab}
-              narrowPreviewTab={effectiveTab}
-              onNarrowTabChange={(tab: 'chat' | 'canvas') => {
-                // Explicit user navigation — drop any in-flight attention override.
-                setAttentionTab(null)
-                setActiveTab(tab)
-                if (tab === 'canvas') {
-                  userRequestedCanvasRef.current = true
-                  if (!canvasEnabled || activeMode !== 'canvas') {
-                    void updateProjectSettings({ activeMode: 'canvas', canvasEnabled: true })
+        <ChatBridgeProvider
+          chatSessionId={chatSessionId}
+          agentUrl={agentUrl}
+          initialEzModeActive={Platform.OS === "web" && capturedStartEzMode}
+          initialAutoStartVoice={
+            Platform.OS === "web" &&
+            capturedStartEzMode &&
+            capturedAutoStartVoice
+          }
+        >
+          <View className="flex-1 bg-background">
+            {isWide ? (
+              <ProjectTopBar
+                {...topBarSharedProps}
+                onTabChange={handlePreviewTabChange}
+              />
+            ) : (
+              <ProjectTopBar
+                {...topBarSharedProps}
+                narrowActiveTab={activeTab}
+                narrowPreviewTab={effectiveTab}
+                onNarrowTabChange={(tab: "chat" | "canvas") => {
+                  // Explicit user navigation — drop any in-flight attention override.
+                  setAttentionTab(null);
+                  setActiveTab(tab);
+                  if (tab === "canvas") {
+                    userRequestedCanvasRef.current = true;
+                    if (!canvasEnabled || activeMode !== "canvas") {
+                      void updateProjectSettings({
+                        activeMode: "canvas",
+                        canvasEnabled: true,
+                      });
+                    }
+                    setPreviewTab("canvas");
+                    router.setParams({ tab: "canvas" } as any);
+                  } else {
+                    // Clear standalone preview (files, capabilities, …) so the chat column shows
+                    // and the next “canvas” visit doesn’t reopen the old panel on top.
+                    setPreviewTab("chat-fullscreen");
+                    router.setParams({ tab: "chat-fullscreen" } as any);
                   }
-                  setPreviewTab('canvas')
-                  router.setParams({ tab: 'canvas' } as any)
-                } else {
-                  // Clear standalone preview (files, capabilities, …) so the chat column shows
-                  // and the next “canvas” visit doesn’t reopen the old panel on top.
-                  setPreviewTab('chat-fullscreen')
-                  router.setParams({ tab: 'chat-fullscreen' } as any)
-                }
-              }}
-              onTabChange={(tabId: string) => {
-                handlePreviewTabChange(tabId)
-                if (tabId !== 'canvas' && tabId !== 'app-preview' && tabId !== 'chat-fullscreen') setActiveTab('canvas')
-              }}
-            />
-          )}
+                }}
+                onTabChange={(tabId: string) => {
+                  handlePreviewTabChange(tabId);
+                  if (
+                    tabId !== "canvas" &&
+                    tabId !== "app-preview" &&
+                    tabId !== "chat-fullscreen"
+                  )
+                    setActiveTab("canvas");
+                }}
+              />
+            )}
 
-          {/* Content — chat panel stays mounted across layout/tab changes.
+            {/* Content — chat panel stays mounted across layout/tab changes.
               `overflow-hidden` keeps the chat column's slide-out (negative
               marginLeft when collapsed) clipped to this row instead of
               poking past the workspace's left edge. */}
-          <View
-            className={cn('flex-1 overflow-hidden', isWide && 'flex-row')}
-            ref={splitRowRef}
-            collapsable={phoneLayout && !isWide ? false : undefined}
-            style={phoneLayout && !isWide ? { width, flex: 1 } : undefined}
-            onLayout={(event) => {
-              const nextHeight = event.nativeEvent?.layout?.height
-              if (typeof nextHeight === 'number' && nextHeight > 0) {
-                setChatViewportHeight((current) => {
-                  const rounded = Math.round(nextHeight)
-                  return current === rounded ? current : rounded
-                })
-              }
-            }}
-          >
-            {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
-            {(() => {
-              // The app sidebar (main app layout) is now the single home for
-              // browsing chats, so the project's own in-split / fullscreen
-              // chat-history rail has been removed. The chat column just holds
-              // the chat content: in wide-split it slides out via an animated
-              // marginLeft when collapsed (clipped by the parent's
-              // overflow-hidden); in fullscreen it owns the full width.
-              return (
-                <View
-                  className={cn(
-                    'flex min-h-0',
-                    isChatFullscreen
-                      ? 'flex-1'
-                      : isWide
-                        ? 'shrink-0 bg-background z-10 flex-row'
-                        : 'relative flex-1 flex-col',
-                    // Narrow-mode tab switches still use display:none —
-                    // those are categorical (chat tab vs. canvas tab)
-                    // and don't benefit from a slide. The wide-split
-                    // collapse case below uses an animated marginLeft
-                    // instead so the panel can transition.
-                    !isChatFullscreen && !isWide && chatHidden && 'hidden',
-                  )}
-                  style={
-                    !isChatFullscreen && isWide
-                      ? ( {
-                          // Width stays at the full panel size even when
-                          // collapsed, so the inner chat content doesn't
-                          // reflow during the slide — the negative
-                          // marginLeft below tucks the column off-screen
-                          // and the parent row's overflow-hidden clips it.
-                          width: clampChatWidth(chatPanelWidth),
-                          // Slide-out: a marginLeft equal to -width makes
-                          // the column's flex contribution net zero, so the
-                          // canvas's flex-1 expands to fill the freed space
-                          // as the slide progresses. Slide-in is the reverse.
-                          marginLeft: chatHidden ? -clampChatWidth(chatPanelWidth) : 0,
-                          // Web-only: smooth the collapse so margin-left
-                          // animates. RN native ignores these style props.
-                          transitionProperty: 'width, margin-left',
-                          transitionDuration: '220ms',
-                          transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.2, 1)',
-                        } as any)
-                      : !isChatFullscreen && !isWide && chatHidden
-                        ? { display: 'none' }
+            <View
+              className={cn("flex-1 overflow-hidden", isWide && "flex-row")}
+              ref={splitRowRef}
+              collapsable={phoneLayout && !isWide ? false : undefined}
+              style={phoneLayout && !isWide ? { width, flex: 1 } : undefined}
+              onLayout={(event) => {
+                const nextHeight = event.nativeEvent?.layout?.height;
+                if (typeof nextHeight === "number" && nextHeight > 0) {
+                  setChatViewportHeight((current) => {
+                    const rounded = Math.round(nextHeight);
+                    return current === rounded ? current : rounded;
+                  });
+                }
+              }}
+            >
+              {/* Chat column — single mount point so ChatPanel never unmounts on mode switch */}
+              {(() => {
+                // The app sidebar (main app layout) is now the single home for
+                // browsing chats, so the project's own in-split / fullscreen
+                // chat-history rail has been removed. The chat column just holds
+                // the chat content: in wide-split it slides out via an animated
+                // marginLeft when collapsed (clipped by the parent's
+                // overflow-hidden); in fullscreen it owns the full width.
+                return (
+                  <View
+                    className={cn(
+                      "flex min-h-0",
+                      isChatFullscreen
+                        ? "flex-1"
+                        : isWide
+                        ? "shrink-0 bg-background z-10 flex-row"
+                        : "relative flex-1 flex-col",
+                      // Narrow-mode tab switches still use display:none —
+                      // those are categorical (chat tab vs. canvas tab)
+                      // and don't benefit from a slide. The wide-split
+                      // collapse case below uses an animated marginLeft
+                      // instead so the panel can transition.
+                      !isChatFullscreen && !isWide && chatHidden && "hidden"
+                    )}
+                    style={
+                      !isChatFullscreen && isWide
+                        ? ({
+                            // Width stays at the full panel size even when
+                            // collapsed, so the inner chat content doesn't
+                            // reflow during the slide — the negative
+                            // marginLeft below tucks the column off-screen
+                            // and the parent row's overflow-hidden clips it.
+                            width: clampChatWidth(chatPanelWidth),
+                            // Slide-out: a marginLeft equal to -width makes
+                            // the column's flex contribution net zero, so the
+                            // canvas's flex-1 expands to fill the freed space
+                            // as the slide progresses. Slide-in is the reverse.
+                            marginLeft: chatHidden
+                              ? -clampChatWidth(chatPanelWidth)
+                              : 0,
+                            // Web-only: smooth the collapse so margin-left
+                            // animates. RN native ignores these style props.
+                            transitionProperty: "width, margin-left",
+                            transitionDuration: "220ms",
+                            transitionTimingFunction:
+                              "cubic-bezier(0.4, 0, 0.2, 1)",
+                          } as any)
+                        : !isChatFullscreen && !isWide && chatHidden
+                        ? { display: "none" }
                         : undefined
-                  }
-                >
-                  {/* Chat content column. The recessed-under-canvas styling
+                    }
+                  >
+                    {/* Chat content column. The recessed-under-canvas styling
                       (rounded top-right + inset shadow) only makes sense
                       in wide split mode where the canvas actually sits to
                       the right; in fullscreen / narrow modes the chat
                       panel owns the full width and there's nothing to
                       indent under. */}
-                  <View
-                    className={cn(
-                      "flex-1 min-h-0 relative",
-                      isWide && !isChatFullscreen && "rounded-tr-2xl overflow-hidden",
-                    )}
-                  >
                     <View
-                      className="absolute inset-0"
-                      style={showEmptyChatState || narrowChatPickerOpen || workspaceChatLoading ? { opacity: 0 } : undefined}
-                      pointerEvents={showEmptyChatState || narrowChatPickerOpen || workspaceChatLoading ? 'none' : 'auto'}
+                      className={cn(
+                        "flex-1 min-h-0 relative",
+                        isWide &&
+                          !isChatFullscreen &&
+                          "rounded-tr-2xl overflow-hidden"
+                      )}
                     >
-                      <EzModeAwareChatPanels>{chatPanels}</EzModeAwareChatPanels>
-                    </View>
-                    {workspaceChatLoading && (
                       <View
-                        testID="workspace-chat-loading"
-                        className="absolute inset-0 bg-background items-center justify-center"
+                        className="absolute inset-0"
+                        style={
+                          showEmptyChatState ||
+                          narrowChatPickerOpen ||
+                          workspaceChatLoading
+                            ? { opacity: 0 }
+                            : undefined
+                        }
+                        pointerEvents={
+                          showEmptyChatState ||
+                          narrowChatPickerOpen ||
+                          workspaceChatLoading
+                            ? "none"
+                            : "auto"
+                        }
                       >
-                        <ActivityIndicator size="large" />
-                        <Text className="text-sm text-muted-foreground mt-3 text-center">
-                          Starting workspace…
-                        </Text>
+                        <EzModeAwareChatPanels>
+                          {chatPanels}
+                        </EzModeAwareChatPanels>
                       </View>
-                    )}
-                    {showEmptyChatState && (
-                      isChatFullscreen ? (
-                        <View className="absolute inset-0 bg-background items-center justify-center px-8">
-                          <MessageSquare size={28} className="text-muted-foreground" />
+                      {workspaceChatLoading && (
+                        <View
+                          testID="workspace-chat-loading"
+                          className="absolute inset-0 bg-background items-center justify-center"
+                        >
+                          <ActivityIndicator size="large" />
                           <Text className="text-sm text-muted-foreground mt-3 text-center">
-                            No chat open. Pick one from the list on the left, or start a new chat.
+                            Starting workspace…
                           </Text>
                         </View>
-                      ) : (
-                        <View className="absolute inset-0 bg-background">
-                          {renderEmptyChatList()}
-                        </View>
-                      )
-                    )}
-                    {!showEmptyChatState && narrowChatPickerOpen && !isWide && activeTab === 'chat' && (
-                      <View className="absolute inset-0 bg-background" style={{ width: '100%' }}>
-                        <ChatSessionSidebar
-                          sessions={chatSessions}
-                          currentSessionId={chatSessionId ?? undefined}
-                          onSelect={(sessionId) => {
-                            setOpenChatTabIds((prev) =>
-                              prev.includes(sessionId) ? prev : [...prev, sessionId],
-                            )
-                            setChatSessionId(sessionId)
-                            setNarrowChatPickerOpen(false)
-                          }}
-                          onCreate={() => {
-                            void handleCreateNewSession()
-                            setNarrowChatPickerOpen(false)
-                          }}
-                          onRename={handleRenameChatSession}
-                          onDelete={handleDeleteChatSession}
-                          onTogglePin={handleTogglePinChatSession}
-                          onToggleArchive={handleToggleArchiveChatSession}
-                          onLoadMore={handleLoadMoreSessions}
-                          hasMore={store?.chatSessionCollection?.hasMore ?? false}
-                          isLoadingMore={store?.chatSessionCollection?.isLoadingMore ?? false}
-                          streamingSessionIds={streamingTabIds}
-                          completedSessionIds={completedTabIds}
-                          projectId={projectId ?? undefined}
-                          mobileFullscreen={enableNativePhoneChatPicker}
-                        />
-                      </View>
-                    )}
-                    {isWide && !isChatFullscreen && (
-                      <>
-                        {/* Inset right-edge shadow — chat panel reads as
+                      )}
+                      {showEmptyChatState &&
+                        (isChatFullscreen ? (
+                          <View className="absolute inset-0 bg-background items-center justify-center px-8">
+                            <MessageSquare
+                              size={28}
+                              className="text-muted-foreground"
+                            />
+                            <Text className="text-sm text-muted-foreground mt-3 text-center">
+                              No chat open. Pick one from the list on the left,
+                              or start a new chat.
+                            </Text>
+                          </View>
+                        ) : (
+                          <View className="absolute inset-0 bg-background">
+                            {renderEmptyChatList()}
+                          </View>
+                        ))}
+                      {!showEmptyChatState &&
+                        narrowChatPickerOpen &&
+                        !isWide &&
+                        activeTab === "chat" && (
+                          <View
+                            className="absolute inset-0 bg-background"
+                            style={{ width: "100%" }}
+                          >
+                            <ChatSessionSidebar
+                              sessions={chatSessions}
+                              currentSessionId={chatSessionId ?? undefined}
+                              onSelect={(sessionId) => {
+                                setOpenChatTabIds((prev) =>
+                                  prev.includes(sessionId)
+                                    ? prev
+                                    : [...prev, sessionId]
+                                );
+                                setChatSessionId(sessionId);
+                                setNarrowChatPickerOpen(false);
+                              }}
+                              onCreate={() => {
+                                void handleCreateNewSession();
+                                setNarrowChatPickerOpen(false);
+                              }}
+                              onRename={handleRenameChatSession}
+                              onDelete={handleDeleteChatSession}
+                              onTogglePin={handleTogglePinChatSession}
+                              onToggleArchive={handleToggleArchiveChatSession}
+                              onLoadMore={handleLoadMoreSessions}
+                              hasMore={
+                                store?.chatSessionCollection?.hasMore ?? false
+                              }
+                              isLoadingMore={
+                                store?.chatSessionCollection?.isLoadingMore ??
+                                false
+                              }
+                              streamingSessionIds={streamingTabIds}
+                              completedSessionIds={completedTabIds}
+                              projectId={projectId ?? undefined}
+                              mobileFullscreen={enableNativePhoneChatPicker}
+                            />
+                          </View>
+                        )}
+                      {isWide && !isChatFullscreen && (
+                        <>
+                          {/* Inset right-edge shadow — chat panel reads as
                             recessed under the canvas/preview column to the
                             right. Same alpha + width as the sidebar's
                             inset shadow so the two recessed columns share
                             a consistent depth. */}
-                        <LinearGradient
-                          colors={
-                            isDark
-                              ? ["rgba(0,0,0,0)", "rgba(0,0,0,0.4)"]
-                              : ["rgba(0,0,0,0)", "rgba(0,0,0,0.08)"]
-                          }
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 0 }}
-                          pointerEvents="none"
-                          style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: 12 }}
-                        />
-                        {/* Inset top-edge shadow — topbar above casts onto
+                          <LinearGradient
+                            colors={
+                              isDark
+                                ? ["rgba(0,0,0,0)", "rgba(0,0,0,0.4)"]
+                                : ["rgba(0,0,0,0)", "rgba(0,0,0,0.08)"]
+                            }
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            pointerEvents="none"
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              bottom: 0,
+                              right: 0,
+                              width: 12,
+                            }}
+                          />
+                          {/* Inset top-edge shadow — topbar above casts onto
                             the recessed chat surface, completing the
                             "tucked under" feel that lines up with the
                             sidebar's top fade. */}
-                        <LinearGradient
-                          colors={
-                            isDark
-                              ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
-                              : ["rgba(0,0,0,0.04)", "rgba(0,0,0,0)"]
-                          }
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 0, y: 1 }}
-                          pointerEvents="none"
-                          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 12 }}
-                        />
-                      </>
-                    )}
-                    {/* Drag handle to resize chat panel — sits inside the
+                          <LinearGradient
+                            colors={
+                              isDark
+                                ? ["rgba(0,0,0,0.4)", "rgba(0,0,0,0)"]
+                                : ["rgba(0,0,0,0.04)", "rgba(0,0,0,0)"]
+                            }
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            pointerEvents="none"
+                            style={{
+                              position: "absolute",
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              height: 12,
+                            }}
+                          />
+                        </>
+                      )}
+                      {/* Drag handle to resize chat panel — sits inside the
                         chat content column, just to the left of the inner
                         scrollbar (web only, wide split mode). */}
-                    {Platform.OS === 'web' && isWide && !isChatFullscreen && !chatHidden && (
-                      <ChatPanelResizeHandle
-                        splitRowRef={splitRowRef}
-                        chatPanelWidth={clampChatWidth(chatPanelWidth)}
-                        minWidth={MIN_CHAT_PANEL_WIDTH}
-                        maxWidth={maxChatPanelWidth}
-                        onResize={setChatPanelWidth}
-                        onResizeEnd={persistChatPanelWidth}
-                        defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
-                        leftOffset={showChatSessions ? 280 : 0}
-                        rightOffset={12}
-                      />
-                    )}
+                      {Platform.OS === "web" &&
+                        isWide &&
+                        !isChatFullscreen &&
+                        !chatHidden && (
+                          <ChatPanelResizeHandle
+                            splitRowRef={splitRowRef}
+                            chatPanelWidth={clampChatWidth(chatPanelWidth)}
+                            minWidth={MIN_CHAT_PANEL_WIDTH}
+                            maxWidth={maxChatPanelWidth}
+                            onResize={setChatPanelWidth}
+                            onResizeEnd={persistChatPanelWidth}
+                            defaultWidth={DEFAULT_CHAT_PANEL_WIDTH}
+                            leftOffset={showChatSessions ? 280 : 0}
+                            rightOffset={12}
+                          />
+                        )}
+                    </View>
                   </View>
-                </View>
-              )
-            })()}
+                );
+              })()}
 
-        {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
-        <View
-          className={cn(
-            'relative flex-1 overflow-hidden',
-            nativePhoneCanvasFrame && 'bg-background',
-            canvasAreaHidden && 'hidden',
-            Platform.OS === 'web' && !canvasAreaHidden && 'min-h-0',
-          )}
-          style={
-            nativePhoneCanvasFrame
-              ? nativePhoneFill
-              : undefined
-          }
-        >
-          <DrawerHost
-            projectId={projectId ?? null}
-            agentUrl={agentUrl ?? null}
-            messages={chatMessages}
-            platformIsWeb={Platform.OS === 'web'}
-            canvasAreaHidden={canvasAreaHidden}
-            isChatFullscreen={isChatFullscreen}
-            folderPath={primaryFolderPath ?? undefined}
-          >
-          {canvasEnabled && effectiveTab === 'canvas' && (
-            <View
-              className="absolute inset-0"
-              style={
-                nativePhoneCanvasFrame
-                  ? nativePhoneFill
-                  : undefined
-              }
-            >
-              <PanelErrorBoundary panelName="Canvas">
-                {canvasPanel}
-              </PanelErrorBoundary>
-            </View>
-          )}
-          {effectiveTab === 'app-preview' && (
-            <View
-              className={cn(
-                'absolute inset-0 overflow-hidden',
-                Platform.OS === 'web' && 'z-0',
-              )}
-            >
-              <AppPreviewPanel previewUrl={previewUrl ?? null} agentUrl={agentUrl ?? null} />
-            </View>
-          )}
-          <View
-            className={cn(
-              'absolute inset-0',
-              STANDALONE_PANELS.includes(effectiveTab)
-                ? 'z-20 bg-background'
-                : 'pointer-events-none',
-            )}
-            style={
-              nativePhoneStandalonePanel
-                ? nativePhoneFill
-                : undefined
-            }
-            pointerEvents={
-              STANDALONE_PANELS.includes(effectiveTab)
-                ? 'auto'
-                : 'none'
-            }
-          >
-            <PanelErrorBoundary panelName="IDE">
-              <IDEPanel
-                visible={effectiveTab === 'ide'}
-                projectId={projectId!}
-                projectName={project.name}
-                agentUrl={agentUrl}
-                isExternalProject={isExternalProject}
-                folderPath={primaryFolderPath ?? undefined}
-                primarySideBarPosition={idePrimarySideBarPosition}
-              />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Files">
-              <FilesBrowserPanel visible={effectiveTab === 'files'} projectId={projectId!} agentUrl={agentUrl} />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Plans">
-              <PlansPanel visible={effectiveTab === 'plans' && !nativePhonePlansOverlay} projectId={projectId!} agentUrl={agentUrl} selectedModel={selectedModel} requestedPlanPath={requestedPlanPath} onBuildPlan={handleBuildPlan} />
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="Settings">
-              {(() => {
-                // Folders' onChange refreshes the project (with folders +
-                // workingMode + trustLevel) so trust / folder changes
-                // propagate without a full reload.
-                const reloadProject = () => {
-                  void refreshLocalProject()
-                }
-                const workspaceItems: SettingsSectionItem[] = []
-                // Always expose the Folders/Workspace panel. For external
-                // projects it manages linked folders + the trust toggle;
-                // for managed projects it renders an informational state
-                // with an "Open a folder" CTA instead of a dead end.
-                workspaceItems.push({
-                  id: 'folders',
-                  label: 'Folders',
-                  icon: FolderTree,
-                  render: () => (
-                    <PanelErrorBoundary panelName="Folders">
-                      <FoldersPanel
-                        visible
+              {/* Right panel area (canvas / files / capabilities / channels / monitor) */}
+              <View
+                className={cn(
+                  "relative flex-1 overflow-hidden",
+                  nativePhoneCanvasFrame && "bg-background",
+                  canvasAreaHidden && "hidden",
+                  Platform.OS === "web" && !canvasAreaHidden && "min-h-0"
+                )}
+                style={nativePhoneCanvasFrame ? nativePhoneFill : undefined}
+              >
+                <DrawerHost
+                  projectId={projectId ?? null}
+                  agentUrl={agentUrl ?? null}
+                  messages={chatMessages}
+                  platformIsWeb={Platform.OS === "web"}
+                  canvasAreaHidden={canvasAreaHidden}
+                  isChatFullscreen={isChatFullscreen}
+                  folderPath={primaryFolderPath ?? undefined}
+                >
+                  {canvasEnabled && effectiveTab === "canvas" && (
+                    <View
+                      className="absolute inset-0"
+                      style={
+                        nativePhoneCanvasFrame ? nativePhoneFill : undefined
+                      }
+                    >
+                      <PanelErrorBoundary panelName="Canvas">
+                        {canvasPanel}
+                      </PanelErrorBoundary>
+                    </View>
+                  )}
+                  {effectiveTab === "app-preview" && (
+                    <View
+                      className={cn(
+                        "absolute inset-0 overflow-hidden",
+                        Platform.OS === "web" && "z-0"
+                      )}
+                    >
+                      <AppPreviewPanel
+                        previewUrl={previewUrl ?? null}
+                        agentUrl={agentUrl ?? null}
+                      />
+                    </View>
+                  )}
+                  <View
+                    className={cn(
+                      "absolute inset-0",
+                      STANDALONE_PANELS.includes(effectiveTab)
+                        ? "z-20 bg-background"
+                        : "pointer-events-none"
+                    )}
+                    style={
+                      nativePhoneStandalonePanel ? nativePhoneFill : undefined
+                    }
+                    pointerEvents={
+                      STANDALONE_PANELS.includes(effectiveTab) ? "auto" : "none"
+                    }
+                  >
+                    <PanelErrorBoundary panelName="IDE">
+                      <IDEPanel
+                        visible={effectiveTab === "ide"}
                         projectId={projectId!}
-                        onChange={reloadProject}
+                        projectName={project.name}
+                        agentUrl={agentUrl}
+                        isExternalProject={isExternalProject}
+                        folderPath={primaryFolderPath ?? undefined}
+                        primarySideBarPosition={idePrimarySideBarPosition}
                       />
                     </PanelErrorBoundary>
-                  ),
-                })
-                // Checkpoints on web lives in the IDE's Checkpoint
-                // activity-bar entry (rendered as the commit node graph);
-                // native users reach the same graph from Settings.
-                if (Platform.OS !== 'web') {
-                  workspaceItems.push({
-                    id: 'checkpoints',
-                    label: 'Checkpoints',
-                    icon: GitCommit,
-                    render: () => (
-                      <PanelErrorBoundary panelName="Checkpoints">
-                        <CheckpointGraphNative projectId={projectId!} />
-                      </PanelErrorBoundary>
-                    ),
-                  })
-                }
-                const settingsGroups: SettingsSectionGroup[] = []
-                if (workspaceItems.length > 0) {
-                  settingsGroups.push({
-                    id: 'workspace',
-                    label: 'WORKSPACE',
-                    items: workspaceItems,
-                  })
-                }
-                settingsGroups.push(
-                  {
-                    id: 'agent',
-                    label: 'AGENT',
-                    items: [
-                      {
-                        id: 'capabilities-config',
-                        label: 'Configuration',
-                        icon: Sliders,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Configuration">
-                            <CapabilitiesConfigPane
-                              visible
-                              agentUrl={agentUrl}
-                              capabilities={capabilitySettings}
-                              onCapabilityToggle={handleCapabilityToggle}
-                              isPaidPlan={effectiveHasActiveSubscription}
-                              activeMode={activeMode}
-                              onModeChange={handleManualModeChange}
-                              techStackId={techStackId}
-                              onTechStackChange={handleTechStackChange}
-                              selectedModel={selectedModel}
-                              onModelChange={handleModelChange}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                      {
-                        id: 'capabilities-skills',
-                        label: 'Skills',
-                        icon: Sparkles,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Skills">
-                            <CapabilitiesSkillsPane
-                              visible
-                              projectId={projectId!}
-                              agentUrl={agentUrl}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                      {
-                        id: 'capabilities-integrations',
-                        label: 'Integrations',
-                        icon: Plug,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Integrations">
-                            <CapabilitiesIntegrationsPane
-                              visible
-                              projectId={projectId!}
-                              agentUrl={agentUrl}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                    ],
-                  },
-                  {
-                    id: 'connections',
-                    label: 'CONNECTIONS',
-                    items: [
-                      {
-                        id: 'channels',
-                        label: 'Channels',
-                        icon: Radio,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Channels">
-                            <ChannelsPanel
-                              visible
-                              projectId={projectId!}
-                              workspaceId={project?.workspaceId}
-                              agentUrl={agentUrl}
-                              hasAdvancedModelAccess={features.billing ? billingData.hasAdvancedModelAccess : true}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                      {
-                        id: 'agents',
-                        label: 'Agents',
-                        icon: Bot,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Agents">
-                            <AgentsPanel
-                              visible
-                              selectedToolId={selectedAgentToolId}
-                              agentUrl={agentUrl}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                    ],
-                  },
-                  {
-                    id: 'monitoring',
-                    label: 'MONITORING',
-                    items: [
-                      {
-                        id: 'monitor-overview',
-                        label: 'Overview',
-                        icon: Activity,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Overview">
-                            <StatusPanel
-                              projectId={projectId!}
-                              agentUrl={agentUrl}
-                              visible
-                              isPaidPlan={effectiveHasActiveSubscription}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                      {
-                        id: 'monitor-analytics',
-                        label: 'Analytics',
-                        icon: BarChart3,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Analytics">
-                            <AnalyticsPanel
-                              projectId={projectId!}
-                              agentUrl={agentUrl}
-                              visible
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                      {
-                        id: 'monitor-logs',
-                        label: 'Logs',
-                        icon: FileText,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Logs">
-                            <LogsPanel
-                              projectId={projectId!}
-                              agentUrl={agentUrl}
-                              visible
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                    ],
-                  },
-                  {
-                    id: 'data',
-                    label: 'DATA',
-                    items: [
-                      {
-                        id: 'auth-database',
-                        label: 'Auth & Database',
-                        icon: ShieldCheck,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Auth & Database">
-                            <AuthDatabasePanel projectId={projectId!} visible />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                    ],
-                  },
-                  {
-                    id: 'publishing',
-                    label: 'PUBLISHING',
-                    items: [
-                      {
-                        id: 'always-on',
-                        label: 'Always on',
-                        icon: Zap,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Always on">
-                            <AlwaysOnSection
-                              projectId={projectId!}
-                              http={http}
-                              embedded={false}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                      {
-                        id: 'custom-domains',
-                        label: 'Custom domain',
-                        icon: Globe,
-                        render: () => (
-                          <PanelErrorBoundary panelName="Custom domain">
-                            <CustomDomainsSection
-                              projectId={projectId!}
-                              http={http}
-                              embedded={false}
-                            />
-                          </PanelErrorBoundary>
-                        ),
-                      },
-                    ],
-                  },
-                )
-                return (
-                  <SettingsPanel
-                    visible={effectiveTab === 'settings'}
-                    groups={settingsGroups}
-                    requestedItem={requestedSettingsItem}
-                  />
-                )
-              })()}
-            </PanelErrorBoundary>
-            <PanelErrorBoundary panelName="ExternalPreview">
-              {effectiveTab === 'external-preview' && (
-                <ExternalPreviewWebView
-                  projectId={projectId!}
-                  url={externalSavedUrl ?? externalDetectedUrl ?? null}
-                  visible={effectiveTab === 'external-preview' && !trustPromptOpen}
-                  detectedUrl={externalDetectedUrl}
-                  onUrlSubmit={handleSaveExternalPreviewUrl}
-                  isTrusted={projectTrustLevel === 'trusted'}
-                  onTrustRequired={() => setTrustPromptOpen(true)}
-                />
+                    <PanelErrorBoundary panelName="Files">
+                      <FilesBrowserPanel
+                        visible={effectiveTab === "files"}
+                        projectId={projectId!}
+                        agentUrl={agentUrl}
+                      />
+                    </PanelErrorBoundary>
+                    <PanelErrorBoundary panelName="Plans">
+                      <PlansPanel
+                        visible={
+                          effectiveTab === "plans" && !nativePhonePlansOverlay
+                        }
+                        projectId={projectId!}
+                        agentUrl={agentUrl}
+                        selectedModel={selectedModel}
+                        requestedPlanPath={requestedPlanPath}
+                        onBuildPlan={handleBuildPlan}
+                      />
+                    </PanelErrorBoundary>
+                    <PanelErrorBoundary panelName="Settings">
+                      {(() => {
+                        // Folders' onChange refreshes the project (with folders +
+                        // workingMode + trustLevel) so trust / folder changes
+                        // propagate without a full reload.
+                        const reloadProject = () => {
+                          void refreshLocalProject();
+                        };
+                        const workspaceItems: SettingsSectionItem[] = [];
+                        // Always expose the Folders/Workspace panel. For external
+                        // projects it manages linked folders + the trust toggle;
+                        // for managed projects it renders an informational state
+                        // with an "Open a folder" CTA instead of a dead end.
+                        workspaceItems.push({
+                          id: "folders",
+                          label: "Folders",
+                          icon: FolderTree,
+                          render: () => (
+                            <PanelErrorBoundary panelName="Folders">
+                              <FoldersPanel
+                                visible
+                                projectId={projectId!}
+                                onChange={reloadProject}
+                              />
+                            </PanelErrorBoundary>
+                          ),
+                        });
+                        // Checkpoints on web lives in the IDE's Checkpoint
+                        // activity-bar entry (rendered as the commit node graph);
+                        // native users reach the same graph from Settings.
+                        if (Platform.OS !== "web") {
+                          workspaceItems.push({
+                            id: "checkpoints",
+                            label: "Checkpoints",
+                            icon: GitCommit,
+                            render: () => (
+                              <PanelErrorBoundary panelName="Checkpoints">
+                                <CheckpointGraphNative projectId={projectId!} />
+                              </PanelErrorBoundary>
+                            ),
+                          });
+                        }
+                        const settingsGroups: SettingsSectionGroup[] = [];
+                        if (workspaceItems.length > 0) {
+                          settingsGroups.push({
+                            id: "workspace",
+                            label: "WORKSPACE",
+                            items: workspaceItems,
+                          });
+                        }
+                        settingsGroups.push(
+                          {
+                            id: "agent",
+                            label: "AGENT",
+                            items: [
+                              {
+                                id: "capabilities-config",
+                                label: "Configuration",
+                                icon: Sliders,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Configuration">
+                                    <CapabilitiesConfigPane
+                                      visible
+                                      agentUrl={agentUrl}
+                                      capabilities={capabilitySettings}
+                                      onCapabilityToggle={
+                                        handleCapabilityToggle
+                                      }
+                                      isPaidPlan={
+                                        effectiveHasActiveSubscription
+                                      }
+                                      activeMode={activeMode}
+                                      onModeChange={handleManualModeChange}
+                                      techStackId={techStackId}
+                                      onTechStackChange={handleTechStackChange}
+                                      selectedModel={selectedModel}
+                                      onModelChange={handleModelChange}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "capabilities-skills",
+                                label: "Skills",
+                                icon: Sparkles,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Skills">
+                                    <CapabilitiesSkillsPane
+                                      visible
+                                      projectId={projectId!}
+                                      agentUrl={agentUrl}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "capabilities-integrations",
+                                label: "Integrations",
+                                icon: Plug,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Integrations">
+                                    <CapabilitiesIntegrationsPane
+                                      visible
+                                      projectId={projectId!}
+                                      agentUrl={agentUrl}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          },
+                          {
+                            id: "connections",
+                            label: "CONNECTIONS",
+                            items: [
+                              {
+                                id: "channels",
+                                label: "Channels",
+                                icon: Radio,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Channels">
+                                    <ChannelsPanel
+                                      visible
+                                      projectId={projectId!}
+                                      workspaceId={project?.workspaceId}
+                                      agentUrl={agentUrl}
+                                      hasAdvancedModelAccess={
+                                        features.billing
+                                          ? billingData.hasAdvancedModelAccess
+                                          : true
+                                      }
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "agents",
+                                label: "Agents",
+                                icon: Bot,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Agents">
+                                    <AgentsPanel
+                                      visible
+                                      selectedToolId={selectedAgentToolId}
+                                      agentUrl={agentUrl}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          },
+                          {
+                            id: "monitoring",
+                            label: "MONITORING",
+                            items: [
+                              {
+                                id: "monitor-overview",
+                                label: "Overview",
+                                icon: Activity,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Overview">
+                                    <StatusPanel
+                                      projectId={projectId!}
+                                      agentUrl={agentUrl}
+                                      visible
+                                      isPaidPlan={
+                                        effectiveHasActiveSubscription
+                                      }
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "monitor-analytics",
+                                label: "Analytics",
+                                icon: BarChart3,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Analytics">
+                                    <AnalyticsPanel
+                                      projectId={projectId!}
+                                      agentUrl={agentUrl}
+                                      visible
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "monitor-logs",
+                                label: "Logs",
+                                icon: FileText,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Logs">
+                                    <LogsPanel
+                                      projectId={projectId!}
+                                      agentUrl={agentUrl}
+                                      visible
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          },
+                          {
+                            id: "data",
+                            label: "DATA",
+                            items: [
+                              {
+                                id: "auth-database",
+                                label: "Auth & Database",
+                                icon: ShieldCheck,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Auth & Database">
+                                    <AuthDatabasePanel
+                                      projectId={projectId!}
+                                      visible
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          },
+                          {
+                            id: "publishing",
+                            label: "PUBLISHING",
+                            items: [
+                              {
+                                id: "always-on",
+                                label: "Always on",
+                                icon: Zap,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Always on">
+                                    <AlwaysOnSection
+                                      projectId={projectId!}
+                                      http={http}
+                                      embedded={false}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "custom-domains",
+                                label: "Custom domain",
+                                icon: Globe,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Custom domain">
+                                    <CustomDomainsSection
+                                      projectId={projectId!}
+                                      http={http}
+                                      embedded={false}
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          }
+                        );
+                        return (
+                          <SettingsPanel
+                            visible={effectiveTab === "settings"}
+                            groups={settingsGroups}
+                            requestedItem={requestedSettingsItem}
+                          />
+                        );
+                      })()}
+                    </PanelErrorBoundary>
+                    <PanelErrorBoundary panelName="ExternalPreview">
+                      {effectiveTab === "external-preview" && (
+                        <ExternalPreviewWebView
+                          projectId={projectId!}
+                          url={externalSavedUrl ?? externalDetectedUrl ?? null}
+                          visible={
+                            effectiveTab === "external-preview" &&
+                            !trustPromptOpen
+                          }
+                          detectedUrl={externalDetectedUrl}
+                          onUrlSubmit={handleSaveExternalPreviewUrl}
+                          isTrusted={projectTrustLevel === "trusted"}
+                          onTrustRequired={() => setTrustPromptOpen(true)}
+                        />
+                      )}
+                    </PanelErrorBoundary>
+                  </View>
+                </DrawerHost>
+              </View>
+
+              {nativePhonePlansOverlay && (
+                <View
+                  className="absolute inset-0 z-40 bg-background"
+                  pointerEvents="auto"
+                  style={nativePhoneFill}
+                >
+                  <PanelErrorBoundary panelName="Plans">
+                    <PlansPanel
+                      visible
+                      projectId={projectId!}
+                      agentUrl={agentUrl}
+                      selectedModel={selectedModel}
+                      requestedPlanPath={requestedPlanPath}
+                      onBuildPlan={handleBuildPlan}
+                    />
+                  </PanelErrorBoundary>
+                </View>
               )}
-            </PanelErrorBoundary>
+
+              {/* Floating chat button on native narrow canvas — render after overlays so canvas/panels cannot cover it. */}
+              {showNativeNarrowChatFab && (
+                <SafeAreaView
+                  edges={["bottom"]}
+                  className="absolute bottom-0 right-0 z-50 pr-4 pb-4"
+                  pointerEvents="box-none"
+                  style={[
+                    { zIndex: 50, elevation: 50 },
+                    narrowCanvasKeyboardInset > 0
+                      ? { marginBottom: narrowCanvasKeyboardInset }
+                      : null,
+                  ]}
+                >
+                  <Pressable
+                    onPress={() => {
+                      // Explicit user navigation — drop any in-flight attention override.
+                      setAttentionTab(null);
+                      setActiveTab("chat");
+                      setPreviewTab("chat-fullscreen");
+                    }}
+                    className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
+                  >
+                    <MessageSquare
+                      size={16}
+                      className="text-primary-foreground"
+                    />
+                    <Text className="text-sm font-semibold text-primary-foreground">
+                      Chat
+                    </Text>
+                  </Pressable>
+                </SafeAreaView>
+              )}
+
+              {/* Workspace trust prompt — first-mount only, dismissible. */}
+              {isExternalProject ? (
+                <TrustPrompt
+                  open={trustPromptOpen}
+                  projectName={project?.name}
+                  folderPath={primaryFolderPath ?? undefined}
+                  isSubmitting={trustSubmitting}
+                  onDecision={handleTrustDecision}
+                  onClose={() => setTrustPromptOpen(false)}
+                />
+              ) : null}
+
+              {/* Floating integrations card */}
+              {showIntegrationsCardUi && (
+                <View
+                  className={cn(
+                    "absolute z-30",
+                    liftIntegrationsAboveComposer
+                      ? "right-3"
+                      : "bottom-4 right-4"
+                  )}
+                  style={
+                    liftIntegrationsAboveComposer
+                      ? { bottom: insets.bottom + 84 }
+                      : undefined
+                  }
+                  pointerEvents="box-none"
+                >
+                  <IntegrationsCard
+                    projectId={projectId!}
+                    integrations={integrationsCardData?.integrations}
+                    templateName={integrationsCardData?.templateName}
+                    pendingToolkits={pendingToolInstalls}
+                    onDismiss={() => setIntegrationsCardDismissed(true)}
+                  />
+                </View>
+              )}
+            </View>
           </View>
-          </DrawerHost>
-        </View>
+        </ChatBridgeProvider>
 
-        {nativePhonePlansOverlay && (
-          <View
-            className="absolute inset-0 z-40 bg-background"
-            pointerEvents="auto"
-            style={nativePhoneFill}
+        {Platform.OS === "web" && (
+          <AlertDialog
+            isOpen={deleteChatConfirmSessionId !== null}
+            onClose={() => setDeleteChatConfirmSessionId(null)}
+            size="sm"
           >
-            <PanelErrorBoundary panelName="Plans">
-              <PlansPanel
-                visible
-                projectId={projectId!}
-                agentUrl={agentUrl}
-                selectedModel={selectedModel}
-                requestedPlanPath={requestedPlanPath}
-                onBuildPlan={handleBuildPlan}
-              />
-            </PanelErrorBoundary>
-          </View>
+            <AlertDialogBackdrop />
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <Heading size="md" className="text-typography-950">
+                  Delete chat
+                </Heading>
+              </AlertDialogHeader>
+              <AlertDialogBody className="mt-3 mb-4">
+                <UIText size="sm" className="text-typography-700">
+                  Delete this chat? This cannot be undone.
+                </UIText>
+              </AlertDialogBody>
+              <AlertDialogFooter>
+                <Button
+                  variant="outline"
+                  action="secondary"
+                  onPress={() => setDeleteChatConfirmSessionId(null)}
+                >
+                  <ButtonText>Cancel</ButtonText>
+                </Button>
+                <Button
+                  action="negative"
+                  onPress={handleConfirmDeleteChatDialog}
+                >
+                  <ButtonText>Delete</ButtonText>
+                </Button>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         )}
-
-        {/* Floating chat button on native narrow canvas — render after overlays so canvas/panels cannot cover it. */}
-        {showNativeNarrowChatFab && (
-          <SafeAreaView
-            edges={['bottom']}
-            className="absolute bottom-0 right-0 z-50 pr-4 pb-4"
-            pointerEvents="box-none"
-            style={[
-              { zIndex: 50, elevation: 50 },
-              narrowCanvasKeyboardInset > 0
-                ? { marginBottom: narrowCanvasKeyboardInset }
-                : null,
-            ]}
-          >
-            <Pressable
-              onPress={() => {
-                // Explicit user navigation — drop any in-flight attention override.
-                setAttentionTab(null)
-                setActiveTab('chat')
-                setPreviewTab('chat-fullscreen')
-              }}
-              className="flex-row items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 shadow-lg"
-            >
-              <MessageSquare size={16} className="text-primary-foreground" />
-              <Text className="text-sm font-semibold text-primary-foreground">Chat</Text>
-            </Pressable>
-          </SafeAreaView>
-        )}
-
-        {/* Workspace trust prompt — first-mount only, dismissible. */}
-        {isExternalProject ? (
-          <TrustPrompt
-            open={trustPromptOpen}
-            projectName={project?.name}
-            folderPath={primaryFolderPath ?? undefined}
-            isSubmitting={trustSubmitting}
-            onDecision={handleTrustDecision}
-            onClose={() => setTrustPromptOpen(false)}
-          />
-        ) : null}
-
-        {/* Floating integrations card */}
-        {showIntegrationsCardUi && (
-          <View
-            className={cn(
-              'absolute z-30',
-              liftIntegrationsAboveComposer ? 'right-3' : 'bottom-4 right-4',
-            )}
-            style={
-              liftIntegrationsAboveComposer
-                ? { bottom: insets.bottom + 84 }
-                : undefined
-            }
-            pointerEvents="box-none"
-          >
-            <IntegrationsCard
-              projectId={projectId!}
-              integrations={integrationsCardData?.integrations}
-              templateName={integrationsCardData?.templateName}
-              pendingToolkits={pendingToolInstalls}
-              onDismiss={() => setIntegrationsCardDismissed(true)}
-            />
-          </View>
-        )}
-
-        </View>
-
-      </View>
-    </ChatBridgeProvider>
-
-      {Platform.OS === 'web' && (
-        <AlertDialog
-          isOpen={deleteChatConfirmSessionId !== null}
-          onClose={() => setDeleteChatConfirmSessionId(null)}
-          size="sm"
-        >
-          <AlertDialogBackdrop />
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <Heading size="md" className="text-typography-950">
-                Delete chat
-              </Heading>
-            </AlertDialogHeader>
-            <AlertDialogBody className="mt-3 mb-4">
-              <UIText size="sm" className="text-typography-700">
-                Delete this chat? This cannot be undone.
-              </UIText>
-            </AlertDialogBody>
-            <AlertDialogFooter>
-              <Button
-                variant="outline"
-                action="secondary"
-                onPress={() => setDeleteChatConfirmSessionId(null)}
-              >
-                <ButtonText>Cancel</ButtonText>
-              </Button>
-              <Button action="negative" onPress={handleConfirmDeleteChatDialog}>
-                <ButtonText>Delete</ButtonText>
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      )}
-    </PlanStreamProvider>
+      </PlanStreamProvider>
     </>
-  )
-})
+  );
+});
 
 // ---------------------------------------------------------------------------
 // EzModeAwareChatPanels — wraps `{chatPanels}` and overlays `EzModeChatPanel`
@@ -3895,19 +4690,19 @@ export default observer(function ProjectLayout() {
 // ---------------------------------------------------------------------------
 
 function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
-  const { ezModeActive, ezPeekActive, setEzPeekActive } = useChatBridge()
-  const { features } = usePlatformConfig()
-  const showEzMode = Platform.OS === 'web' && ezModeActive && features.ezMode
+  const { ezModeActive, ezPeekActive, setEzPeekActive } = useChatBridge();
+  const { features } = usePlatformConfig();
+  const showEzMode = Platform.OS === "web" && ezModeActive && features.ezMode;
   // "Peek" hides the EZ Mode overlay without tearing it down, so the voice
   // session + translator thread keep running while the user interacts
   // with the real ChatPanel underneath.
-  const hideForPeek = showEzMode && ezPeekActive
+  const hideForPeek = showEzMode && ezPeekActive;
   return (
     <View className="min-h-0 flex-1 relative">
       <View
         className="absolute inset-0"
         style={showEzMode && !hideForPeek ? { opacity: 0 } : undefined}
-        pointerEvents={showEzMode && !hideForPeek ? 'none' : 'auto'}
+        pointerEvents={showEzMode && !hideForPeek ? "none" : "auto"}
       >
         {children}
       </View>
@@ -3915,7 +4710,7 @@ function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
         <View
           className="absolute inset-0 z-10 bg-background"
           style={hideForPeek ? { opacity: 0 } : undefined}
-          pointerEvents={hideForPeek ? 'none' : 'auto'}
+          pointerEvents={hideForPeek ? "none" : "auto"}
         >
           <EzModeChatPanel />
         </View>
@@ -3938,7 +4733,7 @@ function EzModeAwareChatPanels({ children }: { children: React.ReactNode }) {
         </View>
       )}
     </View>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -3957,85 +4752,100 @@ function ChatPanelResizeHandle({
   rightOffset = 0,
   hitWidth = 20,
 }: {
-  splitRowRef: React.RefObject<View | null>
-  chatPanelWidth: number
-  minWidth: number
-  maxWidth: number
-  onResize: (w: number) => void
-  onResizeEnd: (w: number) => void
-  defaultWidth: number
+  splitRowRef: React.RefObject<View | null>;
+  chatPanelWidth: number;
+  minWidth: number;
+  maxWidth: number;
+  onResize: (w: number) => void;
+  onResizeEnd: (w: number) => void;
+  defaultWidth: number;
   /** Pixels of fixed-width content (e.g. the chat history sidebar) sitting to the left of the resizable chat panel. */
-  leftOffset?: number
+  leftOffset?: number;
   /** Pixels from the chat panel's right edge where the *visible* bar is drawn.
    *  The grabbable hit zone always extends all the way to the right edge so
    *  the (thin) scrollbar area is also a valid drag target. */
-  rightOffset?: number
+  rightOffset?: number;
   /** Total width of the (transparent) grab zone, measured from the chat
    *  panel's right edge. Should be larger than `rightOffset` so the bar
    *  itself is comfortably inside the hit area. */
-  hitWidth?: number
+  hitWidth?: number;
 }) {
-  const [dragging, setDragging] = useState(false)
-  const [hovered, setHovered] = useState(false)
-  const latestWidthRef = useRef(chatPanelWidth)
+  const [dragging, setDragging] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const latestWidthRef = useRef(chatPanelWidth);
 
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    e.preventDefault()
-    setDragging(true)
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      setDragging(true);
 
-    const container = splitRowRef.current as unknown as HTMLElement | null
-    if (!container) return
-    const containerRect = container.getBoundingClientRect()
+      const container = splitRowRef.current as unknown as HTMLElement | null;
+      if (!container) return;
+      const containerRect = container.getBoundingClientRect();
 
-    // Distance from the cursor at pointerdown to the chat panel's right
-    // edge. We hold this constant during the drag so that grabbing the
-    // handle off-center doesn't snap the panel to the cursor position
-    // (the handle is now inset from the right edge by `rightOffset`, so
-    // the cursor is meaningfully to the left of the actual edge).
-    const currentRightEdgeX = containerRect.left + leftOffset + chatPanelWidth
-    const grabDx = currentRightEdgeX - e.clientX
+      // Distance from the cursor at pointerdown to the chat panel's right
+      // edge. We hold this constant during the drag so that grabbing the
+      // handle off-center doesn't snap the panel to the cursor position
+      // (the handle is now inset from the right edge by `rightOffset`, so
+      // the cursor is meaningfully to the left of the actual edge).
+      const currentRightEdgeX =
+        containerRect.left + leftOffset + chatPanelWidth;
+      const grabDx = currentRightEdgeX - e.clientX;
 
-    // Transparent fixed overlay over the whole viewport. Without this,
-    // any iframe under the cursor (canvas / preview) swallows the
-    // pointermove events and the resize freezes the moment the cursor
-    // crosses into the iframe. The overlay's high z-index keeps it on
-    // top of every iframe; pointer-events stays default ("auto") so
-    // pointermove fires on `document` as expected.
-    const overlay = document.createElement('div')
-    overlay.style.cssText =
-      'position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;'
-    document.body.appendChild(overlay)
+      // Transparent fixed overlay over the whole viewport. Without this,
+      // any iframe under the cursor (canvas / preview) swallows the
+      // pointermove events and the resize freezes the moment the cursor
+      // crosses into the iframe. The overlay's high z-index keeps it on
+      // top of every iframe; pointer-events stays default ("auto") so
+      // pointermove fires on `document` as expected.
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;";
+      document.body.appendChild(overlay);
 
-    const onPointerMove = (ev: PointerEvent) => {
-      const newWidth = Math.max(
-        minWidth,
-        Math.min(maxWidth, ev.clientX + grabDx - containerRect.left - leftOffset),
-      )
-      latestWidthRef.current = newWidth
-      onResize(newWidth)
-    }
+      const onPointerMove = (ev: PointerEvent) => {
+        const newWidth = Math.max(
+          minWidth,
+          Math.min(
+            maxWidth,
+            ev.clientX + grabDx - containerRect.left - leftOffset
+          )
+        );
+        latestWidthRef.current = newWidth;
+        onResize(newWidth);
+      };
 
-    const onPointerUp = () => {
-      document.removeEventListener('pointermove', onPointerMove)
-      document.removeEventListener('pointerup', onPointerUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      overlay.remove()
-      setDragging(false)
-      onResizeEnd(latestWidthRef.current)
-    }
+      const onPointerUp = () => {
+        document.removeEventListener("pointermove", onPointerMove);
+        document.removeEventListener("pointerup", onPointerUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        overlay.remove();
+        setDragging(false);
+        onResizeEnd(latestWidthRef.current);
+      };
 
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    document.addEventListener('pointermove', onPointerMove)
-    document.addEventListener('pointerup', onPointerUp)
-  }, [splitRowRef, minWidth, maxWidth, onResize, onResizeEnd, leftOffset, chatPanelWidth])
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      document.addEventListener("pointermove", onPointerMove);
+      document.addEventListener("pointerup", onPointerUp);
+    },
+    [
+      splitRowRef,
+      minWidth,
+      maxWidth,
+      onResize,
+      onResizeEnd,
+      leftOffset,
+      chatPanelWidth,
+    ]
+  );
 
   const handleDoubleClick = useCallback(() => {
-    onResizeEnd(defaultWidth)
-  }, [defaultWidth, onResizeEnd])
+    onResizeEnd(defaultWidth);
+  }, [defaultWidth, onResizeEnd]);
 
-  const active = dragging || hovered
+  const active = dragging || hovered;
 
   return (
     <View
@@ -4045,24 +4855,24 @@ function ChatPanelResizeHandle({
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
       style={{
-        position: 'absolute',
+        position: "absolute",
         top: 0,
         bottom: 0,
         right: 0,
         width: hitWidth,
-        cursor: 'col-resize' as any,
+        cursor: "col-resize" as any,
         zIndex: 21,
       }}
     >
       <View
         className={cn(
-          'absolute top-0 bottom-0 transition-all duration-150',
-          active ? 'bg-primary/40' : 'bg-transparent',
+          "absolute top-0 bottom-0 transition-all duration-150",
+          active ? "bg-primary/40" : "bg-transparent"
         )}
         style={{ right: rightOffset, width: active ? 3 : 1 }}
       />
     </View>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -4094,33 +4904,35 @@ function ChatPanelResizeHandle({
 // reset `ready=false` and wait for the next `/preview/status` poll — flashing
 // the loading screen for a runtime that never went down. Seeding `ready=true`
 // for a known-good base URL renders the warm iframe immediately.
-const warmPreviewReadyCache = new Set<string>()
+const warmPreviewReadyCache = new Set<string>();
 
 function usePreviewReadiness(
   baseUrl: string | null | undefined,
   // Same-origin readiness signal from `usePreviewPhase` (polled via the
   // agent-proxy). `true` once the preview is serveable.
-  running: boolean,
+  running: boolean
 ): string | null {
-  const [ready, setReady] = useState(() =>baseUrl ? warmPreviewReadyCache.has(baseUrl) : false)
+  const [ready, setReady] = useState(() =>
+    baseUrl ? warmPreviewReadyCache.has(baseUrl) : false
+  );
 
   // Seed from the warm cache on base-URL change so a switch-back shows the
   // preview immediately; the `running` effect below latches it fresh otherwise.
   useEffect(() => {
-    setReady(baseUrl ? warmPreviewReadyCache.has(baseUrl) : false)
-  }, [baseUrl])
+    setReady(baseUrl ? warmPreviewReadyCache.has(baseUrl) : false);
+  }, [baseUrl]);
 
   // Latch ready once the same-origin status reports the preview is running.
   // We only ever transition false→true here (never back) so a live preview
   // doesn't flash the loading gate if the runtime momentarily restarts; the
   // outer `baseTimedOut` gate still surfaces a genuine never-comes-up failure.
   useEffect(() => {
-    if (!baseUrl || !running) return
-    warmPreviewReadyCache.add(baseUrl)
-    setReady(true)
-  }, [baseUrl, running])
+    if (!baseUrl || !running) return;
+    warmPreviewReadyCache.add(baseUrl);
+    setReady(true);
+  }, [baseUrl, running]);
 
-  return ready ? baseUrl! : null
+  return ready ? baseUrl! : null;
 }
 
 function CanvasPanel({
@@ -4133,21 +4945,26 @@ function CanvasPanel({
   onCanvasCapabilities,
   onCanvasError,
 }: {
-  agentUrl: string | null
-  canvasBaseUrl?: string | null
-  previewUrl?: string | null
-  onRefresh?: () => void
-  fullBleed?: boolean
-  iframeRefreshKey?: number
-  onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void
+  agentUrl: string | null;
+  canvasBaseUrl?: string | null;
+  previewUrl?: string | null;
+  onRefresh?: () => void;
+  fullBleed?: boolean;
+  iframeRefreshKey?: number;
+  onCanvasCapabilities?: (caps: { supportsTheme: boolean }) => void;
   onCanvasError?: (
-    phase: 'compile' | 'runtime',
+    phase: "compile" | "runtime",
     error: string,
     context?: {
-      route?: string
-      recentActions?: ReadonlyArray<{ ts: number; kind: string; target?: string; route?: string }>
-    },
-  ) => void
+      route?: string;
+      recentActions?: ReadonlyArray<{
+        ts: number;
+        kind: string;
+        target?: string;
+        route?: string;
+      }>;
+    }
+  ) => void;
 }) {
   // Phase-level visibility into what the runtime is doing while we wait
   // (installing deps, building, starting the API server, …).
@@ -4156,26 +4973,27 @@ function CanvasPanel({
   // Native fetch does not send cookies, so hitting the public preview host
   // (or the proxy without a Cookie header) 401s forever and the gate shows
   // "Connection timed out — The agent runtime could not be reached".
-  const { phase: previewPhase, running: previewRunning, apiReady } = usePreviewPhase(
-    agentUrl,
-    canvasBaseUrl,
-  )
+  const {
+    phase: previewPhase,
+    running: previewRunning,
+    apiReady,
+  } = usePreviewPhase(agentUrl, canvasBaseUrl);
 
   // Gate the canvas iframe on the same-origin `running` signal (no cross-origin
   // probe of the preview host → no CORS console noise). Until ready, this is
   // null so the loading screen stays visible.
-  const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl, previewRunning)
+  const readyCanvasBaseUrl = usePreviewReadiness(canvasBaseUrl, previewRunning);
 
   // iPhone: do not wait for `running`. `/sandbox/url` already returned a
   // tokenized preview URL; loading it is what wakes a sleeping preview.
   // Waiting on the status poll deadlocks (WebView never mounts → preview
   // never wakes → 60s "Connection timed out" while chat already works).
   const nativeBaseReady = nativeCanvasBaseReady({
-    native: Platform.OS !== 'web',
+    native: Platform.OS !== "web",
     agentUrl,
     previewUrl,
     canvasBaseUrl,
-  })
+  });
 
   // Don't load the app UI until the project's API sidecar is responding —
   // otherwise the SPA renders and fires `/api/*` calls into a server that
@@ -4185,25 +5003,27 @@ function CanvasPanel({
   // Latch it: a healthy sidecar that later restarts (schema / custom-routes
   // edits trigger `restartApiServerOnly`) briefly flips `apiReady` false, and
   // we don't want a live preview to flash back to a spinner on every save.
-  const [apiLatched, setApiLatched] = useState(false)
+  const [apiLatched, setApiLatched] = useState(false);
   useEffect(() => {
-    if (apiReady || nativeBaseReady) setApiLatched(true)
-  }, [apiReady, nativeBaseReady])
+    if (apiReady || nativeBaseReady) setApiLatched(true);
+  }, [apiReady, nativeBaseReady]);
 
   // Resume a sleeping metal/Knative preview the same way a browser tab does.
   // `/preview/start` is kicked from usePreviewPhase when status is not running —
   // do not POST it again here.
   useEffect(() => {
-    if (Platform.OS === 'web' || !agentUrl) return
-    const id = projectIdFromAgentProxyUrl(agentUrl)
+    if (Platform.OS === "web" || !agentUrl) return;
+    const id = projectIdFromAgentProxyUrl(agentUrl);
     if (id && API_URL) {
-      void fetch(previewWakeUrl(API_URL, id), { cache: 'no-store' }).catch(() => {})
+      void fetch(previewWakeUrl(API_URL, id), { cache: "no-store" }).catch(
+        () => {}
+      );
     }
-  }, [agentUrl])
+  }, [agentUrl]);
 
   // Dev server reachable (non-404 root) AND the agent runtime is up.
   // Native skips the `running` poll and loads the tokenized document instead.
-  const baseReady = nativeBaseReady || (!!agentUrl && !!readyCanvasBaseUrl)
+  const baseReady = nativeBaseReady || (!!agentUrl && !!readyCanvasBaseUrl);
 
   // Two independent fallbacks, deliberately kept separate:
   //
@@ -4218,57 +5038,64 @@ function CanvasPanel({
   //    previous single timer keyed on `baseReady`, so every flip restarted the
   //    clock and the gate could hang on "Starting API server…" forever. We
   //    start this timer once (on first base-ready) and never restart it.
-  const BASE_TIMEOUT_MS = 60_000
-  const API_WAIT_TIMEOUT_MS = 20_000
-  const [baseTimedOut, setBaseTimedOut] = useState(false)
+  const BASE_TIMEOUT_MS = 60_000;
+  const API_WAIT_TIMEOUT_MS = 20_000;
+  const [baseTimedOut, setBaseTimedOut] = useState(false);
   useEffect(() => {
     if (baseReady) {
-      setBaseTimedOut(false)
-      return
+      setBaseTimedOut(false);
+      return;
     }
-    setBaseTimedOut(false)
-    const timer = setTimeout(() => setBaseTimedOut(true), BASE_TIMEOUT_MS)
-    return () => clearTimeout(timer)
-  }, [baseReady])
+    setBaseTimedOut(false);
+    const timer = setTimeout(() => setBaseTimedOut(true), BASE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [baseReady]);
 
-  const [apiWaitElapsed, setApiWaitElapsed] = useState(false)
-  const apiWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [apiWaitElapsed, setApiWaitElapsed] = useState(false);
+  const apiWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (apiLatched) return
-    if (!baseReady) return
+    if (apiLatched) return;
+    if (!baseReady) return;
     // Start exactly once; do NOT restart on baseReady / phase oscillation.
-    if (apiWaitTimerRef.current) return
-    apiWaitTimerRef.current = setTimeout(() => setApiWaitElapsed(true), API_WAIT_TIMEOUT_MS)
-  }, [baseReady, apiLatched])
+    if (apiWaitTimerRef.current) return;
+    apiWaitTimerRef.current = setTimeout(
+      () => setApiWaitElapsed(true),
+      API_WAIT_TIMEOUT_MS
+    );
+  }, [baseReady, apiLatched]);
   useEffect(
     () => () => {
       if (apiWaitTimerRef.current) {
-        clearTimeout(apiWaitTimerRef.current)
-        apiWaitTimerRef.current = null
+        clearTimeout(apiWaitTimerRef.current);
+        apiWaitTimerRef.current = null;
       }
     },
-    [],
-  )
+    []
+  );
 
   // Load the canvas once the dev server is reachable AND the sidecar is healthy
   // (latched). `apiWaitElapsed` is the bounded safety net so a slow cold start
   // or a sidecar that never reports healthy (crash loop, template without
   // `/health`) still shows the app within ~20s instead of hanging forever.
-  const showCanvas = shouldShowCanvas({ baseReady, apiLatched, timedOut: apiWaitElapsed })
-  const nativeFullFrame = Platform.OS !== 'web' && fullBleed
+  const showCanvas = shouldShowCanvas({
+    baseReady,
+    apiLatched,
+    timedOut: apiWaitElapsed,
+  });
+  const nativeFullFrame = Platform.OS !== "web" && fullBleed;
 
   if (!showCanvas) {
     // `!baseReady` → runtime / dev server not up yet (show its phase, and the
     // "Connection timed out" error path on failure). `baseReady && !apiLatched`
     // → app is built and served but we're waiting on the API sidecar.
     const phaseLabel = !baseReady
-      ? previewPhase && previewPhase !== 'idle'
-        ? ( PHASE_LABELS[previewPhase] ?? 'Preparing preview...')
+      ? previewPhase && previewPhase !== "idle"
+        ? PHASE_LABELS[previewPhase] ?? "Preparing preview..."
         : !agentUrl
-          ? 'Connecting to agent runtime...'
-          : 'Loading preview...'
-      : PHASE_LABELS['starting-api']
-    const previewFailed = isPreviewFailed({ phase: previewPhase })
+        ? "Connecting to agent runtime..."
+        : "Loading preview..."
+      : PHASE_LABELS["starting-api"];
+    const previewFailed = isPreviewFailed({ phase: previewPhase });
     return (
       <View className="flex-1 items-center justify-center px-6">
         {previewFailed ? (
@@ -4299,8 +5126,8 @@ function CanvasPanel({
             </Text>
             <Text className="text-muted-foreground text-center text-sm">
               {agentUrl
-                ? 'The live preview did not become ready. Try Retry, or send a chat message and open Previews again.'
-                : 'The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later.'}
+                ? "The live preview did not become ready. Try Retry, or send a chat message and open Previews again."
+                : "The agent runtime could not be reached. This may be a temporary issue — try refreshing or come back later."}
             </Text>
             {onRefresh && (
               <Pressable
@@ -4315,40 +5142,60 @@ function CanvasPanel({
         ) : (
           <>
             <ActivityIndicator size="large" className="mb-4" />
-            <Text className={cn('text-foreground font-medium mb-1', nativeFullFrame ? 'text-lg' : 'text-base')}>
+            <Text
+              className={cn(
+                "text-foreground font-medium mb-1",
+                nativeFullFrame ? "text-lg" : "text-base"
+              )}
+            >
               {phaseLabel}
             </Text>
-            <Text className={cn('text-muted-foreground text-center', nativeFullFrame ? 'text-sm' : 'text-xs')}>
+            <Text
+              className={cn(
+                "text-muted-foreground text-center",
+                nativeFullFrame ? "text-sm" : "text-xs"
+              )}
+            >
               This usually takes 20-40 seconds
             </Text>
-            <Text className={cn('text-muted-foreground/70 text-center mt-2 max-w-xs', nativeFullFrame ? 'text-xs leading-5' : 'text-[11px]')}>
-              This is a live builder preview that sleeps when idle. Publish to get a permanent, shareable link.
+            <Text
+              className={cn(
+                "text-muted-foreground/70 text-center mt-2 max-w-xs",
+                nativeFullFrame ? "text-xs leading-5" : "text-[11px]"
+              )}
+            >
+              This is a live builder preview that sleeps when idle. Publish to
+              get a permanent, shareable link.
             </Text>
           </>
         )}
       </View>
-    )
+    );
   }
 
   return (
     <View
       className={cn(
         nativeFullFrame
-          ? 'flex-1 overflow-hidden bg-background'
-          : 'flex-1 overflow-hidden rounded-2xl mr-2 mb-2',
-        !nativeFullFrame && fullBleed && 'ml-2',
+          ? "flex-1 overflow-hidden bg-background"
+          : "flex-1 overflow-hidden rounded-2xl mr-2 mb-2",
+        !nativeFullFrame && fullBleed && "ml-2"
       )}
     >
       <CanvasWebView
         agentUrl={agentUrl}
-        canvasBaseUrl={nativeBaseReady ? (canvasBaseUrl ?? readyCanvasBaseUrl) : readyCanvasBaseUrl}
+        canvasBaseUrl={
+          nativeBaseReady
+            ? canvasBaseUrl ?? readyCanvasBaseUrl
+            : readyCanvasBaseUrl
+        }
         previewUrl={previewUrl}
         refreshKey={iframeRefreshKey}
         onCanvasCapabilities={onCanvasCapabilities}
         onCanvasError={onCanvasError}
       />
     </View>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -4356,15 +5203,15 @@ function CanvasPanel({
 // ---------------------------------------------------------------------------
 
 const PHASE_LABELS: Record<string, string> = {
-  idle: 'Preparing environment...',
-  installing: 'Installing dependencies...',
-  'generating-prisma': 'Setting up database...',
-  'pushing-db': 'Initializing database...',
-  building: 'Building app...',
-  'starting-api': 'Starting API server...',
-  ready: 'Ready',
-  failed: 'Preview build failed',
-}
+  idle: "Preparing environment...",
+  installing: "Installing dependencies...",
+  "generating-prisma": "Setting up database...",
+  "pushing-db": "Initializing database...",
+  building: "Building app...",
+  "starting-api": "Starting API server...",
+  ready: "Ready",
+  failed: "Preview build failed",
+};
 
 /**
  * Polls `${agentUrl}/preview/status` so callers can show the user *what*
@@ -4392,105 +5239,124 @@ const PHASE_LABELS: Record<string, string> = {
  */
 function usePreviewPhase(
   agentUrl: string | null,
-  canvasBaseUrl?: string | null,
-): { phase: string; running: boolean; apiReady: boolean; apiServerPhase: string } {
-  const [phase, setPhase] = useState<string>('idle')
-  const [running, setRunning] = useState<boolean>(false)
+  canvasBaseUrl?: string | null
+): {
+  phase: string;
+  running: boolean;
+  apiReady: boolean;
+  apiServerPhase: string;
+} {
+  const [phase, setPhase] = useState<string>("idle");
+  const [running, setRunning] = useState<boolean>(false);
   // Starts `false` (gate closed) and is reset to `false` on each navigation.
   // Backwards-compat for older runtimes whose `/preview/status` predates the
   // `apiReady` field is handled by `resolveApiReady` (absent → ready) so the
   // gate degrades to the old `running`-only behaviour instead of hanging.
-  const [apiReady, setApiReady] = useState<boolean>(false)
-  const [apiServerPhase, setApiServerPhase] = useState<string>('idle')
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const inFlightRef = useRef(false)
-  const kickedStartRef = useRef(false)
-  const statusBase = previewStatusPollBase(agentUrl, canvasBaseUrl)
-  const pollTimeoutMs = Platform.OS === 'web' ? 5_000 : 20_000
+  const [apiReady, setApiReady] = useState<boolean>(false);
+  const [apiServerPhase, setApiServerPhase] = useState<string>("idle");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inFlightRef = useRef(false);
+  const kickedStartRef = useRef(false);
+  const statusBase = previewStatusPollBase(agentUrl, canvasBaseUrl);
+  const pollTimeoutMs = Platform.OS === "web" ? 5_000 : 20_000;
 
   useEffect(() => {
     // Reset on status-base change so consumers see a fresh "idle" phase on
     // navigation instead of a stale `running=true` from the previous
     // project.
-    setPhase('idle')
-    setRunning(false)
-    setApiReady(false)
-    setApiServerPhase('idle')
-    kickedStartRef.current = false
+    setPhase("idle");
+    setRunning(false);
+    setApiReady(false);
+    setApiServerPhase("idle");
+    kickedStartRef.current = false;
 
-    if (!statusBase) return
+    if (!statusBase) return;
 
-    let cancelled = false
+    let cancelled = false;
     const poll = async () => {
-      if (inFlightRef.current) return
-      inFlightRef.current = true
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
       try {
         const resp = await agentFetch(`${statusBase}/preview/status`, {
           signal: AbortSignal.timeout(pollTimeoutMs),
-        })
-        if (cancelled) return
+        });
+        if (cancelled) return;
         if (resp.ok) {
-          const data = await resp.json()
-          if (data.phase) setPhase(data.phase)
-          if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase)
-          setApiReady(resolveApiReady(data))
-          if (data.running) setRunning(true)
+          const data = await resp.json();
+          if (data.phase) setPhase(data.phase);
+          if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase);
+          setApiReady(resolveApiReady(data));
+          // `resolveRunning` folds in `hydrateRebuildPending`: a cold-miss
+          // assign's `data.running` reflects the warm-pool TEMPLATE until the
+          // post-hydrate rebuild finishes, and this is a one-way latch (never
+          // resets to false), so treating that as "running" would mount the
+          // canvas iframe against the template and never revisit it once the
+          // real content comes up. See preview-gate.ts for the full story.
+          if (resolveRunning(data)) setRunning(true);
           if (!data.running && !kickedStartRef.current) {
-            kickedStartRef.current = true
-            void agentFetch(`${statusBase}/preview/start`, { method: 'POST' }).catch(() => {})
+            kickedStartRef.current = true;
+            void agentFetch(`${statusBase}/preview/start`, {
+              method: "POST",
+            }).catch(() => {});
           }
           // Stop only once the preview is running AND the API is ready — the
           // prebuilt-dist path reports `running` before the sidecar binds, so
           // `running` alone would stop the poll too early.
           if (shouldStopPreviewPoll(data)) {
             if (pollRef.current) {
-              clearInterval(pollRef.current)
-              pollRef.current = null
+              clearInterval(pollRef.current);
+              pollRef.current = null;
             }
           }
         } else {
-          console.warn('[preview/status]', resp.status, statusBase)
+          console.warn("[preview/status]", resp.status, statusBase);
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        console.warn('[preview/status] poll failed', message)
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn("[preview/status] poll failed", message);
       } finally {
-        inFlightRef.current = false
+        inFlightRef.current = false;
       }
-    }
+    };
 
-    poll()
-    pollRef.current = setInterval(poll, 3000)
+    poll();
+    pollRef.current = setInterval(poll, 3000);
 
     return () => {
-      cancelled = true
+      cancelled = true;
       if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
-    }
-  }, [statusBase, pollTimeoutMs])
+    };
+  }, [statusBase, pollTimeoutMs]);
 
-  return { phase, running, apiReady, apiServerPhase }
+  return { phase, running, apiReady, apiServerPhase };
 }
 
-function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; agentUrl: string | null }) {
-  const [iframeKey, setIframeKey] = useState(0)
-  const { phase, running } = usePreviewPhase(agentUrl)
+function AppPreviewPanel({
+  previewUrl,
+  agentUrl,
+}: {
+  previewUrl: string | null;
+  agentUrl: string | null;
+}) {
+  const [iframeKey, setIframeKey] = useState(0);
+  const { phase, running } = usePreviewPhase(agentUrl);
   // Latches once the preview reports `running`. Manual refresh resets it
   // so the user can re-trigger the iframe load if Vite/HMR drops.
-  const [previewReady, setPreviewReady] = useState(false)
+  const [previewReady, setPreviewReady] = useState(false);
   useEffect(() => {
     if (running && !previewReady) {
-      setPreviewReady(true)
-      setIframeKey((k) => k + 1)
+      setPreviewReady(true);
+      setIframeKey((k) => k + 1);
     }
-  }, [running, previewReady])
+  }, [running, previewReady]);
 
   // Reset ready state when previewUrl changes (new project)
   useEffect(() => {
-    setPreviewReady(false)
-  }, [previewUrl])
+    setPreviewReady(false);
+  }, [previewUrl]);
 
   if (!previewUrl) {
     return (
@@ -4500,16 +5366,16 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
           Connecting to preview server...
         </Text>
       </View>
-    )
+    );
   }
 
-  if (Platform.OS === 'web') {
+  if (Platform.OS === "web") {
     return (
       <View className="flex-1 relative">
         <Pressable
           onPress={() => {
-            setIframeKey((k) => k + 1)
-            if (!previewReady) setPreviewReady(false)
+            setIframeKey((k) => k + 1);
+            if (!previewReady) setPreviewReady(false);
           }}
           className="absolute top-2 right-2 z-10 rounded-md border border-border bg-background/80 px-3 py-1.5 active:opacity-70"
         >
@@ -4520,26 +5386,27 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
           <View className="absolute inset-0 z-[5] items-center justify-center bg-background/90">
             <ActivityIndicator size="large" className="mb-4" />
             <Text className="text-foreground font-medium text-base mb-1">
-              {PHASE_LABELS[phase] || 'Preparing preview...'}
+              {PHASE_LABELS[phase] || "Preparing preview..."}
             </Text>
             <Text className="text-muted-foreground text-xs">
               This usually takes 20-40 seconds
             </Text>
             <Text className="text-muted-foreground/70 text-[11px] text-center mt-2 max-w-xs">
-              This is a live builder preview that sleeps when idle. Publish to get a permanent, shareable link.
+              This is a live builder preview that sleeps when idle. Publish to
+              get a permanent, shareable link.
             </Text>
           </View>
         )}
 
         <iframe
           key={iframeKey}
-          src={previewReady ? previewUrl : 'about:blank'}
+          src={previewReady ? previewUrl : "about:blank"}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
           className="block h-full w-full border-0"
-          {...({ 'data-thumbnail-target': '' } as any)}
+          {...({ "data-thumbnail-target": "" } as any)}
         />
       </View>
-    )
+    );
   }
 
   return (
@@ -4548,5 +5415,5 @@ function AppPreviewPanel({ previewUrl, agentUrl }: { previewUrl: string | null; 
         Preview is available in the web browser
       </Text>
     </View>
-  )
+  );
 }

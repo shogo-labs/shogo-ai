@@ -33,6 +33,7 @@ model User {
   // String[] so adminScopes is stored as JSON-encoded TEXT (`["analytics:read"]`).
   adminScopes         String   @default("[]")
   onboardingCompleted Boolean  @default(false)
+  lastSeenAnnouncementVersion String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -1578,6 +1579,14 @@ model InfraSnapshot {
   id        String   @id @default(uuid())
   timestamp DateTime @default(now())
 
+  // Which region's collector wrote this row. Nullable because this table is
+  // shared across regions via the bidirectional logical-replication mesh
+  // (see docs/oci-multi-region-production-guide.md) and rows created before
+  // this column existed have no region tag. New rows are always stamped with
+  // the writer's REGION_ID so `/analytics/infra-history` can scope a region's
+  // chart to that region's own snapshots instead of the replicated global set.
+  region String?
+
   totalNodes     Int
   asgDesired     Int
   asgMax         Int
@@ -1601,6 +1610,7 @@ model InfraSnapshot {
   idleEvictions  Int @default(0)
 
   @@index([timestamp])
+  @@index([region, timestamp])
   @@map("infra_snapshots")
 }
 

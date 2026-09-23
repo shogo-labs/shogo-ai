@@ -185,8 +185,8 @@ mock.module('../lib/warm-pool-rescue', () => ({
   },
 }))
 
-mock.module('../lib/runtime-token', () => ({
-  deriveRuntimeToken: (projectId: string) => `token-for-${projectId}`,
+mock.module('../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken: (projectId: string) => `token-for-${projectId}`,
 }))
 
 mock.module('../lib/runtime/build-project-env', () => ({

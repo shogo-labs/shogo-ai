@@ -13,10 +13,12 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test'
 
 // --- Mocked dependencies of workspace.hooks ---------------------------------
 let ownedCount = 0
+let ownedCountByKind: Partial<Record<'personal' | 'team', number>> = {}
 let effectivePlan = 'business'
 
 mock.module('../services/workspace.service', () => ({
-  getUserOwnedWorkspaceCount: async () => ownedCount,
+  getUserOwnedWorkspaceCount: async (_userId: string, kind?: 'personal' | 'team') =>
+    kind && kind in ownedCountByKind ? (ownedCountByKind[kind] as number) : ownedCount,
 }))
 mock.module('../services/billing.service', () => ({
   getEffectivePlanId: async () => effectivePlan,
@@ -71,6 +73,7 @@ function makeCtx(opts: {
 
 beforeEach(() => {
   ownedCount = 0
+  ownedCountByKind = {}
   effectivePlan = 'business'
   workspacesById = {}
   usersById = {}
@@ -171,8 +174,8 @@ describe('workspaceHooks.beforeCreate — child workspaces', () => {
   })
 })
 
-describe('workspaceHooks.beforeCreate — personal workspaces (no parent)', () => {
-  it('enforces the one-free-workspace limit', async () => {
+describe('workspaceHooks.beforeCreate — top-level workspaces (no parent)', () => {
+  it('enforces the one-free-workspace-per-kind limit for the default (team) kind', async () => {
     ownedCount = 1
     const res = await workspaceHooks.beforeCreate!(
       { name: 'Mine' },
@@ -182,13 +185,55 @@ describe('workspaceHooks.beforeCreate — personal workspaces (no parent)', () =
     expect(res?.error?.code).toBe('workspace_limit_reached')
   })
 
-  it('allows the first free personal workspace', async () => {
+  it('allows the first free (team-kind, default) workspace', async () => {
     ownedCount = 0
     const res = await workspaceHooks.beforeCreate!(
       { name: 'Mine' },
       makeCtx({ userId: 'u1', body: {} }),
     )
     expect(res?.ok).toBe(true)
+  })
+
+  it('allows a free team workspace for a user who already owns a personal workspace', async () => {
+    // Every account gets one free workspace of EACH kind — owning a
+    // `personal` workspace doesn't use up the free `team` allowance.
+    ownedCountByKind = { personal: 1, team: 0 }
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'My Team' },
+      makeCtx({ userId: 'u1', body: {} }), // kind omitted -> defaults to 'team'
+    )
+    expect(res?.ok).toBe(true)
+  })
+
+  it('blocks a second free team workspace even if the user owns no personal workspace', async () => {
+    ownedCountByKind = { personal: 0, team: 1 }
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Another Team' },
+      makeCtx({ userId: 'u1', body: {} }),
+    )
+    expect(res?.ok).toBe(false)
+    expect(res?.error?.code).toBe('workspace_limit_reached')
+    expect(res?.error?.message).toMatch(/paid subscription/)
+  })
+
+  it('allows a free personal workspace for a user who already owns a team workspace', async () => {
+    ownedCountByKind = { personal: 0, team: 1 }
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Mine', kind: 'personal' },
+      makeCtx({ userId: 'u1', body: { kind: 'personal' } }),
+    )
+    expect(res?.ok).toBe(true)
+  })
+
+  it('blocks a second free personal workspace', async () => {
+    ownedCountByKind = { personal: 1, team: 0 }
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Mine again', kind: 'personal' },
+      makeCtx({ userId: 'u1', body: { kind: 'personal' } }),
+    )
+    expect(res?.ok).toBe(false)
+    expect(res?.error?.code).toBe('workspace_limit_reached')
+    expect(res?.error?.message).toMatch(/personal workspace/)
   })
 })
 

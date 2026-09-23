@@ -108,6 +108,7 @@ mock.module("@shogo/shared-ui/primitives", () => ({
 // still import (e.g. `useNativePhoneWindow`).
 mock.module("../../../../lib/native-phone-layout", () => ({
   useIsNativePhoneLayout: () => false,
+  usePhoneLayout: () => false,
   useNativePhoneWindow: () => ({ isPhone: false, width: 1024, height: 768 }),
   isNativePhoneIntegrationsLayout: () => false,
   nativePhoneFillStyle: (width: number) => ({

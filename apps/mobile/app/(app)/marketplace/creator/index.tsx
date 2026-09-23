@@ -321,65 +321,74 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
             </Text>
           </View>
         ) : null}
-        <ScrollView className="flex-1" contentContainerStyle={{ padding: 24, paddingTop: 16 }}>
-          <View className="items-center mt-2 mb-10">
-            <View className="w-16 h-16 rounded-full bg-primary/15 items-center justify-center mb-4">
-              <Award size={28} color="#e27927" />
-            </View>
-            <Text className="text-2xl font-bold text-foreground mb-2 text-center">
-              Publish your agents
-            </Text>
-            <Text className="text-sm text-muted-foreground text-center max-w-md leading-5">
-              List your agents in the Shogo marketplace and earn from every
-              install. Set up your publishing profile to get started.
-            </Text>
-          </View>
-
-          {/* Value-prop cards */}
-          <View className="gap-3 mb-8">
-            <ValueProp
-              icon={Users}
-              title="Reach the Shogo community"
-              body="Get your agent in front of every workspace browsing the marketplace, with editorial features for the best work."
-            />
-            <ValueProp
-              icon={DollarSign}
-              title="Earn from every install"
-              body="Set free, one-time, or subscription pricing. Payouts go straight to your bank via Stripe Connect."
-            />
-            <ValueProp
-              icon={Award}
-              title="Keep ownership of your work"
-              body="Buyers fork or link to your project. You decide whether they receive your future updates."
-            />
-          </View>
-
-          {error && (
-            <View className="flex-row items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-destructive/10">
-              <AlertCircle size={16} color="#dc2626" />
-              <Text className="text-sm text-destructive flex-1">{error}</Text>
-            </View>
-          )}
-
-          <Pressable
-            onPress={handleBecomeCreator}
-            disabled={creating}
-            className={cn(
-              'py-3.5 rounded-xl items-center justify-center',
-              creating ? 'bg-primary/60' : 'bg-primary active:opacity-90',
-            )}
-          >
-            {creating ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Text className="text-sm font-semibold text-primary-foreground">
-                Get started
+        <ScrollView
+          className="flex-1"
+          contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 28, paddingBottom: 56 }}
+          showsVerticalScrollIndicator={false}
+        >
+          <View className="mx-auto w-full max-w-2xl">
+            <View className="items-center mt-2 mb-9">
+              <View className="w-16 h-16 rounded-2xl bg-primary/10 items-center justify-center mb-5">
+                <Award size={28} color="#e27927" />
+              </View>
+              <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary mb-2">
+                Creator studio
               </Text>
+              <Text className="text-3xl font-semibold tracking-tight text-foreground mb-2 text-center">
+                Publish what you know.
+              </Text>
+              <Text className="text-sm text-muted-foreground text-center max-w-md leading-5">
+                Turn the agents you&apos;ve built into useful marketplace products,
+                then grow a body of work people trust.
+              </Text>
+            </View>
+
+            {/* Value-prop cards */}
+            <View className="gap-3 mb-8">
+              <ValueProp
+                icon={Users}
+                title="Reach the Shogo community"
+                body="Get your agent in front of every workspace browsing the marketplace, with editorial features for the best work."
+              />
+              <ValueProp
+                icon={DollarSign}
+                title="Earn from every install"
+                body="Set free, one-time, or subscription pricing. Payouts go straight to your bank via Stripe Connect."
+              />
+              <ValueProp
+                icon={Award}
+                title="Keep ownership of your work"
+                body="Buyers fork or link to your project. You decide whether they receive your future updates."
+              />
+            </View>
+
+            {error && (
+              <View className="flex-row items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-destructive/10">
+                <AlertCircle size={16} color="#dc2626" />
+                <Text className="text-sm text-destructive flex-1">{error}</Text>
+              </View>
             )}
-          </Pressable>
-          <Text className="text-[11px] text-muted-foreground text-center mt-3">
-            Free to join. You can publish your first agent in minutes.
-          </Text>
+
+            <Pressable
+              onPress={handleBecomeCreator}
+              disabled={creating}
+              className={cn(
+                'py-4 rounded-2xl items-center justify-center',
+                creating ? 'bg-primary/60' : 'bg-primary active:opacity-90',
+              )}
+            >
+              {creating ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text className="text-sm font-semibold text-primary-foreground">
+                  Create creator profile
+                </Text>
+              )}
+            </Pressable>
+            <Text className="text-[11px] text-muted-foreground text-center mt-3">
+              Free to join. You can publish your first agent in minutes.
+            </Text>
+          </View>
         </ScrollView>
       </View>
     )
@@ -396,25 +405,34 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
   return (
     <ScrollView
       className="flex-1 bg-background"
-      contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+      contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 24, paddingBottom: 56 }}
       showsVerticalScrollIndicator={false}
     >
       {/* Header */}
-      <View className="flex-row items-center gap-3 mb-6">
+      <View className="mx-auto w-full max-w-4xl">
+      <View className="flex-row items-start gap-3 mb-6">
         {!embedded ? (
-          <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
-            <ArrowLeft size={20} color="#71717a" />
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={8}
+            className="mt-1 w-9 h-9 items-center justify-center rounded-full border border-border bg-card"
+            accessibilityLabel="Go back"
+          >
+            <ArrowLeft size={18} color="#71717a" />
           </Pressable>
         ) : null}
         <View className="flex-1">
-          <Text className="text-xl font-bold text-foreground">
-            {embedded ? 'Publishing' : 'Creator dashboard'}
+          <Text className="text-[10px] font-semibold uppercase tracking-[1.5px] text-primary">
+            Creator studio / publishing
+          </Text>
+          <Text className="mt-1 text-3xl font-semibold tracking-tight text-foreground">
+            {embedded ? 'Make your work discoverable.' : 'Creator dashboard'}
           </Text>
         </View>
         {profile?.id && (
           <Pressable
             onPress={() => router.push(`/(app)/marketplace/creators/${profile.id}` as any)}
-            className="flex-row items-center gap-1 px-3 py-1.5 rounded-lg border border-border active:opacity-70"
+            className="mt-1 flex-row items-center gap-1 px-3 py-2 rounded-full border border-border bg-card active:opacity-70"
           >
             <Text className="text-xs font-medium text-foreground">View public</Text>
             <ChevronRight size={12} color="#71717a" />
@@ -431,7 +449,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
 
       {/* Tier card */}
       {profile && (
-        <View className="rounded-2xl border border-border bg-card mb-5">
+        <View className="rounded-2xl border border-primary/15 bg-primary/5 mb-5">
           <View className="p-4 flex-row items-center gap-3">
             {profile.avatarUrl ? (
               <Image
@@ -538,7 +556,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
 
       {/* Onboarding checklist */}
       {!onboardingComplete && (
-        <View className="rounded-2xl border border-primary/30 bg-primary/5 p-4 mb-5">
+        <View className="rounded-2xl border border-primary/25 bg-primary/5 p-5 mb-5">
           <View className="flex-row items-center justify-between mb-3">
             <Text className="text-sm font-semibold text-foreground">
               Get your profile production-ready
@@ -585,7 +603,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
 
       {/* Earnings hero card with sparkline */}
       {profile && (
-        <View className="rounded-2xl border border-border bg-card p-5 mb-3">
+        <View className="rounded-2xl border border-border/80 bg-card p-5 mb-5 shadow-sm">
           <View className="flex-row items-start justify-between mb-3">
             <View>
               <Text className="text-xs text-muted-foreground mb-1">Earnings (last 30 days)</Text>
@@ -652,7 +670,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
 
       {/* Recent transactions */}
       {recentTransactions.length > 0 && (
-        <View className="rounded-2xl border border-border bg-card p-4 mb-5">
+        <View className="rounded-2xl border border-border/80 bg-card p-4 mb-5 shadow-sm">
           <View className="flex-row items-center justify-between mb-3">
             <Text className="text-sm font-semibold text-foreground">Recent transactions</Text>
             <Text className="text-xs text-muted-foreground">
@@ -677,7 +695,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
               params: { id: 'new' },
             })
           }
-          className="flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary"
+          className="flex-row items-center gap-1.5 px-3 py-2 rounded-full bg-primary"
         >
           <Plus size={14} color="#fff" />
           <Text className="text-xs font-semibold text-primary-foreground">New listing</Text>
@@ -707,7 +725,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
           ))}
         </View>
       ) : (
-        <View className="items-center py-12 rounded-2xl border border-dashed border-border">
+        <View className="items-center py-12 rounded-2xl border border-dashed border-border bg-card/60">
           <Plus size={32} color="#a1a1aa" />
           <Text className="text-sm font-medium text-foreground mt-3 mb-1">
             No listings yet
@@ -717,7 +735,7 @@ export const CreatorPublishingPanel = observer(function CreatorPublishingPanel({
           </Text>
         </View>
       )}
-
+      </View>
     </ScrollView>
   )
 })
@@ -734,7 +752,7 @@ function ValueProp({
   body: string
 }) {
   return (
-    <View className="rounded-2xl border border-border bg-card p-4 flex-row gap-3">
+    <View className="rounded-2xl border border-border/80 bg-card p-4 flex-row gap-3 shadow-sm">
       <View className="rounded-xl bg-primary/15 w-10 h-10 items-center justify-center mt-0.5">
         <Icon size={18} color="#e27927" />
       </View>

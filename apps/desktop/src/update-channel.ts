@@ -14,7 +14,7 @@
  *   - `beta` hits a new `/desktop/beta/...` route on the `releases.shogo.ai`
  *     Cloudflare Worker (see
  *     terraform/modules/install-shogo-ai/scripts/releases-worker.js.tftpl),
- *     which resolves prereleases published on every push to `main`. It
+ *     which resolves the newest manually published prerelease. It
  *     speaks the exact same wire protocol as update.electronjs.org (204 =
  *     up to date, JSON `{name,url,notes}` = update available, `/RELEASES`
  *     for Squirrel.Windows) so `updater.ts` doesn't need channel-specific

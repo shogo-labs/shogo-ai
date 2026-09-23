@@ -1,582 +1,80 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Shogo Technologies, Inc.
+import { describe, expect, test } from 'bun:test'
+import { resolveProjectPodUrl } from '../resolve-pod-url'
 
-import { afterEach, describe, expect, it, mock, test } from 'bun:test'
-import { resolveProjectPodUrl, type ResolvePodUrlOpts } from '../resolve-pod-url'
-import { resolveWorkspaceRuntimeUrl } from '../resolve-workspace-runtime-url'
-
-function fakeRuntime(overrides: Partial<any> = {}) {
-  return {
-    projectId: 'proj-1',
-    port: 37500,
-    agentPort: 38500,
-    status: 'running' as const,
-    url: 'http://localhost:37500',
-    pid: 12345,
-    startedAt: Date.now(),
-    ...overrides,
-  }
-}
-
-function fakeRuntimeManager(initial?: any) {
-  let runtime = initial
-  return {
-    status: () => runtime,
-    start: mock(async () => {
-      runtime = fakeRuntime()
-      return runtime
-    }),
-    _setRuntime(r: any) { runtime = r },
-  }
-}
+const passthroughLease = <T>(_key: string, fn: () => Promise<T>) => fn()
 
 describe('resolveProjectPodUrl', () => {
-  describe('mode selection', () => {
-    it('routes K8s when isKubernetes()', async () => {
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.example/v1',
-      })
-      expect(res).toEqual({ mode: 'k8s', url: 'http://pod.example/v1' })
-    })
-
-    it('routes host when not in Kubernetes', async () => {
-      const mgr = fakeRuntimeManager(fakeRuntime())
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(res.mode).toBe('host')
-      expect(res.url).toBe('http://localhost:38500')
-      expect((res as any).runtime).toBeDefined()
-    })
-  })
-
-  describe('metal substrate routing', () => {
-    it('routes metal when enabled and the project is eligible (wins over k8s)', async () => {
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => true,
-        _metalResolver: async () => 'http://10.8.0.2:8080',
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.cluster/v1',
-      })
-      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
-    })
-
-    it('does NOT touch metal when the project is ineligible', async () => {
-      let metalCalls = 0
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => false,
-        _metalResolver: async () => { metalCalls++; return 'http://metal' },
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.cluster/v1',
-      })
-      expect(metalCalls).toBe(0)
-      expect(res.mode).toBe('k8s')
-    })
-
-    it('falls back to k8s when the metal resolver throws (best-effort)', async () => {
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => true,
-        _metalResolver: async () => { throw new Error('no live metal host available') },
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.cluster/v1',
-      })
-      expect(res).toEqual({ mode: 'k8s', url: 'http://pod.cluster/v1' })
-    })
-
-    it('falls back to host when metal fails and not in Kubernetes', async () => {
-      const mgr = fakeRuntimeManager()
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => true,
-        _metalResolver: async () => { throw new Error('all metal hosts failed') },
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(res.mode).toBe('host')
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  describe('metal-only mode (SHOGO_METAL_ALL_PROJECTS)', () => {
-    it('routes every project to metal', async () => {
-      const res = await resolveProjectPodUrl('any-proj', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => true,
-        _isMetalOnly: () => true,
-        _metalResolver: async () => 'http://10.8.0.2:8080',
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.cluster/v1',
-      })
-      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
-    })
-
-    it('does NOT fall back to k8s when metal fails — throws a retryable "starting" error', async () => {
-      let k8sCalls = 0
-      await expect(
-        resolveProjectPodUrl('any-proj', {
-          _isMetalEnabled: () => true,
-          _isMetalEligible: () => true,
-          _isMetalOnly: () => true,
-          _metalResolver: async () => { throw new Error('no live metal host available') },
-          _isKubernetes: () => true,
-          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
-        }),
-      ).rejects.toThrow(/starting/)
-      expect(k8sCalls).toBe(0)
-    })
-
-    it('does NOT fall back to host when metal fails in metal-only mode', async () => {
-      const mgr = fakeRuntimeManager()
-      await expect(
-        resolveProjectPodUrl('any-proj', {
-          _isMetalEnabled: () => true,
-          _isMetalEligible: () => true,
-          _isMetalOnly: () => true,
-          _metalResolver: async () => { throw new Error('all metal hosts failed') },
-          _isKubernetes: () => false,
-          runtimeManager: mgr as any,
-        }),
-      ).rejects.toThrow(/metal-only/)
-      expect(mgr.start).toHaveBeenCalledTimes(0)
-    })
-  })
-
-  describe('drain cutover mode (SHOGO_METAL_DRAIN_MODE)', () => {
-    const drainOpts = (extra: Partial<ResolvePodUrlOpts> = {}): ResolvePodUrlOpts => ({
-      _isMetalEnabled: () => true,
-      _isMetalEligible: () => true,
-      _isMetalOnly: () => true, // drain is authoritative on a metal miss
-      _isMetalDrainMode: () => true,
+  test('always resolves through the project-anchored workspace runtime', async () => {
+    const result = await resolveProjectPodUrl('proj-1', {
+      _loadAnchoredArgs: async () => ({
+        workspaceId: 'ws-1',
+        attachedProjectIds: ['proj-1', 'proj-2'],
+        localFolders: [],
+        readonlyProjectIds: ['proj-2'],
+      }),
       _isKubernetes: () => true,
-      _metalResolver: async () => 'http://10.8.0.2:8080',
-      ...extra,
-    })
-
-    it('yields to a LIVE Knative pod (exists+ready+replicas>0) — does not touch metal', async () => {
-      let metalCalls = 0
-      const res = await resolveProjectPodUrl('proj-1', drainOpts({
-        _metalResolver: async () => { metalCalls++; return 'http://metal' },
-        _knativeStatus: async () => ({ exists: true, ready: true, replicas: 1, url: 'http://project-proj-1.ns.svc/v1' }),
-      }))
-      expect(res).toEqual({ mode: 'k8s', url: 'http://project-proj-1.ns.svc/v1' })
-      expect(metalCalls).toBe(0)
-    })
-
-    it('routes to metal when the Knative pod is scaled to zero (replicas=0)', async () => {
-      const res = await resolveProjectPodUrl('proj-1', drainOpts({
-        _knativeStatus: async () => ({ exists: true, ready: true, replicas: 0, url: 'http://project-proj-1.ns.svc/v1' }),
-      }))
-      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
-    })
-
-    it('routes a brand-new project (no ksvc) to metal', async () => {
-      const res = await resolveProjectPodUrl('brand-new', drainOpts({
-        _knativeStatus: async () => ({ exists: false, ready: false, replicas: 0, url: null }),
-      }))
-      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
-    })
-
-    it('does NOT yield to a Knative service that exists but is not ready', async () => {
-      const res = await resolveProjectPodUrl('proj-1', drainOpts({
-        _knativeStatus: async () => ({ exists: true, ready: false, replicas: 0, url: 'http://x' }),
-      }))
-      expect(res.mode).toBe('metal')
-    })
-
-    it('on a probe FAILURE, throws retryable (no metal resume, no Knative start — avoids dual-run)', async () => {
-      let metalCalls = 0
-      let k8sCalls = 0
-      await expect(
-        resolveProjectPodUrl('proj-1', drainOpts({
-          _metalResolver: async () => { metalCalls++; return 'http://metal' },
-          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
-          _knativeStatus: async () => { throw new Error('k8s api server unavailable') },
-        })),
-      ).rejects.toThrow(/starting/)
-      expect(metalCalls).toBe(0)
-      expect(k8sCalls).toBe(0)
-    })
-
-    it('skips the drain probe when not in Kubernetes', async () => {
-      let probeCalls = 0
-      const res = await resolveProjectPodUrl('proj-1', drainOpts({
-        _isKubernetes: () => false,
-        _knativeStatus: async () => { probeCalls++; return { exists: true, ready: true, replicas: 1, url: 'http://x' } },
-      }))
-      expect(probeCalls).toBe(0)
-      expect(res.mode).toBe('metal')
-    })
-  })
-
-  describe('metal wait-and-retry (metalWaitMs)', () => {
-    it('does a SINGLE attempt by default (metalWaitMs unset) then falls back', async () => {
-      let metalCalls = 0
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => true,
-        _metalResolver: async () => { metalCalls++; throw new Error('not ready') },
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.cluster/v1',
-      })
-      expect(metalCalls).toBe(1)
-      expect(res.mode).toBe('k8s')
-    })
-
-    it('rejoins the in-flight wake: retries within the budget and succeeds on a later attempt', async () => {
-      let calls = 0
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isMetalEnabled: () => true,
-        _isMetalEligible: () => true,
-        _metalResolver: async () => {
-          calls++
-          if (calls < 3) throw new Error('metal /assign timed out')
-          return 'http://10.8.0.2:8080'
-        },
-        _isKubernetes: () => true,
-        _k8sResolver: async () => 'http://pod.cluster/v1',
-        metalWaitMs: 5000,
-        metalRetryDelayMs: 1,
-      })
-      expect(calls).toBe(3)
-      expect(res).toEqual({ mode: 'metal', url: 'http://10.8.0.2:8080' })
-    })
-
-    it('metal-only: retries within budget, then throws a retryable "starting" error (no k8s fallback)', async () => {
-      let calls = 0
-      let k8sCalls = 0
-      await expect(
-        resolveProjectPodUrl('any-proj', {
-          _isMetalEnabled: () => true,
-          _isMetalEligible: () => true,
-          _isMetalOnly: () => true,
-          _metalResolver: async () => { calls++; throw new Error('no live metal host available') },
-          _isKubernetes: () => true,
-          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
-          metalWaitMs: 20,
-          metalRetryDelayMs: 1,
-        }),
-      ).rejects.toThrow(/metal-only/)
-      expect(calls).toBeGreaterThan(1) // retried at least once before giving up
-      expect(k8sCalls).toBe(0)
-    })
-
-    it('a DELETED project fails fast: no retries, no "starting" mask, no fallback', async () => {
-      // Regression: a project deleted mid-turn used to be retried for the whole
-      // wait budget and then wrapped in MetalOnlyUnavailableError, whose message
-      // says "starting" — which the chat route maps to a retryable 503. One
-      // delete therefore produced minutes of /assign attempts against every
-      // host. Waiting cannot bring the row back, so this must be terminal.
-      let calls = 0
-      let k8sCalls = 0
-      const notFound = () => {
-        const err = new Error('project gone-proj does not exist (deleted?)')
-        err.name = 'ProjectNotFoundError' // mirrors ProjectNotFoundError
-        return err
-      }
-      await expect(
-        resolveProjectPodUrl('gone-proj', {
-          _isMetalEnabled: () => true,
-          _isMetalEligible: () => true,
-          _isMetalOnly: () => true,
-          _metalResolver: async () => { calls++; throw notFound() },
-          _isKubernetes: () => true,
-          _k8sResolver: async () => { k8sCalls++; return 'http://pod.cluster/v1' },
-          metalWaitMs: 5000,
-          metalRetryDelayMs: 1,
-        }),
-      ).rejects.toThrow(/does not exist/)
-      expect(calls).toBe(1) // terminal on the first attempt
-      expect(k8sCalls).toBe(0)
-    })
-
-    it('does not mask a deleted project as a retryable "starting" error', async () => {
-      const err = new Error('project gone-2 does not exist (deleted?)')
-      err.name = 'ProjectNotFoundError'
-      let thrown: any
-      try {
-        await resolveProjectPodUrl('gone-2', {
-          _isMetalEnabled: () => true,
-          _isMetalEligible: () => true,
-          _isMetalOnly: () => true,
-          _metalResolver: async () => { throw err },
-          _isKubernetes: () => true,
-          _k8sResolver: async () => 'http://pod.cluster/v1',
-        })
-      } catch (e) {
-        thrown = e
-      }
-      expect(thrown?.name).toBe('ProjectNotFoundError')
-      expect(thrown?.message).not.toMatch(/starting/)
-    })
-  })
-
-  describe('host warm pool vs direct runtime', () => {
-    it('claims from the pool when no direct runtime exists', async () => {
-      const mgr = fakeRuntimeManager(undefined)
-      const pool = mock(async () => 'http://localhost:38300')
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        _isHostWarmPoolEnabled: () => true,
-        _hostPoolResolver: pool,
-        runtimeManager: mgr as any,
-      })
-      expect(pool).toHaveBeenCalledTimes(1)
-      expect(mgr.start).not.toHaveBeenCalled()
-      expect(res.url).toBe('http://localhost:38300')
-    })
-
-    it('keeps a live direct runtime instead of also assigning a pool runtime', async () => {
-      // After a pool fallback the project is served by RuntimeManager; the next
-      // /sandbox/url or agent-proxy call must not claim a second runtime.
-      const mgr = fakeRuntimeManager(fakeRuntime({ status: 'running' }))
-      const pool = mock(async () => 'http://localhost:38300')
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        _isHostWarmPoolEnabled: () => true,
-        _hostPoolResolver: pool,
-        runtimeManager: mgr as any,
-      })
-      expect(pool).not.toHaveBeenCalled()
-      expect(res.url).toBe('http://localhost:38500')
-    })
-
-    it('joins an in-flight direct start instead of racing it with a pool assign', async () => {
-      const mgr = fakeRuntimeManager(fakeRuntime({ status: 'starting' }))
-      const pool = mock(async () => 'http://localhost:38300')
-      await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        _isHostWarmPoolEnabled: () => true,
-        _hostPoolResolver: pool,
-        runtimeManager: mgr as any,
-      })
-      expect(pool).not.toHaveBeenCalled()
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  describe('host mode runtime reuse', () => {
-    it('does NOT call manager.start when runtime is already running', async () => {
-      const running = fakeRuntime({ status: 'running' })
-      const mgr = fakeRuntimeManager(running)
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(res.mode).toBe('host')
-      expect((res as any).runtime).toBe(running)
-      expect(mgr.start).toHaveBeenCalledTimes(0)
-    })
-
-    it('calls manager.start when status is stopped', async () => {
-      const stopped = fakeRuntime({ status: 'stopped' })
-      const mgr = fakeRuntimeManager(stopped)
-      await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-    })
-
-    it('calls manager.start when status is error', async () => {
-      const errored = fakeRuntime({ status: 'error' })
-      const mgr = fakeRuntimeManager(errored)
-      await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-    })
-
-    it('calls manager.start when no runtime exists', async () => {
-      const mgr = fakeRuntimeManager(undefined)
-      await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-    })
-
-    it('calls manager.start when runtime exists but agentPort is missing (interrupted boot)', async () => {
-      const halfBaked = { ...fakeRuntime(), agentPort: undefined }
-      const mgr = fakeRuntimeManager(halfBaked)
-      await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-    })
-
-    it('calls manager.start when status is starting (joins inflight prewarm)', async () => {
-      // Regression: the home composer fires `POST /runtime/prewarm` which
-      // allocates `agentPort` synchronously and sets `status: 'starting'`
-      // long before Vite + the agent-runtime are listening. A previous
-      // gate of "agentPort set & status !== stopped/error" would skip the
-      // await and let `/sandbox/url` return URLs the runtime wasn't
-      // listening on yet — ECONNREFUSED on the canvas / preview iframe /
-      // agent SSE. `manager.start()` dedupes via `startingPromises`, so
-      // calling it here joins the inflight start instead of triggering a
-      // second spawn.
-      const starting = fakeRuntime({ status: 'starting' })
-      const mgr = fakeRuntimeManager(starting)
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(mgr.start).toHaveBeenCalledTimes(1)
-      expect(res.mode).toBe('host')
-      // start() resolves to a `running` runtime (see fakeRuntimeManager),
-      // so the resolved URL reflects the now-ready agent port.
-      expect(res.url).toBe('http://localhost:38500')
-    })
-
-    it('falls back to runtime.port+1000 when agentPort is set later but undefined now', async () => {
-      // Captures the legacy convention `agentPort ?? port + 1000`.
-      const mgr = fakeRuntimeManager()
-      mgr.start = mock(async () => fakeRuntime({ agentPort: undefined as any, port: 37500 })) as any
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(res.mode).toBe('host')
-      expect(res.url).toBe('http://localhost:38500') // 37500 + 1000
-    })
-
-    it('reuses the hostname from runtime.url so non-localhost host bindings still work', async () => {
-      const mgr = fakeRuntimeManager(fakeRuntime({ url: 'http://0.0.0.0:37500' }))
-      const res = await resolveProjectPodUrl('proj-1', {
-        _isKubernetes: () => false,
-        runtimeManager: mgr as any,
-      })
-      expect(res.url).toBe('http://0.0.0.0:38500')
-    })
-  })
-})
-
-describe('SHOGO_WORKSPACE_RUNTIME — anchored workspace pod routing', () => {
-  const origFlag = process.env.SHOGO_WORKSPACE_RUNTIME
-  const passthroughLease = <T>(_id: string, fn: () => Promise<T>) => fn()
-
-  const anchoredArgs = {
-    workspaceId: 'ws-abc',
-    attachedProjectIds: ['proj-anchor', 'proj-attached'],
-    localFolders: [] as string[],
-    readonlyProjectIds: ['proj-attached'],
-  }
-
-  afterEach(() => {
-    if (origFlag === undefined) delete process.env.SHOGO_WORKSPACE_RUNTIME
-    else process.env.SHOGO_WORKSPACE_RUNTIME = origFlag
-  })
-
-  it('routes agent-proxy to workspace-proj pod instead of legacy project pod (k8s)', async () => {
-    process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
-    const legacyK8s = mock(async () => 'http://project-legacy.pod/v1')
-    const workspaceK8s = mock(async (wsId: string, ids: string[], o?: { anchorProjectId?: string }) => {
-      expect(wsId).toBe('ws-abc')
-      expect(ids).toEqual(['proj-anchor', 'proj-attached'])
-      expect(o?.anchorProjectId).toBe('proj-anchor')
-      return `http://workspace-proj-proj-anchor.${wsId}.svc.cluster.local`
-    })
-
-    const res = await resolveProjectPodUrl('proj-anchor', {
-      _isKubernetes: () => true,
-      _k8sResolver: legacyK8s,
-      _loadAnchoredArgs: async () => anchoredArgs,
-      _workspaceK8sResolver: workspaceK8s,
+      _workspaceK8sResolver: async () => 'http://workspace-proj-proj-1.test',
       _spawnLease: passthroughLease,
     })
 
-    expect(res).toEqual({
+    expect(result).toEqual({
       mode: 'k8s',
-      url: 'http://workspace-proj-proj-anchor.ws-abc.svc.cluster.local',
+      url: 'http://workspace-proj-proj-1.test',
     })
-    expect(legacyK8s).not.toHaveBeenCalled()
-    expect(workspaceK8s).toHaveBeenCalledTimes(1)
   })
 
-  it('agent-proxy and workspace-chat resolve to the same pod URL (plans fix)', async () => {
-    process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
-    const sharedUrl = 'http://workspace-proj-proj-anchor.ws-abc.svc.cluster.local'
-    const workspaceK8s = mock(async () => sharedUrl)
-
-    const agentProxy = await resolveProjectPodUrl('proj-anchor', {
+  test('does not depend on the removed rollout flag', async () => {
+    const result = await resolveProjectPodUrl('proj-2', {
+      _loadAnchoredArgs: async () => ({
+        workspaceId: 'ws-2',
+        attachedProjectIds: ['proj-2'],
+        localFolders: [],
+        readonlyProjectIds: [],
+      }),
       _isKubernetes: () => true,
-      _k8sResolver: async () => 'http://project-legacy.pod/v1',
-      _loadAnchoredArgs: async () => anchoredArgs,
-      _workspaceK8sResolver: workspaceK8s,
+      _workspaceK8sResolver: async () => 'http://workspace-proj-proj-2.test',
       _spawnLease: passthroughLease,
-      logTag: 'AgentProxy',
     })
-
-    const workspaceChat = await resolveWorkspaceRuntimeUrl('ws-abc', {
-      attachedProjectIds: anchoredArgs.attachedProjectIds,
-      anchorProjectId: 'proj-anchor',
-      readonlyProjectIds: anchoredArgs.readonlyProjectIds,
-      _isEnabled: () => true,
-      _isKubernetes: () => true,
-      _k8sResolver: workspaceK8s,
-      _spawnLease: passthroughLease,
-      logTag: 'WorkspaceChat',
-    })
-
-    expect(agentProxy.url).toBe(sharedUrl)
-    expect(workspaceChat.url).toBe(sharedUrl)
-    expect(agentProxy.mode).toBe('k8s')
-    expect(workspaceChat.mode).toBe('k8s')
+    expect(result.url).toBe('http://workspace-proj-proj-2.test')
   })
 
-  it('falls back to legacy routing when the project has no workspaceId anchor', async () => {
-    process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
-    const legacyK8s = mock(async () => 'http://project-legacy.pod/v1')
+  test('uses the project anchor host start seam', async () => {
+    const runtime = {
+      id: 'ws:proj:proj-3',
+      port: 38300,
+      agentPort: 39300,
+      status: 'running' as const,
+      url: 'http://127.0.0.1:38300',
+      startedAt: Date.now(),
+    }
+    let anchor: string | undefined
+    const result = await resolveProjectPodUrl('proj-3', {
+      _loadAnchoredArgs: async () => ({
+        workspaceId: 'ws-3',
+        attachedProjectIds: ['proj-3'],
+        localFolders: [],
+        readonlyProjectIds: [],
+      }),
+      _isKubernetes: () => false,
+      _isMetalEnabled: () => false,
+      _hostStartProject: async (anchorProjectId) => {
+        anchor = anchorProjectId
+        return runtime
+      },
+    })
 
-    const res = await resolveProjectPodUrl('proj-legacy', {
-      _isKubernetes: () => true,
-      _k8sResolver: legacyK8s,
+    expect(anchor).toBe('proj-3')
+    expect(result).toEqual({
+      mode: 'host',
+      url: 'http://127.0.0.1:39300',
+      runtime,
+    })
+  })
+
+  test('rejects projects without workspace spawn options', async () => {
+    await expect(resolveProjectPodUrl('legacy-project', {
       _loadAnchoredArgs: async () => null,
-      _spawnLease: passthroughLease,
-    })
-
-    expect(res).toEqual({ mode: 'k8s', url: 'http://project-legacy.pod/v1' })
-    expect(legacyK8s).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not change routing when SHOGO_WORKSPACE_RUNTIME is off', async () => {
-    delete process.env.SHOGO_WORKSPACE_RUNTIME
-    const legacyK8s = mock(async () => 'http://project-legacy.pod/v1')
-    const workspaceK8s = mock(async () => 'http://workspace-proj.pod/v1')
-
-    const res = await resolveProjectPodUrl('proj-anchor', {
-      _isKubernetes: () => true,
-      _k8sResolver: legacyK8s,
-      _loadAnchoredArgs: async () => anchoredArgs,
-      _workspaceK8sResolver: workspaceK8s,
-      _spawnLease: passthroughLease,
-    })
-
-    expect(res.url).toBe('http://project-legacy.pod/v1')
-    expect(workspaceK8s).not.toHaveBeenCalled()
-  })
-})
-
-describe('defaultIsKubernetes (env probe)', () => {
-  const origK8s = process.env.KUBERNETES_SERVICE_HOST
-
-  afterEach(() => {
-    if (origK8s === undefined) delete process.env.KUBERNETES_SERVICE_HOST
-    else process.env.KUBERNETES_SERVICE_HOST = origK8s
-  })
-
-  test('routes to k8s when KUBERNETES_SERVICE_HOST is set (covers defaultIsKubernetes)', async () => {
-    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
-    const res = await resolveProjectPodUrl('proj-env', {
-      _k8sResolver: async () => 'http://knative-pod:8080',
-    })
-    expect(res.mode).toBe('k8s')
-    expect(res.url).toBe('http://knative-pod:8080')
+    })).rejects.toThrow(/workspace-runtime is the only supported/)
   })
 })

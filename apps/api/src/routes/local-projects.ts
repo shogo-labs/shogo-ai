@@ -99,9 +99,8 @@ function prewarmRuntimeBackground(projectId: string, hint: string): void {
  * remounted. `LINKED_FOLDERS` / `READONLY_ROOTS` are parsed once at runtime
  * boot, so the set only takes effect after a restart.
  *
- * No-op (swallowed) when `SHOGO_WORKSPACE_RUNTIME` is off — in that case the
- * project still runs on the legacy single-project runtime and attachments
- * are inert until the flag is enabled.
+ * The anchored workspace runtime is the only project runtime topology, so
+ * attachment changes always restart the same merged-root process.
  */
 async function restartAnchorRuntime(anchorProjectId: string, hint: string): Promise<void> {
   const [{ getRuntimeManager, projectWorkspaceRuntimeKey }, resolveMod] = await Promise.all([
@@ -233,6 +232,48 @@ interface ProjectJson {
   projectId: string
   createdAt: string
   schemaVersion: number
+}
+
+function normalizeFolderPath(folderPath: string): string {
+  const normalized = resolve(folderPath).replace(/[\\/]+$/, '') || sep
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+type ProjectFolderIdentity = {
+  id: string
+  projectId: string
+  path: string
+  isPrimary?: boolean
+}
+
+async function findFolderIdentityByPath(folderPath: string): Promise<ProjectFolderIdentity | null> {
+  const target = normalizeFolderPath(folderPath)
+  const folderModel = (prisma as any).projectFolder
+
+  // Exact lookup is the common path and lets the database use its index.
+  const exact = await Promise.resolve(
+    folderModel.findFirst
+      ? folderModel.findFirst({
+          where: { path: resolve(folderPath) },
+          select: { id: true, projectId: true, path: true, isPrimary: true },
+        })
+      : null,
+  ).catch(() => null)
+  if (exact) return exact
+
+  // Windows paths are case-insensitive. Prisma's `mode: 'insensitive'`
+  // filter is not available consistently across the local SQLite and hosted
+  // Postgres clients, so compare normalized values after a narrow projection.
+  const candidates = await Promise.resolve(
+    folderModel.findMany
+      ? folderModel.findMany({
+          select: { id: true, projectId: true, path: true, isPrimary: true },
+        })
+      : [],
+  ).catch(() => [])
+  return (candidates ?? []).find(
+    (folder: ProjectFolderIdentity) => normalizeFolderPath(folder.path) === target,
+  ) ?? null
 }
 
 function readProjectJson(folderPath: string): ProjectJson | null {
@@ -607,13 +648,38 @@ export function localProjectsRoutes(): Hono {
     // machine" scenario isn't distinguishable from "deleted locally"
     // without a hostname marker, and the practical recovery is the
     // same: rebind to a fresh project on this install.
-    const existing = readProjectJson(finalPrimary)
-    const existingProject = existing
+    let existing = readProjectJson(finalPrimary)
+    let existingProject = existing
       ? await prisma.project.findUnique({
           where: { id: existing.projectId },
           include: { projectFolders: true },
         })
       : null
+
+    // `.shogo/project.json` is intentionally local metadata and can be
+    // removed by `git clean`, a test runner, or an antivirus product. The
+    // durable ProjectFolder row is the recovery key in that case; without
+    // this fallback reopening the same folder creates a new project and makes
+    // all prior chats appear to have vanished.
+    const folderIdentity = await findFolderIdentityByPath(finalPrimary)
+    if (!existingProject && folderIdentity) {
+      existingProject = await prisma.project.findUnique({
+        where: { id: folderIdentity.projectId },
+        include: { projectFolders: true },
+      })
+      if (existingProject) {
+        existing = {
+          projectId: existingProject.id,
+          createdAt: new Date().toISOString(),
+          schemaVersion: SCHEMA_VERSION,
+        }
+        console.log(
+          `[local-projects] Recovered project ${existingProject.id} from ` +
+            `ProjectFolder path (project.json ${readProjectJson(finalPrimary) ? 'stale' : 'missing'}): ${finalPrimary}`,
+        )
+      }
+    }
+
     if (existing && !existingProject) {
       console.log(
         `[local-projects] Stale project.json at ${finalPrimary} ` +
@@ -640,12 +706,21 @@ export function localProjectsRoutes(): Hono {
       // overlay a template into the user's real working tree.
       delete (mergedSettings as any).techStackId
       await prisma.$transaction(async (tx) => {
-        await tx.projectFolder.updateMany({
-          where: { projectId: existingProject.id, path: finalPrimary },
-          data: { lastOpenedAt: new Date(), isPrimary: true },
-        })
+        if (folderIdentity && folderIdentity.projectId === existingProject.id) {
+          await tx.projectFolder.update({
+            where: { id: folderIdentity.id },
+            data: { lastOpenedAt: new Date(), isPrimary: true, path: finalPrimary },
+          })
+        } else {
+          await tx.projectFolder.updateMany({
+            where: { projectId: existingProject.id, path: finalPrimary },
+            data: { lastOpenedAt: new Date(), isPrimary: true },
+          })
+        }
         for (const otherPath of validated.slice(1)) {
-          const existsRow = existingProject.projectFolders.find((f) => f.path === otherPath)
+          const existsRow = existingProject.projectFolders.find(
+            (f) => normalizeFolderPath(f.path) === normalizeFolderPath(otherPath),
+          )
           if (!existsRow) {
             await tx.projectFolder.create({
               data: { projectId: existingProject.id, path: otherPath, isPrimary: false },
@@ -661,25 +736,40 @@ export function localProjectsRoutes(): Hono {
         where: { id: existingProject.id },
         include: { projectFolders: true },
       })
+      if (!readProjectJson(finalPrimary) || readProjectJson(finalPrimary)?.projectId !== existingProject.id) {
+        writeProjectJson(finalPrimary, existingProject.id)
+      }
       prewarmRuntimeBackground(existingProject.id, 'rebind')
       return c.json({ project: reloaded, rebound: true })
     }
 
     // Workspace resolution: caller-supplied (multi-workspace UI) or the
-    // current user's personal workspace (single-tenant local mode).
+    // current user's personal workspace when one exists. A local user may
+    // legitimately have only a team workspace, so do not silently treat the
+    // first membership as personal.
     let workspaceId = body.workspaceId
     if (!workspaceId) {
       const personal = await prisma.workspace.findFirst({
+        where: {
+          kind: 'personal',
+          members: { some: { userId } },
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      const fallback = personal ?? await prisma.workspace.findFirst({
         where: { members: { some: { userId } } },
         orderBy: { createdAt: 'asc' },
       })
-      if (!personal) {
+      if (!fallback) {
         return c.json({ error: 'no_workspace_for_user' }, 400)
       }
-      workspaceId = personal.id
+      workspaceId = fallback.id
     }
 
     const name = (body.name && body.name.trim()) || folderDisplayName(finalPrimary)
+    const orphanProjectIds = folderIdentity && !existingProject
+      ? [folderIdentity.projectId]
+      : []
 
     // Create the row + folder records + bootstrap `.shogo/` and
     // `.gitignore` atomically. If `writeProjectJson` throws (eg.
@@ -736,6 +826,12 @@ export function localProjectsRoutes(): Hono {
             data: { projectId: created.id, path: otherPath, isPrimary: false },
           })
         }
+        if (orphanProjectIds.length && (tx as any).chatSession?.updateMany) {
+          await (tx as any).chatSession.updateMany({
+            where: { contextId: { in: orphanProjectIds } },
+            data: { contextId: created.id },
+          })
+        }
         return created
       })
     } catch (err: any) {
@@ -761,6 +857,11 @@ export function localProjectsRoutes(): Hono {
         201,
       )
     }
+
+    console.log(
+      `[local-projects] Opened external project ${project.id} for ${finalPrimary} ` +
+        `(project.json=${existing ? 'stale' : 'created'})`,
+    )
 
     const reloaded = await prisma.project.findUnique({
       where: { id: project.id },

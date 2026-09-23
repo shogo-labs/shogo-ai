@@ -102,7 +102,7 @@ import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
-import { staticAssetCacheControl } from './static-asset-cache'
+import { staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import {
   walkFilesTree,
   WORKSPACE_TREE_HIDDEN_DIRS,
@@ -1745,6 +1745,26 @@ app.post('/agent/chat', async (c) => {
     }
   }
 
+  // Workspace chat can select one already-mounted project as the focus for
+  // this turn. The API proxy validates attachment membership; the runtime
+  // checks its mounted roots again so direct callers cannot invent a project.
+  if (
+    IS_WORKSPACE_RUNTIME &&
+    typeof body.focusedProjectId === 'string' &&
+    isAttachedProjectId(body.focusedProjectId, effectiveWorkspaceProjectIds())
+  ) {
+    const focusedProject = workspaceProjectsManifest().find(
+      (project) => project.id === body.focusedProjectId,
+    )
+    const projectLabel = focusedProject?.name || body.focusedProjectId
+    const focusContext = [
+      '[Focused project for this turn]',
+      `Prioritize work in "${projectLabel}" (project id: ${body.focusedProjectId}).`,
+      'Other mounted projects remain available only when the request explicitly needs them.',
+    ].join('\n')
+    userText = userText ? `${focusContext}\n\n${userText}` : focusContext
+  }
+
   if (!userText && userFileParts.length === 0) {
     return c.json({ error: 'message is required — send { messages: [{ role: "user", parts: [{ type: "text", text: "..." }] }] }' }, 400)
   }
@@ -2704,6 +2724,37 @@ function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
   return pm
 }
 
+/**
+ * The anchor project id for this workspace runtime — the project the user
+ * actually opened, whose canvas the bare runtime root (and the legacy
+ * single-project `/preview/*` control routes) must reflect. `undefined`
+ * outside workspace mode.
+ */
+function getAnchorProjectId(): string | undefined {
+  if (!IS_WORKSPACE_RUNTIME) return undefined
+  return process.env.WORKSPACE_ANCHOR_PROJECT_ID || WORKSPACE_RUNTIME_PROJECT_IDS[0]
+}
+
+/**
+ * The PreviewManager that the bare runtime root should reflect: the anchor's
+ * own workspace-scoped PreviewManager in workspace mode (its dist/ is what
+ * `/`, `/preview/status`, etc. must serve — see `getWorkspacePreviewManager`'s
+ * doc comment for why this is a SEPARATE instance from `getPreviewManager()`),
+ * or the ordinary root PreviewManager otherwise.
+ *
+ * Falls back to `getPreviewManager()` if there's no resolvable anchor (should
+ * not happen once a workspace runtime is actually assigned, but a build/dist
+ * check running before that point must not throw).
+ */
+function getRootPreviewManager(): PreviewManager {
+  const anchorId = getAnchorProjectId()
+  if (anchorId) {
+    const wpm = getWorkspacePreviewManager(anchorId)
+    if (wpm) return wpm
+  }
+  return getPreviewManager()
+}
+
 // ---------------------------------------------------------------------------
 // Canvas File Watcher (canvas v2 mode — lazy init)
 // ---------------------------------------------------------------------------
@@ -2739,24 +2790,30 @@ function notifyCanvasWorkspaceDelete(relativePath: string): void {
 }
 
 app.get('/preview/status', (c) => {
-  const pm = getPreviewManager()
-  return c.json(pm.getStatus())
+  // Workspace mode: the bare root reflects the ANCHOR's preview, not the
+  // (permanently idle) root-rooted PreviewManager — see `getRootPreviewManager`.
+  const pm = getRootPreviewManager()
+  // `hydrateRebuildPending` — see its declaration below `scheduleHydrateRebuild()`
+  // — tells the client not to latch onto `running`/`apiReady` yet: those
+  // still describe the warm-pool TEMPLATE on a cold-miss assign until this
+  // flips back to false once the post-hydrate rebuild actually lands.
+  return c.json({ ...pm.getStatus(), hydrateRebuildPending: hydrateRebuildInFlight })
 })
 
 app.post('/preview/restart', async (c) => {
-  const pm = getPreviewManager()
+  const pm = getRootPreviewManager()
   const result = await pm.restart()
   return c.json(result)
 })
 
 app.post('/preview/start', async (c) => {
-  const pm = getPreviewManager()
+  const pm = getRootPreviewManager()
   const result = await pm.start()
   return c.json(result)
 })
 
 app.post('/preview/stop', (c) => {
-  const pm = getPreviewManager()
+  const pm = getRootPreviewManager()
   pm.stop()
   return c.json({ ok: true })
 })
@@ -2787,15 +2844,43 @@ app.post('/preview/stop', (c) => {
 // the window simply degrade to the old behavior, which is still correct.
 const HYDRATE_REBUILD_DEBOUNCE_MS = 300
 let hydrateRebuildTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * True from the moment a hydrate schedules a rebuild until that rebuild's
+ * `PreviewManager.restart()` actually resolves. Exposed on `/preview/status`
+ * as `hydrateRebuildPending`.
+ *
+ * Why this exists: `assign()` (metal-agent's `pool.ts`) awaits the *hydrate*
+ * HTTP call (bytes landing in the workspace) but NOT the rebuild it schedules
+ * here — that's intentionally fire-and-forget so `/pool/assign`'s 30s budget
+ * isn't blown by a multi-minute Expo/Metro rebuild. So `assign()` returns,
+ * and the API's `/sandbox/url` reports `ready: true`, while this guest is
+ * still serving the warm-pool TEMPLATE (`workspaceOrigin: 'template'` in
+ * `pool.ts` — literally the "Project Ready" placeholder). The client's
+ * `usePreviewPhase`/`usePreviewReadiness` poll (`apps/mobile/lib/preview-gate.ts`)
+ * would otherwise latch onto that template's own quick `running: true` and
+ * STOP polling before the real, post-hydrate rebuild ever runs — mounting the
+ * canvas iframe against the template and never revisiting it once the real
+ * content comes up moments (or minutes) later. Root cause of the "Project
+ * Ready" placeholder persisting on a freshly cold-booted project
+ * (`a0bea431-...`, staging, 2026-09-22).
+ */
+let hydrateRebuildInFlight = false
 function scheduleHydrateRebuild(): void {
   if (hydrateRebuildTimer) clearTimeout(hydrateRebuildTimer)
+  hydrateRebuildInFlight = true
   hydrateRebuildTimer = setTimeout(() => {
     hydrateRebuildTimer = null
     // Fire-and-forget: readiness is reported through the normal preview/gateway
     // status, so the host's hydrate call never blocks on a full rebuild.
-    getPreviewManager()
+    // Workspace mode: rebuild the ANCHOR's preview (see `getRootPreviewManager`)
+    // — the root-rooted PreviewManager is never started there and restarting
+    // it would just build an empty workspace root.
+    getRootPreviewManager()
       .restart()
       .catch((e: any) => console.error('[pool/hydrate] rebuild failed:', e?.message ?? e))
+      .finally(() => {
+        hydrateRebuildInFlight = false
+      })
   }, HYDRATE_REBUILD_DEBOUNCE_MS)
 }
 
@@ -2836,7 +2921,18 @@ function finishHydrate(entries: string[], destinationDir = WORKSPACE_DIR): void 
   }
   // Rebuild so the served dist reflects everything that was hydrated —
   // debounced, because more overlays are usually still arriving.
-  if (destinationDir === WORKSPACE_DIR) scheduleHydrateRebuild()
+  //
+  // Workspace mode hydrates the anchor into its OWN subfolder (same as any
+  // other attached project — see `hydrateWorkspaceMembers`), never into the
+  // literal `WORKSPACE_DIR` root, so the plain equality check above never
+  // fires there. Recognize that subfolder too, so the anchor's real source
+  // landing host-side actually triggers the rebuild that replaces the
+  // "Project Ready" placeholder — without this a workspace anchor's preview
+  // never rebuilds after a cold hydrate until something else happens to poke
+  // `/preview/start`.
+  const anchorId = getAnchorProjectId()
+  const isAnchorDir = anchorId != null && destinationDir === join(WORKSPACE_DIR, anchorId)
+  if (destinationDir === WORKSPACE_DIR || isAnchorDir) scheduleHydrateRebuild()
 }
 
 /** Ceiling on a pull, however generous a deadline the host asks for. */
@@ -4977,19 +5073,27 @@ app.all('/agent/ports/:port/http/*', handlePortHttpProxy)
 // =============================================================================
 // Workspace per-project preview routes — `/p/<projectId>/…`
 //
-// Registered ONLY in workspace-runtime mode. Multiplexes N attached
-// projects over the single runtime port:
+// Multiplexes N attached projects over the single runtime port:
 //   GET  /p/<id>/preview/status          control-plane status
 //   POST /p/<id>/preview/{start,restart,stop}
 //   *    /p/<id>/api/*                    → the project's server.tsx sidecar
 //   GET  /p/<id>/*                        static dist/ serve (SPA fallback)
 //
-// These are registered before the root catch-all (`app.get('*')`) so they
-// win for `/p/…` paths; in single-project mode they're never registered and
-// `/p/…` is just an ordinary app route served from the root dist.
+// Registered UNCONDITIONALLY (before the root catch-all `app.get('*')` so
+// they win for `/p/…` paths) rather than gated behind a module-load-time
+// `if (IS_WORKSPACE_RUNTIME)` check. `IS_WORKSPACE_RUNTIME` starts false for
+// every guest — warm-pool VMs boot generically from the template and only
+// learn they're a workspace runtime later, via the `/pool/assign` HTTP call
+// mutating this `let` — so a top-level `if` gate evaluated once at module
+// load would permanently skip this block for every real assign, no matter
+// what env the control plane sent. Each handler below re-checks
+// `IS_WORKSPACE_RUNTIME` dynamically instead (same pattern already used by
+// `getWorkspacePreviewManager`, which returns null when it's false), and the
+// static-serve route falls back to the ordinary root-dist behavior so
+// single-project mode keeps treating `/p/…` as just another app route.
 // =============================================================================
 
-if (IS_WORKSPACE_RUNTIME) {
+{
   const projectNotAttached = (c: any, projectId: string) =>
     c.json(
       { error: 'project_not_attached', message: `Project ${projectId} is not attached to this workspace runtime` },
@@ -5076,8 +5180,16 @@ if (IS_WORKSPACE_RUNTIME) {
   // browser resolves relative URLs against `/p/<id>/` (and `/p/:projectId/*`
   // matches). Vite builds use absolute `--base` asset URLs regardless, but
   // the redirect keeps deep-link/back-button behaviour sane.
+  //
+  // Single-project mode: fall through to the ordinary root-dist route exactly
+  // as if this block didn't exist, so a user app's own `/p/<id>` route (if it
+  // has one) still resolves client-side via the SPA fallback.
   app.get('/p/:projectId', (c) => {
     const projectId = c.req.param('projectId')
+    if (!IS_WORKSPACE_RUNTIME) {
+      const urlPath = new URL(c.req.url).pathname
+      return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+    }
     if (!getWorkspacePreviewManager(projectId)) return projectNotAttached(c, projectId)
     return c.redirect(`/p/${projectId}/`)
   })
@@ -5085,6 +5197,9 @@ if (IS_WORKSPACE_RUNTIME) {
   // Static dist/ serve for a project, scoped to its subfolder + base prefix.
   app.get('/p/:projectId/*', (c) => {
     const urlPath = new URL(c.req.url).pathname
+    if (!IS_WORKSPACE_RUNTIME) {
+      return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+    }
     const parsed = parseWorkspacePreviewPath(urlPath)
     if (!parsed) return c.notFound()
     const pm = getWorkspacePreviewManager(parsed.projectId)
@@ -5320,6 +5435,11 @@ app.route('/', runtimeLspRoutes({
 // =============================================================================
 
 function getDistDir(): string {
+  // Workspace mode: the bare root must serve the ANCHOR's dist/, not an
+  // empty `<WORKSPACE_DIR>/dist` that nothing ever builds — see
+  // `getRootPreviewManager`.
+  const anchorId = getAnchorProjectId()
+  if (anchorId) return join(WORKSPACE_DIR, anchorId, 'dist')
   return join(WORKSPACE_DIR, 'dist')
 }
 
@@ -5595,7 +5715,15 @@ const BUILDING_PHASES = new Set([
 function isBuildLikelyInFlight(): boolean {
   // Avoid accidentally constructing a PreviewManager just to peek at
   // its phase — the fallback is only meaningful once one already exists
-  // (i.e. a preview start has been requested somewhere).
+  // (i.e. a preview start has been requested somewhere). Workspace mode:
+  // peek at the ANCHOR's PreviewManager (what the root actually serves —
+  // see `getRootPreviewManager`), not the root-rooted one, which is never
+  // started there.
+  const anchorId = getAnchorProjectId()
+  if (anchorId) {
+    const wpm = workspacePreviewManagers.get(anchorId)
+    return wpm ? BUILDING_PHASES.has(wpm.phase) : false
+  }
   if (!previewManager) return false
   const phase = previewManager.phase
   return BUILDING_PHASES.has(phase)
@@ -5688,7 +5816,12 @@ function serveDistResponse(
       return new Response(html, {
         headers: {
           'Content-Type': mime,
-          'Cache-Control': 'no-cache',
+          // no-store (not no-cache): no-cache still allows a client to keep a
+          // cached copy and revalidate, and browsers commonly serve a
+          // stale-while-revalidate copy on flaky preview connections. HTML is
+          // the one response that points at content-hashed asset URLs, so it
+          // must never be served from cache once those hashes change.
+          'Cache-Control': 'no-store',
           [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
         },
       })
@@ -5702,6 +5835,18 @@ function serveDistResponse(
     })
   }
 
+  // The file doesn't exist. Static-asset paths (hashed JS/CSS, images,
+  // fonts, etc.) must 404 here rather than silently fall back to
+  // `index.html` — see `shouldServeSpaFallback` for why: a stale HTML
+  // document requesting an asset hash that an atomic rebuild already
+  // removed would otherwise get a 200 HTML body back for what the browser
+  // expects to be a JS module, producing a blank white page with no
+  // visible error. Only real SPA routes (extension-less paths, `.html`)
+  // fall back below.
+  if (!shouldServeSpaFallback(safePath)) {
+    return null
+  }
+
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
@@ -5709,7 +5854,7 @@ function serveDistResponse(
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-store',
         [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
       },
     })

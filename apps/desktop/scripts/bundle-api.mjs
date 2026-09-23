@@ -167,7 +167,11 @@ function main() {
     const tempDir = path.join(bundleDir, `_tmp_${name}`)
     fs.mkdirSync(tempDir, { recursive: true })
 
-    const cmd = `bun build "${inputPath}" --target bun --outdir "${tempDir}" ${externals}`
+    const localApiDefine =
+      name === 'api'
+        ? ' --define process.env.SHOGO_LOCAL_MODE=\\"true\\"'
+        : ''
+    const cmd = `bun build "${inputPath}" --target bun --outdir "${tempDir}"${localApiDefine} ${externals}`
 
     try {
       const result = execSync(cmd, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf-8' })

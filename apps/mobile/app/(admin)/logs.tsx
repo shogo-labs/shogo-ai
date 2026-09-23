@@ -12,15 +12,16 @@ import {
   Pressable,
   ActivityIndicator,
   Platform,
+  useWindowDimensions,
 } from 'react-native'
 import {
   ScrollText,
   Pause,
   Play,
   ArrowDown,
-  Trash2,
   RefreshCw,
 } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 
 function getApiBaseUrl(): string {
@@ -64,6 +65,9 @@ function LogLine({ line, index }: { line: string; index: number }) {
 }
 
 export default function AdminLogsPage() {
+  const { width } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
+  const isWide = width >= 900
   const [lines, setLines] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -156,22 +160,44 @@ export default function AdminLogsPage() {
   }
 
   return (
-    <View className="flex-1 bg-background">
-      {/* Toolbar */}
-      <View className="flex-row items-center px-4 py-2 border-b border-border bg-card gap-3">
-        <ScrollText size={16} className="text-muted-foreground" />
-        <Text className="text-sm font-semibold text-foreground flex-1">
-          Desktop Logs
-        </Text>
+    <View
+      className={cn('flex-1 bg-background', isWide ? 'px-8 pt-8' : 'px-4 pt-4')}
+      style={{ paddingBottom: Math.max(insets.bottom, 16) }}
+    >
+      <View className="flex-1 w-full self-center max-w-[1180px] overflow-hidden rounded-2xl border border-border/70 bg-card">
+        <View className={cn('border-b border-border/70', isWide ? 'px-5 py-4' : 'p-4')}>
+          <View className={cn(isWide ? 'flex-row items-center justify-between' : 'gap-3')}>
+            <View className="flex-row items-center gap-3">
+              <View className="h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+                <ScrollText size={17} className="text-primary" />
+              </View>
+              <View className="gap-0.5">
+                <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  System observability
+                </Text>
+                <Text className="text-base font-semibold tracking-tight text-foreground">
+                  Desktop logs
+                </Text>
+              </View>
+            </View>
+            <View className="flex-row items-center gap-2">
+              <View className={cn('h-2 w-2 rounded-full', paused ? 'bg-yellow-500' : 'bg-emerald-500')} />
+              <Text className="text-xs text-muted-foreground">
+                {paused ? 'Paused' : 'Live stream'} · {filteredLines.length} lines
+              </Text>
+            </View>
+          </View>
+        </View>
 
-        {/* Filter buttons */}
-        <View className="flex-row gap-1">
+        <View className={cn('flex-row items-center gap-3 border-b border-border/70 px-4 py-2.5', !isWide && 'flex-wrap')}>
+          <View className="flex-row gap-1 rounded-lg border border-border/70 bg-muted/30 p-0.5">
           {(['all', 'errors'] as const).map(f => (
             <Pressable
               key={f}
               onPress={() => setFilter(f)}
+              accessibilityLabel={`Show ${f} logs`}
               className={cn(
-                'px-2.5 py-1 rounded-md',
+                'min-h-8 justify-center px-2.5 rounded-md',
                 filter === f ? 'bg-primary/15' : 'active:bg-muted',
               )}
             >
@@ -185,51 +211,46 @@ export default function AdminLogsPage() {
               </Text>
             </Pressable>
           ))}
+          </View>
+          <View className="flex-row items-center gap-1">
+            <Pressable
+              onPress={() => setPaused(p => !p)}
+              accessibilityLabel={paused ? 'Resume live log stream' : 'Pause live log stream'}
+              className="h-8 w-8 items-center justify-center rounded-lg border border-border/70 active:bg-muted"
+            >
+              {paused ? (
+                <Play size={14} className="text-emerald-500" />
+              ) : (
+                <Pause size={14} className="text-muted-foreground" />
+              )}
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setAutoScroll(a => !a)
+                if (!autoScroll) scrollRef.current?.scrollToEnd({ animated: true })
+              }}
+              accessibilityLabel={autoScroll ? 'Disable automatic log scrolling' : 'Enable automatic log scrolling'}
+              className={cn(
+                'h-8 w-8 items-center justify-center rounded-lg border border-border/70 active:bg-muted',
+                autoScroll && 'bg-primary/10 border-primary/20',
+              )}
+            >
+              <ArrowDown size={14} className={autoScroll ? 'text-primary' : 'text-muted-foreground'} />
+            </Pressable>
+            <Pressable
+              onPress={fetchLogs}
+              accessibilityLabel="Refresh logs"
+              className="h-8 w-8 items-center justify-center rounded-lg border border-border/70 active:bg-muted"
+            >
+              <RefreshCw size={14} className="text-muted-foreground" />
+            </Pressable>
+          </View>
         </View>
 
-        <View className="w-px h-5 bg-border" />
-
-        {/* Pause/resume */}
-        <Pressable
-          onPress={() => setPaused(p => !p)}
-          className="p-1.5 rounded-md active:bg-muted"
-        >
-          {paused ? (
-            <Play size={14} className="text-emerald-500" />
-          ) : (
-            <Pause size={14} className="text-muted-foreground" />
-          )}
-        </Pressable>
-
-        {/* Auto-scroll toggle */}
-        <Pressable
-          onPress={() => {
-            setAutoScroll(a => !a)
-            if (!autoScroll) scrollRef.current?.scrollToEnd({ animated: true })
-          }}
-          className={cn(
-            'p-1.5 rounded-md active:bg-muted',
-            autoScroll && 'bg-primary/10',
-          )}
-        >
-          <ArrowDown size={14} className={autoScroll ? 'text-primary' : 'text-muted-foreground'} />
-        </Pressable>
-
-        {/* Refresh */}
-        <Pressable
-          onPress={fetchLogs}
-          className="p-1.5 rounded-md active:bg-muted"
-        >
-          <RefreshCw size={14} className="text-muted-foreground" />
-        </Pressable>
-      </View>
-
-      {/* Status bar */}
-      <View className="flex-row items-center px-4 py-1.5 border-b border-border bg-card/50 gap-2">
-        <View className={cn('h-1.5 w-1.5 rounded-full', paused ? 'bg-yellow-500' : 'bg-emerald-500')} />
+        <View className="flex-row items-center gap-2 border-b border-border/70 bg-muted/20 px-4 py-2">
         <Text className="text-[11px] text-muted-foreground">
-          {paused ? 'Paused' : 'Live'} · {filteredLines.length} lines
-          {filter !== 'all' && ` (${lines.length} total)`}
+          Showing {filter === 'errors' ? 'warnings and errors' : 'all entries'}
+          {filter !== 'all' && ` · ${lines.length} total`}
         </Text>
         {logPath && (
           <Text className="text-[11px] text-muted-foreground/60 ml-auto" numberOfLines={1}>
@@ -244,23 +265,24 @@ export default function AdminLogsPage() {
         </View>
       )}
 
-      {/* Log content */}
-      <ScrollView
-        ref={scrollRef}
-        className="flex-1 bg-[#0d1117]"
-        onScrollBeginDrag={() => setAutoScroll(false)}
-      >
-        <View className="py-2">
-          {filteredLines.map((line, i) => (
-            <LogLine key={i} line={line} index={i} />
-          ))}
-          {filteredLines.length === 0 && (
-            <Text className="text-xs text-muted-foreground px-3 py-8 text-center">
-              No log lines to display
-            </Text>
-          )}
-        </View>
-      </ScrollView>
+        <ScrollView
+          ref={scrollRef}
+          className="flex-1 bg-[#0d1117]"
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 12) }}
+          onScrollBeginDrag={() => setAutoScroll(false)}
+        >
+          <View className="py-2">
+            {filteredLines.map((line, i) => (
+              <LogLine key={i} line={line} index={i} />
+            ))}
+            {filteredLines.length === 0 && (
+              <Text className="text-xs text-muted-foreground px-3 py-8 text-center">
+                No log lines to display
+              </Text>
+            )}
+          </View>
+        </ScrollView>
+      </View>
     </View>
   )
 }

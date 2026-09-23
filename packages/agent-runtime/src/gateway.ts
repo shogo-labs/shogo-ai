@@ -2169,6 +2169,8 @@ export class AgentGateway {
       delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
     }
 
+    const commandRegistry = sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined
+    const persistedProgressMessages = new Set<Message>()
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
@@ -2213,7 +2215,7 @@ export class AgentGateway {
         getCwd: () => this.shellCwd.get(sessionId!) || sessionWorkspaceDir,
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
       } : undefined,
-      commandRegistry: sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined,
+      commandRegistry,
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
@@ -3085,6 +3087,27 @@ export class AgentGateway {
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
+        onIterationMessages: (liveMessages) => {
+          const notes = commandRegistry?.consumeCompletionNotes() ?? []
+          if (notes.length === 0) return
+          const note = {
+            role: 'user',
+            content: `[Shogo process update]\n${notes.join('\n')}\nContinue the current task using this result.`,
+            timestamp: Date.now(),
+            __shogoBackgroundNote: true,
+          } as unknown as Message & { __shogoBackgroundNote: boolean }
+          liveMessages.push(note)
+        },
+        onProgress: (progressMessages) => {
+          const durableMessages = progressMessages.filter((message) => {
+            const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
+            return !tagged && !persistedProgressMessages.has(message)
+          })
+          if (durableMessages.length > 0) {
+            this.sessionManager.addMessages(sessionId, ...durableMessages)
+            for (const message of durableMessages) persistedProgressMessages.add(message)
+          }
+        },
         onThinkingStart: () => {
           if (uiWriter) {
             uiReasoningId = `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -3418,7 +3441,10 @@ export class AgentGateway {
         contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
         result = contResult
       }
-      result.newMessages = accumulatedNewMessages
+      result.newMessages = accumulatedNewMessages.filter((message) => {
+        const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
+        return !tagged && !persistedProgressMessages.has(message)
+      })
 
       // Defense-in-depth: rewrite any localhost link the model emitted into the
       // public preview URL in the persisted history + returned text too (the
@@ -3894,24 +3920,6 @@ export class AgentGateway {
         '- Never try to work around permission denials by re-running the same tool or asking the user to confirm in text.',
       ].join('\n'))
     }
-
-    // 5. Error notification guide (always the same)
-    pushStable('error-notification-guide', [
-      '## CRITICAL: Error Notifications (MUST follow)',
-      '',
-      'You have a tool called `notify_user_error`. You MUST call it whenever:',
-      '- A tool returns an error, 404, or access denied',
-      '- You cannot complete the task the user asked for',
-      '- An integration (GitHub, Slack, Google, etc.) is not working properly',
-      '- You detect a configuration or permission issue the user needs to fix',
-      '',
-      'Usage: `notify_user_error({ title: "GitHub Access Error", message: "The repository CodeGlo/shogo-ai is private or not accessible. Your organization may have OAuth App restrictions enabled. Go to GitHub org Settings > Third-party access to approve." })`',
-      '',
-      'ALWAYS call notify_user_error BEFORE writing the error explanation in chat.',
-      'The title should be short (e.g. "GitHub Access Error", "Slack Auth Expired").',
-      'The message should explain what went wrong AND how to fix it.',
-      'This shows a prominent toast notification that the user will not miss.',
-    ].join('\n'))
 
     // Separator tells the AI proxy to split the system prompt into two Anthropic
     // system blocks: the stable prefix gets cache_control, the dynamic suffix

@@ -30,12 +30,8 @@ import {
  *        refused while a read succeeds.
  *     7. Detach B; after the restart B is gone from the merged tree.
  *
- * This whole suite depends on the workspace-runtime rollout flag being on
- * in the target environment (SHOGO_WORKSPACE_RUNTIME /
- * EXPO_PUBLIC_WORKSPACE_RUNTIME). When the flag is off, project chat uses
- * the legacy single-project runtime and there are no attachments, so the
- * suite skips cleanly. Set E2E_WORKSPACE_RUNTIME=true when running against
- * a flag-on env.
+ * Workspace runtimes are unconditional. The suite requires a target
+ * environment with the attachments API and agent runtime available.
  *
  * Local-folder coverage (add a folder + agent reads a file in it) is
  * Electron-only: `window.shogoDesktop.pickFolders` is not present in web
@@ -43,14 +39,9 @@ import {
  * (apps/desktop/e2e/playwright.config.ts) or by stubbing the bridge with
  * page.addInitScript — see the stubbed case at the end of this file.
  *
- * Run: STAGING_URL=... E2E_WORKSPACE_RUNTIME=true \
+ * Run: STAGING_URL=... \
  *   npx playwright test --config e2e/playwright.config.ts workspace-attachments
  */
-
-const WORKSPACE_RUNTIME_ENABLED =
-  process.env.EXPO_PUBLIC_WORKSPACE_RUNTIME === "true" ||
-  process.env.SHOGO_WORKSPACE_RUNTIME === "true" ||
-  process.env.E2E_WORKSPACE_RUNTIME === "true"
 
 const TEST_USER = makeTestUser("WorkspaceAttachments")
 
@@ -216,12 +207,6 @@ async function chatTranscript(page: Page): Promise<string> {
 
 test.describe("Workspace Attachments (Folders panel → merged runtime)", () => {
   test.describe.configure({ mode: "serial" })
-  test.skip(
-    !WORKSPACE_RUNTIME_ENABLED,
-    "Requires the workspace-runtime rollout flag (SHOGO_WORKSPACE_RUNTIME / " +
-      "EXPO_PUBLIC_WORKSPACE_RUNTIME). Set E2E_WORKSPACE_RUNTIME=true when the " +
-      "target env has it on.",
-  )
 
   let page: Page
   let projectA = ""
@@ -387,9 +372,9 @@ test.describe("Workspace Attachments — local folder (stubbed bridge)", () => {
   test.describe.configure({ mode: "serial" })
   const STUB_DIR = process.env.E2E_LOCAL_FOLDER_STUB
   test.skip(
-    !WORKSPACE_RUNTIME_ENABLED || !STUB_DIR,
-    "Local-folder UI coverage needs the workspace-runtime flag and a host " +
-      "path in E2E_LOCAL_FOLDER_STUB to feed the stubbed pickFolders bridge.",
+    !STUB_DIR,
+    "Local-folder UI coverage needs a host path in E2E_LOCAL_FOLDER_STUB " +
+      "to feed the stubbed pickFolders bridge.",
   )
 
   const LOCAL_USER = makeTestUser("WorkspaceLocalFolder")

@@ -232,6 +232,79 @@ describe('PreviewManager.runExpoExportWeb (private)', () => {
   })
 })
 
+// --- startApiServer in-flight guard ---------------------------------------
+//
+// Mirrors the `expoExportInFlight` reentrancy test directly above. Without
+// this guard, callers reachable outside `start()`/`restart()`'s
+// `lifecycleInFlight` gate — `sync()`, the schema-change handler,
+// `restartApiServerOnly()`, `handleCrash()`'s retry, and
+// `maybeRecoverApiServer()` — could each trigger their own concurrent
+// `startApiServer()` spawn attempt, with each one's fresh sidecar looking
+// like a "stale" port squatter to the others (the SIGKILL crash-loop
+// observed in staging on project `a0bea431-...`, 2026-09).
+describe('PreviewManager.startApiServer (private) — in-flight guard', () => {
+  it('reentrancy — concurrent calls share the same in-flight promise', async () => {
+    const m = mk() as any
+    let calls = 0
+    m._startApiServerImpl = async () => {
+      calls++
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    const a = m.startApiServer()
+    const b = m.startApiServer()
+    await Promise.all([a, b])
+    expect(calls).toBe(1)
+  })
+
+  it('a call after the in-flight one settles runs a fresh spawn attempt', async () => {
+    const m = mk() as any
+    let calls = 0
+    m._startApiServerImpl = async () => {
+      calls++
+    }
+    await m.startApiServer()
+    expect(m.apiServerStartInFlight).toBeNull()
+    await m.startApiServer()
+    expect(calls).toBe(2)
+  })
+
+  // Regression test for the 2026-09-21 staging incident: PR #936 added the
+  // in-flight guard above but `stop()` didn't clear it, so the routine
+  // hydrate-triggered `restart()` that follows nearly every cold boot (see
+  // `runLifecycle`) joined a doomed, already-killed `startApiServer()`
+  // attempt instead of spawning a fresh sidecar — silently breaking the API
+  // sidecar on effectively every project (surfaced to users as the
+  // "Project Ready" placeholder / broken app).
+  it('stop() while a startApiServer() attempt is in flight lets the next call spawn fresh instead of joining the doomed one', async () => {
+    const m = mk() as any
+    let calls = 0
+    let resolveFirst: () => void = () => {}
+    m._startApiServerImpl = async () => {
+      calls++
+      if (calls === 1) {
+        // Simulate the first attempt being blocked mid-flight (e.g. in its
+        // health-check poll loop) when stop() fires.
+        await new Promise<void>((r) => { resolveFirst = r })
+      }
+    }
+
+    const first = m.startApiServer()
+    // The hydrate-triggered restart() calls stop() while `first` is still
+    // pending — this must not leave `apiServerStartInFlight` pointing at
+    // the now-irrelevant attempt.
+    m.stop()
+    expect(m.apiServerStartInFlight).toBeNull()
+
+    // A second call (as restart()'s backgroundSetup would make) must spawn
+    // its own fresh attempt right away rather than awaiting the stale one.
+    const second = m.startApiServer()
+    expect(calls).toBe(2)
+
+    resolveFirst()
+    await Promise.all([first, second])
+  })
+})
+
 // --- restartApiServerOnly -------------------------------------------------
 
 describe('PreviewManager.restartApiServerOnly', () => {

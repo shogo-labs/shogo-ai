@@ -8,13 +8,16 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
-import { resolveAgentModelEnv } from './agent-model-defaults'
+import { resolveAgentModelEnv } from './agent-model-defaults-runtime'
 import { INSTANCE_SIZES, meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
-import { isDockerTechStack, getDeclaredPorts } from '@shogo/shared-runtime'
+import {
+  isDockerTechStack,
+  getDeclaredPorts,
+} from '../../../../../packages/core/src/tech-stack-registry'
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was

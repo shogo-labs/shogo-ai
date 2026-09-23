@@ -18,9 +18,7 @@ import { betterAuth, type BetterAuthPlugin } from "better-auth"
 import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
 import { createPersonalWorkspace } from "./services/workspace.service"
-import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail } from "./services/email.service"
-import { identifyUser, trackEvent } from "./services/loops.service"
-import { resolveAttributionForUser } from "./services/affiliate.service"
+import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, identifyUser, trackEvent, resolveAttributionForUser } from "./services/auth-integrations"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
 import { getFrontendUrl } from "./lib/cloud-urls"
@@ -325,11 +323,11 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION === 'true',
     sendResetPassword: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
-      const result = await sendPasswordResetEmail({
+      const result = (await sendPasswordResetEmail({
         to: user.email,
         name: user.name ?? undefined,
         resetUrl: url,
-      })
+      })) ?? { success: false, error: 'email integration unavailable' }
       const logResetLinkInConsole =
         !result.success &&
         (process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOG_PASSWORD_RESET_URL === 'true')
@@ -347,11 +345,11 @@ export const auth = betterAuth({
     sendOnSignUp: true,
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
-      const result = await sendEmailVerificationEmail({
+      const result = (await sendEmailVerificationEmail({
         to: user.email,
         name: user.name ?? undefined,
         verifyUrl: url,
-      })
+      })) ?? { success: false, error: 'email integration unavailable' }
       const logVerifyLinkInConsole =
         !result.success &&
         (process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOG_EMAIL_VERIFICATION_URL === 'true')
@@ -623,7 +621,7 @@ export const auth = betterAuth({
             to: user.email,
             name: user.name || 'User',
             loginUrl: `${baseUrl}/sign-in`
-          }).catch((err) => {
+          }).catch((err: unknown) => {
             console.error(`Welcome email failed for ${user.email}:`, err)
           })
 
@@ -634,8 +632,8 @@ export const auth = betterAuth({
             lastName: user.name?.split(' ').slice(1).join(' ') || undefined,
             plan: 'free',
             createdAt: new Date().toISOString(),
-          }).catch((err) => console.error('[Loops] identify failed:', err))
-          trackEvent(user.id, 'signup', { email: user.email }).catch((err) =>
+          }).catch((err: unknown) => console.error('[Loops] identify failed:', err))
+          trackEvent(user.id, 'signup', { email: user.email }).catch((err: unknown) =>
             console.error('[Loops] signup event failed:', err)
           )
         },

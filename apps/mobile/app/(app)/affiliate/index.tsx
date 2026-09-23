@@ -25,8 +25,9 @@ import * as WebBrowser from 'expo-web-browser'
 import { Redirect, useRouter, useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
-  ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle, Video,
+  ArrowLeft, Copy, Share2, Wallet, Users, ChevronRight, AlertTriangle, Video, Link2, TrendingUp,
 } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, CardContent, Button, Badge } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { affiliateApi, buildReferralLink, type AffiliateSummary } from '../../../lib/affiliate-api'
@@ -56,6 +57,7 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
   const router = useRouter()
   const http = useDomainHttp()
   const params = useLocalSearchParams<{ connect?: string }>()
+  const insets = useSafeAreaInsets()
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -147,16 +149,29 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
   return (
     <View className="flex-1 bg-background">
       {!embedded ? (
-        <View className="flex-row items-center gap-2 px-4 py-3 border-b border-border">
+        <View
+          className="flex-row items-center gap-3 px-5 pb-3 border-b border-border"
+          style={{ paddingTop: Math.max(insets.top, 12) }}
+        >
           <Pressable onPress={() => router.back()} hitSlop={8}>
             <ArrowLeft size={22} className="text-foreground" />
           </Pressable>
-          <Text className="text-lg font-semibold text-foreground">Referrals</Text>
+          <View>
+            <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+              Creator earnings
+            </Text>
+            <Text className="text-lg font-semibold text-foreground">Referrals</Text>
+          </View>
         </View>
       ) : null}
 
       <ScrollView
-        contentContainerStyle={{ padding: 16, gap: 16 }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: embedded ? 20 : 16,
+          paddingBottom: Math.max(insets.bottom, 16) + 28,
+          gap: 16,
+        }}
         refreshControl={
           Platform.OS !== 'web' ? (
             <RefreshControl
@@ -179,6 +194,17 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
           <NotEnrolledCard onEnroll={() => router.push('/(app)/affiliate/enroll')} />
         ) : summary ? (
           <>
+            <View className="gap-1">
+              <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+                Referral earnings
+              </Text>
+              <Text className="text-xl font-semibold tracking-tight text-foreground">
+                Keep your audience close
+              </Text>
+              <Text className="text-sm text-muted-foreground">
+                Track what is waiting to clear, then share your link again.
+              </Text>
+            </View>
             <BalanceCard summary={summary} />
             <ReferralLinkCard
               link={referralLink}
@@ -187,8 +213,16 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
               onCopy={copyLink}
               onShare={shareLink}
             />
-            <StatsRow summary={summary} />
+            <View className="gap-3">
+              <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+                Recent activity
+              </Text>
+              <StatsRow summary={summary} />
+            </View>
             <View className="gap-2">
+              <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground mb-1">
+                Manage earnings
+              </Text>
               <NavRow
                 icon={<Wallet size={18} className="text-foreground" />}
                 title="Commissions"
@@ -226,10 +260,18 @@ export const AffiliateReferralPanel = observer(function AffiliateReferralPanel({
 
 function NotEnrolledCard({ onEnroll }: { onEnroll: () => void }) {
   return (
-    <Card>
-      <CardContent className="gap-3 p-5">
-        <Text className="text-lg font-semibold text-foreground">Refer Shogo and earn</Text>
-        <Text className="text-sm text-muted-foreground">
+    <Card className="border-primary/20">
+      <CardContent className="gap-4 p-5">
+        <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
+          <TrendingUp size={20} className="text-primary" />
+        </View>
+        <View className="gap-1">
+          <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+            Referral program
+          </Text>
+          <Text className="text-xl font-semibold tracking-tight text-foreground">Refer Shogo and earn</Text>
+        </View>
+        <Text className="text-sm text-muted-foreground leading-5">
           Share your link. When someone signs up and pays, you earn 20% of their
           seat subscription for the first 12 months, then 10% for as long as they
           stay. You can also earn a CPM on videos you post. Opt in to get your
@@ -245,14 +287,25 @@ function NotEnrolledCard({ onEnroll }: { onEnroll: () => void }) {
 
 function BalanceCard({ summary }: { summary: AffiliateSummary }) {
   return (
-    <Card>
-      <CardContent className="gap-1 p-5">
-        <Text className="text-xs uppercase text-muted-foreground tracking-wide">Pending payout</Text>
-        <Text className="text-3xl font-bold text-foreground">{dollars(summary.pendingPayoutCents)}</Text>
+    <Card className="border-primary/20">
+      <CardContent className="gap-2 p-5">
+        <View className="flex-row items-start justify-between gap-3">
+          <View className="gap-1">
+            <Text className="text-[11px] uppercase tracking-[1.5px] font-semibold text-muted-foreground">
+              Pending payout
+            </Text>
+            <Text className="text-4xl font-semibold tracking-tight text-foreground">
+              {dollars(summary.pendingPayoutCents)}
+            </Text>
+          </View>
+          <View className="h-9 w-9 rounded-xl bg-primary/10 items-center justify-center">
+            <Wallet size={18} className="text-primary" />
+          </View>
+        </View>
         <Text className="text-sm text-muted-foreground">
-          Lifetime paid: {dollars(summary.lifetimePayoutCents)}
+          Lifetime paid <Text className="font-medium text-foreground">{dollars(summary.lifetimePayoutCents)}</Text>
         </Text>
-        <View className="flex-row gap-2 mt-2">
+        <View className="flex-row gap-2 mt-1">
           <Badge variant={summary.affiliate.status === 'active' ? 'default' : 'secondary'}>
             <Text className="text-xs">{summary.affiliate.status}</Text>
           </Badge>
@@ -271,12 +324,21 @@ function ReferralLinkCard({
 }) {
   return (
     <Card>
-      <CardContent className="gap-2 p-4">
-        <Text className="text-xs uppercase text-muted-foreground tracking-wide">Your link</Text>
-        <Text className="text-sm text-foreground" numberOfLines={1} ellipsizeMode="middle">
-          {link}
-        </Text>
-        <Text className="text-xs text-muted-foreground">Code: {code}</Text>
+      <CardContent className="gap-3 p-4">
+        <View className="flex-row items-center gap-2">
+          <View className="h-7 w-7 rounded-lg bg-muted items-center justify-center">
+            <Link2 size={14} className="text-foreground" />
+          </View>
+          <View>
+            <Text className="text-sm font-semibold text-foreground">Your referral link</Text>
+            <Text className="text-xs text-muted-foreground">Code: {code}</Text>
+          </View>
+        </View>
+        <View className="rounded-lg bg-muted/50 px-3 py-2">
+          <Text className="text-sm text-foreground" numberOfLines={1} ellipsizeMode="middle">
+            {link}
+          </Text>
+        </View>
         <View className="flex-row gap-2 mt-1">
           <Button variant="secondary" onPress={onCopy} className="flex-1">
             <View className="flex-row items-center gap-2">
@@ -309,9 +371,9 @@ function StatsRow({ summary }: { summary: AffiliateSummary }) {
 function Stat({ label, value }: { label: string; value: number }) {
   return (
     <Card className="flex-1">
-      <CardContent className="p-3 items-center">
-        <Text className="text-xl font-bold text-foreground">{value}</Text>
-        <Text className="text-[10px] uppercase text-muted-foreground text-center">{label}</Text>
+      <CardContent className="p-3.5 items-center gap-1">
+        <Text className="text-xl font-semibold text-foreground">{value}</Text>
+        <Text className="text-[10px] uppercase tracking-wide text-muted-foreground text-center">{label}</Text>
       </CardContent>
     </Card>
   )
@@ -323,8 +385,10 @@ function NavRow({
   return (
     <Pressable onPress={onPress}>
       <Card>
-        <CardContent className="flex-row items-center gap-3 p-3">
-          {icon}
+        <CardContent className="flex-row items-center gap-3 p-3.5">
+          <View className="h-9 w-9 rounded-xl bg-muted items-center justify-center">
+            {icon}
+          </View>
           <View className="flex-1">
             <Text className="text-foreground font-medium">{title}</Text>
             <Text className="text-xs text-muted-foreground">{subtitle}</Text>
@@ -378,10 +442,15 @@ function PayoutSetupCard({
   return (
     <Card>
       <CardContent className="gap-2 p-4">
-        <Text className="text-sm font-semibold text-foreground">Payout setup</Text>
+        <View className="flex-row items-center justify-between gap-2">
+          <Text className="text-sm font-semibold text-foreground">Payout setup</Text>
+          <Badge variant={verified ? 'default' : 'secondary'}>
+            <Text className="text-xs">{status}</Text>
+          </Badge>
+        </View>
         <Text className="text-xs text-muted-foreground">
           Referral and content earnings are paid to a Stripe-connected bank
-          account. Status: <Text className="text-foreground">{status}</Text>
+          account.
         </Text>
         {!verified && (
           <Button variant="secondary" onPress={onboard} disabled={working}>

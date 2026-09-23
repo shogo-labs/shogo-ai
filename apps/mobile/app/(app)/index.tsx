@@ -30,8 +30,13 @@ import {
   useDomainHttp,
 } from '../../contexts/domain'
 import { CompactChatInput, ComposerPlusSection } from '../../components/chat/CompactChatInput'
-import type { FileAttachment, InteractionMode } from '../../components/chat/ChatInput'
-import { DEFAULT_MODEL_PRO, DEFAULT_MODEL_FREE } from '../../components/chat/ChatInput'
+import {
+  ChatInput,
+  DEFAULT_MODEL_PRO,
+  DEFAULT_MODEL_FREE,
+  type FileAttachment,
+  type InteractionMode,
+} from '../../components/chat/ChatInput'
 import {
   loadInteractionModePreference,
   saveInteractionModePreference,
@@ -50,7 +55,13 @@ import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
 import { getPendingLicenseCode, clearPendingLicenseCode } from '../../lib/pending-license'
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from '../../lib/native-composer-keyboard'
 import { useNativeComposerDockPad } from '../../lib/use-native-composer-keyboard'
-import { nativePhoneCanvas, nativePhoneIconColor, NATIVE_PHONE_GUTTER, isPhoneLayout } from '../../lib/native-phone-layout'
+import {
+  nativePhoneCanvas,
+  nativePhoneIconColor,
+  NATIVE_PHONE_GUTTER,
+  WEB_WIDE_MIN_WIDTH,
+  isPhoneLayout,
+} from '../../lib/native-phone-layout'
 import type { AgentTileListing } from '../../components/marketplace/AgentTile'
 import { ProjectSourceMenu } from '../../components/project/ProjectSourceMenu'
 import { TechStackPicker } from '../../components/chat/TechStackPicker'
@@ -58,8 +69,9 @@ import { techStackDisplayName } from '../../lib/tech-stack-catalog'
 import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
-import { PersonalHomeScreen } from '../../components/personal/PersonalHomeScreen'
+import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
+import { useMobileWorkspaceChrome } from '../../components/layout/MobileWorkspaceChromeContext'
 
 /**
  * Default tech stack for blank projects created from the home composer.
@@ -238,7 +250,13 @@ const styles = StyleSheet.create({
   },
 })
 
-const HomeScreen = observer(function HomeScreen() {
+export const HomeScreen = observer(function HomeScreen({
+  forceBuilder = false,
+  originWorkspaceSessionId,
+}: {
+  forceBuilder?: boolean
+  originWorkspaceSessionId?: string
+}) {
   const router = useRouter()
   const { user, isAuthenticated } = useAuth()
   const { localMode, features } = usePlatformConfig()
@@ -253,12 +271,17 @@ const HomeScreen = observer(function HomeScreen() {
   const insets = useSafeAreaInsets()
   const isMobile = screenWidth < 640
   const isNativePhone = isPhoneLayout(screenWidth, screenHeight)
+  const isNarrowAgentSurface = Platform.OS !== 'web' || screenWidth < WEB_WIDE_MIN_WIDTH
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
   const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   const restComposerSidePad = NATIVE_PHONE_GUTTER
   const iosComposerAvoiding = Platform.OS === 'ios'
   const composerKeyboardPad = useNativeComposerDockPad({
-    enabled: Platform.OS !== 'web' && isNativePhone,
+    // `isNativePhone` here is viewport-based (`isPhoneLayout`), so this
+    // already covers narrow mobile web — the keyboard subscription itself
+    // switches to `visualViewport` on web (see use-native-composer-keyboard.ts).
+    enabled: isNativePhone,
     restPad: restComposerPad,
     iosKeyboardAvoiding: iosComposerAvoiding,
   })
@@ -327,6 +350,7 @@ const HomeScreen = observer(function HomeScreen() {
   }, [])
 
   const currentWorkspace = useActiveWorkspace()
+  const currentExperience = workspaceExperience(currentWorkspace?.kind)
 
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces `CreatePersonalSpaceBanner` below — see that component for why
@@ -479,6 +503,14 @@ const HomeScreen = observer(function HomeScreen() {
   const createHomeDraftSession = useCallback(
     async (projectId: string, workspaceId: string): Promise<HomeDraft> => {
       if (isWorkspaceRuntimeEnabled()) {
+        if (originWorkspaceSessionId) {
+          await api.attachProject(http, workspaceId, originWorkspaceSessionId, projectId, 'readwrite')
+          return {
+            projectId,
+            chatSessionId: originWorkspaceSessionId,
+            chatScope: 'workspace',
+          }
+        }
         const session = await api.createWorkspaceSession(http, workspaceId, {
           inferredName: 'Untitled',
           attachProjectIds: [projectId],
@@ -493,7 +525,7 @@ const HomeScreen = observer(function HomeScreen() {
       })
       return { projectId, chatSessionId: chatSession.id, chatScope: 'project' }
     },
-    [actions, http],
+    [actions, http, originWorkspaceSessionId],
   )
 
   /** Fire-and-forget warm the runtime that backs a draft (workspace or project). */
@@ -877,12 +909,14 @@ const HomeScreen = observer(function HomeScreen() {
     )
   }
 
-  // `features.personalShell` is an instance-wide kill switch (default on):
-  // a super-admin can fall back every personal workspace to the standard
-  // builder home without a deploy if the companion-shell rollout needs to
-  // pause. See the API's `/api/config` handler and `(admin)/general.tsx`.
-  if (features.personalShell && workspaceExperience(currentWorkspace?.kind).homeScreen === 'companion') {
-    return <PersonalHomeScreen />
+  // Personal workspaces use the agent chat surface on every platform.
+  // Shared workspaces use it on narrow surfaces while wide web retains the
+  // established builder home.
+  const workspaceAgentChatEnabled =
+    isWorkspaceRuntimeEnabled() &&
+    (isNarrowAgentSurface || currentExperience.kind === 'personal')
+  if (!forceBuilder && workspaceAgentChatEnabled) {
+    return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
   }
 
   const greeting = (
@@ -904,7 +938,15 @@ const HomeScreen = observer(function HomeScreen() {
     </>
   )
 
-  const composer = (
+  const composer = usesMobileWorkspaceChrome ? (
+    <ChatInput
+      onSubmit={(text, files) => handlePromptSubmit(text, files)}
+      disabled={isCreating}
+      placeholder="Describe the project you want to build..."
+      composer={currentExperience.composer}
+      presentation="agent"
+    />
+  ) : (
     <View className={isNativePhone ? 'w-full' : 'w-full rounded-2xl'} style={composerWrapperStyle}>
       <CompactChatInput
         onSubmit={handlePromptSubmit}
@@ -1006,12 +1048,17 @@ const HomeScreen = observer(function HomeScreen() {
         </Animated.View>
         <View
           className="w-full"
-          style={[CONTENT_MAX_WIDTH, { alignSelf: 'center' }]}
+          style={[
+            usesMobileWorkspaceChrome ? undefined : CONTENT_MAX_WIDTH,
+            { alignSelf: 'center' },
+          ]}
         >
           <Animated.View
             style={{
               paddingBottom: composerKeyboardPad,
-              paddingHorizontal: restComposerSidePad,
+              paddingHorizontal: usesMobileWorkspaceChrome
+                ? 0
+                : restComposerSidePad,
             }}
           >
             {composer}
@@ -1040,7 +1087,15 @@ const HomeScreen = observer(function HomeScreen() {
     </View>
   )
 
-  if (Platform.OS === 'web' && !isNativePhone) return screen
+  // The full mobile ChatInput manages focus/keyboard dismissal itself. The
+  // legacy home wrapper dismisses the keyboard on its child press, which
+  // steals focus from that composer after the first character.
+  if (
+    (Platform.OS === 'web' && !isNativePhone) ||
+    usesMobileWorkspaceChrome
+  ) {
+    return screen
+  }
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>

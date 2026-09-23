@@ -14,10 +14,10 @@ export type ComposerVariant = "web" | "native" | "prominent";
 
 export const COMPOSER_SIZES = {
   web: {
-    minHeight: 60,
-    maxHeight: 200,
-    inputMinHeight: 60,
-    inputMaxHeight: 200,
+    minHeight: 48,
+    maxHeight: 160,
+    inputMinHeight: 48,
+    inputMaxHeight: 160,
   },
   native: {
     minHeight: 52,
@@ -44,7 +44,7 @@ export const COMPOSER_SIZES = {
 function nativeModelMenuWidth(windowWidth: number): number {
   return Math.max(
     240,
-    Math.min(280, Math.floor(windowWidth - NATIVE_PHONE_SECTION_INSET)),
+    Math.min(280, Math.floor(windowWidth - NATIVE_PHONE_SECTION_INSET))
   );
 }
 
@@ -72,8 +72,8 @@ export function useComposerLayoutMode({
   const variant: ComposerVariant = useProminentComposer
     ? "prominent"
     : isNative
-      ? "native"
-      : "web";
+    ? "native"
+    : "web";
 
   const sizes =
     compact && variant === "web"
@@ -85,14 +85,14 @@ export function useComposerLayoutMode({
           maxHeight: 200,
         }
       : compact && variant === "native"
-        ? {
-            ...COMPOSER_SIZES.native,
-            inputMinHeight: 48,
-            inputMaxHeight: 144,
-            minHeight: 48,
-            maxHeight: 144,
-          }
-        : COMPOSER_SIZES[variant];
+      ? {
+          ...COMPOSER_SIZES.native,
+          inputMinHeight: 48,
+          inputMaxHeight: 144,
+          minHeight: 48,
+          maxHeight: 144,
+        }
+      : COMPOSER_SIZES[variant];
 
   const chatgptComposer =
     (colorScheme ?? resolvedTheme) === "light"
@@ -102,8 +102,8 @@ export function useComposerLayoutMode({
   const modelTriggerMaxWidth = useProminentComposer
     ? prominentModelTriggerMaxWidth(width)
     : compact
-      ? Math.max(50, Math.min(62, Math.floor(width * 0.16)))
-      : Math.max(64, Math.min(96, Math.floor(width * 0.22)));
+    ? Math.max(50, Math.min(62, Math.floor(width * 0.16)))
+    : Math.max(64, Math.min(96, Math.floor(width * 0.22)));
 
   return {
     isNative,

@@ -13,7 +13,7 @@
  *     vs output tokens
  *   - the agent-mode aliases (`basic` → haiku, `advanced` → sonnet)
  *   - image pricing (base, hd multiplier, large-size multiplier,
- *     unknown model fallback to dall-e-3)
+ *     unknown model fallback to gpt-image-1)
  *   - the zero-cost short-circuit ({0, 0} when no tokens)
  *
  * Cost arithmetic is reproduced inline against the catalog constants
@@ -189,8 +189,10 @@ describe('calculateImageUsageCost', () => {
     expect(r).toBeCloseTo(cfg.base * cfg.hdMultiplier * cfg.largeSizeMultiplier, PRECISION)
   })
 
-  test('unknown model falls back to dall-e-3 config (never throws)', () => {
-    const fallback = calculateImageUsageCost('dall-e-3', 'standard', '1024x1024').rawUsd
+  // dall-e-3 is retired (OpenAI, 2026-09); the fallback moved to the
+  // current-generation gpt-image-1 pricing profile.
+  test('unknown model falls back to gpt-image-1 config (never throws)', () => {
+    const fallback = calculateImageUsageCost('gpt-image-1', 'standard', '1024x1024').rawUsd
     const unknown = calculateImageUsageCost('totally-fake-model', 'standard', '1024x1024').rawUsd
     expect(unknown).toBeCloseTo(fallback, PRECISION)
   })

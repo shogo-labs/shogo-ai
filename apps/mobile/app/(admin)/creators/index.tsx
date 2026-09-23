@@ -132,6 +132,53 @@ function CreatorRow({ c, onPress }: { c: AdminCreatorStat; onPress: () => void }
   )
 }
 
+function CreatorCard({ c, onPress }: { c: AdminCreatorStat; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      role="button"
+      accessibilityLabel={`Open ${c.displayName || c.name || 'creator'} profile`}
+      className="border-b border-border/70 p-4 active:bg-muted/40"
+    >
+      <View className="flex-row items-start justify-between gap-3">
+        <View className="flex-1 min-w-0">
+          <View className="flex-row items-center gap-1.5">
+            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+              {c.displayName || c.name || 'Unknown'}
+            </Text>
+            {c.verified && <Star size={12} className="text-amber-500" />}
+          </View>
+          <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={1}>
+            {c.email}
+          </Text>
+        </View>
+        <View className="items-end">
+          <Text className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Earnings</Text>
+          <Text className="text-sm font-semibold text-foreground">{usd(c.totalEarningsUsd)}</Text>
+        </View>
+        <ChevronRight size={16} className="mt-1 text-muted-foreground" />
+      </View>
+      <View className="mt-3 flex-row flex-wrap gap-x-4 gap-y-1">
+        <Text className="text-xs text-muted-foreground">
+          <Text className="font-medium text-foreground">{c.creatorTier}</Text> tier
+        </Text>
+        <Text className="text-xs text-muted-foreground">
+          <Text className="font-medium text-foreground">{c.totalAgentsPublished.toLocaleString()}</Text> agents
+        </Text>
+        <Text className="text-xs text-muted-foreground">
+          <Text className="font-medium text-foreground">{c.totalInstalls.toLocaleString()}</Text> installs
+        </Text>
+        <Text className="text-xs text-muted-foreground">
+          Rating <Text className="font-medium text-foreground">{c.averageAgentRating > 0 ? c.averageAgentRating.toFixed(1) : '—'}</Text>
+        </Text>
+        <Text className="text-xs text-muted-foreground">
+          Spend <Text className="font-medium text-foreground">{usd(c.spendUsd)}</Text>
+        </Text>
+      </View>
+    </Pressable>
+  )
+}
+
 export default function AdminCreators() {
   const router = useRouter()
   const { width } = useWindowDimensions()
@@ -187,55 +234,71 @@ export default function AdminCreators() {
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      {/* Header */}
-      <View className="mb-6">
-        <View className="flex-row items-center gap-2">
-          <Sparkles size={isWide ? 22 : 18} className="text-primary" />
-          <Text className={cn('font-bold text-foreground', isWide ? 'text-2xl' : 'text-xl')}>Creators</Text>
+      <View className="w-full max-w-[1180px] self-center">
+        <View className="mb-4 rounded-2xl border border-border bg-card p-4">
+          <View className="flex-row items-start gap-3">
+            <View className="h-9 w-9 shrink-0 rounded-lg bg-primary/10 items-center justify-center">
+              <Sparkles size={17} className="text-primary" />
+            </View>
+            <View className="flex-1 min-w-0">
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-muted-foreground">
+                Marketplace network
+              </Text>
+              <Text className={cn('mt-1 font-bold text-foreground tracking-tight', isWide ? 'text-2xl' : 'text-xl')}>
+                Creators
+              </Text>
+              <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+                Marketplace publishing health, earnings, and platform usage. Select a creator for a full profile.
+              </Text>
+            </View>
+          </View>
         </View>
-        <Text className="text-sm text-muted-foreground mt-0.5">
-          Marketplace creators with publishing metrics and platform usage. Tap a creator to view their profile.
-        </Text>
-      </View>
 
-      {/* Summary cards */}
-      <View className="flex-row flex-wrap gap-3 mb-6">
-        <StatCard label="Creators" value={creators.length} icon={Users} accent="bg-blue-500/10" iconColor="text-blue-500" />
-        <StatCard label="Total installs" value={totals.installs} icon={Download} accent="bg-emerald-500/10" iconColor="text-emerald-500" />
-        <StatCard label="Total earnings" value={usd(totals.earnings)} icon={DollarSign} accent="bg-amber-500/10" iconColor="text-amber-500" />
-        <StatCard label="Platform spend" value={usd(totals.spend)} icon={DollarSign} accent="bg-purple-500/10" iconColor="text-purple-500" />
-      </View>
+        <View className="flex-row flex-wrap gap-3 mb-4">
+          <StatCard label="Creators" value={creators.length} icon={Users} accent="bg-blue-500/10" iconColor="text-blue-500" />
+          <StatCard label="Total installs" value={totals.installs} icon={Download} accent="bg-emerald-500/10" iconColor="text-emerald-500" />
+          <StatCard label="Total earnings" value={usd(totals.earnings)} icon={DollarSign} accent="bg-amber-500/10" iconColor="text-amber-500" />
+          <StatCard label="Platform spend" value={usd(totals.spend)} icon={DollarSign} accent="bg-purple-500/10" iconColor="text-purple-500" />
+        </View>
 
-      {/* Table */}
-      <View className="rounded-xl border border-border bg-card overflow-hidden">
-        {error ? (
-          <View className="h-32 items-center justify-center px-4">
-            <Text className="text-sm text-muted-foreground text-center">{error}</Text>
-          </View>
-        ) : loading ? (
-          <View className="p-4 gap-2">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <View key={i} className="h-10 bg-muted/50 rounded" />
-            ))}
-          </View>
-        ) : creators.length === 0 ? (
-          <View className="h-32 items-center justify-center">
-            <Text className="text-sm text-muted-foreground">No creators yet</Text>
-          </View>
-        ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View>
-              <HeaderRow />
-              {creators.map((c) => (
-                <CreatorRow
-                  key={c.userId}
-                  c={c}
-                  onPress={() => router.push(`/(admin)/creators/${c.userId}` as any)}
-                />
+        <View className="rounded-xl border border-border bg-card overflow-hidden">
+          {error ? (
+            <View className="h-32 items-center justify-center px-4">
+              <Text className="text-sm text-muted-foreground text-center">{error}</Text>
+            </View>
+          ) : loading ? (
+            <View className="p-4 gap-2">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <View key={i} className="h-10 bg-muted/50 rounded" />
               ))}
             </View>
-          </ScrollView>
-        )}
+          ) : creators.length === 0 ? (
+            <View className="h-32 items-center justify-center">
+              <Text className="text-sm text-muted-foreground">No creators yet</Text>
+            </View>
+          ) : isWide ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View>
+                <HeaderRow />
+                {creators.map((c) => (
+                  <CreatorRow
+                    key={c.userId}
+                    c={c}
+                    onPress={() => router.push(`/(admin)/creators/${c.userId}` as any)}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+          ) : (
+            creators.map((c) => (
+              <CreatorCard
+                key={c.userId}
+                c={c}
+                onPress={() => router.push(`/(admin)/creators/${c.userId}` as any)}
+              />
+            ))
+          )}
+        </View>
       </View>
     </ScrollView>
   )

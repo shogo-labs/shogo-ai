@@ -17,12 +17,12 @@ mock.module('../../lib/prisma', () => ({
 }))
 
 let podUrlImpl: (projectId: string) => Promise<string> = async () => 'https://pod.example.com'
-mock.module('../../lib/knative-project-manager', () => ({
-  getProjectPodUrl: (projectId: string) => podUrlImpl(projectId),
+mock.module('../../lib/resolve-pod-url', () => ({
+  resolveProjectPodUrl: async (projectId: string) => ({ mode: 'host', url: await podUrlImpl(projectId) }),
 }))
 
-mock.module('../../lib/runtime-token', () => ({
-  deriveRuntimeToken: (projectId: string) => `rt_v1_${projectId}`,
+mock.module('../../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken: (projectId: string) => `rt_v1_${projectId}`,
 }))
 
 const evictCalls: any[] = []

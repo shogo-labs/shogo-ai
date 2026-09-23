@@ -21,6 +21,10 @@ export interface PlatformConfig {
     phoneChannel: boolean
     /** Companion-shell rollout kill switch — see the API's `/api/config` handler. */
     personalShell: boolean
+    /** Workspace Agent shell rollout; the runtime gate is checked separately. */
+    agentShell: boolean
+    /** Independently controls the narrow/native Workspace Agent shell. */
+    mobileAgentShell: boolean
   }
 }
 
@@ -37,6 +41,8 @@ const CLOUD_CONFIG: PlatformConfig = {
     ezMode: true,
     phoneChannel: true,
     personalShell: true,
+    agentShell: false,
+    mobileAgentShell: false,
   },
 }
 
@@ -53,6 +59,8 @@ const LOCAL_CONFIG: PlatformConfig = {
     ezMode: true,
     phoneChannel: false,
     personalShell: true,
+    agentShell: true,
+    mobileAgentShell: true,
   },
 }
 
@@ -67,13 +75,12 @@ function isLocalMode(): boolean {
  * workspace-aware (merged-root) runtime — a workspace-scoped chat session
  * with the project attached — instead of the per-project runtime.
  *
- * Opt-in via `EXPO_PUBLIC_WORKSPACE_RUNTIME=true`. The API independently
- * gates the actual runtime behind `SHOGO_WORKSPACE_RUNTIME` (workspace chat
- * returns 501 when that's off), so BOTH must agree for workspace chat to
- * function. Default off preserves the existing per-project create flow.
+ * Workspace runtimes are the only supported runtime topology. The helper is
+ * retained as a compatibility API for callers that still use the old rollout
+ * check while the UI migration finishes.
  */
 export function isWorkspaceRuntimeEnabled(): boolean {
-  return process.env.EXPO_PUBLIC_WORKSPACE_RUNTIME === 'true'
+  return true
 }
 
 let cachedConfig: PlatformConfig | null = null
@@ -88,7 +95,18 @@ async function fetchConfig(): Promise<PlatformConfig> {
   try {
     const platform = new PlatformApi(createHttpClient())
     const data = await platform.getConfig()
-    cachedConfig = { ...data, configLoaded: true }
+    // Local UI development must not depend on a persisted hosted/admin
+    // override. The execution runtime retains its own independent gate.
+    cachedConfig = {
+      ...data,
+      localMode: data.localMode || isLocalMode(),
+      features: {
+        ...data.features,
+        agentShell: data.localMode || isLocalMode() ? true : data.features.agentShell,
+        mobileAgentShell: data.localMode || isLocalMode() ? true : data.features.mobileAgentShell,
+      },
+      configLoaded: true,
+    }
     return cachedConfig!
   } catch {}
   const fallback = getInitialConfig()

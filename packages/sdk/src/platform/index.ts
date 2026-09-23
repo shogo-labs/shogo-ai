@@ -41,6 +41,10 @@ export interface PlatformConfig {
     phoneChannel: boolean
     /** Companion-shell rollout kill switch for personal workspaces. */
     personalShell: boolean
+    /** Workspace Agent shell rollout; requires the workspace runtime. */
+    agentShell: boolean
+    /** Independently controls the narrow/native Workspace Agent shell rollout. */
+    mobileAgentShell: boolean
   }
 }
 
@@ -50,6 +54,8 @@ export interface FeatureFlagOverrides {
   ezMode: boolean | null
   phoneChannel: boolean | null
   personalShell: boolean | null
+  agentShell: boolean | null
+  mobileAgentShell: boolean | null
 }
 
 /** Partial feature flag patch; omit a key to leave it unchanged; `null` to reset to default. */
@@ -58,6 +64,8 @@ export type FeatureFlagPatch = Partial<{
   ezMode: boolean | null
   phoneChannel: boolean | null
   personalShell: boolean | null
+  agentShell: boolean | null
+  mobileAgentShell: boolean | null
 }>
 
 /** API keys come in two flavours:
@@ -155,6 +163,9 @@ export interface CloudLoginStatus {
   email?: string | null
   workspace?: { id?: string; name?: string; slug?: string } | null
   deviceId?: string | null
+  lastHeartbeatOk?: boolean | null
+  lastHeartbeatAt?: number | null
+  lastHeartbeatError?: string | null
   keyPrefix?: string
   /** True when the cloud has rejected the stored API key (revoked / expired).
    * The user remains signed in locally; the UI should show a warning banner
@@ -1176,7 +1187,14 @@ export class PlatformApi {
   /** Read super-admin feature flag overrides. `null` means "use platform default". */
   async getFeatureFlags(): Promise<FeatureFlagOverrides> {
     const res = await this.http.get<FeatureFlagOverrides>('/api/admin/settings/features')
-    return res.data ?? { marketplace: null, ezMode: null, phoneChannel: null, personalShell: null }
+    return res.data ?? {
+      marketplace: null,
+      ezMode: null,
+      phoneChannel: null,
+      personalShell: null,
+      agentShell: null,
+      mobileAgentShell: null,
+    }
   }
 
   /** Update feature flag overrides. Pass `null` for a flag to reset to platform default. */
@@ -1188,7 +1206,14 @@ export class PlatformApi {
     return (
       res.data ?? {
         ok: false,
-        flags: { marketplace: null, ezMode: null, phoneChannel: null, personalShell: null },
+        flags: {
+          marketplace: null,
+          ezMode: null,
+          phoneChannel: null,
+          personalShell: null,
+          agentShell: null,
+          mobileAgentShell: null,
+        },
       }
     )
   }

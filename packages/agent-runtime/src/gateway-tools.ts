@@ -792,16 +792,17 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       const softTimeoutMs = Math.max(0, timeout)
       const SOFT_TIMEOUT = Symbol('soft-timeout')
-      let timer: NodeJS.Timeout | undefined
+      let timer: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<typeof SOFT_TIMEOUT>((resolve) => {
         timer = setTimeout(() => resolve(SOFT_TIMEOUT), softTimeoutMs)
-        timer.unref?.()
+        ;(timer as any)?.unref?.()
       })
 
       const winner = await Promise.race([handle.done, timeoutPromise])
       if (timer) clearTimeout(timer)
 
       if (winner === SOFT_TIMEOUT) {
+        registry.markBackgrounded(entry.runId)
         return buildSoftTimeoutResult(entry, softTimeoutMs)
       }
 
@@ -810,11 +811,17 @@ function createExecTool(ctx: ToolContext): AgentTool {
   }
 }
 
+function stripAnsiForPattern(value: string): string {
+  // Covers CSI color/control sequences (the common source of a readiness
+  // token being invisible to a plain `/Ready/` pattern).
+  return value.replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+}
+
 function createExecWaitTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec_wait',
     description:
-      `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive the same { status: "running", run_id, pid, ... } shape and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` resolves early as soon as the regex matches accumulated stdout or stderr.`,
+      `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive { status: "running", run_id, pid, ... } and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` returns { status: "pattern_matched", matched: <pattern>, ... } as soon as the regex matches recent combined output; this is distinct from a timeout.`,
     label: 'Wait for Command',
     parameters: Type.Object({
       run_id: Type.String({ description: 'The run_id returned by a previous exec or exec_wait call' }),
@@ -822,7 +829,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). Set to 0 for an immediate non-blocking status check.`,
       })),
       pattern: Type.Optional(Type.String({
-        description: 'Optional regex (JavaScript syntax). Resolves as soon as the regex matches accumulated stdout or stderr.',
+        description: 'Optional regex (JavaScript syntax). Resolves as soon as the regex matches ANSI-stripped recent combined stdout/stderr.',
       })),
     }),
     execute: async (_toolCallId, params) => {
@@ -872,39 +879,69 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
       const SOFT_TIMEOUT = Symbol('soft-timeout')
       const PATTERN_HIT = Symbol('pattern-hit')
 
-      let timer: NodeJS.Timeout | undefined
+      let timer: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<typeof SOFT_TIMEOUT>((resolve) => {
         if (softTimeoutMs === 0) {
           resolve(SOFT_TIMEOUT)
           return
         }
         timer = setTimeout(() => resolve(SOFT_TIMEOUT), softTimeoutMs)
-        timer.unref?.()
+        ;(timer as any)?.unref?.()
       })
 
       // Pattern polling: ~250ms tick. Cheap and avoids hooking into the
       // child stream from a different tool than the one that owns it.
-      let patternTimer: NodeJS.Timeout | undefined
+      let patternTimer: ReturnType<typeof setTimeout> | undefined
       const patternPromise = regex
         ? new Promise<typeof PATTERN_HIT>((resolve) => {
             const tick = () => {
               if (entry.handle.exited()) return // `done` will win
-              if (regex!.test(entry.handle.stdout()) || regex!.test(entry.handle.stderr())) {
+              const stdout = stripAnsiForPattern(entry.handle.stdout())
+              const stderr = stripAnsiForPattern(entry.handle.stderr())
+              const recent = stripAnsiForPattern(entry.handle.recentOutput())
+              const combined = `${stdout}\n${stderr}\n${recent}`
+              if (
+                regex!.test(stdout) ||
+                regex!.test(stderr) ||
+                regex!.test(recent) ||
+                regex!.test(combined)
+              ) {
                 resolve(PATTERN_HIT)
                 return
               }
               patternTimer = setTimeout(tick, 250)
-              patternTimer.unref?.()
+              ;(patternTimer as any)?.unref?.()
             }
             tick()
           })
         : new Promise<never>(() => {}) // never resolves
 
-      const winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise])
+      const endWait = registry.beginWait(run_id)
+      let winner: { exitCode: number; stdout: string; stderr: string; killed: boolean } | typeof SOFT_TIMEOUT | typeof PATTERN_HIT
+      try {
+        winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise])
+      } finally {
+        endWait()
+      }
       if (timer) clearTimeout(timer)
       if (patternTimer) clearTimeout(patternTimer)
 
-      if (winner === SOFT_TIMEOUT || winner === PATTERN_HIT) {
+      if (winner === PATTERN_HIT) {
+        return textResult({
+          status: 'pattern_matched',
+          run_id: entry.runId,
+          pid: entry.handle.pid,
+          sandboxed: entry.handle.sandboxed || undefined,
+          container_name: entry.handle.containerName,
+          matched: pattern,
+          elapsedMs: Date.now() - entry.handle.startedAt,
+          stdout: truncateExecOutput(entry.handle.stdout().trim()),
+          stderr: truncateExecOutput(entry.handle.stderr().trim()),
+          hint: 'Pattern matched while the command is still running. Call exec_wait without a pattern to wait for exit.',
+        })
+      }
+
+      if (winner === SOFT_TIMEOUT) {
         // Re-check completion in case the process exited between the race
         // resolving and us building the result, so we always prefer the
         // final result when available.
@@ -2222,6 +2259,7 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
       'Ask the user structured multiple-choice questions ONLY when you are blocked on a decision that genuinely requires their input: a true requirement ambiguity, an irreversible/destructive choice, or missing information you cannot obtain yourself (e.g. which of two products to build, a credential the user must provide).',
       'Do NOT use ask_user to ask permission to continue work that was already requested, to confirm an obvious next step, or as a progress checkpoint — just keep going and complete the task, then summarize. This tool ENDS your turn and forces the user to reply, so every unnecessary call stalls the task and makes the user type "continue".',
       'The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
+      'If you just generated one or more images with generate_image (e.g. avatar candidates) and are now asking the user to pick one, set each option\'s imagePath to that image\'s workspace path (the `path` field returned by generate_image, e.g. "images/generated-123.png") so the user can see a thumbnail of each choice instead of guessing from text alone.',
     ].join(' '),
     label: 'Ask User',
     parameters: Type.Object({
@@ -2231,6 +2269,9 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
         options: Type.Array(Type.Object({
           label: Type.String({ description: 'Display text for this option' }),
           description: Type.String({ description: 'Brief explanation of what this option means' }),
+          imagePath: Type.Optional(Type.String({
+            description: 'Workspace-relative path to an image to show as a thumbnail for this option (e.g. "images/generated-123.png", from a prior generate_image call). Use this when the choice is between visual candidates like avatars.',
+          })),
         })),
         multiSelect: Type.Optional(Type.Boolean({ description: 'Allow selecting multiple options (default: false)' })),
       })),
@@ -2360,9 +2401,10 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     name: 'publish',
     description: [
       'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
+      'First publish to a subdomain requires the Pro plan or higher. If the user may be on Free/Basic, tell them about this BEFORE starting deploy work so they are not surprised after you have already done the work — do not just attempt the tool call and hope. If the tool nonetheless returns `plan_not_allowed`, point the user to Settings > Billing to upgrade.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
-      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. If the user still sees an old version, first distinguish the stable preview URL from the published URL, then refresh after cache propagation before changing code.',
+      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -2454,27 +2496,10 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         republished: wasRepublish,
         verified,
         note: verified
-          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers, but a browser or edge may take a short while to revalidate; refresh once if an old version remains.`
-          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version, distinguish preview from published URL and refresh after propagation before changing code.`,
+          ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers and the runtime self-heals stale bundles automatically — do not tell the user to hard-refresh or clear their cache.`
+          : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version after ~30s, distinguish preview from published URL and republish rather than asking them to hard-refresh or clear their cache — the runtime already self-heals stale bundles.`,
       })
     },
-  }
-}
-
-// ---------------------------------------------------------------------------
-// NotifyUserError Tool (prominent error toast in chat UI)
-// ---------------------------------------------------------------------------
-
-function createNotifyUserErrorTool(): AgentTool {
-  return {
-    name: 'notify_user_error',
-    description: 'Show a prominent error notification to the user when a tool fails, an integration is broken, or you cannot complete the requested task. Call this BEFORE explaining the error in chat text. The UI renders an unmissable banner with the title and remediation steps.',
-    label: 'Error Notification',
-    parameters: Type.Object({
-      title: Type.String({ description: 'Short error title, e.g. "GitHub Access Error", "Slack Auth Expired"' }),
-      message: Type.String({ description: 'What went wrong AND how to fix it — shown in the notification body' }),
-    }),
-    execute: async () => textResult({ acknowledged: true }),
   }
 }
 
@@ -5582,7 +5607,6 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
     createPublishTool(ctx),
-    createNotifyUserErrorTool(),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),
@@ -6091,7 +6115,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 export const ALL_TOOL_NAMES = [
   'exec', 'exec_wait', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
-  'todo_write', 'ask_user', 'notify_user_error', 'skill',
+  'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
   'heartbeat_configure', 'heartbeat_status', 'terminal_exec', 'terminal_read',
   'read_lints', 'server_sync',
@@ -7009,16 +7033,57 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
 // Image Generation Tool
 // ---------------------------------------------------------------------------
 
+/**
+ * Turn a raw upstream image-generation failure into a short, human-readable
+ * message instead of surfacing the raw (sometimes doubly-JSON-nested)
+ * provider error body straight into the chat transcript — e.g. the proxy
+ * wraps an OpenAI failure as a string like `OpenAI image generation error
+ * (400): {"error":{"message":"Unknown parameter: 'response_format'."}}`,
+ * which GenerateImageWidget (apps/mobile) used to render verbatim in a
+ * "Image generation failed" card. The raw text is still logged server-side
+ * (agent-runtime process stdout) for debugging.
+ */
+function friendlyImageGenerationError(context: string, status: number, rawErrorText: string): string {
+  console.error(`[${context}] upstream error (${status}):`, rawErrorText)
+  try {
+    const parsed = JSON.parse(rawErrorText)
+    let message: string | undefined = parsed?.error?.message
+    if (typeof message === 'string') {
+      // Unwrap one more level of nested JSON, if the proxy embedded it in
+      // the message text (see the doc comment above).
+      const nestedMatch = message.match(/:\s*(\{[\s\S]*\})\s*$/)
+      if (nestedMatch) {
+        try {
+          const nested = JSON.parse(nestedMatch[1])
+          if (typeof nested?.error?.message === 'string') message = nested.error.message
+        } catch {
+          // Keep the outer message — the embedded text wasn't valid JSON.
+        }
+      }
+      if (message) return message
+    }
+  } catch {
+    // Not JSON at all — fall through to the generic message below.
+  }
+  if (status === 429) return `${context} is rate-limited right now. Please try again in a moment.`
+  if (status >= 500) return `The image provider is temporarily unavailable. Please try again shortly.`
+  return `${context} failed. Please try a different prompt.`
+}
+
 function createGenerateImageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'generate_image',
-    description: 'Generate an image from a text prompt using AI (DALL-E, GPT Image, Imagen, etc). The image is saved to the agent workspace. Optionally provide a reference_image path to edit/modify an existing workspace image instead of generating from scratch.',
+    description: 'Generate an image from a text prompt using AI (GPT Image, Imagen, etc). The image is saved to the agent workspace. Optionally provide a reference_image path to edit/modify an existing workspace image instead of generating from scratch.',
     label: 'Generate Image',
     parameters: Type.Object({
       prompt: Type.String({ description: 'Text description of the image to generate, or edit instruction when using reference_image' }),
       filename: Type.Optional(Type.String({ description: 'Destination filename (default: auto-generated). Saved under images/ directory.' })),
       size: Type.Optional(Type.String({ description: 'Image size: "1024x1024", "1024x1792", "1792x1024" (default: "1024x1024")' })),
-      model: Type.Optional(Type.String({ description: 'Image model: "dall-e-3", "gpt-image-1", "imagen-4", etc. (default: "dall-e-3")' })),
+      // OpenAI retired the DALL-E 2/3 models (2026-09) — "dall-e-3" now 400s
+      // with "The model 'dall-e-3' does not exist." `gpt-image-2.5-flare`
+      // is the current default, for both generation and reference_image
+      // edits (edits used to require dall-e-2, which is also retired).
+      model: Type.Optional(Type.String({ description: 'Image model: "gpt-image-2.5-flare", "gpt-image-1", "imagen-4", etc. (default: "gpt-image-2.5-flare")' })),
       quality: Type.Optional(Type.String({ description: 'Image quality: "standard" or "hd" (default: "standard")' })),
       reference_image: Type.Optional(Type.String({ description: 'Path to a workspace image to use as reference for editing (e.g. "images/logo.png")' })),
     }),
@@ -7027,7 +7092,7 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
         prompt,
         filename,
         size = '1024x1024',
-        model = 'dall-e-3',
+        model = 'gpt-image-2.5-flare',
         quality = 'standard',
         reference_image,
       } = params as {
@@ -7076,7 +7141,12 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
           const formData = new FormData()
           formData.append('image', new Blob([imageBuffer], { type: mimeType }), `reference${refExt || '.png'}`)
           formData.append('prompt', prompt)
-          formData.append('model', 'dall-e-2')
+          // dall-e-2 (the previous edit model) is retired; the gpt-image
+          // family supports /v1/images/edits too — see the ai-proxy edits
+          // route. Send the resolved `model` (defaults to
+          // gpt-image-2.5-flare) instead of a hardcoded literal so an
+          // explicit model choice is respected for edits too.
+          formData.append('model', model)
           formData.append('size', size)
           formData.append('n', '1')
 
@@ -7089,7 +7159,7 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 
           if (!response.ok) {
             const errText = await response.text()
-            return textResult({ error: `Image edit failed (${response.status}): ${errText}` })
+            return textResult({ error: friendlyImageGenerationError('Image edit', response.status, errText) })
           }
 
           responseData = await response.json()
@@ -7107,13 +7177,12 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
               size,
               quality,
               n: 1,
-              response_format: 'b64_json',
             }),
           })
 
           if (!response.ok) {
             const errText = await response.text()
-            return textResult({ error: `Image generation failed (${response.status}): ${errText}` })
+            return textResult({ error: friendlyImageGenerationError('Image generation', response.status, errText) })
           }
 
           responseData = await response.json()

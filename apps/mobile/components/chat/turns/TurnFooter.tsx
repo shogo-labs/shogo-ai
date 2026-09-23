@@ -14,17 +14,33 @@
  * disabled and copy still works.
  */
 
-import { memo, useCallback, useEffect, useState } from "react"
-import { Platform, Share as NativeShare, View, Text, Pressable } from "react-native"
-import * as Clipboard from "expo-clipboard"
-import { Copy, Check, Share2, ThumbsUp, ThumbsDown, GitFork, Loader2 } from "lucide-react-native"
-import { cn } from "@shogo/shared-ui/primitives"
-import { useTurnFooterContext } from "./TurnFooterContext"
-import { formatRelativeTime } from "./turnShaping"
+import { memo, useCallback, useEffect, useState } from "react";
+import {
+  Platform,
+  Share as NativeShare,
+  View,
+  Text,
+  Pressable,
+} from "react-native";
+import * as Clipboard from "expo-clipboard";
+import {
+  Copy,
+  Check,
+  Share2,
+  ThumbsUp,
+  ThumbsDown,
+  GitFork,
+  Loader2,
+} from "lucide-react-native";
+import { cn } from "@shogo/shared-ui/primitives";
+import { useTurnFooterContext } from "./TurnFooterContext";
+import { formatRelativeTime } from "./turnShaping";
+import { usePhoneLayout } from "../../../lib/native-phone-layout";
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
 
 /** How often the relative-time label re-renders to stay fresh. */
-const RELATIVE_TIME_TICK_MS = 30_000
-const ACTION_ICON_SIZE = 16
+const RELATIVE_TIME_TICK_MS = 30_000;
+const ACTION_ICON_SIZE = 14;
 
 /**
  * Ticking "2m ago" label. Re-renders on an interval instead of a
@@ -33,41 +49,44 @@ const ACTION_ICON_SIZE = 16
  * elsewhere in the turn UI (see `PlanningStatusLine`).
  */
 function useRelativeTimeLabel(timestampMs: number | undefined): string | null {
-  const [, forceTick] = useState(0)
+  const [, forceTick] = useState(0);
 
   useEffect(() => {
-    if (timestampMs === undefined) return
-    const id = setInterval(() => forceTick((n) => n + 1), RELATIVE_TIME_TICK_MS)
-    return () => clearInterval(id)
-  }, [timestampMs])
+    if (timestampMs === undefined) return;
+    const id = setInterval(
+      () => forceTick((n) => n + 1),
+      RELATIVE_TIME_TICK_MS
+    );
+    return () => clearInterval(id);
+  }, [timestampMs]);
 
-  if (timestampMs === undefined) return null
-  return formatRelativeTime(timestampMs)
+  if (timestampMs === undefined) return null;
+  return formatRelativeTime(timestampMs);
 }
 
 export interface TurnFooterProps {
   /** The assistant message id this footer acts on (feedback/fork target). */
-  messageId: string | undefined
+  messageId: string | undefined;
   /** Plain-text content of the turn, for the copy button. */
-  text: string
+  text: string;
   /** When the turn completed (epoch ms) — renders as "2m ago". */
-  completedAt: number | undefined
-  className?: string
+  completedAt: number | undefined;
+  className?: string;
 }
 
-function CopyAction({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
+function CopyAction({ text, iconSize }: { text: string; iconSize: number }) {
+  const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
-    if (!text) return
+    if (!text) return;
     try {
-      await Clipboard.setStringAsync(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await Clipboard.setStringAsync(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     } catch {
       // Silently fail on copy error
     }
-  }, [text])
+  }, [text]);
 
   return (
     <Pressable
@@ -77,35 +96,38 @@ function CopyAction({ text }: { text: string }) {
       accessibilityLabel={copied ? "Copied" : "Copy message"}
     >
       {copied ? (
-        <Check size={ACTION_ICON_SIZE} className="text-green-500" />
+        <Check size={iconSize} className="text-green-500" />
       ) : (
-        <Copy size={ACTION_ICON_SIZE} className="text-muted-foreground" />
+        <Copy size={iconSize} className="text-muted-foreground" />
       )}
     </Pressable>
-  )
+  );
 }
 
-function ShareAction({ text }: { text: string }) {
+function ShareAction({ text, iconSize }: { text: string; iconSize: number }) {
   const handleShare = useCallback(async () => {
-    if (!text) return
+    if (!text) return;
     try {
-      await NativeShare.share({ message: text })
+      await NativeShare.share({ message: text });
     } catch {
       // The user can dismiss the native share sheet without an error state.
     }
-  }, [text])
+  }, [text]);
 
   return (
     <Pressable
       testID="turn-footer-share"
       onPress={handleShare}
       disabled={!text}
-      className={cn("items-center justify-center rounded-lg p-1 hover:bg-muted/40", !text && "opacity-40")}
+      className={cn(
+        "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
+        !text && "opacity-40"
+      )}
       accessibilityLabel="Share message"
     >
-      <Share2 size={ACTION_ICON_SIZE} className="text-muted-foreground" />
+      <Share2 size={iconSize} className="text-muted-foreground" />
     </Pressable>
-  )
+  );
 }
 
 export const TurnFooter = memo(function TurnFooter({
@@ -114,46 +136,55 @@ export const TurnFooter = memo(function TurnFooter({
   completedAt,
   className,
 }: TurnFooterProps) {
-  const ctx = useTurnFooterContext()
-  const relativeTime = useRelativeTimeLabel(completedAt)
-  const [forking, setForking] = useState(false)
+  const ctx = useTurnFooterContext();
+  const relativeTime = useRelativeTimeLabel(completedAt);
+  const isPhoneLayout = usePhoneLayout();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+  const usesMobileChatPresentation =
+    isPhoneLayout || usesMobileWorkspaceChrome;
+  const actionIconSize = usesMobileChatPresentation ? 12 : ACTION_ICON_SIZE;
+  const [forking, setForking] = useState(false);
 
-  const canAct = !!messageId && !!ctx && ctx.canActOnMessage(messageId)
-  const currentThumb = messageId ? ctx?.feedback[messageId] : undefined
+  const canAct = !!messageId && !!ctx && ctx.canActOnMessage(messageId);
+  const currentThumb = messageId ? ctx?.feedback[messageId] : undefined;
 
   const handleThumb = useCallback(
     async (thumbs: "up" | "down") => {
-      if (!ctx || !messageId || !canAct) return
+      if (!ctx || !messageId || !canAct) return;
       try {
         if (currentThumb === thumbs) {
-          await ctx.clearFeedback(messageId)
+          await ctx.clearFeedback(messageId);
         } else {
-          await ctx.setFeedback(messageId, thumbs)
+          await ctx.setFeedback(messageId, thumbs);
         }
       } catch (err) {
-        console.error("[TurnFooter] Failed to update feedback:", err)
+        console.error("[TurnFooter] Failed to update feedback:", err);
       }
     },
-    [ctx, messageId, canAct, currentThumb],
-  )
+    [ctx, messageId, canAct, currentThumb]
+  );
 
   const handleFork = useCallback(async () => {
-    if (!ctx || !messageId || !canAct || forking) return
-    setForking(true)
+    if (!ctx || !messageId || !canAct || forking) return;
+    setForking(true);
     try {
-      await ctx.forkFromMessage(messageId)
+      await ctx.forkFromMessage(messageId);
     } catch (err) {
-      console.error("[TurnFooter] Failed to fork conversation:", err)
+      console.error("[TurnFooter] Failed to fork conversation:", err);
     } finally {
-      setForking(false)
+      setForking(false);
     }
-  }, [ctx, messageId, canAct, forking])
+  }, [ctx, messageId, canAct, forking]);
 
   return (
-    <View className={cn("flex-row items-center justify-between pl-3 pr-1", className)}>
-      <View className="flex-row items-center gap-0.5">
-        <CopyAction text={text} />
-        {Platform.OS !== "web" ? <ShareAction text={text} /> : null}
+    <View
+      className={cn("flex-row items-center justify-between pr-1", className)}
+    >
+      <View className="-ml-1 flex-row items-center gap-0.5">
+        <CopyAction text={text} iconSize={actionIconSize} />
+        {Platform.OS !== "web" ? (
+          <ShareAction text={text} iconSize={actionIconSize} />
+        ) : null}
 
         <Pressable
           testID="turn-footer-thumb-up"
@@ -161,14 +192,16 @@ export const TurnFooter = memo(function TurnFooter({
           disabled={!canAct}
           className={cn(
             "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
-            !canAct && "opacity-40",
+            !canAct && "opacity-40"
           )}
-          accessibilityLabel={currentThumb === "up" ? "Remove like" : "Like response"}
+          accessibilityLabel={
+            currentThumb === "up" ? "Remove like" : "Like response"
+          }
         >
           <ThumbsUp
-            size={ACTION_ICON_SIZE}
+            size={actionIconSize}
             className={cn(
-              currentThumb === "up" ? "text-primary" : "text-muted-foreground",
+              currentThumb === "up" ? "text-primary" : "text-muted-foreground"
             )}
             fill={currentThumb === "up" ? "currentColor" : "none"}
           />
@@ -180,14 +213,18 @@ export const TurnFooter = memo(function TurnFooter({
           disabled={!canAct}
           className={cn(
             "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
-            !canAct && "opacity-40",
+            !canAct && "opacity-40"
           )}
-          accessibilityLabel={currentThumb === "down" ? "Remove dislike" : "Dislike response"}
+          accessibilityLabel={
+            currentThumb === "down" ? "Remove dislike" : "Dislike response"
+          }
         >
           <ThumbsDown
-            size={ACTION_ICON_SIZE}
+            size={actionIconSize}
             className={cn(
-              currentThumb === "down" ? "text-destructive" : "text-muted-foreground",
+              currentThumb === "down"
+                ? "text-destructive"
+                : "text-muted-foreground"
             )}
             fill={currentThumb === "down" ? "currentColor" : "none"}
           />
@@ -199,23 +236,36 @@ export const TurnFooter = memo(function TurnFooter({
           disabled={!canAct || forking}
           className={cn(
             "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
-            (!canAct || forking) && "opacity-40",
+            (!canAct || forking) && "opacity-40"
           )}
           accessibilityLabel="Fork conversation from here"
         >
           {forking ? (
-            <Loader2 size={ACTION_ICON_SIZE} className="text-muted-foreground animate-spin" />
+            <Loader2
+              size={actionIconSize}
+              className="text-muted-foreground animate-spin"
+            />
           ) : (
-            <GitFork size={ACTION_ICON_SIZE} className="text-muted-foreground" />
+            <GitFork
+              size={actionIconSize}
+              className="text-muted-foreground"
+            />
           )}
         </Pressable>
       </View>
 
-      {relativeTime && (
-        <Text className="text-[11px] text-muted-foreground/60">{relativeTime}</Text>
+      {relativeTime && !usesMobileChatPresentation && (
+        <Text
+          className={cn(
+            "text-[11px]",
+            "text-muted-foreground/60"
+          )}
+        >
+          {relativeTime}
+        </Text>
       )}
     </View>
-  )
-})
+  );
+});
 
-export default TurnFooter
+export default TurnFooter;

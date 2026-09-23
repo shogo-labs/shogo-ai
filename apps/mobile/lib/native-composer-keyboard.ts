@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /** Space between the pill/search bar and the keyboard so the oval stays readable. */
-export const NATIVE_COMPOSER_KEYBOARD_GAP = 12
+export const NATIVE_COMPOSER_KEYBOARD_GAP = 12;
 /**
  * NativeWind `max-w-2xl` (672px). Deliberately its own constant rather than
  * reusing `WEB_WIDE_MIN_WIDTH` (the phone/wide layout breakpoint, 768px) —
@@ -11,53 +11,60 @@ export const NATIVE_COMPOSER_KEYBOARD_GAP = 12
  * silently widened the chat transcript/composer column too. Keep them
  * independent even if the numbers ever happen to match again.
  */
-export const CHAT_TRANSCRIPT_MAX_WIDTH = 672
+export const CHAT_TRANSCRIPT_MAX_WIDTH = 672;
 /** Ignore tiny pad deltas so rest safe-area padding is not treated as a keyboard. */
-export const NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP = 8
+export const NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP = 8;
 /** Fallback when iOS omits duration or reports it as 0. */
-export const NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION = 250
+export const NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION = 250;
 /** iOS keyboard curve (matches `keyboardWillShow` / ChatGPT dock). */
-export const NATIVE_COMPOSER_KEYBOARD_EASING = [0.17, 0.59, 0.4, 0.77] as const
+export const NATIVE_COMPOSER_KEYBOARD_EASING = [0.17, 0.59, 0.4, 0.77] as const;
 
-export type NativeComposerKeyboardSource = 'show' | 'hide' | 'change'
+export type NativeComposerKeyboardSource = "show" | "hide" | "change";
 
 export type NativeComposerKeyboardEvent = {
-  duration?: number
-  endCoordinates?: { height?: number; screenY?: number }
-}
+  duration?: number;
+  endCoordinates?: { height?: number; screenY?: number };
+};
 
-export function isNativeComposerKeyboardOpen(pad: number, restPad: number): boolean {
-  return pad > restPad + NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP
+export function isNativeComposerKeyboardOpen(
+  pad: number,
+  restPad: number
+): boolean {
+  return pad > restPad + NATIVE_COMPOSER_KEYBOARD_OPEN_SLOP;
 }
 
 export function nativeComposerKeyboardOverlap(
   endCoordinates: { height?: number; screenY?: number } | undefined,
-  viewportHeight: number,
+  viewportHeight: number
 ): number {
-  if (!endCoordinates) return 0
-  const fromHeight = Math.max(0, endCoordinates.height ?? 0)
+  if (!endCoordinates) return 0;
+  const fromHeight = Math.max(0, endCoordinates.height ?? 0);
   // `screenY` is the keyboard's actual visible top edge. Prefer it when
   // available so accessory/suggestion-frame heights cannot create a larger
   // visual gap above the keyboard. Older platforms may omit it, so retain
   // the reported height as the fallback.
-  if (typeof endCoordinates.screenY === 'number' && endCoordinates.screenY > 0) {
-    return Math.max(0, viewportHeight - endCoordinates.screenY)
+  if (
+    typeof endCoordinates.screenY === "number" &&
+    endCoordinates.screenY > 0
+  ) {
+    return Math.max(0, viewportHeight - endCoordinates.screenY);
   }
-  return fromHeight
+  return fromHeight;
 }
 
 export function nativeComposerKeyboardPad(
   endCoordinates: { height?: number; screenY?: number } | undefined,
   viewportHeight: number,
-  gap = NATIVE_COMPOSER_KEYBOARD_GAP,
+  gap = NATIVE_COMPOSER_KEYBOARD_GAP
 ): number {
-  return nativeComposerKeyboardOverlap(endCoordinates, viewportHeight) + gap
+  return nativeComposerKeyboardOverlap(endCoordinates, viewportHeight) + gap;
 }
 
 /** RN iOS sometimes reports keyboard duration in seconds. */
 export function nativeComposerKeyboardDuration(duration?: number): number {
-  if (duration == null || duration <= 0) return NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION
-  return duration < 10 ? Math.round(duration * 1000) : duration
+  if (duration == null || duration <= 0)
+    return NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION;
+  return duration < 10 ? Math.round(duration * 1000) : duration;
 }
 
 /**
@@ -67,9 +74,9 @@ export function nativeComposerKeyboardDuration(duration?: number): number {
 export function nativeComposerShouldIgnoreClosedFrame(
   overlap: number,
   restPad: number,
-  source: NativeComposerKeyboardSource,
+  source: NativeComposerKeyboardSource
 ): boolean {
-  return source === 'change' && !isNativeComposerKeyboardOpen(overlap, restPad)
+  return source === "change" && !isNativeComposerKeyboardOpen(overlap, restPad);
 }
 
 /**
@@ -79,30 +86,34 @@ export function nativeComposerShouldIgnoreClosedFrame(
 export function nativeComposerKeyboardOpenFromSource(
   source: NativeComposerKeyboardSource,
   overlap: number,
-  restPad: number,
+  restPad: number
 ): boolean | null {
-  if (nativeComposerShouldIgnoreClosedFrame(overlap, restPad, source)) return null
-  if (source === 'hide') return false
-  if (source === 'show') return true
-  return isNativeComposerKeyboardOpen(overlap, restPad)
+  if (nativeComposerShouldIgnoreClosedFrame(overlap, restPad, source))
+    return null;
+  if (source === "hide") return false;
+  if (source === "show") return true;
+  return isNativeComposerKeyboardOpen(overlap, restPad);
 }
 
 /** Bottom inset for the home composer. iOS KeyboardAvoidingView already lifts. */
 export function nativeComposerDockBottomPad(opts: {
-  keyboardOpen: boolean
-  overlap: number
-  restPad: number
+  keyboardOpen: boolean;
+  overlap: number;
+  restPad: number;
   /** Bottom safe-area already occupied by the iOS keyboard frame. */
-  safeAreaBottom?: number
-  iosKeyboardAvoiding: boolean
+  safeAreaBottom?: number;
+  iosKeyboardAvoiding: boolean;
 }): number {
-  if (!opts.keyboardOpen) return opts.restPad
-  if (opts.iosKeyboardAvoiding) return NATIVE_COMPOSER_KEYBOARD_GAP
+  if (!opts.keyboardOpen) return opts.restPad;
+  if (opts.iosKeyboardAvoiding) return NATIVE_COMPOSER_KEYBOARD_GAP;
   // iOS includes the home-indicator area in the keyboard frame overlap. The
   // Project chat surface is not SafeAreaView-backed, so moving by the full
   // overlap double-counts that inset and leaves a visible ~34pt extra gap.
-  const keyboardOverlap = Math.max(0, opts.overlap - (opts.safeAreaBottom ?? 0))
-  return keyboardOverlap + NATIVE_COMPOSER_KEYBOARD_GAP
+  const keyboardOverlap = Math.max(
+    0,
+    opts.overlap - (opts.safeAreaBottom ?? 0)
+  );
+  return keyboardOverlap + NATIVE_COMPOSER_KEYBOARD_GAP;
 }
 
 /**
@@ -111,19 +122,20 @@ export function nativeComposerDockBottomPad(opts: {
  * the pill drops under the iOS keyboard / home indicator.
  */
 export function chatComposerDockStyle(opts: {
-  measuredWidth?: number
-  keyboardPad?: unknown
-  webOverflowVisible?: boolean
+  measuredWidth?: number;
+  maxWidth?: number;
+  keyboardPad?: unknown;
+  webOverflowVisible?: boolean;
 }): Array<Record<string, unknown> | undefined> {
   const column = opts.measuredWidth
     ? { width: opts.measuredWidth }
-    : { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH }
-  if (opts.keyboardPad == null) return [column]
+    : { width: "100%", maxWidth: opts.maxWidth ?? CHAT_TRANSCRIPT_MAX_WIDTH };
+  if (opts.keyboardPad == null) return [column];
   return [
     column,
     {
       paddingBottom: opts.keyboardPad,
-      ...(opts.webOverflowVisible ? { overflow: 'visible' as const } : {}),
+      ...(opts.webOverflowVisible ? { overflow: "visible" as const } : {}),
     },
-  ]
+  ];
 }

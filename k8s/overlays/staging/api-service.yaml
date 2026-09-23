@@ -176,6 +176,18 @@ spec:
               value: "staging"
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-staging"
+            # getArtifactBucket()/getS3Bucket() in apps/api/src/lib/s3.ts require
+            # S3_ARTIFACT_BUCKET or S3_SCHEMA_BUCKET, neither of which was ever set
+            # here. Every artifact upload (agent avatars, thumbnails) was silently
+            # falling back to embedding the raw image as a base64 data: URI —
+            # for agent avatars that gets persisted forever in
+            # workspace_agent_profiles.avatarUrl and resent as chat context on
+            # every turn, which is what blew a personal-agent chat past the
+            # model's context window on 2026-09-21. Reuse the workspaces bucket
+            # (same pattern as S3_LFS_BUCKET's fallback) rather than requiring a
+            # dedicated bucket just for this.
+            - name: S3_ARTIFACT_BUCKET
+              value: "shogo-workspaces-staging"
             - name: S3_REGION
               value: "us-ashburn-1"
             - name: S3_ENDPOINT

@@ -107,8 +107,8 @@ describe('HeartbeatScheduler — triggerAgent text-fail arrow', () => {
     mock.module('../lib/knative-project-manager', () => ({
       getProjectPodUrl: async () => 'http://pod.test.local',
     }))
-    mock.module('../lib/runtime-token', () => ({
-      deriveRuntimeToken: () => 'rt-tok',
+    mock.module('../lib/project-runtime-token', () => ({
+      deriveProjectRuntimeToken: () => 'rt-tok',
     }))
     const evictSpy = mock(async (_p: string, _s: number, body: string) => {
       evictedWith = body

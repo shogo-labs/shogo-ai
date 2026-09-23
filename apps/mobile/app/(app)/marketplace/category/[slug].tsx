@@ -9,6 +9,8 @@ import {
   ScrollView,
   FlatList,
   ActivityIndicator,
+  Platform,
+  useWindowDimensions,
 } from 'react-native'
 import * as Lucide from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
@@ -109,6 +111,8 @@ export default observer(function CategoryLandingScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>()
   const http = useDomainHttp()
   const { numColumns, cellStyle } = useMarketplaceGridLayout()
+  const { width } = useWindowDimensions()
+  const isWide = Platform.OS === 'web' && width >= 768
 
   const category = useMemo(() => findCategory(slug), [slug])
 
@@ -217,14 +221,36 @@ export default observer(function CategoryLandingScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* Top bar */}
-      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+      {/* Contextual route header */}
+      <View
+        className={
+          isWide
+            ? 'flex-row items-center gap-3 border-b border-border/60 bg-background/95 px-6 py-4'
+            : 'flex-row items-center gap-3 border-b border-border/60 bg-background px-4 py-3'
+        }
+      >
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          className="p-1"
+          accessibilityRole="button"
+          accessibilityLabel="Back to marketplace"
+        >
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1">
-          {category.label}
-        </Text>
+        <View className="flex-1 min-w-0">
+          {isWide && (
+            <Text className="text-[11px] font-bold uppercase tracking-[1.2px] text-primary">
+              Marketplace · Category
+            </Text>
+          )}
+          <Text
+            className={isWide ? 'mt-0.5 text-base font-semibold text-foreground' : 'text-base font-semibold text-foreground'}
+            numberOfLines={1}
+          >
+            {category.label}
+          </Text>
+        </View>
       </View>
 
       <FlatList
@@ -232,7 +258,10 @@ export default observer(function CategoryLandingScreen() {
         data={padded}
         keyExtractor={(item, index) => item?.slug ?? `spacer-${index}`}
         numColumns={numColumns}
-        contentContainerStyle={{ paddingHorizontal: MARKETPLACE_GRID_PAD_X, paddingBottom: 32 }}
+        contentContainerStyle={{
+          paddingHorizontal: isWide ? 24 : MARKETPLACE_GRID_PAD_X,
+          paddingBottom: isWide ? 48 : 32,
+        }}
         {...overlayScrollbarProps}
         renderItem={({ item }) => {
           if (!item) return <View className="flex-1 m-1.5" style={cellStyle} />

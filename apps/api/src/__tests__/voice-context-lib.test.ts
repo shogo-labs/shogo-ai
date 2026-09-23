@@ -12,7 +12,7 @@
  *   - resolveVoiceContext():
  *     - happy path returns formatted block
  *     - missing prisma row → returns ''
- *     - getProjectPodUrl throws → still returns metadata-only block
+ *     - resolveProjectPodUrl throws → still returns metadata-only block
  *     - pod fetch returns non-ok → swallowed, evictOnSingleMissingAuth invoked
  *     - timeout / fetch throws → null memory / userMd
  *     - body without `content` string → null
@@ -29,15 +29,15 @@ const prismaMock = {
 }
 mock.module('../lib/prisma', () => ({ prisma: prismaMock }))
 
-const knativeMock = {
-  getProjectPodUrl: mock(async (_id: string) => 'http://pod.local'),
+const podResolverMock = {
+  resolveProjectPodUrl: mock(async (_id: string) => ({ mode: 'host', url: 'http://pod.local' })),
 }
-mock.module('../lib/knative-project-manager', () => knativeMock)
+mock.module('../lib/resolve-pod-url', () => podResolverMock)
 
 const runtimeTokenMock = {
-  deriveRuntimeToken: mock((_id: string) => 'rt_test'),
+  deriveProjectRuntimeToken: mock((_id: string) => 'rt_test'),
 }
-mock.module('../lib/runtime-token', () => runtimeTokenMock)
+mock.module('../lib/project-runtime-token', () => runtimeTokenMock)
 
 const selfHealMock = {
   evictOnSingleMissingAuth: mock(async (_id: string, _s: number, _b: string) => undefined),
@@ -61,10 +61,10 @@ let fetchImpl: (input: any, init?: any) => Promise<Response> = async () =>
 beforeEach(() => {
   prismaMock.project.findUnique.mockClear()
   prismaMock.project.findUnique.mockImplementation(async () => null)
-  knativeMock.getProjectPodUrl.mockClear()
-  knativeMock.getProjectPodUrl.mockImplementation(async () => 'http://pod.local')
-  runtimeTokenMock.deriveRuntimeToken.mockClear()
-  runtimeTokenMock.deriveRuntimeToken.mockImplementation(() => 'rt_test')
+  podResolverMock.resolveProjectPodUrl.mockClear()
+  podResolverMock.resolveProjectPodUrl.mockImplementation(async () => ({ mode: 'host', url: 'http://pod.local' }))
+  runtimeTokenMock.deriveProjectRuntimeToken.mockClear()
+  runtimeTokenMock.deriveProjectRuntimeToken.mockImplementation(() => 'rt_test')
   selfHealMock.evictOnSingleMissingAuth.mockClear()
   selfHealMock.evictOnSingleMissingAuth.mockImplementation(async () => undefined)
   fetchImpl = async () => new Response('not impl', { status: 500 })
@@ -188,7 +188,7 @@ describe('formatContextBlock()', () => {
 describe('resolveVoiceContext()', () => {
   test('returns "" when project missing AND no pod fetch results', async () => {
     prismaMock.project.findUnique.mockImplementation(async () => null)
-    knativeMock.getProjectPodUrl.mockImplementation(async () => { throw new Error('cold') })
+    podResolverMock.resolveProjectPodUrl.mockImplementation(async () => { throw new Error('cold') })
     const out = await resolveVoiceContext({ projectId: 'pX' })
     expect(out).toBe('')
   })
@@ -220,14 +220,14 @@ describe('resolveVoiceContext()', () => {
     }
     await resolveVoiceContext({ projectId: 'p1' })
     expect(seenAuth).toBe('rt_test')
-    expect(runtimeTokenMock.deriveRuntimeToken).toHaveBeenCalledWith('p1')
+    expect(runtimeTokenMock.deriveProjectRuntimeToken).toHaveBeenCalledWith('p1')
   })
 
   test('strips trailing slash from podUrl when constructing fetch URL', async () => {
     prismaMock.project.findUnique.mockImplementation(async () => ({
       name: 'X', description: null, siteTitle: null, siteDescription: null,
     }))
-    knativeMock.getProjectPodUrl.mockImplementation(async () => 'http://pod.local///')
+    podResolverMock.resolveProjectPodUrl.mockImplementation(async () => ({ mode: 'host', url: 'http://pod.local///' }))
     const seenUrls: string[] = []
     fetchImpl = async (url: any) => {
       seenUrls.push(String(url))
@@ -275,7 +275,7 @@ describe('resolveVoiceContext()', () => {
     prismaMock.project.findUnique.mockImplementation(async () => ({
       name: 'Solo', description: null, siteTitle: null, siteDescription: null,
     }))
-    knativeMock.getProjectPodUrl.mockImplementation(async () => { throw new Error('no pod') })
+    podResolverMock.resolveProjectPodUrl.mockImplementation(async () => { throw new Error('no pod') })
     const out = await resolveVoiceContext({ projectId: 'p1' })
     expect(out).toContain('Name: Solo')
     expect(out).not.toContain('## Long-lived memory')

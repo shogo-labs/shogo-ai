@@ -31,7 +31,7 @@
  */
 
 import { mkdirSync, readdirSync } from 'node:fs'
-import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport'
+import { CloudFileTransport } from '../../../../../packages/sdk/src/projects/cloud-file-transport'
 import { CloudSyncWatcher } from '@shogo-ai/worker/cloud-sync-watcher'
 import {
   cloneProject as defaultCloneProject,

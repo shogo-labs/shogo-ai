@@ -12,6 +12,7 @@ import { afterEach, describe, test, expect, beforeEach, mock } from 'bun:test'
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
 
 mock.module('@shogo/shared-runtime', () => ({
   createLogger: () => ({
@@ -430,7 +431,9 @@ describe('PermissionEngine approval timeout — lines 623-626', () => {
 })
 
 describe('assertWithinWorkspace — realpathSync catch on roots (lines 790-793)', () => {
-  test('broken-symlink in LINKED_FOLDERS falls back via catch (lines 790-793)', () => {
+  // Creating symlinks needs elevation/Developer Mode on Windows, so skip
+  // rather than fail — a permanently red Windows job tests nothing (SHOG-749).
+  test.skipIf(!SYMLINKS_SUPPORTED)('broken-symlink in LINKED_FOLDERS falls back via catch (lines 790-793)', () => {
     // Lines 790-793 are inside the LINKED_FOLDERS branch. Set LINKED_FOLDERS to a
     // broken-symlink path so realpathSync throws → catch returns the raw path.
     const ghostTarget = workspaceDir + '-nonexistent'
@@ -446,5 +449,86 @@ describe('assertWithinWorkspace — realpathSync catch on roots (lines 790-793)'
       else process.env.LINKED_FOLDERS = origLF
       rmSync(linkFolder, { force: true })
     }
+  })
+})
+
+describe('assertWithinWorkspace — LINKED_FOLDERS containment (SHOG-749)', () => {
+  // The LINKED_FOLDERS branch is what folder-linked desktop projects take.
+  // Before the path-boundary fix it rejected every child path on Windows,
+  // because it compared against `root + '/'` while path.resolve() returns
+  // backslashes. No symlinks here on purpose: the only pre-existing test
+  // for this branch needed symlinkSync, which needs elevation on Windows,
+  // so the branch was effectively untested on the platform it broke on.
+  const withLinkedFolders = (folders: string[], fn: () => void) => {
+    const origLF = process.env.LINKED_FOLDERS
+    const origLocal = process.env.SHOGO_LOCAL_MODE
+    process.env.LINKED_FOLDERS = JSON.stringify(folders)
+    delete process.env.SHOGO_LOCAL_MODE
+    try {
+      fn()
+    } finally {
+      if (origLF === undefined) delete process.env.LINKED_FOLDERS
+      else process.env.LINKED_FOLDERS = origLF
+      if (origLocal === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = origLocal
+    }
+  }
+
+  test('a child path inside a linked folder is allowed', () => {
+    withLinkedFolders([workspaceDir], () => {
+      const out = assertWithinWorkspace(workspaceDir, 'config.json')
+      expect(out).toBe(join(workspaceDir, 'config.json'))
+    })
+  })
+
+  test('a deeply nested child inside a linked folder is allowed', () => {
+    withLinkedFolders([workspaceDir], () => {
+      const out = assertWithinWorkspace(workspaceDir, 'apps/desktop/src/preload.ts')
+      expect(out).toBe(join(workspaceDir, 'apps', 'desktop', 'src', 'preload.ts'))
+    })
+  })
+
+  test('an absolute child path inside a linked folder is allowed', () => {
+    withLinkedFolders([workspaceDir], () => {
+      const abs = join(workspaceDir, 'config.json')
+      expect(assertWithinWorkspace(workspaceDir, abs)).toBe(abs)
+    })
+  })
+
+  test('the linked folder root itself is allowed', () => {
+    withLinkedFolders([workspaceDir], () => {
+      expect(assertWithinWorkspace(workspaceDir, workspaceDir)).toBe(workspaceDir)
+    })
+  })
+
+  test('a path outside every linked folder is rejected', () => {
+    withLinkedFolders([workspaceDir], () => {
+      expect(() => assertWithinWorkspace(workspaceDir, '../../etc/passwd')).toThrow(
+        /outside the project's allowed folders/i,
+      )
+    })
+  })
+
+  test('a sibling dir whose name merely prefixes a linked folder is rejected', () => {
+    withLinkedFolders([workspaceDir], () => {
+      expect(() => assertWithinWorkspace(workspaceDir, workspaceDir + '-evil')).toThrow(
+        /outside the project's allowed folders/i,
+      )
+    })
+  })
+
+  test('the duplicated workspaceDir root is reported only once', () => {
+    // permission-engine prepends workspaceDir to LINKED_FOLDERS, and a
+    // folder-linked project already lists it — so it used to be printed twice.
+    withLinkedFolders([workspaceDir], () => {
+      try {
+        assertWithinWorkspace(workspaceDir, '../../etc/passwd')
+        throw new Error('expected a rejection')
+      } catch (err) {
+        const message = (err as Error).message
+        const occurrences = message.split(workspaceDir).length - 1
+        expect(occurrences).toBe(1)
+      }
+    })
   })
 })

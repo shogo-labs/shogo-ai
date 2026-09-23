@@ -7,13 +7,9 @@
 //   - WorkerRuntimeManager config closures (L143-145 spawnCommand, L151-156 resolveBin)
 //     incl. AGENT_RUNTIME_ENTRY env override and the existsSync->null branch
 //   - private getProjectWorkspaceId (L971-983), success + prisma-throws branches
-//   - stop() legacy-agentProcess fallback (L1832-1860) incl. timeout->SIGKILL escalation
-//     AND the normal 'exit' event path
-//   - stop() runtime.process branch (L1862-1875) incl. SIGKILL escalation + exit-event path
 //   - startHealthCheck (L1973-1981) — drive the setInterval callback once
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { EventEmitter } from 'node:events'
 
 const capturedWorkerConfigs: Array<Record<string, unknown>> = []
 
@@ -170,109 +166,6 @@ describe('RuntimeManager.getProjectWorkspaceId (private)', () => {
       getProjectWorkspaceId: (id: string) => Promise<string | null>
     }
     expect(await rm.getProjectWorkspaceId('proj-3')).toBeNull()
-  })
-})
-
-describe('RuntimeManager.stop legacy fallback paths', () => {
-  function fakeChild() {
-    const ee = new EventEmitter() as EventEmitter & {
-      kill: (sig: string) => boolean
-      killed: boolean
-    }
-    ee.kill = (() => { ee.killed = true; return true }) as never
-    ee.killed = false
-    return ee
-  }
-
-  test('stop(): legacy agentProcess path — graceful exit before SIGKILL timer fires', async () => {
-    const rm = new RuntimeManager()
-    const child = fakeChild()
-    ;(rm as unknown as { runtimes: Map<string, unknown> }).runtimes.set('proj-legacy', {
-      status: 'running',
-      port: 37100,
-      agentProcess: child,
-      process: null,
-    })
-    const stopPromise = rm.stop('proj-legacy')
-    queueMicrotask(() => child.emit('exit'))
-    await stopPromise
-    expect(child.killed).toBe(true)
-  })
-
-  test('stop(): legacy agentProcess path — SIGKILL escalation when exit never fires', async () => {
-    const rm = new RuntimeManager()
-    const child = fakeChild()
-    // Override kill so the killed flag stays false on SIGTERM
-    let killCalls: string[] = []
-    child.kill = ((sig: string) => {
-      killCalls.push(sig)
-      if (sig === 'SIGKILL') child.killed = true
-      return true
-    }) as never
-    ;(rm as unknown as { runtimes: Map<string, unknown> }).runtimes.set('proj-stuck', {
-      status: 'running',
-      port: 37101,
-      agentProcess: child,
-      process: null,
-    })
-    // Override the 3000ms grace via vi-style monkey-patch on setTimeout
-    const origSetTimeout = globalThis.setTimeout
-    globalThis.setTimeout = ((cb: () => void, _ms: number) =>
-      origSetTimeout(cb, 5)) as never
-    try {
-      await rm.stop('proj-stuck')
-    } finally {
-      globalThis.setTimeout = origSetTimeout
-    }
-    expect(killCalls).toContain('SIGTERM')
-    expect(killCalls).toContain('SIGKILL')
-  })
-
-  test('stop(): runtime.process path — graceful exit', async () => {
-    const rm = new RuntimeManager()
-    const proc = fakeChild()
-    ;(rm as unknown as { runtimes: Map<string, unknown> }).runtimes.set('proj-proc', {
-      status: 'running',
-      port: 37102,
-      agentProcess: null,
-      process: proc,
-    })
-    const stopPromise = rm.stop('proj-proc')
-    queueMicrotask(() => proc.emit('exit'))
-    await stopPromise
-    expect(proc.killed).toBe(true)
-  })
-
-  test('stop(): runtime.process path — SIGKILL escalation', async () => {
-    const rm = new RuntimeManager()
-    const proc = fakeChild()
-    let killCalls: string[] = []
-    proc.kill = ((sig: string) => {
-      killCalls.push(sig)
-      if (sig === 'SIGKILL') proc.killed = true
-      return true
-    }) as never
-    ;(rm as unknown as { runtimes: Map<string, unknown> }).runtimes.set('proj-proc2', {
-      status: 'running',
-      port: 37103,
-      agentProcess: null,
-      process: proc,
-    })
-    const origSetTimeout = globalThis.setTimeout
-    globalThis.setTimeout = ((cb: () => void, _ms: number) =>
-      origSetTimeout(cb, 5)) as never
-    try {
-      await rm.stop('proj-proc2')
-    } finally {
-      globalThis.setTimeout = origSetTimeout
-    }
-    expect(killCalls).toContain('SIGTERM')
-    expect(killCalls).toContain('SIGKILL')
-  })
-
-  test('stop(): no-op when projectId not in runtimes map', async () => {
-    const rm = new RuntimeManager()
-    await rm.stop('never-started')
   })
 })
 

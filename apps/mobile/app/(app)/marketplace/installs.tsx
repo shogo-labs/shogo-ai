@@ -12,6 +12,8 @@ import {
   TextInput,
   Image,
   Modal,
+  Platform,
+  useWindowDimensions,
 } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
@@ -86,6 +88,8 @@ interface UpdateState {
 export default observer(function InstallsScreen() {
   const router = useRouter()
   const http = useDomainHttp()
+  const { width } = useWindowDimensions()
+  const isWide = Platform.OS === 'web' && width >= 768
   const [installs, setInstalls] = useState<InstallRow[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -278,13 +282,36 @@ export default observer(function InstallsScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* Header */}
-      <View className="px-5 pt-4 pb-3 gap-3">
+      {/* Contextual route header */}
+      <View
+        className={
+          isWide
+            ? 'border-b border-border/60 bg-background/95 px-6 py-4 gap-3'
+            : 'border-b border-border/60 bg-background px-4 py-3 gap-3'
+        }
+      >
         <View className="flex-row items-center gap-3">
-          <Pressable onPress={() => router.back()} hitSlop={8} className="p-1 -ml-1">
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={8}
+            className="p-1 -ml-1"
+            accessibilityRole="button"
+            accessibilityLabel="Back to marketplace"
+          >
             <ArrowLeft size={18} color="#a1a1aa" />
           </Pressable>
-          <Text className="text-lg font-semibold text-foreground flex-1">Installed</Text>
+          <View className="flex-1">
+            {isWide && (
+              <Text className="text-[11px] font-bold uppercase tracking-[1.2px] text-primary">
+                Marketplace · Library
+              </Text>
+            )}
+            <Text
+              className={isWide ? 'mt-0.5 text-lg font-semibold text-foreground' : 'text-lg font-semibold text-foreground'}
+            >
+              Installed agents
+            </Text>
+          </View>
           {updateCount > 0 && (
             <View className="px-2.5 py-1 rounded-md bg-blue-500/15">
               <Text className="text-[11px] font-semibold text-blue-500">
@@ -315,11 +342,14 @@ export default observer(function InstallsScreen() {
         )}
       </View>
 
-      <View className="h-px bg-border" />
-
       {/* Content */}
       <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: 48, gap: 10 }}
+        contentContainerStyle={{
+          padding: isWide ? 24 : 16,
+          paddingBottom: isWide ? 56 : 48,
+          gap: 10,
+          ...(isWide ? { width: '100%', maxWidth: 960, alignSelf: 'center' } : {}),
+        }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {loadError && (

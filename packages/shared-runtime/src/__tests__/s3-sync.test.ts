@@ -112,6 +112,7 @@ const ENV_KEYS = [
   'S3_WORKSPACES_BUCKET', 'PROJECT_ID', 'S3_REGION', 'S3_ENDPOINT',
   'S3_FORCE_PATH_STYLE', 'S3_WATCH_ENABLED', 'S3_SYNC_INTERVAL',
   'S3_STORAGE_QUOTA_BYTES', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+  'S3_DOWNLOAD_TIMEOUT_MS',
 ] as const
 
 beforeEach(() => {
@@ -374,6 +375,34 @@ describe('downloadAll', () => {
     expect(stats.errors.length).toBeGreaterThan(0)
     expect(stats.errors[0]).toContain('boom')
     ;(sync as any).client.send = orig
+  })
+
+  // Regression coverage for a real incident (staging, 2026-09-22): a guest
+  // VM's `POST /internal/workspace/members` call hung for ~18 minutes
+  // instead of failing fast, permanently wedging that runtime's single-flight
+  // mount queue. `downloadAll()`'s S3 calls previously had no timeout of
+  // their own, so a stuck network/credential-resolution call (e.g. a metal
+  // guest with no S3 credentials probing the AWS SDK's default provider
+  // chain) could hang forever. `S3_DOWNLOAD_TIMEOUT_MS` bounds it.
+  test('a hung S3 call times out instead of hanging forever, and is reported like any other download error', async () => {
+    process.env.S3_DOWNLOAD_TIMEOUT_MS = '30'
+    const sync = mkSync()
+    // Simulate a network/credential-resolution stall: `send()` never
+    // resolves or rejects on its own.
+    ;(sync as any).client.send = () => new Promise(() => {})
+    const start = Date.now()
+    const stats = await sync.downloadAll()
+    const elapsed = Date.now() - start
+    expect(elapsed).toBeLessThan(2000) // bounded by the 30ms timeout, not hanging
+    expect(stats.errors.length).toBeGreaterThan(0)
+    expect(stats.errors[0]).toContain('timed out')
+  })
+
+  test('a slow but real download that finishes before the timeout still succeeds', async () => {
+    process.env.S3_DOWNLOAD_TIMEOUT_MS = '5000'
+    const sync = mkSync()
+    const stats = await sync.downloadAll()
+    expect(stats.errors).toEqual([])
   })
 })
 

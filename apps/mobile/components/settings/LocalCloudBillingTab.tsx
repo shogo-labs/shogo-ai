@@ -81,24 +81,24 @@ export function LocalCloudBillingTab() {
         <Card>
           <CardContent className="p-4 gap-3">
             <Text className="text-sm font-semibold text-foreground">
-              Sign in to Shogo Cloud
+              Connect a Shogo Cloud API key
             </Text>
             <Text className="text-sm text-muted-foreground">
               Link this installation to Shogo Cloud to view usage, set a spending
-              limit, or upgrade your account.
+              limit, or upgrade the linked workspace.
             </Text>
             {(loginError || error) && (
               <Text className="text-xs text-destructive">{loginError || error}</Text>
             )}
             <Button onPress={handleSignIn} disabled={loginState === 'connecting'}>
               <Text className="text-primary-foreground font-medium">
-                {loginState === 'connecting' ? 'Signing in…' : 'Sign in to Shogo Cloud'}
+                {loginState === 'connecting' ? 'Minting key…' : 'Connect'}
               </Text>
             </Button>
             {Platform.OS === 'web' && (
               <Text className="text-[11px] text-muted-foreground">
-                Browser previews cannot complete device sign-in. Use the Shogo
-                Desktop app or run `shogo login` in a terminal.
+                Browser previews cannot mint the key. Use Shogo Desktop or run
+                `shogo login` in a terminal.
               </Text>
             )}
           </CardContent>
@@ -140,16 +140,16 @@ export function LocalCloudBillingTab() {
             <View className="flex-row items-center gap-2">
               <Alert size={17} className="text-destructive" />
               <Text className="text-sm font-semibold text-foreground">
-                Shogo Cloud sign-in needs attention
+                Shogo Cloud API key needs attention
               </Text>
             </View>
             <Text className="text-sm text-muted-foreground">
-              This device key was revoked or expired. Sign in again to manage
-              your cloud plan.
+              This device key was revoked or expired. Mint a fresh API key to
+              manage the linked cloud workspace.
             </Text>
             <Button variant="outline" onPress={handleSignIn} disabled={loginState === 'connecting'}>
               <Text className="text-foreground font-medium">
-                {loginState === 'connecting' ? 'Signing in…' : 'Sign in again'}
+                {loginState === 'connecting' ? 'Minting key…' : 'Mint a fresh API key'}
               </Text>
             </Button>
           </CardContent>

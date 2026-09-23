@@ -3139,7 +3139,6 @@ const BUILTIN_MOCKS: ToolMockMap = {
   send_message: DEFAULT_SEND_MESSAGE,
   browser: { type: 'static', response: { ok: true, snapshot: '<html>Mock browser snapshot</html>' } },
   ask_user: { type: 'static', response: { answered: true, choice: 'Proceed with defaults' } },
-  notify_user_error: { type: 'static', response: { acknowledged: true } },
 }
 
 // ---------------------------------------------------------------------------

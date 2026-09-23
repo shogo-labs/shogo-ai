@@ -65,14 +65,17 @@ export async function fetchProjectChatSessions(
   http: ChatSessionsClient,
   projectId: string,
   limit = PROJECT_CHAT_PAGE_SIZE,
-): Promise<{ sessions: ProjectChatListItem[]; hasMore: boolean }> {
-  const res = await http.get<{ ok: boolean; items?: ChatSessionApiItem[] }>(
-    `/api/chat-sessions?contextId=${encodeURIComponent(projectId)}&limit=${limit}`,
+  offset = 0,
+): Promise<{ sessions: ProjectChatListItem[]; hasMore: boolean; total: number }> {
+  const res = await http.get<{ ok: boolean; items?: ChatSessionApiItem[]; total?: number }>(
+    `/api/chat-sessions?contextId=${encodeURIComponent(projectId)}&limit=${limit}&offset=${offset}`,
   )
   const rawItems = res.data?.items
   const items = Array.isArray(rawItems) ? rawItems : []
+  const total = typeof res.data?.total === 'number' ? res.data.total : 0
   return {
     sessions: normalizeProjectChatItems(items),
-    hasMore: items.length >= limit,
+    hasMore: total > 0 ? offset + items.length < total : items.length >= limit,
+    total,
   }
 }

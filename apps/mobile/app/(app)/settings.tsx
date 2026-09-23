@@ -9,7 +9,7 @@
  * - Account: Profile, email, preferences
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   ScrollView,
@@ -20,10 +20,10 @@ import {
   Platform,
   StyleSheet,
   useWindowDimensions,
-} from 'react-native'
-import { useRouter, useLocalSearchParams } from 'expo-router'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { observer } from 'mobx-react-lite'
+} from "react-native";
+import { useRouter, useLocalSearchParams } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { observer } from "mobx-react-lite";
 import {
   ArrowLeft as ArrowLeftIcon,
   Building2 as Building2Icon,
@@ -47,43 +47,62 @@ import {
   Coins as CoinsIcon,
   Plug as PlugIcon,
   Download as DownloadIcon,
-  Bug as BugIcon,
   Monitor as MonitorIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
-} from 'lucide-react-native'
+  KeyRound as KeyRoundIcon,
+  LogOut as LogOutIcon,
+  Plus as PlusIcon,
+  Sparkles as SparklesIcon,
+} from "lucide-react-native";
 import {
   Text,
   TextInput,
   useAccountSheetIcons,
-} from '../../components/settings/account-sheet-chrome'
-import { AppearanceTab } from '../../components/settings/AppearanceTab'
-import { useAuth } from '../../contexts/auth'
+} from "../../components/settings/account-sheet-chrome";
+import { AppearanceTab } from "../../components/settings/AppearanceTab";
+import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
+import { useAuth } from "../../contexts/auth";
 import {
   useDomain,
   useWorkspaceCollection,
+  useProjectCollection,
   useMemberCollection,
   useInvitationCollection,
   useDomainHttp,
   type IDomainStore,
-} from '../../contexts/domain'
-import { useDomainActions } from '@shogo/shared-app/domain'
-import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { resolveActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
-import { api, API_URL, isInvitationExpired, type WorkspaceChildrenResponse } from '../../lib/api'
-import { useBillingData } from '@shogo/shared-app/hooks'
-import { formatUsd, getWindowDisplays, getUsageLimitNotice, PLAN_PRICING } from '../../lib/billing-config'
-import { usePlatformConfig } from '../../lib/platform-config'
-import { openWebAppSession } from '../../lib/openWebAppSession'
-import { useCloudBillingSummary } from '../../hooks/useCloudBillingSummary'
-import { SecuritySettingsPanel } from '../../components/security/SecuritySettingsPanel'
-import { ComputeTab } from '../../components/settings/ComputeTab'
-import { LocalCloudBillingTab } from '../../components/settings/LocalCloudBillingTab'
-import { BugReportTab } from '../../components/settings/BugReportTab'
-import { UpdatesTab } from '../../components/settings/UpdatesTab'
-import { IntegrationsTab } from '../../components/settings/IntegrationsTab'
-import { WorkspaceModelsTab } from '../../components/settings/WorkspaceModelsTab'
-import { RemoteControlTab } from '../../components/settings/RemoteControlTab'
+} from "../../contexts/domain";
+import { useDomainActions } from "@shogo/shared-app/domain";
+import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import {
+  resolveActiveWorkspaceId,
+  setActiveWorkspaceId,
+} from "../../lib/workspace-store";
+import {
+  api,
+  API_URL,
+  isInvitationExpired,
+  type WorkspaceChildrenResponse,
+} from "../../lib/api";
+import { useBillingData } from "@shogo/shared-app/hooks";
+import {
+  formatUsd,
+  getWindowDisplays,
+  getUsageLimitNotice,
+  PLAN_PRICING,
+} from "../../lib/billing-config";
+import { usePlatformConfig } from "../../lib/platform-config";
+import { openWebAppSession } from "../../lib/openWebAppSession";
+import { usePostHogSafe } from "../../contexts/posthog";
+import { EVENTS, trackEvent } from "../../lib/analytics";
+import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
+import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
+import { ComputeTab } from "../../components/settings/ComputeTab";
+import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
+import { UpdatesTab } from "../../components/settings/UpdatesTab";
+import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
+import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
+import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import {
   type AnalyticsPeriod,
   type UsageSummaryData,
@@ -98,19 +117,38 @@ import {
   ChatAnalyticsSection,
   UsageBreakdownSection,
   UsageTimeseriesChart,
-} from '../../components/analytics/SharedAnalytics'
-import { DateRangePills } from '../../components/analytics/DateRangePills'
-import { UsageLeaderboard } from '../../components/analytics/UsageLeaderboard'
-import { BillingProgressCard } from '../../components/billing/BillingProgressCard'
-import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
-import { CostAnalyticsTab } from '../../components/analytics/CostAnalyticsTab'
-import { useVisibleModels } from '../../lib/visible-models'
-import { isNativePhoneIntegrationsLayout, WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
-import { DOCS_URL } from '../../lib/theme-choices'
-import { SETTINGS_TABS, settingsNavItems, settingsTab, type SettingsTabId } from '../../lib/settings-tabs'
-import { leaveSettings } from '../../lib/settings-back'
-import { useToast, Toast, ToastTitle, ToastDescription } from '@/components/ui/toast'
-import { invitationEvents } from '../../lib/invitation-events'
+} from "../../components/analytics/SharedAnalytics";
+import { DateRangePills } from "../../components/analytics/DateRangePills";
+import { UsageLeaderboard } from "../../components/analytics/UsageLeaderboard";
+import { BillingProgressCard } from "../../components/billing/BillingProgressCard";
+import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
+import { CostAnalyticsTab } from "../../components/analytics/CostAnalyticsTab";
+import { useVisibleModels } from "../../lib/visible-models";
+import {
+  isNativePhoneIntegrationsLayout,
+  WEB_WIDE_MIN_WIDTH,
+} from "../../lib/native-phone-layout";
+import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
+import whatsNewCatalog from "../../lib/whats-new/releases.generated.json";
+import {
+  reloadAfterWorkspaceSwitch,
+  scheduleWorkspaceSwitch,
+} from "../../lib/switch-workspace";
+
+import {
+  SETTINGS_TABS,
+  settingsNavItems,
+  settingsTab,
+  type SettingsTabId,
+} from "../../lib/settings-tabs";
+import { leaveSettings } from "../../lib/settings-back";
+import {
+  useToast,
+  Toast,
+  ToastTitle,
+  ToastDescription,
+} from "@/components/ui/toast";
+import { invitationEvents } from "../../lib/invitation-events";
 import {
   Card,
   CardContent,
@@ -121,9 +159,11 @@ import {
   Skeleton,
   Switch,
   cn,
-} from '@shogo/shared-ui/primitives'
-import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from '../../lib/notifications/preferences'
-import { useDualPlan } from '../../lib/dual-plan-preference'
+} from "@shogo/shared-ui/primitives";
+import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
+import { useDualPlan } from "../../lib/dual-plan-preference";
+
+const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
 const SETTINGS_ICON_MAP = {
   ArrowLeft: ArrowLeftIcon,
@@ -148,40 +188,38 @@ const SETTINGS_ICON_MAP = {
   Coins: CoinsIcon,
   Plug: PlugIcon,
   Download: DownloadIcon,
-  Bug: BugIcon,
   Monitor: MonitorIcon,
   Paintbrush: PaintbrushIcon,
   RefreshCw: RefreshCwIcon,
-} as const
+} as const;
 
 function useSettingsIcons() {
-  return useAccountSheetIcons(SETTINGS_ICON_MAP)
+  return useAccountSheetIcons(SETTINGS_ICON_MAP);
 }
 
 const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
-  workspace: 'Building2',
-  people: 'Users',
-  models: 'Boxes',
-  integrations: 'Plug',
-  'remote-control': 'Monitor',
-  account: 'User',
-  security: 'Shield',
-  billing: 'CreditCard',
-  compute: 'Server',
-  analytics: 'BarChart3',
-  costs: 'Coins',
-  support: 'Bug',
-  appearance: 'Paintbrush',
-  updates: 'RefreshCw',
-}
+  workspace: "Building2",
+  people: "Users",
+  models: "Boxes",
+  integrations: "Plug",
+  "remote-control": "Monitor",
+  account: "User",
+  security: "Shield",
+  billing: "CreditCard",
+  compute: "Server",
+  analytics: "BarChart3",
+  costs: "Coins",
+  appearance: "Paintbrush",
+  updates: "RefreshCw",
+};
 
-export type TabId = SettingsTabId
+export type TabId = SettingsTabId;
 
-const ALL_TAB_IDS: TabId[] = SETTINGS_TABS.map(({ id }) => id)
+const ALL_TAB_IDS: TabId[] = SETTINGS_TABS.map(({ id }) => id);
 
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
-const SETTINGS_WIDE_BREAKPOINT = WEB_WIDE_MIN_WIDTH
-const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === 'ios'
+const SETTINGS_WIDE_BREAKPOINT = WEB_WIDE_MIN_WIDTH;
+const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === "ios";
 
 // Whether we're running inside the Electron desktop shell. Deliberately NOT
 // the same as the `localMode` passed into TabBar/SettingsSidebar below:
@@ -190,42 +228,43 @@ const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === 'ios'
 // tab since it's the Electron auto-updater's home regardless of which
 // backend the app talks to. See `desktopOnly` in lib/settings-tabs.ts.
 const IS_DESKTOP_CLIENT =
-  Platform.OS === 'web' && typeof window !== 'undefined' && !!(window as any).shogoDesktop?.isDesktop
+  Platform.OS === "web" &&
+  typeof window !== "undefined" &&
+  !!(window as any).shogoDesktop?.isDesktop;
 
 interface NavItem {
-  id: TabId
-  label: string
-  icon: React.ElementType
+  id: TabId;
+  label: string;
+  icon: React.ElementType;
 }
 
 const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
-  'workspace',
-  'people',
-  'models',
-  'integrations',
-  'remote-control',
-  'account',
-  'appearance',
-  ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? ['compute' as TabId] : []),
-  'billing',
-  'analytics',
-  'costs',
-  ...(IS_DESKTOP_CLIENT ? ['updates' as TabId] : []),
-])
+  "workspace",
+  "people",
+  "models",
+  "integrations",
+  "remote-control",
+  "account",
+  "appearance",
+  ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? ["compute" as TabId] : []),
+  "billing",
+  "analytics",
+  "costs",
+  ...(IS_DESKTOP_CLIENT ? ["updates" as TabId] : []),
+]);
 
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
-  'workspace',
-  'integrations',
-  'remote-control',
-  'account',
-  'appearance',
-  'security',
-  'billing',
-  'analytics',
-  'costs',
-  'support',
-  ...(IS_DESKTOP_CLIENT ? ['updates' as TabId] : []),
-])
+  "workspace",
+  "integrations",
+  "remote-control",
+  "account",
+  "appearance",
+  "security",
+  "billing",
+  "analytics",
+  "costs",
+  ...(IS_DESKTOP_CLIENT ? ["updates" as TabId] : []),
+]);
 
 function TabBar({
   activeTab,
@@ -233,62 +272,62 @@ function TabBar({
   showBilling = true,
   localMode = false,
 }: {
-  activeTab: TabId
-  onTabChange: (tab: TabId) => void
-  showBilling?: boolean
-  localMode?: boolean
+  activeTab: TabId;
+  onTabChange: (tab: TabId) => void;
+  showBilling?: boolean;
+  localMode?: boolean;
 }) {
-  const icons = useSettingsIcons()
-  const items = (showBilling && !localMode) ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS
+  const icons = useSettingsIcons();
+  const items = showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS;
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      className="border-b border-border"
-      contentContainerClassName="px-4"
+      className="border-b border-border/70 bg-card"
+      contentContainerClassName="gap-1 px-4 py-1"
       style={{ flexGrow: 0 }}
     >
       {items.map((item) => {
-        const Icon = icons[SETTINGS_TAB_ICON_NAME[item.id]]
-        const isActive = activeTab === item.id
+        const Icon = icons[SETTINGS_TAB_ICON_NAME[item.id]];
+        const isActive = activeTab === item.id;
         return (
           <Pressable
             key={item.id}
             onPress={() => onTabChange(item.id)}
             className={cn(
-              'flex-row items-center gap-2 px-3 py-3 mr-1',
-              isActive ? 'border-b-2 border-primary' : ''
+              "flex-row items-center gap-2 rounded-lg px-3 py-2.5",
+              isActive ? "bg-primary/10" : "active:bg-muted"
             )}
           >
             <Icon
               size={16}
-              className={isActive ? 'text-primary' : 'text-muted-foreground'}
+              className={isActive ? "text-primary" : "text-muted-foreground"}
             />
             <Text
               className={cn(
-                'text-sm font-medium',
-                isActive ? 'text-primary' : 'text-muted-foreground'
+                "text-sm font-medium",
+                isActive ? "text-primary" : "text-muted-foreground"
               )}
             >
               {item.label}
             </Text>
           </Pressable>
-        )
+        );
       })}
     </ScrollView>
-  )
+  );
 }
 
 interface SidebarItem {
-  id: TabId
-  label: string
-  avatar?: string
+  id: TabId;
+  label: string;
+  avatar?: string;
 }
 
 interface SidebarSection {
-  id: string
-  label?: string
-  items: SidebarItem[]
+  id: string;
+  label?: string;
+  items: SidebarItem[];
 }
 
 function SettingsSidebar({
@@ -296,124 +335,132 @@ function SettingsSidebar({
   onTabChange,
   workspaceName,
   userName,
+  onExit,
   showBilling = true,
   localMode = false,
 }: {
-  activeTab: TabId
-  onTabChange: (tab: TabId) => void
-  workspaceName: string
-  userName: string
-  showBilling?: boolean
-  localMode?: boolean
+  activeTab: TabId;
+  onTabChange: (tab: TabId) => void;
+  workspaceName: string;
+  userName: string;
+  onExit: () => void;
+  showBilling?: boolean;
+  localMode?: boolean;
 }) {
-  const { ArrowLeft } = useSettingsIcons()
-  const router = useRouter()
+  const { ArrowLeft } = useSettingsIcons();
   const tabItem = (id: TabId): SidebarItem => ({
     id,
     label: settingsTab(id).label,
-  })
+  });
 
   const workspaceItems: SidebarItem[] = [
-    {
-      ...tabItem('workspace'),
-      label: workspaceName || settingsTab('workspace').label,
-      avatar: (workspaceName?.[0] || 'W').toUpperCase(),
-    },
-    ...(!(localMode || !showBilling) ? [tabItem('people'), tabItem('models')] : []),
-    tabItem('integrations'),
-    tabItem('remote-control'),
+    ...(!(localMode || !showBilling)
+      ? [tabItem("people"), tabItem("models")]
+      : []),
+    tabItem("integrations"),
+    tabItem("remote-control"),
     ...(showBilling
       ? [
-          ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [tabItem('compute')] : []),
-          tabItem('billing'),
-          tabItem('analytics'),
-          tabItem('costs'),
+          ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [tabItem("compute")] : []),
+          tabItem("billing"),
+          tabItem("analytics"),
+          tabItem("costs"),
         ]
-      : [
-          tabItem('billing'),
-          tabItem('analytics'),
-          tabItem('costs'),
-        ]),
-  ]
+      : [tabItem("billing"), tabItem("analytics"), tabItem("costs")]),
+  ];
 
   const sections: SidebarSection[] = [
     {
-      id: 'workspace',
-      label: 'Workspace',
+      id: "workspace",
       items: workspaceItems,
     },
     {
-      id: 'account',
-      label: settingsTab('account').label,
+      id: "account",
+      label: settingsTab("account").label,
       items: [
-        { ...tabItem('account'), label: userName || settingsTab('account').label },
-        tabItem('appearance'),
-        ...(!showBilling ? [tabItem('security')] : []),
-        ...(IS_DESKTOP_CLIENT ? [tabItem('updates')] : []),
+        {
+          ...tabItem("account"),
+          label: userName || settingsTab("account").label,
+        },
+        tabItem("appearance"),
+        ...(!showBilling ? [tabItem("security")] : []),
+        ...(IS_DESKTOP_CLIENT ? [tabItem("updates")] : []),
       ],
     },
-    ...(localMode ? [{
-      id: 'support',
-      label: 'Support',
-      items: [
-        tabItem('support'),
-      ],
-    }] : []),
-  ]
+  ];
 
   return (
-    <View className="w-[210px] pt-4 pb-3 px-3">
+    <ScrollView
+      className="w-[232px]"
+      contentContainerClassName="px-3 pb-5 pt-5"
+      showsVerticalScrollIndicator={false}
+    >
       <Pressable
-        onPress={() => leaveSettings(router, false)}
-        className="flex-row items-center gap-1 px-2 py-1.5 mb-4"
+        onPress={onExit}
+        className="mb-5 flex-row items-center gap-1.5 self-start rounded-lg px-2 py-1.5 active:bg-muted"
       >
         <ArrowLeft size={14} className="text-muted-foreground" />
         <Text className="text-sm text-muted-foreground">Go back</Text>
       </Pressable>
+      <WorkspaceAccountActions
+        onSelectTab={onTabChange}
+        showActions={false}
+        showSignOut={false}
+        variant="sidebar"
+      />
 
       {sections.map((section, sectionIdx) => (
-        <View key={section.id} className={sectionIdx > 0 ? 'mt-6' : ''}>
+        <View key={section.id} className={sectionIdx > 0 ? "mt-6" : ""}>
           {section.label && (
-            <Text className="text-xs font-medium text-muted-foreground px-2 mb-1">
+            <Text className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               {section.label}
             </Text>
           )}
           <View className="gap-0.5">
-          {section.items.map((item) => {
-            const isActive = activeTab === item.id
-            return (
-              <Pressable
-                key={item.id}
-                onPress={() => onTabChange(item.id)}
-                className={cn(
-                  'flex-row items-center gap-2 px-2 py-2 rounded-md',
-                  isActive ? 'bg-muted' : ''
-                )}
-              >
-                {item.avatar && (
-                  <View className="h-5 w-5 rounded bg-primary items-center justify-center">
-                    <Text className="text-[10px] font-semibold text-primary-foreground">
-                      {item.avatar}
-                    </Text>
-                  </View>
-                )}
-                <Text
+            {section.items.map((item) => {
+              const isActive = activeTab === item.id;
+              return (
+                <Pressable
+                  key={item.id}
+                  onPress={() => onTabChange(item.id)}
                   className={cn(
-                    'text-sm flex-1',
-                    isActive ? 'text-foreground font-medium' : 'text-muted-foreground'
+                    "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5",
+                    isActive
+                      ? "border border-primary/20 bg-primary/5"
+                      : "active:bg-muted"
                   )}
-                  numberOfLines={1}
                 >
-                  {item.label}
-                </Text>
-              </Pressable>
-            )
-          })}
+                  {item.avatar && (
+                    <View className="h-5 w-5 rounded bg-primary items-center justify-center">
+                      <Text className="text-[10px] font-semibold text-primary-foreground">
+                        {item.avatar}
+                      </Text>
+                    </View>
+                  )}
+                  <Text
+                    className={cn(
+                      "text-sm flex-1",
+                      isActive
+                        ? "text-foreground font-medium"
+                        : "text-muted-foreground"
+                    )}
+                    numberOfLines={1}
+                  >
+                    {item.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
       ))}
-    </View>
-  )
+      <WorkspaceAccountActions
+        onSelectTab={onTabChange}
+        showWorkspace={false}
+        variant="sidebar"
+      />
+    </ScrollView>
+  );
 }
 
 // ============================================================================
@@ -421,68 +468,73 @@ function SettingsSidebar({
 // ============================================================================
 
 function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
-  const { Cloud } = useSettingsIcons()
+  const { Cloud } = useSettingsIcons();
   const [status, setStatus] = useState<{
-    connected: boolean
-    keyMask?: string
-    cloudUrl?: string
-    workspace?: { name: string } | null
-  } | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [apiKey, setApiKey] = useState('')
-  const [connecting, setConnecting] = useState(false)
-  const [connectError, setConnectError] = useState<string | null>(null)
-  const [disconnecting, setDisconnecting] = useState(false)
+    connected: boolean;
+    keyMask?: string;
+    cloudUrl?: string;
+    workspace?: { name: string } | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [apiKey, setApiKey] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/local/shogo-key`, { credentials: 'include' })
-      const data = await res.json()
-      setStatus(data)
+      const res = await fetch(`${API_URL}/api/local/shogo-key`, {
+        credentials: "include",
+      });
+      const data = await res.json();
+      setStatus(data);
     } catch {
-      setStatus({ connected: false })
+      setStatus({ connected: false });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
-    fetchStatus()
-  }, [fetchStatus])
+    fetchStatus();
+  }, [fetchStatus]);
 
   const handleConnect = async () => {
-    if (!apiKey.trim()) return
-    setConnecting(true)
-    setConnectError(null)
+    if (!apiKey.trim()) return;
+    setConnecting(true);
+    setConnectError(null);
     try {
       const res = await fetch(`${API_URL}/api/local/shogo-key`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: apiKey.trim() }),
-      })
-      const data = await res.json()
+      });
+      const data = await res.json();
       if (!data.ok) {
-        setConnectError(data.error || 'Failed to connect')
-        return
+        setConnectError(data.error || "Failed to connect");
+        return;
       }
-      setApiKey('')
-      await fetchStatus()
+      setApiKey("");
+      await fetchStatus();
     } catch (err: any) {
-      setConnectError(err.message || 'Network error')
+      setConnectError(err.message || "Network error");
     } finally {
-      setConnecting(false)
+      setConnecting(false);
     }
-  }
+  };
 
   const handleDisconnect = async () => {
-    setDisconnecting(true)
+    setDisconnecting(true);
     try {
-      await fetch(`${API_URL}/api/local/shogo-key`, { method: 'DELETE', credentials: 'include' })
-      await fetchStatus()
+      await fetch(`${API_URL}/api/local/shogo-key`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      await fetchStatus();
     } catch {}
-    setDisconnecting(false)
-  }
+    setDisconnecting(false);
+  };
 
   if (loading) {
     return (
@@ -492,7 +544,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
           <Skeleton className="h-4 w-60" />
         </CardContent>
       </Card>
-    )
+    );
   }
 
   return (
@@ -506,7 +558,9 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
             </Text>
           </View>
           <Text className="text-sm text-muted-foreground">
-            Connect to Shogo Cloud to control this desktop from your phone or another computer.
+            Connect this desktop to Shogo Cloud with an API key to control it
+            from your phone or another computer. You can paste a `shogo_sk_…`
+            key here or provide `SHOGO_API_KEY` when launching the app.
           </Text>
         </View>
 
@@ -516,22 +570,32 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
           <View className="px-6 py-5 gap-4">
             <View className="flex-row items-center gap-2">
               <View className="h-2.5 w-2.5 rounded-full bg-green-500" />
-              <Text className="text-sm font-medium text-foreground">Connected to Shogo Cloud</Text>
+              <Text className="text-sm font-medium text-foreground">
+                Shogo Cloud API key connected
+              </Text>
             </View>
 
             <View className="gap-2.5">
               <View className="flex-row items-center justify-between">
                 <Text className="text-sm text-muted-foreground">API Key</Text>
-                <Text className="text-sm font-mono text-foreground">{status.keyMask}</Text>
+                <Text className="text-sm font-mono text-foreground">
+                  {status.keyMask}
+                </Text>
               </View>
               <View className="flex-row items-center justify-between">
                 <Text className="text-sm text-muted-foreground">Cloud URL</Text>
-                <Text className="text-sm text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
+                <Text className="text-sm text-foreground" numberOfLines={1}>
+                  {status.cloudUrl}
+                </Text>
               </View>
               {status.workspace?.name && (
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-sm text-muted-foreground">Workspace</Text>
-                  <Text className="text-sm text-foreground">{status.workspace.name}</Text>
+                  <Text className="text-sm text-muted-foreground">
+                    Workspace
+                  </Text>
+                  <Text className="text-sm text-foreground">
+                    {status.workspace.name}
+                  </Text>
                 </View>
               )}
             </View>
@@ -544,7 +608,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
               className="self-start"
             >
               <Text className="text-sm font-medium text-foreground">
-                {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+                {disconnecting ? "Disconnecting..." : "Disconnect"}
               </Text>
             </Button>
           </View>
@@ -555,17 +619,24 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
                 Connect with API Key
               </Text>
               <Text className="text-xs text-muted-foreground">
-                Create an API key from your Shogo Cloud workspace, then paste it here.
+                Create an API key from your Shogo Cloud workspace, then paste it
+                here.
               </Text>
               {status?.cloudUrl ? (
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-xs text-muted-foreground">Cloud URL</Text>
-                  <Text className="text-xs text-foreground" numberOfLines={1}>{status.cloudUrl}</Text>
+                  <Text className="text-xs text-muted-foreground">
+                    Cloud URL
+                  </Text>
+                  <Text className="text-xs text-foreground" numberOfLines={1}>
+                    {status.cloudUrl}
+                  </Text>
                 </View>
               ) : null}
               <View className="gap-2">
                 <View>
-                  <Text className="text-xs text-muted-foreground mb-1">API Key</Text>
+                  <Text className="text-xs text-muted-foreground mb-1">
+                    API Key
+                  </Text>
                   <Input
                     value={apiKey}
                     onChangeText={setApiKey}
@@ -587,8 +658,15 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
                 size="sm"
                 className="self-start"
               >
-                <Text className={cn('text-sm font-medium', apiKey.trim() && !connecting ? 'text-primary-foreground' : 'text-muted-foreground')}>
-                  {connecting ? 'Connecting...' : 'Connect'}
+                <Text
+                  className={cn(
+                    "text-sm font-medium",
+                    apiKey.trim() && !connecting
+                      ? "text-primary-foreground"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  {connecting ? "Connecting..." : "Connect"}
                 </Text>
               </Button>
             </View>
@@ -596,7 +674,7 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
         )}
       </CardContent>
     </Card>
-  )
+  );
 }
 
 // ============================================================================
@@ -604,94 +682,98 @@ function RemoteAccessSection({ workspaceId }: { workspaceId?: string }) {
 // ============================================================================
 
 const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
-  const { X } = useSettingsIcons()
-  const { width } = useWindowDimensions()
-  const isWideNameSection = width >= SETTINGS_WIDE_BREAKPOINT
-  const router = useRouter()
-  const store = useDomain() as IDomainStore
-  const actions = useDomainActions()
-  const { user } = useAuth()
-  const { features: wsFeatures, localMode } = usePlatformConfig()
-  const workspaces = useWorkspaceCollection()
-  const members = useMemberCollection()
-  const http = useDomainHttp()
-  const currentWorkspace = useActiveWorkspace()
+  const { X } = useSettingsIcons();
+  const { width } = useWindowDimensions();
+  const isWideNameSection = width >= SETTINGS_WIDE_BREAKPOINT;
+  const router = useRouter();
+  const store = useDomain() as IDomainStore;
+  const actions = useDomainActions();
+  const { user } = useAuth();
+  const { features: wsFeatures, localMode } = usePlatformConfig();
+  const workspaces = useWorkspaceCollection();
+  const members = useMemberCollection();
+  const http = useDomainHttp();
+  const currentWorkspace = useActiveWorkspace();
 
-  const [name, setName] = useState(currentWorkspace?.name || '')
-  const [isSaving, setIsSaving] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
-  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false)
-  const [isLeaving, setIsLeaving] = useState(false)
-  const [leaveError, setLeaveError] = useState<string | null>(null)
-  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
-  const [isDeleting, setIsDeleting] = useState(false)
-  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [name, setName] = useState(currentWorkspace?.name || "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
+    "idle"
+  );
+  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
-  const originalName = currentWorkspace?.name || ''
-  const hasChanges = name !== originalName
-  const isValid = name.trim().length > 0 && name.length <= 60
+  const originalName = currentWorkspace?.name || "";
+  const hasChanges = name !== originalName;
+  const isValid = name.trim().length > 0 && name.length <= 60;
 
-  const currentUserId = user?.id
-  const membersAll = Array.isArray(members.all) ? members.all : []
+  const currentUserId = user?.id;
+  const membersAll = Array.isArray(members.all) ? members.all : [];
   const workspaceMembers = currentWorkspace?.id
     ? membersAll.filter(
         (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
       )
-    : []
+    : [];
   const currentUserMember = workspaceMembers.find(
     (m: any) => m.userId === currentUserId
-  )
-  const isOwner = currentUserMember?.role === 'owner'
+  );
+  const isOwner = currentUserMember?.role === "owner";
 
   // `kind` (not a slug/name heuristic) is the source of truth — a team
   // workspace named e.g. "My Personal Brand" must stay deletable.
-  const isPersonalWorkspace = currentWorkspace?.kind === 'personal'
+  const isPersonalWorkspace = currentWorkspace?.kind === "personal";
 
-  const wsAll = Array.isArray(workspaces.all) ? workspaces.all : []
-  const canDelete = isOwner && wsAll.length > 1 && !isPersonalWorkspace
-  const deleteConfirmRequired = currentWorkspace?.name || 'delete'
-  const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired
+  const wsAll = Array.isArray(workspaces.all) ? workspaces.all : [];
+  const canDelete = isOwner && wsAll.length > 1 && !isPersonalWorkspace;
+  const deleteConfirmRequired = currentWorkspace?.name || "delete";
+  const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired;
 
   useEffect(() => {
-    setName(currentWorkspace?.name || '')
-    setSaveStatus('idle')
-  }, [currentWorkspace?.name])
+    setName(currentWorkspace?.name || "");
+    setSaveStatus("idle");
+  }, [currentWorkspace?.name]);
 
   useEffect(() => {
     if (currentWorkspace?.id) {
-      members.loadAll({ workspaceId: currentWorkspace.id }).catch((e) => console.error('[Settings] Failed to load members:', e))
+      members
+        .loadAll({ workspaceId: currentWorkspace.id })
+        .catch((e) => console.error("[Settings] Failed to load members:", e));
     }
-  }, [currentWorkspace?.id])
+  }, [currentWorkspace?.id]);
 
   const handleSave = async () => {
-    if (!hasChanges || !isValid || !currentWorkspace?.id) return
-    setIsSaving(true)
-    setSaveStatus('idle')
+    if (!hasChanges || !isValid || !currentWorkspace?.id) return;
+    setIsSaving(true);
+    setSaveStatus("idle");
     try {
-      await actions.updateWorkspace(currentWorkspace.id, { name: name.trim() })
-      setSaveStatus('saved')
-      setTimeout(() => setSaveStatus('idle'), 2000)
+      await actions.updateWorkspace(currentWorkspace.id, { name: name.trim() });
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (error) {
-      console.error('Failed to save workspace name:', error)
-      setSaveStatus('error')
+      console.error("Failed to save workspace name:", error);
+      setSaveStatus("error");
     } finally {
-      setIsSaving(false)
+      setIsSaving(false);
     }
-  }
+  };
 
   const handleDeleteWorkspace = async () => {
-    if (!currentWorkspace?.id || !isDeleteConfirmed) return
-    setIsDeleting(true)
+    if (!currentWorkspace?.id || !isDeleteConfirmed) return;
+    setIsDeleting(true);
     try {
-      await actions.deleteWorkspace(currentWorkspace.id)
-      setIsDeleteDialogOpen(false)
-      router.replace('/(app)')
+      await actions.deleteWorkspace(currentWorkspace.id);
+      setIsDeleteDialogOpen(false);
+      router.replace("/(app)");
     } catch (error) {
-      console.error('Failed to delete workspace:', error)
+      console.error("Failed to delete workspace:", error);
     } finally {
-      setIsDeleting(false)
+      setIsDeleting(false);
     }
-  }
+  };
 
   return (
     <View className="gap-8">
@@ -723,8 +805,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                     <Input
                       value={name}
                       onChangeText={(t) => {
-                        setName(t)
-                        setSaveStatus('idle')
+                        setName(t);
+                        setSaveStatus("idle");
                       }}
                     />
                   </View>
@@ -733,18 +815,18 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                     disabled={!hasChanges || !isValid || isSaving}
                     size="sm"
                   >
-                    {isSaving ? 'Saving...' : 'Save'}
+                    {isSaving ? "Saving..." : "Save"}
                   </Button>
                 </View>
                 <Text className="text-xs text-muted-foreground mt-1.5 text-right">
                   {name.length} / 60 characters
                 </Text>
-                {saveStatus === 'saved' && (
+                {saveStatus === "saved" && (
                   <Text className="text-xs text-green-600 mt-1">
                     Changes saved successfully!
                   </Text>
                 )}
-                {saveStatus === 'error' && (
+                {saveStatus === "error" && (
                   <Text className="text-xs text-destructive mt-1">
                     Failed to save changes. Please try again.
                   </Text>
@@ -763,8 +845,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 className="mt-3 w-full min-w-0"
                 value={name}
                 onChangeText={(t) => {
-                  setName(t)
-                  setSaveStatus('idle')
+                  setName(t);
+                  setSaveStatus("idle");
                 }}
               />
               <Text className="text-xs text-muted-foreground mt-1.5">
@@ -776,15 +858,15 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                   disabled={!hasChanges || !isValid || isSaving}
                   size="sm"
                 >
-                  {isSaving ? 'Saving...' : 'Save'}
+                  {isSaving ? "Saving..." : "Save"}
                 </Button>
               </View>
-              {saveStatus === 'saved' && (
+              {saveStatus === "saved" && (
                 <Text className="text-xs text-green-600 mt-2">
                   Changes saved successfully!
                 </Text>
               )}
-              {saveStatus === 'error' && (
+              {saveStatus === "error" && (
                 <Text className="text-xs text-destructive mt-2">
                   Failed to save changes. Please try again.
                 </Text>
@@ -807,15 +889,20 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                     Leave workspace
                   </Text>
                   <Text className="text-sm text-muted-foreground mt-0.5">
-                    Leave this workspace. You will lose access to its projects and data.
+                    Leave this workspace. You will lose access to its projects
+                    and data.
                   </Text>
                 </View>
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={wsAll.length <= 1 || (isOwner && !workspaceMembers.some(
-                    (m: any) => m.role === 'owner' && m.userId !== user?.id
-                  ))}
+                  disabled={
+                    wsAll.length <= 1 ||
+                    (isOwner &&
+                      !workspaceMembers.some(
+                        (m: any) => m.role === "owner" && m.userId !== user?.id
+                      ))
+                  }
                   onPress={() => setIsLeaveDialogOpen(true)}
                 >
                   Leave workspace
@@ -832,10 +919,10 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                       </Text>
                       <Text className="text-sm text-muted-foreground mt-0.5">
                         {canDelete
-                          ? 'Permanently delete this workspace and all its data.'
+                          ? "Permanently delete this workspace and all its data."
                           : isPersonalWorkspace
-                          ? 'Your personal workspace cannot be deleted.'
-                          : 'You cannot delete your only workspace.'}
+                          ? "Your personal workspace cannot be deleted."
+                          : "You cannot delete your only workspace."}
                       </Text>
                     </View>
                     <Button
@@ -859,23 +946,42 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
         visible={isLeaveDialogOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+        onRequestClose={() => {
+          if (!isLeaving) {
+            setIsLeaveDialogOpen(false);
+            setLeaveError(null);
+          }
+        }}
       >
         <Pressable
           className="flex-1 bg-black/50 justify-center items-center px-6"
-          onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }}
+          onPress={() => {
+            if (!isLeaving) {
+              setIsLeaveDialogOpen(false);
+              setLeaveError(null);
+            }
+          }}
         >
           <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
             <View className="flex-row items-center justify-between">
               <Text className="text-lg font-semibold text-foreground">
                 Leave workspace
               </Text>
-              <Pressable onPress={() => { if (!isLeaving) { setIsLeaveDialogOpen(false); setLeaveError(null) } }} className="p-1">
+              <Pressable
+                onPress={() => {
+                  if (!isLeaving) {
+                    setIsLeaveDialogOpen(false);
+                    setLeaveError(null);
+                  }
+                }}
+                className="p-1"
+              >
                 <X size={20} className="text-muted-foreground" />
               </Pressable>
             </View>
             <Text className="text-sm text-muted-foreground">
-              Are you sure you want to leave "{currentWorkspace?.name}"? You will lose access to all projects and data in this workspace.
+              Are you sure you want to leave "{currentWorkspace?.name}"? You
+              will lose access to all projects and data in this workspace.
             </Text>
             {leaveError && (
               <Text className="text-sm text-destructive">{leaveError}</Text>
@@ -884,7 +990,10 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               <Button
                 variant="outline"
                 size="sm"
-                onPress={() => { setIsLeaveDialogOpen(false); setLeaveError(null) }}
+                onPress={() => {
+                  setIsLeaveDialogOpen(false);
+                  setLeaveError(null);
+                }}
                 disabled={isLeaving}
               >
                 Cancel
@@ -894,35 +1003,41 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 size="sm"
                 disabled={isLeaving}
                 onPress={async () => {
-                  setIsLeaving(true)
-                  setLeaveError(null)
+                  setIsLeaving(true);
+                  setLeaveError(null);
                   try {
-                    const wsId = currentWorkspace?.id
+                    const wsId = currentWorkspace?.id;
                     if (!wsId || !http) {
-                      setLeaveError('Missing workspace information.')
-                      setIsLeaving(false)
-                      return
+                      setLeaveError("Missing workspace information.");
+                      setIsLeaving(false);
+                      return;
                     }
-                    await api.leaveWorkspace(http, wsId)
-                    await workspaces.loadAll()
-                    const remaining = Array.isArray(workspaces.all) ? workspaces.all : []
+                    await api.leaveWorkspace(http, wsId);
+                    await workspaces.loadAll();
+                    const remaining = Array.isArray(workspaces.all)
+                      ? workspaces.all
+                      : [];
                     if (remaining.length > 0) {
-                      setActiveWorkspaceId((remaining[0] as any).id)
+                      setActiveWorkspaceId((remaining[0] as any).id);
                     }
-                    setIsLeaveDialogOpen(false)
-                    setLeaveError(null)
-                    router.replace('/(app)/projects')
+                    setIsLeaveDialogOpen(false);
+                    setLeaveError(null);
+                    router.replace("/(app)/projects");
                   } catch (error: any) {
-                    console.error('[Settings] Failed to leave workspace:', error)
-                    const msg = error?.details?.error?.message
-                      || error?.message
-                      || 'Failed to leave workspace.'
-                    setLeaveError(msg)
-                    setIsLeaving(false)
+                    console.error(
+                      "[Settings] Failed to leave workspace:",
+                      error
+                    );
+                    const msg =
+                      error?.details?.error?.message ||
+                      error?.message ||
+                      "Failed to leave workspace.";
+                    setLeaveError(msg);
+                    setIsLeaving(false);
                   }
                 }}
               >
-                {isLeaving ? 'Leaving...' : 'Leave workspace'}
+                {isLeaving ? "Leaving..." : "Leave workspace"}
               </Button>
             </View>
           </Pressable>
@@ -934,18 +1049,30 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
         visible={isDeleteDialogOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => { setIsDeleteDialogOpen(false); setDeleteConfirmText('') }}
+        onRequestClose={() => {
+          setIsDeleteDialogOpen(false);
+          setDeleteConfirmText("");
+        }}
       >
         <Pressable
           className="flex-1 bg-black/50 justify-center items-center px-6"
-          onPress={() => { setIsDeleteDialogOpen(false); setDeleteConfirmText('') }}
+          onPress={() => {
+            setIsDeleteDialogOpen(false);
+            setDeleteConfirmText("");
+          }}
         >
           <Pressable className="bg-background rounded-xl p-6 w-full max-w-sm gap-4">
             <View className="flex-row items-center justify-between">
               <Text className="text-lg font-semibold text-destructive">
                 Delete workspace
               </Text>
-              <Pressable onPress={() => { setIsDeleteDialogOpen(false); setDeleteConfirmText('') }} className="p-1">
+              <Pressable
+                onPress={() => {
+                  setIsDeleteDialogOpen(false);
+                  setDeleteConfirmText("");
+                }}
+                className="p-1"
+              >
                 <X size={20} className="text-muted-foreground" />
               </Pressable>
             </View>
@@ -966,8 +1093,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 variant="outline"
                 size="sm"
                 onPress={() => {
-                  setIsDeleteDialogOpen(false)
-                  setDeleteConfirmText('')
+                  setIsDeleteDialogOpen(false);
+                  setDeleteConfirmText("");
                 }}
                 disabled={isDeleting}
               >
@@ -979,22 +1106,22 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 onPress={handleDeleteWorkspace}
                 disabled={!isDeleteConfirmed || isDeleting}
               >
-                {isDeleting ? 'Deleting...' : 'Delete workspace'}
+                {isDeleting ? "Deleting..." : "Delete workspace"}
               </Button>
             </View>
           </Pressable>
         </Pressable>
       </Modal>
     </View>
-  )
-})
+  );
+});
 
 // ============================================================================
 // ACCOUNT TAB
 // ============================================================================
 
 function NotificationsCard() {
-  const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref()
+  const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref();
   return (
     <Card>
       <CardContent className="p-0">
@@ -1011,17 +1138,17 @@ function NotificationsCard() {
           <Switch
             checked={notifyOnTurn}
             onCheckedChange={(v) => {
-              void setNotifyOnTurn(v)
+              void setNotifyOnTurn(v);
             }}
           />
         </View>
       </CardContent>
     </Card>
-  )
+  );
 }
 
 function DualPlanCard() {
-  const [dualPlan, setDualPlan] = useDualPlan()
+  const [dualPlan, setDualPlan] = useDualPlan();
   return (
     <Card>
       <CardContent className="p-0">
@@ -1031,82 +1158,85 @@ function DualPlanCard() {
               Generate summaries for plans
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              When on, every plan you generate also gets a stakeholder
-              summary alongside the technical body. You can flip between
-              the Technical and Summary views from any plan, and generate
-              summaries on demand for older plans.
+              When on, every plan you generate also gets a stakeholder summary
+              alongside the technical body. You can flip between the Technical
+              and Summary views from any plan, and generate summaries on demand
+              for older plans.
             </Text>
           </View>
           <Switch
             checked={dualPlan}
             onCheckedChange={(v) => {
-              void setDualPlan(v)
+              void setDualPlan(v);
             }}
           />
         </View>
       </CardContent>
     </Card>
-  )
+  );
 }
 
 function AccountTab() {
-  const { user, signOut, updateUser } = useAuth()
-  const http = useDomainHttp()
-  const router = useRouter()
-  const { localMode } = usePlatformConfig()
-  const toast = useToast()
+  const { user, signOut, updateUser } = useAuth();
+  const http = useDomainHttp();
+  const router = useRouter();
+  const { localMode } = usePlatformConfig();
+  const toast = useToast();
 
-  const [name, setName] = useState(user?.name || '')
-  const [isSaving, setIsSaving] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
-  const [isDeleting, setIsDeleting] = useState(false)
-  const [deleteConfirmText, setDeleteConfirmText] = useState('')
-  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [name, setName] = useState(user?.name || "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
+    "idle"
+  );
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
-  const originalName = user?.name || ''
-  const hasNameChanges = name !== originalName
-  const hasChanges = hasNameChanges
+  const originalName = user?.name || "";
+  const hasNameChanges = name !== originalName;
+  const hasChanges = hasNameChanges;
 
   useEffect(() => {
-    setName(user?.name || '')
-  }, [user?.name])
+    setName(user?.name || "");
+  }, [user?.name]);
 
   const handleSave = async () => {
-    if (!hasChanges || isSaving || !user?.id) return
-    if (hasNameChanges && !name.trim()) return
-    setIsSaving(true)
-    setSaveStatus('idle')
+    if (!hasChanges || isSaving || !user?.id) return;
+    if (hasNameChanges && !name.trim()) return;
+    setIsSaving(true);
+    setSaveStatus("idle");
     try {
-      await updateUser({ name: name.trim() })
-      setSaveStatus('saved')
-      setTimeout(() => setSaveStatus('idle'), 2000)
+      await updateUser({ name: name.trim() });
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
     } catch (error) {
-      console.error('Failed to save account settings:', error)
-      setSaveStatus('error')
+      console.error("Failed to save account settings:", error);
+      setSaveStatus("error");
     } finally {
-      setIsSaving(false)
+      setIsSaving(false);
     }
-  }
+  };
 
   const handleSignOut = async () => {
-    await signOut()
-    router.replace(localMode ? '/' : '/(auth)/sign-in')
-  }
+    await signOut();
+    router.replace(localMode ? "/" : "/(auth)/sign-in");
+  };
 
   const handleDeleteAccount = async () => {
-    if (deleteConfirmText !== 'DELETE' || !user?.id || !http) return
-    setIsDeleting(true)
+    if (deleteConfirmText !== "DELETE" || !user?.id || !http) return;
+    setIsDeleting(true);
     try {
-      await api.deleteAccount(http, user.id)
-      await signOut()
-      router.replace(localMode ? '/' : '/(auth)/sign-in')
+      await api.deleteAccount(http, user.id);
+      await signOut();
+      router.replace(localMode ? "/" : "/(auth)/sign-in");
     } catch (error: any) {
-      console.error('Failed to delete account:', error)
-      const msg = error?.details?.error?.message
-        || error?.message
-        || 'Failed to delete account. Please try again or contact support.'
+      console.error("Failed to delete account:", error);
+      const msg =
+        error?.details?.error?.message ||
+        error?.message ||
+        "Failed to delete account. Please try again or contact support.";
       toast.show({
-        placement: 'top',
+        placement: "top",
         duration: 5000,
         render: ({ id }: { id: string }) => (
           <Toast nativeID={id} variant="outline" action="error">
@@ -1114,13 +1244,13 @@ function AccountTab() {
             <ToastDescription>{msg}</ToastDescription>
           </Toast>
         ),
-      })
+      });
     } finally {
-      setIsDeleting(false)
-      setIsDeleteDialogOpen(false)
-      setDeleteConfirmText('')
+      setIsDeleting(false);
+      setIsDeleteDialogOpen(false);
+      setDeleteConfirmText("");
     }
-  }
+  };
 
   return (
     <View className="gap-8">
@@ -1149,7 +1279,7 @@ function AccountTab() {
             </View>
             <View className="h-10 w-10 rounded-full bg-primary items-center justify-center">
               <Text className="text-sm font-semibold text-primary-foreground">
-                {user?.name?.[0]?.toUpperCase() || 'U'}
+                {user?.name?.[0]?.toUpperCase() || "U"}
               </Text>
             </View>
           </View>
@@ -1169,8 +1299,8 @@ function AccountTab() {
                 <Input
                   value={name}
                   onChangeText={(t) => {
-                    setName(t)
-                    setSaveStatus('idle')
+                    setName(t);
+                    setSaveStatus("idle");
                   }}
                   placeholder="Enter a username"
                 />
@@ -1181,15 +1311,15 @@ function AccountTab() {
                 onPress={handleSave}
                 disabled={!hasNameChanges || !name.trim() || isSaving}
               >
-                {isSaving ? 'Saving...' : 'Update'}
+                {isSaving ? "Saving..." : "Update"}
               </Button>
             </View>
-            {saveStatus === 'saved' && (
+            {saveStatus === "saved" && (
               <Text className="text-xs text-green-600 mt-1">
                 Updated successfully!
               </Text>
             )}
-            {saveStatus === 'error' && (
+            {saveStatus === "error" && (
               <Text className="text-xs text-destructive mt-1">
                 Failed to update. Please try again.
               </Text>
@@ -1204,9 +1334,8 @@ function AccountTab() {
             <Text className="text-sm text-muted-foreground mt-0.5">
               Your email address associated with your account.
             </Text>
-            <Input className="mt-3" value={user?.email || ''} disabled />
+            <Input className="mt-3" value={user?.email || ""} disabled />
           </View>
-
         </CardContent>
       </Card>
 
@@ -1219,68 +1348,73 @@ function AccountTab() {
           <CardContent className="p-0">
             {/* Delete account */}
             <View className="px-6 py-5">
-                <View className="flex-row items-center justify-between">
-                  <View className="flex-1 mr-4">
-                    <Text className="text-sm font-semibold text-foreground">
-                      Delete account
-                    </Text>
-                    <Text className="text-sm text-muted-foreground mt-0.5">
-                      Permanently delete your Shogo account. This cannot be undone.
-                    </Text>
-                  </View>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onPress={() => setIsDeleteDialogOpen(true)}
-                  >
-                    Delete
-                  </Button>
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1 mr-4">
+                  <Text className="text-sm font-semibold text-foreground">
+                    Delete account
+                  </Text>
+                  <Text className="text-sm text-muted-foreground mt-0.5">
+                    Permanently delete your Shogo account. This cannot be
+                    undone.
+                  </Text>
                 </View>
-                {isDeleteDialogOpen && (
-                  <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
-                    <Text className="text-sm text-foreground font-medium">
-                      Are you sure? This action is irreversible.
-                    </Text>
-                    <Text className="text-sm text-muted-foreground mt-1">
-                      Type "DELETE" to confirm.
-                    </Text>
-                    <Input
-                      className="mt-2"
-                      value={deleteConfirmText}
-                      onChangeText={setDeleteConfirmText}
-                      placeholder='Type "DELETE"'
-                    />
-                    <View className="flex-row gap-2 mt-3">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onPress={() => {
-                          setIsDeleteDialogOpen(false)
-                          setDeleteConfirmText('')
-                        }}
-                        disabled={isDeleting}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onPress={handleDeleteAccount}
-                        disabled={deleteConfirmText !== 'DELETE' || isDeleting}
-                      >
-                        {isDeleting ? 'Deleting...' : 'Permanently delete'}
-                      </Button>
-                    </View>
-                  </View>
-                )}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onPress={() => setIsDeleteDialogOpen(true)}
+                >
+                  Delete
+                </Button>
               </View>
+              {isDeleteDialogOpen && (
+                <View className="mt-4 p-4 border border-destructive/30 rounded-lg bg-destructive/5">
+                  <Text className="text-sm text-foreground font-medium">
+                    Are you sure? This action is irreversible.
+                  </Text>
+                  <Text className="text-sm text-muted-foreground mt-1">
+                    Type "DELETE" to confirm.
+                  </Text>
+                  <Input
+                    className="mt-2"
+                    value={deleteConfirmText}
+                    onChangeText={setDeleteConfirmText}
+                    placeholder='Type "DELETE"'
+                  />
+                  <View className="flex-row gap-2 mt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onPress={() => {
+                        setIsDeleteDialogOpen(false);
+                        setDeleteConfirmText("");
+                      }}
+                      disabled={isDeleting}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onPress={handleDeleteAccount}
+                      disabled={deleteConfirmText !== "DELETE" || isDeleting}
+                    >
+                      {isDeleting ? "Deleting..." : "Permanently delete"}
+                    </Button>
+                  </View>
+                </View>
+              )}
+            </View>
           </CardContent>
         </Card>
       )}
 
       {/* Sign Out */}
       {!localMode && (
-        <Button variant="destructive" onPress={handleSignOut} className="w-full">
+        <Button
+          variant="destructive"
+          onPress={handleSignOut}
+          className="w-full"
+        >
           Sign Out
         </Button>
       )}
@@ -1303,321 +1437,416 @@ function AccountTab() {
             <Button
               size="sm"
               onPress={handleSave}
-              disabled={!hasChanges || (hasNameChanges && !name.trim()) || isSaving}
+              disabled={
+                !hasChanges || (hasNameChanges && !name.trim()) || isSaving
+              }
             >
-              {isSaving ? 'Saving...' : 'Save changes'}
+              {isSaving ? "Saving..." : "Save changes"}
             </Button>
           </View>
         </View>
       )}
     </View>
-  )
+  );
 }
 
 // ============================================================================
 // PEOPLE TAB — Lovable-style workspace member management
 // ============================================================================
 
-type PeopleSubTab = 'all' | 'invitations'
+type PeopleSubTab = "all" | "invitations";
 
 const ROLE_DISPLAY: Record<string, string> = {
-  owner: 'Owner',
-  admin: 'Admin',
-  member: 'Editor',
-  viewer: 'Viewer',
-}
+  owner: "Owner",
+  admin: "Admin",
+  member: "Editor",
+  viewer: "Viewer",
+};
 
 const ROLE_COLORS: Record<string, string> = {
-  owner: 'bg-amber-500',
-  admin: 'bg-blue-500',
-  member: 'bg-emerald-500',
-  viewer: 'bg-slate-400',
-}
+  owner: "bg-amber-500",
+  admin: "bg-blue-500",
+  member: "bg-emerald-500",
+  viewer: "bg-slate-400",
+};
 
-type SortField = 'name' | 'role' | 'included' | 'free' | 'onDemand'
-type SortDir = 'asc' | 'desc'
+type SortField = "name" | "role" | "included" | "free" | "onDemand";
+type SortDir = "asc" | "desc";
 
 function formatUsdLabel(value: number): string {
-  if (value === 0) return '$0.00'
-  if (value < 0.01) return '<$0.01'
-  return `$${value.toFixed(2)}`
+  if (value === 0) return "$0.00";
+  if (value < 0.01) return "<$0.01";
+  return `$${value.toFixed(2)}`;
 }
 
 /** Renders a member's included usage as their share of the team total (no dollar pool). */
 function formatSharePct(value: number, total: number): string {
-  if (total <= 0 || value <= 0) return '0%'
-  const pct = (value / total) * 100
-  if (pct < 1) return '<1%'
-  return `${Math.round(pct)}%`
+  if (total <= 0 || value <= 0) return "0%";
+  const pct = (value / total) * 100;
+  if (pct < 1) return "<1%";
+  return `${Math.round(pct)}%`;
 }
 
 const PeopleTab = observer(function PeopleTab() {
   const { X, ChevronDown, Download, Search, UserPlus, Users, Mail } =
-    useSettingsIcons()
-  const { width } = useWindowDimensions()
-  const isMobilePeopleLayout = width < SETTINGS_WIDE_BREAKPOINT
+    useSettingsIcons();
+  const { width } = useWindowDimensions();
+  const isMobilePeopleLayout = width < SETTINGS_WIDE_BREAKPOINT;
 
-  const { user } = useAuth()
-  const workspaces = useWorkspaceCollection()
-  const members = useMemberCollection()
-  const invitations = useInvitationCollection()
-  const actions = useDomainActions()
-  const http = useDomainHttp()
-  const currentWorkspace = useActiveWorkspace()
-  const toast = useToast()
+  const { user } = useAuth();
+  const workspaces = useWorkspaceCollection();
+  const members = useMemberCollection();
+  const invitations = useInvitationCollection();
+  const actions = useDomainActions();
+  const http = useDomainHttp();
+  const currentWorkspace = useActiveWorkspace();
+  const toast = useToast();
 
-  const [subTab, setSubTab] = useState<PeopleSubTab>('all')
-  const [search, setSearch] = useState('')
-  const [roleFilter, setRoleFilter] = useState<string>('all')
-  const [showRoleFilter, setShowRoleFilter] = useState(false)
-  const [showInviteModal, setShowInviteModal] = useState(false)
-  const [sortField, setSortField] = useState<SortField>('onDemand')
-  const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const [isLoading, setIsLoading] = useState(true)
-  const [menuState, setMenuState] = useState<{ memberId: string; view: 'actions' | 'roles' } | null>(null)
-  const [userMap, setUserMap] = useState<Record<string, { name: string; email: string }>>({})
-  const [receivedInvites, setReceivedInvites] = useState<any[]>([])
-  const [processingInvite, setProcessingInvite] = useState<{ id: string; action: 'accept' | 'decline' } | null>(null)
+  const [subTab, setSubTab] = useState<PeopleSubTab>("all");
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [showRoleFilter, setShowRoleFilter] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [sortField, setSortField] = useState<SortField>("onDemand");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [isLoading, setIsLoading] = useState(true);
+  const [menuState, setMenuState] = useState<{
+    memberId: string;
+    view: "actions" | "roles";
+  } | null>(null);
+  const [userMap, setUserMap] = useState<
+    Record<string, { name: string; email: string }>
+  >({});
+  const [receivedInvites, setReceivedInvites] = useState<any[]>([]);
+  const [processingInvite, setProcessingInvite] = useState<{
+    id: string;
+    action: "accept" | "decline";
+  } | null>(null);
 
-  const [resolvedWs, setResolvedWs] = useState<{ id: string; name: string } | null>(null)
+  const [resolvedWs, setResolvedWs] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [memberUsage, setMemberUsage] = useState<{
-    monthly: Record<string, number>
-    total: Record<string, number>
-    included: Record<string, number>
-    free: Record<string, number>
-    onDemand: Record<string, number>
-  }>({ monthly: {}, total: {}, included: {}, free: {}, onDemand: {} })
+    monthly: Record<string, number>;
+    total: Record<string, number>;
+    included: Record<string, number>;
+    free: Record<string, number>;
+    onDemand: Record<string, number>;
+  }>({ monthly: {}, total: {}, included: {}, free: {}, onDemand: {} });
 
   const loadPeopleData = useCallback(async () => {
     if (!currentWorkspace?.id) {
       if ((Array.isArray(workspaces.all) ? workspaces.all : []).length === 0) {
-        try { await workspaces.loadAll({}) } catch {}
+        try {
+          await workspaces.loadAll({});
+        } catch {}
       }
-      setIsLoading(false)
-      return
+      setIsLoading(false);
+      return;
     }
-    setIsLoading(true)
+    setIsLoading(true);
     try {
-      const ws = currentWorkspace
-      setResolvedWs({ id: ws.id, name: ws.name || 'Workspace' })
+      const ws = currentWorkspace;
+      setResolvedWs({ id: ws.id, name: ws.name || "Workspace" });
 
-      await members.loadAll({ workspaceId: ws.id })
-      await invitations.loadAll({ workspaceId: ws.id })
+      await members.loadAll({ workspaceId: ws.id });
+      await invitations.loadAll({ workspaceId: ws.id });
 
       if (http) {
         try {
-          const rawItems = await api.getWorkspaceMembers(http, ws.id)
-          const items = Array.isArray(rawItems) ? rawItems : []
-          const map: Record<string, { name: string; email: string }> = {}
+          const rawItems = await api.getWorkspaceMembers(http, ws.id);
+          const items = Array.isArray(rawItems) ? rawItems : [];
+          const map: Record<string, { name: string; email: string }> = {};
           for (const item of items) {
-            if (item.user && typeof item.user === 'object' && item.user.id) {
+            if (item.user && typeof item.user === "object" && item.user.id) {
               map[item.user.id] = {
-                name: item.user.name || '',
-                email: item.user.email || '',
-              }
+                name: item.user.name || "",
+                email: item.user.email || "",
+              };
             }
           }
-          setUserMap(map)
+          setUserMap(map);
         } catch {}
 
         try {
-          const usage = await api.getMemberUsageStats(http, ws.id)
-          setMemberUsage(usage)
+          const usage = await api.getMemberUsageStats(http, ws.id);
+          setMemberUsage(usage);
         } catch {}
 
         if (user?.email) {
           try {
-            const rawPending = await api.getReceivedInvitations(http, user.email)
-            setReceivedInvites(Array.isArray(rawPending) ? rawPending : [])
+            const rawPending = await api.getReceivedInvitations(
+              http,
+              user.email
+            );
+            setReceivedInvites(Array.isArray(rawPending) ? rawPending : []);
           } catch {}
         }
       }
     } catch {}
-    setIsLoading(false)
-  }, [workspaces, members, invitations, http, currentWorkspace?.id, user?.email])
+    setIsLoading(false);
+  }, [
+    workspaces,
+    members,
+    invitations,
+    http,
+    currentWorkspace?.id,
+    user?.email,
+  ]);
 
-  useEffect(() => { loadPeopleData() }, [loadPeopleData])
+  useEffect(() => {
+    loadPeopleData();
+  }, [loadPeopleData]);
 
-  useEffect(() => invitationEvents.subscribe(loadPeopleData), [loadPeopleData])
+  useEffect(() => invitationEvents.subscribe(loadPeopleData), [loadPeopleData]);
 
-  const ROLE_PRIORITY: Record<string, number> = { owner: 0, admin: 1, member: 2, viewer: 3 }
+  const ROLE_PRIORITY: Record<string, number> = {
+    owner: 0,
+    admin: 1,
+    member: 2,
+    viewer: 3,
+  };
 
   const workspaceMembers = useMemo(() => {
-    if (!currentWorkspace?.id) return []
-    const allMembers = Array.isArray(members.all) ? members.all : []
-    const raw = allMembers.filter((m: any) => m.workspaceId === currentWorkspace.id && !m.projectId)
-    const byUser = new Map<string, any>()
+    if (!currentWorkspace?.id) return [];
+    const allMembers = Array.isArray(members.all) ? members.all : [];
+    const raw = allMembers.filter(
+      (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
+    );
+    const byUser = new Map<string, any>();
     for (const m of raw) {
-      const existing = byUser.get(m.userId)
-      if (!existing || (ROLE_PRIORITY[m.role] ?? 9) < (ROLE_PRIORITY[existing.role] ?? 9)) {
-        byUser.set(m.userId, m)
+      const existing = byUser.get(m.userId);
+      if (
+        !existing ||
+        (ROLE_PRIORITY[m.role] ?? 9) < (ROLE_PRIORITY[existing.role] ?? 9)
+      ) {
+        byUser.set(m.userId, m);
       }
     }
-    return Array.from(byUser.values())
-  }, [currentWorkspace?.id, members.all])
-  const allInvitations = Array.isArray(invitations.all) ? invitations.all : []
+    return Array.from(byUser.values());
+  }, [currentWorkspace?.id, members.all]);
+  const allInvitations = Array.isArray(invitations.all) ? invitations.all : [];
   const sentInvitations = currentWorkspace?.id
-    ? allInvitations.filter((i: any) => i.workspaceId === currentWorkspace.id && i.status !== 'cancelled')
-    : []
+    ? allInvitations.filter(
+        (i: any) =>
+          i.workspaceId === currentWorkspace.id && i.status !== "cancelled"
+      )
+    : [];
 
   const filteredMembers = useMemo(() => {
-    let result = [...workspaceMembers]
+    let result = [...workspaceMembers];
     if (search.trim()) {
-      const q = search.toLowerCase()
+      const q = search.toLowerCase();
       result = result.filter((m: any) => {
-        const u = userMap[m.userId]
+        const u = userMap[m.userId];
         return (
-          (u?.name || '').toLowerCase().includes(q) ||
-          (u?.email || '').toLowerCase().includes(q) ||
-          (m.userId || '').toLowerCase().includes(q)
-        )
-      })
+          (u?.name || "").toLowerCase().includes(q) ||
+          (u?.email || "").toLowerCase().includes(q) ||
+          (m.userId || "").toLowerCase().includes(q)
+        );
+      });
     }
-    if (roleFilter !== 'all') {
-      result = result.filter((m: any) => m.role === roleFilter)
+    if (roleFilter !== "all") {
+      result = result.filter((m: any) => m.role === roleFilter);
     }
     result.sort((a: any, b: any) => {
-      let cmp = 0
-      if (sortField === 'name') cmp = (a.userId || '').localeCompare(b.userId || '')
-      else if (sortField === 'role') cmp = (a.role || '').localeCompare(b.role || '')
-      else if (sortField === 'included') cmp = (memberUsage.included[a.userId] ?? 0) - (memberUsage.included[b.userId] ?? 0)
-      else if (sortField === 'free') cmp = (memberUsage.free[a.userId] ?? 0) - (memberUsage.free[b.userId] ?? 0)
-      else if (sortField === 'onDemand') cmp = (memberUsage.onDemand[a.userId] ?? 0) - (memberUsage.onDemand[b.userId] ?? 0)
-      return sortDir === 'desc' ? -cmp : cmp
-    })
-    return result
-  }, [workspaceMembers, search, roleFilter, sortField, sortDir, memberUsage])
+      let cmp = 0;
+      if (sortField === "name")
+        cmp = (a.userId || "").localeCompare(b.userId || "");
+      else if (sortField === "role")
+        cmp = (a.role || "").localeCompare(b.role || "");
+      else if (sortField === "included")
+        cmp =
+          (memberUsage.included[a.userId] ?? 0) -
+          (memberUsage.included[b.userId] ?? 0);
+      else if (sortField === "free")
+        cmp =
+          (memberUsage.free[a.userId] ?? 0) - (memberUsage.free[b.userId] ?? 0);
+      else if (sortField === "onDemand")
+        cmp =
+          (memberUsage.onDemand[a.userId] ?? 0) -
+          (memberUsage.onDemand[b.userId] ?? 0);
+      return sortDir === "desc" ? -cmp : cmp;
+    });
+    return result;
+  }, [workspaceMembers, search, roleFilter, sortField, sortDir, memberUsage]);
 
   const includedTotalAll = useMemo(
-    () => Object.values(memberUsage.included).reduce((sum, v) => sum + (v || 0), 0),
-    [memberUsage.included],
-  )
+    () =>
+      Object.values(memberUsage.included).reduce((sum, v) => sum + (v || 0), 0),
+    [memberUsage.included]
+  );
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
-      setSortField(field)
-      setSortDir('asc')
+      setSortField(field);
+      setSortDir("asc");
     }
-  }
+  };
 
-  const currentUserMembership = workspaceMembers.find((m: any) => m.userId === user?.id)
-  const canManageMembers = currentUserMembership?.role === 'owner' || currentUserMembership?.role === 'admin'
+  const currentUserMembership = workspaceMembers.find(
+    (m: any) => m.userId === user?.id
+  );
+  const canManageMembers =
+    currentUserMembership?.role === "owner" ||
+    currentUserMembership?.role === "admin";
 
-  const handleChangeRole = async (memberId: string, newRole: 'owner' | 'admin' | 'member' | 'viewer') => {
+  const handleChangeRole = async (
+    memberId: string,
+    newRole: "owner" | "admin" | "member" | "viewer"
+  ) => {
     try {
-      await actions.updateMemberRole(memberId, newRole, user?.id || '')
-      setMenuState(null)
-      await loadPeopleData()
+      await actions.updateMemberRole(memberId, newRole, user?.id || "");
+      setMenuState(null);
+      await loadPeopleData();
     } catch {}
-  }
+  };
 
-  const handleRemoveMember = useCallback(async (memberId: string) => {
-    const confirmed = Platform.OS === 'web'
-      ? window.confirm('Are you sure you want to remove this member?')
-      : true
-    if (!confirmed) { setMenuState(null); return }
-    try {
-      setMenuState(null)
-      await actions.removeMember(memberId, user?.id || '')
-      await loadPeopleData()
-    } catch {
-      toast.show({
-        placement: 'top',
-        duration: 5000,
-        render: ({ id }: { id: string }) => (
-          <Toast nativeID={id} variant="outline" action="error">
-            <ToastTitle>Failed to remove member</ToastTitle>
-            <ToastDescription>You may not have permission. Please try again.</ToastDescription>
-          </Toast>
-        ),
-      })
-    }
-  }, [actions, user?.id, loadPeopleData, toast])
+  const handleRemoveMember = useCallback(
+    async (memberId: string) => {
+      const confirmed =
+        Platform.OS === "web"
+          ? window.confirm("Are you sure you want to remove this member?")
+          : true;
+      if (!confirmed) {
+        setMenuState(null);
+        return;
+      }
+      try {
+        setMenuState(null);
+        await actions.removeMember(memberId, user?.id || "");
+        await loadPeopleData();
+      } catch {
+        toast.show({
+          placement: "top",
+          duration: 5000,
+          render: ({ id }: { id: string }) => (
+            <Toast nativeID={id} variant="outline" action="error">
+              <ToastTitle>Failed to remove member</ToastTitle>
+              <ToastDescription>
+                You may not have permission. Please try again.
+              </ToastDescription>
+            </Toast>
+          ),
+        });
+      }
+    },
+    [actions, user?.id, loadPeopleData, toast]
+  );
 
   const [revokeInvitationTarget, setRevokeInvitationTarget] = useState<{
-    id: string
-    email: string
-  } | null>(null)
-  const [isRevokingInvitation, setIsRevokingInvitation] = useState(false)
+    id: string;
+    email: string;
+  } | null>(null);
+  const [isRevokingInvitation, setIsRevokingInvitation] = useState(false);
 
   const confirmRevokeInvitation = useCallback(async () => {
-    if (!revokeInvitationTarget) return
-    setIsRevokingInvitation(true)
+    if (!revokeInvitationTarget) return;
+    setIsRevokingInvitation(true);
     try {
-      await actions.cancelInvitation(revokeInvitationTarget.id)
-      setRevokeInvitationTarget(null)
-      await loadPeopleData()
+      await actions.cancelInvitation(revokeInvitationTarget.id);
+      setRevokeInvitationTarget(null);
+      await loadPeopleData();
     } catch {
     } finally {
-      setIsRevokingInvitation(false)
+      setIsRevokingInvitation(false);
     }
-  }, [actions, loadPeopleData, revokeInvitationTarget])
+  }, [actions, loadPeopleData, revokeInvitationTarget]);
 
-  const builderCount = workspaceMembers.length
-  const currentMonth = new Date().toLocaleString('default', { month: 'short' })
+  const builderCount = workspaceMembers.length;
+  const currentMonth = new Date().toLocaleString("default", { month: "short" });
 
   const SUB_TABS: { id: PeopleSubTab; label: string }[] = [
-    { id: 'all', label: 'All' },
-    { id: 'invitations', label: 'Invitations' },
-  ]
+    { id: "all", label: "All" },
+    { id: "invitations", label: "Invitations" },
+  ];
 
   const SortArrow = ({ field }: { field: SortField }) => (
     <View className="ml-1">
-      <Text className={cn('text-[8px]', sortField === field && sortDir === 'asc' ? 'text-foreground' : 'text-muted-foreground/40')}>▲</Text>
-      <Text className={cn('text-[8px] -mt-1', sortField === field && sortDir === 'desc' ? 'text-foreground' : 'text-muted-foreground/40')}>▼</Text>
+      <Text
+        className={cn(
+          "text-[8px]",
+          sortField === field && sortDir === "asc"
+            ? "text-foreground"
+            : "text-muted-foreground/40"
+        )}
+      >
+        ▲
+      </Text>
+      <Text
+        className={cn(
+          "text-[8px] -mt-1",
+          sortField === field && sortDir === "desc"
+            ? "text-foreground"
+            : "text-muted-foreground/40"
+        )}
+      >
+        ▼
+      </Text>
     </View>
-  )
+  );
 
   /** Keeps header/body aligned: name flexes separately so usage columns stay evenly spaced, not shoved to the edge. */
   const peopleNameCol = cn(
-    'flex-1 min-w-0',
-    isMobilePeopleLayout && 'min-w-[200px]',
-    !isMobilePeopleLayout && 'max-w-md'
-  )
-  const peopleMetricsRow = 'flex-row items-center gap-x-5 shrink-0'
-  const colRole = 'w-[104px]'
-  const colUsage = 'w-[120px]'
-  const colActions = 'w-11 items-center justify-center pr-1'
+    "flex-1 min-w-0",
+    isMobilePeopleLayout && "min-w-[200px]",
+    !isMobilePeopleLayout && "max-w-md"
+  );
+  const peopleMetricsRow = "flex-row items-center gap-x-5 shrink-0";
+  const colRole = "w-[104px]";
+  const colUsage = "w-[120px]";
+  const colActions = "w-11 items-center justify-center pr-1";
 
   const memberListTable = (
     <>
       <View className="flex-row items-center justify-between gap-4 px-4 py-2.5 pr-5 border-b border-border bg-muted/30">
         <Pressable
-          onPress={() => handleSort('name')}
-          className={cn('flex-row items-center', peopleNameCol)}
+          onPress={() => handleSort("name")}
+          className={cn("flex-row items-center", peopleNameCol)}
         >
-          <Text className="text-xs font-medium text-muted-foreground">Member</Text>
+          <Text className="text-xs font-medium text-muted-foreground">
+            Member
+          </Text>
           <SortArrow field="name" />
         </Pressable>
         <View className={peopleMetricsRow}>
           <Pressable
-            onPress={() => handleSort('role')}
-            className={cn('flex-row items-center', colRole)}
+            onPress={() => handleSort("role")}
+            className={cn("flex-row items-center", colRole)}
           >
-            <Text className="text-xs font-medium text-muted-foreground">Role</Text>
+            <Text className="text-xs font-medium text-muted-foreground">
+              Role
+            </Text>
             <SortArrow field="role" />
           </Pressable>
           <Pressable
-            onPress={() => handleSort('included')}
-            className={cn('flex-row items-center justify-end', colUsage)}
+            onPress={() => handleSort("included")}
+            className={cn("flex-row items-center justify-end", colUsage)}
           >
-            <Text className="text-xs font-medium text-muted-foreground text-right">Included Usage</Text>
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              Included Usage
+            </Text>
             <SortArrow field="included" />
           </Pressable>
           <Pressable
-            onPress={() => handleSort('free')}
-            className={cn('flex-row items-center justify-end', colUsage)}
+            onPress={() => handleSort("free")}
+            className={cn("flex-row items-center justify-end", colUsage)}
           >
-            <Text className="text-xs font-medium text-muted-foreground text-right">Free Usage</Text>
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              Free Usage
+            </Text>
             <SortArrow field="free" />
           </Pressable>
           <Pressable
-            onPress={() => handleSort('onDemand')}
-            className={cn('flex-row items-center justify-end', colUsage)}
+            onPress={() => handleSort("onDemand")}
+            className={cn("flex-row items-center justify-end", colUsage)}
           >
-            <Text className="text-xs font-medium text-muted-foreground text-right">On-Demand Usage</Text>
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              On-Demand Usage
+            </Text>
             <SortArrow field="onDemand" />
           </Pressable>
           <View className={colActions} />
@@ -1625,31 +1854,48 @@ const PeopleTab = observer(function PeopleTab() {
       </View>
 
       {filteredMembers.map((member: any) => {
-        const isCurrentUser = member.userId === user?.id
-        const avatarColor = ROLE_COLORS[member.role] || 'bg-primary'
-        const resolved = userMap[member.userId]
-        const mName = isCurrentUser ? (user?.name || user?.email) : (resolved?.name || resolved?.email || member.userId)
-        const mEmail = isCurrentUser ? user?.email : (resolved?.email || member.userId)
-        const initial = (mName || 'M')[0]?.toUpperCase()
+        const isCurrentUser = member.userId === user?.id;
+        const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
+        const resolved = userMap[member.userId];
+        const mName = isCurrentUser
+          ? user?.name || user?.email
+          : resolved?.name || resolved?.email || member.userId;
+        const mEmail = isCurrentUser
+          ? user?.email
+          : resolved?.email || member.userId;
+        const initial = (mName || "M")[0]?.toUpperCase();
         return (
           <View
             key={member.id}
             className="flex-row items-center justify-between gap-4 px-4 py-3 pr-5 border-b border-border overflow-visible"
           >
-            <View className={cn('flex-row items-center gap-3', peopleNameCol)}>
-              <View className={cn('h-8 w-8 rounded-full items-center justify-center shrink-0', avatarColor)}>
-                <Text className="text-xs font-semibold text-white">{initial}</Text>
+            <View className={cn("flex-row items-center gap-3", peopleNameCol)}>
+              <View
+                className={cn(
+                  "h-8 w-8 rounded-full items-center justify-center shrink-0",
+                  avatarColor
+                )}
+              >
+                <Text className="text-xs font-semibold text-white">
+                  {initial}
+                </Text>
               </View>
               <View className="min-w-0 flex-1">
                 <View className="flex-row items-center gap-1 flex-wrap">
-                  <Text className="text-sm font-medium text-foreground" numberOfLines={2}>
+                  <Text
+                    className="text-sm font-medium text-foreground"
+                    numberOfLines={2}
+                  >
                     {mName}
                   </Text>
                   {isCurrentUser && (
                     <Text className="text-sm text-muted-foreground">(you)</Text>
                   )}
                 </View>
-                <Text className="text-xs text-muted-foreground" numberOfLines={2}>
+                <Text
+                  className="text-xs text-muted-foreground"
+                  numberOfLines={2}
+                >
                   {mEmail}
                 </Text>
               </View>
@@ -1659,11 +1905,14 @@ const PeopleTab = observer(function PeopleTab() {
               <View className={colRole}>
                 {canManageMembers && !isCurrentUser ? (
                   <Pressable
-                    onPress={() => setMenuState(
-                      menuState?.memberId === member.id && menuState?.view === 'roles'
-                        ? null
-                        : { memberId: member.id, view: 'roles' }
-                    )}
+                    onPress={() =>
+                      setMenuState(
+                        menuState?.memberId === member.id &&
+                          menuState?.view === "roles"
+                          ? null
+                          : { memberId: member.id, view: "roles" }
+                      )
+                    }
                     className="flex-row items-center gap-1"
                   >
                     <Text className="text-sm text-foreground capitalize">
@@ -1678,19 +1927,22 @@ const PeopleTab = observer(function PeopleTab() {
                 )}
               </View>
 
-              <View className={cn(colUsage, 'items-end')}>
+              <View className={cn(colUsage, "items-end")}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatSharePct(memberUsage.included[member.userId] ?? 0, includedTotalAll)}
+                  {formatSharePct(
+                    memberUsage.included[member.userId] ?? 0,
+                    includedTotalAll
+                  )}
                 </Text>
               </View>
 
-              <View className={cn(colUsage, 'items-end')}>
+              <View className={cn(colUsage, "items-end")}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
                   {formatUsdLabel(memberUsage.free[member.userId] ?? 0)}
                 </Text>
               </View>
 
-              <View className={cn(colUsage, 'items-end')}>
+              <View className={cn(colUsage, "items-end")}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
                   {formatUsdLabel(memberUsage.onDemand[member.userId] ?? 0)}
                 </Text>
@@ -1699,7 +1951,9 @@ const PeopleTab = observer(function PeopleTab() {
               <View className={colActions}>
                 {canManageMembers && !isCurrentUser ? (
                   <Pressable
-                    onPress={() => setMenuState({ memberId: member.id, view: 'actions' })}
+                    onPress={() =>
+                      setMenuState({ memberId: member.id, view: "actions" })
+                    }
                     className="items-center justify-center min-w-[44px] min-h-[44px] -mr-1"
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
@@ -1713,7 +1967,7 @@ const PeopleTab = observer(function PeopleTab() {
               </View>
             </View>
           </View>
-        )
+        );
       })}
 
       <View className="px-4 py-2.5">
@@ -1722,61 +1976,107 @@ const PeopleTab = observer(function PeopleTab() {
         </Text>
       </View>
     </>
-  )
+  );
 
   const sentInvitationListTable = (
     <>
       <View className="flex-row items-center px-4 py-2.5 border-b border-border bg-muted/30">
-        <View className={cn('flex-[2]', isMobilePeopleLayout && 'min-w-[200px] shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">Email</Text>
+        <View
+          className={cn(
+            "flex-[2]",
+            isMobilePeopleLayout && "min-w-[200px] shrink-0"
+          )}
+        >
+          <Text className="text-xs font-medium text-muted-foreground">
+            Email
+          </Text>
         </View>
-        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">Role</Text>
+        <View className={cn("w-24", isMobilePeopleLayout && "shrink-0")}>
+          <Text className="text-xs font-medium text-muted-foreground">
+            Role
+          </Text>
         </View>
-        <View className={cn('w-28', isMobilePeopleLayout && 'shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">Sent</Text>
+        <View className={cn("w-28", isMobilePeopleLayout && "shrink-0")}>
+          <Text className="text-xs font-medium text-muted-foreground">
+            Sent
+          </Text>
         </View>
-        <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-          <Text className="text-xs font-medium text-muted-foreground">Status</Text>
+        <View className={cn("w-24", isMobilePeopleLayout && "shrink-0")}>
+          <Text className="text-xs font-medium text-muted-foreground">
+            Status
+          </Text>
         </View>
-        <View className={cn('w-8', isMobilePeopleLayout && 'shrink-0')} />
+        <View className={cn("w-8", isMobilePeopleLayout && "shrink-0")} />
       </View>
 
       {sentInvitations.map((inv: any) => {
-        const isExpired = inv.status === 'expired' || Date.now() > inv.expiresAt
-        const status = isExpired ? 'expired' : (inv.status as string)
-        const isDimmed = status === 'expired' || status === 'declined'
-        const badgeVariant = status === 'accepted' ? 'default'
-          : status === 'declined' ? 'destructive'
-          : status === 'expired' ? 'outline'
-          : 'secondary'
-        const badgeLabel = status === 'accepted' ? 'Accepted'
-          : status === 'declined' ? 'Declined'
-          : status === 'expired' ? 'Expired'
-          : 'Pending'
+        const isExpired =
+          inv.status === "expired" || Date.now() > inv.expiresAt;
+        const status = isExpired ? "expired" : (inv.status as string);
+        const isDimmed = status === "expired" || status === "declined";
+        const badgeVariant =
+          status === "accepted"
+            ? "default"
+            : status === "declined"
+            ? "destructive"
+            : status === "expired"
+            ? "outline"
+            : "secondary";
+        const badgeLabel =
+          status === "accepted"
+            ? "Accepted"
+            : status === "declined"
+            ? "Declined"
+            : status === "expired"
+            ? "Expired"
+            : "Pending";
         return (
           <View
             key={inv.id}
-            className={cn('flex-row items-center px-4 py-3 border-b border-border', isDimmed && 'opacity-50')}
+            className={cn(
+              "flex-row items-center px-4 py-3 border-b border-border",
+              isDimmed && "opacity-50"
+            )}
           >
-            <View className={cn('flex-[2] min-w-0', isMobilePeopleLayout && 'min-w-[200px] shrink-0')}>
-              <Text className={cn('text-sm text-foreground', isDimmed && 'line-through')} numberOfLines={2}>
+            <View
+              className={cn(
+                "flex-[2] min-w-0",
+                isMobilePeopleLayout && "min-w-[200px] shrink-0"
+              )}
+            >
+              <Text
+                className={cn(
+                  "text-sm text-foreground",
+                  isDimmed && "line-through"
+                )}
+                numberOfLines={2}
+              >
                 {inv.email}
               </Text>
             </View>
-            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
-              <Text className="text-sm text-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
-            </View>
-            <View className={cn('w-28', isMobilePeopleLayout && 'shrink-0')}>
-              <Text className="text-sm text-foreground">
-                {new Date(inv.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            <View className={cn("w-24", isMobilePeopleLayout && "shrink-0")}>
+              <Text className="text-sm text-foreground capitalize">
+                {ROLE_DISPLAY[inv.role] || inv.role}
               </Text>
             </View>
-            <View className={cn('w-24', isMobilePeopleLayout && 'shrink-0')}>
+            <View className={cn("w-28", isMobilePeopleLayout && "shrink-0")}>
+              <Text className="text-sm text-foreground">
+                {new Date(inv.createdAt).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </Text>
+            </View>
+            <View className={cn("w-24", isMobilePeopleLayout && "shrink-0")}>
               <Badge variant={badgeVariant}>{badgeLabel}</Badge>
             </View>
-            <View className={cn('w-8 items-center', isMobilePeopleLayout && 'shrink-0')}>
-              {status === 'pending' && (
+            <View
+              className={cn(
+                "w-8 items-center",
+                isMobilePeopleLayout && "shrink-0"
+              )}
+            >
+              {status === "pending" && (
                 <Pressable
                   onPress={() =>
                     setRevokeInvitationTarget({ id: inv.id, email: inv.email })
@@ -1787,7 +2087,7 @@ const PeopleTab = observer(function PeopleTab() {
               )}
             </View>
           </View>
-        )
+        );
       })}
 
       <View className="px-4 py-2.5">
@@ -1796,36 +2096,43 @@ const PeopleTab = observer(function PeopleTab() {
         </Text>
       </View>
     </>
-  )
+  );
 
-  const billableSeats = workspaceMembers.filter((m: any) => m.role !== 'viewer').length
+  const billableSeats = workspaceMembers.filter(
+    (m: any) => m.role !== "viewer"
+  ).length;
 
   const handleExportMembersCsv = () => {
-    if (!currentWorkspace?.id) return
-    const url = api.getUsageLogCsvUrl(currentWorkspace.id, { period: '30d' })
-    if (typeof window !== 'undefined') {
-      window.open(url, '_blank', 'noopener')
+    if (!currentWorkspace?.id) return;
+    const url = api.getUsageLogCsvUrl(currentWorkspace.id, { period: "30d" });
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener");
     } else {
-      Linking.openURL(url)
+      Linking.openURL(url);
     }
-  }
+  };
 
   return (
     <View className="gap-0">
       {/* Header */}
       <View
         className={cn(
-          'flex-row items-start justify-between gap-3 mb-4',
-          isMobilePeopleLayout && 'flex-col mb-5',
+          "flex-row items-start justify-between gap-3 mb-4",
+          isMobilePeopleLayout && "flex-col mb-5"
         )}
       >
         <View className="flex-1">
           <Text className="text-xl font-semibold text-foreground">Members</Text>
-          <Text className={cn('text-sm text-muted-foreground mt-1', isMobilePeopleLayout && 'leading-5')}>
-            Inviting people to{' '}
+          <Text
+            className={cn(
+              "text-sm text-muted-foreground mt-1",
+              isMobilePeopleLayout && "leading-5"
+            )}
+          >
+            Inviting people to{" "}
             <Text className="font-semibold text-foreground">
-              {resolvedWs?.name || currentWorkspace?.name || 'your workspace'}
-            </Text>{' '}
+              {resolvedWs?.name || currentWorkspace?.name || "your workspace"}
+            </Text>{" "}
             gives access to workspace shared projects and usage.
           </Text>
         </View>
@@ -1843,9 +2150,13 @@ const PeopleTab = observer(function PeopleTab() {
       <View className="rounded-xl border border-border bg-card p-4 mb-4">
         <View className="flex-row items-center gap-2 mb-1">
           <View className="h-2 w-2 rounded-full bg-emerald-500" />
-          <Text className="text-xs font-medium text-foreground">Billable Seats</Text>
+          <Text className="text-xs font-medium text-foreground">
+            Billable Seats
+          </Text>
         </View>
-        <Text className="text-2xl font-bold text-foreground">{billableSeats}</Text>
+        <Text className="text-2xl font-bold text-foreground">
+          {billableSeats}
+        </Text>
       </View>
 
       {/* Sub-tabs */}
@@ -1854,23 +2165,21 @@ const PeopleTab = observer(function PeopleTab() {
           <Pressable
             key={tab.id}
             onPress={() => {
-              setSubTab(tab.id)
-              setShowRoleFilter(false)
-              setMenuState(null)
+              setSubTab(tab.id);
+              setShowRoleFilter(false);
+              setMenuState(null);
             }}
             className={cn(
-              'px-4 py-2.5 mr-1',
-              subTab === tab.id
-                ? 'border-b-2 border-foreground'
-                : ''
+              "px-4 py-2.5 mr-1",
+              subTab === tab.id ? "border-b-2 border-foreground" : ""
             )}
           >
             <Text
               className={cn(
-                'text-sm',
+                "text-sm",
                 subTab === tab.id
-                  ? 'text-foreground font-medium'
-                  : 'text-muted-foreground'
+                  ? "text-foreground font-medium"
+                  : "text-muted-foreground"
               )}
             >
               {tab.label}
@@ -1882,76 +2191,93 @@ const PeopleTab = observer(function PeopleTab() {
       {/* Controls row */}
       <View
         className={cn(
-          'mb-4',
-          isMobilePeopleLayout ? 'flex-col gap-3' : 'flex-row items-center gap-2 flex-wrap'
+          "mb-4",
+          isMobilePeopleLayout
+            ? "flex-col gap-3"
+            : "flex-row items-center gap-2 flex-wrap"
         )}
       >
-        {subTab === 'all' && (
+        {subTab === "all" && (
           <>
             <View
               className={cn(
-                'flex-row items-center border border-border rounded-lg px-3',
-                isMobilePeopleLayout ? 'w-full h-11' : 'h-9 flex-1 min-w-[160px]'
+                "flex-row items-center border border-border rounded-lg px-3",
+                isMobilePeopleLayout
+                  ? "w-full h-11"
+                  : "h-9 flex-1 min-w-[160px]"
               )}
             >
-              <Search size={14} className="text-muted-foreground mr-2 shrink-0" />
+              <Search
+                size={14}
+                className="text-muted-foreground mr-2 shrink-0"
+              />
               <TextInput
                 value={search}
                 onChangeText={setSearch}
                 placeholder="Search..."
                 className={cn(
-                  'flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none web:min-h-0',
-                  isMobilePeopleLayout && 'py-0 leading-5 web:py-1.5'
+                  "flex-1 text-sm text-foreground placeholder:text-muted-foreground web:outline-none web:min-h-0",
+                  isMobilePeopleLayout && "py-0 leading-5 web:py-1.5"
                 )}
                 autoCapitalize="none"
                 autoCorrect={false}
-                textAlignVertical={isMobilePeopleLayout ? 'center' : undefined}
+                textAlignVertical={isMobilePeopleLayout ? "center" : undefined}
               />
             </View>
 
             <Pressable
               onPress={() => setShowRoleFilter(true)}
               className={cn(
-                'flex-row items-center px-3 border border-border rounded-lg gap-1.5',
-                isMobilePeopleLayout ? 'w-full justify-between h-11' : 'h-9'
+                "flex-row items-center px-3 border border-border rounded-lg gap-1.5",
+                isMobilePeopleLayout ? "w-full justify-between h-11" : "h-9"
               )}
             >
               <Text className="text-sm text-foreground">
-                {roleFilter === 'all' ? 'All roles' : ROLE_DISPLAY[roleFilter] || roleFilter}
+                {roleFilter === "all"
+                  ? "All roles"
+                  : ROLE_DISPLAY[roleFilter] || roleFilter}
               </Text>
               <ChevronDown size={14} className="text-muted-foreground" />
             </Pressable>
           </>
         )}
 
-        {subTab === 'invitations' && !isMobilePeopleLayout && <View className="flex-1" />}
+        {subTab === "invitations" && !isMobilePeopleLayout && (
+          <View className="flex-1" />
+        )}
 
         <Pressable
           onPress={() => setShowInviteModal(true)}
           className={cn(
-            'flex-row items-center gap-1.5 px-3 bg-primary rounded-lg',
-            isMobilePeopleLayout ? 'w-full justify-center h-11' : 'h-9'
+            "flex-row items-center gap-1.5 px-3 bg-primary rounded-lg",
+            isMobilePeopleLayout ? "w-full justify-center h-11" : "h-9"
           )}
         >
           <UserPlus size={14} className="text-primary-foreground" />
-          <Text className="text-sm font-medium text-primary-foreground">Invite members</Text>
+          <Text className="text-sm font-medium text-primary-foreground">
+            Invite members
+          </Text>
         </Pressable>
       </View>
 
       {/* Content based on sub-tab */}
-      {subTab === 'all' && (
+      {subTab === "all" && (
         <Card>
           <CardContent className="p-0">
             {isLoading ? (
               <View className="py-12 items-center">
                 <ActivityIndicator size="small" />
-                <Text className="text-sm text-muted-foreground mt-2">Loading members...</Text>
+                <Text className="text-sm text-muted-foreground mt-2">
+                  Loading members...
+                </Text>
               </View>
             ) : filteredMembers.length === 0 ? (
               <View className="py-12 items-center px-6">
                 <Users size={32} className="text-muted-foreground/50 mb-3" />
                 <Text className="text-sm text-muted-foreground">
-                  {search.trim() || roleFilter !== 'all' ? 'No members match your filters' : 'No members yet. Invite someone to collaborate.'}
+                  {search.trim() || roleFilter !== "all"
+                    ? "No members match your filters"
+                    : "No members yet. Invite someone to collaborate."}
                 </Text>
               </View>
             ) : (
@@ -1960,7 +2286,7 @@ const PeopleTab = observer(function PeopleTab() {
                   <ScrollView
                     horizontal
                     nestedScrollEnabled
-                    showsHorizontalScrollIndicator={Platform.OS !== 'web'}
+                    showsHorizontalScrollIndicator={Platform.OS !== "web"}
                     className="w-full max-w-full"
                     style={{ flexGrow: 0 }}
                   >
@@ -1975,88 +2301,143 @@ const PeopleTab = observer(function PeopleTab() {
         </Card>
       )}
 
-      {subTab === 'invitations' && (
+      {subTab === "invitations" && (
         <View className="gap-4">
           {/* Received invitations */}
           <View>
-            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Received</Text>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
+              Received
+            </Text>
             {receivedInvites.length === 0 ? (
-              <Card><CardContent className="py-6 items-center"><Text className="text-sm text-muted-foreground">No invitations</Text></CardContent></Card>
+              <Card>
+                <CardContent className="py-6 items-center">
+                  <Text className="text-sm text-muted-foreground">
+                    No invitations
+                  </Text>
+                </CardContent>
+              </Card>
             ) : (
               <Card>
                 <CardContent className="p-0">
                   {receivedInvites.map((inv: any) => {
-                    const expired = isInvitationExpired(inv)
-                    const isAccepting = processingInvite?.id === inv.id && processingInvite?.action === 'accept'
-                    const isDeclining = processingInvite?.id === inv.id && processingInvite?.action === 'decline'
+                    const expired = isInvitationExpired(inv);
+                    const isAccepting =
+                      processingInvite?.id === inv.id &&
+                      processingInvite?.action === "accept";
+                    const isDeclining =
+                      processingInvite?.id === inv.id &&
+                      processingInvite?.action === "decline";
                     return (
                       <View key={inv.id} className="p-4 border-b border-border">
                         <View className="flex-row items-center justify-between mb-1">
                           <Text className="text-base font-semibold text-foreground">
-                            {inv.workspace?.name || inv.workspaceName || 'Workspace'}
+                            {inv.workspace?.name ||
+                              inv.workspaceName ||
+                              "Workspace"}
                           </Text>
                           <View className="flex-row items-center gap-2">
                             {expired && (
                               <View className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40">
-                                <Text className="text-xs text-amber-700 dark:text-amber-300">Expired</Text>
+                                <Text className="text-xs text-amber-700 dark:text-amber-300">
+                                  Expired
+                                </Text>
                               </View>
                             )}
                             <View className="px-2 py-0.5 rounded bg-muted">
-                              <Text className="text-xs text-muted-foreground capitalize">{ROLE_DISPLAY[inv.role] || inv.role}</Text>
+                              <Text className="text-xs text-muted-foreground capitalize">
+                                {ROLE_DISPLAY[inv.role] || inv.role}
+                              </Text>
                             </View>
                           </View>
                         </View>
                         <Text className="text-sm text-muted-foreground mb-3">
-                          {expired ? 'This invitation has expired. You can dismiss it or ask for a new invite.' : "You've been invited to join this workspace"}
+                          {expired
+                            ? "This invitation has expired. You can dismiss it or ask for a new invite."
+                            : "You've been invited to join this workspace"}
                         </Text>
                         <View className="flex-row gap-2">
                           <Pressable
-                            disabled={expired || processingInvite?.id === inv.id}
+                            disabled={
+                              expired || processingInvite?.id === inv.id
+                            }
                             onPress={async () => {
-                              setProcessingInvite({ id: inv.id, action: 'accept' })
+                              setProcessingInvite({
+                                id: inv.id,
+                                action: "accept",
+                              });
                               try {
-                                await actions.acceptInvitation(inv.id, user?.id || '', {
-                                  workspaceId: inv.workspaceId,
-                                  role: inv.role,
-                                  projectId: inv.projectId,
-                                })
-                                setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                                await actions.acceptInvitation(
+                                  inv.id,
+                                  user?.id || "",
+                                  {
+                                    workspaceId: inv.workspaceId,
+                                    role: inv.role,
+                                    projectId: inv.projectId,
+                                  }
+                                );
+                                setReceivedInvites((prev) =>
+                                  prev.filter((i: any) => i.id !== inv.id)
+                                );
                               } catch {}
-                              loadPeopleData()
-                              invitationEvents.emit()
-                              setProcessingInvite(null)
+                              loadPeopleData();
+                              invitationEvents.emit();
+                              setProcessingInvite(null);
                             }}
-                            className={cn('flex-1 h-10 rounded-lg items-center justify-center', expired ? 'bg-muted' : 'bg-primary', (expired || processingInvite?.id === inv.id) && 'opacity-50')}
+                            className={cn(
+                              "flex-1 h-10 rounded-lg items-center justify-center",
+                              expired ? "bg-muted" : "bg-primary",
+                              (expired || processingInvite?.id === inv.id) &&
+                                "opacity-50"
+                            )}
                           >
                             {isAccepting ? (
                               <ActivityIndicator size="small" color="white" />
                             ) : (
-                              <Text className={cn('text-sm font-medium', expired ? 'text-muted-foreground' : 'text-primary-foreground')}>{expired ? 'Expired' : 'Accept'}</Text>
+                              <Text
+                                className={cn(
+                                  "text-sm font-medium",
+                                  expired
+                                    ? "text-muted-foreground"
+                                    : "text-primary-foreground"
+                                )}
+                              >
+                                {expired ? "Expired" : "Accept"}
+                              </Text>
                             )}
                           </Pressable>
                           <Pressable
                             disabled={processingInvite?.id === inv.id}
                             onPress={async () => {
-                              setProcessingInvite({ id: inv.id, action: 'decline' })
+                              setProcessingInvite({
+                                id: inv.id,
+                                action: "decline",
+                              });
                               try {
-                                await actions.declineInvitation(inv.id)
-                                setReceivedInvites((prev) => prev.filter((i: any) => i.id !== inv.id))
+                                await actions.declineInvitation(inv.id);
+                                setReceivedInvites((prev) =>
+                                  prev.filter((i: any) => i.id !== inv.id)
+                                );
                               } catch {}
-                              loadPeopleData()
-                              invitationEvents.emit()
-                              setProcessingInvite(null)
+                              loadPeopleData();
+                              invitationEvents.emit();
+                              setProcessingInvite(null);
                             }}
-                            className={cn('flex-1 h-10 border border-border rounded-lg items-center justify-center', processingInvite?.id === inv.id && 'opacity-50')}
+                            className={cn(
+                              "flex-1 h-10 border border-border rounded-lg items-center justify-center",
+                              processingInvite?.id === inv.id && "opacity-50"
+                            )}
                           >
                             {isDeclining ? (
                               <ActivityIndicator size="small" />
                             ) : (
-                              <Text className="text-sm font-medium text-foreground">{expired ? 'Dismiss' : 'Decline'}</Text>
+                              <Text className="text-sm font-medium text-foreground">
+                                {expired ? "Dismiss" : "Decline"}
+                              </Text>
                             )}
                           </Pressable>
                         </View>
                       </View>
-                    )
+                    );
                   })}
                 </CardContent>
               </Card>
@@ -2065,47 +2446,55 @@ const PeopleTab = observer(function PeopleTab() {
 
           {/* Sent invitations */}
           <View>
-            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">Sent</Text>
-        <Card>
-          <CardContent className="p-0">
-            {isLoading ? (
-              <View className="py-12 items-center">
-                <ActivityIndicator size="small" />
-                <Text className="text-sm text-muted-foreground mt-2">Loading...</Text>
-              </View>
-            ) : sentInvitations.length === 0 ? (
-              <View className="py-16 items-center px-6">
-                <View className="h-12 w-12 rounded-lg bg-muted/50 items-center justify-center mb-4">
-                  <Mail size={24} className="text-muted-foreground/50" />
-                </View>
-                <Text className="text-base font-medium text-foreground mb-2">No invitations found</Text>
-                <Pressable
-                  onPress={() => setShowInviteModal(true)}
-                  className="flex-row items-center gap-1.5 mt-2 px-4 py-2 border border-border rounded-lg"
-                >
-                  <UserPlus size={14} className="text-foreground" />
-                  <Text className="text-sm font-medium text-foreground">Invite members</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <>
-                {isMobilePeopleLayout ? (
-                  <ScrollView
-                    horizontal
-                    nestedScrollEnabled
-                    showsHorizontalScrollIndicator={Platform.OS !== 'web'}
-                    className="w-full max-w-full"
-                    style={{ flexGrow: 0 }}
-                  >
-                    <View>{sentInvitationListTable}</View>
-                  </ScrollView>
+            <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-1">
+              Sent
+            </Text>
+            <Card>
+              <CardContent className="p-0">
+                {isLoading ? (
+                  <View className="py-12 items-center">
+                    <ActivityIndicator size="small" />
+                    <Text className="text-sm text-muted-foreground mt-2">
+                      Loading...
+                    </Text>
+                  </View>
+                ) : sentInvitations.length === 0 ? (
+                  <View className="py-16 items-center px-6">
+                    <View className="h-12 w-12 rounded-lg bg-muted/50 items-center justify-center mb-4">
+                      <Mail size={24} className="text-muted-foreground/50" />
+                    </View>
+                    <Text className="text-base font-medium text-foreground mb-2">
+                      No invitations found
+                    </Text>
+                    <Pressable
+                      onPress={() => setShowInviteModal(true)}
+                      className="flex-row items-center gap-1.5 mt-2 px-4 py-2 border border-border rounded-lg"
+                    >
+                      <UserPlus size={14} className="text-foreground" />
+                      <Text className="text-sm font-medium text-foreground">
+                        Invite members
+                      </Text>
+                    </Pressable>
+                  </View>
                 ) : (
-                  sentInvitationListTable
+                  <>
+                    {isMobilePeopleLayout ? (
+                      <ScrollView
+                        horizontal
+                        nestedScrollEnabled
+                        showsHorizontalScrollIndicator={Platform.OS !== "web"}
+                        className="w-full max-w-full"
+                        style={{ flexGrow: 0 }}
+                      >
+                        <View>{sentInvitationListTable}</View>
+                      </ScrollView>
+                    ) : (
+                      sentInvitationListTable
+                    )}
+                  </>
                 )}
-              </>
-            )}
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
           </View>
         </View>
       )}
@@ -2126,20 +2515,46 @@ const PeopleTab = observer(function PeopleTab() {
             onPress={(e) => e.stopPropagation()}
             className="bg-background rounded-xl p-5 w-full max-w-xs gap-1"
           >
-            <Text className="text-base font-semibold text-foreground mb-2">Filter by role</Text>
-            {[{ value: 'all', label: 'All roles' }, { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Editor' }, { value: 'viewer', label: 'Viewer' }].map((opt) => (
+            <Text className="text-base font-semibold text-foreground mb-2">
+              Filter by role
+            </Text>
+            {[
+              { value: "all", label: "All roles" },
+              { value: "owner", label: "Owner" },
+              { value: "admin", label: "Admin" },
+              { value: "member", label: "Editor" },
+              { value: "viewer", label: "Viewer" },
+            ].map((opt) => (
               <Pressable
                 key={opt.value}
-                onPress={() => { setRoleFilter(opt.value); setShowRoleFilter(false) }}
-                className={cn('py-3 border-b border-border', roleFilter === opt.value && 'bg-accent rounded-md px-3')}
+                onPress={() => {
+                  setRoleFilter(opt.value);
+                  setShowRoleFilter(false);
+                }}
+                className={cn(
+                  "py-3 border-b border-border",
+                  roleFilter === opt.value && "bg-accent rounded-md px-3"
+                )}
               >
-                <Text className={cn('text-sm', roleFilter === opt.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                <Text
+                  className={cn(
+                    "text-sm",
+                    roleFilter === opt.value
+                      ? "text-foreground font-medium"
+                      : "text-foreground"
+                  )}
+                >
                   {opt.label}
                 </Text>
               </Pressable>
             ))}
-            <Pressable onPress={() => setShowRoleFilter(false)} className="py-2 mt-1">
-              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+            <Pressable
+              onPress={() => setShowRoleFilter(false)}
+              className="py-2 mt-1"
+            >
+              <Text className="text-sm text-muted-foreground text-center">
+                Cancel
+              </Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -2149,11 +2564,11 @@ const PeopleTab = observer(function PeopleTab() {
       <InviteMembersModal
         visible={showInviteModal}
         onClose={() => {
-          setShowInviteModal(false)
-          loadPeopleData()
+          setShowInviteModal(false);
+          loadPeopleData();
         }}
-        workspaceId={resolvedWs?.id || currentWorkspace?.id || ''}
-        workspaceName={resolvedWs?.name || currentWorkspace?.name || ''}
+        workspaceId={resolvedWs?.id || currentWorkspace?.id || ""}
+        workspaceName={resolvedWs?.name || currentWorkspace?.name || ""}
         actions={actions}
       />
 
@@ -2162,13 +2577,13 @@ const PeopleTab = observer(function PeopleTab() {
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (!isRevokingInvitation) setRevokeInvitationTarget(null)
+          if (!isRevokingInvitation) setRevokeInvitationTarget(null);
         }}
       >
         <Pressable
           className="flex-1 bg-black/50 justify-center items-center px-6"
           onPress={() => {
-            if (!isRevokingInvitation) setRevokeInvitationTarget(null)
+            if (!isRevokingInvitation) setRevokeInvitationTarget(null);
           }}
         >
           <Pressable
@@ -2191,22 +2606,24 @@ const PeopleTab = observer(function PeopleTab() {
                 disabled={isRevokingInvitation}
                 onPress={() => setRevokeInvitationTarget(null)}
                 className={cn(
-                  'px-4 py-2.5 rounded-lg border border-border items-center justify-center',
-                  isRevokingInvitation && 'opacity-50'
+                  "px-4 py-2.5 rounded-lg border border-border items-center justify-center",
+                  isRevokingInvitation && "opacity-50"
                 )}
               >
-                <Text className="text-sm font-medium text-foreground">Cancel</Text>
+                <Text className="text-sm font-medium text-foreground">
+                  Cancel
+                </Text>
               </Pressable>
               <Pressable
                 disabled={isRevokingInvitation}
                 onPress={confirmRevokeInvitation}
                 className={cn(
-                  'px-4 py-2.5 rounded-lg bg-destructive items-center justify-center',
-                  isRevokingInvitation && 'opacity-50'
+                  "px-4 py-2.5 rounded-lg bg-destructive items-center justify-center",
+                  isRevokingInvitation && "opacity-50"
                 )}
               >
                 <Text className="text-sm font-medium text-destructive-foreground">
-                  {isRevokingInvitation ? 'Revoking…' : 'Revoke'}
+                  {isRevokingInvitation ? "Revoking…" : "Revoke"}
                 </Text>
               </Pressable>
             </View>
@@ -2229,14 +2646,15 @@ const PeopleTab = observer(function PeopleTab() {
             onPress={(e) => e.stopPropagation()}
             className="bg-background rounded-xl p-5 w-full max-w-xs gap-3"
           >
-            {menuState?.view === 'actions' && (
+            {menuState?.view === "actions" && (
               <>
                 <Text className="text-base font-semibold text-foreground mb-1">
                   Member actions
                 </Text>
                 <Pressable
                   onPress={() => {
-                    if (menuState) setMenuState({ ...menuState, view: 'roles' })
+                    if (menuState)
+                      setMenuState({ ...menuState, view: "roles" });
                   }}
                   className="py-3 border-b border-border"
                 >
@@ -2244,47 +2662,63 @@ const PeopleTab = observer(function PeopleTab() {
                 </Pressable>
                 <Pressable
                   onPress={() => {
-                    if (menuState) handleRemoveMember(menuState.memberId)
+                    if (menuState) handleRemoveMember(menuState.memberId);
                   }}
                   className="py-3"
                 >
-                  <Text className="text-sm text-destructive">Remove member</Text>
+                  <Text className="text-sm text-destructive">
+                    Remove member
+                  </Text>
                 </Pressable>
               </>
             )}
-            {menuState?.view === 'roles' && (
+            {menuState?.view === "roles" && (
               <>
                 <Text className="text-base font-semibold text-foreground mb-1">
                   Select role
                 </Text>
-                {(['owner', 'admin', 'member', 'viewer'] as const).map((r) => {
-                  const activeMember = workspaceMembers.find((m: any) => m.id === menuState?.memberId)
-                  const isActive = activeMember?.role === r
+                {(["owner", "admin", "member", "viewer"] as const).map((r) => {
+                  const activeMember = workspaceMembers.find(
+                    (m: any) => m.id === menuState?.memberId
+                  );
+                  const isActive = activeMember?.role === r;
                   return (
                     <Pressable
                       key={r}
                       onPress={() => {
-                        if (menuState) handleChangeRole(menuState.memberId, r)
+                        if (menuState) handleChangeRole(menuState.memberId, r);
                       }}
-                      className={cn('py-3 border-b border-border', isActive && 'bg-accent rounded-md px-3')}
+                      className={cn(
+                        "py-3 border-b border-border",
+                        isActive && "bg-accent rounded-md px-3"
+                      )}
                     >
-                      <Text className={cn('text-sm', isActive ? 'text-foreground font-medium' : 'text-foreground')}>
+                      <Text
+                        className={cn(
+                          "text-sm",
+                          isActive
+                            ? "text-foreground font-medium"
+                            : "text-foreground"
+                        )}
+                      >
                         {ROLE_DISPLAY[r]}
                       </Text>
                     </Pressable>
-                  )
+                  );
                 })}
               </>
             )}
             <Pressable onPress={() => setMenuState(null)} className="py-2 mt-1">
-              <Text className="text-sm text-muted-foreground text-center">Cancel</Text>
+              <Text className="text-sm text-muted-foreground text-center">
+                Cancel
+              </Text>
             </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
     </View>
-  )
-})
+  );
+});
 
 /** RN Modal on iOS needs explicit layout + `overFullScreen`; NativeWind flex inside Modal is unreliable on device. */
 const inviteMembersModalStyles = StyleSheet.create({
@@ -2293,24 +2727,24 @@ const inviteMembersModalStyles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
   centerRegion: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: '100%',
+    justifyContent: "center",
+    alignItems: "center",
+    width: "100%",
   },
   card: {
-    width: '100%',
+    width: "100%",
     maxWidth: 448,
     zIndex: 10,
-    overflow: 'visible',
+    overflow: "visible",
   },
   cardCompact: {
-    maxHeight: '92%',
+    maxHeight: "92%",
   },
-})
+});
 
 function InviteMembersModal({
   visible,
@@ -2319,44 +2753,45 @@ function InviteMembersModal({
   workspaceName,
   actions,
 }: {
-  visible: boolean
-  onClose: () => void
-  workspaceId: string
-  workspaceName: string
-  actions: ReturnType<typeof useDomainActions>
+  visible: boolean;
+  onClose: () => void;
+  workspaceId: string;
+  workspaceName: string;
+  actions: ReturnType<typeof useDomainActions>;
 }) {
-  const { X, ChevronDown } = useSettingsIcons()
-  const { width, height } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
-  const compactInviteModal = width < SETTINGS_WIDE_BREAKPOINT
+  const { X, ChevronDown } = useSettingsIcons();
+  const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const compactInviteModal = width < SETTINGS_WIDE_BREAKPOINT;
   /** iOS: never put actions as sibling below a bounded ScrollView — RCTScrollView draws a hard edge that clips/overlaps the footer. */
-  const nativeCompactScrollMaxHeight = Math.min(height * 0.78, 560)
+  const nativeCompactScrollMaxHeight = Math.min(height * 0.78, 560);
 
-  const workspaces = useWorkspaceCollection()
-  const { subscription } = useBillingData(workspaceId)
-  const [emailInput, setEmailInput] = useState('')
-  const [role, setRole] = useState<string>('member')
-  const [showRolePicker, setShowRolePicker] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const workspaces = useWorkspaceCollection();
+  const { subscription } = useBillingData(workspaceId);
+  const [emailInput, setEmailInput] = useState("");
+  const [role, setRole] = useState<string>("member");
+  const [showRolePicker, setShowRolePicker] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const INVITE_ROLES = [
-    { value: 'member', label: 'Editor' },
-    { value: 'admin', label: 'Admin' },
-    { value: 'viewer', label: 'Viewer' },
-  ]
+    { value: "member", label: "Editor" },
+    { value: "admin", label: "Admin" },
+    { value: "viewer", label: "Viewer" },
+  ];
 
-  const selectedRoleLabel = INVITE_ROLES.find((r) => r.value === role)?.label || 'Editor'
+  const selectedRoleLabel =
+    INVITE_ROLES.find((r) => r.value === role)?.label || "Editor";
 
   const parseEmails = (input: string): string[] => {
     return input
       .split(/[,;\s]+/)
       .map((e) => e.trim().toLowerCase())
-      .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
-  }
+      .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+  };
 
-  const validEmails = parseEmails(emailInput)
-  const canSubmit = validEmails.length > 0 && !isSubmitting
+  const validEmails = parseEmails(emailInput);
+  const canSubmit = validEmails.length > 0 && !isSubmitting;
 
   /**
    * Per-seat monthly cost on the active subscription. We only compute it when
@@ -2365,59 +2800,72 @@ function InviteMembersModal({
    * `syncSeatsFromMembership` once an invitee accepts.
    */
   const seatHint = useMemo(() => {
-    const planId = subscription?.planId?.toLowerCase?.() ?? ''
-    const isPaidSeatPlan = planId.startsWith('pro') || planId.startsWith('business')
-    if (!isPaidSeatPlan) return null
-    const pricing = planId.startsWith('business') ? PLAN_PRICING.business : PLAN_PRICING.pro
-    const interval = subscription?.billingInterval === 'annual' ? 'annual' : 'monthly'
-    const perSeatMonthly = interval === 'annual' ? Math.round(pricing.annual / 12) : pricing.monthly
-    const incomingCount = validEmails.length
+    const planId = subscription?.planId?.toLowerCase?.() ?? "";
+    const isPaidSeatPlan =
+      planId.startsWith("pro") || planId.startsWith("business");
+    if (!isPaidSeatPlan) return null;
+    const pricing = planId.startsWith("business")
+      ? PLAN_PRICING.business
+      : PLAN_PRICING.pro;
+    const interval =
+      subscription?.billingInterval === "annual" ? "annual" : "monthly";
+    const perSeatMonthly =
+      interval === "annual" ? Math.round(pricing.annual / 12) : pricing.monthly;
+    const incomingCount = validEmails.length;
     return {
       perSeatMonthly,
       incomingCount,
-      planLabel: planId.startsWith('business') ? 'Business' : 'Pro',
-    }
-  }, [subscription, validEmails.length])
+      planLabel: planId.startsWith("business") ? "Business" : "Pro",
+    };
+  }, [subscription, validEmails.length]);
 
   const handleSubmit = async () => {
-    if (!canSubmit) return
-    let resolvedWsId = workspaceId
+    if (!canSubmit) return;
+    let resolvedWsId = workspaceId;
     if (!resolvedWsId) {
-      const ws = workspaces.all[0]
-      resolvedWsId = ws?.id || ''
+      const ws = workspaces.all[0];
+      resolvedWsId = ws?.id || "";
     }
     if (!resolvedWsId) {
-      setError('Workspace not loaded yet. Please close and try again.')
-      return
+      setError("Workspace not loaded yet. Please close and try again.");
+      return;
     }
-    setIsSubmitting(true)
-    setError(null)
+    setIsSubmitting(true);
+    setError(null);
     try {
       for (const email of validEmails) {
-        await actions.sendInvitation({ email, role: role as any, workspaceId: resolvedWsId })
+        await actions.sendInvitation({
+          email,
+          role: role as any,
+          workspaceId: resolvedWsId,
+        });
       }
-      setEmailInput('')
-      setRole('member')
-      onClose()
+      setEmailInput("");
+      setRole("member");
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send invitation')
+      setError(
+        err instanceof Error ? err.message : "Failed to send invitation"
+      );
     } finally {
-      setIsSubmitting(false)
+      setIsSubmitting(false);
     }
-  }
+  };
 
   const handleClose = () => {
-    setEmailInput('')
-    setRole('member')
-    setError(null)
-    setShowRolePicker(false)
-    onClose()
-  }
+    setEmailInput("");
+    setRole("member");
+    setError(null);
+    setShowRolePicker(false);
+    onClose();
+  };
 
   const inviteFormFields = (
     <>
       <View className="flex-row items-center justify-between mb-1">
-        <Text className="text-lg font-semibold text-foreground">Invite members</Text>
+        <Text className="text-lg font-semibold text-foreground">
+          Invite members
+        </Text>
         <Pressable onPress={handleClose} className="p-1 -mr-1">
           <X size={20} className="text-muted-foreground" />
         </Pressable>
@@ -2437,7 +2885,10 @@ function InviteMembersModal({
       <View className="border border-border rounded-lg mb-4">
         <TextInput
           value={emailInput}
-          onChangeText={(t) => { setEmailInput(t); setError(null) }}
+          onChangeText={(t) => {
+            setEmailInput(t);
+            setError(null);
+          }}
           placeholder="example1@example.com, example2@example.com"
           autoCapitalize="none"
           autoCorrect={false}
@@ -2447,7 +2898,9 @@ function InviteMembersModal({
       </View>
 
       <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
-      <View className={cn('relative z-50', compactInviteModal ? 'mb-4' : 'mb-6')}>
+      <View
+        className={cn("relative z-50", compactInviteModal ? "mb-4" : "mb-6")}
+      >
         <Pressable
           onPress={() => setShowRolePicker(!showRolePicker)}
           className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
@@ -2456,17 +2909,31 @@ function InviteMembersModal({
           <ChevronDown size={14} className="text-muted-foreground" />
         </Pressable>
         {showRolePicker && (
-          <View className={cn(
-            'bg-background border border-border rounded-lg shadow-lg overflow-hidden',
-            Platform.OS === 'web' ? 'absolute top-11 left-0 right-0 z-50' : 'mt-1'
-          )}>
+          <View
+            className={cn(
+              "bg-background border border-border rounded-lg shadow-lg overflow-hidden",
+              Platform.OS === "web"
+                ? "absolute top-11 left-0 right-0 z-50"
+                : "mt-1"
+            )}
+          >
             {INVITE_ROLES.map((r) => (
               <Pressable
                 key={r.value}
-                onPress={() => { setRole(r.value); setShowRolePicker(false) }}
-                className={cn('px-3 py-2.5', role === r.value && 'bg-accent')}
+                onPress={() => {
+                  setRole(r.value);
+                  setShowRolePicker(false);
+                }}
+                className={cn("px-3 py-2.5", role === r.value && "bg-accent")}
               >
-                <Text className={cn('text-sm', role === r.value ? 'text-foreground font-medium' : 'text-foreground')}>
+                <Text
+                  className={cn(
+                    "text-sm",
+                    role === r.value
+                      ? "text-foreground font-medium"
+                      : "text-foreground"
+                  )}
+                >
                   {r.label}
                 </Text>
               </Pressable>
@@ -2476,16 +2943,33 @@ function InviteMembersModal({
       </View>
 
       {seatHint && (
-        <View className={cn('rounded-lg bg-muted/40 border border-border p-3', compactInviteModal ? 'mb-4' : 'mb-6')}>
+        <View
+          className={cn(
+            "rounded-lg bg-muted/40 border border-border p-3",
+            compactInviteModal ? "mb-4" : "mb-6"
+          )}
+        >
           <Text className="text-xs text-foreground">
             {seatHint.incomingCount > 0
-              ? `Each accepted invite adds a ${seatHint.planLabel} seat at ${formatUsd(seatHint.perSeatMonthly)}/seat/mo (prorated immediately). Pending invites are not billed — ${seatHint.incomingCount} seat${seatHint.incomingCount === 1 ? '' : 's'} would be added if all accept.`
-              : `Each accepted invite adds a ${seatHint.planLabel} seat at ${formatUsd(seatHint.perSeatMonthly)}/seat/mo (prorated immediately). Pending invites are not billed.`}
+              ? `Each accepted invite adds a ${
+                  seatHint.planLabel
+                } seat at ${formatUsd(
+                  seatHint.perSeatMonthly
+                )}/seat/mo (prorated immediately). Pending invites are not billed — ${
+                  seatHint.incomingCount
+                } seat${
+                  seatHint.incomingCount === 1 ? "" : "s"
+                } would be added if all accept.`
+              : `Each accepted invite adds a ${
+                  seatHint.planLabel
+                } seat at ${formatUsd(
+                  seatHint.perSeatMonthly
+                )}/seat/mo (prorated immediately). Pending invites are not billed.`}
           </Text>
         </View>
       )}
     </>
-  )
+  );
 
   const inviteFormActions = (
     <View className="flex-row gap-3">
@@ -2500,23 +2984,28 @@ function InviteMembersModal({
         onPress={handleSubmit}
         disabled={!canSubmit}
         className={cn(
-          'flex-1 h-10 rounded-lg items-center justify-center',
-          canSubmit ? 'bg-primary' : 'bg-muted'
+          "flex-1 h-10 rounded-lg items-center justify-center",
+          canSubmit ? "bg-primary" : "bg-muted"
         )}
       >
         {isSubmitting ? (
           <ActivityIndicator size="small" color="white" />
         ) : (
-          <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
+          <Text
+            className={cn(
+              "text-sm font-medium",
+              canSubmit ? "text-primary-foreground" : "text-muted-foreground"
+            )}
+          >
             Invite
           </Text>
         )}
       </Pressable>
     </View>
-  )
+  );
 
   const inviteModalInner = compactInviteModal ? (
-    Platform.OS === 'web' ? (
+    Platform.OS === "web" ? (
       <>
         <ScrollView
           keyboardShouldPersistTaps="handled"
@@ -2547,34 +3036,41 @@ function InviteMembersModal({
       {inviteFormFields}
       {inviteFormActions}
     </>
-  )
+  );
 
   const inviteCardWeb = (
     <Pressable
       onPress={(e) => e.stopPropagation()}
       className={cn(
-        'bg-background rounded-xl w-full max-w-md shadow-xl overflow-visible z-10',
-        compactInviteModal ? 'p-5 max-h-[92%]' : 'p-6'
+        "bg-background rounded-xl w-full max-w-md shadow-xl overflow-visible z-10",
+        compactInviteModal ? "p-5 max-h-[92%]" : "p-6"
       )}
     >
       {inviteModalInner}
     </Pressable>
-  )
+  );
 
-  if (Platform.OS === 'web') {
+  if (Platform.OS === "web") {
     return (
-      <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+      <Modal
+        visible={visible}
+        transparent
+        animationType="fade"
+        onRequestClose={handleClose}
+      >
         <Pressable
           onPress={handleClose}
           className={cn(
-            'flex-1 bg-black/50 justify-center',
-            compactInviteModal ? 'px-4 py-6' : 'items-center justify-center px-6'
+            "flex-1 bg-black/50 justify-center",
+            compactInviteModal
+              ? "px-4 py-6"
+              : "items-center justify-center px-6"
           )}
         >
           {inviteCardWeb}
         </Pressable>
       </Modal>
-    )
+    );
   }
 
   return (
@@ -2582,12 +3078,15 @@ function InviteMembersModal({
       visible={visible}
       transparent
       animationType="fade"
-      presentationStyle={Platform.OS === 'ios' ? 'overFullScreen' : undefined}
+      presentationStyle={Platform.OS === "ios" ? "overFullScreen" : undefined}
       statusBarTranslucent
       onRequestClose={handleClose}
     >
       <View style={inviteMembersModalStyles.nativeOverlay}>
-        <Pressable style={inviteMembersModalStyles.backdrop} onPress={handleClose} />
+        <Pressable
+          style={inviteMembersModalStyles.backdrop}
+          onPress={handleClose}
+        />
         <View
           style={[
             inviteMembersModalStyles.centerRegion,
@@ -2605,8 +3104,8 @@ function InviteMembersModal({
               compactInviteModal ? inviteMembersModalStyles.cardCompact : null,
             ]}
             className={cn(
-              'bg-background rounded-xl shadow-xl',
-              compactInviteModal ? 'p-5' : 'p-6'
+              "bg-background rounded-xl shadow-xl",
+              compactInviteModal ? "p-5" : "p-6"
             )}
           >
             {inviteModalInner}
@@ -2614,7 +3113,7 @@ function InviteMembersModal({
         </View>
       </View>
     </Modal>
-  )
+  );
 }
 
 // ============================================================================
@@ -2628,74 +3127,77 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
   workspaceId,
   planId,
 }: {
-  workspaceId: string
-  planId: string
+  workspaceId: string;
+  planId: string;
 }) {
-  const http = useDomainHttp()
-  const { user } = useAuth()
-  const workspaces = useWorkspaceCollection()
-  const toast = useToast()
+  const http = useDomainHttp();
+  const { user } = useAuth();
+  const workspaces = useWorkspaceCollection();
+  const toast = useToast();
 
-  const [data, setData] = useState<WorkspaceChildrenResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [newName, setNewName] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [data, setData] = useState<WorkspaceChildrenResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
-    if (!http || !workspaceId) return
-    setLoading(true)
+    if (!http || !workspaceId) return;
+    setLoading(true);
     try {
-      const res = await api.getWorkspaceChildren(http, workspaceId)
-      setData(res ?? null)
+      const res = await api.getWorkspaceChildren(http, workspaceId);
+      setData(res ?? null);
     } catch {
-      setData(null)
+      setData(null);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [http, workspaceId])
+  }, [http, workspaceId]);
 
   useEffect(() => {
-    load()
-  }, [load])
+    load();
+  }, [load]);
 
   // Prefer the server-resolved effective plan (covers enterprise-via-grant,
   // where the local subscription planId is "free"); fall back to the prop.
-  const effectivePlan = data?.parent.plan ?? planId
+  const effectivePlan = data?.parent.plan ?? planId;
   const planAllowsChildren =
-    effectivePlan.startsWith('business') || effectivePlan.startsWith('enterprise')
+    effectivePlan.startsWith("business") ||
+    effectivePlan.startsWith("enterprise");
 
   const handleCreate = useCallback(async () => {
-    const name = newName.trim()
-    if (!name || !http || !user?.id || creating) return
-    setCreating(true)
+    const name = newName.trim();
+    if (!name || !http || !user?.id || creating) return;
+    setCreating(true);
     try {
       await api.createChildWorkspace(http, {
         name,
         parentWorkspaceId: workspaceId,
         ownerId: user.id,
-      })
-      setNewName('')
-      await load()
+      });
+      setNewName("");
+      await load();
       // Refresh the global collection so the new workspace shows in the switcher.
       try {
-        await workspaces.loadAll()
+        await workspaces.loadAll();
       } catch {}
       toast.show({
-        placement: 'top',
+        placement: "top",
         duration: 4000,
         render: ({ id }: { id: string }) => (
           <Toast nativeID={id} variant="outline" action="success">
             <ToastTitle>Workspace created</ToastTitle>
-            <ToastDescription>“{name}” shares this plan&apos;s usage and seats.</ToastDescription>
+            <ToastDescription>
+              “{name}” shares this plan&apos;s usage and seats.
+            </ToastDescription>
           </Toast>
         ),
-      })
+      });
     } catch (err: any) {
-      const msg = err?.message?.includes('plan_required')
-        ? 'Additional workspaces are included on Business and Enterprise plans only.'
-        : 'Could not create the workspace. Please try again.'
+      const msg = err?.message?.includes("plan_required")
+        ? "Additional workspaces are included on Business and Enterprise plans only."
+        : "Could not create the workspace. Please try again.";
       toast.show({
-        placement: 'top',
+        placement: "top",
         duration: 5000,
         render: ({ id }: { id: string }) => (
           <Toast nativeID={id} variant="outline" action="error">
@@ -2703,26 +3205,28 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
             <ToastDescription>{msg}</ToastDescription>
           </Toast>
         ),
-      })
+      });
     } finally {
-      setCreating(false)
+      setCreating(false);
     }
-  }, [newName, http, user?.id, creating, workspaceId, load, workspaces, toast])
+  }, [newName, http, user?.id, creating, workspaceId, load, workspaces, toast]);
 
   // Hide entirely for plans that can't have children and have none.
-  if (!planAllowsChildren && (!data || data.children.length === 0)) return null
+  if (!planAllowsChildren && (!data || data.children.length === 0)) return null;
 
-  const children = data?.children ?? []
+  const children = data?.children ?? [];
 
   return (
     <Card>
       <CardContent className="p-4 gap-3">
         <View className="gap-1">
-          <Text className="text-sm font-semibold text-foreground">Workspaces</Text>
+          <Text className="text-sm font-semibold text-foreground">
+            Workspaces
+          </Text>
           <Text className="text-xs text-muted-foreground">
             {planAllowsChildren
-              ? 'Create additional workspaces at no extra cost. They share this plan\u2019s usage, billing, and seats. You can view their usage here.'
-              : 'These workspaces share this plan\u2019s usage, billing, and seats.'}
+              ? "Create additional workspaces at no extra cost. They share this plan\u2019s usage, billing, and seats. You can view their usage here."
+              : "These workspaces share this plan\u2019s usage, billing, and seats."}
           </Text>
         </View>
 
@@ -2731,7 +3235,9 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
             <ActivityIndicator />
           </View>
         ) : children.length === 0 ? (
-          <Text className="text-xs text-muted-foreground">No additional workspaces yet.</Text>
+          <Text className="text-xs text-muted-foreground">
+            No additional workspaces yet.
+          </Text>
         ) : (
           <View className="gap-2">
             {children.map((child) => (
@@ -2740,15 +3246,21 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
                 className="flex-row items-center justify-between rounded-lg border border-border p-3"
               >
                 <View className="flex-1 pr-3">
-                  <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
+                  <Text
+                    className="text-sm font-medium text-foreground"
+                    numberOfLines={1}
+                  >
                     {child.name}
                   </Text>
                   <Text className="text-xs text-muted-foreground">
-                    {child.memberCount} {child.memberCount === 1 ? 'member' : 'members'}
+                    {child.memberCount}{" "}
+                    {child.memberCount === 1 ? "member" : "members"}
                   </Text>
                 </View>
                 <View className="items-end">
-                  <Text className="text-xs text-muted-foreground">This month</Text>
+                  <Text className="text-xs text-muted-foreground">
+                    This month
+                  </Text>
                   <Text className="text-sm font-medium text-foreground">
                     {formatUsd(child.usageThisMonthUsd)}
                   </Text>
@@ -2777,7 +3289,7 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
                 disabled={creating || newName.trim().length === 0}
               >
                 <Text className="text-primary-foreground font-medium text-sm">
-                  {creating ? 'Creating…' : 'Create'}
+                  {creating ? "Creating…" : "Create"}
                 </Text>
               </Button>
             </View>
@@ -2785,22 +3297,25 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
         )}
       </CardContent>
     </Card>
-  )
-})
+  );
+});
 
 function BillingTab() {
-  const { CreditCard } = useSettingsIcons()
-  const router = useRouter()
-  const http = useDomainHttp()
-  const workspace = useActiveWorkspace()
-  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } = useBillingData(workspace?.id)
-  const [instanceLabel, setInstanceLabel] = useState<string | null>(null)
-  const [spendLimitOpen, setSpendLimitOpen] = useState(false)
+  const { CreditCard } = useSettingsIcons();
+  const router = useRouter();
+  const http = useDomainHttp();
+  const workspace = useActiveWorkspace();
+  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } =
+    useBillingData(workspace?.id);
+  const [instanceLabel, setInstanceLabel] = useState<string | null>(null);
+  const [spendLimitOpen, setSpendLimitOpen] = useState(false);
 
   // Coupled window display + single at-limit notice (overage vs paused).
-  const billingWindowDisplays = getWindowDisplays(usageWindows)
+  const billingWindowDisplays = getWindowDisplays(usageWindows);
   const billingUsageLimitNotice = getUsageLimitNotice({
-    atLimit: billingWindowDisplays.fiveHour.atLimit || billingWindowDisplays.weekly.atLimit,
+    atLimit:
+      billingWindowDisplays.fiveHour.atLimit ||
+      billingWindowDisplays.weekly.atLimit,
     overage: effectiveBalance
       ? {
           enabled: effectiveBalance.overageEnabled,
@@ -2811,48 +3326,64 @@ function BillingTab() {
     countdown: billingWindowDisplays.weekly.atLimit
       ? billingWindowDisplays.weekly.countdown
       : billingWindowDisplays.fiveHour.countdown,
-  })
+  });
   // Surface the expired-entitlement state even before a window is exhausted,
   // so the user isn't only told about it once they hit the wall.
-  const overageEntitlementExpired = !!effectiveBalance?.overageEnabled && effectiveBalance.overageActive === false
+  const overageEntitlementExpired =
+    !!effectiveBalance?.overageEnabled &&
+    effectiveBalance.overageActive === false;
 
   useEffect(() => {
-    if (!workspace?.id) return
-    let cancelled = false
-    api.getWorkspaceInstance(http, workspace.id).then((inst: any) => {
-      if (cancelled || !inst) return
-      const size = inst.size ?? 'micro'
-      const labels: Record<string, string> = { micro: 'Micro (0.5 CPU, 2 GB)', small: 'Small (1 CPU, 4 GB)', medium: 'Medium (2 CPU, 8 GB)', large: 'Large (4 CPU, 16 GB)', xlarge: 'XLarge (8 CPU, 32 GB)' }
-      setInstanceLabel(labels[size] ?? size)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [http, workspace?.id])
+    if (!workspace?.id) return;
+    let cancelled = false;
+    api
+      .getWorkspaceInstance(http, workspace.id)
+      .then((inst: any) => {
+        if (cancelled || !inst) return;
+        const size = inst.size ?? "micro";
+        const labels: Record<string, string> = {
+          micro: "Micro (0.5 CPU, 2 GB)",
+          small: "Small (1 CPU, 4 GB)",
+          medium: "Medium (2 CPU, 8 GB)",
+          large: "Large (4 CPU, 16 GB)",
+          xlarge: "XLarge (8 CPU, 32 GB)",
+        };
+        setInstanceLabel(labels[size] ?? size);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [http, workspace?.id]);
 
   const handleManageUsageOnWeb = useCallback(() => {
-    openWebAppSession('/settings?tab=billing').catch((err) =>
-      console.warn('[BillingTab] failed to open web billing:', err),
-    )
-  }, [])
+    openWebAppSession("/settings?tab=billing").catch((err) =>
+      console.warn("[BillingTab] failed to open web billing:", err)
+    );
+  }, []);
 
-  const planId = subscription?.planId?.toLowerCase() ?? 'free'
-  const planLabel = planId.startsWith('enterprise')
-    ? 'Enterprise'
-    : planId.startsWith('business')
-      ? 'Business'
-      : planId.startsWith('pro')
-        ? 'Pro'
-        : planId.startsWith('basic')
-          ? 'Basic'
-          : 'Free'
-  const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const canUseOverage = hasActiveSubscription
+  const planId = subscription?.planId?.toLowerCase() ?? "free";
+  const planLabel = planId.startsWith("enterprise")
+    ? "Enterprise"
+    : planId.startsWith("business")
+    ? "Business"
+    : planId.startsWith("pro")
+    ? "Pro"
+    : planId.startsWith("basic")
+    ? "Basic"
+    : "Free";
+  const hasActiveSubscription =
+    subscription?.status === "active" || subscription?.status === "trialing";
+  const canUseOverage = hasActiveSubscription;
 
   if (!workspace?.id) {
     return (
       <View className="py-12 items-center">
-        <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+        <Text className="text-sm text-muted-foreground">
+          No workspace selected
+        </Text>
       </View>
-    )
+    );
   }
 
   return (
@@ -2860,9 +3391,9 @@ function BillingTab() {
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Billing</Text>
         <Text className="text-xs text-muted-foreground">
-          {Platform.OS === 'ios'
-            ? 'Manage your plan and usage. For detailed analytics, see the Usage tab.'
-            : 'Manage your plan and on-demand spending cap. For detailed analytics, see the Usage tab.'}
+          {Platform.OS === "ios"
+            ? "Manage your plan and usage. For detailed analytics, see the Usage tab."
+            : "Manage your plan and on-demand spending cap. For detailed analytics, see the Usage tab."}
         </Text>
       </View>
 
@@ -2870,12 +3401,18 @@ function BillingTab() {
         <CardContent className="p-4 gap-3">
           <View className="flex-row items-center justify-between">
             <View className="gap-1">
-              <Text className="text-xs text-muted-foreground">Current Plan</Text>
+              <Text className="text-xs text-muted-foreground">
+                Current Plan
+              </Text>
               <View className="flex-row items-center gap-2">
-                <Text className="text-lg font-bold text-foreground">{planLabel}</Text>
+                <Text className="text-lg font-bold text-foreground">
+                  {planLabel}
+                </Text>
                 {hasActiveSubscription && (
                   <Badge variant="secondary">
-                    <Text className="text-xs">{subscription?.status === 'trialing' ? 'Trial' : 'Active'}</Text>
+                    <Text className="text-xs">
+                      {subscription?.status === "trialing" ? "Trial" : "Active"}
+                    </Text>
                   </Badge>
                 )}
               </View>
@@ -2886,42 +3423,51 @@ function BillingTab() {
           <Separator />
 
           <View className="gap-3">
-            {(['fiveHour', 'weekly'] as const).map((key) => {
-              const w = usageWindows?.[key]
-              const label = key === 'fiveHour' ? '5-hour usage' : 'Weekly usage'
-              const display = billingWindowDisplays[key]
-              const { pct, uncapped, countdown } = display
+            {(["fiveHour", "weekly"] as const).map((key) => {
+              const w = usageWindows?.[key];
+              const label =
+                key === "fiveHour" ? "5-hour usage" : "Weekly usage";
+              const display = billingWindowDisplays[key];
+              const { pct, uncapped, countdown } = display;
               return (
                 <View key={key} className="gap-1">
                   <View className="flex-row items-center justify-between">
-                    <Text className="text-sm text-muted-foreground">{label}</Text>
+                    <Text className="text-sm text-muted-foreground">
+                      {label}
+                    </Text>
                     <Text className="text-sm font-medium text-foreground">
-                      {!w ? '—' : uncapped ? 'Unlimited' : `${pct}% used`}
+                      {!w ? "—" : uncapped ? "Unlimited" : `${pct}% used`}
                     </Text>
                   </View>
                   {!uncapped && (
                     <View className="h-2 bg-muted rounded-full overflow-hidden">
                       <View
-                        className={cn('h-full rounded-full', pct >= 100 ? 'bg-destructive' : 'bg-primary')}
+                        className={cn(
+                          "h-full rounded-full",
+                          pct >= 100 ? "bg-destructive" : "bg-primary"
+                        )}
                         style={{ width: `${pct}%` }}
                       />
                     </View>
                   )}
                   {!uncapped && countdown ? (
                     <Text className="text-xs text-muted-foreground">
-                      {pct >= 100 ? `Limit reached — resets in ${countdown}` : `Resets in ${countdown}`}
+                      {pct >= 100
+                        ? `Limit reached — resets in ${countdown}`
+                        : `Resets in ${countdown}`}
                     </Text>
                   ) : null}
                 </View>
-              )
+              );
             })}
             {billingUsageLimitNotice ? (
               <Text
                 className={cn(
-                  'text-xs',
-                  billingUsageLimitNotice.tone === 'overage' || billingUsageLimitNotice.tone === 'expired'
-                    ? 'text-foreground font-medium'
-                    : 'text-muted-foreground',
+                  "text-xs",
+                  billingUsageLimitNotice.tone === "overage" ||
+                    billingUsageLimitNotice.tone === "expired"
+                    ? "text-foreground font-medium"
+                    : "text-muted-foreground"
                 )}
               >
                 {billingUsageLimitNotice.text}
@@ -2929,14 +3475,20 @@ function BillingTab() {
             ) : null}
             {!billingUsageLimitNotice && overageEntitlementExpired && (
               <Text className="text-xs text-foreground font-medium">
-                Your on-demand billing entitlement has expired. Reactivate your subscription or license to keep using on-demand usage.
+                Your on-demand billing entitlement has expired. Reactivate your
+                subscription or license to keep using on-demand usage.
               </Text>
             )}
-            {Platform.OS !== 'ios' && !billingUsageLimitNotice && effectiveBalance?.overageEnabled && effectiveBalance.overageAccumulatedUsd > 0 && (
-              <Text className="text-xs text-muted-foreground">
-                Overage this period: {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in trust blocks: $100 → $500)
-              </Text>
-            )}
+            {Platform.OS !== "ios" &&
+              !billingUsageLimitNotice &&
+              effectiveBalance?.overageEnabled &&
+              effectiveBalance.overageAccumulatedUsd > 0 && (
+                <Text className="text-xs text-muted-foreground">
+                  Overage this period:{" "}
+                  {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in
+                  trust blocks: $100 → $500)
+                </Text>
+              )}
           </View>
 
           {instanceLabel && (
@@ -2944,7 +3496,9 @@ function BillingTab() {
               <Separator />
               <View className="flex-row items-center justify-between">
                 <Text className="text-sm text-muted-foreground">Instance</Text>
-                <Text className="text-sm font-medium text-foreground">{instanceLabel}</Text>
+                <Text className="text-sm font-medium text-foreground">
+                  {instanceLabel}
+                </Text>
               </View>
             </>
           )}
@@ -2954,17 +3508,23 @@ function BillingTab() {
           <View className="flex-row items-center gap-2">
             <Button
               variant="default"
-              onPress={() => router.push('/(app)/billing' as any)}
+              onPress={() => router.push("/(app)/billing" as any)}
               className="flex-1"
             >
-              <Text className="text-primary-foreground font-medium">Manage Plan</Text>
+              <Text className="text-primary-foreground font-medium">
+                Manage Plan
+              </Text>
             </Button>
             <Button
               variant="outline"
-              onPress={() => router.push('/(app)/settings?tab=analytics' as any)}
+              onPress={() =>
+                router.push("/(app)/settings?tab=analytics" as any)
+              }
               className="flex-1"
             >
-              <Text className="text-foreground font-medium">View detailed usage</Text>
+              <Text className="text-foreground font-medium">
+                View detailed usage
+              </Text>
             </Button>
           </View>
         </CardContent>
@@ -2972,52 +3532,64 @@ function BillingTab() {
 
       <WorkspaceFamilySection workspaceId={workspace.id} planId={planId} />
 
-      {canUseOverage && Platform.OS === 'ios' && (
+      {canUseOverage && Platform.OS === "ios" && (
         <Card>
           <CardContent className="p-4 gap-3">
             <View className="gap-1">
-              <Text className="text-sm font-semibold text-foreground">Usage payments</Text>
+              <Text className="text-sm font-semibold text-foreground">
+                Usage payments
+              </Text>
               <Text className="text-xs text-muted-foreground">
-                Usage beyond your included monthly amount is managed from your web account.
+                Usage beyond your included monthly amount is managed from your
+                web account.
               </Text>
             </View>
             <Button variant="outline" onPress={handleManageUsageOnWeb}>
-              <Text className="text-foreground font-medium text-sm">Manage usage & payments on the web</Text>
+              <Text className="text-foreground font-medium text-sm">
+                Manage usage & payments on the web
+              </Text>
             </Button>
           </CardContent>
         </Card>
       )}
 
-      {canUseOverage && Platform.OS !== 'ios' && (
+      {canUseOverage && Platform.OS !== "ios" && (
         <Card>
           <CardContent className="p-4 gap-3">
             <View className="gap-1">
-              <Text className="text-sm font-semibold text-foreground">Spending limit</Text>
+              <Text className="text-sm font-semibold text-foreground">
+                Spending limit
+              </Text>
               <Text className="text-xs text-muted-foreground">
-                You keep working when your included usage runs out — we charge the saved card
-                in trust blocks billed at provider cost + 20%. Blocks start at $100 and step
-                up by $100 as you build payment history (capped at $500 per charge).
+                You keep working when your included usage runs out — we charge
+                the saved card in trust blocks billed at provider cost + 20%.
+                Blocks start at $100 and step up by $100 as you build payment
+                history (capped at $500 per charge).
               </Text>
             </View>
 
             <View className="flex-row items-center justify-between">
               <View>
-                <Text className="text-xs text-muted-foreground">Monthly spending cap</Text>
+                <Text className="text-xs text-muted-foreground">
+                  Monthly spending cap
+                </Text>
                 <Text className="text-base font-semibold text-foreground">
                   {effectiveBalance?.overageHardLimitUsd != null
                     ? formatUsd(effectiveBalance.overageHardLimitUsd)
-                    : 'No cap'}
+                    : "No cap"}
                 </Text>
               </View>
               <Button variant="outline" onPress={() => setSpendLimitOpen(true)}>
-                <Text className="text-foreground font-medium text-sm">Set Limit</Text>
+                <Text className="text-foreground font-medium text-sm">
+                  Set Limit
+                </Text>
               </Button>
             </View>
           </CardContent>
         </Card>
       )}
 
-      {Platform.OS !== 'ios' && (
+      {Platform.OS !== "ios" && (
         <SetSpendLimitDialog
           visible={spendLimitOpen}
           onClose={() => setSpendLimitOpen(false)}
@@ -3028,7 +3600,7 @@ function BillingTab() {
         />
       )}
     </View>
-  )
+  );
 }
 
 // ============================================================================
@@ -3036,129 +3608,187 @@ function BillingTab() {
 // ============================================================================
 
 interface SpendTimeseriesPayload {
-  days: { date: string; byModel: Record<string, number>; total: number }[]
+  days: { date: string; byModel: Record<string, number>; total: number }[];
   totals: {
-    totalSpendUsd: number
-    totalIncludedUsd: number
-    totalOnDemandUsd: number
-    uniqueModels: number
-  }
-  models: string[]
-  groupBy: 'model' | 'user' | 'source'
-  metric: 'spend' | 'tokens' | 'requests'
+    totalSpendUsd: number;
+    totalIncludedUsd: number;
+    totalOnDemandUsd: number;
+    uniqueModels: number;
+  };
+  models: string[];
+  groupBy: "model" | "user" | "source";
+  metric: "spend" | "tokens" | "requests";
 }
 
 function fmtUsd(n: number): string {
-  if (n === 0) return '$0.00'
-  if (n < 0.01) return `$${n.toFixed(4)}`
-  if (n < 1000) return `$${n.toFixed(2)}`
-  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+  if (n === 0) return "$0.00";
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  if (n < 1000) return `$${n.toFixed(2)}`;
+  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 function WorkspaceAnalyticsTab() {
-  const { Coins, CreditCard, Download, Zap } = useSettingsIcons()
-  const http = useDomainHttp()
-  const router = useRouter()
-  const workspace = useActiveWorkspace()
-  const workspaceId = workspace?.id
-  const { localMode } = usePlatformConfig()
-  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } = useBillingData(workspaceId)
-  const cloudBilling = useCloudBillingSummary(localMode)
+  const { Coins, CreditCard, Download, Zap } = useSettingsIcons();
+  const http = useDomainHttp();
+  const router = useRouter();
+  const workspace = useActiveWorkspace();
+  const workspaceId = workspace?.id;
+  const { localMode } = usePlatformConfig();
+  const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } =
+    useBillingData(workspaceId);
+  const cloudBilling = useCloudBillingSummary(localMode);
   // Warm the visible-models metadata cache so chart series can be labeled with
   // model display names (e.g. "Hoshi 1.0") rather than raw ids (mimo-v2.5).
-  useVisibleModels()
+  useVisibleModels();
 
-  const planId = subscription?.planId?.toLowerCase() ?? ''
-  const isBusinessOrHigher = localMode || planId.startsWith('business') || planId.startsWith('enterprise')
+  const planId = subscription?.planId?.toLowerCase() ?? "";
+  const isBusinessOrHigher =
+    localMode ||
+    planId.startsWith("business") ||
+    planId.startsWith("enterprise");
 
-  const [period, setPeriod] = useState<AnalyticsPeriod>('7d')
-  const [logPage, setLogPage] = useState(1)
-  const [groupBy, setGroupBy] = useState<SpendGroupBy>('model')
-  const [metric, setMetric] = useState<SpendMetric>('spend')
-  const [spendLimitOpen, setSpendLimitOpen] = useState(false)
+  const [period, setPeriod] = useState<AnalyticsPeriod>("7d");
+  const [logPage, setLogPage] = useState(1);
+  const [groupBy, setGroupBy] = useState<SpendGroupBy>("model");
+  const [metric, setMetric] = useState<SpendMetric>("spend");
+  const [spendLimitOpen, setSpendLimitOpen] = useState(false);
 
-  const [usageSummary, setUsageSummary] = useState<{ data: UsageSummaryData | null; loading: boolean }>({ data: null, loading: true })
-  const [usageLog, setUsageLog] = useState<{ data: UsageLogData | null; loading: boolean }>({ data: null, loading: true })
-  const [spend, setSpend] = useState<{ data: SpendTimeseriesPayload | null; loading: boolean }>({ data: null, loading: true })
-  const [usage, setUsage] = useState<{ data: UsageBreakdownData | null; loading: boolean }>({ data: null, loading: true })
-  const [chatStats, setChatStats] = useState<{ data: ChatAnalyticsData | null; loading: boolean }>({ data: null, loading: true })
+  const [usageSummary, setUsageSummary] = useState<{
+    data: UsageSummaryData | null;
+    loading: boolean;
+  }>({ data: null, loading: true });
+  const [usageLog, setUsageLog] = useState<{
+    data: UsageLogData | null;
+    loading: boolean;
+  }>({ data: null, loading: true });
+  const [spend, setSpend] = useState<{
+    data: SpendTimeseriesPayload | null;
+    loading: boolean;
+  }>({ data: null, loading: true });
+  const [usage, setUsage] = useState<{
+    data: UsageBreakdownData | null;
+    loading: boolean;
+  }>({ data: null, loading: true });
+  const [chatStats, setChatStats] = useState<{
+    data: ChatAnalyticsData | null;
+    loading: boolean;
+  }>({ data: null, loading: true });
 
   const loadAll = useCallback(async () => {
-    if (!workspaceId) return
-    const p = { period }
+    if (!workspaceId) return;
+    const p = { period };
 
-    setUsageSummary(s => ({ ...s, loading: true }))
-    setUsageLog(s => ({ ...s, loading: true }))
-    setSpend(s => ({ ...s, loading: true }))
+    setUsageSummary((s) => ({ ...s, loading: true }));
+    setUsageLog((s) => ({ ...s, loading: true }));
+    setSpend((s) => ({ ...s, loading: true }));
 
     const basicFetches = [
-      api.getWorkspaceAnalytics<UsageSummaryData>(http, workspaceId, 'usage-summary', p).catch(() => null),
-      api.getWorkspaceAnalytics<UsageLogData>(http, workspaceId, 'usage-log', { ...p, page: String(logPage), limit: '50' }).catch(() => null),
-      api.getWorkspaceAnalytics<SpendTimeseriesPayload>(http, workspaceId, 'spend-timeseries', { ...p, groupBy, metric }).catch(() => null),
-    ] as const
+      api
+        .getWorkspaceAnalytics<UsageSummaryData>(
+          http,
+          workspaceId,
+          "usage-summary",
+          p
+        )
+        .catch(() => null),
+      api
+        .getWorkspaceAnalytics<UsageLogData>(http, workspaceId, "usage-log", {
+          ...p,
+          page: String(logPage),
+          limit: "50",
+        })
+        .catch(() => null),
+      api
+        .getWorkspaceAnalytics<SpendTimeseriesPayload>(
+          http,
+          workspaceId,
+          "spend-timeseries",
+          { ...p, groupBy, metric }
+        )
+        .catch(() => null),
+    ] as const;
 
     if (isBusinessOrHigher) {
-      setUsage(s => ({ ...s, loading: true }))
-      setChatStats(s => ({ ...s, loading: true }))
+      setUsage((s) => ({ ...s, loading: true }));
+      setChatStats((s) => ({ ...s, loading: true }));
 
       const [uSum, uLog, sp, us, ch] = await Promise.all([
         ...basicFetches,
-        api.getWorkspaceAnalytics<UsageBreakdownData>(http, workspaceId, 'usage', p).catch(() => null),
-        api.getWorkspaceAnalytics<ChatAnalyticsData>(http, workspaceId, 'chat', p).catch(() => null),
-      ])
+        api
+          .getWorkspaceAnalytics<UsageBreakdownData>(
+            http,
+            workspaceId,
+            "usage",
+            p
+          )
+          .catch(() => null),
+        api
+          .getWorkspaceAnalytics<ChatAnalyticsData>(
+            http,
+            workspaceId,
+            "chat",
+            p
+          )
+          .catch(() => null),
+      ]);
 
-      setUsageSummary({ data: uSum, loading: false })
-      setUsageLog({ data: uLog, loading: false })
-      setSpend({ data: sp, loading: false })
-      setUsage({ data: us, loading: false })
-      setChatStats({ data: ch, loading: false })
+      setUsageSummary({ data: uSum, loading: false });
+      setUsageLog({ data: uLog, loading: false });
+      setSpend({ data: sp, loading: false });
+      setUsage({ data: us, loading: false });
+      setChatStats({ data: ch, loading: false });
     } else {
-      const [uSum, uLog, sp] = await Promise.all(basicFetches)
-      setUsageSummary({ data: uSum, loading: false })
-      setUsageLog({ data: uLog, loading: false })
-      setSpend({ data: sp, loading: false })
+      const [uSum, uLog, sp] = await Promise.all(basicFetches);
+      setUsageSummary({ data: uSum, loading: false });
+      setUsageLog({ data: uLog, loading: false });
+      setSpend({ data: sp, loading: false });
     }
-  }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher])
+  }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher]);
 
   useEffect(() => {
-    loadAll()
-  }, [loadAll])
+    loadAll();
+  }, [loadAll]);
 
   if (!workspaceId) {
     return (
       <View className="py-12 items-center">
-        <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+        <Text className="text-sm text-muted-foreground">
+          No workspace selected
+        </Text>
       </View>
-    )
+    );
   }
 
   // ─── Progress card data ──────────────────────────────────
   // Coupled window display: weekly-at-100% forces the 5-hour card to 100% too.
-  const analyticsWindowDisplays = getWindowDisplays(usageWindows)
-  const cloudPlan = cloudBilling.summary?.plan
+  const analyticsWindowDisplays = getWindowDisplays(usageWindows);
+  const cloudPlan = cloudBilling.summary?.plan;
   const onDemandUsed = localMode
-    ? (cloudPlan?.overageAccumulatedUsd ?? 0)
-    : (effectiveBalance?.overageAccumulatedUsd ?? 0)
+    ? cloudPlan?.overageAccumulatedUsd ?? 0
+    : effectiveBalance?.overageAccumulatedUsd ?? 0;
   const onDemandLimit = localMode
-    ? (cloudPlan?.overageHardLimitUsd ?? null)
-    : (effectiveBalance?.overageHardLimitUsd ?? null)
-  const onDemandPct = onDemandLimit && onDemandLimit > 0
-    ? Math.min(100, (onDemandUsed / onDemandLimit) * 100)
-    : (onDemandUsed > 0 ? Math.min(100, onDemandUsed / 1000 * 100) : 0)
+    ? cloudPlan?.overageHardLimitUsd ?? null
+    : effectiveBalance?.overageHardLimitUsd ?? null;
+  const onDemandPct =
+    onDemandLimit && onDemandLimit > 0
+      ? Math.min(100, (onDemandUsed / onDemandLimit) * 100)
+      : onDemandUsed > 0
+      ? Math.min(100, (onDemandUsed / 1000) * 100)
+      : 0;
 
   // ─── Summary cards ───────────────────────────────────────
-  const totalSpend = spend.data?.totals.totalSpendUsd ?? 0
-  const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0
-  const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0
+  const totalSpend = spend.data?.totals.totalSpendUsd ?? 0;
+  const includedSpend = spend.data?.totals.totalIncludedUsd ?? 0;
+  const onDemandSpend = spend.data?.totals.totalOnDemandUsd ?? 0;
 
-  const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period })
+  const csvUrl = api.getUsageLogCsvUrl(workspaceId, { period });
   const handleExportCsv = () => {
-    if (typeof window !== 'undefined') {
-      window.open(csvUrl, '_blank', 'noopener')
+    if (typeof window !== "undefined") {
+      window.open(csvUrl, "_blank", "noopener");
     } else {
-      Linking.openURL(csvUrl)
+      Linking.openURL(csvUrl);
     }
-  }
+  };
 
   return (
     <View className="gap-4">
@@ -3166,55 +3796,57 @@ function WorkspaceAnalyticsTab() {
         <Text className="text-lg font-bold text-foreground mb-1">Usage</Text>
         <Text className="text-xs text-muted-foreground">
           {localMode
-            ? 'Token usage and agent activity for this workspace'
-            : 'Usage metrics and spend for this workspace'}
+            ? "Token usage and agent activity for this workspace"
+            : "Usage metrics and spend for this workspace"}
         </Text>
       </View>
 
       {/* Progress cards */}
       <View className="flex-row flex-wrap gap-3">
-        {(['fiveHour', 'weekly'] as const).map((key) => {
-          const w = usageWindows?.[key]
-          const label = key === 'fiveHour' ? '5-hour usage' : 'Weekly usage'
-          const { pct, uncapped, countdown } = analyticsWindowDisplays[key]
+        {(["fiveHour", "weekly"] as const).map((key) => {
+          const w = usageWindows?.[key];
+          const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
+          const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
           return (
             <BillingProgressCard
               key={key}
               title={label}
-              current={!w ? '—' : uncapped ? 'Unlimited' : `${pct}%`}
+              current={!w ? "—" : uncapped ? "Unlimited" : `${pct}%`}
               total={null}
               percent={uncapped ? 0 : pct}
-              tone={pct >= 100 ? 'destructive' : pct >= 90 ? 'warning' : 'primary'}
+              tone={
+                pct >= 100 ? "destructive" : pct >= 90 ? "warning" : "primary"
+              }
               helper={
                 uncapped
-                  ? 'Unlimited — no usage window'
+                  ? "Unlimited — no usage window"
                   : countdown
-                    ? pct >= 100
-                      ? `Limit reached — resets in ${countdown}`
-                      : `Resets in ${countdown}`
-                    : 'Window not started'
+                  ? pct >= 100
+                    ? `Limit reached — resets in ${countdown}`
+                    : `Resets in ${countdown}`
+                  : "Window not started"
               }
             />
-          )
+          );
         })}
         <BillingProgressCard
           title="On-Demand Usage (Team)"
           current={fmtUsd(onDemandUsed)}
           total={onDemandLimit != null ? fmtUsd(onDemandLimit) : null}
           percent={onDemandPct}
-          tone={onDemandPct > 80 ? 'warning' : 'primary'}
+          tone={onDemandPct > 80 ? "warning" : "primary"}
           helper="Pay for extra usage beyond your plan limits."
           subHelper={
             onDemandLimit != null
               ? `${fmtUsd(onDemandLimit)} team spend cap`
-              : 'No spend cap set'
+              : "No spend cap set"
           }
-          {...(Platform.OS !== 'ios' && (!localMode || (
-            cloudBilling.summary?.signedIn === true &&
-            cloudBilling.summary.plan?.paidTier === true
-          ))
+          {...(Platform.OS !== "ios" &&
+          (!localMode ||
+            (cloudBilling.summary?.signedIn === true &&
+              cloudBilling.summary.plan?.paidTier === true))
             ? {
-                actionLabel: 'Set Limit',
+                actionLabel: "Set Limit",
                 onActionPress: () => setSpendLimitOpen(true),
               }
             : {})}
@@ -3229,7 +3861,11 @@ function WorkspaceAnalyticsTab() {
       {/* Summary cards */}
       <View className="flex-row flex-wrap gap-2">
         <StatCard label="Total spend" value={fmtUsd(totalSpend)} icon={Coins} />
-        <StatCard label="Included" value={fmtUsd(includedSpend)} icon={CreditCard} />
+        <StatCard
+          label="Included"
+          value={fmtUsd(includedSpend)}
+          icon={CreditCard}
+        />
         <StatCard label="On-demand" value={fmtUsd(onDemandSpend)} icon={Zap} />
       </View>
 
@@ -3244,7 +3880,7 @@ function WorkspaceAnalyticsTab() {
         isLocalMode={localMode}
         title="Team Usage"
         subtitle="Team usage per day across this billing period"
-        groupByOptions={['model', 'user', 'source']}
+        groupByOptions={["model", "user", "source"]}
         showTotals={false}
       />
 
@@ -3256,7 +3892,9 @@ function WorkspaceAnalyticsTab() {
             className="flex-row items-center gap-1.5 px-3 h-8 rounded-md border border-border bg-background active:bg-muted"
           >
             <Download size={14} className="text-foreground" />
-            <Text className="text-xs font-medium text-foreground">Export CSV</Text>
+            <Text className="text-xs font-medium text-foreground">
+              Export CSV
+            </Text>
           </Pressable>
         </View>
         <UsageTableSection
@@ -3271,16 +3909,22 @@ function WorkspaceAnalyticsTab() {
       </View>
 
       {/* Leaderboard (Image 2) */}
-      <UsageLeaderboard data={usageSummary.data} loading={usageSummary.loading} />
+      <UsageLeaderboard
+        data={usageSummary.data}
+        loading={usageSummary.loading}
+      />
 
       {isBusinessOrHigher && (
         <>
-          <ChatAnalyticsSection data={chatStats.data} loading={chatStats.loading} />
+          <ChatAnalyticsSection
+            data={chatStats.data}
+            loading={chatStats.loading}
+          />
           <UsageBreakdownSection data={usage.data} loading={usage.loading} />
         </>
       )}
 
-      {Platform.OS !== 'ios' && (
+      {Platform.OS !== "ios" && (
         <SetSpendLimitDialog
           visible={spendLimitOpen}
           onClose={() => setSpendLimitOpen(false)}
@@ -3290,15 +3934,15 @@ function WorkspaceAnalyticsTab() {
           onSave={localMode ? cloudBilling.setSpendingLimit : undefined}
           onSaved={() => {
             if (localMode) {
-              void cloudBilling.refresh()
+              void cloudBilling.refresh();
             } else {
-              refetchUsageWallet()
+              refetchUsageWallet();
             }
           }}
         />
       )}
     </View>
-  )
+  );
 }
 
 // ============================================================================
@@ -3306,45 +3950,51 @@ function WorkspaceAnalyticsTab() {
 // ============================================================================
 
 function WorkspaceCostTab() {
-  const http = useDomainHttp()
-  const workspace = useActiveWorkspace()
-  const workspaceId = workspace?.id
+  const http = useDomainHttp();
+  const workspace = useActiveWorkspace();
+  const workspaceId = workspace?.id;
 
   const fetchCostAnalytics = useCallback(
     <T,>(endpoint: string, params?: Record<string, string>) =>
       api.getWorkspaceCostAnalytics<T>(http, workspaceId!, endpoint, params),
-    [http, workspaceId],
-  )
+    [http, workspaceId]
+  );
 
   const postCostAnalytics = useCallback(
     <T,>(endpoint: string, body: Record<string, unknown>) =>
       api.postWorkspaceCostAnalytics<T>(http, workspaceId!, endpoint, body),
-    [http, workspaceId],
-  )
+    [http, workspaceId]
+  );
 
   const fetchSubagentOverrides = useCallback(
     () => api.listSubagentOverrides(http, workspaceId!),
-    [http, workspaceId],
-  )
+    [http, workspaceId]
+  );
 
   const putSubagentOverride = useCallback(
-    (body: { agentType: string; model: string; provider?: string | null; projectId?: string | null }) =>
-      api.upsertSubagentOverride(http, workspaceId!, body),
-    [http, workspaceId],
-  )
+    (body: {
+      agentType: string;
+      model: string;
+      provider?: string | null;
+      projectId?: string | null;
+    }) => api.upsertSubagentOverride(http, workspaceId!, body),
+    [http, workspaceId]
+  );
 
   const deleteSubagentOverride = useCallback(
     (agentType: string, projectId?: string | null) =>
       api.deleteSubagentOverride(http, workspaceId!, agentType, projectId),
-    [http, workspaceId],
-  )
+    [http, workspaceId]
+  );
 
   if (!workspaceId) {
     return (
       <View className="py-12 items-center">
-        <Text className="text-sm text-muted-foreground">No workspace selected</Text>
+        <Text className="text-sm text-muted-foreground">
+          No workspace selected
+        </Text>
       </View>
-    )
+    );
   }
 
   return (
@@ -3356,128 +4006,475 @@ function WorkspaceCostTab() {
       putSubagentOverride={putSubagentOverride}
       deleteSubagentOverride={deleteSubagentOverride}
     />
-  )
+  );
 }
 
 // ============================================================================
 // MAIN SETTINGS PAGE
 // ============================================================================
 
+export function WorkspaceAccountActions({
+  onSelectTab,
+  showWorkspace = true,
+  showActions = true,
+  showSignOut = true,
+  showActionsHeading = true,
+  variant = "default",
+}: {
+  onSelectTab?: (tab: TabId) => void;
+  showWorkspace?: boolean;
+  showActions?: boolean;
+  showSignOut?: boolean;
+  showActionsHeading?: boolean;
+  variant?: "default" | "sidebar";
+}) {
+  const router = useRouter();
+  const { signOut, user } = useAuth();
+  const { features, localMode } = usePlatformConfig();
+  const workspaces = useWorkspaceCollection();
+  const projects = useProjectCollection();
+  const actions = useDomainActions();
+  const posthog = usePostHogSafe();
+  const currentWorkspace = useActiveWorkspace();
+  const allWorkspaces = workspaces?.all ?? [];
+  // See `AppSidebar.tsx`'s `hasTeamWorkspace` for why this gates the free
+  // vs. paid "Create new workspace" flow.
+  const hasTeamWorkspace = allWorkspaces.some(
+    (w: { kind?: string }) => w.kind === "team"
+  );
+  const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
+
+  useEffect(() => {
+    void workspaces.loadAll().catch(() => undefined);
+  }, [workspaces]);
+
+  const switchWorkspace = useCallback(
+    (workspaceId: string) => {
+      if (workspaceId === currentWorkspace?.id) return;
+      scheduleWorkspaceSwitch(workspaceId, projects, reloadAfterWorkspaceSwitch);
+    },
+    [currentWorkspace?.id, projects]
+  );
+
+  const createWorkspace = useCallback(() => {
+    if (hasTeamWorkspace) {
+      router.push("/(app)/new-workspace" as any);
+      return;
+    }
+    setCreateWorkspaceOpen(true);
+  }, [hasTeamWorkspace, router]);
+
+  const handleCreateWorkspaceSubmit = useCallback(
+    async (name: string) => {
+      if (!user?.id) return;
+      try {
+        const created = await actions.createWorkspace(name, undefined, user.id);
+        if (created?.id) {
+          trackEvent(posthog, EVENTS.WORKSPACE_CREATED);
+          setActiveWorkspaceId(created.id);
+          await workspaces.loadAll();
+          projects.clear();
+          await projects.loadAll({ workspaceId: created.id });
+        }
+      } catch (err) {
+        console.warn("Failed to create workspace:", err);
+      }
+    },
+    [actions, posthog, projects, user?.id, workspaces]
+  );
+
+  const go = useCallback((href: string) => router.push(href as any), [router]);
+  const sidebar = variant === "sidebar";
+
+  return (
+    <View className={cn(sidebar ? "gap-0.5" : "mb-8 gap-4")}>
+      {showWorkspace ? (
+        <View>
+          <Text
+            className={cn(
+              "text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+              sidebar && "mb-2 px-2"
+            )}
+          >
+            Workspace
+          </Text>
+          <View
+            className={cn(
+              !sidebar && "mt-2 gap-1 rounded-xl bg-muted/40 p-1",
+              sidebar && "gap-0.5"
+            )}
+          >
+            {allWorkspaces.map((workspace: any) => {
+              const isCurrent = workspace.id === currentWorkspace?.id;
+              return (
+                <Pressable
+                  key={workspace.id}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isCurrent }}
+                  accessibilityLabel={`Switch to ${
+                    workspace.name || "workspace"
+                  }`}
+                  onPress={() =>
+                    isCurrent
+                      ? onSelectTab?.("workspace")
+                      : switchWorkspace(workspace.id)
+                  }
+                  className={cn(
+                    sidebar
+                      ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                      : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted",
+                    isCurrent &&
+                      (sidebar
+                        ? "border border-primary/20 bg-primary/5"
+                        : "bg-background")
+                  )}
+                >
+                  <View
+                    className={cn(
+                      "items-center justify-center rounded-lg bg-primary/10",
+                      sidebar ? "h-5 w-5" : "h-8 w-8"
+                    )}
+                  >
+                    <Text
+                      className={cn(
+                        "font-semibold text-primary",
+                        sidebar ? "text-[10px]" : "text-sm"
+                      )}
+                    >
+                      {workspace.name?.[0]?.toUpperCase() || "W"}
+                    </Text>
+                  </View>
+                  <Text
+                    className="flex-1 text-sm font-medium text-foreground"
+                    numberOfLines={1}
+                  >
+                    {workspace.name || "Untitled workspace"}
+                  </Text>
+                  {isCurrent ? (
+                    <Text
+                      className={cn(
+                        "font-medium text-primary",
+                        sidebar ? "text-[10px]" : "text-xs"
+                      )}
+                    >
+                      Current
+                    </Text>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Create new workspace"
+              onPress={createWorkspace}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <PlusIcon size={18} className="text-muted-foreground" />
+              <Text className="text-sm font-medium text-foreground">
+                Create new workspace
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {showActions ? (
+        <View className={cn(sidebar && "mt-6")}>
+          {showActionsHeading ? (
+            <Text
+              className={cn(
+                "text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+                sidebar && "mb-2 px-2"
+              )}
+            >
+              Workspace actions
+            </Text>
+          ) : null}
+          <View className={cn(!sidebar && "mt-2 gap-1", sidebar && "gap-0.5")}>
+            {!localMode && features.billing ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Invite workspace members"
+                onPress={() => onSelectTab?.("people")}
+                className={cn(
+                  sidebar
+                    ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                    : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+                )}
+              >
+                <UserPlusIcon size={18} className="text-muted-foreground" />
+                <Text className="flex-1 text-sm text-foreground">Invite</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Manage API keys"
+              onPress={() => go("/(app)/api-keys")}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <KeyRoundIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">API Keys</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open documentation"
+              onPress={() => void Linking.openURL(DOCS_URL)}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <ExternalLinkIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">Docs</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open What's New"
+              onPress={() => void Linking.openURL(CHANGELOG_URL)}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <ZapIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">What's New</Text>
+            </Pressable>
+            {latestAnnouncedRelease && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Replay What's New"
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/settings",
+                    params: { whatsNew: latestAnnouncedRelease.version },
+                  } as any)
+                }
+                className={cn(
+                  sidebar
+                    ? "ml-8 flex-row items-center gap-2 rounded-lg px-2.5 py-2 active:bg-muted"
+                    : "ml-9 flex-row items-center gap-3 rounded-lg px-3 py-2 active:bg-muted"
+                )}
+              >
+                <SparklesIcon size={16} className="text-primary-500" />
+                <Text className="flex-1 text-xs text-muted-foreground">
+                  Replay latest announcement
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open Creator"
+              onPress={() => go("/(app)/creator")}
+              className={cn(
+                sidebar
+                  ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
+                  : "flex-row items-center gap-3 rounded-lg px-3 py-2.5 active:bg-muted"
+              )}
+            >
+              <BoxesIcon size={18} className="text-muted-foreground" />
+              <Text className="flex-1 text-sm text-foreground">Creator</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {showSignOut ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+          onPress={() => void signOut()}
+          className={cn(
+            sidebar
+              ? "mt-6 flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-destructive/10"
+              : "flex-row items-center gap-3 rounded-lg py-2.5 active:bg-destructive/10"
+          )}
+        >
+          <LogOutIcon size={18} className="text-destructive" />
+          <Text className="text-sm font-medium text-destructive">Sign out</Text>
+        </Pressable>
+      ) : null}
+      <CreateWorkspaceModal
+        visible={createWorkspaceOpen}
+        onClose={() => setCreateWorkspaceOpen(false)}
+        onSubmit={handleCreateWorkspaceSubmit}
+      />
+    </View>
+  );
+}
 
 export const SettingsContent = observer(function SettingsContent({
   activeTab,
-  localMode = false
+  localMode = false,
+  onSelectTab,
 }: {
-  activeTab: TabId,
-  localMode?: boolean
+  activeTab: TabId;
+  localMode?: boolean;
+  onSelectTab?: (tab: TabId) => void;
 }) {
-  const isLocal = localMode
+  const isLocal = localMode;
   return (
     <>
-      {activeTab === 'workspace' && <WorkspaceSettingsTab />}
-      {activeTab === 'people' && !isLocal && <PeopleTab />}
-      {activeTab === 'models' && !isLocal && <WorkspaceModelsTab />}
-      {activeTab === 'integrations' && <IntegrationsTab />}
-      {activeTab === 'remote-control' && <RemoteControlTab />}
-      {activeTab === 'account' && <AccountTab />}
-      {activeTab === 'appearance' && <AppearanceTab />}
-      {activeTab === 'security' && <SecuritySettingsPanel />}
-      {activeTab === 'compute' && !isLocal && !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
-      {activeTab === 'billing' && (isLocal ? <LocalCloudBillingTab /> : <BillingTab />)}
-      {activeTab === 'analytics' && <WorkspaceAnalyticsTab />}
-      {activeTab === 'costs' && <WorkspaceCostTab />}
-      {activeTab === 'support' && <BugReportTab />}
-      {activeTab === 'updates' && <UpdatesTab />}
+      {activeTab === "workspace" && <WorkspaceSettingsTab />}
+      {activeTab === "people" && !isLocal && <PeopleTab />}
+      {activeTab === "models" && !isLocal && <WorkspaceModelsTab />}
+      {activeTab === "integrations" && <IntegrationsTab />}
+      {activeTab === "remote-control" && <RemoteControlTab />}
+      {activeTab === "account" && <AccountTab />}
+      {activeTab === "appearance" && <AppearanceTab />}
+      {activeTab === "security" && <SecuritySettingsPanel />}
+      {activeTab === "compute" &&
+        !isLocal &&
+        !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
+      {activeTab === "billing" &&
+        (isLocal ? <LocalCloudBillingTab /> : <BillingTab />)}
+      {activeTab === "analytics" && <WorkspaceAnalyticsTab />}
+      {activeTab === "costs" && <WorkspaceCostTab />}
+      {activeTab === "updates" && <UpdatesTab />}
     </>
-  )
-})
+  );
+});
 
-export default observer(function SettingsPage() {
-  const { ExternalLink, ArrowLeft } = useSettingsIcons()
-  const router = useRouter()
-  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>()
-  const { width, height } = useWindowDimensions()
-  const isWide = width >= SETTINGS_WIDE_BREAKPOINT
-  const isNativePhone = isNativePhoneIntegrationsLayout(width, height)
-  const { user } = useAuth()
-  const workspaces = useWorkspaceCollection()
-  const currentWorkspace = useActiveWorkspace()
-  const { features, localMode } = usePlatformConfig()
+export default observer(function SettingsPage({
+  onClose,
+}: {
+  onClose?: () => void;
+}) {
+  const { ExternalLink, ArrowLeft } = useSettingsIcons();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ tab?: string; workspace?: string }>();
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const isWide = width >= SETTINGS_WIDE_BREAKPOINT;
+  const isNativePhone = isNativePhoneIntegrationsLayout(width, height);
+  const { user } = useAuth();
+  const workspaces = useWorkspaceCollection();
+  const currentWorkspace = useActiveWorkspace();
+  const { features, localMode } = usePlatformConfig();
 
-  const [activeTab, setActiveTab] = useState<TabId>(
-    () => {
-      const requested = params.tab as TabId
-      return ALL_TAB_IDS.includes(requested) ? requested : 'workspace'
+  const [activeTab, setActiveTab] = useState<TabId>(() => {
+    const requested = params.tab as TabId;
+    return ALL_TAB_IDS.includes(requested) ? requested : "workspace";
+  });
+
+  useEffect(() => {
+    const requestedWorkspace = params.workspace;
+    const ownWorkspaceIds =
+      workspaces?.all?.map((workspace: any) => workspace.id) ?? [];
+    if (!requestedWorkspace || ownWorkspaceIds.length === 0) return;
+    const resolvedWorkspace = resolveActiveWorkspaceId(
+      ownWorkspaceIds,
+      requestedWorkspace
+    );
+    if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
+  }, [params.workspace, workspaces?.all]);
+
+  useEffect(() => {
+    const isLocal = localMode || !features.billing;
+    if (activeTab === "people" && isLocal) setActiveTab("workspace");
+    if (activeTab === "models" && isLocal) setActiveTab("workspace");
+    if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
+      setActiveTab("workspace");
+    if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
+      setActiveTab("workspace");
+  }, [activeTab, features.billing, localMode]);
+
+  const workspaceName = currentWorkspace?.name || "";
+  const userName = user?.name || "";
+  const activeTabLabel = settingsTab(activeTab).label;
+  const exitSettings = () => {
+    if (onClose) {
+      onClose();
+      return;
     }
-  )
-
-  useEffect(() => {
-    const requestedWorkspace = params.workspace
-    const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
-    if (!requestedWorkspace || ownWorkspaceIds.length === 0) return
-    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, requestedWorkspace)
-    if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace)
-  }, [params.workspace, workspaces?.all])
-
-  useEffect(() => {
-    const isLocal = localMode || !features.billing
-    if (activeTab === 'people' && isLocal) setActiveTab('workspace')
-    if (activeTab === 'models' && isLocal) setActiveTab('workspace')
-    if (activeTab === 'compute' && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS)) setActiveTab('workspace')
-    if (activeTab === 'billing' && isLocal) setActiveTab('workspace')
-    if (activeTab === 'updates' && !IS_DESKTOP_CLIENT) setActiveTab('workspace')
-  }, [activeTab, features.billing, localMode])
-
-  const workspaceName = currentWorkspace?.name || ''
-  const userName = user?.name || ''
+    leaveSettings(router, isNativePhone);
+  };
 
   if (isWide) {
     return (
-      <View className="flex-1 bg-background flex-row">
-        <SettingsSidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          workspaceName={workspaceName}
-          userName={userName}
-          showBilling={features.billing}
-          localMode={localMode}
-        />
+      <View
+        className="flex-1 flex-row bg-muted/30"
+        style={{ paddingTop: insets.top }}
+      >
+        <View className="border-r border-border/70 bg-card">
+          <SettingsSidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            workspaceName={workspaceName}
+            userName={userName}
+            onExit={exitSettings}
+            showBilling={features.billing}
+            localMode={localMode}
+          />
+        </View>
         <ScrollView
           className="flex-1"
-          contentContainerClassName="px-12 pt-6 pb-[60px]"
+          contentContainerClassName="px-8 py-8 xl:px-12"
+          contentContainerStyle={{
+            paddingBottom: Math.max(insets.bottom + 40, 60),
+          }}
           showsVerticalScrollIndicator={false}
         >
-          <View>
-            <View className="flex-row items-center justify-end mb-1">
+          <View className="w-full max-w-[1080px] self-center">
+            <View className="mb-6 flex-row items-end justify-between border-b border-border/70 pb-5">
+              <View>
+                <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Settings
+                </Text>
+                <Text className="mt-1 text-2xl font-semibold text-foreground">
+                  {activeTabLabel}
+                </Text>
+              </View>
               <Pressable
                 onPress={() => Linking.openURL(DOCS_URL)}
-                className="flex-row items-center gap-1.5"
+                className="flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 active:bg-muted"
               >
                 <ExternalLink size={14} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">Docs</Text>
               </Pressable>
             </View>
-            <SettingsContent activeTab={activeTab} localMode={localMode || !features.billing} />
+            <SettingsContent
+              activeTab={activeTab}
+              localMode={localMode || !features.billing}
+              onSelectTab={setActiveTab}
+            />
           </View>
         </ScrollView>
       </View>
-    )
+    );
   }
 
   return (
-    <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-3 px-4 py-3 border-b border-border">
+    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+      <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back"
-          onPress={() => leaveSettings(router, isNativePhone)}
+          onPress={exitSettings}
+          className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
         >
           <ArrowLeft size={20} className="text-foreground" />
         </Pressable>
-        <Text className="text-xl font-bold text-foreground">Settings</Text>
+        <View className="flex-1">
+          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Settings
+          </Text>
+          <Text className="text-xl font-semibold text-foreground">
+            {activeTabLabel}
+          </Text>
+        </View>
       </View>
 
-      <View className="z-10 bg-background">
+      <View className="z-10 bg-card">
         <TabBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -3488,11 +4485,20 @@ export default observer(function SettingsPage() {
 
       <ScrollView
         className="flex-1"
-        contentContainerClassName="p-4 pb-10"
+        contentContainerClassName="px-4 pt-5"
+        contentContainerStyle={{
+          paddingBottom: Math.max(insets.bottom + 28, 40),
+        }}
         showsVerticalScrollIndicator={false}
       >
-        <SettingsContent activeTab={activeTab} localMode={localMode || !features.billing} />
+        <View className="w-full self-center" style={{ maxWidth: 720 }}>
+          <SettingsContent
+            activeTab={activeTab}
+            localMode={localMode || !features.billing}
+            onSelectTab={setActiveTab}
+          />
+        </View>
       </ScrollView>
     </View>
-  )
-})
+  );
+});

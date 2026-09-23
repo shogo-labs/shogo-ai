@@ -12,6 +12,13 @@ export type ToolCategory = "mcp" | "file" | "skill" | "bash" | "other"
 export interface AskUserQuestionOption {
   label: string
   description: string
+  /**
+   * Workspace-relative path to an image to show as a thumbnail for this
+   * option (e.g. "images/generated-123.png", from a prior generate_image
+   * tool call). Resolved the same way as GenerateImageWidget: via
+   * `chatContext.agentUrl` + `/agent/workspace/download/:path`.
+   */
+  imagePath?: string
 }
 
 export interface AskUserQuestionItem {

@@ -18,7 +18,8 @@
 import { spawn, execSync, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
 import { join } from 'path'
-import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, watch, type FSWatcher } from 'fs'
+import { homedir } from 'os'
+import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
@@ -39,6 +40,43 @@ import {
  * runtimes are not flooded with every raw vite-watch build line.
  */
 const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-desktop-runtime'
+
+/**
+ * Matches the "disk is full" build failure mode (09-21 prod pain point:
+ * a workspace `emptyDir` reported "14GB/14GB"). vite/esbuild/bun all
+ * surface this the same way in stderr regardless of which step hit it.
+ */
+const ENOSPC_PATTERN = /ENOSPC|no space left on device/i
+
+/**
+ * Best-effort emergency disk reclaim when a build fails with ENOSPC.
+ * Deletes only rebuildable caches — never source, `dist/`, or the
+ * database — so a follow-up install/build just re-populates them from
+ * scratch (slower, but correct). Each candidate is removed independently;
+ * a missing path or a permissions failure on one never blocks the others.
+ * Returns the paths that existed and were actually removed, so the
+ * caller can name them in the operator-facing error message.
+ */
+function bestEffortReclaimDiskSpace(cwd: string): string[] {
+  const candidates = [
+    join(cwd, 'node_modules', '.vite'),
+    join(cwd, DEFAULT_STAGING_DIR),
+    join(homedir(), '.bun', 'install', 'cache'),
+    join(homedir(), '.npm', '_cacache'),
+  ]
+  const removed: string[] = []
+  for (const dir of candidates) {
+    try {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true })
+        removed.push(dir)
+      }
+    } catch {
+      /* best-effort — a failed reclaim of one path shouldn't block the rest */
+    }
+  }
+  return removed
+}
 
 /** Derive the project id from a `<root>/.shogo/logs/build.log` path (best-effort). */
 function projectIdFromLogPath(logPath: string): string | undefined {
@@ -778,6 +816,9 @@ export type PreviewPhase =
 
 export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'restarting' | 'crashed' | 'stopped'
 
+/** Shared return shape for {@link PreviewManager.start} and {@link PreviewManager.restart}. */
+export type PreviewStartResult = { mode: string; port: number | null; timings: Record<string, number> }
+
 /**
  * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
  * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
@@ -912,6 +953,31 @@ export class PreviewManager {
   private started = false
   private _phase: PreviewPhase = 'idle'
   /**
+   * Single-flight guard for the `start()`/`restart()` lifecycle body.
+   *
+   * Without it, a cold boot can see 3+ independent triggers call into
+   * `start()`/`restart()` concurrently — `initializeEssentials()`'s
+   * auto-start, `scheduleHydrateRebuild()`'s post-hydrate restart, and
+   * `onRefreshEnv`'s env-change restart all raced in staging on
+   * project `a0bea431-...` (2026-09). Each racer's `startApiServer()`
+   * saw the other's freshly-spawned sidecar as a "stale" port squatter
+   * and SIGKILLed it, tripping `handleCrash()` and burning through
+   * `MAX_CRASH_RESTARTS` — a genuine "never loads" outcome, not just a
+   * slow one.
+   *
+   * `lifecycleInFlight` holds the promise for whichever `start()`/
+   * `restart()` call is currently running its body; concurrent callers
+   * await that same promise instead of spawning their own. `lifecyclePending`
+   * records that at least one more `restart()` was requested while the
+   * in-flight one was running — since the caller who lost the race may
+   * need the *fresh* rebuild it asked for (e.g. the hydrate-restart case,
+   * where silently dropping the request would leave the project serving
+   * stale content), exactly one trailing-edge follow-up run is scheduled
+   * once the in-flight run finishes.
+   */
+  private lifecycleInFlight: Promise<PreviewStartResult> | null = null
+  private lifecyclePending = false
+  /**
    * Reentrancy guard for `runExpoExportWeb`. Without it, the staging-pod
    * boot path can spawn `expo export --platform web` twice in parallel:
    *   - Once via `start() -> backgroundSetupMetro()` (fire-and-forget).
@@ -925,6 +991,46 @@ export class PreviewManager {
    * strictly serial — concurrent callers receive the in-flight promise.
    */
   private expoExportInFlight: Promise<void> | null = null
+  /**
+   * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
+   * above. `startApiServer()` is reachable from many independent entry
+   * points — `backgroundSetup()`/`backgroundSetupMetro()` (via `start()`/
+   * `restart()`'s `lifecycleInFlight` gate), `sync()`, the schema-change
+   * handler, `restartApiServerOnly()`, `handleCrash()`'s retry, and
+   * `maybeRecoverApiServer()`. The `lifecycleInFlight` gate on `start()`/
+   * `restart()` only coalesces calls that overlap the (near-instant)
+   * synchronous portion of those methods; it does NOT stop one of these
+   * *other* entry points from calling `startApiServer()` while a
+   * previously-triggered spawn is still mid-flight (reaping the port,
+   * spawning `server.tsx`, and polling `/health` for up to
+   * `HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS`).
+   *
+   * Without this guard, two overlapping `startApiServer()` calls each ran
+   * their own `reapStaleApiSidecars()` / force-kill-port / spawn sequence,
+   * so each one's freshly-spawned sidecar looked like a "stale" squatter to
+   * the other and got SIGKILLed — the exact crash-loop observed in staging
+   * on project `a0bea431-...` (2026-09). This guard keeps the spawn
+   * attempt strictly serial; concurrent callers await the same in-flight
+   * promise instead of racing their own.
+   */
+  private apiServerStartInFlight: Promise<void> | null = null
+  /**
+   * Bumped by {@link stop} every time it runs. `_startApiServerImpl()`
+   * snapshots this at entry and re-checks it before spawning (and before
+   * any early-return that mutates `apiPhase`/`hasApiServer`) so a start
+   * attempt that was already in flight when `stop()` fires (e.g. the
+   * hydrate-triggered `restart()` that follows nearly every cold boot —
+   * see `runLifecycle`) quietly bails instead of clobbering the *next*
+   * attempt's state or double-spawning a sidecar on the same port once it
+   * resumes from its `await`. Without this, `stop()` nulling
+   * `apiServerProcess` without invalidating the in-flight promise left
+   * `startApiServer()` coalescing new calls onto a doomed attempt for up
+   * to `HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS` (~5s) — long
+   * enough to span the routine post-hydrate restart on effectively every
+   * project, so the sidecar never came back up. Root cause of the
+   * 2026-09-21 "every project shows Project Ready" staging regression.
+   */
+  private apiServerGeneration = 0
   /**
    * Port the spawned project API server (`server.tsx`) binds to. Resolved
    * once in the constructor — subsequent `process.env` mutations don't
@@ -1820,9 +1926,53 @@ export class PreviewManager {
   }
 
   /**
-   * Start the preview server. ALWAYS returns immediately and runs the
-   * expensive work (install deps, prisma generate, vite build watch, api
-   * server) in `backgroundSetup`.
+   * Start the preview server. Thin wrapper around {@link runLifecycle} —
+   * see that method and {@link lifecycleInFlight} for the single-flight
+   * coalescing guarantee. See {@link _runLifecycleOnce} for the actual
+   * start/restart body and its "always returns immediately" contract.
+   */
+  async start(): Promise<PreviewStartResult> {
+    return this.runLifecycle('start')
+  }
+
+  /**
+   * Restart: stop, reinstall, rebuild. Thin wrapper around
+   * {@link runLifecycle} — see that method and {@link lifecycleInFlight}
+   * for the single-flight coalescing guarantee.
+   */
+  async restart(): Promise<PreviewStartResult> {
+    return this.runLifecycle('restart')
+  }
+
+  /**
+   * Single-flight gate for {@link start} / {@link restart}. At most one
+   * `_runLifecycleOnce()` body runs at a time; a caller that arrives while
+   * one is already in flight joins that same promise instead of triggering
+   * its own `backgroundSetup()`/`startApiServer()` call (the concurrency
+   * bug — see {@link lifecycleInFlight} doc). If any joiner's call was a
+   * `restart()` (i.e. it specifically needed a fresh rebuild, not just to
+   * observe the in-flight one), `lifecyclePending` records that and exactly
+   * one trailing-edge `restart()` runs immediately after the in-flight one
+   * settles.
+   */
+  private async runLifecycle(kind: 'start' | 'restart'): Promise<PreviewStartResult> {
+    if (this.lifecycleInFlight) {
+      if (kind === 'restart') this.lifecyclePending = true
+      return this.lifecycleInFlight
+    }
+    this.lifecycleInFlight = this._runLifecycleOnce(kind).finally(() => {
+      const pending = this.lifecyclePending
+      this.lifecyclePending = false
+      this.lifecycleInFlight = null
+      if (pending) void this.runLifecycle('restart')
+    })
+    return this.lifecycleInFlight
+  }
+
+  /**
+   * Start (or restart) the preview server. ALWAYS returns immediately and
+   * runs the expensive work (install deps, prisma generate, vite build
+   * watch, api server) in `backgroundSetup`.
    *
    * Why always background? The previous behavior was:
    *   - prebuilt-dist branch: backgroundSetup (fast)
@@ -1845,10 +1995,13 @@ export class PreviewManager {
    * - Skips `prisma generate` when the generated client already exists.
    * - Marks _phase = 'ready' immediately when dist/ is prebuilt so the
    *   preview iframe can render while background work continues.
+   *
+   * Only ever invoked through {@link runLifecycle} — never call directly,
+   * or the single-flight guarantee above is bypassed.
    */
-  async start(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
-    if (this.started) {
-      return { mode: 'already-running', port: this.runtimePort, timings: {} }
+  private async _runLifecycleOnce(kind: 'start' | 'restart'): Promise<PreviewStartResult> {
+    if (kind === 'restart') {
+      this.stop()
     }
 
     // One-shot migration: delete the legacy `<workspace>/.build.log` and
@@ -2448,6 +2601,15 @@ export class PreviewManager {
       this.apiServerProcess = null
     }
     this.apiListening = false
+    // Invalidate any in-flight _startApiServerImpl() attempt. It's still
+    // running (JS can't cancel a suspended await), but bumping the
+    // generation lets it detect it's stale and bail before spawning, and
+    // clearing apiServerStartInFlight lets the *next* startApiServer()
+    // call (from the restart that's about to run) start a fresh attempt
+    // immediately instead of joining this doomed one. See
+    // {@link apiServerGeneration}.
+    this.apiServerGeneration++
+    this.apiServerStartInFlight = null
     if (this.buildWatchProcess) {
       console.log(`[${LOG_PREFIX}] Stopping Vite build watch...`)
       this.killBuildWatchProcessGroup(this.buildWatchProcess)
@@ -2494,14 +2656,6 @@ export class PreviewManager {
     }
   }
 
-  /**
-   * Restart: stop, reinstall, rebuild.
-   */
-  async restart(): Promise<{ mode: string; port: number | null; timings: Record<string, number> }> {
-    this.stop()
-    return this.start()
-  }
-
   get phase(): PreviewPhase {
     return this._phase
   }
@@ -2514,11 +2668,19 @@ export class PreviewManager {
    * spinner that never resolves.
    *
    * A preview that already reached `ready` (e.g. a prebuilt dist serving while a
-   * later background step blows up) is left untouched — the static preview still
-   * works, so we must not flip it to failed.
+   * later background step blows up) is left untouched by default — the static
+   * preview still works, so we must not flip it to failed.
+   *
+   * `force: true` overrides that guard. Used by the one-shot vite build failure
+   * path: a prebuilt template `dist/` marks `_phase = 'ready'` before the FIRST
+   * real build ever runs, so without `force` a genuine build failure (e.g.
+   * ENOSPC) would be silently swallowed forever — the preview keeps serving the
+   * stale template while reporting itself healthy. Once a build has actually
+   * failed, staying "ready" is a lie, so this is not the same case the
+   * ready-guard exists to protect.
    */
-  private markSetupFailed(err: unknown): void {
-    if (this._phase === 'ready') return
+  private markSetupFailed(err: unknown, opts: { force?: boolean } = {}): void {
+    if (this._phase === 'ready' && !opts.force) return
     const msg = err instanceof Error ? err.message : String(err)
     this.lastSetupError = msg || 'setup failed'
     this._phase = 'failed'
@@ -2712,6 +2874,10 @@ export class PreviewManager {
     // the shim's `#!/usr/bin/env node` shebang fails with code 127. See
     // resolveBinInvocation() doc-block for the full story.
     const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
+    // Tail of stderr (bounded so a runaway build can't grow this
+    // unbounded) — used to classify the failure (ENOSPC vs. a normal
+    // build error) and to surface a useful excerpt in `errors.setup`.
+    let stderrTail = ''
     const exitCode = await new Promise<number | null>((resolveBuild) => {
       let proc: ChildProcess
       try {
@@ -2746,6 +2912,7 @@ export class PreviewManager {
       proc.stderr?.on('data', (data: Buffer) => {
         const line = data.toString().trim()
         emitBuildLine(buildLogPath, '[stderr]', line, 'stderr')
+        stderrTail = (stderrTail + '\n' + line).slice(-4000)
       })
       proc.on('exit', (code) => resolveBuild(code))
     })
@@ -2760,6 +2927,21 @@ export class PreviewManager {
     } else {
       console.warn(`[${LOG_PREFIX}] One-shot vite build failed (code=${exitCode})`)
       cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+
+      let message = `Build failed (vite exited with code ${exitCode}).${stderrTail ? ` ${stderrTail.trim().slice(-500)}` : ''}`
+      if (ENOSPC_PATTERN.test(stderrTail)) {
+        const reclaimed = bestEffortReclaimDiskSpace(cwd)
+        message = reclaimed.length
+          ? `Workspace disk is full (build failed with ENOSPC). Freed cache space at: ${reclaimed.join(', ')}. Run \`du -sh\` to find large files, delete what you don't need, then rebuild.`
+          : `Workspace disk is full (build failed with ENOSPC). Could not free any cache automatically. Run \`du -sh\` to find large files, delete what you don't need, then rebuild.`
+      }
+      // A prebuilt dist/ (template seed) already marked `_phase = 'ready'`
+      // before this — the first REAL — build ran (see start()'s fast-path
+      // doc-block). Without `force`, markSetupFailed would no-op here and
+      // the preview would keep silently serving the stale prebuilt dist
+      // forever while reporting itself healthy. Force the transition so
+      // `errors.setup` (and the "failed" phase/overlay) become visible.
+      this.markSetupFailed(new Error(message), { force: true })
     }
   }
 
@@ -2944,7 +3126,33 @@ export class PreviewManager {
     await this.waitForPortRelease()
   }
 
+  /**
+   * Spawn (or re-spawn) the API sidecar. Thin single-flight wrapper —
+   * see {@link apiServerStartInFlight} — around {@link _startApiServerImpl},
+   * which does the actual reap/generate/drift-check/spawn/health-check
+   * work. Concurrent callers join the same in-flight promise rather than
+   * each attempting their own spawn.
+   */
   private async startApiServer(): Promise<void> {
+    if (this.apiServerStartInFlight) {
+      console.log(`[${LOG_PREFIX}] API server start already in flight — awaiting it instead of spawning a second one`)
+      return this.apiServerStartInFlight
+    }
+    this.apiServerStartInFlight = this._startApiServerImpl().finally(() => {
+      this.apiServerStartInFlight = null
+    })
+    return this.apiServerStartInFlight
+  }
+
+  private async _startApiServerImpl(): Promise<void> {
+    // Snapshot the generation this attempt belongs to. `stop()` bumps
+    // `apiServerGeneration` synchronously, so if this attempt is still
+    // resuming from an `await` after a `stop()` fired (e.g. the
+    // hydrate-triggered restart that follows nearly every cold boot), the
+    // checks below let it bail rather than spawning a now-unwanted sidecar
+    // or clobbering the state of whichever fresh attempt superseded it.
+    const generation = this.apiServerGeneration
+    const isStaleAttempt = () => generation !== this.apiServerGeneration
     const cwd = this.bundlerCwd
 
     // Clear any orphaned sidecar squatting our port BEFORE the (slower)
@@ -2952,6 +3160,10 @@ export class PreviewManager {
     // EADDRINUSE. The isPortFree/forceKill block just before spawn remains as
     // a second line of defense for a squatter that appears mid-startup.
     await this.reapStaleApiSidecars()
+    if (isStaleAttempt()) {
+      console.log(`[${LOG_PREFIX}] Abandoning stale API server start attempt (superseded by a stop()/restart())`)
+      return
+    }
 
     // The runtime template no longer ships a hand-written `server.tsx`
     // — it's generated by the SDK from `shogo.config.json` (see
@@ -2981,6 +3193,10 @@ export class PreviewManager {
       }
 
       const ok = await this.runShogoGenerate()
+      if (isStaleAttempt()) {
+        console.log(`[${LOG_PREFIX}] Abandoning stale API server start attempt (superseded by a stop()/restart())`)
+        return
+      }
       if (!ok) {
         console.warn(
           `[${LOG_PREFIX}] Initial shogo generate failed — server.tsx will likely crash. ` +
@@ -3031,6 +3247,11 @@ export class PreviewManager {
           )
         }
       }
+    }
+
+    if (isStaleAttempt()) {
+      console.log(`[${LOG_PREFIX}] Abandoning stale API server start attempt (superseded by a stop()/restart())`)
+      return
     }
 
     ensureRuntimeLogDir(this.workspaceDir)
@@ -3101,6 +3322,16 @@ export class PreviewManager {
           console.error(`[${LOG_PREFIX}] Port-contention retry failed: ${err?.message ?? err}`)
         })
       }, backoff)
+      return
+    }
+
+    // Last chance before we actually spawn a process bound to the port —
+    // if a stop()/restart() superseded this attempt while we were awaiting
+    // the port-free checks above, bail rather than spawning a sidecar the
+    // fresh (superseding) attempt didn't ask for and may have already
+    // spawned its own copy of.
+    if (isStaleAttempt()) {
+      console.log(`[${LOG_PREFIX}] Abandoning stale API server start attempt (superseded by a stop()/restart())`)
       return
     }
 

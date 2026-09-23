@@ -94,6 +94,7 @@ describe('PlatformApi.getConfig', () => {
       features: {
         billing: false, admin: false, oauth: true, analytics: false,
         publishing: false, marketplace: true, ezMode: false, phoneChannel: false,
+        personalShell: true, agentShell: false, mobileAgentShell: false,
       },
     }
     http.setGet('/api/config', expected)
@@ -434,14 +435,16 @@ describe('PlatformApi.putAgentModelDefaults', () => {
 describe('PlatformApi.getFeatureFlags', () => {
   test('happy: returns data', async () => {
     const { api, http } = mkApi()
-    const f: FeatureFlagOverrides = { marketplace: true, ezMode: null, phoneChannel: false }
+    const f: FeatureFlagOverrides = {
+      marketplace: true, ezMode: null, phoneChannel: false, personalShell: null, agentShell: true, mobileAgentShell: false,
+    }
     http.setGet('/api/admin/settings/features', f)
     expect(await api.getFeatureFlags()).toEqual(f)
   })
   test('fallback: all-null when data missing', async () => {
     const { api } = mkApi()
     expect(await api.getFeatureFlags()).toEqual({
-      marketplace: null, ezMode: null, phoneChannel: null, personalShell: null,
+      marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
     })
   })
 })
@@ -449,7 +452,12 @@ describe('PlatformApi.getFeatureFlags', () => {
 describe('PlatformApi.putFeatureFlags', () => {
   test('happy: returns data', async () => {
     const { api, http } = mkApi()
-    const r = { ok: true, flags: { marketplace: true, ezMode: null, phoneChannel: null } as FeatureFlagOverrides }
+    const r = {
+      ok: true,
+      flags: {
+        marketplace: true, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
+      } as FeatureFlagOverrides,
+    }
     http.setRequest('PUT', '/api/admin/settings/features', r)
     expect(await api.putFeatureFlags({ marketplace: true })).toEqual(r)
     expect(http.calls[0]!.body).toEqual({ marketplace: true })
@@ -458,7 +466,9 @@ describe('PlatformApi.putFeatureFlags', () => {
     const { api } = mkApi()
     expect(await api.putFeatureFlags({})).toEqual({
       ok: false,
-      flags: { marketplace: null, ezMode: null, phoneChannel: null, personalShell: null },
+      flags: {
+          marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
+      },
     })
   })
 })

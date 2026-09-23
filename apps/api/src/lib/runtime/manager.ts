@@ -24,7 +24,11 @@ import {
 import { join, dirname, resolve, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
-import { pkg, isMobileTechStack, stackSeedsItself } from '@shogo/shared-runtime'
+import { pkg } from '../../../../../packages/cli/src/pkg'
+import {
+  isMobileTechStack,
+  stackSeedsItself,
+} from '../../../../../packages/core/src/tech-stack-registry'
 import { cloneTree, defaultCloneMode, type CloneMode } from './clone-tree'
 import {
   WorkerRuntimeManager,
@@ -41,13 +45,27 @@ import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
-import { resolveAgentModelEnv } from './agent-model-defaults'
-import {
-  isProjectCloudLinked,
-  isCloudSyncActive,
-  syncCloudProjectIntoDir,
-  stopAllCloudSyncWatchers,
-} from './cloud-content-sync'
+import { resolveAgentModelEnv } from './agent-model-defaults-runtime'
+
+type CloudContentSyncModule = typeof import('./cloud-content-sync')
+
+async function loadCloudContentSync(): Promise<CloudContentSyncModule> {
+  return import('./cloud-content-sync')
+}
+
+async function isProjectCloudLinked(projectId: string): Promise<boolean> {
+  return (await loadCloudContentSync()).isProjectCloudLinked(projectId)
+}
+
+async function syncCloudProjectIntoDir(
+  options: Parameters<CloudContentSyncModule['syncCloudProjectIntoDir']>[0],
+) {
+  return (await loadCloudContentSync()).syncCloudProjectIntoDir(options)
+}
+
+async function isCloudSyncActive(projectId: string): Promise<boolean> {
+  return (await loadCloudContentSync()).isCloudSyncActive(projectId)
+}
 
 /** Get the directory where this module is located */
 const __filename = fileURLToPath(import.meta.url)
@@ -263,8 +281,9 @@ export class RuntimeManager implements IRuntimeManager {
    */
   private workspacePreviewMru: string[] = []
   private readonly workspacePreviewMax: number = (() => {
-    const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || '3', 10)
-    return Number.isFinite(n) && n > 0 ? n : 3
+    const defaultMax = process.env.SHOGO_HOST_TIER === 'low' ? 1 : 3
+    const n = parseInt(process.env.WORKSPACE_PREVIEW_MAX || String(defaultMax), 10)
+    return Number.isFinite(n) && n > 0 ? n : defaultMax
   })()
 
   /**
@@ -1477,12 +1496,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * so the bare-key `start()` path and the attach/restart path build the
    * identical merged root.
    *
-   * Returns `null` when the project has no `workspaceId` (it cannot be
-   * anchored), so callers fall back to the legacy single-project path.
+   * Returns `null` when the project has no `workspaceId`; callers fail
+   * clearly because the anchored workspace runtime is mandatory.
    *
    * Uses dynamic imports to keep prisma / the attachment service off this
-   * module's static dependency graph — `manager.ts` is imported very early
-   * and `restartAnchorRuntime` already lazy-imports the same modules.
+   * module's static dependency graph — `manager.ts` is imported very early.
    */
   async resolveAnchorSpawnOpts(anchorProjectId: string): Promise<{
     workspaceId: string
@@ -1518,78 +1536,28 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     projectId: string,
     opts?: { background?: boolean; openAttemptId?: string },
   ): Promise<IProjectRuntime> {
-    // Universal workspace-runtime model: when SHOGO_WORKSPACE_RUNTIME is
-    // enabled, every project runs on its project-anchored merged-root
-    // runtime (`ws:proj:<id>`). The legacy single-project runtime keyed by
-    // the bare `<projectId>` would otherwise be spawned *in addition* to
-    // the anchored one — prewarm + heartbeat take this `start()` path while
-    // chat / attach take `startProjectWorkspace` — giving two agent-runtime
-    // trees per project that never dedup against each other. Delegating here
-    // collapses them onto one key so prewarm, heartbeat, chat and attach all
-    // share a single runtime.
-    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
-      const anchorOpts = await this.resolveAnchorSpawnOpts(projectId)
-      if (anchorOpts) {
-        return this.startProjectWorkspace(projectId, {
-          ...anchorOpts,
-          background: opts?.background,
-          openAttemptId: opts?.openAttemptId,
-        })
-      }
-      // No workspaceId — cannot anchor; fall through to the legacy path.
-    }
-
-    // Check if already running
-    const existing = this.runtimes.get(projectId)
-    if (existing && existing.status === 'running') {
-      return this.toPublicRuntime(existing)
-    }
-
-    // Deduplicate concurrent start calls for the same project
-    const inflight = this.startingPromises.get(projectId)
-    if (inflight) {
-      console.log(`[RuntimeManager] Waiting on in-flight start for ${projectId}`)
-      return inflight
-    }
-
-    // If a prior start crashed into 'error' (or got stuck in 'starting'
-    // with no inflight promise, e.g. when waitForHealth timed out and
-    // the worker's spawn left a wedged tree behind), tear down whatever
-    // is still on disk for this project before we allocate a fresh
-    // port and spawn another copy. Otherwise we accumulate parallel
-    // agent-runtime trees per failed retry — each one binding ports
-    // 37xxx + spawning vite + tsserver + server.tsx — and the chat
-    // proxy fans out across them indefinitely. Discovered on Windows
-    // where the worker's previous SIGTERM was a no-op on grandchildren
-    // (see killProcessGroup in packages/shogo-worker/src/lib/runtime-manager.ts).
-    if (existing && (existing.status === 'error' || existing.status === 'starting')) {
-      console.log(
-        `[RuntimeManager] start(${projectId}): prior runtime in status='${existing.status}' — ` +
-          `stopping leaked tree before respawn`,
+    // Every project is an anchor in the merged-root workspace topology. This
+    // keeps heartbeat, prewarm, chat, and sandbox requests on the same
+    // `ws:proj:<anchor>` slot instead of allowing a legacy bare-project slot
+    // to spawn a second agent-runtime tree.
+    const anchorOpts = await this.resolveAnchorSpawnOpts(projectId)
+    if (!anchorOpts) {
+      throw new Error(
+        `[RuntimeManager] project ${projectId} has no workspaceId; ` +
+          'workspace-runtime is the only supported runtime topology',
       )
-      try {
-        await this.stop(projectId, 'pre-respawn')
-      } catch (err: any) {
-        console.warn(
-          `[RuntimeManager] start(${projectId}): pre-respawn stop failed: ${err?.message ?? err} — continuing`,
-        )
-      }
     }
-
-    const promise = this.doStart(projectId, opts?.openAttemptId)
-    this.startingPromises.set(projectId, promise)
-    try {
-      return await promise
-    } finally {
-      this.startingPromises.delete(projectId)
-    }
+    return this.startProjectWorkspace(projectId, {
+      ...anchorOpts,
+      background: opts?.background,
+      openAttemptId: opts?.openAttemptId,
+    })
   }
 
   /**
    * Start (or join an in-flight start of) a WORKSPACE runtime — one
    * agent-runtime rooted at the `workspaces/` parent that mounts several
-   * attached projects as subfolders (the merged-root mode toggled by
-   * `WORKSPACE_RUNTIME=true`, see agent-runtime/workspace-runtime-mode.ts).
+   * attached projects as subfolders.
    *
    * Keyed by `ws:<workspaceId>` so it can never collide with a single
    * project runtime of the same id. Idempotent + dedupes concurrent
@@ -1919,7 +1887,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // hook writes checkpoints) so the two don't fight. Local-only runtimes
       // keep their normal checkpoint behavior. (Mixed merged roots gate on the
       // anchor; per-member gating is a follow-up.)
-      if (spec.anchorProjectId && isCloudSyncActive(spec.anchorProjectId)) {
+      if (spec.anchorProjectId && await isCloudSyncActive(spec.anchorProjectId)) {
         runtimeEnv.SHOGO_CLOUD_SYNC = '1'
       }
 
@@ -2736,7 +2704,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Cloud-synced projects defer S3Sync + checkpoint inserts to the
         // CloudSyncWatcher + cloud post-receive hook (see the merged-root
         // path); local-only projects keep their own checkpoint behavior.
-        if (isCloudSyncActive(projectId)) {
+        if (await isCloudSyncActive(projectId)) {
           runtimeEnv.SHOGO_CLOUD_SYNC = '1'
         }
 
@@ -3091,11 +3059,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * (which also passes through pre-resolved `ws:*` keys unchanged).
    */
   private resolveRuntimeKey(projectId: string): string {
-    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
-      const anchored = projectWorkspaceRuntimeKey(projectId)
-      if (this.runtimes.has(anchored)) return anchored
-    }
-    return projectId
+    if (projectId.startsWith('ws:')) return projectId
+    return projectWorkspaceRuntimeKey(projectId)
   }
 
   /**
@@ -3185,14 +3150,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   async stop(projectId: string, reason: string = 'external'): Promise<void> {
-    // A project served by the host warm pool is not in `this.runtimes` — the
-    // pool controller owns that process. Without this, `POST /runtime/stop`
-    // was a silent no-op for every pool-assigned project (measured on 1.14.1:
-    // the UI's stop returned `status: "stopped"` while `sandbox/url` kept
-    // reporting the same live runtime). Best-effort and dynamic to avoid the
-    // controller ↔ manager import cycle.
-    await this.evictFromHostPool(projectId, reason)
-
     const key = this.resolveRuntimeKey(projectId)
     const runtime = this.runtimes.get(key)
     if (!runtime) {
@@ -3263,21 +3220,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.dropBackgroundMru(key)
   }
 
-  private async evictFromHostPool(projectId: string, reason: string): Promise<void> {
-    if (projectId.startsWith('ws:')) return
-    try {
-      const pool = await import('../host-warm-pool-controller')
-      if (!pool.isHostWarmPoolEnabled()) return
-      const controller = pool.getHostWarmPoolController()
-      if (controller.getAssignedPod(projectId)) {
-        console.log(`[RuntimeManager] stop(${projectId}) reason=${reason} — evicting host-pool runtime`)
-        controller.evictProject(projectId)
-      }
-    } catch {
-      // Pool not initialised (or disabled): nothing to evict.
-    }
-  }
-
   /**
    * Stop a workspace (merged-root) runtime. Idempotent. Delegates to
    * stop() with the `ws:<id>` key so the worker child, ports, health
@@ -3296,10 +3238,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   async restart(projectId: string): Promise<IProjectRuntime> {
     console.log(`[RuntimeManager] Restarting runtime for ${projectId}`)
 
-    const existing = this.runtimes.get(projectId)
+    const key = this.resolveRuntimeKey(projectId)
+    const existing = this.runtimes.get(key)
     if (existing && existing.status !== 'stopped') {
-      console.log(`[RuntimeManager] Stopping existing runtime for ${projectId}`)
-      await this.stop(projectId, 'restart')
+      console.log(`[RuntimeManager] Stopping existing runtime for ${key}`)
+      await this.stop(key, 'restart')
     }
 
     console.log(`[RuntimeManager] Starting fresh runtime for ${projectId}`)
@@ -3307,17 +3250,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   status(projectId: string): IProjectRuntime | null {
-    // Universal workspace-runtime model: when the flag is on, a project
-    // runs on its anchored merged-root runtime (`ws:proj:<id>`), so a bare
-    // `<projectId>` lookup would miss it and make callers (e.g. the local
-    // heartbeat scheduler) believe nothing is running and cold-start a
-    // duplicate. Prefer the anchored key, falling back to the bare key for
-    // any legacy runtime started before the flag was enabled.
-    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
-      const anchored = this.runtimes.get(projectWorkspaceRuntimeKey(projectId))
-      if (anchored) return this.toPublicRuntime(anchored)
-    }
-    const runtime = this.runtimes.get(projectId)
+    const runtime = this.runtimes.get(this.resolveRuntimeKey(projectId))
     return runtime ? this.toPublicRuntime(runtime) : null
   }
 
@@ -3348,7 +3281,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   async getHealth(projectId: string): Promise<IHealthStatus> {
-    const runtime = this.runtimes.get(projectId)
+    const runtime = this.runtimes.get(this.resolveRuntimeKey(projectId))
     if (!runtime) {
       return {
         healthy: false,
@@ -3395,11 +3328,14 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       )
     )
     await Promise.all(stopPromises)
-    // Stop cloud-content-sync watchers last so their final debounced flush
-    // gets a chance to PUT/commit the user's last edits before shutdown.
-    await stopAllCloudSyncWatchers().catch((err) =>
+    // Stop cloud-content-sync watchers last. Keep the cloud island lazy so
+    // local API startup/tests do not resolve cloud-only SDK subpaths.
+    try {
+      const { stopAllCloudSyncWatchers } = await import('./cloud-content-sync')
+      await stopAllCloudSyncWatchers()
+    } catch (err) {
       console.error('[RuntimeManager] Failed to stop cloud sync watchers:', err)
-    )
+    }
   }
 
   getActiveProjects(): string[] {
@@ -3534,7 +3470,11 @@ export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): Runti
   // PROJECT_ROOT above.
   const config: Partial<IRuntimeConfig> = {
     basePort: PORT_RANGE_START,
-    maxRuntimes: parseInt(process.env.RUNTIME_MAX_COUNT || '10', 10),
+    maxRuntimes: parseInt(
+      process.env.RUNTIME_MAX_COUNT ||
+        (process.env.SHOGO_HOST_TIER === 'low' ? '2' : '10'),
+      10,
+    ),
     healthCheckInterval: parseInt(process.env.RUNTIME_HEALTH_INTERVAL || '30000', 10),
     workspacesDir: process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces'),
     domainSuffix: process.env.RUNTIME_DOMAIN_SUFFIX || 'localhost',

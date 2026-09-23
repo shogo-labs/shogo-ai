@@ -6,7 +6,10 @@ import { Linking, Platform, Pressable, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { cn } from "@shogo/shared-ui/primitives";
 import { densityFor } from "../../../lib/phone-density";
-import { useNativePhoneIconChrome } from "../../../lib/native-phone-layout";
+import {
+  useNativePhoneIconChrome,
+  usePhoneLayout,
+} from "../../../lib/native-phone-layout";
 
 // ─── NavItem ───────────────────────────────────────────────
 
@@ -39,8 +42,13 @@ export function NavItem({
   labelClassName,
 }: NavItemProps) {
   const router = useRouter();
-  const isNative = Platform.OS !== "web";
-  const density = densityFor(isNative);
+  // Sizing/density follows the viewport (so narrow mobile web matches native
+  // phone chrome, same as the Projects list below it) — but the icon-chrome
+  // color/stroke override below stays native-only, since that's a platform
+  // rendering convention, not a density concern.
+  const nativePlatform = Platform.OS !== "web";
+  const comfortable = usePhoneLayout();
+  const density = densityFor(comfortable);
   const iconChrome = useNativePhoneIconChrome();
 
   const handlePress = useCallback(() => {
@@ -65,24 +73,24 @@ export function NavItem({
       accessibilityLabel={label}
       className={cn(
         "flex-row items-center rounded-md",
-        isNative ? `${density.rowMin} gap-3 px-3 py-2` : "gap-2 px-2 py-1",
+        comfortable ? `${density.rowMin} gap-3 px-3 py-2` : "gap-2 px-2 py-1",
         active ? "bg-accent" : "active:bg-accent/50",
         collapsed && "justify-center px-2",
       )}
     >
       <Icon
-        size={isNative ? density.icon.nav : 12}
-        color={isNative && !iconClassName ? iconChrome.color : undefined}
-        strokeWidth={isNative ? iconChrome.strokeWidth : undefined}
+        size={comfortable ? density.icon.nav : 12}
+        color={nativePlatform && !iconClassName ? iconChrome.color : undefined}
+        strokeWidth={nativePlatform ? iconChrome.strokeWidth : undefined}
         className={cn(
           iconClassName,
-          !isNative && (active ? "text-foreground" : "text-muted-foreground"),
+          !nativePlatform && (active ? "text-foreground" : "text-muted-foreground"),
         )}
       />
       {!collapsed && (
         <Text
           className={cn(
-            isNative ? `${density.text.body} flex-1` : "text-xs flex-1",
+            comfortable ? `${density.text.body} flex-1` : "text-xs flex-1",
             labelClassName ?? (active ? "text-foreground" : "text-muted-foreground"),
           )}
           numberOfLines={1}

@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   User,
@@ -88,19 +89,19 @@ export default observer(function ProfilePage() {
 
   if (isLoading) {
     return (
-      <View className="flex-1 bg-background p-6">
+      <SafeAreaView className="flex-1 bg-background p-6">
         <View className="gap-6 max-w-lg mx-auto w-full">
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-48 w-full" />
           <Skeleton className="h-64 w-full" />
         </View>
-      </View>
+      </SafeAreaView>
     )
   }
 
   if (!currentUser) {
     return (
-      <View className="flex-1 bg-background p-6">
+      <SafeAreaView className="flex-1 bg-background p-6">
         <View className="items-center justify-center py-12">
           <User size={48} className="text-muted-foreground mb-4" />
           <Text className="text-xl font-semibold text-foreground mb-2">
@@ -118,40 +119,52 @@ export default observer(function ProfilePage() {
             </View>
           </Button>
         </View>
-      </View>
+      </SafeAreaView>
     )
   }
 
   return (
-    <ScrollView
-      className="flex-1 bg-background"
-      contentContainerStyle={{
-        paddingTop: 16,
-        paddingBottom: 40,
-        paddingHorizontal: profilePadH,
-        maxWidth: profileMaxWidth,
-        width: '100%',
-        alignSelf: 'center',
-      }}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* Header */}
-      <View className="flex-row items-center gap-3 mb-6">
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={8}
-          className={isNativePhone ? "h-11 w-11 items-center justify-center" : undefined}
-        >
-          <ArrowLeft size={isNativePhone ? 22 : 20} className="text-foreground" />
-        </Pressable>
-        <Text className="text-2xl font-bold text-foreground">Profile</Text>
-      </View>
+    <SafeAreaView className="flex-1 bg-background">
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{
+          paddingTop: 16,
+          paddingBottom: 40,
+          paddingHorizontal: profilePadH,
+          maxWidth: profileMaxWidth,
+          width: '100%',
+          alignSelf: 'center',
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header */}
+        <View className="mb-6 border-b border-border/70 pb-5">
+          <View className="flex-row items-center gap-3">
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={8}
+              accessibilityLabel="Back"
+              className={cn(
+                'h-10 w-10 items-center justify-center rounded-full border border-border active:bg-muted',
+                !isNativePhone && 'h-9 w-9',
+              )}
+            >
+              <ArrowLeft size={isNativePhone ? 20 : 18} className="text-foreground" />
+            </Pressable>
+            <View className="min-w-0 flex-1">
+              <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">Personal space</Text>
+              <Text className="text-2xl font-semibold tracking-tight text-foreground">Profile</Text>
+            </View>
+          </View>
+        </View>
 
-      {/* User Info Card */}
-      <Card className="mb-6">
+        {/* User Info Card */}
+        <Card className="mb-4 border border-border bg-card">
         <CardHeader>
           <View className="flex-row items-center gap-2">
-            <User size={isNativePhone ? 22 : 20} className="text-card-foreground" />
+            <View className="h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <User size={isNativePhone ? 18 : 16} className="text-primary" />
+            </View>
             <CardTitle className={isNativePhone ? "text-xl" : "text-lg"}>Account Information</CardTitle>
           </View>
           <CardDescription className={isNativePhone ? "text-sm" : undefined}>Your account details</CardDescription>
@@ -196,13 +209,15 @@ export default observer(function ProfilePage() {
             </View>
           )}
         </CardContent>
-      </Card>
+        </Card>
 
-      {/* Workspaces Card */}
-      <Card className="mb-6">
+        {/* Workspaces Card */}
+        <Card className="mb-4 border border-border bg-card">
         <CardHeader>
           <View className="flex-row items-center gap-2">
-            <Building2 size={isNativePhone ? 22 : 20} className="text-card-foreground" />
+            <View className="h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <Building2 size={isNativePhone ? 18 : 16} className="text-primary" />
+            </View>
             <CardTitle className={isNativePhone ? "text-xl" : "text-lg"}>Workspaces</CardTitle>
           </View>
           <CardDescription className={isNativePhone ? "text-sm" : undefined}>
@@ -237,11 +252,12 @@ export default observer(function ProfilePage() {
             </View>
           )}
         </CardContent>
-      </Card>
+        </Card>
 
-      {/* Usage & Spend */}
-      <UserUsageSection />
-    </ScrollView>
+        {/* Usage & Spend */}
+        <UserUsageSection />
+      </ScrollView>
+    </SafeAreaView>
   )
 })
 
@@ -289,10 +305,12 @@ function UserUsageSection() {
   if (!features.billing) return null
 
   return (
-    <Card className="mb-6">
+    <Card className="mb-4 border border-border bg-card">
       <CardHeader>
         <View className="flex-row items-center gap-2">
-          <BarChart3 size={density.icon.lg + 2} className="text-card-foreground" />
+          <View className="h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+            <BarChart3 size={density.icon.md} className="text-primary" />
+          </View>
           <CardTitle className={density.text.heading}>Usage & Spend</CardTitle>
         </View>
         <CardDescription className={density.text.label}>Your usage across all workspaces</CardDescription>
@@ -348,7 +366,7 @@ const WorkspaceCard = observer(function WorkspaceCard({
   } = useBillingData(features.billing ? workspace.id : undefined)
 
   return (
-    <View className="p-4 rounded-lg border border-border bg-card">
+    <View className="rounded-xl border border-border bg-card p-4">
       <View className={cn(comfortable ? "gap-3" : "flex-row items-center justify-between mb-3")}>
         <View className={comfortable ? undefined : "flex-1"}>
           <Text className={cn("font-medium text-foreground", density.text.body)}>

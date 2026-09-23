@@ -7,31 +7,30 @@
  * Renders tool calls interleaved within assistant content.
  */
 
-import { memo, useCallback } from "react"
-import { View, Platform, Pressable, type ViewStyle } from "react-native"
-import { Motion } from "@legendapp/motion"
-import * as Clipboard from "expo-clipboard"
-import * as Haptics from "expo-haptics"
-import { cn } from "@shogo/shared-ui/primitives"
-import { usePhaseColor } from "@/hooks/usePhaseColor"
-import type { ConversationTurn } from "./types"
-import { TurnHeader } from "./TurnHeader"
-import { MessageContent, extractTextContent } from "./MessageContent"
-import { AssistantContent } from "./AssistantContent"
-import { EditableUserMessage } from "./EditableUserMessage"
-import { TurnFooter } from "./TurnFooter"
-import { extractTurnTiming } from "./turnShaping"
-import { ToolTimeline } from "../tools"
-import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { memo, useCallback } from "react";
+import { View, Platform, Pressable, type ViewStyle } from "react-native";
+import { Motion } from "@legendapp/motion";
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
+import { cn } from "@shogo/shared-ui/primitives";
+import { usePhaseColor } from "@/hooks/usePhaseColor";
+import type { ConversationTurn } from "./types";
+import { MessageContent, extractTextContent } from "./MessageContent";
+import { AssistantContent } from "./AssistantContent";
+import { EditableUserMessage } from "./EditableUserMessage";
+import { TurnFooter } from "./TurnFooter";
+import { extractTurnTiming } from "./turnShaping";
+import { ToolTimeline } from "../tools";
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout";
 
 export interface TurnGroupProps {
-  turn: ConversationTurn
-  phase?: string | null
-  showToolTimeline?: boolean
-  className?: string
+  turn: ConversationTurn;
+  phase?: string | null;
+  showToolTimeline?: boolean;
+  className?: string;
 }
 
-const DOT_DURATION = 600
+const DOT_DURATION = 600;
 
 function LoadingDots() {
   return (
@@ -58,7 +57,7 @@ function LoadingDots() {
         />
       ))}
     </View>
-  )
+  );
 }
 
 // CSS containment for web only. `contain: layout style` makes each turn its
@@ -82,7 +81,7 @@ function LoadingDots() {
 const WEB_CONTAIN_STYLE: ViewStyle | undefined =
   Platform.OS === "web"
     ? ({ contain: "layout style" } as unknown as ViewStyle)
-    : undefined
+    : undefined;
 
 /**
  * Memoized so ChatPanel re-renders (MobX reactions, tab switches, streaming
@@ -96,34 +95,34 @@ export const TurnGroup = memo(
     showToolTimeline = false,
     className,
   }: TurnGroupProps) {
-    const colors = usePhaseColor(phase || "")
-    const nativePhone = useIsNativePhoneLayout()
+    const colors = usePhaseColor(phase || "");
+    const nativePhone = useIsNativePhoneLayout();
 
     const handleCopyAssistant = useCallback(async () => {
-      if (!turn.assistantMessage) return
-      const text = extractTextContent(turn.assistantMessage)
-      if (!text) return
+      if (!turn.assistantMessage) return;
+      const text = extractTextContent(turn.assistantMessage);
+      if (!text) return;
       try {
-        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-        await Clipboard.setStringAsync(text)
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        await Clipboard.setStringAsync(text);
       } catch {
         // Clipboard / haptics can fail in simulators.
       }
-    }, [turn.assistantMessage])
+    }, [turn.assistantMessage]);
 
-  return (
-    <Motion.View
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", damping: 20, stiffness: 150 }}
-      style={WEB_CONTAIN_STYLE}
-      className={cn(
-        "gap-2",
-        turn.assistantMessage ? colors.border : "border-primary/30",
-        className
-      )}
-    >
-      {/* User message — full-width clickable row. Clicking it swaps
+    return (
+      <Motion.View
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: "spring", damping: 20, stiffness: 150 }}
+        style={WEB_CONTAIN_STYLE}
+        className={cn(
+          "gap-2",
+          turn.assistantMessage ? colors.border : "border-primary/30",
+          className
+        )}
+      >
+        {/* User message — full-width clickable row. Clicking it swaps
           in an in-place ChatInput pre-filled with the message's
           content + attachments, so the user can edit and re-send
           from this point in history.
@@ -132,73 +131,74 @@ export const TurnGroup = memo(
           right-align wrapper here: EditableUserMessage now claims
           the full chat-panel width (matching the bottom composer)
           so the click target is unambiguous and large. */}
-      {turn.userMessage && <EditableUserMessage message={turn.userMessage} />}
+        {turn.userMessage && <EditableUserMessage message={turn.userMessage} />}
 
-      {/* Tool timeline (legacy mode only) */}
-      {showToolTimeline && turn.toolCalls.length > 0 && (
-        <ToolTimeline
-          tools={turn.toolCalls}
-          defaultExpanded={turn.toolCalls.length <= 3}
-        />
-      )}
+        {/* Tool timeline (legacy mode only) */}
+        {showToolTimeline && turn.toolCalls.length > 0 && (
+          <ToolTimeline
+            tools={turn.toolCalls}
+            defaultExpanded={turn.toolCalls.length <= 3}
+          />
+        )}
 
-      {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
-      {turn.assistantMessage && (
-        <View className="gap-0.5">
-          {nativePhone ? null : <TurnHeader role="assistant" phase={phase} />}
-          {nativePhone ? (
-            <Pressable
-              onLongPress={handleCopyAssistant}
-              delayLongPress={400}
-              accessibilityRole="button"
-              accessibilityLabel="Assistant message. Long press to copy."
-            >
-              {showToolTimeline ? (
-                <MessageContent
-                  message={turn.assistantMessage}
-                  isStreaming={turn.isStreaming}
-                />
-              ) : (
-                <AssistantContent
-                  message={turn.assistantMessage}
-                  isStreaming={turn.isStreaming}
-                />
-              )}
-            </Pressable>
-          ) : showToolTimeline ? (
-            <MessageContent
-              message={turn.assistantMessage}
-              isStreaming={turn.isStreaming}
-            />
-          ) : (
-            <AssistantContent
-              message={turn.assistantMessage}
-              isStreaming={turn.isStreaming}
-            />
-          )}
-          {!turn.isStreaming && (
-            <TurnFooter
-              messageId={turn.assistantMessage.id}
-              text={extractTextContent(turn.assistantMessage)}
-              completedAt={extractTurnTiming(turn.assistantMessage).completedAt}
-              className={nativePhone ? "mt-2 px-1" : undefined}
-            />
-          )}
-        </View>
-      )}
+        {/* Assistant message with interleaved tools (default) or plain content (legacy) */}
+        {turn.assistantMessage && (
+          <View className="gap-0.5">
+            {nativePhone ? (
+              <Pressable
+                onLongPress={handleCopyAssistant}
+                delayLongPress={400}
+                accessibilityRole="button"
+                accessibilityLabel="Assistant message. Long press to copy."
+              >
+                {showToolTimeline ? (
+                  <MessageContent
+                    message={turn.assistantMessage}
+                    isStreaming={turn.isStreaming}
+                  />
+                ) : (
+                  <AssistantContent
+                    message={turn.assistantMessage}
+                    isStreaming={turn.isStreaming}
+                    className="pl-2.5"
+                  />
+                )}
+              </Pressable>
+            ) : showToolTimeline ? (
+              <MessageContent
+                message={turn.assistantMessage}
+                isStreaming={turn.isStreaming}
+              />
+            ) : (
+              <AssistantContent
+                message={turn.assistantMessage}
+                isStreaming={turn.isStreaming}
+                className="pl-2.5"
+              />
+            )}
+            {!turn.isStreaming && (
+              <TurnFooter
+                messageId={turn.assistantMessage.id}
+                text={extractTextContent(turn.assistantMessage)}
+                completedAt={
+                  extractTurnTiming(turn.assistantMessage).completedAt
+                }
+                className={nativePhone ? "mt-2 px-1" : "pl-2.5"}
+              />
+            )}
+          </View>
+        )}
 
-      {/* Loading indicator when streaming but no assistant message yet */}
-      {turn.isStreaming && !turn.assistantMessage && (
-        <LoadingDots />
-      )}
-    </Motion.View>
-  )
+        {/* Loading indicator when streaming but no assistant message yet */}
+        {turn.isStreaming && !turn.assistantMessage && <LoadingDots />}
+      </Motion.View>
+    );
   },
   (prev, next) =>
     prev.turn === next.turn &&
     prev.phase === next.phase &&
     prev.showToolTimeline === next.showToolTimeline &&
-    prev.className === next.className,
-)
+    prev.className === next.className
+);
 
-export default TurnGroup
+export default TurnGroup;

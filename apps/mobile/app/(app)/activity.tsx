@@ -59,14 +59,14 @@ function elapsed(task: AgentTask) {
 
 function SectionHeader({ title, count, subtitle }: { title: string; count?: number; subtitle?: string }) {
   return (
-    <View className="mt-6 flex-row items-center justify-between px-4">
+    <View className="mt-7 flex-row items-center justify-between px-4">
       <View className="flex-1 pr-3">
-        <Text className="text-base font-semibold uppercase tracking-[1.5px] text-muted-foreground">{title}</Text>
-        {subtitle ? <Text className="mt-1 text-xs text-muted-foreground">{subtitle}</Text> : null}
+        <Text className="text-[17px] font-semibold text-foreground">{title}</Text>
+        {subtitle ? <Text className="mt-1 text-[13px] leading-5 text-muted-foreground">{subtitle}</Text> : null}
       </View>
       {typeof count === 'number' ? (
-        <View className="min-w-6 items-center rounded-full bg-muted px-2 py-1">
-          <Text className="text-[11px] font-semibold text-muted-foreground">{count}</Text>
+        <View className="min-w-7 items-center rounded-full border border-border/80 bg-card px-2.5 py-1">
+          <Text className="text-[12px] font-semibold text-muted-foreground">{count}</Text>
         </View>
       ) : null}
     </View>
@@ -75,12 +75,12 @@ function SectionHeader({ title, count, subtitle }: { title: string; count?: numb
 
 function Metric({ label, value, tone }: { label: string; value: number; tone: 'primary' | 'success' | 'danger' | 'muted' }) {
   return (
-    <View className="flex-1 items-center justify-center px-3 py-5">
+    <View className="flex-1 items-start justify-center px-4 py-4">
       <Text className={cn(
-        'text-3xl font-semibold',
+        'text-[25px] font-semibold tracking-[-0.4px]',
         tone === 'primary' ? 'text-primary' : tone === 'success' ? 'text-emerald-700 dark:text-emerald-300' : tone === 'danger' ? 'text-destructive' : 'text-foreground',
       )}>{value}</Text>
-      <Text className="mt-2 text-xs font-medium text-muted-foreground">{label}</Text>
+      <Text className="mt-1 text-[11px] leading-4 text-muted-foreground">{label}</Text>
     </View>
   )
 }
@@ -130,7 +130,7 @@ function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; 
   const hasStatus = completed > 0 || pending > 0 || failed > 0
 
   return (
-    <Pressable onPress={onPress} className="mx-4 mt-3 rounded-2xl bg-card p-4 active:bg-muted/50">
+    <Pressable onPress={onPress} className="mx-4 mt-3 rounded-2xl border border-border/80 bg-card p-4 shadow-sm active:bg-muted/50">
       <View className="flex-row items-center gap-3">
         <View className="h-10 w-10 items-center justify-center rounded-xl bg-muted"><Folder size={19} className="text-muted-foreground" /></View>
         <View className="flex-1">
@@ -349,20 +349,25 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
       {loading ? <ActivityLoadingState /> : (
         <ScrollView
           className="flex-1"
-          contentContainerClassName="pb-32"
+          contentContainerClassName="pb-36 pt-2"
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(true) }} />}
         >
-          <SectionHeader title="Overview" />
-          <View className="mx-4 mt-3 overflow-hidden rounded-3xl bg-card">
+          <View className="px-4 pb-1 pt-4">
+            <Text className="text-[28px] font-semibold tracking-[-0.6px] text-foreground">Activity</Text>
+            <Text className="mt-1 text-[15px] leading-5 text-muted-foreground">A calm view of agent work and project progress.</Text>
+          </View>
+
+          <SectionHeader title="Workspace overview" subtitle="Current status across your projects" />
+          <View className="mx-4 mt-3 overflow-hidden rounded-2xl border border-border/80 bg-card shadow-sm">
             <View className="flex-row">
-              <Metric label="Pending projects" value={pendingProjectsCount} tone="primary" />
-              <Metric label="Completed projects" value={completedProjectsCount} tone="success" />
-              <Metric label="Failed projects" value={failedProjectsCount} tone="danger" />
+              <View className="flex-1 border-r border-border/80"><Metric label="Pending" value={pendingProjectsCount} tone="primary" /></View>
+              <View className="flex-1 border-r border-border/80"><Metric label="Completed" value={completedProjectsCount} tone="success" /></View>
+              <View className="flex-1"><Metric label="Needs attention" value={failedProjectsCount} tone="danger" /></View>
             </View>
           </View>
 
-          <SectionHeader title="Running now" count={active.length} subtitle="Live agent work across the workspace" />
+          <SectionHeader title="Running now" count={active.length} subtitle="Live agent work across this workspace" />
           {active.length === 0 ? (
             <View className="mx-4 mt-3">
               <ActivityEmptyCard title="No agents are currently working" message="When you start an agent, its live progress will appear here." />

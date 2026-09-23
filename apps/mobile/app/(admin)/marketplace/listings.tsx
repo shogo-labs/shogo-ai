@@ -29,6 +29,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
+  Layers3,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
@@ -161,9 +162,24 @@ export default function MarketplaceListingsPage() {
         <Text className="text-xs text-muted-foreground" numberOfLines={1}>
           {item.creator.displayName} · {item.slug}
         </Text>
+        {!isWide && (
+          <View className="mt-1 flex-row flex-wrap items-center gap-x-3 gap-y-1">
+            <Text className="text-[11px] text-muted-foreground">{pricingLabel(item)}</Text>
+            <View className="flex-row items-center gap-1">
+              <Download size={10} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">{item.installCount.toLocaleString()}</Text>
+            </View>
+            <View className="flex-row items-center gap-1">
+              <Star size={10} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">
+                {item.averageRating.toFixed(2)} ({item.reviewCount})
+              </Text>
+            </View>
+          </View>
+        )}
       </View>
 
-      <View className="w-[110px] mr-3">
+      <View className={cn('w-[110px]', isWide ? 'mr-3' : 'mr-1 self-start')}>
         <StatusPill status={item.status} />
       </View>
 
@@ -198,16 +214,7 @@ export default function MarketplaceListingsPage() {
   )
 
   const ListHeader = () => (
-    <View className="gap-3 mb-2">
-      <View className="flex-row items-center justify-between">
-        <Text className="text-xl font-semibold text-foreground">Listings</Text>
-        {data && (
-          <Text className="text-xs text-muted-foreground">
-            {data.total} total
-          </Text>
-        )}
-      </View>
-
+    <View className="gap-3">
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -310,23 +317,50 @@ export default function MarketplaceListingsPage() {
   )
 
   return (
-    <View className={cn('flex-1 bg-background', isWide ? 'px-8 pt-6' : 'px-4 pt-3')}>
-      <FlatList
-        data={data?.items ?? []}
-        keyExtractor={(it) => it.id}
-        ListHeaderComponent={<ListHeader />}
-        ListFooterComponent={<ListFooter />}
-        ListEmptyComponent={loading ? null : <Empty />}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        renderItem={renderRow}
-        contentContainerStyle={{ paddingBottom: 24 }}
-        showsVerticalScrollIndicator={false}
-      />
-      {loading && !refreshing && (
-        <View className="absolute inset-0 items-center justify-center bg-background/80">
-          <ActivityIndicator size="large" />
+    <View className={cn('flex-1 bg-background', isWide ? 'px-8 py-6' : 'px-4 pt-4')}>
+      <View className="w-full max-w-[1180px] self-center flex-1">
+        <View className="rounded-2xl border border-border bg-card px-4 py-4 mb-4">
+          <View className="flex-row items-start justify-between gap-4">
+            <View className="flex-1 min-w-0">
+              <View className="flex-row items-center gap-2 mb-1.5">
+                <Layers3 size={15} className="text-primary" />
+                <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-muted-foreground">
+                  Marketplace catalog
+                </Text>
+              </View>
+              <Text className={cn('font-bold text-foreground tracking-tight', isWide ? 'text-2xl' : 'text-xl')}>
+                Listings
+              </Text>
+              <Text className="mt-1 text-sm leading-5 text-muted-foreground">
+                Browse every marketplace listing, its status, commercial model, and recent activity.
+              </Text>
+            </View>
+            <View className="rounded-lg border border-border bg-background px-3 py-2 items-end">
+              <Text className="text-lg font-semibold text-foreground">{data?.total ?? '—'}</Text>
+              <Text className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">results</Text>
+            </View>
+          </View>
         </View>
-      )}
+
+        <View className="flex-1 overflow-hidden rounded-xl border border-border bg-card">
+          <FlatList
+            data={data?.items ?? []}
+            keyExtractor={(it) => it.id}
+            ListHeaderComponent={<ListHeader />}
+            ListFooterComponent={<ListFooter />}
+            ListEmptyComponent={loading ? null : <Empty />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+            renderItem={renderRow}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            showsVerticalScrollIndicator={false}
+          />
+          {loading && !refreshing && (
+            <View className="absolute inset-0 items-center justify-center bg-background/80">
+              <ActivityIndicator size="large" />
+            </View>
+          )}
+        </View>
+      </View>
     </View>
   )
 }

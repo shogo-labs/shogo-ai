@@ -27,7 +27,7 @@
  */
 
 import { prisma } from './prisma'
-import { getProjectPodUrl } from './knative-project-manager'
+import { resolveProjectPodUrl } from './resolve-pod-url'
 import { deriveProjectRuntimeToken } from './project-runtime-token'
 
 /**
@@ -102,7 +102,9 @@ async function fetchPodFile(params: {
       // carry a valid runtime token, so a 401 with the missing-auth
       // sentinel is unambiguously a stale assignment.
       const body = await res.text().catch(() => '')
-      const { evictOnSingleMissingAuth } = await import('./warm-pool-self-heal')
+      const { evictOnSingleMissingAuth } = await import(
+        new URL('./warm-pool-self-heal.ts', import.meta.url).href
+      )
       await evictOnSingleMissingAuth(projectId, res.status, body)
       return null
     }
@@ -184,7 +186,7 @@ export async function resolveVoiceContext(params: {
   let memory: string | null = null
   let userMd: string | null = null
   try {
-    const podUrl = await getProjectPodUrl(projectId)
+    const podUrl = (await resolveProjectPodUrl(projectId)).url
     const [memoryResult, userResult] = await Promise.all([
       fetchPodFile({ projectId, podUrl, path: 'MEMORY.md', signal }),
       fetchPodFile({ projectId, podUrl, path: 'USER.md', signal }),
@@ -192,7 +194,7 @@ export async function resolveVoiceContext(params: {
     memory = memoryResult
     userMd = userResult
   } catch (err) {
-    // `getProjectPodUrl` may throw on cold-start / no-warm-pod paths.
+    // Runtime resolution may throw on cold-start / no-warm-pod paths.
     // That's fine — fall back to project metadata only.
     console.warn(
       '[voice-context] pod fetch skipped:',

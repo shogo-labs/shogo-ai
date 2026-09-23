@@ -5,7 +5,7 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
-import { computeDefaultRuntimeMemoryMB, computeDefaultWarmPoolSize } from './runtime-memory'
+import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
 
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
@@ -15,9 +15,6 @@ export interface HostRuntimeConfig {
   /** CPU ceiling as a percentage of a single core (100 = one full core). Only
    *  enforced where the OS supports it (cgroup CPUQuota on Linux). 0 = no cap. */
   cpuPercent: number
-  /** Number of generic (PROJECT_ID=__POOL__) runtimes to keep pre-booted so a
-   *  project open can claim one and skip the cold spawn. 0 = disabled. */
-  warmPoolSize: number
 }
 
 export interface MeetingConfig {
@@ -37,9 +34,9 @@ export interface BugReportConfig {
   maxLogLines?: number
 }
 
-/** Desktop auto-update channel. `beta` tracks the newest build off `main`
- * (published on every push, prerelease on GitHub) instead of the latest
- * tagged stable release. See `update-channel.ts` for feed-URL resolution. */
+/** Desktop auto-update channel. `beta` tracks the newest manually published
+ * prerelease instead of the latest tagged stable release. See
+ * `update-channel.ts` for feed-URL resolution. */
 export type UpdateChannel = 'stable' | 'beta'
 
 export interface DesktopConfig {
@@ -76,10 +73,6 @@ function getDefaultHostRuntimeConfig(): HostRuntimeConfig {
   return {
     memoryMB: computeDefaultRuntimeMemoryMB(totalMemMB),
     cpuPercent: 0,  // 0 = no CPU cap
-    // Pre-boot 1 generic runtime on machines with RAM to spare, so the first
-    // project opened after launch skips the cold agent-runtime spawn. See
-    // computeDefaultWarmPoolSize for the RAM threshold and trade-off.
-    warmPoolSize: computeDefaultWarmPoolSize(totalMemMB),
   }
 }
 

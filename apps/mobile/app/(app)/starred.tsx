@@ -245,7 +245,7 @@ export default observer(function StarredProjectsPage() {
       return (
         <Pressable
           onPress={() => handleProjectPress(project)}
-          className="flex-1 mx-1.5 mb-3 rounded-xl bg-card overflow-hidden border border-border"
+          className="flex-1 mx-1.5 mb-3 overflow-hidden rounded-xl border border-border bg-card active:bg-muted/50"
         >
           <View
             className={cn(
@@ -343,7 +343,7 @@ export default observer(function StarredProjectsPage() {
       return (
         <Pressable
           onPress={() => handleProjectPress(project)}
-          className="flex-row items-center px-4 py-3 border-b border-border"
+          className="mb-2 flex-row items-center rounded-xl border border-border bg-card px-4 py-3 active:bg-muted/50"
         >
           <View
             className={cn(
@@ -423,36 +423,44 @@ export default observer(function StarredProjectsPage() {
   return (
     <SafeAreaView className="flex-1 bg-background">
       {/* Header */}
-      <View className="px-4 pt-4 pb-2">
-        <View className="flex-row items-center gap-2">
-          <Star size={20} className="text-yellow-500" fill="#eab308" />
-          <Text className="text-foreground text-lg font-semibold">Starred Projects</Text>
+      <View className="border-b border-border/70 px-4 pt-3 pb-3">
+        <View className="w-full max-w-5xl self-center">
+          <View className="flex-row items-center gap-3">
+            <View className="h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+              <Star size={19} className="text-primary" />
+            </View>
+            <View className="min-w-0 flex-1">
+              <Text className="text-xs font-semibold uppercase tracking-[1.5px] text-primary">Library</Text>
+              <Text className="text-2xl font-semibold tracking-tight text-foreground">Starred projects</Text>
+            </View>
+          </View>
+          <Text className="mt-2 text-sm leading-5 text-muted-foreground">
+            Quick access to your favorite projects across all workspaces
+          </Text>
         </View>
-        <Text className="text-muted-foreground text-sm mt-1">
-          Quick access to your favorite projects across all workspaces
-        </Text>
       </View>
 
       {/* Filters Bar */}
-      <View className="flex-row items-center gap-2 px-4 py-2 border-b border-border">
-        <View className="flex-1 flex-row items-center bg-muted rounded-lg px-3 py-2">
-          <Search size={16} className="text-muted-foreground mr-2" />
-          <TextInput
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search starred..."
-            placeholderTextColor="#9ca3af"
-            className="flex-1 text-foreground text-sm"
-          />
-        </View>
-        <Pressable
-          onPress={() => setSortModalVisible(true)}
-          className="flex-row items-center border border-border rounded-lg px-3 py-2"
-        >
-          <Text className="text-foreground text-xs mr-1">{sortLabel}</Text>
-          <ChevronDown size={14} className="text-muted-foreground" />
-        </Pressable>
-        <View className="flex-row">
+      <View className="px-4 py-3">
+        <View className="w-full max-w-5xl self-center flex-row items-center gap-2 rounded-xl border border-border bg-card p-2">
+          <View className="flex-1 flex-row items-center rounded-lg bg-muted px-3 py-2">
+            <Search size={16} className="mr-2 text-muted-foreground" />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search starred..."
+              placeholderTextColor="#9ca3af"
+              className="flex-1 text-foreground text-sm"
+            />
+          </View>
+          <Pressable
+            onPress={() => setSortModalVisible(true)}
+            className="flex-row items-center rounded-lg border border-border px-3 py-2"
+          >
+            <Text className="mr-1 text-foreground text-xs">{sortLabel}</Text>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Pressable>
+          <View className="flex-row">
           <Pressable
             onPress={() => setViewMode('grid')}
             className={cn('p-2 rounded-l-lg border border-border', viewMode === 'grid' && 'bg-secondary')}
@@ -465,6 +473,7 @@ export default observer(function StarredProjectsPage() {
           >
             <List size={16} className={viewMode === 'list' ? 'text-foreground' : 'text-muted-foreground'} />
           </Pressable>
+          </View>
         </View>
       </View>
 
@@ -475,17 +484,19 @@ export default observer(function StarredProjectsPage() {
         </View>
       ) : filteredEntries.length === 0 ? (
         <View className="flex-1 items-center justify-center px-6">
-          <View className="w-16 h-16 rounded-full bg-muted items-center justify-center mb-4">
-            <Star size={32} className="text-muted-foreground/50" />
+          <View className="w-full max-w-sm items-center rounded-2xl border border-border bg-card px-6 py-8">
+            <View className="mb-4 h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+              <Star size={24} className="text-primary" />
+            </View>
+            <Text className="text-foreground text-base font-semibold mb-1">
+              {searchQuery ? 'No results found' : 'No starred projects yet'}
+            </Text>
+            <Text className="text-muted-foreground text-sm text-center max-w-[300px]">
+              {searchQuery
+                ? `No starred projects match "${searchQuery}"`
+                : 'Star projects to access them quickly. Tap the star icon on any project to add it here.'}
+            </Text>
           </View>
-          <Text className="text-foreground text-base font-medium mb-1">
-            {searchQuery ? 'No results found' : 'No starred projects yet'}
-          </Text>
-          <Text className="text-muted-foreground text-sm text-center max-w-[300px]">
-            {searchQuery
-              ? `No starred projects match "${searchQuery}"`
-              : 'Star projects to access them quickly. Tap the star icon on any project to add it here.'}
-          </Text>
         </View>
       ) : viewMode === 'grid' ? (
         <FlatList
@@ -493,7 +504,7 @@ export default observer(function StarredProjectsPage() {
           data={filteredEntries}
           keyExtractor={(item: any) => item.id}
           numColumns={gridColumns}
-          contentContainerClassName="p-2.5 pt-4"
+          contentContainerClassName="w-full max-w-5xl self-center px-2.5 pb-8 pt-1"
           renderItem={renderGridItem}
         />
       ) : (
@@ -501,6 +512,7 @@ export default observer(function StarredProjectsPage() {
           key="list-1"
           data={filteredEntries}
           keyExtractor={(item: any) => item.id}
+          contentContainerClassName="w-full max-w-5xl self-center px-4 pb-8"
           renderItem={renderListItem}
         />
       )}

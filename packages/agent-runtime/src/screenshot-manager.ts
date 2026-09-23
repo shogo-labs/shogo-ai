@@ -25,6 +25,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { isWithinRoot } from './path-boundary'
 
 const SCREENSHOTS_DIRNAME = '.shogo/screenshots'
 /**
@@ -183,7 +184,7 @@ export function trimOldRuns(workspaceDir: string, maxRuns = 20): number {
   for (const run of doomed) {
     const abs = resolve(run.path)
     const rootAbs = resolve(root)
-    if (!abs.startsWith(rootAbs + '/') && abs !== rootAbs) continue
+    if (!isWithinRoot(rootAbs, abs)) continue
     try {
       rmSync(abs, { recursive: true, force: true })
       removed += 1

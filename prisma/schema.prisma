@@ -40,6 +40,7 @@ model User {
   // access. Validated against the catalog in apps/api/src/lib/admin-scopes.ts.
   adminScopes         String[] @default([])
   onboardingCompleted Boolean  @default(false)
+  lastSeenAnnouncementVersion String?
   // Write-ownership region for this user's identity-scoped rows (the user row
   // itself, notifications, etc.). Identity writes are routed to this region so
   // a given user is only ever written in one place, keeping active-active
@@ -2071,6 +2072,14 @@ model InfraSnapshot {
   id        String   @id @default(uuid())
   timestamp DateTime @default(now())
 
+  // Which region's collector wrote this row. Nullable because this table is
+  // shared across regions via the bidirectional logical-replication mesh
+  // (see docs/oci-multi-region-production-guide.md) and rows created before
+  // this column existed have no region tag. New rows are always stamped with
+  // the writer's REGION_ID so `/analytics/infra-history` can scope a region's
+  // chart to that region's own snapshots instead of the replicated global set.
+  region String?
+
   totalNodes     Int
   asgDesired     Int
   asgMax         Int
@@ -2094,6 +2103,7 @@ model InfraSnapshot {
   idleEvictions  Int @default(0)
 
   @@index([timestamp])
+  @@index([region, timestamp])
   @@map("infra_snapshots")
 }
 

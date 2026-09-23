@@ -84,6 +84,10 @@ export interface AgentLoopOptions {
   onToolCall?: (name: string, input: any) => void
   /** Called at each iteration */
   onIteration?: (iteration: number) => void
+  /** Called after an iteration with the live transcript, before the next model step. */
+  onIterationMessages?: (messages: Message[]) => void
+  /** Called after tool results with only messages not reported by an earlier callback. */
+  onProgress?: (messages: Message[]) => void
   /** Called with incremental text as the model streams */
   onTextDelta?: (delta: string) => void
   /** Called when thinking/reasoning starts */
@@ -249,6 +253,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     thinkingLevel = 'medium',
     onToolCall,
     onIteration,
+    onIterationMessages,
+    onProgress,
     onTextDelta,
     onThinkingStart,
     onThinkingDelta,
@@ -289,6 +295,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let maxIterationsExhausted = false
   let lastStopReason: string | undefined
   let lastTurnHadToolCalls = false
+  let lastProgressMessageCount = history.length
 
   const { signal } = options
 
@@ -401,6 +408,12 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         })
 
         await onAfterToolCall?.(event.toolName, args, output, event.isError, event.toolCallId)
+        const progressMessages = agent.state.messages.slice(history.length)
+        if (progressMessages.length > lastProgressMessageCount - history.length) {
+          const newProgress = progressMessages.slice(lastProgressMessageCount - history.length)
+          lastProgressMessageCount = agent.state.messages.length
+          onProgress?.(newProgress)
+        }
 
         if (loopDetector && !abortTriggered) {
           const check = loopDetector.recordAndCheck(event.toolName, args, output)
@@ -423,6 +436,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         const turnToolResults = (event as any).toolResults
         lastTurnHadToolCalls = Array.isArray(turnToolResults) && turnToolResults.length > 0
         onIteration?.(iterations)
+        onIterationMessages?.(agent.state.messages)
+        const iterationMessages = agent.state.messages.slice(history.length)
+        if (iterationMessages.length > lastProgressMessageCount - history.length) {
+          const newProgress = iterationMessages.slice(lastProgressMessageCount - history.length)
+          lastProgressMessageCount = agent.state.messages.length
+          onProgress?.(newProgress)
+        }
         // Track the stop reason from the last assistant message
         const msgs = agent.state.messages
         for (let i = msgs.length - 1; i >= 0; i--) {

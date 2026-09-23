@@ -1,34 +1,42 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { memo, useMemo, type ReactNode } from "react"
-import Markdown, { Renderer } from "react-native-marked"
-import type { MarkedStyles } from "react-native-marked"
-import { useColorScheme } from "nativewind"
-import { ScrollView, useWindowDimensions, View, type ColorValue, type ViewStyle } from "react-native"
+import React, { memo, useMemo, type ReactNode } from "react";
+import Markdown, { Renderer } from "react-native-marked";
+import type { MarkedStyles } from "react-native-marked";
+import { useColorScheme } from "nativewind";
+import {
+  ScrollView,
+  useWindowDimensions,
+  View,
+  type ColorValue,
+  type ViewStyle,
+} from "react-native";
+import { usePhoneLayout } from "../../lib/native-phone-layout";
+import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 
 interface ThemeColors {
-  text: ColorValue
-  code: ColorValue
-  link: ColorValue
-  border: ColorValue
+  text: ColorValue;
+  code: ColorValue;
+  link: ColorValue;
+  border: ColorValue;
 }
 
-export type MarkdownVariant = "default" | "thinking"
+export type MarkdownVariant = "default" | "thinking";
 
 export interface MarkdownTextProps {
-  children: string
-  className?: string
-  isStreaming?: boolean
-  variant?: MarkdownVariant
+  children: string;
+  className?: string;
+  isStreaming?: boolean;
+  variant?: MarkdownVariant;
 }
 
 const baseStyles: MarkedStyles = {
-  text: { fontSize: 16, lineHeight: 23 },
+  text: { fontSize: 12, lineHeight: 18 },
   strong: { fontWeight: "bold" },
   em: { fontStyle: "italic" },
   codespan: {
     fontFamily: "monospace",
-    fontSize: 14,
+    fontSize: 12,
     borderRadius: 3,
   },
   code: {
@@ -40,11 +48,22 @@ const baseStyles: MarkedStyles = {
   h3: { fontSize: 18, lineHeight: 24, fontWeight: "600", marginBottom: 4 },
   h4: { fontSize: 16, lineHeight: 22, fontWeight: "500" },
   list: { marginVertical: 2 },
-  li: { fontSize: 16, lineHeight: 23 },
+  li: { fontSize: 12, lineHeight: 18 },
   link: { textDecorationLine: "underline" },
   hr: { height: 1, marginVertical: 8 },
   image: { borderRadius: 6 },
-}
+};
+
+/** Larger, readable body copy for the phone chat surface. */
+const phoneChatStyles: MarkedStyles = {
+  ...baseStyles,
+  text: { fontSize: 16, lineHeight: 24 },
+  h1: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 6 },
+  h2: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 5 },
+  h3: { fontSize: 18, lineHeight: 24, fontWeight: "600", marginBottom: 4 },
+  h4: { fontSize: 18, lineHeight: 24, fontWeight: "500" },
+  li: { fontSize: 16, lineHeight: 24 },
+};
 
 const thinkingStyles: MarkedStyles = {
   text: { fontSize: 14, lineHeight: 21 },
@@ -68,42 +87,42 @@ const thinkingStyles: MarkedStyles = {
   link: { textDecorationLine: "underline" },
   hr: { height: 1, marginVertical: 6 },
   image: { borderRadius: 6 },
-}
+};
 
 const lightColors: ThemeColors = {
   text: "#1a1a1a",
   code: "#f5f5f5",
   link: "#2563eb",
   border: "#e0e0e0",
-}
+};
 
 const darkColors: ThemeColors = {
   text: "#f0f0f0",
   code: "#2a2a2a",
   link: "#93c5fd",
   border: "#525252",
-}
+};
 
 const lightThinkingColors: ThemeColors = {
   text: "#737373",
   code: "#f0f0f0",
   link: "#6b9bd2",
   border: "#e0e0e0",
-}
+};
 
 const darkThinkingColors: ThemeColors = {
   text: "#a0a0a0",
   code: "#252525",
   link: "#7ba8d4",
   border: "#444444",
-}
+};
 
 /**
  * Same per-column width as `react-native-marked`'s `getTableWidthArr`
  * (`viewport * 1.3 / 3`). Keep this in lockstep so native tables match
  * the library's layout, with nested scrolling enabled on top.
  */
-const MARKED_TABLE_COLUMN_WIDTH_RATIO = 1.3 / 3
+const MARKED_TABLE_COLUMN_WIDTH_RATIO = 1.3 / 3;
 
 /**
  * Tables need their own horizontal gesture recognizer. The default
@@ -114,7 +133,7 @@ const MARKED_TABLE_COLUMN_WIDTH_RATIO = 1.3 / 3
  */
 class NativePhoneMarkdownRenderer extends Renderer {
   constructor(private readonly tableWidth: number) {
-    super()
+    super();
   }
 
   override table(
@@ -122,14 +141,16 @@ class NativePhoneMarkdownRenderer extends Renderer {
     rows: ReactNode[][][],
     tableStyle?: ViewStyle,
     rowStyle?: ViewStyle,
-    cellStyle?: ViewStyle,
+    cellStyle?: ViewStyle
   ): ReactNode {
-    const columnWidth = Math.floor(this.tableWidth * MARKED_TABLE_COLUMN_WIDTH_RATIO)
-    const widthArr = Array(header.length).fill(columnWidth)
+    const columnWidth = Math.floor(
+      this.tableWidth * MARKED_TABLE_COLUMN_WIDTH_RATIO
+    );
+    const widthArr = Array(header.length).fill(columnWidth);
     const borderStyle = {
       borderColor: tableStyle?.borderColor as string | undefined,
       borderWidth: tableStyle?.borderWidth,
-    }
+    };
 
     return (
       <ScrollView
@@ -151,11 +172,18 @@ class NativePhoneMarkdownRenderer extends Renderer {
             ))}
           </View>
           {rows.map((row, rowIndex) => (
-            <View key={`row-${rowIndex}`} style={[{ flexDirection: "row" }, rowStyle]}>
+            <View
+              key={`row-${rowIndex}`}
+              style={[{ flexDirection: "row" }, rowStyle]}
+            >
               {row.map((cell, cellIndex) => (
                 <View
                   key={`cell-${rowIndex}-${cellIndex}`}
-                  style={[{ width: widthArr[cellIndex] }, cellStyle, borderStyle]}
+                  style={[
+                    { width: widthArr[cellIndex] },
+                    cellStyle,
+                    borderStyle,
+                  ]}
                 >
                   {cell}
                 </View>
@@ -164,7 +192,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
           ))}
         </View>
       </ScrollView>
-    )
+    );
   }
 }
 
@@ -180,36 +208,44 @@ class NativePhoneMarkdownRenderer extends Renderer {
 // reference-different allocations. We can short-circuit on length first to
 // keep the common "still streaming, body grew" case from doing a full
 // character compare on long bodies.
-function markdownPropsEqual(
-  prev: MarkdownTextProps,
-  next: MarkdownTextProps,
-) {
-  if (prev.variant !== next.variant) return false
-  if (prev.className !== next.className) return false
-  if (prev.isStreaming !== next.isStreaming) return false
-  const a = prev.children || ""
-  const b = next.children || ""
-  return a.length === b.length && a === b
+function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
+  if (prev.variant !== next.variant) return false;
+  if (prev.className !== next.className) return false;
+  if (prev.isStreaming !== next.isStreaming) return false;
+  const a = prev.children || "";
+  const b = next.children || "";
+  return a.length === b.length && a === b;
 }
 
 export const MarkdownText = memo(function MarkdownText({
   children,
   variant = "default",
 }: MarkdownTextProps) {
-  const { colorScheme } = useColorScheme()
-  const { width } = useWindowDimensions()
+  const { colorScheme } = useColorScheme();
+  const { width } = useWindowDimensions();
+  const isPhoneLayout = usePhoneLayout();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
 
-  const isThinking = variant === "thinking"
-  const colors = colorScheme === "dark"
-    ? (isThinking ? darkThinkingColors : darkColors)
-    : (isThinking ? lightThinkingColors : lightColors)
-  const styles = isThinking ? thinkingStyles : baseStyles
+  const isThinking = variant === "thinking";
+  const colors =
+    colorScheme === "dark"
+      ? isThinking
+        ? darkThinkingColors
+        : darkColors
+      : isThinking
+      ? lightThinkingColors
+      : lightColors;
+  const styles = isThinking
+    ? thinkingStyles
+    : isPhoneLayout || usesMobileWorkspaceChrome
+    ? phoneChatStyles
+    : baseStyles;
 
-  const value = useMemo(() => children || "", [children])
+  const value = useMemo(() => children || "", [children]);
   const renderer = useMemo(
     () => new NativePhoneMarkdownRenderer(width),
-    [width],
-  )
+    [width]
+  );
 
   return (
     <Markdown
@@ -217,7 +253,11 @@ export const MarkdownText = memo(function MarkdownText({
       styles={styles}
       theme={{ colors }}
       renderer={renderer}
-      flatListProps={{ scrollEnabled: false, style: { backgroundColor: 'transparent' } }}
+      flatListProps={{
+        scrollEnabled: false,
+        style: { backgroundColor: "transparent" },
+      }}
     />
-  )
-}, markdownPropsEqual)
+  );
+},
+markdownPropsEqual);

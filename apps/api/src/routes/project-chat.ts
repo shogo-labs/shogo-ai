@@ -19,18 +19,17 @@ import { trace, SpanStatusCode } from "@opentelemetry/api"
 
 import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
-import * as billingService from "../services/billing.service"
+import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
-import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session"
+import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session-runtime"
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from "../lib/chat-references"
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
-import { isMetalEligibleProject } from "../lib/metal-eligibility"
 import { sendPushToUser } from "../lib/push-notifications"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
@@ -177,6 +176,8 @@ export async function trackUsageFromStream(
     cacheWriteTokens?: number
   }
   const usageRef: { value: UsageSnapshot | null } = { value: null }
+  const chatSessionId = options.chatSessionId ?? requestBody?.chatSessionId ?? null
+  const agentMode = requestBody?.agentMode || 'advanced'
 
   // Accumulate tool call data incrementally as stream events arrive.
   // Keyed by toolCallId so args, result, and duration are captured correctly.
@@ -232,6 +233,71 @@ export async function trackUsageFromStream(
   // turn's actual start time doesn't change across a resume.
   let turnStartedAt: number | undefined
   let turnCompletedAt: number | undefined
+  let assistantMessageId: string | null = null
+  let lastPartialPersistAt = 0
+  let partialPersistInFlight: Promise<void> | null = null
+  let persistenceDirty = false
+  let persistenceUrgent = false
+
+  function buildPersistedParts(): any[] {
+    const parts = orderedParts.filter(
+      (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim())),
+    )
+    if (turnStartedAt !== undefined) {
+      parts.push({
+        type: 'data-turn-timing',
+        data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
+      })
+    }
+    return parts
+  }
+
+  /**
+   * Persist a partial assistant message while the stream is alive. This is
+   * intentionally throttled for text deltas, but tool results force a flush
+   * so a hard-killed desktop still has the last completed step on reload.
+   */
+  async function persistAssistantSnapshot(force = false): Promise<void> {
+    if (!chatSessionId || (!accumulatedText && toolCallMap.size === 0)) return
+    if (!force && assistantMessageId && Date.now() - lastPartialPersistAt < 2_000) return
+    if (partialPersistInFlight) {
+      await partialPersistInFlight
+      if (!force && Date.now() - lastPartialPersistAt < 2_000) return
+    }
+
+    const run = (async () => {
+      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
+      if (!session) return
+      const parts = buildPersistedParts()
+      const data = {
+        role: 'assistant' as const,
+        content: accumulatedText,
+        parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
+        agent: 'technical' as const,
+        model: agentMode,
+      }
+      if (assistantMessageId) {
+        const update = (prisma as any).chatMessage?.update
+        if (typeof update === 'function') {
+          await update({ where: { id: assistantMessageId }, data })
+        }
+      } else {
+        const message = await prisma.chatMessage.create({
+          data: { sessionId: chatSessionId, ...data },
+        })
+        assistantMessageId = message.id
+      }
+      lastPartialPersistAt = Date.now()
+    })().catch((err) => {
+      console.error('[ProjectChat] Failed to persist assistant snapshot:', err)
+    })
+    partialPersistInFlight = run
+    try {
+      await run
+    } finally {
+      if (partialPersistInFlight === run) partialPersistInFlight = null
+    }
+  }
 
   const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000', 10)
 
@@ -362,6 +428,7 @@ export async function trackUsageFromStream(
         orderedParts.push(currentTextPart)
       }
       currentTextPart.text += data.delta
+      persistenceDirty = true
     }
 
     if (type === 'tool-input-start' || type === 'tool-call-start' || type === 'tool-call') {
@@ -417,6 +484,7 @@ export async function trackUsageFromStream(
       }
       orderedParts.push(part)
       toolPartIndex.set(toolCallId, part)
+      persistenceDirty = true
     }
 
     if (type === 'tool-output-available') {
@@ -440,6 +508,8 @@ export async function trackUsageFromStream(
         part.output = data.output ?? { success: true }
         part.state = 'output-available'
       }
+      persistenceDirty = true
+      persistenceUrgent = true
     }
 
     if (type === 'tool-output-error') {
@@ -455,6 +525,8 @@ export async function trackUsageFromStream(
         part.output = { error: data.errorText ?? data.error ?? 'tool error' }
         part.state = 'output-error'
       }
+      persistenceDirty = true
+      persistenceUrgent = true
     }
 
     // The runtime emits `data-inference-retry` when it re-issues a model call
@@ -590,6 +662,12 @@ export async function trackUsageFromStream(
 
         for (const line of lines) {
           processLine(line)
+          if (persistenceDirty) {
+            const urgent = persistenceUrgent
+            persistenceDirty = false
+            persistenceUrgent = false
+            await persistAssistantSnapshot(urgent)
+          }
         }
       }
       return true
@@ -604,15 +682,6 @@ export async function trackUsageFromStream(
   // First pass: consume the original tee'd tracking stream.
   const firstOk = await consumeStream(stream.getReader())
   if (!firstOk) originalStreamErrored = true
-
-  // Extract context. The route handler resolves chatSessionId from
-  // `X-Chat-Session-Id` header OR `requestBody.chatSessionId` and passes
-  // the resolved value via `options.chatSessionId`; we treat that as
-  // authoritative so billing (open/close) and persistence agree. The
-  // `requestBody.chatSessionId` fallback exists for older callers that
-  // don't yet thread the option through.
-  const chatSessionId = options.chatSessionId ?? requestBody?.chatSessionId ?? null
-  const agentMode = requestBody?.agentMode || 'advanced'
 
   // Auto-resume drive: when the original stream EOF'd cleanly but the runtime
   // never emitted `data-turn-complete`, the upstream proxy cut us off mid-turn.
@@ -750,91 +819,45 @@ export async function trackUsageFromStream(
     }
   }
 
-  // Persist whatever we accumulated. Partial rows are fine: the agent's
-  // next-turn context comes from the runtime's in-memory SessionManager
-  // (and its on-disk persistence), NOT from this `ChatMessage` table, so
-  // a truncated row only affects what the user sees on page reload — and
-  // that should be what they actually saw.
-  let assistantMessageId: string | null = null
-  if (chatSessionId && (accumulatedText || toolCallMap.size > 0)) {
-    try {
-      const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
-      if (session) {
-        const parts = orderedParts.filter(
-          (p) => !((p.type === 'text' || p.type === 'reasoning') && (!p.text || !p.text.trim()))
-        )
+  // Always perform one final forced flush after resume/replay handling. This
+  // updates the row created mid-stream instead of creating a duplicate row.
+  await persistAssistantSnapshot(true)
+  const partialTag = observedTurnComplete ? '' : ', partial'
+  if (assistantMessageId) {
+    console.log(
+      `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`,
+    )
 
-        // Persist turn-level wall-clock timing so the mobile client's
-        // "Worked for X" header renders an exact duration on reload
-        // instead of falling back to a count-only label (see
-        // `extractTurnTiming` in apps/mobile/components/chat/turns/turnShaping.ts).
-        // Only recorded when we actually captured a start; a partial
-        // turn that never got `completedAt` (stop/crash) still records
-        // `startedAt` alone so the client can show elapsed-to-persist time.
-        if (turnStartedAt !== undefined) {
-          parts.push({
-            type: 'data-turn-timing',
-            data: { startedAt: turnStartedAt, completedAt: turnCompletedAt },
-          })
-        }
+    if (
+      observedTurnComplete &&
+      turnCompleteStatus === 'completed' &&
+      options.userId &&
+      !options.suppressCompletionPush
+    ) {
+      const preview = accumulatedText.replace(/\s+/g, ' ').trim().slice(0, 180)
+      void sendPushToUser(options.userId, {
+        title: `${options.projectName || 'Project'} response ready`,
+        body: preview || 'The agent finished responding.',
+        data: { sessionId: chatSessionId, ...(project ? { projectId: project.id } : {}) },
+      })
+    }
 
-        const message = await prisma.chatMessage.create({
-          data: {
-            sessionId: chatSessionId,
-            role: 'assistant',
-            content: accumulatedText,
-            parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
-            agent: 'technical',
-            // Stamp the model selection used for this turn (the picker
-            // `agentMode` value, e.g. "claude-sonnet-4-6" or "auto", after any
-            // server-side tier downgrade). Lets the client default the picker
-            // to a chat's last-used model when switching chats.
-            model: agentMode,
-          },
-        })
-        assistantMessageId = message.id
-        const partialTag = observedTurnComplete ? '' : ', partial'
-        console.log(
-          `[ProjectChat] 💾 Persisted assistant message (${accumulatedText.length} chars, ${toolCallCount} tool calls${partialTag}) for session ${chatSessionId}`
-        )
+    const now = new Date()
+    // Bump the session's lastActiveAt so the chat history sidebar buckets
+    // reflect the most recent message rather than the session's creation time.
+    const updateChatSession = (prisma as any).chatSession?.update
+    if (typeof updateChatSession === 'function') {
+      updateChatSession({
+        where: { id: chatSessionId },
+        data: { lastActiveAt: now, updatedAt: now },
+      }).catch(() => {})
+    }
 
-        if (
-          observedTurnComplete &&
-          turnCompleteStatus === 'completed' &&
-          options.userId &&
-          !options.suppressCompletionPush
-        ) {
-          const preview = accumulatedText.replace(/\s+/g, ' ').trim().slice(0, 180)
-          void sendPushToUser(options.userId, {
-            title: `${options.projectName || 'Project'} response ready`,
-            body: preview || 'The agent finished responding.',
-            data: { sessionId: chatSessionId, ...(project ? { projectId: project.id } : {}) },
-          })
-        }
-
-        const now = new Date()
-        // Bump the session's lastActiveAt so the chat history sidebar
-        // buckets reflect the most recent message rather than the
-        // session's creation time. The user-message path goes through
-        // the chatMessageHooks afterCreate hook; this stream path
-        // bypasses that hook (it persists assistant messages directly),
-        // so we mirror the bump here.
-        prisma.chatSession.update({
-          where: { id: chatSessionId },
-          data: { lastActiveAt: now, updatedAt: now },
-        }).catch(() => {})
-
-        // No anchor project (workspace-scoped chat with nothing attached
-        // yet) — there's no Project row to bump lastMessageAt on.
-        if (project) {
-          prisma.project.update({
-            where: { id: project.id },
-            data: { lastMessageAt: now },
-          }).catch(() => {})
-        }
-      }
-    } catch (err) {
-      console.error("[ProjectChat] Failed to persist assistant message:", err)
+    if (project) {
+      prisma.project.update({
+        where: { id: project.id },
+        data: { lastMessageAt: now },
+      }).catch(() => {})
     }
   }
 
@@ -1360,7 +1383,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const metalChat = isMetalEligibleProject(projectId)
+      const metalChat = process.env.KUBERNETES_SERVICE_HOST
+        ? (await import(new URL('../lib/metal-eligibility.ts', import.meta.url).href))
+            .isMetalEligibleProject(projectId)
+        : false
       // Metal guests currently hang rather than refuse — a 4h fetch timeout
       // never fires before the client aborts, so we never invalidate the
       // placement. A 90s budget is long enough for a healthy wake and short
@@ -1424,7 +1450,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // Threshold is intentionally higher than other callers because the
             // chat path sees transient 401s during normal warm-pool transitions.
             const EVICT_AFTER_ATTEMPTS = 8
-            const { evictIfPodMissingAuth } = await import('../lib/warm-pool-self-heal')
+            const { evictIfPodMissingAuth } = await import(
+              new URL('../lib/warm-pool-self-heal.ts', import.meta.url).href
+            )
             const evicted = await evictIfPodMissingAuth(
               projectId,
               response.status,
@@ -1676,10 +1704,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             )
             try {
               const { getMetalWarmPoolController, destroyMetalProject } = await import(
-                '../lib/metal-warm-pool-controller'
+                new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
               )
               getMetalWarmPoolController().invalidateUrlCache(projectId)
-              void destroyMetalProject(projectId).catch((err) =>
+              void destroyMetalProject(projectId).catch((err: any) =>
                 console.error(`[ProjectChat] destroy after timeout failed for ${projectId}:`, err),
               )
             } catch (err: any) {
@@ -1783,7 +1811,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         // took ownership (retry exhaustion, client disconnect, thrown error).
         // closeSession is idempotent — safe to call even if already closed.
         if (!billingSessionHandedOff) {
-          closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err) =>
+          closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
         }
@@ -2061,9 +2089,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Metal-only mode: the project runs on the metal microVM substrate, not
       // Knative. Report readiness off the live host fleet — the actual resume
       // happens on the chat call (fast), same contract as the warm pool.
-      const { isMetalAllProjects } = await import("../lib/metal-eligibility")
+      const { isMetalAllProjects } = await import(
+        new URL('../lib/metal-eligibility.ts', import.meta.url).href
+      )
       if (isMetalAllProjects()) {
-        const { getMetalWarmPoolController } = await import("../lib/metal-warm-pool-controller")
+        const { getMetalWarmPoolController } = await import(
+          new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
+        )
         const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",
@@ -2076,7 +2108,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       if (isKubernetes()) {
         // In Kubernetes: Check Knative Service status
-        const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+        const { getKnativeProjectManager } = await import(
+          new URL('../lib/knative-project-manager.ts', import.meta.url).href
+        )
         const manager = getKnativeProjectManager()
         const status = await manager.getStatus(projectId)
 
@@ -2137,7 +2171,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
 
       // In Kubernetes, wait for pod to be ready
       if (isKubernetes()) {
-        const { getKnativeProjectManager } = await import("../lib/knative-project-manager")
+        const { getKnativeProjectManager } = await import(
+          new URL('../lib/knative-project-manager.ts', import.meta.url).href
+        )
         const manager = getKnativeProjectManager()
         await manager.waitForReady(projectId, 60000)
       }

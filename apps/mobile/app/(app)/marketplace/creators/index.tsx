@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   Image,
   FlatList,
+  Platform,
+  useWindowDimensions,
 } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
@@ -74,6 +76,8 @@ export default observer(function CreatorsDirectoryScreen() {
   const router = useRouter()
   const http = useDomainHttp()
   const numColumns = useGridColumns()
+  const { width } = useWindowDimensions()
+  const isWide = Platform.OS === 'web' && width >= 768
 
   const [allCreators, setAllCreators] = useState<LeaderboardCreator[]>([])
   const [loading, setLoading] = useState(true)
@@ -224,12 +228,35 @@ export default observer(function CreatorsDirectoryScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* Top bar */}
-      <View className="flex-row items-center gap-3 px-5 pt-3 pb-2">
-        <Pressable onPress={() => router.back()} hitSlop={6} className="p-1">
+      {/* Contextual route header */}
+      <View
+        className={
+          isWide
+            ? 'flex-row items-center gap-3 border-b border-border/60 bg-background/95 px-6 py-4'
+            : 'flex-row items-center gap-3 border-b border-border/60 bg-background px-4 py-3'
+        }
+      >
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          className="p-1"
+          accessibilityRole="button"
+          accessibilityLabel="Back to marketplace"
+        >
           <ArrowLeft size={20} color="#71717a" />
         </Pressable>
-        <Text className="text-base font-semibold text-foreground flex-1">Creators</Text>
+        <View className="flex-1">
+          {isWide && (
+            <Text className="text-[11px] font-bold uppercase tracking-[1.2px] text-primary">
+              Marketplace · Community
+            </Text>
+          )}
+          <Text
+            className={isWide ? 'mt-0.5 text-base font-semibold text-foreground' : 'text-base font-semibold text-foreground'}
+          >
+            Creators
+          </Text>
+        </View>
       </View>
 
       <MarketplaceHero
@@ -254,7 +281,10 @@ export default observer(function CreatorsDirectoryScreen() {
           data={visible}
           keyExtractor={(c) => c.id}
           numColumns={numColumns}
-          contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 32 }}
+          contentContainerStyle={{
+            paddingHorizontal: isWide ? 24 : 16,
+            paddingBottom: isWide ? 48 : 32,
+          }}
           ListHeaderComponent={ListHeader}
           renderItem={({ item }) => (
             <View className="flex-1 m-1.5">

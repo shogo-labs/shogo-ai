@@ -367,6 +367,24 @@ export function runtimeRoutes(config: RuntimeRoutesConfig) {
     }
   })
 
+  /**
+   * POST /projects/:projectId/runtime/prewarm - Start in the background.
+   *
+   * The desktop open flow uses this as a best-effort latency optimization.
+   * It must acknowledge quickly and never turn a cold-start failure into a
+   * failed project-open request.
+   */
+  router.post("/projects/:projectId/runtime/prewarm", async (c) => {
+    const projectId = c.req.param("projectId")
+    if (!await validateProject(projectId)) {
+      return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
+    }
+    void runtimeManager.start(projectId, { background: true }).catch((error: any) => {
+      console.warn(`[Runtime] Prewarm failed for ${projectId}:`, error?.message || error)
+    })
+    return c.json({ ok: true, projectId, status: "starting" }, 202)
+  })
+
   return router
 }
 

@@ -18,6 +18,7 @@ import {
   View,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { observer } from 'mobx-react-lite'
 import { ArrowLeft, ChevronRight, Folder, MessageSquare, Plus } from 'lucide-react-native'
 import { useProjectCollection, useDomainHttp } from '../../contexts/domain'
@@ -119,15 +120,17 @@ export default observer(function ProjectChatsPage() {
     ({ item }: { item: ProjectChatListItem }) => {
       const label = projectChatLabel(item)
       return (
-        <PhoneListRow
-          onPress={() => openChat(item.id)}
-          title={label}
-          icon={
-          <MessageSquare size={18} className="text-foreground" />}
-          trailing={
-          <ChevronRight size={18} className="text-muted-foreground" />
-          }
-        />
+        <View className="mx-4 mt-2 overflow-hidden rounded-2xl border border-border/70 bg-card">
+          <PhoneListRow
+            onPress={() => openChat(item.id)}
+            title={label}
+            icon={
+            <MessageSquare size={18} className="text-orange-600 dark:text-orange-300" />}
+            trailing={
+            <ChevronRight size={18} className="text-muted-foreground" />
+            }
+          />
+        </View>
       )
     },
     [openChat],
@@ -143,33 +146,38 @@ export default observer(function ProjectChatsPage() {
   const title = project?.name || 'Project'
 
   return (
-    <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 border-b border-border px-4 py-4">
+    <SafeAreaView className="flex-1 bg-background" edges={['top', 'left', 'right']}>
+      <View className="flex-row items-center gap-2 border-b border-border/70 bg-card/70 px-4 pb-4 pt-3">
         <Pressable
           onPress={goBack}
           accessibilityLabel="Back"
-          className="rounded-md p-2 -ml-2 active:bg-muted"
+          className="-ml-2 rounded-xl p-2 active:bg-muted"
         >
           <ArrowLeft size={24} className="text-foreground" />
         </Pressable>
-        <View className="min-w-0 flex-1 flex-row items-center gap-2">
-          <Folder size={18} className="text-muted-foreground shrink-0" />
-          <Text className="flex-1 text-xl font-semibold text-foreground" numberOfLines={1}>
+        <View className="min-w-0 flex-1">
+          <View className="flex-row items-center gap-2">
+            <Folder size={16} className="shrink-0 text-orange-600 dark:text-orange-300" />
+            <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
+              Project chats
+            </Text>
+          </View>
+          <Text className="mt-1 text-xl font-semibold tracking-[-0.25px] text-foreground" numberOfLines={1}>
             {title}
           </Text>
         </View>
         <Pressable
           onPress={openNewChat}
           accessibilityLabel={`New chat in ${title}`}
-          className="rounded-md p-2 active:bg-muted"
+          className="h-10 w-10 items-center justify-center rounded-xl bg-orange-500 active:bg-orange-600"
         >
-          <Plus size={22} className="text-foreground" />
+          <Plus size={20} color="white" />
         </Pressable>
       </View>
 
       {loading && sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <ActivityIndicator color="#f97316" />
         </View>
       ) : activeSessions.length === 0 ? (
         <PhoneListEmpty
@@ -180,9 +188,9 @@ export default observer(function ProjectChatsPage() {
           action={
           <Pressable
             onPress={openNewChat}
-            className="rounded-full bg-muted px-5 py-2.5 active:opacity-80"
+            className="rounded-xl bg-orange-500 px-5 py-2.5 active:bg-orange-600"
           >
-            <Text className="text-base font-medium text-foreground">New chat</Text>
+            <Text className="text-base font-medium text-white">New chat</Text>
           </Pressable>
           }
         />
@@ -192,16 +200,18 @@ export default observer(function ProjectChatsPage() {
           keyExtractor={(item) => item.id}
           onEndReached={loadMore}
           onEndReachedThreshold={0.4}
+          contentContainerClassName="pb-8 pt-2"
+          showsVerticalScrollIndicator={false}
           ListFooterComponent={
             loadingMore ? (
               <View className="items-center py-4">
-                <ActivityIndicator />
+                <ActivityIndicator color="#f97316" />
               </View>
             ) : null
           }
           renderItem={renderChat}
         />
       )}
-    </View>
+    </SafeAreaView>
   )
 })

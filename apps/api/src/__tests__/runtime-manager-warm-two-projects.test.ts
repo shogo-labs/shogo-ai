@@ -23,19 +23,8 @@
  * Run: bun test apps/api/src/__tests__/runtime-manager-warm-two-projects.test.ts
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manager'
-
-const prevFlag = process.env.SHOGO_WORKSPACE_RUNTIME
-
-beforeEach(() => {
-  process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
-})
-
-afterEach(() => {
-  if (prevFlag === undefined) delete process.env.SHOGO_WORKSPACE_RUNTIME
-  else process.env.SHOGO_WORKSPACE_RUNTIME = prevFlag
-})
 
 /**
  * Build a RuntimeManager with the heavy seams stubbed so start() exercises the

@@ -5,7 +5,7 @@
 // branches that the existing gateway-tools.*.test.ts files do not exercise:
 //   - missing-manager error paths for team_*, task_*, agent_*, etc.
 //   - happy paths for tools with simple internal logic (heartbeat_*, plan_*,
-//     read_guide, notify_user_error, ask_user, todo_write, channel_list,
+//     read_guide, ask_user, todo_write, channel_list,
 //     channel_disconnect, send_team_message, quick_action, agent_status,
 //     agent_cancel, agent_list, agent_result, search, delete_file,
 //     impact_radius, disconnect, server_sync)
@@ -196,15 +196,10 @@ describe('Loaded skills registry', () => {
 })
 
 // ---------------------------------------------------------------------------
-// notify_user_error + ask_user + todo_write trivial acks
+// ask_user + todo_write trivial acks
 // ---------------------------------------------------------------------------
 
 describe('trivial ack tools', () => {
-  test('notify_user_error acks', async () => {
-    const d = await exec(makeCtx(), 'notify_user_error', { title: 'X', message: 'Y' })
-    expect(d.acknowledged).toBe(true)
-  })
-
   test('ask_user acks regardless of questions payload', async () => {
     const d = await exec(makeCtx(), 'ask_user', {
       questions: [

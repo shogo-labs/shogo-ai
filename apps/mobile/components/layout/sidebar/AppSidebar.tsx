@@ -35,6 +35,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
   Home,
+  MessageCircle,
+  ListTodo,
+  LayoutGrid,
   Activity,
   Target,
   MessagesSquare,
@@ -53,6 +56,7 @@ import {
   Check,
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
+import type { PrimaryNavId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
 import { ShogoWordmark } from "../../branding/ShogoWordmark";
@@ -72,7 +76,10 @@ import {
   resolveActiveWorkspaceId,
   subscribeActiveWorkspaceId,
 } from "../../../lib/workspace-store";
-import { scheduleWorkspaceSwitch } from "../../../lib/switch-workspace";
+import {
+  reloadAfterWorkspaceSwitch,
+  scheduleWorkspaceSwitch,
+} from "../../../lib/switch-workspace";
 import { workspaceProjectFilter } from "../../../lib/project-load";
 import { usePlatformConfig } from "../../../lib/platform-config";
 import { useCloudBillingSummary } from "../../../hooks/useCloudBillingSummary";
@@ -89,6 +96,7 @@ import {
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
 import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
+import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
 import {
   effectiveSidebarProjectFilter,
   getPinnedProjectIds,
@@ -110,7 +118,6 @@ import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
-import { workspaceExperience } from "@shogo/shared-app";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -350,7 +357,7 @@ export const AppSidebar = observer(function AppSidebar({
   }
 
   const activeWorkspaceId = currentWorkspace?.id ?? selectedWorkspaceId;
-  const experience = workspaceExperience(currentWorkspace?.kind);
+  const experience = useWorkspaceExperience();
 
   const billingData = useBillingData(
     features.billing ? currentWorkspace?.id : undefined,
@@ -597,6 +604,16 @@ export const AppSidebar = observer(function AppSidebar({
     (w: any) => w.kind === "personal",
   );
 
+  // Whether the user already has a `kind: 'team'` workspace. `false` means
+  // "Create new workspace" is still free — every account gets one free
+  // workspace of each kind (one `personal`, one `team`; see
+  // `workspaceHooks.beforeCreate`). Once both exist, further workspaces
+  // require the paid checkout flow. This mirrors `hasPersonalWorkspace`
+  // above, so it's membership- rather than ownership-based; a user merely
+  // invited into someone else's team workspace may be routed to checkout
+  // even though the server would still grant them a free one.
+  const hasTeamWorkspace = allWorkspaces.some((w: any) => w.kind === "team");
+
   const allPlans = useWorkspacePlans(
     allWorkspaces.map((w: any) => w.id),
     !!features.billing,
@@ -644,20 +661,20 @@ export const AppSidebar = observer(function AppSidebar({
     (workspaceId: string) => {
       trackEvent(posthog, EVENTS.WORKSPACE_SWITCHED);
       setSelectedWorkspaceId(workspaceId);
-      scheduleWorkspaceSwitch(workspaceId, projects);
+      scheduleWorkspaceSwitch(workspaceId, projects, reloadAfterWorkspaceSwitch);
     },
     [projects, posthog],
   );
 
   const handleCreateWorkspace = useCallback(() => {
-    if (allWorkspaces.length >= 1) {
+    if (hasTeamWorkspace) {
       router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     } else {
       setCreateWorkspaceOpen(true);
       if (!isWide) closeNativeDrawer();
     }
-  }, [allWorkspaces.length, closeNativeDrawer, router, isWide]);
+  }, [hasTeamWorkspace, closeNativeDrawer, router, isWide]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
@@ -766,6 +783,46 @@ export const AppSidebar = observer(function AppSidebar({
   const isMarketplacePage =
     pathname.startsWith("/marketplace") ||
     pathname.startsWith("/(app)/marketplace");
+  const primaryNavItems: Record<
+    PrimaryNavId,
+    {
+      label: string;
+      icon: typeof MessageCircle;
+      href: string;
+      active: boolean;
+    }
+  > = {
+    chat: {
+      label: "Chat",
+      icon: MessageCircle,
+      href: "/(app)",
+      active: isHomePage,
+    },
+    tasks: {
+      label: "Tasks",
+      icon: ListTodo,
+      href: "/(app)/tasks",
+      active: pathname.includes("/tasks"),
+    },
+    activity: {
+      label: "Activity",
+      icon: Activity,
+      href: "/(app)/activity",
+      active: pathname.includes("/activity"),
+    },
+    canvases: {
+      label: "Canvases",
+      icon: LayoutGrid,
+      href: "/(app)/canvases",
+      active: pathname.includes("/canvases"),
+    },
+    goals: {
+      label: "Goals",
+      icon: Target,
+      href: "/(app)/goals",
+      active: pathname.includes("/goals"),
+    },
+  };
 
   const sidebarContent = (
     <View
@@ -871,16 +928,31 @@ export const AppSidebar = observer(function AppSidebar({
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
-        {/* Primary nav */}
+        {/* Primary nav mirrors the mobile bottom bar. */}
         <View className="px-2">
-          <NavItem
-            icon={Home}
-            label="Home"
-            href="/(app)"
-            active={isHomePage}
-            collapsed={collapsed}
-            onNavPress={onNavPress}
-          />
+          {experience.primaryNav.map((id) => {
+            const item = primaryNavItems[id];
+            return (
+              <NavItem
+                key={id}
+                icon={item.icon}
+                label={item.label}
+                href={item.href}
+                active={item.active}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            );
+          })}
+        </View>
+
+        {/* Secondary navigation and utilities. */}
+        <View
+          className={cn(
+            "mx-2 mt-2 border-t border-border/50 pt-2",
+            isNativeDrawer && "mt-3 pt-3",
+          )}
+        >
           {features.marketplace && experience.showMarketplace && (
             <NavItem
               icon={Store}
@@ -917,26 +989,6 @@ export const AppSidebar = observer(function AppSidebar({
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-          )}
-          {experience.showGoalsNav && (
-            <>
-              <NavItem
-                icon={Target}
-                label="Goals"
-                href="/(app)/goals"
-                active={pathname.includes("/goals")}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-              <NavItem
-                icon={Activity}
-                label="Activity"
-                href="/(app)/activity"
-                active={pathname.includes("/activity")}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-            </>
           )}
           {experience.showSideChatsNav && (
             <NavItem
@@ -1191,16 +1243,19 @@ export const AppSidebar = observer(function AppSidebar({
                           : "Show all projects"
                       }
                       className={cn(
-                        "flex-row items-center rounded-md px-2 active:bg-accent/50",
-                        isNativeDrawer
-                          ? `${drawerDensity.rowMin} gap-2.5 py-2`
-                          : "gap-1.5 py-1.5",
+                        "flex-row items-center rounded-md active:bg-accent/50",
+                        isNativeDrawer ? "py-1.5" : "py-1",
                       )}
+                      // No leading chevron/folder glyph here (unlike each
+                      // project row) — indent to line up with those rows'
+                      // *text*, not their icon column, instead of adding an
+                      // icon of its own just to fill the slot.
+                      style={{
+                        paddingLeft:
+                          (isNativeDrawer ? drawerDensity.icon.md : 12) + 10,
+                        paddingRight: 8,
+                      }}
                     >
-                      <SectionDisclosureChevron
-                        expanded={showAllProjects}
-                        size={sectionChevronSize}
-                      />
                       <Text
                         className={cn(
                           "text-muted-foreground flex-1",

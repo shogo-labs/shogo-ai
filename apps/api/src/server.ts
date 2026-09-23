@@ -6,40 +6,20 @@ import { cors } from 'hono/cors'
 import { csrf } from 'hono/csrf'
 import { secureHeaders } from 'hono/secure-headers'
 import { bodyLimit } from 'hono/body-limit'
-import Stripe from 'stripe'
 import { type ModelMessage } from 'ai'
+import type StripeTypes from 'stripe'
 import { z } from 'zod'
 import { resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'fs'
 import { auth } from './auth'
-import { getPriceId, getInstancePriceId, type PaidInstanceSize } from './config/stripe-prices'
-import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './config/currencies'
-import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
-import { buildRegionalPlans } from './config/regional-plan-pricing'
+import type { PaidInstanceSize } from './config/stripe-prices'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
-import * as billingService from './services/billing.service'
-import * as appleIap from './services/apple-iap.service'
-import * as instanceService from './services/instance.service'
-import * as storageService from './services/storage.service'
-import * as nodeMetricsService from './services/node-metrics.service'
-import * as affiliateService from './services/affiliate.service'
-import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, getInstanceDisplayPrice, type InstanceSizeName } from './config/instance-sizes'
-import {
-  sendPlanUpgradedEmail,
-  sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail,
-  sendMemberJoinedEmail, sendMemberRemovedEmail, sendAccountDeletedEmail,
-} from './services/email.service'
-import { identifyUser, unsubscribeUser } from './services/loops.service'
-import { getUnreadNotificationCount } from './services/notification.service'
-import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-alerts.service'
-import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
+import type { InstanceSizeName } from './config/instance-sizes'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
 import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
-import { proxyToPeer } from './lib/region-peer-proxy'
-import { publishRoutes } from './routes/publish'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
@@ -48,8 +28,6 @@ import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
-import { slackAgentRoutes } from './routes/slack-agent'
-import { projectAdminRoutes } from './routes/project-admin'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -69,8 +47,6 @@ import {
   liveRelayMessage,
   liveRelayOpen,
 } from './lib/live-session-relay'
-import { publicApiRoutes } from './routes/public-api'
-import { voiceRoutes } from './routes/voice'
 import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
@@ -92,20 +68,8 @@ import {
 } from './lib/title-parse'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
-import { adminRoutes, userAttributionRoute } from './routes/admin'
-import { adminMarketplaceRoutes } from './routes/admin-marketplace'
-import { licenseKeyAdminRoutes, licenseKeyRoutes } from './routes/license-keys'
-import { affiliateRoutes } from './routes/affiliates'
-import { marketplaceRoutes } from './routes/marketplace'
-import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
-import { costAnalyticsRoutes } from './routes/cost-analytics'
-import { integrationRoutes } from './routes/integrations'
 import { techStackRoutes } from './routes/tech-stacks'
-import { evalOutputRoutes } from './routes/eval-outputs'
-import { projectExportImportRoutes } from './routes/project-export-import'
-import { evalAdminRoutes, evalInternalRoutes } from './routes/eval-admin'
 import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
-import { cliAuthRoutes } from './routes/cli-auth'
 import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
 import {
   resolveExposedPorts,
@@ -120,6 +84,7 @@ import {
   _resetAgentModelDefaultsCache,
   _resetUpstreamCredentialCache,
 } from './lib/federated-upstream'
+import type { MetricsPeriod } from './services/node-metrics.service'
 import { agentModelDefaultsRoute } from './lib/runtime/agent-model-defaults-route'
 import {
   readVisibleModelsConfig,
@@ -127,29 +92,17 @@ import {
   resolvePlatformVisibleModels,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
+import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { meetingRoutes } from './routes/meetings'
-import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
-import { checkRedisHealth, isTunnelRedisDegraded } from './lib/tunnel-redis'
-import { remoteAuditRoutes } from './routes/remote-audit'
-import { mobilePushRoutes } from './routes/mobile-push'
-import { syncRoutes } from './routes/sync'
-import internalRoutes from './routes/internal'
-import internalE2eRoutes from './routes/internal-e2e'
-import { metalRoutes } from './routes/metal'
 import { localProjectsRoutes } from './routes/local-projects'
 import { localLogsRoutes } from './routes/local-logs'
 import { cloudProjectsRoutes } from './routes/cloud-projects'
-import { externalPreviewRoutes } from './routes/external-preview'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
-import { normalizeAdminScopes } from './lib/admin-scopes'
-import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
 import { historyRoutes } from './routes/history'
-// Generated admin CRUD routes (unrestricted, middleware-protected)
-import { createAdminRoutes } from './generated/admin-routes'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
 import { createRuntimeManager, setRuntimeManager, type IRuntimeManager } from './lib/runtime'
 // Generated routes (v2 API)
@@ -166,6 +119,91 @@ import {
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
+
+const LOCAL_MODE = process.env.SHOGO_LOCAL_MODE === 'true'
+/**
+ * Keep the cloud dependency graph out of local/desktop API startup. The
+ * composer still owns the route surface, but its cloud-shaped modules are
+ * imported as one lazy island only when this process is actually a cloud
+ * server. The no-op route factories preserve the local route table without
+ * evaluating Stripe/S3/admin/affiliate modules.
+ */
+const cloud: any = LOCAL_MODE ? {} : await import('./server-cloud-deps')
+const emptyRouter = () => new Hono()
+const Stripe: any = cloud.Stripe ?? class LocalStripeUnavailable {
+  constructor() {
+    throw new Error('Stripe is unavailable in local mode')
+  }
+}
+const billingService: any = cloud.billingService ?? {}
+const appleIap: any = cloud.appleIap ?? {}
+const instanceService: any = cloud.instanceService ?? {}
+const storageService: any = cloud.storageService ?? {}
+const nodeMetricsService: any = cloud.nodeMetricsService ?? { getWorkspaceMetrics: async () => null }
+const affiliateService: any = cloud.affiliateService ?? {}
+const getPriceId: any = cloud.getPriceId ?? (() => undefined)
+const getInstancePriceId: any = cloud.getInstancePriceId ?? (() => undefined)
+const getCurrencyForCountry: any = cloud.getCurrencyForCountry ?? (() => undefined)
+const formatPrice: any = cloud.formatPrice ?? ((value: unknown) => String(value))
+const SUPPORTED_CURRENCIES: any = cloud.SUPPORTED_CURRENCIES ?? []
+const getExchangeRates: any = cloud.getExchangeRates ?? (async () => ({}))
+const convertPrice: any = cloud.convertPrice ?? ((value: unknown) => value)
+const buildRegionalPlans: any = cloud.buildRegionalPlans ?? (() => [])
+const INSTANCE_SIZES: any = cloud.INSTANCE_SIZES ?? {}
+const INSTANCE_SIZE_ORDER: any = cloud.INSTANCE_SIZE_ORDER ?? []
+const getInstanceDisplayPrice: any = cloud.getInstanceDisplayPrice ?? (() => undefined)
+const sendPlanUpgradedEmail: any = cloud.sendPlanUpgradedEmail ?? (async () => {})
+const sendInvitationEmail: any = cloud.sendInvitationEmail ?? (async () => {})
+const sendProjectInviteEmail: any = cloud.sendProjectInviteEmail ?? (async () => {})
+const sendInviteAcceptedEmail: any = cloud.sendInviteAcceptedEmail ?? (async () => {})
+const sendMemberJoinedEmail: any = cloud.sendMemberJoinedEmail ?? (async () => {})
+const sendMemberRemovedEmail: any = cloud.sendMemberRemovedEmail ?? (async () => {})
+const sendAccountDeletedEmail: any = cloud.sendAccountDeletedEmail ?? (async () => {})
+const identifyUser: any = cloud.identifyUser ?? (async () => {})
+const unsubscribeUser: any = cloud.unsubscribeUser ?? (async () => {})
+const getUnreadNotificationCount: any = cloud.getUnreadNotificationCount ?? (async () => 0)
+const notifyPaymentReceipt: any = cloud.notifyPaymentReceipt ?? (async () => {})
+const notifyPaymentFailed: any = cloud.notifyPaymentFailed ?? (async () => {})
+const STRIPE_API_VERSION: any = cloud.STRIPE_API_VERSION
+const resolveInvoiceSubscriptionId: any = cloud.resolveInvoiceSubscriptionId ?? (() => null)
+const proxyToPeer: any = cloud.proxyToPeer ?? (async () => new Response('Cloud peer routing unavailable', { status: 503 }))
+const publishRoutes: any = cloud.publishRoutes ?? emptyRouter
+const slackAgentRoutes: any = cloud.slackAgentRoutes ?? emptyRouter
+const projectAdminRoutes: any = cloud.projectAdminRoutes ?? emptyRouter
+const publicApiRoutes: any = cloud.publicApiRoutes ?? emptyRouter
+const voiceRoutes: any = cloud.voiceRoutes ?? emptyRouter
+const adminRoutes: any = cloud.adminRoutes ?? emptyRouter
+const userAttributionRoute: any = cloud.userAttributionRoute ?? emptyRouter
+const adminMarketplaceRoutes: any = cloud.adminMarketplaceRoutes ?? emptyRouter
+const licenseKeyAdminRoutes: any = cloud.licenseKeyAdminRoutes ?? emptyRouter
+const licenseKeyRoutes: any = cloud.licenseKeyRoutes ?? emptyRouter
+const affiliateRoutes: any = cloud.affiliateRoutes ?? emptyRouter
+const marketplaceRoutes: any = cloud.marketplaceRoutes ?? emptyRouter
+const scopedAnalyticsRoutes: any = cloud.scopedAnalyticsRoutes ?? emptyRouter
+const costAnalyticsRoutes: any = cloud.costAnalyticsRoutes ?? emptyRouter
+const integrationRoutes: any = cloud.integrationRoutes ?? emptyRouter
+const evalOutputRoutes: any = cloud.evalOutputRoutes ?? emptyRouter
+const projectExportImportRoutes: any = cloud.projectExportImportRoutes ?? emptyRouter
+const evalAdminRoutes: any = cloud.evalAdminRoutes ?? emptyRouter
+const evalInternalRoutes: any = cloud.evalInternalRoutes ?? emptyRouter
+const cliAuthRoutes: any = cloud.cliAuthRoutes ?? emptyRouter
+const instanceRoutes: any = cloud.instanceRoutes ?? emptyRouter
+const authenticateInstanceWs: any = cloud.authenticateInstanceWs ?? (async () => false)
+const handleInstanceWsOpen: any = cloud.handleInstanceWsOpen ?? (() => {})
+const handleInstanceWsMessage: any = cloud.handleInstanceWsMessage ?? (() => {})
+const handleInstanceWsClose: any = cloud.handleInstanceWsClose ?? (() => {})
+const startTunnelHeartbeat: any = cloud.startTunnelHeartbeat ?? (() => {})
+const remoteAuditRoutes: any = cloud.remoteAuditRoutes ?? emptyRouter
+const mobilePushRoutes: any = cloud.mobilePushRoutes ?? emptyRouter
+const syncRoutes: any = cloud.syncRoutes ?? emptyRouter
+const internalRoutes: any = cloud.internalRoutes ?? new Hono()
+const internalE2eRoutes: any = cloud.internalE2eRoutes ?? new Hono()
+const metalRoutes: any = cloud.metalRoutes ?? emptyRouter
+const externalPreviewRoutes: any = cloud.externalPreviewRoutes ?? emptyRouter
+const createAdminRoutes: any = cloud.createAdminRoutes ?? emptyRouter
+const adminModelCatalogRoutes: any = cloud.adminModelCatalogRoutes ?? emptyRouter
+const checkRedisHealth: any = cloud.checkRedisHealth ?? (async () => ({ healthy: true, latencyMs: 0 }))
+const isTunnelRedisDegraded: any = cloud.isTunnelRedisDegraded ?? (() => false)
 
 // Runtime manager singleton for project Vite runtimes
 let runtimeManager: IRuntimeManager | null = null
@@ -956,6 +994,11 @@ app.get('/api/config', async (c) => {
     // whenever this is true. Defaults on; a super-admin can flip it off
     // instance-wide without a deploy if the rollout needs to pause.
     personalShell: true,
+    // Workspace runtimes are separately gated. Keep both redesigned shells
+    // off in hosted environments until that runtime and the relevant QA lane
+    // have been explicitly enabled; local design work stays opt-in by default.
+    agentShell: localMode,
+    mobileAgentShell: localMode,
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
@@ -969,6 +1012,8 @@ app.get('/api/config', async (c) => {
             'feature.ez_mode',
             'feature.phone_channel',
             'feature.personal_shell',
+            'feature.agent_shell',
+            'feature.mobile_agent_shell',
           ],
         },
       },
@@ -979,6 +1024,8 @@ app.get('/api/config', async (c) => {
       if (row.key === 'feature.ez_mode') overrides.ezMode = bool
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
       if (row.key === 'feature.personal_shell') overrides.personalShell = bool
+      if (row.key === 'feature.agent_shell') overrides.agentShell = bool
+      if (row.key === 'feature.mobile_agent_shell') overrides.mobileAgentShell = bool
     }
   } catch (err) {
     console.error('[config] Failed to load feature flag overrides:', err)
@@ -1105,7 +1152,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
     { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
   ] as const
 
-  const PROVIDER_BY_ID = new Map(PROVIDER_KEYS.map((p) => [p.id, p.envKey]))
+  const PROVIDER_BY_ID: Map<string, string> = new Map(PROVIDER_KEYS.map((p) => [p.id, p.envKey]))
   const ALL_PROVIDER_ENV_KEYS = PROVIDER_KEYS.map((p) => p.envKey)
 
   // Legacy field-name aliases. The original PUT body used camelCase keys like
@@ -1121,7 +1168,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       const rows = await localDb.localConfig.findMany({
         where: { key: { in: ALL_PROVIDER_ENV_KEYS } },
       })
-      const byEnvKey = new Map(rows.map((r) => [r.key, r.value]))
+      const byEnvKey = new Map<string, string>((rows as any[]).map((r: any) => [r.key, r.value]))
       const keys: Record<string, string> = {}
       for (const provider of PROVIDER_KEYS) {
         const value = byEnvKey.get(provider.envKey)
@@ -1548,12 +1595,13 @@ app.route('/api', mobilePushRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder
-// model). Session CRUD is live; the /chat proxy (+ turn/stream/stop) reaches
-// project-chat parity (billing, persistence, auto-resume) but the merged-root
-// workspace runtime it proxies to is gated behind SHOGO_WORKSPACE_RUNTIME —
-// runtime resolution returns 501 until that flag is enabled.
+// model). Session CRUD and the /chat proxy (+ turn/stream/stop) use the
+// unconditional merged-root workspace runtime.
 app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
-app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+app.route('/api', workspaceAgentRoutes({
+  authorize: sessionAuthorize(getAuthUserId),
+  saveAgentAvatar: cloud.saveAgentAvatar,
+}))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.
@@ -3264,12 +3312,11 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // transport.
   const contentType = c.req.header('content-type')
   const accept = c.req.header('accept')
-  // Under SHOGO_WORKSPACE_RUNTIME the project is served by a merged-root
-  // "unified" runtime that authenticates with the WORKSPACE token, not the
-  // project token — sending the project token here 401s every proxied call
-  // (config, quick-actions, workspace tree/search, chat). The resolver picks
-  // the right token type for the active topology. `authedWorkspaceId` is set
-  // for all non-webchat paths; webchat falls back to a (cached) lookup.
+  // Every project is served by a merged-root runtime that authenticates with
+  // the WORKSPACE token, not the project token — sending the project token
+  // here 401s every proxied call (config, quick-actions, workspace
+  // tree/search, chat). `authedWorkspaceId` is set for all non-webchat paths;
+  // webchat falls back to a (cached) lookup.
   const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
   const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId: authedWorkspaceId })
 
@@ -5250,7 +5297,10 @@ app.all('/api/projects/:projectId/database/proxy/*', async (c) => {
 const workspacesDirResolved = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
 
 // Mount checkpoint routes
-const checkpointRouter = checkpointRoutes({ workspacesDir: workspacesDirResolved })
+const checkpointRouter = checkpointRoutes({
+  workspacesDir: workspacesDirResolved,
+  hydrateRepo: cloud.hydrateRepo,
+})
 app.route('/api', checkpointRouter)
 
 // Mount git smart-HTTP backend (clone/fetch/push from paired workers).
@@ -6510,6 +6560,8 @@ const FEATURE_FLAG_KEYS = {
   ezMode: 'feature.ez_mode',
   phoneChannel: 'feature.phone_channel',
   personalShell: 'feature.personal_shell',
+  agentShell: 'feature.agent_shell',
+  mobileAgentShell: 'feature.mobile_agent_shell',
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
@@ -6525,6 +6577,8 @@ app.get('/api/admin/settings/features', async (c) => {
       ezMode: null,
       phoneChannel: null,
       personalShell: null,
+      agentShell: null,
+      mobileAgentShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -6569,6 +6623,8 @@ app.put('/api/admin/settings/features', async (c) => {
       ezMode: null,
       phoneChannel: null,
       personalShell: null,
+      agentShell: null,
+      mobileAgentShell: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -7154,7 +7210,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
       return c.json({ ok: true, workspaceId, planId, seats, alreadyProvisioned: true }, 200)
     }
 
-    const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+    const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as StripeTypes.Subscription & {
       current_period_start?: number
       current_period_end?: number
     }
@@ -7313,7 +7369,7 @@ app.get('/api/billing/invoices', async (c) => {
     }
 
     const list = await stripe.invoices.list({ customer: customerId, limit })
-    const invoices = list.data.map((inv) => ({
+    const invoices = list.data.map((inv: any) => ({
       id: inv.id,
       number: inv.number ?? null,
       status: inv.status ?? null,
@@ -7327,7 +7383,7 @@ app.get('/api/billing/invoices', async (c) => {
       hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
       invoicePdf: inv.invoice_pdf ?? null,
       description: inv.description ?? null,
-      lines: (inv.lines?.data ?? []).map((line) => ({
+      lines: (inv.lines?.data ?? []).map((line: any) => ({
         description: line.description ?? null,
         amount: (line.amount ?? 0) / 100,
       })),
@@ -7631,7 +7687,7 @@ app.get('/api/workspaces/:id/instance', async (c) => {
             cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
           }
         : null,
-      sizes: INSTANCE_SIZE_ORDER.map((t) => ({
+      sizes: INSTANCE_SIZE_ORDER.map((t: any) => ({
         name: t,
         ...INSTANCE_SIZES[t],
         displayPriceMonthly: getInstanceDisplayPrice(t, 'monthly'),
@@ -7653,7 +7709,7 @@ app.get('/api/workspaces/:id/metrics', async (c) => {
     }
 
     const url = new URL(c.req.url)
-    const period = (url.searchParams.get('period') || '24h') as nodeMetricsService.MetricsPeriod
+    const period = (url.searchParams.get('period') || '24h') as MetricsPeriod
 
     const metrics = await nodeMetricsService.getWorkspaceMetrics(workspaceId, period)
     if (!metrics) {
@@ -7708,7 +7764,7 @@ app.post('/api/webhooks/stripe', async (c) => {
       return c.json({ error: 'Webhook verification not configured' }, 500)
     }
 
-    let event: Stripe.Event | null = null
+    let event: StripeTypes.Event | null = null
     let lastErr: any = null
     for (const secret of secrets) {
       try {
@@ -7730,7 +7786,7 @@ app.post('/api/webhooks/stripe', async (c) => {
     switch (event.type) {
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
-        const subscription = event.data.object as Stripe.Subscription & {
+        const subscription = event.data.object as StripeTypes.Subscription & {
           current_period_start?: number
           current_period_end?: number
         }
@@ -7849,12 +7905,12 @@ app.post('/api/webhooks/stripe', async (c) => {
         // running (and being billed floor-wise) at its old tier forever.
         // Seat-plan cancellation is intentionally NOT handled here — that's
         // a separate, pre-existing gap outside this change's scope.
-        const subscription = event.data.object as Stripe.Subscription
+        const subscription = event.data.object as StripeTypes.Subscription
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
           if (instanceSub) {
             await instanceService.downgradeToMicro(instanceSub.workspaceId)
-            instanceService.applyInstanceToRuntime(instanceSub.workspaceId).catch((err) =>
+            instanceService.applyInstanceToRuntime(instanceSub.workspaceId).catch((err: any) =>
               console.error('[Webhook] Failed to apply micro downgrade to runtime:', err.message),
             )
             console.log('[Webhook] Instance subscription canceled, downgraded to micro:', instanceSub.workspaceId)
@@ -7865,7 +7921,7 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session
+        const session = event.data.object as StripeTypes.Checkout.Session
         console.log('[Webhook] Checkout completed:', {
           sessionId: session.id,
           subscriptionId: session.subscription,
@@ -7881,7 +7937,7 @@ app.post('/api/webhooks/stripe', async (c) => {
           const { workspaceId, billingInterval } = session.metadata
           if (workspaceId && normalizedSize && billingInterval && session.subscription && session.customer) {
             try {
-              const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+              const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as StripeTypes.Subscription & {
                 current_period_start?: number
                 current_period_end?: number
               }
@@ -7904,7 +7960,7 @@ app.post('/api/webhooks/stripe', async (c) => {
                 new Date(currentPeriodEnd),
               )
 
-              instanceService.applyInstanceToRuntime(workspaceId).catch((err) =>
+              instanceService.applyInstanceToRuntime(workspaceId).catch((err: any) =>
                 console.error('[Webhook] Failed to apply instance size to runtime:', err.message)
               )
 
@@ -7920,7 +7976,7 @@ app.post('/api/webhooks/stripe', async (c) => {
         const { workspaceId, planId, billingInterval, seats: seatsRaw } = session.metadata || {}
         if (workspaceId && planId && billingInterval && session.subscription && session.customer) {
           try {
-            const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as Stripe.Subscription & {
+            const stripeSubscription = await stripe!.subscriptions.retrieve(session.subscription as string) as StripeTypes.Subscription & {
               current_period_start?: number
               current_period_end?: number
             }
@@ -7969,16 +8025,16 @@ app.post('/api/webhooks/stripe', async (c) => {
                   seats: checkoutSeats,
                   includedUsdTotal: `$${includedUsd}`,
                   dashboardUrl: `${baseUrl}/billing`,
-                }).catch((err) => console.error('[Webhook] plan-upgraded email failed:', err))
+                }).catch((err: any) => console.error('[Webhook] plan-upgraded email failed:', err))
 
                 // FIRE-AND-FORGET: update Loops contact with new plan
                 // and unsubscribe from free-user drip/conversion sequences
                 const ownerId = workspace?.members?.[0]?.user?.id
                 if (ownerId) {
                   identifyUser(ownerId, { email: ownerEmail, plan: planId })
-                    .catch((err) => console.error('[Loops] identify failed:', err))
+                    .catch((err: any) => console.error('[Loops] identify failed:', err))
                   unsubscribeUser(ownerId)
-                    .catch((err) => console.error('[Loops] unsubscribe failed:', err))
+                    .catch((err: any) => console.error('[Loops] unsubscribe failed:', err))
                 }
               }
             } catch (emailErr: any) {
@@ -7991,7 +8047,7 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice & { billing_reason?: string }
+        const invoice = event.data.object as StripeTypes.Invoice & { billing_reason?: string }
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
         // Resolve the subscription id across Stripe API versions: it moved from
         // `invoice.subscription` to `invoice.parent.subscription_details` in
@@ -8076,7 +8132,7 @@ app.post('/api/webhooks/stripe', async (c) => {
         // requirements, this maps the account's payout capability back onto
         // the owning CreatorProfile or Affiliate's payoutStatus (so the
         // affiliate payout cron can start paying a now-verified affiliate).
-        const acct = event.data.object as Stripe.Account
+        const acct = event.data.object as StripeTypes.Account
         try {
           const { handleAccountUpdated } = await import('./services/stripe-connect.service')
           await handleAccountUpdated(acct.id)
@@ -8086,7 +8142,7 @@ app.post('/api/webhooks/stripe', async (c) => {
         break
       }
       case 'invoice.payment_failed': {
-        const invoice = event.data.object as Stripe.Invoice
+        const invoice = event.data.object as StripeTypes.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
         const subscriptionId = resolveInvoiceSubscriptionId(invoice)
         if (customerId && subscriptionId) {
@@ -8326,142 +8382,8 @@ app.route('/api/internal/e2e', internalE2eRoutes)
 // apps/api/src/routes/metal.ts and lib/metal-warm-pool-controller.ts.
 app.route('/api/internal/metal', metalRoutes())
 
-// =============================================================================
-// Current User Route (/api/me) - Returns user profile with role
-// =============================================================================
-
-app.get('/api/me', authMiddleware, requireAuth, async (c) => {
-  const authCtx = c.get('auth')
-  if (!authCtx?.userId) {
-    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
-  }
-  const user = await prisma.user.findUnique({
-    where: { id: authCtx.userId },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      emailVerified: true,
-      image: true,
-      role: true,
-      adminScopes: true,
-      onboardingCompleted: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  })
-  if (!user) {
-    return c.json({ error: { code: 'not_found', message: 'User not found' } }, 404)
-  }
-  return c.json({
-    ok: true,
-    data: { ...user, adminScopes: normalizeAdminScopes(user.adminScopes) },
-  })
-})
-
-// =============================================================================
-// Onboarding complete (/api/onboarding/complete)
-// =============================================================================
-
-app.post('/api/onboarding/complete', authMiddleware, requireAuth, async (c) => {
-  const authCtx = c.get('auth')
-  if (!authCtx?.userId) {
-    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
-  }
-  await prisma.user.update({
-    where: { id: authCtx.userId },
-    data: { onboardingCompleted: true },
-  })
-  return c.json({ ok: true })
-})
-
-// =============================================================================
-// Current User Activity (/api/me/activity) - Message stats for account page
-// =============================================================================
-
-app.get('/api/me/activity', authMiddleware, requireAuth, async (c) => {
-  const authCtx = c.get('auth')
-  if (!authCtx?.userId) {
-    return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
-  }
-
-  try {
-    const userId = authCtx.userId
-    const oneYearAgo = new Date()
-    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
-    oneYearAgo.setHours(0, 0, 0, 0)
-
-    const memberships = await prisma.member.findMany({
-      where: { userId },
-      select: { workspaceId: true },
-    })
-    const workspaceIds = memberships.map((m: any) => m.workspaceId)
-
-    if (workspaceIds.length === 0) {
-      return c.json({
-        ok: true,
-        data: { totalMessages: 0, dailyAverage: 0, daysActive: 0, daysInPeriod: 365, currentStreak: 0, dailyCounts: {} },
-      })
-    }
-
-    const messages = await prisma.chatMessage.findMany({
-      where: {
-        role: 'user',
-        agent: 'technical',
-        createdAt: { gte: oneYearAgo },
-        session: {
-          project: { workspaceId: { in: workspaceIds } },
-        },
-      },
-      select: { createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    })
-
-    const dailyCounts: Record<string, number> = {}
-    for (const msg of messages) {
-      const day = msg.createdAt.toISOString().slice(0, 10)
-      dailyCounts[day] = (dailyCounts[day] || 0) + 1
-    }
-
-    const totalMessages = messages.length
-    const now = new Date()
-    const diffMs = now.getTime() - oneYearAgo.getTime()
-    const daysInPeriod = Math.max(1, Math.ceil(diffMs / 86400000))
-    const dailyAverage = Math.round((totalMessages / daysInPeriod) * 10) / 10
-    const daysActive = Object.keys(dailyCounts).length
-
-    let currentStreak = 0
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const cursor = new Date(today)
-    while (true) {
-      const key = cursor.toISOString().slice(0, 10)
-      if (dailyCounts[key]) {
-        currentStreak++
-        cursor.setDate(cursor.getDate() - 1)
-      } else if (currentStreak === 0) {
-        cursor.setDate(cursor.getDate() - 1)
-        const yesterdayKey = cursor.toISOString().slice(0, 10)
-        if (dailyCounts[yesterdayKey]) {
-          currentStreak++
-          cursor.setDate(cursor.getDate() - 1)
-        } else {
-          break
-        }
-      } else {
-        break
-      }
-    }
-
-    return c.json({
-      ok: true,
-      data: { totalMessages, dailyAverage, daysActive, daysInPeriod, currentStreak, dailyCounts },
-    })
-  } catch (error: any) {
-    console.error('[Activity] Failed to fetch activity:', error)
-    return c.json({ error: { code: 'activity_failed', message: error.message } }, 500)
-  }
-})
+// User/profile routes are shared by the local and cloud composers.
+app.route('/api', userProfileRoutes())
 
 // =============================================================================
 // Generated API Routes - Auto-generated from Prisma schema with hooks
@@ -8502,7 +8424,7 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
 
   // Active-seat billing: leaving a workspace removes a paid seat.
-  billingService.syncSeatsFromMembership(workspaceId).catch((err) =>
+  billingService.syncSeatsFromMembership(workspaceId).catch((err: any) =>
     console.error('[Billing] /leave seat sync failed:', err.message ?? err),
   )
 
@@ -8825,7 +8747,7 @@ app.post('/api/invite-links/:token/accept', async (c) => {
   // Active-seat billing: workspace-level invite-link acceptance must bump
   // the Stripe seat quantity (project-only memberships don't bill seats).
   if (memberData.workspaceId && !memberData.projectId) {
-    billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err) =>
+    billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err: any) =>
       console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
     )
   }
@@ -9033,11 +8955,6 @@ async function gracefulShutdown(signal: string) {
       }
     }
 
-    try {
-      const { stopHostWarmPool } = await import('./lib/host-warm-pool-controller')
-      await stopHostWarmPool()
-      console.log('[Server] Host warm pool stopped')
-    } catch (_) { /* may not be initialized */ }
   }
 
   // Drain active proxy connections (SSE streams, chat)
@@ -9102,7 +9019,41 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
           } catch {}
           continue
         }
-        if (!process.env[row.key]) {
+        if (
+          row.key === 'SHOGO_API_KEY' &&
+          process.env.SHOGO_API_KEY &&
+          process.env.SHOGO_API_KEY !== row.value
+        ) {
+          const validate = async (key: string): Promise<boolean> => {
+            try {
+              const response = await fetch(`${getShogoCloudUrl()}/api/api-keys/validate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key }),
+                signal: AbortSignal.timeout(5_000),
+              })
+              const body = await response.json().catch(() => ({} as any))
+              return response.ok && body?.valid === true
+            } catch {
+              return false
+            }
+          }
+          const [envValid, storedValid] = await Promise.all([
+            validate(process.env.SHOGO_API_KEY),
+            validate(row.value),
+          ])
+          const winner = envValid || !storedValid ? process.env.SHOGO_API_KEY : row.value
+          process.env.SHOGO_API_KEY = winner
+          if (winner !== row.value) {
+            await (prisma as any).localConfig.update({
+              where: { key: 'SHOGO_API_KEY' },
+              data: { value: winner },
+            }).catch(() => {})
+          }
+          console.log(
+            `[LocalMode] Resolved conflicting SHOGO_API_KEY sources (envValid=${envValid}, storedValid=${storedValid}, source=${winner === row.value ? 'localConfig' : 'environment'})`,
+          )
+        } else if (!process.env[row.key]) {
           process.env[row.key] = row.value
           console.log(`[LocalMode] Restored ${row.key} from local config`)
         }
@@ -9499,14 +9450,12 @@ if (isKubernetes()) {
     // Keep the last-N most-recently-opened workspace runtimes warm by pinging
     // their /health (refreshes Knative scale-to-zero retention). The resolver
     // populates the MRU; this just starts the periodic sweep.
-    if (process.env.SHOGO_WORKSPACE_RUNTIME === 'true') {
-      try {
-        const { getWorkspaceKeepWarm } = await import('./lib/workspace-keep-warm')
-        getWorkspaceKeepWarm().start()
-        console.log('[WorkspaceKeepWarm] Keep-warm controller started')
-      } catch (err: any) {
-        console.error('[WorkspaceKeepWarm] Failed to start keep-warm (non-fatal):', err.message)
-      }
+    try {
+      const { getWorkspaceKeepWarm } = await import('./lib/workspace-keep-warm')
+      getWorkspaceKeepWarm().start()
+      console.log('[WorkspaceKeepWarm] Keep-warm controller started')
+    } catch (err: any) {
+      console.error('[WorkspaceKeepWarm] Failed to start keep-warm (non-fatal):', err.message)
     }
 
     try {
@@ -9544,25 +9493,6 @@ if (isKubernetes()) {
   }, 2000)
 }
 
-// Start host warm pool controller (local host mode, opt-in via HOST_WARM_POOL_SIZE).
-// Pre-boots generic agent-runtimes so project opens skip the cold spawn.
-if (!isKubernetes()) {
-  setTimeout(async () => {
-    try {
-      // Even low-memory machines benefit from a ready workspace when the
-      // project is created; only the extra resident agent process is gated by
-      // HOST_WARM_POOL_SIZE.
-      await getRuntimeManager().prepareWarmWorkspace()
-      const { initHostWarmPool, isHostWarmPoolEnabled } = await import('./lib/host-warm-pool-controller')
-      if (!isHostWarmPoolEnabled()) return
-      await initHostWarmPool()
-      console.log('[HostWarmPool] Host warm pool controller started')
-    } catch (err: any) {
-      console.error('[HostWarmPool] Failed to start host warm pool (non-fatal):', err?.message ?? err)
-    }
-  }, 2000)
-}
-
 // Start local heartbeat scheduler (local dev only)
 if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   setTimeout(async () => {
@@ -9576,16 +9506,16 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   }, 3000)
 }
 
-// Prewarm workspace runtimes on startup (local dev + shipped desktop app —
-// both run this same entry point with SHOGO_LOCAL_MODE=true). Without this,
+// Prewarm desktop workspace runtimes on startup. Without this,
 // the merged-root runtime for a workspace only cold-boots (bun install +
 // Vite build + agent-runtime boot, ~25-30s) the first time it's needed —
 // i.e. on the user's first chat message of the session. Firing that same
 // boot here instead means it happens in the background while the app is
 // still loading, so by the time the user sends a message it's already warm.
-// Prewarms the `workspacePreviewMax` (default 3, see runtime/manager.ts)
-// most recently active workspaces so they don't evict each other on open.
-if (process.env.SHOGO_LOCAL_MODE === 'true' && process.env.SHOGO_WORKSPACE_RUNTIME === 'true' && !isKubernetes()) {
+// Prewarms the most recently active workspace sessions and project anchors.
+// This is deliberately unconditional for desktop/local mode: users prefer a
+// ready companion and project over paying the cold-start latency later.
+if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
   setTimeout(async () => {
     try {
       const { resolveWorkspaceRuntimeUrl } = await import('./lib/resolve-workspace-runtime-url')
@@ -9607,51 +9537,41 @@ if (process.env.SHOGO_LOCAL_MODE === 'true' && process.env.SHOGO_WORKSPACE_RUNTI
             console.warn(`[StartupPrewarm] Failed to warm workspace ${ws.id} (non-fatal):`, err?.message ?? err),
           )
       }
+
+      const projectCount = Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10))
+      if (projectCount > 0) {
+        const projects = await prisma.project.findMany({
+          orderBy: { updatedAt: 'desc' },
+          take: projectCount,
+          select: { id: true },
+        })
+        const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+        for (const project of projects) {
+          void resolveProjectPodUrl(project.id, {
+            logTag: 'DesktopStartupPrewarm',
+            runtimeManager: getRuntimeManager(),
+          })
+            .then(() => console.log(`[DesktopStartupPrewarm] Project ${project.id} runtime warmed`))
+            .catch((err: any) =>
+              console.warn(`[DesktopStartupPrewarm] Failed to warm project ${project.id}:`, err?.message ?? err),
+            )
+        }
+      }
     } catch (err: any) {
       console.error('[StartupPrewarm] Failed to start workspace prewarm (non-fatal):', err?.message ?? err)
     }
   }, 4000)
 }
 
-// Keep the most recently used desktop project warm before the user clicks it.
-// This is bounded separately from workspace-runtime prewarm so a desktop with
-// many projects does not boot every runtime on launch.
-if (process.env.SHOGO_LOCAL_MODE === 'true' && !isKubernetes()) {
-  setTimeout(async () => {
-    try {
-      const count = Math.max(0, parseInt(process.env.DESKTOP_STARTUP_PREWARM_PROJECTS || '1', 10))
-      if (count === 0) return
-      const projects = await prisma.project.findMany({
-        orderBy: { updatedAt: 'desc' },
-        take: count,
-        select: { id: true },
-      })
-      const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
-      for (const project of projects) {
-        void resolveProjectPodUrl(project.id, {
-          logTag: 'DesktopStartupPrewarm',
-          runtimeManager: getRuntimeManager(),
-        })
-          .then(() => console.log(`[DesktopStartupPrewarm] Project ${project.id} runtime warmed`))
-          .catch((err: any) =>
-            console.warn(`[DesktopStartupPrewarm] Failed to warm project ${project.id}:`, err?.message ?? err),
-          )
-      }
-    } catch (err: any) {
-      console.warn('[DesktopStartupPrewarm] Skipped:', err?.message ?? err)
-    }
-  }, 3500)
-}
-
 // Storage usage recalculation (Kubernetes only, every 6 hours)
 if (isKubernetes()) {
   const STORAGE_RECALC_INTERVAL = 6 * 60 * 60 * 1000
   setTimeout(() => {
-    storageService.recalculateAllStorageUsage().catch((err) =>
+    storageService.recalculateAllStorageUsage().catch((err: any) =>
       console.error('[Storage] Initial recalculation failed:', err.message)
     )
     setInterval(() => {
-      storageService.recalculateAllStorageUsage().catch((err) =>
+      storageService.recalculateAllStorageUsage().catch((err: any) =>
         console.error('[Storage] Periodic recalculation failed:', err.message)
       )
     }, STORAGE_RECALC_INTERVAL)

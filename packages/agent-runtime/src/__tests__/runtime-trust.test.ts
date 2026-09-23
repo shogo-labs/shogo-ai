@@ -20,6 +20,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
 import { tmpdir } from 'os'
 import { join, sep } from 'path'
 
@@ -253,7 +254,7 @@ describe('runtime-trust', () => {
     })
   })
 
-  test('symlink escape: symlink inside workspace pointing to outsideDir is REJECTED', () => {
+  test.skipIf(!SYMLINKS_SUPPORTED)('symlink escape: symlink inside workspace pointing to outsideDir is REJECTED', () => {
     setTrust({ trustLevel: 'trusted' })
     const linkPath = join(workspaceDir, 'escape')
     symlinkSync(outsideDir, linkPath)

@@ -6,6 +6,7 @@ import { existsSync } from 'fs'
 import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
+import { resolveHostTier } from './runtime-memory'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -251,14 +252,13 @@ function readHostRuntimeConfig(): import('./config').HostRuntimeConfig {
     // RAM-aware defaults so limits (and the warm pool) are still applied.
     // Mirrors the DEFAULTs in config.ts (see runtime-memory.ts for why
     // memoryMB isn't a flat 2048MB, and for the warm pool RAM threshold).
-    const { computeDefaultRuntimeMemoryMB, computeDefaultWarmPoolSize } =
+    const { computeDefaultRuntimeMemoryMB } =
       require('./runtime-memory') as typeof import('./runtime-memory')
     const os = require('os') as typeof import('os')
     const totalMemMB = Math.round(os.totalmem() / 1024 / 1024)
     return {
       memoryMB: computeDefaultRuntimeMemoryMB(totalMemMB),
       cpuPercent: 0,
-      warmPoolSize: computeDefaultWarmPoolSize(totalMemMB),
     }
   }
 }
@@ -292,7 +292,7 @@ export async function startLocalServer(): Promise<void> {
   // Ensure runtime-template is available in the workspaces dir for RuntimeManager's fallback
   ensureRuntimeTemplate()
 
-  // Host-runtime resource limits + warm pool config (see apps/desktop/src/config.ts).
+  // Host-runtime resource limits (see apps/desktop/src/config.ts).
   const hostRuntime = readHostRuntimeConfig()
 
   apiPort = await findFreePort()
@@ -301,6 +301,11 @@ export async function startLocalServer(): Promise<void> {
   }
 
   const os = require('os') as typeof import('os')
+  const hostTier = resolveHostTier(
+    process.env,
+    Math.round(os.totalmem() / 1024 / 1024),
+    os.cpus().length,
+  )
   const bunDir = path.dirname(bunPath)
   const pathSep = isWindows ? ';' : ':'
   const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
@@ -310,6 +315,7 @@ export async function startLocalServer(): Promise<void> {
     PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
+    SHOGO_HOST_TIER: hostTier,
     APP_VERSION: app.getVersion(),
     // The desktop app database travels under a Shogo-specific name, NOT the
     // generic `DATABASE_URL` that every user project's Prisma datasource reads.
@@ -381,11 +387,9 @@ export async function startLocalServer(): Promise<void> {
     }),
     SHOGO_DATA_DIR: getDataDir(),
     SHOGO_SHERPA_DIR: path.join(getDataDir(), 'sherpa-onnx'),
-    // Host-mode per-project resource limits (enforced by WorkerRuntimeManager)
-    // and warm-pool sizing (HostWarmPoolController). See config.ts defaults.
+    // Host-mode resource limits (enforced by WorkerRuntimeManager).
     RUNTIME_MEMORY_MB: String(hostRuntime.memoryMB),
     RUNTIME_CPU_PERCENT: String(hostRuntime.cpuPercent),
-    HOST_WARM_POOL_SIZE: String(hostRuntime.warmPoolSize),
   }
 
   // Defense-in-depth for the env-bleed described above: a `DATABASE_URL` (or

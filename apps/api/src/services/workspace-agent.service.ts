@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '../lib/prisma'
 
 export const GOAL_STATUSES = ['active', 'paused', 'done'] as const
@@ -61,34 +60,13 @@ export async function updateAgentProfile(
 }
 
 /**
- * Store an uploaded agent-avatar image and return a durable URL, mirroring
- * `saveThumbnail` in `routes/thumbnail.ts`: same artifact-S3 bucket, same
- * presigned-URL-stored-directly-in-the-column tradeoff (7-day expiry,
- * refreshed whenever the avatar is next changed), same base64 data-URL
- * fallback when S3 isn't reachable. Keyed by workspaceId so re-uploading
- * replaces the previous avatar object instead of accumulating orphans.
+ * Store an uploaded agent-avatar image for local mode. Cloud mode injects the
+ * S3-backed implementation at the route boundary so the local API never
+ * evaluates the AWS SDK.
  */
 export async function saveAgentAvatar(workspaceId: string, imageBuffer: Buffer): Promise<string> {
-  try {
-    const { getArtifactS3Client, getArtifactBucket, buildArtifactKey, getArtifactPresignedReadUrl } =
-      await import('../lib/s3')
-    const bucket = getArtifactBucket()
-    const key = buildArtifactKey('avatars', `${workspaceId}.png`)
-    const s3 = getArtifactS3Client()
-
-    await s3.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: imageBuffer,
-      ContentType: 'image/png',
-      CacheControl: 'max-age=3600',
-    }))
-
-    return await getArtifactPresignedReadUrl(key, { expiresIn: 86400 * 7 })
-  } catch {
-    const base64 = imageBuffer.toString('base64')
-    return `data:image/png;base64,${base64}`
-  }
+  void workspaceId
+  return `data:image/png;base64,${imageBuffer.toString('base64')}`
 }
 
 export async function listGoals(workspaceId: string, status?: GoalStatus) {

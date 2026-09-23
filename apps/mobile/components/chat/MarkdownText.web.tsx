@@ -3,6 +3,7 @@
 import React, { memo } from "react"
 import { Streamdown } from "streamdown"
 import "streamdown/styles.css"
+import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 
 export interface MarkdownTextProps {
   children: string
@@ -29,7 +30,11 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
 
 export const MarkdownText = memo(
   function MarkdownText({ children, className, isStreaming }: MarkdownTextProps) {
-    const cls = className ? `chat-md ${className}` : "chat-md"
+    const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+    const baseClassName = usesMobileWorkspaceChrome
+      ? "chat-md chat-md-mobile"
+      : "chat-md"
+    const cls = className ? `${baseClassName} ${className}` : baseClassName
     return (
       <Streamdown
         className={cls}

@@ -9,7 +9,7 @@
  * Strategy:
  *  - Mock `./prisma` so fetchDueAgents can run the $queryRaw
  *  - Mock `./knative-project-manager.getProjectPodUrl`
- *  - Mock `./runtime-token.deriveRuntimeToken`
+ *  - Mock `./project-runtime-token.deriveProjectRuntimeToken`
  *  - Mock `./warm-pool-self-heal.evictOnSingleMissingAuth`
  *  - Mock global fetch
  *  - Mock OTel meter so counters are observable (we assert on `.add`)
@@ -56,8 +56,8 @@ mock.module('../lib/knative-project-manager', () => ({
 }))
 
 const deriveRuntimeTokenMock = mock((projectId: string) => `rt_v1_${projectId}_TOKEN`)
-mock.module('../lib/runtime-token', () => ({
-  deriveRuntimeToken: deriveRuntimeTokenMock,
+mock.module('../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken: deriveRuntimeTokenMock,
 }))
 
 const evictMock = mock(async (..._args: any[]) => {})

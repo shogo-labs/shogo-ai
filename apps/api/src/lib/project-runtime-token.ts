@@ -4,37 +4,10 @@
  * Resolve the `x-runtime-token` the API must present when calling a
  * *project's* runtime.
  *
- * Two runtime topologies exist, and they authenticate with DIFFERENT
- * token types:
- *
- *   - Legacy single-project runtime → PROJECT token
- *     `rt_v1_<projectId>_…` (`deriveRuntimeToken`).
- *   - Universal workspace runtime (`SHOGO_WORKSPACE_RUNTIME=true`) →
- *     every project is served by a merged-root "unified" runtime whose
- *     `RUNTIME_AUTH_SECRET` is the WORKSPACE token
- *     `wrt_v1_<workspaceId>_…` (`deriveWorkspaceRuntimeToken`, keyed by
- *     the project's `workspaceId`). Sending the project token to it
- *     yields 401 — which is exactly what broke `/agent-proxy/*`
- *     (config, quick-actions, workspace tree/search, chat) once the flag
- *     was enabled locally.
- *
- * This helper centralizes the choice so every API→runtime caller
- * (agent-proxy, project chat, local heartbeat, …) authenticates
- * correctly under whichever topology is active. When the flag is OFF the
- * result is byte-for-byte identical to calling `deriveRuntimeToken`
- * directly, so cloud / non-flag behavior is unchanged.
- *
- * IMPORTANT — the workspace token applies to PROJECT callers in HOST mode
- * only. `resolveProjectPodUrl` (the single source of truth for
- * agent-proxy / project-chat / runtime routes) only reaches a workspace
- * runtime on the host path, where it calls `RuntimeManager.start` — which,
- * under the flag, anchors the project on its merged-root workspace runtime
- * (workspace token). In Kubernetes that same resolver returns a *project*
- * pod (`getProjectPodUrl`) whose `RUNTIME_AUTH_SECRET` is still the PROJECT
- * token, so the workspace token would 401 there. (Workspace-scoped K8s
- * traffic has its own path — `resolve-workspace-runtime-url` +
- * `deriveWorkspaceRuntimeToken` — and never flows through this helper.)
- * Hence the host-mode gate below.
+ * Every project is served by a project-anchored merged-root workspace runtime.
+ * Its `RUNTIME_AUTH_SECRET` is therefore always the workspace token
+ * `wrt_v1_<workspaceId>_…` (`deriveWorkspaceRuntimeToken`), regardless of
+ * whether the runtime is hosted locally, on metal, or in Kubernetes.
  */
 
 import { deriveRuntimeToken } from './runtime-token'
@@ -46,8 +19,6 @@ import { deriveWorkspaceRuntimeToken } from './workspace-runtime-token'
  * doc for why K8s keeps the project token even with the flag on.
  */
 function shouldUseWorkspaceToken(): boolean {
-  if (process.env.SHOGO_WORKSPACE_RUNTIME !== 'true') return false
-  if (process.env.KUBERNETES_SERVICE_HOST) return false
   return true
 }
 
@@ -97,12 +68,9 @@ export async function deriveProjectRuntimeToken(
   if (shouldUseWorkspaceToken()) {
     const workspaceId = opts?.workspaceId ?? (await resolveProjectWorkspaceId(projectId))
     if (workspaceId) return deriveWorkspaceRuntimeToken(workspaceId)
-    // No workspace mapping (project deleted mid-flight, DB hiccup). The
-    // project token will 401 against a workspace runtime, but that's
-    // strictly better than throwing inside a proxy hot path.
-    console.warn(
-      `[ProjectRuntimeToken] SHOGO_WORKSPACE_RUNTIME on but no workspaceId for ${projectId}; ` +
-        `falling back to project token`,
+    throw new Error(
+      `[ProjectRuntimeToken] project ${projectId} has no workspaceId; ` +
+        'workspace runtime authentication cannot be resolved',
     )
   }
   return deriveRuntimeToken(projectId)

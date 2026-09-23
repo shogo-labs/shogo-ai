@@ -10,13 +10,6 @@
  * project set. The k8s/host cascade mirrors `resolveProjectPodUrl`
  * exactly so the two stay in lockstep.
  *
- * ─── Rollout gate ──────────────────────────────────────────────────
- *
- * This resolver is gated behind `SHOGO_WORKSPACE_RUNTIME`: with the flag
- * off it throws `WorkspaceRuntimeNotEnabledError` so the
- * `/api/workspaces/:id/chat` route can return a clean 501 instead of
- * half-booting a single-project runtime.
- *
  * Drivers:
  *   - k8s:  the Knative workspace driver (`knative-workspace-manager.ts`)
  *           is wired as the default `_k8sResolver`. It creates the
@@ -41,15 +34,15 @@ export type ResolvedWorkspacePod =
   | { mode: 'host'; url: string; runtime: IProjectRuntime }
 
 /**
- * Thrown when a workspace runtime is requested but the feature flag
- * (`SHOGO_WORKSPACE_RUNTIME`) is not enabled. Callers should map this
- * to a 501 with a clear "not yet available" message.
+ * Retained as a compatibility export for callers that imported the old
+ * rollout error. Workspace runtimes are now unconditional, so production
+ * code never throws this error.
  */
 export class WorkspaceRuntimeNotEnabledError extends Error {
   constructor(workspaceId: string) {
     super(
-      `Workspace runtime for ${workspaceId} is not enabled. ` +
-        `Set SHOGO_WORKSPACE_RUNTIME=true once the merged-root agent-runtime (Phase 2b) is available.`,
+      `Workspace runtime for ${workspaceId} is unavailable. ` +
+        'The merged-root workspace runtime could not be resolved.',
     )
     this.name = 'WorkspaceRuntimeNotEnabledError'
   }
@@ -82,17 +75,13 @@ export interface ResolveWorkspaceRuntimeOpts {
   /** Correlates a UI open attempt with host runtime boot logs. */
   openAttemptId?: string
 
-  /** Test-only override: is the workspace-runtime feature enabled? */
+  /** @deprecated Workspace runtimes are always enabled. */
   _isEnabled?: () => boolean
-  /**
-   * Internal callers such as Slack have no alternate project-runtime path.
-   * They still use the same resolver, but may explicitly opt into the
-   * workspace runtime without requiring the UI feature flag.
-   */
+  /** @deprecated Retained for source compatibility; ignored. */
   alwaysEnabled?: boolean
-  /** Personal workspaces use the workspace runtime even before the global flag. */
+  /** @deprecated Workspace kind no longer changes runtime selection. */
   workspaceKind?: 'personal' | 'team'
-  /** Test seam for resolving the workspace kind when the feature flag is off. */
+  /** @deprecated Workspace kind is no longer loaded for runtime selection. */
   _loadWorkspaceKind?: (workspaceId: string) => Promise<'personal' | 'team' | null>
   /** Test-only override for the K8s mode probe. */
   _isKubernetes?: () => boolean
@@ -137,10 +126,6 @@ export interface ResolveWorkspaceRuntimeOpts {
    * the lease (single-process, SQLite-backed).
    */
   _spawnLease?: <T>(workspaceId: string, fn: () => Promise<T>) => Promise<T>
-}
-
-function defaultIsEnabled(): boolean {
-  return process.env.SHOGO_WORKSPACE_RUNTIME === 'true'
 }
 
 function defaultIsKubernetes(): boolean {
@@ -202,18 +187,37 @@ async function defaultHostStartProject(
 
 /**
  * Resolve the agent-runtime URL for a workspace, honouring the
- * k8s/host hierarchy. Throws `WorkspaceRuntimeNotEnabledError` when
- * the feature flag is off.
+ * metal/k8s/host hierarchy. Workspace runtimes are unconditional; the
+ * The former workspace rollout gate has been retired.
  */
 export async function resolveWorkspaceRuntimeUrl(
   workspaceId: string,
   opts: ResolveWorkspaceRuntimeOpts,
 ): Promise<ResolvedWorkspacePod> {
   const tag = opts.logTag ?? 'WorkspaceRuntime'
-  const isEnabled = opts._isEnabled ?? defaultIsEnabled
   const isKubernetes = opts._isKubernetes ?? defaultIsKubernetes
   const isMetalEnabled = opts._isMetalEnabled ?? defaultIsMetalEnabled
-  const attachedProjectIds = opts.attachedProjectIds ?? []
+  // The anchor project is always a member of its own merged-root workspace —
+  // it owns the root path, so its guest-side PreviewManager can only ever
+  // come up if the runtime's member list includes it. `startProjectWorkspace`
+  // (host mode) already defensively prepends the anchor for this reason, but
+  // the metal and k8s branches below previously forwarded `opts.attachedProjectIds`
+  // verbatim, which only lists the anchor's OTHER attachments (see
+  // `resolveAnchorSpawnOpts` in runtime/manager.ts — it never includes the
+  // anchor itself). That left every anchor project with no OTHER attachments
+  // — i.e. every project in an otherwise-empty workspace, which is the common
+  // case — booting a workspace runtime whose guest never recognizes the
+  // anchor as an attached member, so `getWorkspacePreviewManager()` on the
+  // guest returns null and the preview never starts, permanently stuck on
+  // the "Project Ready" placeholder (staging incident, 2026-09-22, project
+  // a0bea431-... and its 27 workspace siblings). Computing the deduped
+  // member list once, here, fixes metal + k8s uniformly and makes the
+  // host branch's own prepend a harmless no-op.
+  const attachedProjectIds = opts.anchorProjectId
+    ? [opts.anchorProjectId, ...(opts.attachedProjectIds ?? [])].filter(
+        (id, i, arr) => !!id && arr.indexOf(id) === i,
+      )
+    : opts.attachedProjectIds ?? []
   // Cloud branches serialize spawns across replicas with an advisory lease.
   const spawnLease =
     opts._spawnLease ?? (<T>(id: string, fn: () => Promise<T>) => withWorkspaceSpawnLease(id, fn, { logTag: tag }))
@@ -221,22 +225,6 @@ export async function resolveWorkspaceRuntimeUrl(
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
   }
-  let workspaceKind = opts.workspaceKind
-  if (!opts.alwaysEnabled && !workspaceKind && !isEnabled()) {
-    try {
-      const loadKind = opts._loadWorkspaceKind ?? (async (id: string) => {
-        const { getWorkspaceKind } = await import('../services/workspace.service')
-        return getWorkspaceKind(id)
-      })
-      workspaceKind = (await loadKind(workspaceId)) ?? 'team'
-    } catch {
-      workspaceKind = 'team'
-    }
-  }
-  if (!opts.alwaysEnabled && workspaceKind !== 'personal' && !isEnabled()) {
-    throw new WorkspaceRuntimeNotEnabledError(workspaceId)
-  }
-
   // Metal takes precedence over the k8s (Knative) branch: in metal regions the
   // API pod runs IN Kubernetes, so a workspace runtime must resolve to a
   // merged-root microVM rather than creating a Knative Service.
@@ -254,7 +242,9 @@ export async function resolveWorkspaceRuntimeUrl(
         ids: string[],
         resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
       ) => {
-        const { getMetalWarmPoolController } = await import('./metal-warm-pool-controller')
+        const { getMetalWarmPoolController } = await import(
+          new URL('./metal-warm-pool-controller.ts', import.meta.url).href
+        )
         return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
       })
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
@@ -280,7 +270,7 @@ export async function resolveWorkspaceRuntimeUrl(
     // resolution, mirroring resolve-pod-url.ts.
     const resolver =
       opts._k8sResolver ??
-      (await import('./knative-workspace-manager')).getWorkspacePodUrl
+      (await import(new URL('./knative-workspace-manager.ts', import.meta.url).href)).getWorkspacePodUrl
     // Serialize across replicas: only one builds the workspace KSvc; others
     // wait and re-resolve via the same resolver (which short-circuits on an
     // existing service). Anchored runtimes lease on the anchor id so two

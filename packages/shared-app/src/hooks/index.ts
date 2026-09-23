@@ -73,8 +73,10 @@ export {
 } from './useGitGraph'
 export {
   workspaceExperience,
+  CANVAS_NAV_HIDDEN,
   type WorkspaceExperience,
   type WorkspaceExperienceKind,
   type WorkspaceExperienceComposer,
   type BottomTabId,
+  type PrimaryNavId,
 } from './useWorkspaceExperience'

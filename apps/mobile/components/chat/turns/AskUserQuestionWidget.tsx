@@ -8,7 +8,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
-import { View, Text, TextInput, Pressable, Animated, ScrollView } from "react-native"
+import { View, Text, TextInput, Pressable, Animated, ScrollView, Image } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   CheckCircle2,
@@ -25,6 +25,7 @@ import {
 } from "../tools/types"
 import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { useChatContextSafe } from "../ChatContext"
 
 export interface AskUserQuestionWidgetProps {
   tool: ToolCallData
@@ -146,6 +147,7 @@ function OptionRow({
   letter,
   label,
   description,
+  imageUrl,
   isSelected,
   isMultiSelect,
   onSelect,
@@ -154,11 +156,15 @@ function OptionRow({
   letter: string
   label: string
   description: string
+  /** Resolved thumbnail URL (already built from chatContext.agentUrl + imagePath), if any. */
+  imageUrl?: string | null
   isSelected: boolean
   isMultiSelect: boolean
   onSelect: () => void
   disabled?: boolean
 }) {
+  const [imageFailed, setImageFailed] = useState(false)
+
   return (
     <Pressable
       onPress={onSelect}
@@ -190,6 +196,16 @@ function OptionRow({
             {letter}
           </Text>
         </View>
+
+        {imageUrl && !imageFailed ? (
+          <Image
+            source={{ uri: imageUrl }}
+            className="w-12 h-12 rounded-md border border-border/50"
+            resizeMode="cover"
+            accessibilityLabel={`Preview for option: ${label}`}
+            onError={() => setImageFailed(true)}
+          />
+        ) : null}
 
         <View className="flex-1">
           {label !== description && label.length <= 32 ? (
@@ -273,6 +289,16 @@ export function AskUserQuestionWidget({
 }: AskUserQuestionWidgetProps) {
   const questions = useMemo(() => parseQuestions(tool.args), [tool.args])
   const isSheet = presentation === "sheet"
+  // For options that carry an `imagePath` (e.g. picking between generated
+  // avatar candidates) — resolved the same way as GenerateImageWidget.
+  const chatContext = useChatContextSafe()
+  const resolveOptionImageUrl = useCallback(
+    (imagePath?: string) => {
+      if (!imagePath || !chatContext?.agentUrl) return null
+      return `${chatContext.agentUrl}/agent/workspace/download/${imagePath}`
+    },
+    [chatContext?.agentUrl],
+  )
 
   // Treat both `undefined` (live stream: gateway suppresses tool-output-available)
   // and `null` (legacy persisted parts that wrote `output: null`) as "not yet
@@ -579,6 +605,7 @@ export function AskUserQuestionWidget({
             letter={letterForIndex(optionIndex)}
             label={option.label}
             description={option.description}
+            imageUrl={resolveOptionImageUrl(option.imagePath)}
             isSelected={isSelected}
             isMultiSelect={currentQuestion.multiSelect ?? false}
             onSelect={() =>
@@ -802,7 +829,7 @@ export interface AskUserQuestionBarProps {
 
 /**
  * Collapsed in-stream placeholder for a pending ask_user call. Styled like the
- * unexpanded TodoWidget header. The interactive answer UI lives attached above
+ * unexpanded task-row header. The interactive answer UI lives attached above
  * the chat input; tapping this bar scrolls there via `onPress`.
  */
 export function AskUserQuestionBar({

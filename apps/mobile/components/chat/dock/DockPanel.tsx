@@ -8,7 +8,7 @@
  * Body content mounts/unmounts with `expanded` rather than animating a
  * measured height — matching the majority of the codebase's existing
  * collapsible cards (`ProcessPanel`, `SubagentPanel`, `PlanCard`,
- * `TodoWidget`), and critically, this is what lets a panel like the live
+ * task row), and critically, this is what lets a panel like the live
  * browser viewport actually suspend its subscription while collapsed:
  * unmounting is the suspend.
  *

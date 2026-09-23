@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 import { RuntimeManager, projectWorkspaceRuntimeKey } from '../lib/runtime/manager'
-
-const prevFlag = process.env.SHOGO_WORKSPACE_RUNTIME
-
-beforeEach(() => {
-  process.env.SHOGO_WORKSPACE_RUNTIME = 'true'
-})
-
-afterEach(() => {
-  if (prevFlag === undefined) delete process.env.SHOGO_WORKSPACE_RUNTIME
-  else process.env.SHOGO_WORKSPACE_RUNTIME = prevFlag
-})
 
 function fakeProcess() {
   const proc = {
@@ -86,9 +75,9 @@ describe('RuntimeManager — workspace ws:proj: keying', () => {
     expect(rm.workspacePreviewMru[0]).toBe(key)
   })
 
-  test('resolveRuntimeKey falls back to the bare key when no anchored runtime exists', () => {
+  test('resolveRuntimeKey always uses the anchored key', () => {
     const rm = newManager()
-    expect(rm.resolveRuntimeKey('nope')).toBe('nope')
+    expect(rm.resolveRuntimeKey('nope')).toBe('ws:proj:nope')
   })
 })
 

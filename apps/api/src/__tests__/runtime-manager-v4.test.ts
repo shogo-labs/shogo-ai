@@ -263,7 +263,7 @@ describe('RuntimeManager.touch (uncov edge cases)', () => {
     const calls: string[] = []
     rm.agentManager.touch = (id: string) => calls.push(id)
     ;(rm as unknown as { touch: (id: string) => void }).touch('proj-1')
-    expect(calls).toEqual(['proj-1'])
+    expect(calls).toEqual(['ws:proj:proj-1'])
   })
 })
 
@@ -293,7 +293,7 @@ describe('RuntimeManager.restart (uncov branches)', () => {
       start: (id: string) => Promise<unknown>
       restart: (id: string) => Promise<unknown>
     }
-    rm.runtimes.set('p', { status: 'stopped' })
+    rm.runtimes.set('ws:proj:p', { status: 'stopped' })
     let stopCalled = false
     rm.stop = async () => {
       stopCalled = true
@@ -311,7 +311,7 @@ describe('RuntimeManager.restart (uncov branches)', () => {
       start: (id: string) => Promise<unknown>
       restart: (id: string) => Promise<unknown>
     }
-    rm.runtimes.set('p', { status: 'running' })
+    rm.runtimes.set('ws:proj:p', { status: 'running' })
     const order: string[] = []
     rm.stop = async () => {
       order.push('stop')
@@ -388,8 +388,8 @@ describe('RuntimeManager.getHealth (uncov branches)', () => {
       runtimes: Map<string, unknown>
       getHealth: (id: string) => Promise<{ healthy: boolean; error?: string }>
     }
-    rm.runtimes.set('p', {
-      id: 'p',
+    rm.runtimes.set('ws:proj:p', {
+      id: 'ws:proj:p',
       port: 37123,
       agentPort: 38123,
       status: 'running',
@@ -413,8 +413,8 @@ describe('RuntimeManager.getHealth (uncov branches)', () => {
       runtimes: Map<string, unknown>
       getHealth: (id: string) => Promise<{ healthy: boolean }>
     }
-    rm.runtimes.set('p', {
-      id: 'p',
+    rm.runtimes.set('ws:proj:p', {
+      id: 'ws:proj:p',
       port: 37123,
       agentPort: 38123,
       status: 'running',
