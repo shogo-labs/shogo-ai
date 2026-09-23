@@ -11,8 +11,13 @@ export type AgentModelEnv = {
 type CloudResolver = (workspaceId?: string) => Promise<AgentModelEnv>
 let cloudResolver: CloudResolver | null = null
 if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-  const cloud = await import(new URL('./agent-model-defaults.ts', import.meta.url).href)
+  const cloud = await import('./agent-model-defaults')
   cloudResolver = cloud.resolveAgentModelEnv
+}
+
+/** An explicit local LLM is authoritative — never override it with cloud ids. */
+function hasLocalLlmOverride(): boolean {
+  return Boolean(process.env.LOCAL_LLM_BASE_URL && process.env.LOCAL_LLM_BASIC_MODEL?.trim())
 }
 
 function localModelEnv(): AgentModelEnv {
@@ -34,6 +39,45 @@ function localModelEnv(): AgentModelEnv {
   }
 }
 
+/**
+ * Local mode still has a cloud account on cloud-proxy desktop installs, and
+ * that account is authoritative for Auto tier models.
+ *
+ * `fetchCloudAgentModelDefaults()` is itself local-mode-only (`if (!isLocalMode())
+ * return null`), so it cannot live behind the `cloudResolver` branch above —
+ * that branch only runs when we are NOT in local mode, which made the two
+ * conditions mutually exclusive and left desktop pinned to the hardcoded
+ * `localModelEnv()` id for every tier.
+ *
+ * `lib/federated-upstream` imports only `prisma` + `cloud-urls`, so pulling it
+ * in keeps the slim local bundle guardrail in `scripts/check-api-local-bundle.ts`
+ * intact (`agent-model-defaults.ts` stays out — it reaches Stripe via
+ * `billing.service`).
+ */
+async function cloudConfiguredModelEnv(): Promise<AgentModelEnv | null> {
+  try {
+    const { fetchCloudAgentModelDefaults } = await import('../federated-upstream')
+    const defaults = await fetchCloudAgentModelDefaults()
+    if (!defaults?.basic || !defaults.advanced || !defaults.autoTiers) return null
+    const { economy, standard, premium } = defaults.autoTiers
+    if (!economy?.id || !standard?.id || !premium?.id) return null
+    return {
+      AGENT_BASIC_MODEL: defaults.basic,
+      AGENT_ADVANCED_MODEL: defaults.advanced,
+      AGENT_AUTO_TIER_MAP: JSON.stringify({ economy, standard, premium }),
+      ...(defaults.deepseekModelIds?.length
+        ? { AGENT_DEEPSEEK_MODEL_IDS: defaults.deepseekModelIds.join(',') }
+        : {}),
+    }
+  } catch {
+    // Cloud unreachable / not signed in — fall back to the static local env
+    // rather than blocking runtime startup.
+    return null
+  }
+}
+
 export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<AgentModelEnv> {
-  return cloudResolver?.(workspaceId) ?? localModelEnv()
+  if (cloudResolver) return cloudResolver(workspaceId)
+  if (hasLocalLlmOverride()) return localModelEnv()
+  return (await cloudConfiguredModelEnv()) ?? localModelEnv()
 }
