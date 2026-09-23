@@ -17,6 +17,7 @@ let PLATFORM_SETTINGS: Record<string, string> = {}
 let MODEL_DEFS: any[] = []
 let CONFIGURED_PROVIDERS = new Set<string>()
 let ALLOWED_IDS: Set<string> | null = null
+let CLOUD_CATALOG_MODELS: any[] | null = null
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
@@ -39,9 +40,10 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
-// No connected cloud in these tests — always resolve locally.
+// No connected cloud by default in these tests — always resolve locally.
+// Tests that need cloud-proxy mode set `CLOUD_CATALOG_MODELS` directly.
 mock.module('../../lib/federated-upstream', () => ({
-  fetchCloudVisibleModels: async () => null,
+  fetchCloudVisibleModels: async () => (CLOUD_CATALOG_MODELS ? { catalogModels: CLOUD_CATALOG_MODELS } : null),
 }))
 
 mock.module('../provider-credentials.service', () => ({
@@ -103,6 +105,7 @@ beforeEach(async () => {
   MODEL_DEFS = []
   CONFIGURED_PROVIDERS = new Set(['anthropic', 'openai'])
   ALLOWED_IDS = null
+  CLOUD_CATALOG_MODELS = null
   await primeModelRegistry()
 })
 
@@ -162,6 +165,58 @@ describe('resolveVisibleCatalogModels — DB-managed picker', () => {
 
     const models = await resolveVisibleCatalogModels(['db-model-a', 'claude-opus-5', 'does-not-exist'])
     expect(models.map((m) => m.id)).toEqual(['db-model-a', 'claude-opus-5'])
+  })
+})
+
+describe('resolveVisibleCatalogModels — cloud-proxy mode (mirrored catalog)', () => {
+  // Regression test for the 2026-09-23 desktop app report: a cloud-connected
+  // local instance with an empty local DB showed Astra / Fable 5.1 / Sonnet 5
+  // TWICE in the picker. Root cause: an empty local DB (`dbEntries.length ===
+  // 0`) fell back to `getMergedCatalogSync()`, which mixes the slug-keyed
+  // static MODEL_CATALOG with the UUID-keyed cloud-mirrored rows — so any
+  // model present in both (same conceptual model, two different ids) rendered
+  // as two picker rows.
+  const CLOUD_ASTRA_UUID = 'aaaaaaaa-0000-0000-0000-000000000001'
+
+  test('an empty local DB + a cloud mirror does not duplicate a model that also exists in the static catalog', async () => {
+    CLOUD_CATALOG_MODELS = [
+      {
+        id: CLOUD_ASTRA_UUID,
+        provider: 'openai',
+        displayName: 'GPT-6 Astra',
+        shortDisplayName: 'Astra',
+        tier: 'premium',
+        family: 'gpt',
+        maxOutputTokens: 128000,
+      },
+    ]
+    await primeModelRegistry() // MODEL_DEFS is [] (empty local DB) per beforeEach
+
+    const models = await resolveVisibleCatalogModels(null)
+    const astraRows = models.filter((m) => m.displayName === 'GPT-6 Astra')
+
+    expect(astraRows).toHaveLength(1)
+    expect(astraRows[0]!.id).toBe(CLOUD_ASTRA_UUID)
+    // The static catalog's own slug id must not also survive alongside it.
+    expect(models.map((m) => m.id)).not.toContain('gpt-6-astra')
+  })
+
+  test('a cloud-only model not in the static catalog still resolves normally', async () => {
+    CLOUD_CATALOG_MODELS = [
+      {
+        id: 'cloud-only-uuid',
+        provider: 'custom',
+        displayName: 'Cloud Custom Model',
+        shortDisplayName: 'Custom',
+        tier: 'standard',
+        family: 'other',
+        maxOutputTokens: 8192,
+      },
+    ]
+    await primeModelRegistry()
+
+    const models = await resolveVisibleCatalogModels(null)
+    expect(models.map((m) => m.id)).toEqual(['cloud-only-uuid'])
   })
 })
 
