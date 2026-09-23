@@ -133,9 +133,13 @@ const server = Bun.serve({
       }
 
       if (path === '/assign' && req.method === 'POST') {
-        const { projectId, workspaceId, attachedProjectIds, env } = await json(req)
+        const { projectId, workspaceId, attachedProjectIds, anchorProjectId, env } = await json(req)
         if (!projectId && !workspaceId) return Response.json({ error: 'projectId or workspaceId required' }, { status: 400 })
-        const runtimeKey = workspaceId ? `ws:${workspaceId}` : projectId
+        // An anchored project preview must receive its own merged-root VM.
+        // A workspace-only key is reserved for workspace-session runtimes.
+        const runtimeKey = workspaceId
+          ? (anchorProjectId ? `ws:proj:${anchorProjectId}` : `ws:${workspaceId}`)
+          : projectId
         // Resume-or-assign under one singleflight key (no double cold-boot on a
         // concurrent burst). A stale/cold miss falls through to a fresh assign.
         const r = await pool.open(runtimeKey, env ?? {}, workspaceId ? { workspaceId, attachedProjectIds } : undefined)
