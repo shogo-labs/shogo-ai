@@ -60,6 +60,13 @@ mock.module('expo-haptics', () => ({
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
   NotificationFeedbackType: { Success: 'success', Warning: 'warning', Error: 'error' },
 }))
+// `expo-blur` resolves its native view through `expo-modules-core`, which is
+// intentionally unavailable in the happy-dom test environment. Use the
+// existing host-view shim so iOS-specific tests can render components that
+// contain the backdrop without pulling in native view managers.
+mock.module('expo-blur', () => ({
+  BlurView: reactNativeMockBase.View,
+}))
 mock.module('expo-secure-store', () => ({
   getItemAsync: () => Promise.resolve(null),
   setItemAsync: () => Promise.resolve(),

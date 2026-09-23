@@ -4,22 +4,16 @@
 import {
   Platform,
   StyleSheet,
+  useColorScheme,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import {
-  GlassView,
-  isGlassEffectAPIAvailable,
-  isLiquidGlassAvailable,
-} from "expo-glass-effect";
+import { BlurView } from "expo-blur";
 
 export function supportsLiquidGlass(): boolean {
-  if (Platform.OS !== "ios") return false;
-  try {
-    return isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
-  } catch {
-    return false;
-  }
+  // Keep the existing iOS-only presentation; Android and web retain their
+  // opaque fallback chrome instead of taking on a new visual treatment.
+  return Platform.OS === "ios";
 }
 
 export function LiquidGlassBackdrop({
@@ -29,14 +23,19 @@ export function LiquidGlassBackdrop({
   style?: StyleProp<ViewStyle>;
   tintColor?: string;
 }) {
+  const colorScheme = useColorScheme();
   if (!supportsLiquidGlass()) return null;
 
   return (
-    <GlassView
+    <BlurView
       pointerEvents="none"
-      glassEffectStyle="regular"
-      tintColor={tintColor}
-      style={[StyleSheet.absoluteFill, style]}
+      intensity={75}
+      tint={colorScheme === "dark" ? "dark" : "light"}
+      style={[
+        StyleSheet.absoluteFill,
+        tintColor ? { backgroundColor: tintColor } : undefined,
+        style,
+      ]}
     />
   );
 }
