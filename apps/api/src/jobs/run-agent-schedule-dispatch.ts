@@ -18,10 +18,46 @@ import { nextAgentScheduleRun } from '../services/agent-schedule.service'
 type RuntimeManager = Parameters<typeof workspaceChatRoutes>[0]['runtimeManager']
 
 const SCHEDULE_DISPATCH_INTERVAL_MS = 30_000
+const SCHEDULE_DISPATCH_JITTER_MS = 5_000
 const SCHEDULE_BATCH_SIZE = 25
-const SCHEDULE_STALE_AFTER_MS = 30 * 60_000
+/** A live run refreshes runningAt this often; see `startScheduleLease`. */
+const SCHEDULE_HEARTBEAT_INTERVAL_MS = 60_000
+/** Several missed heartbeats means the owning API process died. */
+const SCHEDULE_STALE_AFTER_MS = 5 * 60_000
+/** Must stay below CHAT_UPSTREAM_FETCH_TIMEOUT_MS (4h by default). */
+const SCHEDULE_MAX_RUN_MS = 2 * 60 * 60_000
+const MAX_CONSECUTIVE_SCHEDULE_FAILURES = 5
+const MAX_CONCURRENT_SCHEDULE_RUNS = 10
 
-async function consumeResponse(response: Response): Promise<void> {
+const inFlightRuns = new Set<Promise<void>>()
+
+class ScheduleRunError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: 'failed' | 'forbidden' | 'timed_out',
+    public readonly status?: number,
+  ) {
+    super(message)
+    this.name = 'ScheduleRunError'
+  }
+}
+
+function abortError(signal: AbortSignal): ScheduleRunError {
+  return signal.reason instanceof ScheduleRunError
+    ? signal.reason
+    : new ScheduleRunError('The scheduled run was aborted', 'failed')
+}
+
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError(signal))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
+}
+
+async function consumeResponse(response: Response, signal: AbortSignal): Promise<void> {
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     let message = body || `Scheduled agent request failed with HTTP ${response.status}`
@@ -31,17 +67,66 @@ async function consumeResponse(response: Response): Promise<void> {
     } catch {
       // Keep the raw response when it is not JSON.
     }
-    throw new Error(message)
+    const forbidden = response.status === 401 || response.status === 403
+    throw new ScheduleRunError(message, forbidden ? 'forbidden' : 'failed', response.status)
   }
   if (!response.body) return
   const reader = response.body.getReader()
+  const cancel = () => void reader.cancel(signal.reason).catch(() => {})
+  signal.addEventListener('abort', cancel, { once: true })
   try {
     while (true) {
-      const next = await reader.read()
+      const next = await untilAborted(reader.read(), signal)
       if (next.done) break
     }
   } finally {
+    signal.removeEventListener('abort', cancel)
     reader.releaseLock()
+  }
+}
+
+/**
+ * Hold the claim on a schedule while its run is in flight. `runningAt` is
+ * the lease token: every heartbeat swaps it for a fresh timestamp only if it
+ * still matches the value this run holds, so a reclaimed or deleted schedule
+ * is detected instead of overwritten. `release` returns the current token for
+ * the final conditional write.
+ */
+function startScheduleLease(scheduleId: string, runningAt: Date, onLost: () => void) {
+  let current = runningAt
+  let lost = false
+  let pending: Promise<void> = Promise.resolve()
+  const timer = setInterval(() => {
+    pending = pending
+      .then(async () => {
+        if (lost) return
+        const next = new Date()
+        const renewed = await prisma.agentSchedule.updateMany({
+          where: { id: scheduleId, runningAt: current },
+          data: { runningAt: next },
+        })
+        if (renewed.count > 0) {
+          current = next
+        } else {
+          lost = true
+          onLost()
+        }
+      })
+      .catch((error) => {
+        console.error(`[AgentSchedule] Failed to heartbeat ${scheduleId}:`, error)
+      })
+  }, SCHEDULE_HEARTBEAT_INTERVAL_MS)
+  ;(timer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
+
+  return {
+    get lost() {
+      return lost
+    },
+    async release(): Promise<Date> {
+      clearInterval(timer)
+      await pending
+      return current
+    },
   }
 }
 
@@ -89,6 +174,38 @@ async function latestAssistantSummary(sessionId: string, after: Date): Promise<s
   return message?.content?.trim() || null
 }
 
+function failureUpdate(
+  schedule: { consecutiveFailures: number },
+  error: unknown,
+): Record<string, unknown> {
+  const runError =
+    error instanceof ScheduleRunError
+      ? error
+      : new ScheduleRunError(error instanceof Error ? error.message : String(error), 'failed')
+  const failures = schedule.consecutiveFailures + 1
+  const base = {
+    lastRunStatus: runError.kind === 'timed_out' ? 'timed_out' : 'failed',
+    lastRunSummary: null,
+    consecutiveFailures: failures,
+    runningAt: null,
+  }
+  if (runError.kind === 'forbidden') {
+    return {
+      ...base,
+      enabled: false,
+      lastError: `Disabled: the schedule's creator can no longer run it in this workspace (HTTP ${runError.status}). ${runError.message}`.slice(0, 2_000),
+    }
+  }
+  if (failures >= MAX_CONSECUTIVE_SCHEDULE_FAILURES) {
+    return {
+      ...base,
+      enabled: false,
+      lastError: `Disabled after ${failures} consecutive failed runs. Last error: ${runError.message}`.slice(0, 2_000),
+    }
+  }
+  return { ...base, lastError: runError.message.slice(0, 2_000) }
+}
+
 async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeManager): Promise<void> {
   const schedule = await prisma.agentSchedule.findUnique({
     where: { id: scheduleId },
@@ -96,20 +213,33 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
   })
   if (!schedule || !schedule.enabled || !schedule.runningAt) return
 
-  try {
-    if (schedule.goal && schedule.goal.status !== 'active') {
-      await prisma.agentSchedule.updateMany({
-        where: { id: schedule.id, runningAt: schedule.runningAt },
-        data: {
-          lastRunStatus: 'skipped',
-          lastRunSummary: `Skipped because goal "${schedule.goal.title}" is ${schedule.goal.status}.`,
-          lastError: null,
-          runningAt: null,
-        },
-      })
-      return
-    }
+  if (schedule.goal && schedule.goal.status !== 'active') {
+    await prisma.agentSchedule.updateMany({
+      where: { id: schedule.id, runningAt: schedule.runningAt },
+      data: {
+        lastRunStatus: 'skipped',
+        lastRunSummary: `Skipped because goal "${schedule.goal.title}" is ${schedule.goal.status}.`,
+        lastError: null,
+        runningAt: null,
+      },
+    })
+    return
+  }
 
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    controller.abort(new ScheduleRunError(
+      `Timed out after ${Math.round(SCHEDULE_MAX_RUN_MS / 60_000)} minutes`,
+      'timed_out',
+    ))
+  }, SCHEDULE_MAX_RUN_MS)
+  ;(timeout as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
+  const lease = startScheduleLease(schedule.id, schedule.runningAt, () => {
+    controller.abort(new ScheduleRunError('The schedule was reclaimed or deleted during the run', 'failed'))
+  })
+
+  let outcome: Record<string, unknown>
+  try {
     const sessionId = await ensureScheduleChatSession(schedule)
     const startedAt = new Date()
     const goalInstruction = schedule.goal
@@ -130,9 +260,10 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
       alwaysEnabled: true,
       resolveUserId: async (c) => c.req.header('X-Schedule-User-Id') || null,
     })
-    const response = await router.fetch(
+    const response = await untilAborted(Promise.resolve(router.fetch(
       new Request(`http://internal/workspaces/${encodeURIComponent(schedule.workspaceId)}/chat`, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           'X-Schedule-User-Id': schedule.userId,
@@ -148,34 +279,53 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
           clientTurnId: `agent-schedule-${schedule.id}-${crypto.randomUUID()}`,
         }),
       }),
-    )
-    await consumeResponse(response)
+    )), controller.signal)
+    await consumeResponse(response, controller.signal)
 
     const summary = await latestAssistantSummary(sessionId, startedAt)
-    await prisma.agentSchedule.updateMany({
-      where: { id: schedule.id, runningAt: schedule.runningAt },
-      data: {
-        lastRunStatus: 'ok',
-        lastRunSummary: summary?.slice(0, 8_000) || 'The scheduled run completed.',
-        lastError: null,
-        runningAt: null,
-      },
-    })
+    outcome = {
+      lastRunStatus: 'ok',
+      lastRunSummary: summary?.slice(0, 8_000) || 'The scheduled run completed.',
+      lastError: null,
+      consecutiveFailures: 0,
+      runningAt: null,
+    }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    await prisma.agentSchedule.updateMany({
-      where: { id: schedule.id, runningAt: schedule.runningAt },
-      data: {
-        lastRunStatus: 'failed',
-        lastRunSummary: null,
-        lastError: message.slice(0, 2_000),
-        runningAt: null,
-      },
-    }).catch((updateError) => {
-      console.error(`[AgentSchedule] Failed to persist failure for ${schedule.id}:`, updateError)
+    outcome = failureUpdate(schedule, error)
+    console.error(`[AgentSchedule] ${schedule.id} ${outcome.lastRunStatus}:`, {
+      workspaceId: schedule.workspaceId,
+      consecutiveFailures: outcome.consecutiveFailures,
+      disabled: outcome.enabled === false,
+      error: error instanceof Error ? error.message : String(error),
     })
-    console.error(`[AgentSchedule] ${schedule.id} failed:`, message)
+  } finally {
+    clearTimeout(timeout)
   }
+
+  const runningAt = await lease.release()
+  if (lease.lost) return
+  await prisma.agentSchedule.updateMany({
+    where: { id: schedule.id, runningAt },
+    data: outcome,
+  }).catch((updateError) => {
+    console.error(`[AgentSchedule] Failed to persist run result for ${schedule.id}:`, updateError)
+  })
+}
+
+function trackRun(run: Promise<void>): void {
+  const tracked = run
+    .catch((error) => {
+      console.error('[AgentSchedule] Run crashed:', error)
+    })
+    .finally(() => {
+      inFlightRuns.delete(tracked)
+    })
+  inFlightRuns.add(tracked)
+}
+
+/** Resolves once every run started by this process has finished. */
+export async function waitForAgentScheduleRuns(): Promise<void> {
+  while (inFlightRuns.size > 0) await Promise.all([...inFlightRuns])
 }
 
 export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Promise<void> {
@@ -184,18 +334,25 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
   const homeFilter = homeRegionWorkspaceWhere()
   const workspaceFilter = homeFilter ? { workspace: homeFilter } : {}
 
+  const capacity = MAX_CONCURRENT_SCHEDULE_RUNS - inFlightRuns.size
+  if (capacity <= 0) return
+
   const due = await prisma.agentSchedule.findMany({
     where: {
       enabled: true,
       nextRunAt: { lte: now },
-      OR: [{ runningAt: null }, { runningAt: { lt: staleBefore } }],
+      AND: [
+        { OR: [{ runningAt: null }, { runningAt: { lt: staleBefore } }] },
+        { OR: [{ goalId: null }, { goal: { status: 'active' } }] },
+      ],
       ...workspaceFilter,
     },
     orderBy: [{ nextRunAt: 'asc' }, { createdAt: 'asc' }],
-    take: SCHEDULE_BATCH_SIZE,
+    take: Math.min(SCHEDULE_BATCH_SIZE, capacity),
   })
 
   for (const schedule of due) {
+    if (inFlightRuns.size >= MAX_CONCURRENT_SCHEDULE_RUNS) break
     let nextRunAt: Date
     try {
       nextRunAt = nextAgentScheduleRun(schedule.cronExpression, schedule.timezone, now)
@@ -206,7 +363,7 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
         data: {
           enabled: false,
           lastRunStatus: 'failed',
-          lastError: `Invalid stored schedule: ${message}`.slice(0, 2_000),
+          lastError: `Disabled: the stored cron expression or timezone is invalid. ${message}`.slice(0, 2_000),
           runningAt: null,
         },
       })
@@ -228,7 +385,7 @@ export async function dispatchDueSchedules(runtimeManager?: RuntimeManager): Pro
         runningAt: now,
       },
     })
-    if (claimed.count > 0) void runAgentSchedule(schedule.id, runtimeManager)
+    if (claimed.count > 0) trackRun(runAgentSchedule(schedule.id, runtimeManager))
   }
 }
 
@@ -241,10 +398,14 @@ export async function runAgentScheduleDispatch(runtimeManager?: RuntimeManager):
 export function startAgentScheduleWorker(runtimeManager?: RuntimeManager): () => void {
   if (scheduleDispatcherTimer) return stopAgentScheduleWorker
 
+  // Jitter each tick so replicas started together don't race every claim.
   const tick = () => {
-    void runAgentScheduleDispatch(runtimeManager).catch((error) => {
-      console.error('[AgentSchedule] Dispatcher tick failed:', error)
-    })
+    const jitter = setTimeout(() => {
+      void runAgentScheduleDispatch(runtimeManager).catch((error) => {
+        console.error('[AgentSchedule] Dispatcher tick failed:', error)
+      })
+    }, Math.random() * SCHEDULE_DISPATCH_JITTER_MS)
+    ;(jitter as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
   }
   tick()
   scheduleDispatcherTimer = setInterval(tick, SCHEDULE_DISPATCH_INTERVAL_MS)

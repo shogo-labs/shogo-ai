@@ -137,7 +137,7 @@ export async function updateGoal(
   })
   if (!existing) return null
 
-  return prisma.goal.update({
+  const goal = await prisma.goal.update({
     where: { id: goalId },
     data: {
       ...changes,
@@ -145,6 +145,13 @@ export async function updateGoal(
       deliverables: changes.deliverables === undefined ? undefined : (changes.deliverables as any),
     },
   })
+  if (changes.status === 'done') {
+    await prisma.agentSchedule.updateMany({
+      where: { goalId, enabled: true },
+      data: { enabled: false, lastError: 'Disabled because the goal was marked done.' },
+    })
+  }
+  return goal
 }
 
 export async function listGoalEvents(workspaceId: string, goalId: string) {
