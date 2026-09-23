@@ -3,7 +3,15 @@
 import crypto from 'node:crypto'
 import { auth } from '../auth'
 import { prisma } from './prisma'
-import { createPaidWorkspace, createPersonalWorkspace, getUserOwnedWorkspaceCount } from '../services/workspace.service'
+import {
+  createPaidWorkspace,
+  createPersonalWorkspace,
+  defaultTeamWorkspaceName,
+  getUserOwnedWorkspaceCount,
+} from '../services/workspace.service'
+
+/** Name given to the seeded local user until onboarding asks for a real one. */
+const PLACEHOLDER_LOCAL_USER_NAME = 'Local User'
 
 /** Restore persisted provider settings and seed the single local user. */
 export async function bootstrapLocalDatabase(): Promise<void> {
@@ -38,7 +46,7 @@ export async function bootstrapLocalDatabase(): Promise<void> {
       const password = crypto.randomBytes(24).toString('base64')
       const response = await auth.api.signUpEmail({
         body: {
-          name: process.env.SHOGO_LOCAL_USER_NAME || 'Local User',
+          name: process.env.SHOGO_LOCAL_USER_NAME || PLACEHOLDER_LOCAL_USER_NAME,
           email: process.env.SHOGO_LOCAL_USER_EMAIL || 'local@shogo.local',
           password,
         },
@@ -74,7 +82,7 @@ export async function bootstrapLocalDatabase(): Promise<void> {
   // has both.
   if (localUserId) {
     const user = await prisma.user.findUnique({ where: { id: localUserId }, select: { name: true } })
-    const userName = user?.name || 'Local User'
+    const userName = user?.name || PLACEHOLDER_LOCAL_USER_NAME
 
     try {
       const ownedPersonalCount = await getUserOwnedWorkspaceCount(localUserId, 'personal')
@@ -89,7 +97,12 @@ export async function bootstrapLocalDatabase(): Promise<void> {
     try {
       const ownedTeamCount = await getUserOwnedWorkspaceCount(localUserId, 'team')
       if (ownedTeamCount === 0) {
-        await createPaidWorkspace(localUserId, `${userName} Team`)
+        // Same "Alice's Workspace" naming as cloud signup; the placeholder
+        // name would yield "Local's Workspace", so it gets the generic one.
+        const teamName = defaultTeamWorkspaceName(
+          userName === PLACEHOLDER_LOCAL_USER_NAME ? null : userName,
+        )
+        await createPaidWorkspace(localUserId, teamName)
         console.log('[LocalMode] Seeded team workspace for local user')
       }
     } catch (err: any) {

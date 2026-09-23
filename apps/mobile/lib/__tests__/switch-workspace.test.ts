@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, describe, expect, test } from 'bun:test'
-import { scheduleWorkspaceSwitch } from '../switch-workspace'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { Platform } from 'react-native'
+import { openInWorkspace, scheduleWorkspaceSwitch } from '../switch-workspace'
 import { clearActiveWorkspaceId, getActiveWorkspaceId } from '../workspace-store'
 
 afterEach(() => {
@@ -54,5 +55,89 @@ describe('scheduleWorkspaceSwitch', () => {
 
     expect(loaded).toEqual(['ws-2'])
     expect(getActiveWorkspaceId()).toBe('ws-2')
+  })
+})
+
+describe('openInWorkspace', () => {
+  function fakeRouter() {
+    const calls = { push: [] as string[], replace: [] as string[] }
+    return {
+      calls,
+      router: {
+        push: (href: string) => calls.push.push(href),
+        replace: (href: string) => calls.replace.push(href),
+      },
+    }
+  }
+
+  test('pushes without switching when the target is the current workspace', () => {
+    const { calls, router } = fakeRouter()
+    openInWorkspace(router, 'ws-1', '/(app)/marketplace', 'ws-1')
+    expect(calls.push).toEqual(['/(app)/marketplace'])
+    expect(getActiveWorkspaceId()).toBeNull()
+  })
+
+  test('pushes without switching when no target workspace is known', () => {
+    const { calls, router } = fakeRouter()
+    openInWorkspace(router, undefined, '/(app)/settings?tab=people', 'ws-1')
+    expect(calls.push).toEqual(['/(app)/settings?tab=people'])
+  })
+
+  test('makes the target workspace active before navigating across workspaces', () => {
+    const { calls, router } = fakeRouter()
+    openInWorkspace(router, 'ws-team', '/', 'ws-personal')
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+    expect(calls.push).toEqual([])
+  })
+
+  test('cancels a queued switch so it cannot override the target workspace', async () => {
+    const { router } = fakeRouter()
+    const loaded: string[] = []
+    scheduleWorkspaceSwitch('ws-other', {
+      clear: () => {},
+      loadAll: async ({ workspaceId }) => {
+        loaded.push(workspaceId)
+      },
+    })
+    openInWorkspace(router, 'ws-team', '/', 'ws-personal')
+    await flushSwitch()
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+    expect(loaded).toEqual([])
+  })
+
+  describe('on native', () => {
+    const originalOS = Platform.OS
+    beforeEach(() => {
+      ;(Platform as { OS: string }).OS = 'ios'
+    })
+    afterEach(() => {
+      ;(Platform as { OS: string }).OS = originalOS
+    })
+
+    test('pushes the target (keeps the back stack) and reloads projects for the new workspace', async () => {
+      const { calls, router } = fakeRouter()
+      let cleared = 0
+      const loaded: string[] = []
+      openInWorkspace(router, 'ws-team', '/(app)/marketplace', 'ws-personal', {
+        clear: () => {
+          cleared += 1
+        },
+        loadAll: async ({ workspaceId }) => {
+          loaded.push(workspaceId)
+        },
+      })
+      expect(getActiveWorkspaceId()).toBe('ws-team')
+      expect(calls.push).toEqual(['/(app)/marketplace'])
+      expect(calls.replace).toEqual([])
+      expect(cleared).toBe(1)
+      expect(loaded).toEqual(['ws-team'])
+    })
+
+    test('still navigates when no projects collection is passed', () => {
+      const { calls, router } = fakeRouter()
+      openInWorkspace(router, 'ws-team', '/', 'ws-personal')
+      expect(getActiveWorkspaceId()).toBe('ws-team')
+      expect(calls.push).toEqual(['/'])
+    })
   })
 })

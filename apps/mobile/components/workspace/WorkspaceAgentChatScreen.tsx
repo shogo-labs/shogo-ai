@@ -13,7 +13,18 @@ import { useRouter } from "expo-router";
 import { observer } from "mobx-react-lite";
 import { Sparkles, X } from "lucide-react-native";
 import { useAuth } from "../../contexts/auth";
-import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
+import {
+  useDomainHttp,
+  useMemberCollection,
+  useProjectCollection,
+  useWorkspaceCollection,
+} from "../../contexts/domain";
+import {
+  GetStartedChecklist,
+  useGettingStarted,
+} from "../onboarding/GetStartedChecklist";
+import { openInWorkspace } from "../../lib/switch-workspace";
+import { pickTeamWorkspace } from "../../lib/team-workspace";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill";
@@ -66,6 +77,14 @@ export const WorkspaceAgentChatScreen = observer(
     const crossTabPrefill = useChatPrefill();
     const { showWelcome, dismissWelcome } = useWelcomeMessage(workspace?.id);
     const isPersonalWorkspace = experience.kind === "personal";
+    const gettingStarted = useGettingStarted();
+    const workspaces = useWorkspaceCollection();
+    const members = useMemberCollection();
+    const teamWorkspaceId = pickTeamWorkspace(
+      (workspaces?.all ?? []) as Array<{ id: string; kind?: string }>,
+      (members?.all ?? []) as any[],
+      user?.id
+    )?.id;
 
     const loadWorkspaceChat = useCallback(async () => {
       if (!workspace?.id) {
@@ -345,7 +364,9 @@ export const WorkspaceAgentChatScreen = observer(
           <PersonalAgentHeader profile={profile} actions={profileActions} compact />
         )}
         {usesMobileWorkspaceChrome &&
-        ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
+        ((isPersonalWorkspace && showWelcome) ||
+          gettingStarted.visible ||
+          attachments.length > 0) ? (
           // `PersonalAgentMobileHeader` floats above this content instead of
           // reserving layout space, so the welcome card / working-set chip —
           // the first normal-flow content on this screen — need their own
@@ -362,9 +383,25 @@ export const WorkspaceAgentChatScreen = observer(
                   Hi, I'm {profile.name}.
                 </Text>
                 <Text className="mt-1 text-sm leading-5 text-muted-foreground">
-                  Tell me what you want to work on, and I’ll help turn it into
-                  focused, trackable work.
+                  This is your Personal space: a private companion that
+                  remembers your context and turns what you tell me into goals
+                  and tasks. Try “Help me plan my week.”
                 </Text>
+                {teamWorkspaceId ? (
+                  <Text className="mt-2 text-xs leading-4 text-muted-foreground">
+                    Want to build agents and projects?{" "}
+                    <Text
+                      accessibilityRole="link"
+                      onPress={() =>
+                        openInWorkspace(router, teamWorkspaceId, "/", workspace.id, projects)
+                      }
+                      className="font-medium text-primary"
+                    >
+                      Open your Team workspace
+                    </Text>
+                    .
+                  </Text>
+                ) : null}
               </View>
               <Pressable
                 onPress={dismissWelcome}
@@ -374,6 +411,11 @@ export const WorkspaceAgentChatScreen = observer(
                 <X size={15} className="text-muted-foreground" />
               </Pressable>
             </View>
+          </View>
+        ) : null}
+        {gettingStarted.visible ? (
+          <View className="mx-auto mt-3 w-full max-w-2xl px-4">
+            <GetStartedChecklist state={gettingStarted} />
           </View>
         ) : null}
         {attachments.length > 0 ? (

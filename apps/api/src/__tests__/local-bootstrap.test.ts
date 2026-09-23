@@ -54,6 +54,13 @@ mock.module('../services/workspace.service', () => ({
       member: { id: `mem-team-${userId}`, userId, role: 'owner', workspaceId: `ws-team-${userId}` },
     }
   },
+  createDefaultTeamWorkspace: async () => {
+    throw new Error('createDefaultTeamWorkspace is cloud-only')
+  },
+  defaultTeamWorkspaceName: (userName: string | null | undefined) => {
+    const firstName = (userName ?? '').trim().split(/\s+/)[0]
+    return firstName ? `${firstName}'s Workspace` : 'My Workspace'
+  },
   createPersonalWorkspace: async (userId: string, userName: string) => {
     createPersonalWorkspaceCalls.push({ userId, name: userName })
     return {
@@ -129,7 +136,7 @@ describe('bootstrapLocalDatabase — free team-workspace backfill', () => {
 
     await bootstrapLocalDatabase()
 
-    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'new-user-2', name: 'Local User Team' }])
+    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'new-user-2', name: 'My Workspace' }])
     expect(createPersonalWorkspaceCalls).toEqual([])
   })
 
@@ -140,7 +147,7 @@ describe('bootstrapLocalDatabase — free team-workspace backfill', () => {
 
     await bootstrapLocalDatabase()
 
-    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'existing-1', name: 'Russell Team' }])
+    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'existing-1', name: "Russell's Workspace" }])
   })
 
   it('is idempotent — skips creation when the user already owns a team workspace', async () => {
@@ -153,14 +160,14 @@ describe('bootstrapLocalDatabase — free team-workspace backfill', () => {
     expect(createPaidWorkspaceCalls).toEqual([])
   })
 
-  it('falls back to "Local User Team" when the user has no name', async () => {
+  it('falls back to "My Workspace" when the user has no name', async () => {
     users = [{ id: 'existing-1', name: '', createdAt: '2026-01-01T00:00:00.000Z' }]
     ownedPersonalCountByUser['existing-1'] = 1
     ownedTeamCountByUser['existing-1'] = 0
 
     await bootstrapLocalDatabase()
 
-    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'existing-1', name: 'Local User Team' }])
+    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'existing-1', name: 'My Workspace' }])
   })
 })
 
@@ -205,6 +212,6 @@ describe('bootstrapLocalDatabase — free personal-workspace backfill (legacy te
     await bootstrapLocalDatabase()
 
     expect(createPersonalWorkspaceCalls).toEqual([{ userId: 'orphan-1', name: 'Orphan' }])
-    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'orphan-1', name: 'Orphan Team' }])
+    expect(createPaidWorkspaceCalls).toEqual([{ userId: 'orphan-1', name: "Orphan's Workspace" }])
   })
 })

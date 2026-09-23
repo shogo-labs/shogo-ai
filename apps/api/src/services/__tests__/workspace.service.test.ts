@@ -20,6 +20,10 @@ interface State {
    * base slug is free. */
   txWorkspaceFindUniqueResult: any | null
   countCallArgs: any[]
+  /** What `tx.member.findFirst` (the owned-team check inside
+   * `createDefaultTeamWorkspace`) returns. */
+  txOwnedTeamMember: any | null
+  txMemberFindFirstCalls: any[]
 }
 
 const s: State = {
@@ -36,6 +40,8 @@ const s: State = {
   txMemberCreateCalls: [],
   txWorkspaceFindUniqueResult: null,
   countCallArgs: [],
+  txOwnedTeamMember: null,
+  txMemberFindFirstCalls: [],
 }
 
 const tx = {
@@ -56,6 +62,10 @@ const tx = {
     create: async (args: any) => {
       s.txMemberCreateCalls.push(args)
       return s.txMemberCreate ?? { id: 'm-new', ...args.data }
+    },
+    findFirst: async (args: any) => {
+      s.txMemberFindFirstCalls.push(args)
+      return s.txOwnedTeamMember
     },
   },
 }
@@ -86,8 +96,10 @@ mock.module('nanoid', () => ({
 }))
 
 const {
+  createDefaultTeamWorkspace,
   createPaidWorkspace,
   createPersonalWorkspace,
+  defaultTeamWorkspaceName,
   getUserOwnedWorkspaceCount,
   getWorkspace,
   getWorkspaceBySlug,
@@ -111,6 +123,8 @@ beforeEach(() => {
   s.txMemberCreateCalls = []
   s.txWorkspaceFindUniqueResult = null
   s.countCallArgs = []
+  s.txOwnedTeamMember = null
+  s.txMemberFindFirstCalls = []
 })
 
 afterEach(() => {})
@@ -182,6 +196,72 @@ describe('createPersonalWorkspace', () => {
     s.txMemberCreate = { id: 'm-1', userId: 'u', role: 'owner', workspaceId: 'ws-1' }
     await createPersonalWorkspace('abcdefgh', 'X')
     expect(s.txWorkspaceCreateCalls[0].data.slug).toBe('user-abcdefgh-personal')
+  })
+})
+
+describe('defaultTeamWorkspaceName', () => {
+  it("uses the first name: 'Alice Smith' -> \"Alice's Workspace\"", () => {
+    expect(defaultTeamWorkspaceName('Alice Smith')).toBe("Alice's Workspace")
+  })
+
+  it("falls back to 'My Workspace' for blank names", () => {
+    expect(defaultTeamWorkspaceName('')).toBe('My Workspace')
+    expect(defaultTeamWorkspaceName('   ')).toBe('My Workspace')
+    expect(defaultTeamWorkspaceName(null)).toBe('My Workspace')
+  })
+})
+
+describe('createDefaultTeamWorkspace', () => {
+  it('creates a team-kind workspace with a deterministic slug and no agent profile', async () => {
+    s.txWorkspaceCreate = { id: 'ws-t', name: "Alice's Workspace", slug: 'user-12ab34c-team' }
+    s.txMemberCreate = { id: 'm-1', userId: '12ab-34cd-XXXX', role: 'owner', workspaceId: 'ws-t' }
+    await createDefaultTeamWorkspace('12ab-34cd-XXXX', 'Alice Smith')
+    expect(s.txWorkspaceCreateCalls[0].data).toMatchObject({
+      name: "Alice's Workspace",
+      slug: 'user-12ab34c-team',
+      kind: 'team',
+    })
+    expect(s.txWorkspaceProfileCreateCalls).toHaveLength(0)
+  })
+
+  it('creates an owner member who is a billing admin', async () => {
+    s.txWorkspaceCreate = { id: 'ws-t', name: 'X', slug: 'user-abcdefgh-team' }
+    await createDefaultTeamWorkspace('abcdefgh', 'X')
+    expect(s.txMemberCreateCalls[0].data).toMatchObject({
+      userId: 'abcdefgh',
+      role: 'owner',
+      workspaceId: 'ws-t',
+      isBillingAdmin: true,
+    })
+  })
+
+  it('appends a nanoid suffix when the base slug is already taken', async () => {
+    s.txWorkspaceFindUniqueResult = { id: 'ws-old', slug: 'user-abcdefgh-team' }
+    s.txWorkspaceCreate = { id: 'ws-t', name: 'X', slug: 'user-abcdefgh-team-abc123' }
+    await createDefaultTeamWorkspace('abcdefgh', 'X')
+    expect(s.txWorkspaceCreateCalls[0].data.slug).toBe('user-abcdefgh-team-abc123')
+  })
+
+  it('returns the existing owned team workspace instead of creating another', async () => {
+    s.txOwnedTeamMember = {
+      id: 'm-old',
+      userId: 'abcdefgh',
+      role: 'owner',
+      workspaceId: 'ws-old',
+      workspace: { id: 'ws-old', name: "X's Workspace", slug: 'user-abcdefgh-team' },
+    }
+    const out = await createDefaultTeamWorkspace('abcdefgh', 'X')
+    expect(s.txMemberFindFirstCalls[0].where).toEqual({
+      userId: 'abcdefgh',
+      role: 'owner',
+      workspace: { kind: 'team' },
+    })
+    expect(s.txWorkspaceCreateCalls).toHaveLength(0)
+    expect(s.txMemberCreateCalls).toHaveLength(0)
+    expect(out).toEqual({
+      workspace: { id: 'ws-old', name: "X's Workspace", slug: 'user-abcdefgh-team' },
+      member: { id: 'm-old', userId: 'abcdefgh', role: 'owner', workspaceId: 'ws-old' },
+    })
   })
 })
 

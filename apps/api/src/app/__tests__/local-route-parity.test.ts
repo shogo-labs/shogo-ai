@@ -4,6 +4,7 @@ const REQUIRED_LOCAL_ROUTES = [
   'GET /api/me',
   'POST /api/me/announcements/seen',
   'GET /api/me/activity',
+  'GET /api/me/getting-started',
   'POST /api/onboarding/complete',
   'GET /api/preview/:projectId/wake',
   'GET /api/preview/:projectId/open',
