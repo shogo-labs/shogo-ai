@@ -50,6 +50,14 @@ export interface ResolveOpts {
 export interface WakeOpts {
   waitMs?: number
   retryDelayMs?: number
+  /**
+   * Whether this published site has the "always on" perk enabled
+   * (`Project.publishedAlwaysOn`). Metal must re-assert this on every wake —
+   * resuming without it clears the host reaper's idle-suspend exemption, so
+   * an always-on app that was suspended for any reason (host restart, resize,
+   * etc.) would silently lose the perk after the next visitor wakes it.
+   */
+  alwaysOn?: boolean
 }
 
 /** Resource overrides for `resize` (mirrors patchProjectResources). */

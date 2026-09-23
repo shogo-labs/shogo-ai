@@ -65,6 +65,9 @@ const ACCESS_OPTIONS: { value: AccessLevel; label: string; Icon: any }[] = [
 // code (e.g. the cloud-proxy codes returned by the local/desktop API) and fall
 // back to the server message otherwise.
 function publishErrorMessage(err: any): string {
+  if (err?.name === 'AbortError') {
+    return "This is taking longer than expected. We're likely experiencing elevated load — please try again in a moment."
+  }
   const code: string | undefined = err?.details?.error?.code ?? err?.details?.code
   switch (code) {
     case 'cloud_signin_required':
@@ -73,6 +76,9 @@ function publishErrorMessage(err: any): string {
       return 'Sync this project to Shogo Cloud before publishing.'
     case 'cloud_unreachable':
       return "Couldn't reach Shogo Cloud. Check your connection and try again."
+    case 'upload_timeout':
+    case 'configure_timeout':
+      return "Publishing timed out while setting up your site. Please try again — if it keeps happening, we're on it."
     default:
       return err?.message || 'Failed to publish'
   }
