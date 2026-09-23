@@ -161,7 +161,9 @@ export function userProfileRoutes(): Hono {
             session: {
               OR: [
                 { project: { createdBy: userId } },
-                { workspace: { members: { some: { userId } } } },
+                // ChatMessage has no author, so shared team workspaces can't
+                // be attributed to this user; only their personal space can.
+                { workspace: { kind: 'personal', members: { some: { userId } } } },
               ],
             },
           },

@@ -617,12 +617,16 @@ export const auth = betterAuth({
             }
           }
 
-          await createWithRetry('personal', () => createPersonalWorkspace(user.id, user.name || "User"))
           // Every cloud account starts with both spaces: Personal (companion)
           // and Team (where you build). Desktop stays single-workspace.
-          if (!isLocalMode) {
-            await createWithRetry('team', () => createDefaultTeamWorkspace(user.id, user.name || "User"))
-          }
+          // Independent, so run in parallel; allSettled keeps one failing
+          // from blocking the other or the signup itself.
+          await Promise.allSettled([
+            createWithRetry('personal', () => createPersonalWorkspace(user.id, user.name || "User")),
+            ...(!isLocalMode
+              ? [createWithRetry('team', () => createDefaultTeamWorkspace(user.id, user.name || "User"))]
+              : []),
+          ])
 
           // FIRE-AND-FORGET: Send welcome email (non-blocking)
           const baseUrl = getFrontendUrl()

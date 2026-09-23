@@ -123,9 +123,13 @@ export function defaultTeamWorkspaceName(userName: string | null | undefined): s
 /**
  * Create the free default `kind: 'team'` workspace for a new cloud user.
  * Called from the Better Auth signup hook alongside `createPersonalWorkspace`
- * so every account starts with both spaces. Written directly through Prisma,
- * so it bypasses `workspaceHooks.beforeCreate` — it is the one free team
- * workspace that hook would otherwise allow.
+ * so every account starts with both spaces. `workspaceHooks.beforeCreate`
+ * would allow this first free team workspace too; it is written directly
+ * through Prisma so the workspace and its owner member row are created in
+ * one transaction.
+ *
+ * Idempotent: if the user already owns a team workspace (e.g. a retried
+ * attempt whose commit actually landed), that workspace is returned instead.
  */
 export async function createDefaultTeamWorkspace(
   userId: string,
@@ -136,6 +140,12 @@ export async function createDefaultTeamWorkspace(
   const workspaceName = defaultTeamWorkspaceName(userName);
 
   const result = await prisma.$transaction(async (tx) => {
+    const owned = await tx.member.findFirst({
+      where: { userId, role: 'owner', workspace: { kind: 'team' } },
+      include: { workspace: true },
+    });
+    if (owned?.workspace) return { workspace: owned.workspace, member: owned };
+
     const existing = await tx.workspace.findUnique({ where: { slug: baseSlug } });
     const slug = existing ? `${baseSlug}-${nanoid()}` : baseSlug;
 

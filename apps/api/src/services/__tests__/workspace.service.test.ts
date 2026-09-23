@@ -20,6 +20,10 @@ interface State {
    * base slug is free. */
   txWorkspaceFindUniqueResult: any | null
   countCallArgs: any[]
+  /** What `tx.member.findFirst` (the owned-team check inside
+   * `createDefaultTeamWorkspace`) returns. */
+  txOwnedTeamMember: any | null
+  txMemberFindFirstCalls: any[]
 }
 
 const s: State = {
@@ -36,6 +40,8 @@ const s: State = {
   txMemberCreateCalls: [],
   txWorkspaceFindUniqueResult: null,
   countCallArgs: [],
+  txOwnedTeamMember: null,
+  txMemberFindFirstCalls: [],
 }
 
 const tx = {
@@ -56,6 +62,10 @@ const tx = {
     create: async (args: any) => {
       s.txMemberCreateCalls.push(args)
       return s.txMemberCreate ?? { id: 'm-new', ...args.data }
+    },
+    findFirst: async (args: any) => {
+      s.txMemberFindFirstCalls.push(args)
+      return s.txOwnedTeamMember
     },
   },
 }
@@ -113,6 +123,8 @@ beforeEach(() => {
   s.txMemberCreateCalls = []
   s.txWorkspaceFindUniqueResult = null
   s.countCallArgs = []
+  s.txOwnedTeamMember = null
+  s.txMemberFindFirstCalls = []
 })
 
 afterEach(() => {})
@@ -228,6 +240,28 @@ describe('createDefaultTeamWorkspace', () => {
     s.txWorkspaceCreate = { id: 'ws-t', name: 'X', slug: 'user-abcdefgh-team-abc123' }
     await createDefaultTeamWorkspace('abcdefgh', 'X')
     expect(s.txWorkspaceCreateCalls[0].data.slug).toBe('user-abcdefgh-team-abc123')
+  })
+
+  it('returns the existing owned team workspace instead of creating another', async () => {
+    s.txOwnedTeamMember = {
+      id: 'm-old',
+      userId: 'abcdefgh',
+      role: 'owner',
+      workspaceId: 'ws-old',
+      workspace: { id: 'ws-old', name: "X's Workspace", slug: 'user-abcdefgh-team' },
+    }
+    const out = await createDefaultTeamWorkspace('abcdefgh', 'X')
+    expect(s.txMemberFindFirstCalls[0].where).toEqual({
+      userId: 'abcdefgh',
+      role: 'owner',
+      workspace: { kind: 'team' },
+    })
+    expect(s.txWorkspaceCreateCalls).toHaveLength(0)
+    expect(s.txMemberCreateCalls).toHaveLength(0)
+    expect(out).toEqual({
+      workspace: { id: 'ws-old', name: "X's Workspace", slug: 'user-abcdefgh-team' },
+      member: { id: 'm-old', userId: 'abcdefgh', role: 'owner', workspaceId: 'ws-old' },
+    })
   })
 })
 

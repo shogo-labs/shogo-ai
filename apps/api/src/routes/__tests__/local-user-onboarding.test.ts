@@ -15,6 +15,7 @@ const s = {
   userUpdates: [] as any[],
   ownedTeamMembers: [] as Array<{ workspaceId: string | null }>,
   chatMessage: null as any,
+  chatMessageQueries: [] as any[],
   project: null as any,
   install: null as any,
   slackInstall: null as any,
@@ -35,7 +36,12 @@ mock.module('../../lib/prisma', () => withPrismaExports({
       findMany: async () => s.ownedTeamMembers,
       findFirst: async () => s.otherMember,
     },
-    chatMessage: { findFirst: async () => s.chatMessage },
+    chatMessage: {
+      findFirst: async (args: any) => {
+        s.chatMessageQueries.push(args)
+        return s.chatMessage
+      },
+    },
     project: { findFirst: async () => s.project },
     marketplaceInstall: { findFirst: async () => s.install },
     slackWorkspaceInstallation: { findFirst: async () => s.slackInstall },
@@ -60,6 +66,7 @@ beforeEach(() => {
   s.userUpdates = []
   s.ownedTeamMembers = []
   s.chatMessage = null
+  s.chatMessageQueries = []
   s.project = null
   s.install = null
   s.slackInstall = null
@@ -128,6 +135,20 @@ describe('GET /api/me/getting-started', () => {
       installedAgent: true,
       connectedIntegration: true,
       invitedTeammate: true,
+    })
+  })
+
+  test('only attributes messages in projects the user created or their personal workspace', async () => {
+    await makeApp('u-1').request('/api/me/getting-started')
+    expect(s.chatMessageQueries).toHaveLength(1)
+    expect(s.chatMessageQueries[0].where).toEqual({
+      role: 'user',
+      session: {
+        OR: [
+          { project: { createdBy: 'u-1' } },
+          { workspace: { kind: 'personal', members: { some: { userId: 'u-1' } } } },
+        ],
+      },
     })
   })
 

@@ -61,7 +61,8 @@ const wsState: {
   createCalls: Array<{ userId: string; name: string }>
   teamCreateCalls: Array<{ userId: string; name: string }>
   shouldFailTimes: number
-} = { createCalls: [], teamCreateCalls: [], shouldFailTimes: 0 }
+  teamShouldFailTimes: number
+} = { createCalls: [], teamCreateCalls: [], shouldFailTimes: 0, teamShouldFailTimes: 0 }
 
 mock.module('../services/workspace.service', () => ({
   createPersonalWorkspace: async (userId: string, name: string) => {
@@ -74,6 +75,10 @@ mock.module('../services/workspace.service', () => ({
   },
   createDefaultTeamWorkspace: async (userId: string, name: string) => {
     wsState.teamCreateCalls.push({ userId, name })
+    if (wsState.teamShouldFailTimes > 0) {
+      wsState.teamShouldFailTimes--
+      throw new Error('team workspace create failed')
+    }
     return { id: 'ws-team-1' }
   },
 }))
@@ -167,6 +172,7 @@ beforeEach(() => {
   wsState.createCalls.length = 0
   wsState.teamCreateCalls.length = 0
   wsState.shouldFailTimes = 0
+  wsState.teamShouldFailTimes = 0
   emailState.welcomeCalls = 0
   emailState.resetCalls = 0
   emailState.verifyCalls = 0
@@ -424,6 +430,20 @@ describe('databaseHooks.user.create.after', () => {
     )
     expect(wsState.createCalls.length).toBe(5)
     expect(errMsg).toContain('Failed to create personal workspace')
+  }, 20000)
+
+  test('team workspace failure still lets signup succeed (personal created, welcome sent)', async () => {
+    wsState.teamShouldFailTimes = 5
+    const errors: string[] = []
+    console.error = (m: string) => { errors.push(String(m)) }
+    await capturedConfig.databaseHooks.user.create.after(
+      { id: 'u-team-fail', email: 't@t.com', name: 'Tina' }, {},
+    )
+    expect(wsState.createCalls).toEqual([{ userId: 'u-team-fail', name: 'Tina' }])
+    expect(wsState.teamCreateCalls.length).toBe(5)
+    expect(errors.some((m) => m.includes('Failed to create team workspace'))).toBe(true)
+    await new Promise(r => setTimeout(r, 10))
+    expect(emailState.welcomeCalls).toBe(1)
   }, 20000)
 
   test('runs affiliate attribution when SHOGO_AFFILIATES_NATIVE=true + cookies present', async () => {
