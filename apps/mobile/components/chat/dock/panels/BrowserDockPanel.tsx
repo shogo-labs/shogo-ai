@@ -43,7 +43,6 @@ export function BrowserDockPanel() {
       title: "Live browser",
       icon: Eye,
       summary: runningAgentType,
-      chip: { icon: Eye, dot: true },
       render: ({ expanded }) => <LiveBrowserView instanceId={runningInstanceId} active={expanded} />,
     }
   }, [runningInstanceId, runningAgentType])

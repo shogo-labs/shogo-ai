@@ -216,7 +216,6 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
           ? `${offlineCount} waiting${queuedMessages.length > offlineCount ? ` · ${queuedMessages.length - offlineCount} queued` : ""}`
           : `${queuedMessages.length} queued`,
       defaultExpanded: true,
-      chip: { icon: ListOrdered, count: queuedMessages.length },
       render: () => <QueueBody {...props} />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

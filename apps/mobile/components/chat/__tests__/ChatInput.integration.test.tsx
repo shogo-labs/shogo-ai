@@ -112,7 +112,18 @@ mock.module("@shogo/shared-ui/primitives", () => ({
 }))
 
 mock.module("@/components/ui/popover", () => ({
-  Popover: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  Popover: ({
+    children,
+    trigger,
+  }: {
+    children?: React.ReactNode
+    trigger?: (triggerProps: Record<string, unknown>) => React.ReactNode
+  }) => (
+    <>
+      {trigger?.({})}
+      {children}
+    </>
+  ),
   PopoverBackdrop: () => null,
   PopoverContent: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
 }))
@@ -201,6 +212,40 @@ describe("ChatInput integration — chat and plan mentions", () => {
     expect(screen.getByText("History Search")).toBeTruthy()
     fireEvent.click(screen.getByText("SQLite decision"))
     expect(input.value).toContain("@chat:chat-1")
+  })
+})
+
+// `flush` opts out of the phone-prominent composer (the mocked window is
+// phone-sized), which is the layout that renders the Advanced controls trigger.
+describe("ChatInput integration — agent advanced controls", () => {
+  test("hides the Advanced controls trigger when the agent composer has no controls to show", () => {
+    render(
+      <ChatInput
+        onSubmit={mock(() => {})}
+        isPro
+        flush
+        presentation="agent"
+        composer={{ showModelPicker: false, showInteractionModes: false }}
+        quickActions={[]}
+      />,
+    )
+
+    expect(screen.queryByLabelText("Advanced controls")).toBeNull()
+  })
+
+  test("shows the Advanced controls trigger when the model picker is enabled", () => {
+    render(
+      <ChatInput
+        onSubmit={mock(() => {})}
+        isPro
+        flush
+        presentation="agent"
+        composer={{ showModelPicker: true, showInteractionModes: false }}
+        quickActions={[]}
+      />,
+    )
+
+    expect(screen.getByLabelText("Advanced controls")).toBeTruthy()
   })
 })
 

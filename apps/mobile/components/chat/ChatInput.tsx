@@ -53,7 +53,6 @@ import { resolveShortName, resolveTier } from "../../lib/visible-models";
 import { ComposerModelPicker } from "./ModelPickerMenu";
 import { WebTooltip } from "./WebTooltip";
 import { DockChip } from "./dock/DockChip";
-import { DockChipRail } from "./dock/DockChipRail";
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel";
 import { ContextUsageDockPanel } from "./dock/panels/ContextUsageDockPanel";
 import {
@@ -1639,8 +1638,8 @@ function ChatInputImpl({
       {/* Queued messages, live browser, running tasks, plan, checklist,
           changed files, worktree, and context usage all render inside the
           floating chat dock now (see ChatPanel's <ChatDock />) instead of
-          inline here. This registers the queue's dock panel + composer
-          chip; the row UI itself lives in QueueDockPanel. */}
+          inline here. This registers the queue's dock panel; the row UI
+          itself lives in QueueDockPanel. */}
       <QueueDockPanel
         queuedMessages={queuedMessages}
         onRemoveQueuedMessage={onRemoveQueuedMessage}
@@ -2426,7 +2425,10 @@ function ChatInputImpl({
                 </>
               ) : (
                 <>
-                  {presentation === "agent" ? (
+                  {presentation === "agent" &&
+                  (composer.showInteractionModes ||
+                    showModelPicker ||
+                    quickActions.length > 0) ? (
                     <Popover
                       placement="top"
                       size="xs"
@@ -2495,11 +2497,11 @@ function ChatInputImpl({
                             </View>
                           </>
                         ) : null}
-                        <View className="mt-2 border-t border-border/60 pt-2">
-                          <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Model
-                          </Text>
-                          {showModelPicker ? (
+                        {showModelPicker ? (
+                          <View className="mt-2 border-t border-border/60 pt-2">
+                            <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Model
+                            </Text>
                             <ComposerModelPicker
                               {...composerModelPickerProps({
                                 currentModelId,
@@ -2515,11 +2517,8 @@ function ChatInputImpl({
                                 onSelect: handleModelChange,
                               })}
                             />
-                          ) : null}
-                        </View>
-                        <View className="mt-2 border-t border-border/60 pt-2">
-                          <EnvironmentPicker disabled={disabled} />
-                        </View>
+                          </View>
+                        ) : null}
                         {quickActions.length > 0 ? (
                           <View className="mt-2 border-t border-border/60 pt-2">
                             {quickActions.map((action) => (
@@ -2930,7 +2929,6 @@ function ChatInputImpl({
                 ) : null}
                 {useProminentComposer ? null : (
                   <>
-                    <DockChipRail isNative={isNative} />
                     {contextUsage && (
                       <DockChip
                         panelId="context-usage"

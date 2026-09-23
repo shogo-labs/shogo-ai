@@ -82,18 +82,6 @@ describe("createChatDockStore registerPanel", () => {
     expect(calls).toBe(1)
   })
 
-  test("changing the chip's count does notify subscribers", () => {
-    const store = createChatDockStore()
-    store.registerPanel(baseDescriptor({ chip: { icon: Files, count: 1 } }))
-
-    let calls = 0
-    store.subscribe(() => calls++)
-
-    store.registerPanel(baseDescriptor({ chip: { icon: Files, count: 2 } }))
-
-    expect(calls).toBe(1)
-  })
-
   test("switching kind between status and blocking does notify subscribers", () => {
     const store = createChatDockStore()
     store.registerPanel(baseDescriptor({ id: "plan", icon: ClipboardList, kind: "status" }))
