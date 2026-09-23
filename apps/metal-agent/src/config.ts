@@ -226,6 +226,12 @@ export const config = {
    */
   hydrateTimeoutMs: parseInt(env('METAL_HYDRATE_TIMEOUT_MS', '60000'), 10),
   /**
+   * Per-export budget when asking a mute-but-running guest to export before it
+   * is discarded. Past this the host reads the workspace off the VM's disk
+   * instead, so it bounds how long a reprovisioning open waits on a wedged guest.
+   */
+  rescueGuestTimeoutMs: parseInt(env('METAL_RESCUE_GUEST_TIMEOUT_MS', '20000'), 10),
+  /**
    * Extra hydrate budget per MiB of archive, on top of `hydrateTimeoutMs`.
    *
    * A single flat timeout has to be either too tight for a large archive or

@@ -36,7 +36,10 @@ const fakeBrowserCtx = { pages: () => [fakePage] }
 const fakeBrowser = {
   contexts: () => [fakeBrowserCtx],
   newPage: async () => fakePage,
+  newContext: async () => ({ newPage: async () => fakePage, close: async () => {} }),
   close: async () => {},
+  isConnected: () => true,
+  on: () => {},
 }
 
 mock.module('playwright-core', () => ({
@@ -111,7 +114,11 @@ function makeCtx(overrides: any = {}): any {
 }
 
 const ORIGINAL_ENV = { ...process.env }
-beforeEach(() => {
+beforeEach(async () => {
+  // The shared browser pool is process-wide; another file's fake browser
+  // must not leak into this file's launch-mode tests.
+  const { resetSharedBrowserPool } = await import('../browser-pool')
+  await resetSharedBrowserPool()
   process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = 'tok-test-12345'
   process.env.BROWSER_CHANNEL = 'chrome'
   delete process.env.BROWSER_CDP_ENDPOINT

@@ -23,7 +23,7 @@
  */
 
 import { spawn } from 'child_process'
-import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -181,6 +181,10 @@ export async function untrackDependencyDirs(
  * Returns the seeded HEAD sha, or null when `.git` already existed or the
  * workspace was empty (nothing to commit — the repo is left initialized so
  * the first agent edit produces the seeding commit).
+ *
+ * Throws when any git step fails, after removing the `.git` it created: a
+ * half-initialized repo would otherwise be exported as the project's durable
+ * history (an empty repo) and block every later seed attempt.
  */
 export async function seedRepoIfAbsent(
   workspaceDir: string,
@@ -210,32 +214,124 @@ export async function seedRepoIfAbsent(
       child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
     })
 
+  const must = async (args: string[]) => {
+    const res = await runEnv(args)
+    if (res.code !== 0) {
+      throw new Error(`git ${args[0]} exited ${res.code}: ${res.stderr.trim().slice(0, 500)}`)
+    }
+    return res
+  }
+
   try {
     // Never let the seed commit sweep up node_modules / build output. Only
     // when such a directory exists, so an empty workspace stays empty.
     if (UNTRACK_DIRS.some((d) => existsSync(join(workspaceDir, d))) && ensureWorkspaceGitignore(workspaceDir)) {
       logger.log('[repo-store] seed: wrote default .gitignore (workspace had none)')
     }
-    await runEnv(['init', '-b', branch])
-    await runEnv(['config', 'core.autocrlf', 'false'])
-    await runEnv(['config', 'core.longpaths', 'true'])
-    await runEnv(['config', 'user.name', authorName])
-    await runEnv(['config', 'user.email', authorEmail])
-    await runEnv(['add', '-A'])
+    await must(['init', '-b', branch])
+    await must(['config', 'core.autocrlf', 'false'])
+    await must(['config', 'core.longpaths', 'true'])
+    await must(['config', 'user.name', authorName])
+    await must(['config', 'user.email', authorEmail])
+    await must(['add', '-A'])
+    // `diff --quiet` exits 1 when there are staged changes; anything else is an error.
     const staged = await runEnv(['diff', '--cached', '--quiet'])
     if (staged.code === 0) {
       logger.log('[repo-store] seed: empty workspace, initialized empty repo')
       return null
     }
-    await runEnv(['commit', '-m', 'chore: seed repo from workspace', '--no-verify'])
-    const head = await runEnv(['rev-parse', 'HEAD'])
-    const sha = head.code === 0 ? head.stdout.trim() : null
-    logger.log(`[repo-store] seeded local repo @ ${sha ?? '?'}`)
+    if (staged.code !== 1) {
+      throw new Error(`git diff exited ${staged.code}: ${staged.stderr.trim().slice(0, 500)}`)
+    }
+    await must(['commit', '-m', 'chore: seed repo from workspace', '--no-verify'])
+    const head = await must(['rev-parse', 'HEAD'])
+    const sha = head.stdout.trim()
+    logger.log(`[repo-store] seeded local repo @ ${sha}`)
     return sha
   } catch (err: any) {
-    logger.warn(`[repo-store] seed failed: ${err?.message ?? err}`)
-    return null
+    logger.error(`[repo-store] seed failed: ${err?.message ?? err}`)
+    rmSync(join(workspaceDir, '.git'), { recursive: true, force: true })
+    throw err
   }
+}
+
+export interface AdoptRepoResult {
+  /** HEAD after adoption, or null when the durable repo has no commits yet. */
+  headSha: string | null
+  /** Whether the working tree was reset to HEAD. */
+  reset: boolean
+  /** Ref holding tracked working-tree changes that the reset discarded, if any. */
+  preservedRef: string | null
+}
+
+/**
+ * Replace `<workspaceDir>/.git` with the durable `.git` the host extracted to
+ * `<stagingDir>/.git`, then rebuild the working tree from its HEAD.
+ *
+ * A swap (not an overlay) because a fresh guest may already hold a throwaway
+ * `.git` seeded from the template before the host's hydrate arrived; overlaying
+ * an older or empty durable repo onto it would leave the template commit as
+ * HEAD, and resetting to that would wipe the real source.
+ *
+ * The reset is what makes `.git` authoritative: the source archive can lag the
+ * repo (the host exports `.git` every couple of minutes but source only on
+ * suspend), and without it the next auto-commit would record the older tree as
+ * a revert. Tracked changes the reset would discard are first saved under
+ * `refs/shogo/pre-hydrate/<ts>` so nothing is lost if the source was newer.
+ * Untracked and ignored files (databases, uploads) are left alone. An unborn
+ * HEAD (durable repo with no commits) skips the reset; the next sync commits
+ * the hydrated tree as the first commit.
+ */
+export async function adoptHydratedRepo(
+  workspaceDir: string,
+  stagingDir: string,
+  opts: { logger?: Logger } = {},
+): Promise<AdoptRepoResult> {
+  const logger = opts.logger ?? console
+  const staged = join(stagingDir, '.git')
+  if (!existsSync(staged)) throw new Error(`no staged .git at ${staged}`)
+  const target = join(workspaceDir, '.git')
+  rmSync(target, { recursive: true, force: true })
+  renameSync(staged, target)
+  rmSync(stagingDir, { recursive: true, force: true })
+
+  const headSha = await getHeadSha(workspaceDir)
+  if (!headSha) {
+    logger.log('[repo-store] adopted durable repo with an unborn HEAD — working tree left as hydrated')
+    return { headSha: null, reset: false, preservedRef: null }
+  }
+
+  const git = (args: string[]) =>
+    new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn('git', args, { cwd: workspaceDir, stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (c) => { stdout += String(c) })
+      child.stderr.on('data', (c) => { stderr += String(c) })
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
+    })
+
+  let preservedRef: string | null = null
+  const stash = await git(['stash', 'create', 'pre-hydrate working tree'])
+  const stashSha = stash.code === 0 ? stash.stdout.trim() : ''
+  if (stashSha) {
+    const ref = `refs/shogo/pre-hydrate/${Date.now()}`
+    const saved = await git(['update-ref', ref, stashSha])
+    if (saved.code !== 0) {
+      throw new Error(`could not preserve working tree before reset: ${saved.stderr.trim().slice(0, 300)}`)
+    }
+    preservedRef = ref
+  }
+  const reset = await git(['reset', '--hard', 'HEAD'])
+  if (reset.code !== 0) {
+    throw new Error(`git reset --hard exited ${reset.code}: ${reset.stderr.trim().slice(0, 300)}`)
+  }
+  logger.log(
+    `[repo-store] adopted durable repo @ ${headSha}` +
+      (preservedRef ? ` (differing working tree saved at ${preservedRef})` : ''),
+  )
+  return { headSha, reset: true, preservedRef }
 }
 
 /** Resolve the current HEAD sha, or null when HEAD is unborn / not a repo. */

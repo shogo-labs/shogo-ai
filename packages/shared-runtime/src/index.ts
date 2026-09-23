@@ -26,6 +26,13 @@ export {
 } from './git-sync'
 
 export {
+  applyGitSafeDirectoryEnv,
+  checkGitUsable,
+  DUBIOUS_OWNERSHIP_RE,
+  type GitUsability,
+} from './git-safe-dir'
+
+export {
   ensureWorkspaceRepo,
   type EnsureWorkspaceRepoConfig,
   type EnsureWorkspaceRepoResult,
@@ -53,8 +60,10 @@ export {
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
+  adoptHydratedRepo,
   repoExistsInStore,
   repoStoreConfigFromEnv,
+  type AdoptRepoResult,
   type RepoStoreConfig,
 } from './repo-store'
 

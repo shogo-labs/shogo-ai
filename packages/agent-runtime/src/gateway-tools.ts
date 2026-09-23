@@ -56,6 +56,12 @@ import {
 } from './subagent'
 import { ACCESSIBILITY_SNAPSHOT_SCRIPT } from './browser-snapshot-script'
 import {
+  getSharedBrowserPool,
+  registerBrowserSessionCleanup,
+  BrowserPoolTimeoutError,
+  type BrowserLease,
+} from './browser-pool'
+import {
   findActualString, preserveQuoteStyle, stripTrailingWhitespace,
   applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
   resolveLineEndingPolicy, normalizeLineEndings,
@@ -3507,8 +3513,31 @@ function captureBrowserCall(
   }
 }
 
+const BROWSER_TOOL_IDLE_RELEASE_MS = 5 * 60 * 1000
+
+const browserToolDisposers = new WeakMap<AgentTool, () => Promise<void>>()
+
+/** Release the browser resources held by a tool from createBrowserTool (no-op otherwise). */
+export async function disposeBrowserTool(tool: AgentTool | undefined): Promise<void> {
+  const dispose = tool ? browserToolDisposers.get(tool) : undefined
+  if (dispose) await dispose()
+}
+
+// Errors meaning the page/context/browser is gone, as opposed to an ordinary
+// action failure where the page (and the user's state in it) is still usable.
+const DEAD_BROWSER_ERROR_RE = /target (page, context or browser )?(has been )?closed|browser has been closed|browser has disconnected|browser closed|context closed|page (has been )?closed|page crashed|target crashed|connection closed/i
+
+export function isDeadBrowserError(message: string | undefined): boolean {
+  return !!message && DEAD_BROWSER_ERROR_RE.test(message)
+}
+
 export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
+  let lease: BrowserLease | null = null
+  let unregisterSessionCleanup: (() => void) | null = null
+  let ensurePromise: Promise<any> | null = null
+  let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null
+  let inFlightCalls = 0
   let page: any = null
   let isExtensionMode = false
   let killRelay: (() => void) | null = null
@@ -3599,10 +3628,22 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   }
 
   async function ensureBrowser() {
-    if (browser && page) {
-      await ensureScreencast()
-      return page
+    if (page && (isExtensionMode ? browser : lease)) {
+      if (!isExtensionMode && page.isClosed?.()) {
+        await cleanup()
+      } else {
+        await ensureScreencast()
+        return page
+      }
     }
+    // Parallel calls on one tool instance must not each acquire a context.
+    if (!ensurePromise) {
+      ensurePromise = openBrowser().finally(() => { ensurePromise = null })
+    }
+    return ensurePromise
+  }
+
+  async function openBrowser() {
     try {
       const pw = await import('playwright-core')
 
@@ -3621,33 +3662,23 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         page = browserCtx?.pages()[0] || await browser.newPage()
         isExtensionMode = true
       } else {
-        const launchArgs: string[] = []
-        if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CONTAINER) {
-          launchArgs.push('--no-sandbox', '--disable-setuid-sandbox')
+        const acquired = await getSharedBrowserPool().acquire()
+        try {
+          page = await acquired.context.newPage()
+        } catch (err) {
+          await acquired.release()
+          throw err
         }
-        // Bun's stdio pipe transport (FDs 3/4) doesn't deliver CDP frames
-        // reliably, so Playwright's default `--remote-debugging-pipe` flow
-        // hangs (chromium launches and prints "DevTools listening on ws://"
-        // but Browser.getVersion on the pipe never returns). Setting
-        // `cdpPort: 0` switches Playwright to its WebSocketTransport, which
-        // works correctly under bun once the patch in
-        // scripts/patch-playwright-bun.ts has been applied to playwright-core.
-        // `cdpPort` is on the internal launch options — not in the public
-        // .d.ts — but is accepted via the protocol validator.
-        const isBun = typeof (globalThis as any).Bun !== 'undefined'
-        const launchOpts: any = {
-          headless: true,
-          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-          args: launchArgs.length > 0 ? launchArgs : undefined,
+        lease = acquired
+        if (ctx.sessionId) {
+          unregisterSessionCleanup = registerBrowserSessionCleanup(ctx.sessionId, () => cleanup())
         }
-        if (isBun) launchOpts.cdpPort = 0
-        browser = await pw.chromium.launch(launchOpts)
-        page = await browser.newPage()
       }
       await ensureScreencast()
       return page
     } catch (err: any) {
       cleanupRelay()
+      if (err instanceof BrowserPoolTimeoutError) throw err
       if (process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
         throw new Error(
           `Failed to connect to browser via extension: ${err.message}. ` +
@@ -3671,7 +3702,29 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     }
   }
 
+  function clearIdleRelease() {
+    if (idleReleaseTimer) {
+      clearTimeout(idleReleaseTimer)
+      idleReleaseTimer = null
+    }
+  }
+
+  function scheduleIdleRelease() {
+    clearIdleRelease()
+    if (!lease) return
+    idleReleaseTimer = setTimeout(() => {
+      idleReleaseTimer = null
+      void cleanup()
+    }, BROWSER_TOOL_IDLE_RELEASE_MS)
+    ;(idleReleaseTimer as any).unref?.()
+  }
+
   async function cleanup() {
+    clearIdleRelease()
+    if (unregisterSessionCleanup) {
+      unregisterSessionCleanup()
+      unregisterSessionCleanup = null
+    }
     if (screencastStarted && cdpSession) {
       try { await cdpSession.send('Page.stopScreencast') } catch {}
       try { await cdpSession.detach() } catch {}
@@ -3685,16 +3738,21 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         dropChannel(ctx.subagentInstanceId)
       } catch {}
     }
-    if (isExtensionMode) {
-      try { if (browser) await browser.close() } catch {}
-    } else {
-      try { if (page) await page.close() } catch {}
-      try { if (browser) await browser.close() } catch {}
-    }
-    cleanupRelay()
+    const currentPage = page
+    const currentLease = lease
+    const currentBrowser = browser
+    const wasExtensionMode = isExtensionMode
     page = null
+    lease = null
     browser = null
     isExtensionMode = false
+    if (wasExtensionMode) {
+      try { if (currentBrowser) await currentBrowser.close() } catch {}
+    } else {
+      try { if (currentPage) await currentPage.close() } catch {}
+      if (currentLease) await currentLease.release()
+    }
+    cleanupRelay()
   }
 
   function resolveLocator(p: any, ref?: number, selector?: string): any {
@@ -3754,6 +3812,8 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         waitMs?: number
       }
 
+      clearIdleRelease()
+      inFlightCalls++
       try {
         if (action === 'close') {
           await cleanup()
@@ -3899,10 +3959,17 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             return textResult({ error: `Unknown browser action: ${action}` })
         }
       } catch (err: any) {
+        if (lease && (isDeadBrowserError(err?.message) || page?.isClosed?.())) {
+          await cleanup()
+        }
         return textResult({ error: `Browser error: ${err.message}`, action })
+      } finally {
+        inFlightCalls--
+        if (inFlightCalls === 0) scheduleIdleRelease()
       }
     },
   }
+  browserToolDisposers.set(tool, cleanup)
 
   if (captureDir) {
     const innerExecute = tool.execute

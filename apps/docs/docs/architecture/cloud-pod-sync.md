@@ -272,6 +272,41 @@ from the pod's durable object store:
   to fetch/seed against the API origin (the legacy push model is the
   durability path in that mode).
 
+## Metal (Firecracker) runtimes: host-mediated durability
+
+Metal guests hold no object-storage credentials, so the **host** (metal-agent)
+moves every durable artifact:
+
+- **`.git`** — pulled from the guest's `/pool/export-repo` every
+  `METAL_PROJECT_DATA_EXPORT_INTERVAL_MS` (2 min) and at suspend. The guest
+  commits the live working tree first, so this export also carries source.
+- **Source** (`project-src.tar.gz`) — at suspend only.
+- **Writable state** (`project-data.tar.gz`) — every 2 min and at suspend.
+
+The guest runtime runs as root while `/app/workspace` belongs to `appuser`, so
+git needs `safe.directory` (set system-wide in the image, and exported via
+`GIT_CONFIG_*` by the runtime when it runs as root). Without it every git
+command fails with "dubious ownership" and no history is ever persisted; the
+runtime logs `GIT_UNUSABLE` at startup when that happens.
+
+**Cold boot.** The host hydrates source, then data, then extracts the durable
+`.git` into `.shogo/local/repo-staging` and calls `/pool/repo-hydrated`. The
+guest swaps that `.git` in (replacing any template-seeded one) and resets the
+working tree to its HEAD, since `.git` is newer than the suspend-time source.
+Tracked changes the reset would drop are kept under `refs/shogo/pre-hydrate/*`.
+
+**Discarding a VM.** When the health gate or the dead-VM reaper discards a VM,
+the host first rescues its workspace: guest export if the guest still answers,
+otherwise it stops the VM, mounts its rootfs read-only and packs
+`/app/workspace` itself. If nothing can be saved, the disk is moved to
+`<runDir|dmCowDir>/quarantine/` with a `.json` note, and
+`metal_rescue_failed_quarantined_total` increments — page on it.
+
+**Resume.** A snapshot records the ETags of the archives current when it was
+taken. If any of them has since been overwritten (the VM ran on and died
+without suspending), the snapshot is skipped and the project cold-boots from
+storage instead (`metal_stale_snapshot_skipped_total`).
+
 ## Large / binary file offload (hybrid)
 
 Git stays small by keeping only text/source. There are two strategies; which
