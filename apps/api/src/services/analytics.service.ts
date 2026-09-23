@@ -909,10 +909,10 @@ export async function getActiveUsers(
 }
 
 // ============================================================================
-// Desktop Installs
+// App Installs
 // ============================================================================
 
-export interface DesktopInstallsData {
+export interface InstallSegment {
   totalDevices: number
   active: {
     d1: number
@@ -932,52 +932,64 @@ export interface DesktopInstallsData {
   distinctUsers: number
 }
 
+/** Backwards-compatible name for callers of the desktop-only endpoint. */
+export type DesktopInstallsData = InstallSegment
+
+export interface AppInstallsData {
+  desktop: InstallSegment
+  ios: InstallSegment
+  android: InstallSegment
+  totals: {
+    totalDevices: number
+    active: {
+      d1: number
+      d7: number
+      d30: number
+    }
+    newLast30d: number
+    distinctUsers: number
+  }
+}
+
+type InstallAggregateRow = {
+  deviceId: string | null
+  platform: string | null
+  version: string | null
+  lastSeenAt: Date | null
+  createdAt: Date
+  userId: string | null
+}
+
 /**
- * Get install and activity metrics for desktops that have signed in to Cloud.
+ * Aggregate install and activity metrics for a set of physical devices.
  *
  * Device API keys are minted per workspace, so a stable deviceId is used to
- * count each physical desktop once across workspaces. The latest-seen key is
+ * count each physical desktop once across workspaces. The latest-seen row is
  * retained for its current version, platform, and activity state.
  */
-export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
+function aggregateInstalls(rows: InstallAggregateRow[]): InstallSegment {
   const now = new Date()
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const keys = await prisma.apiKey.findMany({
-    where: {
-      kind: 'device',
-      revokedAt: null,
-      deviceId: { not: null },
-    },
-    select: {
-      deviceId: true,
-      devicePlatform: true,
-      deviceAppVersion: true,
-      lastSeenAt: true,
-      createdAt: true,
-      userId: true,
-    },
-  })
-
-  const latestByDevice = new Map<string, (typeof keys)[number]>()
-  for (const key of keys) {
-    if (!key.deviceId) continue
-    const existing = latestByDevice.get(key.deviceId)
+  const latestByDevice = new Map<string, InstallAggregateRow>()
+  for (const row of rows) {
+    if (!row.deviceId) continue
+    const existing = latestByDevice.get(row.deviceId)
     if (!existing || (
-      key.lastSeenAt &&
-      (!existing.lastSeenAt || key.lastSeenAt > existing.lastSeenAt)
+      row.lastSeenAt &&
+      (!existing.lastSeenAt || row.lastSeenAt > existing.lastSeenAt)
     )) {
-      latestByDevice.set(key.deviceId, key)
+      latestByDevice.set(row.deviceId, row)
     }
   }
 
   const devices = [...latestByDevice.values()]
-  const activeSince = (key: typeof devices[number], since: Date) =>
-    key.lastSeenAt !== null && key.lastSeenAt !== undefined && key.lastSeenAt >= since
-  const versionFor = (key: typeof devices[number]) => key.deviceAppVersion || 'unknown'
-  const platformFor = (key: typeof devices[number]) => key.devicePlatform || 'unknown'
+  const activeSince = (row: InstallAggregateRow, since: Date) =>
+    row.lastSeenAt !== null && row.lastSeenAt >= since
+  const versionFor = (row: InstallAggregateRow) => row.version || 'unknown'
+  const platformFor = (row: InstallAggregateRow) => row.platform || 'unknown'
 
   const versionCounts = new Map<string, { count: number; activeD7: number }>()
   const platformCounts = new Map<string, number>()
@@ -1006,7 +1018,110 @@ export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
     byPlatform: [...platformCounts.entries()]
       .map(([platform, count]) => ({ platform, count }))
       .sort((a, b) => b.count - a.count || a.platform.localeCompare(b.platform)),
-    distinctUsers: new Set(keys.map((key) => key.userId).filter(Boolean)).size,
+    distinctUsers: new Set(rows.map((row) => row.userId).filter(Boolean)).size,
+  }
+}
+
+/**
+ * Get install and activity metrics for desktops that have signed in to Cloud.
+ */
+export async function getDesktopInstalls(): Promise<DesktopInstallsData> {
+  const keys = await prisma.apiKey.findMany({
+    where: {
+      kind: 'device',
+      revokedAt: null,
+      deviceId: { not: null },
+    },
+    select: {
+      deviceId: true,
+      devicePlatform: true,
+      deviceAppVersion: true,
+      lastSeenAt: true,
+      createdAt: true,
+      userId: true,
+    },
+  })
+
+  return aggregateInstalls(keys.map((key) => ({
+    deviceId: key.deviceId,
+    platform: key.devicePlatform,
+    version: key.deviceAppVersion,
+    lastSeenAt: key.lastSeenAt,
+    createdAt: key.createdAt,
+    userId: key.userId,
+  })))
+}
+
+/**
+ * Get combined signed-in install metrics for desktop, iOS, and Android.
+ */
+export async function getAppInstalls(): Promise<AppInstallsData> {
+  const [keys, appInstalls] = await Promise.all([
+    prisma.apiKey.findMany({
+      where: {
+        kind: 'device',
+        revokedAt: null,
+        deviceId: { not: null },
+      },
+      select: {
+        deviceId: true,
+        devicePlatform: true,
+        deviceAppVersion: true,
+        lastSeenAt: true,
+        createdAt: true,
+        userId: true,
+      },
+    }),
+    prisma.appInstall.findMany({
+      where: { platform: { in: ['ios', 'android'] } },
+      select: {
+        deviceId: true,
+        platform: true,
+        appVersion: true,
+        osVersion: true,
+        firstSeenAt: true,
+        lastSeenAt: true,
+        userId: true,
+      },
+    }),
+  ])
+
+  const desktopRows: InstallAggregateRow[] = keys.map((key) => ({
+    deviceId: key.deviceId,
+    platform: key.devicePlatform,
+    version: key.deviceAppVersion,
+    lastSeenAt: key.lastSeenAt,
+    createdAt: key.createdAt,
+    userId: key.userId,
+  }))
+  const mobileRows: InstallAggregateRow[] = appInstalls.map((install) => ({
+    deviceId: install.deviceId,
+    platform: install.osVersion,
+    version: install.appVersion,
+    lastSeenAt: install.lastSeenAt,
+    createdAt: install.firstSeenAt,
+    userId: install.userId,
+  }))
+
+  const desktop = aggregateInstalls(desktopRows)
+  const ios = aggregateInstalls(mobileRows.filter((row, index) => appInstalls[index]?.platform === 'ios'))
+  const android = aggregateInstalls(mobileRows.filter((row, index) => appInstalls[index]?.platform === 'android'))
+  const allDevices = [...desktopRows, ...mobileRows]
+
+  return {
+    desktop,
+    ios,
+    android,
+    totals: {
+      totalDevices: desktop.totalDevices + ios.totalDevices + android.totalDevices,
+      active: {
+        d1: desktop.active.d1 + ios.active.d1 + android.active.d1,
+        d7: desktop.active.d7 + ios.active.d7 + android.active.d7,
+        d30: desktop.active.d30 + ios.active.d30 + android.active.d30,
+      },
+      newLast30d: desktop.newLast30d + ios.newLast30d + android.newLast30d,
+      distinctUsers: new Set(allDevices.map((row) => row.userId).filter(Boolean)).size,
+    },
   }
 }
 

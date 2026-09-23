@@ -53,6 +53,7 @@ import { cliAuthRoutes } from './routes/cli-auth'
 import { instanceRoutes, authenticateInstanceWs, handleInstanceWsOpen, handleInstanceWsMessage, handleInstanceWsClose, startTunnelHeartbeat } from './routes/instances'
 import { remoteAuditRoutes } from './routes/remote-audit'
 import { mobilePushRoutes } from './routes/mobile-push'
+import { appInstallRoutes } from './routes/app-installs'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
@@ -124,6 +125,7 @@ export {
   startTunnelHeartbeat,
   remoteAuditRoutes,
   mobilePushRoutes,
+  appInstallRoutes,
   syncRoutes,
   internalRoutes,
   internalE2eRoutes,

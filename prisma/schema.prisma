@@ -68,6 +68,7 @@ model User {
   affiliateAttribution AffiliateAttribution?
   projectAuthSignIns   ProjectAuthSignIn[]
   mobilePushSubscriptions MobilePushSubscription[]
+  appInstalls          AppInstall[]
   slackUserLinks       SlackUserLink[]
 
   @@index([createdAt])
@@ -2375,6 +2376,25 @@ model MobilePushSubscription {
 
   @@index([userId])
   @@map("mobile_push_subscriptions")
+}
+
+model AppInstall {
+  id          String    @id @default(cuid())
+  deviceId    String    @unique
+  platform    String
+  appVersion  String?
+  osVersion   String?
+  deviceModel String?
+  userId      String?
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([platform])
+  @@index([lastSeenAt])
+  @@index([userId])
+  @@map("app_installs")
 }
 
 // =============================================================================
