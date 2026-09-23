@@ -145,7 +145,11 @@ function readPkgScripts(pkgDir: string): Record<string, string> {
   }
 }
 
-function createPackageTestJob(pkg: string, withCoverage: boolean): PackagePoolJob | null {
+function createPackageTestJob(
+  pkg: string,
+  withCoverage: boolean,
+  shard: string | null,
+): PackagePoolJob | null {
   const pkgDir = join(REPO_ROOT, pkg)
   const scripts = readPkgScripts(pkgDir)
 
@@ -176,10 +180,13 @@ function createPackageTestJob(pkg: string, withCoverage: boolean): PackagePoolJo
   // suites that need a proxy stub mock one themselves.
   delete childEnv.AI_PROXY_URL
   delete childEnv.AI_PROXY_TOKEN
+  const args = ['run', scriptName]
+  if (shard) args.push('--', '--shard', shard)
+
   return {
     name: pkg,
     command: 'bun',
-    args: ['run', scriptName],
+    args,
     cwd: pkgDir,
     env: childEnv,
   }
@@ -345,6 +352,50 @@ function findLcovFiles(pkg: string): string[] {
 async function main() {
   const argv = process.argv.slice(2)
   const withCoverage = argv.includes('--coverage')
+  const includeE2E = argv.includes('--include-e2e')
+  const requestedPackageConcurrency = Number(process.env.SHOGO_TEST_PACKAGE_CONCURRENCY ?? '2')
+  const packageConcurrency = Number.isFinite(requestedPackageConcurrency)
+    ? Math.max(1, Math.min(8, Math.floor(requestedPackageConcurrency)))
+    : 2
+  let packageFilter: Set<string> | null = null
+  let shard: string | null = null
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--packages' && argv[i + 1]) {
+      packageFilter = new Set(
+        argv[++i].split(',').map((pkg) => pkg.trim()).filter(Boolean),
+      )
+    } else if (arg.startsWith('--packages=')) {
+      packageFilter = new Set(
+        arg.slice('--packages='.length).split(',').map((pkg) => pkg.trim()).filter(Boolean),
+      )
+    } else if (arg === '--shard' && argv[i + 1]) {
+      shard = argv[++i]
+    } else if (arg.startsWith('--shard=')) {
+      shard = arg.slice('--shard='.length)
+    }
+  }
+
+  const selectedPackages = packageFilter
+    ? TEST_PACKAGES.filter((pkg) => packageFilter!.has(pkg))
+    : [...TEST_PACKAGES]
+  const unknownPackages = packageFilter
+    ? [...packageFilter].filter((pkg) => !TEST_PACKAGES.includes(pkg as (typeof TEST_PACKAGES)[number]))
+    : []
+  if (unknownPackages.length > 0) {
+    console.error(`[test] unknown package filter: ${unknownPackages.join(', ')}`)
+    process.exit(2)
+  }
+  if (selectedPackages.length === 0) {
+    console.error('[test] package filter selected no test packages')
+    process.exit(2)
+  }
+  console.log(`[test] package concurrency=${packageConcurrency}`)
+
+  // Package-filtered matrix jobs own their selected package tests. Keep the
+  // in-process e2e suites in exactly one unsharded "remaining" matrix leg.
+  const runE2E = packageFilter === null || includeE2E
 
   const rootCoverageDir = join(REPO_ROOT, 'coverage')
   const e2eShardsRoot = join(rootCoverageDir, '.e2e-shards')
@@ -368,8 +419,8 @@ async function main() {
   }
 
   const packageJobs: PackagePoolJob[] = []
-  for (const pkg of TEST_PACKAGES) {
-    const job = createPackageTestJob(pkg, withCoverage)
+  for (const pkg of selectedPackages) {
+    const job = createPackageTestJob(pkg, withCoverage, shard)
     if (job) {
       packageJobs.push(job)
     } else {
@@ -379,7 +430,7 @@ async function main() {
       console.log(`\n=== ${pkg}: no \`${scriptName}\` script — skipping ===`)
     }
   }
-  const packageResults = await runPackagePool(packageJobs, 2, printPackageResult)
+  const packageResults = await runPackagePool(packageJobs, packageConcurrency, printPackageResult)
   const results: PackageResult[] = packageResults.map((result) => ({
     pkg: result.job.name,
     exitCode: result.exitCode,
@@ -393,8 +444,10 @@ async function main() {
   // and run last so a missing local DB just emits a SKIPPED line
   // instead of bringing down the whole coverage build.
   const e2eResults: E2EResult[] = []
-  for (const suite of IN_PROCESS_E2E_SUITES) {
-    e2eResults.push(runE2ESuite(suite, withCoverage, e2eShardsRoot))
+  if (runE2E) {
+    for (const suite of IN_PROCESS_E2E_SUITES) {
+      e2eResults.push(runE2ESuite(suite, withCoverage, e2eShardsRoot))
+    }
   }
 
   console.log()

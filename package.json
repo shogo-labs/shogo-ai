@@ -13,7 +13,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || exit 0",
     "build": "bun run build:packages && bun run --cwd packages/agent-runtime build",
-    "build:packages": "bun run build:core && bun run build:agent && bun run build:db && bun run build:email && bun run build:voice && bun run build:cli && bun run build:sdk",
+    "build:packages": "bun scripts/build-packages.ts",
     "build:sdk": "bun run --cwd packages/sdk build",
     "build:core": "bun run --cwd packages/core build",
     "build:agent": "bun run --cwd packages/agent build",
