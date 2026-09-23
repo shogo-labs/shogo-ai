@@ -133,11 +133,17 @@ export function OnboardingStepper({
       >
         <ScrollView
           className="flex-1"
-          contentContainerClassName="flex-grow justify-center px-5 py-8 sm:px-8"
+          contentContainerClassName="flex-grow items-center justify-center px-5 py-8 sm:px-8"
           keyboardShouldPersistTaps="handled"
         >
           <Animated.View
-            style={{ opacity, transform: [{ translateX }], width: '100%', maxWidth: 768 }}
+            style={{
+              opacity,
+              transform: [{ translateX }],
+              width: '100%',
+              maxWidth: 768,
+              alignSelf: 'center',
+            }}
             className="self-center"
           >
             {step.eyebrow ? (
