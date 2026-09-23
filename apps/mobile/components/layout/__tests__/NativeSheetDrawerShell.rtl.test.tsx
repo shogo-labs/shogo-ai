@@ -14,7 +14,7 @@ mock.module("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
 }))
 
-const { NativeSheetDrawerShell } = await import("../NativeSheetDrawerShell")
+const { NativeSheetDrawerShell, nativeSheetDrawerFrameOverflow } = await import("../NativeSheetDrawerShell")
 
 function drawerStub(overrides: Record<string, unknown> = {}) {
   return {
@@ -32,6 +32,13 @@ function drawerStub(overrides: Record<string, unknown> = {}) {
     ...overrides,
   } as any
 }
+
+test("clips the drawer underlay on Android but preserves iOS sheet overflow", () => {
+  expect(nativeSheetDrawerFrameOverflow(true, "android")).toBe("hidden")
+  expect(nativeSheetDrawerFrameOverflow(true, "ios")).toBe("visible")
+  expect(nativeSheetDrawerFrameOverflow(true, "web")).toBe("hidden")
+  expect(nativeSheetDrawerFrameOverflow(false, "ios")).toBe("hidden")
+})
 
 describe("NativeSheetDrawerShell", () => {
   test("native drawer frame uses the sheet fill and does not clip the slide", () => {

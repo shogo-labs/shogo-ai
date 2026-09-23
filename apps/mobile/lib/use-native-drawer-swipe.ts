@@ -39,6 +39,8 @@ export const NATIVE_DRAWER_SHEET_OPEN_CANVAS = SURFACE_COLORS.dark.containerHigh
 export const NATIVE_DRAWER_MIN_TOP_INSET = 56
 export const NATIVE_DRAWER_MIN_SIDE_INSET = 4
 export const NATIVE_DRAWER_MIN_FOOTER_INSET = 12
+/** Extra Android clearance for edge-to-edge drawer footers above system navigation. */
+export const NATIVE_DRAWER_ANDROID_FOOTER_EXTRA_INSET = 16
 /** Rasterize the moving sheet once progress leaves rest, not on every tick. */
 export const NATIVE_DRAWER_COMPOSITING_EPSILON = 0.001
 
@@ -65,8 +67,9 @@ export function nativeDrawerSideInset(safeLeft: number): number {
   return Math.max(safeLeft, NATIVE_DRAWER_MIN_SIDE_INSET)
 }
 
-export function nativeDrawerFooterInset(safeBottom: number): number {
-  return Math.max(safeBottom, NATIVE_DRAWER_MIN_FOOTER_INSET)
+export function nativeDrawerFooterInset(safeBottom: number, platform?: string): number {
+  const baseInset = Math.max(safeBottom, NATIVE_DRAWER_MIN_FOOTER_INSET)
+  return baseInset + (platform === 'android' ? NATIVE_DRAWER_ANDROID_FOOTER_EXTRA_INSET : 0)
 }
 
 export function nativeDrawerUnderlayStyle(drawerWidth: number, isDark: boolean) {

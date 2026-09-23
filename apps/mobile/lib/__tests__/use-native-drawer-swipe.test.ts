@@ -24,6 +24,7 @@ import {
   NATIVE_DRAWER_MIN_TOP_INSET,
   NATIVE_DRAWER_MIN_SIDE_INSET,
   NATIVE_DRAWER_MIN_FOOTER_INSET,
+  NATIVE_DRAWER_ANDROID_FOOTER_EXTRA_INSET,
 } from '../use-native-drawer-swipe'
 import { NATIVE_PHONE_CANVAS, NATIVE_PHONE_HOME_CANVAS } from '../native-phone-layout'
 
@@ -116,6 +117,12 @@ describe('native drawer insets', () => {
     expect(nativeDrawerSideInset(0)).toBe(NATIVE_DRAWER_MIN_SIDE_INSET)
     expect(nativeDrawerFooterInset(8)).toBe(NATIVE_DRAWER_MIN_FOOTER_INSET)
     expect(nativeDrawerFooterInset(34)).toBe(34)
+    expect(nativeDrawerFooterInset(8, 'android')).toBe(
+      NATIVE_DRAWER_MIN_FOOTER_INSET + NATIVE_DRAWER_ANDROID_FOOTER_EXTRA_INSET,
+    )
+    expect(nativeDrawerFooterInset(34, 'android')).toBe(
+      34 + NATIVE_DRAWER_ANDROID_FOOTER_EXTRA_INSET,
+    )
   })
 })
 

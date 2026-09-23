@@ -3196,10 +3196,12 @@ export default observer(function ProjectLayout() {
                     void updateProjectSettings({ activeMode: 'canvas', canvasEnabled: true })
                   }
                   setPreviewTab('canvas')
+                  router.setParams({ tab: 'canvas' } as any)
                 } else {
                   // Clear standalone preview (files, capabilities, …) so the chat column shows
                   // and the next “canvas” visit doesn’t reopen the old panel on top.
                   setPreviewTab('chat-fullscreen')
+                  router.setParams({ tab: 'chat-fullscreen' } as any)
                 }
               }}
               onTabChange={(tabId: string) => {

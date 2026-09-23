@@ -140,8 +140,13 @@ export function ModelPickerMenu({
     const isSelected = currentModelId === model.id
     const isLocked = !effectiveIsPro && model.tier !== "economy"
     const effort = model.reasoningEffort
+    const hasDetails = Boolean(
+      model.description?.trim() ||
+      (model.contextWindow && model.contextWindow > 0) ||
+      effort,
+    )
     const isExpanded = expandedId === model.id
-    const contextLabel = !isWeb && isExpanded ? formatContextWindow(model.contextWindow) : null
+    const contextLabel = !isWeb && isExpanded && hasDetails ? formatContextWindow(model.contextWindow) : null
 
     return (
       <View key={model.id}>
@@ -185,7 +190,7 @@ export function ModelPickerMenu({
             />
           ) : null}
           {/* Native-only inline details toggle. */}
-          {!isWeb ? (
+          {!isWeb && hasDetails ? (
             <Pressable
               onPress={(e) => {
                 e.stopPropagation?.()
@@ -201,7 +206,7 @@ export function ModelPickerMenu({
             </Pressable>
           ) : null}
         </Pressable>
-        {!isWeb && isExpanded ? (
+        {!isWeb && isExpanded && hasDetails ? (
           <View className="px-3 pb-2.5 -mt-1 gap-1">
             {model.description ? (
               <Text className={cn("text-muted-foreground", isSheet ? NATIVE_MODEL_SHEET.detailClass : "text-[13px] leading-5")}>

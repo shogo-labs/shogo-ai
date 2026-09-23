@@ -399,7 +399,7 @@ function AdminSidebar({
 
       <View
         className="border-t border-border p-2 gap-0.5"
-        style={isNativeDrawer ? { paddingBottom: nativeDrawerFooterInset(insets.bottom) } : undefined}
+        style={isNativeDrawer ? { paddingBottom: nativeDrawerFooterInset(insets.bottom, Platform.OS) } : undefined}
       >
         <Pressable
           onPress={() => { router.replace('/(app)'); onClose?.() }}

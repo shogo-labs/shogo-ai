@@ -6,6 +6,19 @@ import { Animated, Platform, View } from 'react-native'
 import { SafeAreaView, type Edge, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 
+export function nativeSheetDrawerFrameOverflow(
+  nativeSheetDrawer: boolean,
+  platform: string,
+): 'visible' | 'hidden' {
+  // Android's bottom system inset is outside the foreground sheet. Letting
+  // the drawer underlay overflow into it makes the sidebar footer show
+  // beneath the mobile bottom nav on inset pages such as Tasks and Activity.
+  // iOS keeps the visible overflow needed for its sheet transition.
+  return nativeSheetDrawer && platform !== 'web' && platform !== 'android'
+    ? 'visible'
+    : 'hidden'
+}
+
 export interface NativeSheetDrawerShellProps {
   isWide: boolean
   nativeSheetDrawer: boolean
@@ -42,7 +55,7 @@ export function NativeSheetDrawerShell({
   const insets = useSafeAreaInsets()
   const frameFill = nativeSheetDrawer ? (sheetFill ?? canvas) : canvas
   const flattenSheet = nativeSheetDrawer && (drawerOpen || sheetCompositing)
-  const frameOverflow = nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
+  const frameOverflow = nativeSheetDrawerFrameOverflow(nativeSheetDrawer, Platform.OS)
   const safeAreaAppliesTop = safeAreaEdges === undefined || safeAreaEdges.includes('top')
   const safeAreaAppliesBottom = safeAreaEdges === undefined || safeAreaEdges.includes('bottom')
   const fullHeightUnderlayStyle = nativeSheetDrawer

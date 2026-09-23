@@ -158,7 +158,7 @@ export const AppSidebar = observer(function AppSidebar({
   // Sit above the home indicator / rounded corner without the extra min-height
   // padding that used to look like a second empty row.
   const drawerFooterInset = isNativeDrawer
-    ? nativeDrawerFooterInset(insets.bottom)
+    ? nativeDrawerFooterInset(insets.bottom, Platform.OS)
     : insets.bottom;
   const drawerSideInset = isNativeDrawer
     ? nativeDrawerSideInset(insets.left)

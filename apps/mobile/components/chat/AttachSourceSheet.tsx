@@ -4,13 +4,14 @@
 import { type ReactNode } from "react"
 import { Modal, View, Text, Pressable, ScrollView, useWindowDimensions } from "react-native"
 import { X } from "lucide-react-native"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import {
   executeNativeAttachAction,
   type NativeAttachAction,
   type NativeAttachPickerOptions,
 } from "../../lib/native-attachment-picker"
 import { ComposerPlusCloseContext } from "./ComposerPlusMenu"
-import { useNativePhoneSheetChrome } from "../../lib/native-phone-layout";
+import { NATIVE_PHONE_GUTTER, useNativePhoneSheetChrome } from "../../lib/native-phone-layout";
 import { PLUS_ATTACH_ROWS } from "../../lib/composer-phone"
 
 export interface AttachSourceSheetProps extends NativeAttachPickerOptions {
@@ -27,6 +28,7 @@ export function AttachSourceSheet({
   ...opts
 }: AttachSourceSheetProps) {
   const { height } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
   const sheet = useNativePhoneSheetChrome()
   const close = () => onOpenChange(false)
   const handleSelect = (action: NativeAttachAction) => {
@@ -54,8 +56,11 @@ export function AttachSourceSheet({
             accessibilityLabel="Dismiss attach menu"
           />
           <View
-            className="z-10 w-full rounded-t-3xl border border-outline-100 border-b-0 bg-background-0 pb-safe shadow-hard-5"
-            style={sheet.panel}
+            className="z-10 w-full rounded-t-3xl border border-outline-100 border-b-0 bg-background-0 shadow-hard-5"
+            style={[
+              sheet.panel,
+              { paddingBottom: Math.max(insets.bottom, NATIVE_PHONE_GUTTER) },
+            ]}
           >
             <View className="items-center pt-2 pb-1">
               <View className="h-1 w-12 rounded-full bg-background-400" />

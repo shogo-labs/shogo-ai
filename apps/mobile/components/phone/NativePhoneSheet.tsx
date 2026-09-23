@@ -236,7 +236,14 @@ export function NativePhoneSheet({
   const panelSlide = animationType === 'slide'
   const { mounted, transition } = useNativePhoneSheetSlide(visible, panelSlide)
   const panelHeight = Math.round(height * maxHeightRatio)
-  const keyboardShift = useNativePhoneSheetKeyboardShift(visible, height, keyboardBehavior === 'shift')
+  // iOS scroll sheets can rely on automatic keyboard insets. Android does not
+  // resize this transparent modal reliably, so lift the panel while retaining
+  // the scroll behavior for the task form.
+  const keyboardShift = useNativePhoneSheetKeyboardShift(
+    visible,
+    height,
+    keyboardBehavior === 'shift' || (keyboardBehavior === 'scroll' && Platform.OS === 'android'),
+  )
   const dragOffset = useRef(new Animated.Value(0)).current
   const dragStart = useRef(0)
   const dragBounds = useMemo(() => {

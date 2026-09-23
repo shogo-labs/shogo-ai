@@ -20,7 +20,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { ActivityIndicator, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
-import { Slot, usePathname, useRouter } from 'expo-router'
+import { Slot, useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { API_URL } from '../../lib/api'
@@ -51,6 +51,7 @@ export default function AppLayout() {
   const { localMode } = usePlatformConfig()
   const router = useRouter()
   const pathname = usePathname()
+  const routeParams = useLocalSearchParams<{ tab?: string | string[] }>()
   const isIdeEmbed = useMemo(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return false
     return new URLSearchParams(window.location.search).get('embed') === 'ide'
@@ -85,6 +86,8 @@ export default function AppLayout() {
   const isAccountPage = pathname === '/account' || pathname === '/(app)/account'
   const isSearchPage = pathname === '/search' || pathname === '/(app)/search'
   const isProjectChatsPage = pathname === '/project-chats' || pathname === '/(app)/project-chats'
+  const projectTab = Array.isArray(routeParams.tab) ? routeParams.tab[0] : routeParams.tab
+  const isProjectCanvasTab = pathname.includes('/projects/') && projectTab === 'canvas'
 
   usePostHogIdentify()
   const posthog = usePostHogSafe()
@@ -289,7 +292,7 @@ export default function AppLayout() {
             <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
           ) : null
         }
-        bottomNav={isNativeApp && !isIdeEmbed ? <MobileBottomNav /> : null}
+        bottomNav={isNativeApp && !isIdeEmbed && !isProjectCanvasTab ? <MobileBottomNav /> : null}
         drawer={drawer}
       >
         {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
