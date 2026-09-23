@@ -3886,7 +3886,7 @@ export class AgentGateway {
         actionLines.push('- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.')
       }
       if (devopsGuideOn) {
-        actionLines.push('- For recurring reminders, digests, check-ins, or autonomous routines, call `heartbeat_configure` and write or update `HEARTBEAT.md` with the exact checklist.')
+        actionLines.push('- For recurring reminders, digests, check-ins, or autonomous routines in a workspace, create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.')
       }
       actionLines.push(
         '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',

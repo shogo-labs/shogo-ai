@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { CheckCircle2, ChevronRight, CircleDot, PauseCircle, Target } from 'lucide-react-native'
+import { CheckCircle2, ChevronRight, CircleDot, PauseCircle, Repeat2, Target } from 'lucide-react-native'
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, type PersonalGoal, type PersonalWorkspaceActivity } from '../../lib/api'
@@ -146,6 +146,15 @@ function GoalSection({
                 <Text className="text-base font-semibold text-foreground">{goal.title}</Text>
                 {goal.why ? (
                   <Text className="mt-1 text-sm leading-5 text-muted-foreground">{goal.why}</Text>
+                ) : null}
+                {goal.schedules?.some((schedule) => schedule.enabled) ? (
+                  <View className="mt-2 flex-row items-center gap-1">
+                    <Repeat2 size={13} className="text-muted-foreground" />
+                    <Text className="text-xs text-muted-foreground">
+                      {goal.schedules.filter((schedule) => schedule.enabled).length} recurring schedule
+                      {goal.schedules.filter((schedule) => schedule.enabled).length === 1 ? '' : 's'}
+                    </Text>
+                  </View>
                 ) : null}
                 <Text className="mt-3 text-xs capitalize text-muted-foreground">
                   {goal.status}

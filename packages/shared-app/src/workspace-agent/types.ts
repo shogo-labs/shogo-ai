@@ -30,6 +30,21 @@ export interface WorkspaceAgentProfile {
   statusUpdatedAt: string | null
 }
 
+export interface AgentScheduleSummary {
+  id: string
+  goalId: string | null
+  name: string
+  prompt: string
+  cronExpression: string
+  timezone: string
+  enabled: boolean
+  nextRunAt: string
+  lastRunAt: string | null
+  lastRunStatus: string | null
+  lastRunSummary: string | null
+  lastError: string | null
+}
+
 export interface Goal {
   id: string
   workspaceId: string
@@ -38,6 +53,7 @@ export interface Goal {
   status: GoalStatus
   plan: unknown
   deliverables: unknown
+  schedules?: AgentScheduleSummary[]
   nextCheckInAt: string | null
   lastProgressAt: string | null
   createdAt: string

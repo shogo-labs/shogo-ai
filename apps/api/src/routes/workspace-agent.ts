@@ -21,6 +21,13 @@
 import { Hono } from 'hono'
 import { hasWorkspaceAccess } from '../services/workspace.service'
 import {
+  AgentScheduleError,
+  createSchedule,
+  deleteSchedule,
+  listSchedules,
+  updateSchedule,
+} from '../services/agent-schedule.service'
+import {
   createGoal,
   createGoalEvent,
   getGoal,
@@ -77,6 +84,11 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   const router = new Hono()
   const { authorize } = config
   const saveAvatar = config.saveAgentAvatar ?? saveLocalAgentAvatar
+
+  function scheduleError(c: any, error: unknown) {
+    if (!(error instanceof AgentScheduleError)) throw error
+    return c.json({ error: { code: error.code, message: error.message } }, error.status)
+  }
 
   router.get('/workspaces/:workspaceId/agent-profile', async (c) => {
     const auth = await authorize(c)
@@ -199,6 +211,106 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     })
     if (!goal) return c.json({ error: { code: 'not_found', message: 'Goal not found' } }, 404)
     return c.json({ goal })
+  })
+
+  router.get('/workspaces/:workspaceId/schedules', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const goalId = c.req.query('goalId') || undefined
+    return c.json({ schedules: await listSchedules(auth.workspaceId, goalId) })
+  })
+
+  router.post('/workspaces/:workspaceId/schedules', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const userId =
+      auth.userId ||
+      (typeof body?.userId === 'string' && body.userId.trim() ? body.userId.trim() : null)
+    if (!userId) {
+      return c.json({
+        error: { code: 'invalid_body', message: 'userId is required for an internal schedule request' },
+      }, 400)
+    }
+    if (!auth.userId && !(await hasWorkspaceAccess(auth.workspaceId, userId))) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
+    if (
+      !body ||
+      typeof body.name !== 'string' ||
+      !body.name.trim() ||
+      typeof body.prompt !== 'string' ||
+      !body.prompt.trim() ||
+      typeof body.cronExpression !== 'string' ||
+      !body.cronExpression.trim()
+    ) {
+      return c.json({
+        error: { code: 'invalid_body', message: 'name, prompt, and cronExpression are required' },
+      }, 400)
+    }
+    if (body.goalId !== undefined && body.goalId !== null && typeof body.goalId !== 'string') {
+      return c.json({ error: { code: 'invalid_field', message: 'goalId must be a string or null' } }, 400)
+    }
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_field', message: 'enabled must be a boolean' } }, 400)
+    }
+    try {
+      const schedule = await createSchedule({
+        workspaceId: auth.workspaceId,
+        userId,
+        goalId: body.goalId as string | null | undefined,
+        name: body.name.trim().slice(0, 200),
+        prompt: body.prompt.trim().slice(0, 10_000),
+        cronExpression: body.cronExpression.trim(),
+        timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
+        enabled: body.enabled as boolean | undefined,
+      })
+      return c.json({ schedule }, 201)
+    } catch (error) {
+      return scheduleError(c, error)
+    }
+  })
+
+  router.patch('/workspaces/:workspaceId/schedules/:scheduleId', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: { code: 'invalid_body', message: 'Request body must be an object' } }, 400)
+    }
+    if (body.goalId !== undefined && body.goalId !== null && typeof body.goalId !== 'string') {
+      return c.json({ error: { code: 'invalid_field', message: 'goalId must be a string or null' } }, 400)
+    }
+    for (const key of ['name', 'prompt', 'cronExpression', 'timezone'] as const) {
+      if (body[key] !== undefined && (typeof body[key] !== 'string' || !body[key].trim())) {
+        return c.json({ error: { code: 'invalid_field', message: `${key} must be a non-empty string` } }, 400)
+      }
+    }
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return c.json({ error: { code: 'invalid_field', message: 'enabled must be a boolean' } }, 400)
+    }
+    try {
+      const schedule = await updateSchedule(auth.workspaceId, c.req.param('scheduleId'), {
+        goalId: body.goalId as string | null | undefined,
+        name: typeof body.name === 'string' ? body.name.trim().slice(0, 200) : undefined,
+        prompt: typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 10_000) : undefined,
+        cronExpression: typeof body.cronExpression === 'string' ? body.cronExpression.trim() : undefined,
+        timezone: typeof body.timezone === 'string' ? body.timezone.trim() : undefined,
+        enabled: body.enabled as boolean | undefined,
+      })
+      if (!schedule) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
+      return c.json({ schedule })
+    } catch (error) {
+      return scheduleError(c, error)
+    }
+  })
+
+  router.delete('/workspaces/:workspaceId/schedules/:scheduleId', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const deleted = await deleteSchedule(auth.workspaceId, c.req.param('scheduleId'))
+    if (!deleted) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
+    return c.json({ ok: true })
   })
 
   router.post('/workspaces/:workspaceId/goals/:goalId/events', async (c) => {

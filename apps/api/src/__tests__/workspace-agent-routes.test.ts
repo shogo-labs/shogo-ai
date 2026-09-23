@@ -49,6 +49,30 @@ mock.module('../services/workspace-agent.service', () => ({
       : null,
 }))
 
+const schedule = {
+  id: 'schedule-1',
+  workspaceId: 'workspace-1',
+  goalId: 'goal-1',
+  userId: 'user-1',
+  name: 'Morning digest',
+  prompt: 'Review the inbox.',
+  cronExpression: '0 9 * * 1-5',
+  timezone: 'America/Los_Angeles',
+  enabled: true,
+  nextRunAt: '2026-09-22T16:00:00.000Z',
+}
+
+mock.module('../services/agent-schedule.service', () => ({
+  AgentScheduleError: class AgentScheduleError extends Error {
+    code = 'invalid_cron'
+    status = 400
+  },
+  listSchedules: async () => [schedule],
+  createSchedule: async (input: any) => ({ ...schedule, ...input, id: 'schedule-1' }),
+  updateSchedule: async (_workspaceId: string, _scheduleId: string, changes: any) => ({ ...schedule, ...changes }),
+  deleteSchedule: async () => true,
+}))
+
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../routes/workspace-agent')
 
 function appFor(userId: string | null) {
@@ -191,6 +215,38 @@ describe('workspace agent routes (session-authorized mount)', () => {
       },
     )
     expect(res.status).toBe(404)
+  })
+
+  test('lets an authenticated workspace agent create and manage goal schedules', async () => {
+    const create = await appFor('user-1').request('/api/workspaces/workspace-1/schedules', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Morning digest',
+        prompt: 'Review the inbox.',
+        cronExpression: '0 9 * * 1-5',
+        timezone: 'America/Los_Angeles',
+        goalId: 'goal-1',
+      }),
+    })
+    expect(create.status).toBe(201)
+    expect(await create.json()).toMatchObject({ schedule: { goalId: 'goal-1' } })
+
+    const list = await appFor('user-1').request('/api/workspaces/workspace-1/schedules?goalId=goal-1')
+    expect(list.status).toBe(200)
+    expect(await list.json()).toMatchObject({ schedules: [{ id: 'schedule-1' }] })
+
+    const update = await appFor('user-1').request('/api/workspaces/workspace-1/schedules/schedule-1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+    expect(update.status).toBe(200)
+
+    const remove = await appFor('user-1').request('/api/workspaces/workspace-1/schedules/schedule-1', {
+      method: 'DELETE',
+    })
+    expect(remove.status).toBe(200)
   })
 })
 

@@ -445,6 +445,7 @@ export interface PersonalGoal {
   status: 'active' | 'paused' | 'done'
   plan: unknown
   deliverables: unknown
+  schedules?: AgentSchedule[]
   nextCheckInAt: string | null
   lastProgressAt: string | null
   createdAt: string
@@ -477,6 +478,44 @@ export interface PersonalGoalUpdateRequest {
   deliverables?: unknown
   nextCheckInAt?: string | null
   lastProgressAt?: string | null
+}
+
+export interface AgentSchedule {
+  id: string
+  workspaceId: string
+  goalId: string | null
+  userId: string
+  name: string
+  prompt: string
+  cronExpression: string
+  timezone: string
+  enabled: boolean
+  nextRunAt: string
+  lastRunAt: string | null
+  lastRunStatus: string | null
+  lastRunSummary: string | null
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AgentScheduleCreateRequest {
+  name: string
+  prompt: string
+  cronExpression: string
+  timezone?: string
+  goalId?: string | null
+  enabled?: boolean
+  userId?: string
+}
+
+export interface AgentScheduleUpdateRequest {
+  name?: string
+  prompt?: string
+  cronExpression?: string
+  timezone?: string
+  goalId?: string | null
+  enabled?: boolean
 }
 
 async function personalFetch<T>(
@@ -573,6 +612,49 @@ export async function logGoalEvent(
   return personalFetch(
     `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/goals/${encodeURIComponent(goalId)}/events`,
     { method: 'POST', body: JSON.stringify(input), parse: (j) => j?.event as PersonalGoalEvent },
+  )
+}
+
+export async function listSchedules(
+  workspaceId: string,
+  goalId?: string,
+): Promise<CheckpointCallResult<AgentSchedule[]>> {
+  const query = goalId ? `?goalId=${encodeURIComponent(goalId)}` : ''
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules${query}`, {
+    method: 'GET',
+    parse: (j) => (j?.schedules ?? []) as AgentSchedule[],
+  })
+}
+
+export async function createSchedule(
+  workspaceId: string,
+  input: AgentScheduleCreateRequest,
+): Promise<CheckpointCallResult<AgentSchedule>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => j?.schedule as AgentSchedule,
+  })
+}
+
+export async function updateSchedule(
+  workspaceId: string,
+  scheduleId: string,
+  input: AgentScheduleUpdateRequest,
+): Promise<CheckpointCallResult<AgentSchedule>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules/${encodeURIComponent(scheduleId)}`,
+    { method: 'PATCH', body: JSON.stringify(input), parse: (j) => j?.schedule as AgentSchedule },
+  )
+}
+
+export async function deleteSchedule(
+  workspaceId: string,
+  scheduleId: string,
+): Promise<CheckpointCallResult<{ ok: true }>> {
+  return personalFetch(
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules/${encodeURIComponent(scheduleId)}`,
+    { method: 'DELETE', parse: (j) => j as { ok: true } },
   )
 }
 

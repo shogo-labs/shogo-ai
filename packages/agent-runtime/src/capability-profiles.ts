@@ -99,7 +99,8 @@ export const CORE_TOOL_NAMES = [
   'ask_user', 'skill', 'quick_action', 'generate_image',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
   'project_list', 'project_create', 'project_call', 'project_configure',
-  'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list', 'set_status',
+  'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
+  'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
 ]
 
 export interface CapabilityProfile {

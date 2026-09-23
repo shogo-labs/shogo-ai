@@ -11,6 +11,10 @@ import {
   createGoalLogTool,
   createGoalListTool,
   createGoalUpdateTool,
+  createScheduleCreateTool,
+  createScheduleDeleteTool,
+  createScheduleListTool,
+  createScheduleUpdateTool,
   createSetStatusTool,
 } from '../workspace-agent-tools'
 
@@ -41,6 +45,22 @@ mock.module('../internal-api', () => ({
   listGoals: async (...args: unknown[]) => {
     calls.push({ name: 'listGoals', args })
     return { ok: true, status: 200, data: [{ id: 'goal-1', status: 'active' }] }
+  },
+  createSchedule: async (...args: unknown[]) => {
+    calls.push({ name: 'createSchedule', args })
+    return { ok: true, status: 201, data: { id: 'schedule-1', name: 'Morning digest' } }
+  },
+  listSchedules: async (...args: unknown[]) => {
+    calls.push({ name: 'listSchedules', args })
+    return { ok: true, status: 200, data: [{ id: 'schedule-1', enabled: true }] }
+  },
+  updateSchedule: async (...args: unknown[]) => {
+    calls.push({ name: 'updateSchedule', args })
+    return { ok: true, status: 200, data: { id: 'schedule-1', enabled: false } }
+  },
+  deleteSchedule: async (...args: unknown[]) => {
+    calls.push({ name: 'deleteSchedule', args })
+    return { ok: true, status: 200, data: { ok: true } }
   },
 }))
 
@@ -89,6 +109,49 @@ describe('personal runtime tools', () => {
     const result = await execute(createGoalListTool(ctx), { status: 'active' })
     expect(result.goals).toEqual([{ id: 'goal-1', status: 'active' }])
     expect(calls[0]).toEqual({ name: 'listGoals', args: ['workspace-1', 'active'] })
+  })
+
+  test('creates, lists, updates, and deletes workspace schedules', async () => {
+    calls.length = 0
+    await execute(createScheduleCreateTool({ ...ctx, userId: 'user-1' }), {
+      name: 'Morning digest',
+      prompt: 'Review my inbox and summarize anything urgent.',
+      cron: '0 9 * * 1-5',
+      timezone: 'America/Los_Angeles',
+      goalId: 'goal-1',
+    })
+    await execute(createScheduleListTool(ctx), { goalId: 'goal-1' })
+    await execute(createScheduleUpdateTool(ctx), { scheduleId: 'schedule-1', enabled: false })
+    await execute(createScheduleDeleteTool(ctx), { scheduleId: 'schedule-1' })
+
+    expect(calls.map((call) => call.name)).toEqual([
+      'createSchedule',
+      'listSchedules',
+      'updateSchedule',
+      'deleteSchedule',
+    ])
+    expect(calls[0]?.args).toEqual([
+      'workspace-1',
+      {
+        name: 'Morning digest',
+        prompt: 'Review my inbox and summarize anything urgent.',
+        cronExpression: '0 9 * * 1-5',
+        timezone: 'America/Los_Angeles',
+        goalId: 'goal-1',
+        enabled: undefined,
+        userId: 'user-1',
+      },
+    ])
+    expect(calls[1]?.args).toEqual(['workspace-1', 'goal-1'])
+    expect(calls[2]?.args).toEqual(['workspace-1', 'schedule-1', {
+      name: undefined,
+      prompt: undefined,
+      cronExpression: undefined,
+      timezone: undefined,
+      goalId: undefined,
+      enabled: false,
+    }])
+    expect(calls[3]?.args).toEqual(['workspace-1', 'schedule-1'])
   })
 })
 

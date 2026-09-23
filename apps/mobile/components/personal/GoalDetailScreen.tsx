@@ -20,6 +20,7 @@ import {
   Clock3,
   ListChecks,
   PauseCircle,
+  Repeat2,
   Sparkles,
 } from 'lucide-react-native'
 import { isGoalEventApprovalPending, parseGoalDeliverables, parseGoalPlan } from '@shogo/shared-app'
@@ -142,6 +143,36 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
 
         {goal.why ? (
           <Text className="mt-3 text-sm leading-5 text-muted-foreground">{goal.why}</Text>
+        ) : null}
+
+        {goal.schedules && goal.schedules.length > 0 ? (
+          <View className="mt-5">
+            <SectionLabel icon={Repeat2} label="Schedules" />
+            <View className="mt-3 gap-2.5">
+              {goal.schedules.map((schedule) => (
+                <View key={schedule.id} className="rounded-xl border border-border bg-card p-3">
+                  <View className="flex-row items-start gap-2">
+                    <View className="min-w-0 flex-1">
+                      <Text className="text-sm font-medium text-foreground">{schedule.name}</Text>
+                      <Text className="mt-1 text-xs text-muted-foreground">
+                        {schedule.cronExpression} · {schedule.timezone}
+                      </Text>
+                    </View>
+                    <Text className="text-xs text-muted-foreground">
+                      {schedule.enabled ? 'Active' : 'Paused'}
+                    </Text>
+                  </View>
+                  <Text className="mt-2 text-xs text-muted-foreground">
+                    Next run {formatDate(schedule.nextRunAt)}
+                    {schedule.lastRunStatus ? ` · Last run ${schedule.lastRunStatus}` : ''}
+                  </Text>
+                  {schedule.lastError ? (
+                    <Text className="mt-1 text-xs text-destructive">{schedule.lastError}</Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </View>
         ) : null}
 
         {pendingEvents.length > 0 ? (

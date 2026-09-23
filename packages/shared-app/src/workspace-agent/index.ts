@@ -4,6 +4,7 @@ export type {
   GoalStatus,
   GoalEventKind,
   WorkspaceAgentProfile,
+  AgentScheduleSummary,
   Goal,
   WorkspaceActivityItem,
   GoalPlanStep,

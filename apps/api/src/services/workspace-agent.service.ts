@@ -72,6 +72,11 @@ export async function saveAgentAvatar(workspaceId: string, imageBuffer: Buffer):
 export async function listGoals(workspaceId: string, status?: GoalStatus) {
   return prisma.goal.findMany({
     where: { workspaceId, ...(status ? { status } : {}) },
+    include: {
+      schedules: {
+        orderBy: [{ enabled: 'desc' }, { nextRunAt: 'asc' }],
+      },
+    },
     orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
   })
 }
@@ -82,6 +87,9 @@ export async function getGoal(workspaceId: string, goalId: string) {
     include: {
       events: { orderBy: { createdAt: 'desc' } },
       agentTasks: { orderBy: { updatedAt: 'desc' } },
+      schedules: {
+        orderBy: [{ enabled: 'desc' }, { nextRunAt: 'asc' }],
+      },
     },
   })
 }

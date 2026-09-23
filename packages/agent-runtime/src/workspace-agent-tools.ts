@@ -19,10 +19,14 @@ import { textResult } from './gateway-tools'
 import { assertWithinWorkspace } from './permission-engine'
 import {
   createGoal as apiCreateGoal,
+  createSchedule as apiCreateSchedule,
+  deleteSchedule as apiDeleteSchedule,
   getAgentProfile,
   listGoals as apiListGoals,
+  listSchedules as apiListSchedules,
   logGoalEvent,
   setAgentProfile,
+  updateSchedule as apiUpdateSchedule,
   updateGoal as apiUpdateGoal,
   uploadAgentAvatar,
 } from './internal-api'
@@ -42,6 +46,13 @@ function noWorkspace() {
   return textResult({
     error: 'This runtime has no workspace context, so personal workspace tools are unavailable.',
     code: 'no_workspace',
+  })
+}
+
+function noUser() {
+  return textResult({
+    error: 'This runtime has no authenticated user, so schedules cannot be assigned to a user.',
+    code: 'no_user',
   })
 }
 
@@ -228,6 +239,125 @@ export function createGoalListTool(ctx: ToolContext): AgentTool {
   }
 }
 
+export function createScheduleCreateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'schedule_create',
+    label: 'Create Schedule',
+    description:
+      'Create a recurring cron job. Use a standard five-field cron expression, the user timezone when known, and attach it to a goal when the run advances that goal.',
+    parameters: Type.Object({
+      name: Type.String(),
+      prompt: Type.String(),
+      cron: Type.String(),
+      timezone: Type.Optional(Type.String()),
+      goalId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      if (!ctx.userId) return noUser()
+      const input = params as {
+        name: string
+        prompt: string
+        cron: string
+        timezone?: string
+        goalId?: string | null
+        enabled?: boolean
+      }
+      const result = await apiCreateSchedule(workspaceId, {
+        name: input.name,
+        prompt: input.prompt,
+        cronExpression: input.cron,
+        timezone: input.timezone,
+        goalId: input.goalId,
+        enabled: input.enabled,
+        userId: ctx.userId,
+      })
+      return result.ok && result.data
+        ? textResult({ ok: true, schedule: result.data })
+        : apiError(result, 'Could not create the schedule')
+    },
+  }
+}
+
+export function createScheduleListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'schedule_list',
+    label: 'List Schedules',
+    description: 'List recurring schedules in this workspace, optionally limited to one goal.',
+    parameters: Type.Object({
+      goalId: Type.Optional(Type.String()),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { goalId?: string }
+      const result = await apiListSchedules(workspaceId, input.goalId)
+      return result.ok ? textResult({ ok: true, schedules: result.data ?? [] }) : apiError(result, 'Could not list schedules')
+    },
+  }
+}
+
+export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'schedule_update',
+    label: 'Update Schedule',
+    description: 'Update a recurring schedule, including its cadence, prompt, goal, or enabled state.',
+    parameters: Type.Object({
+      scheduleId: Type.String(),
+      name: Type.Optional(Type.String()),
+      prompt: Type.Optional(Type.String()),
+      cron: Type.Optional(Type.String()),
+      timezone: Type.Optional(Type.String()),
+      goalId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+      enabled: Type.Optional(Type.Boolean()),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as {
+        scheduleId: string
+        name?: string
+        prompt?: string
+        cron?: string
+        timezone?: string
+        goalId?: string | null
+        enabled?: boolean
+      }
+      const result = await apiUpdateSchedule(workspaceId, input.scheduleId, {
+        name: input.name,
+        prompt: input.prompt,
+        cronExpression: input.cron,
+        timezone: input.timezone,
+        goalId: input.goalId,
+        enabled: input.enabled,
+      })
+      return result.ok && result.data
+        ? textResult({ ok: true, schedule: result.data })
+        : apiError(result, 'Could not update the schedule')
+    },
+  }
+}
+
+export function createScheduleDeleteTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'schedule_delete',
+    label: 'Delete Schedule',
+    description: 'Delete a recurring schedule permanently after confirming the user wants it removed.',
+    parameters: Type.Object({
+      scheduleId: Type.String(),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { scheduleId: string }
+      const result = await apiDeleteSchedule(workspaceId, input.scheduleId)
+      return result.ok ? textResult({ ok: true }) : apiError(result, 'Could not delete the schedule')
+    },
+  }
+}
+
 export function createSetStatusTool(ctx: ToolContext): AgentTool {
   return {
     name: 'set_status',
@@ -253,6 +383,10 @@ export const WORKSPACE_AGENT_TOOL_NAMES = [
   'goal_update',
   'goal_log',
   'goal_list',
+  'schedule_create',
+  'schedule_list',
+  'schedule_update',
+  'schedule_delete',
   'set_status',
 ] as const
 
@@ -264,6 +398,10 @@ export function createWorkspaceAgentTools(ctx: ToolContext): AgentTool[] {
     createGoalUpdateTool(ctx),
     createGoalLogTool(ctx),
     createGoalListTool(ctx),
+    createScheduleCreateTool(ctx),
+    createScheduleListTool(ctx),
+    createScheduleUpdateTool(ctx),
+    createScheduleDeleteTool(ctx),
     createSetStatusTool(ctx),
   ]
 }
