@@ -4,6 +4,19 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
 
+mock.module('../services/chat-turn-state.service', () => ({
+  listActiveChatTurns: async () => [{
+    chatSessionId: 'chat-1',
+    turnId: 'turn-1',
+    sessionName: 'Planning',
+    isPrimary: false,
+    projectId: 'project-1',
+    projectName: 'Website',
+    projectHidden: false,
+    startedAt: new Date('2026-09-23T05:00:00.000Z'),
+  }],
+}))
+
 const profile = {
   id: 'profile-1',
   workspaceId: 'workspace-1',
@@ -112,6 +125,15 @@ describe('workspace agent routes (session-authorized mount)', () => {
     expect(await patchResponse.json()).toMatchObject({
       profile: { statusText: 'Planning your next step' },
     })
+  })
+
+  test('returns active chats scoped to an authorized workspace', async () => {
+    const response = await appFor('user-1').request('/api/workspaces/workspace-1/active-chats')
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      chats: [{ chatSessionId: 'chat-1', projectName: 'Website' }],
+    })
+    expect((await appFor('user-2').request('/api/workspaces/workspace-1/active-chats')).status).toBe(403)
   })
 
   test('uploads an avatar image and sets it on the profile', async () => {

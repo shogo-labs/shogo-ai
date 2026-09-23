@@ -19,9 +19,10 @@ describe('isApprovalPending', () => {
     ).toBe(false)
   })
 
-  it('is false for non-approval goal events and agent_task items', () => {
+  it('is false for non-approval goal events, agent_task items, and active chats', () => {
     expect(isApprovalPending({ type: 'goal_event', kind: 'progress', metadata: null })).toBe(false)
     expect(isApprovalPending({ type: 'agent_task', metadata: null })).toBe(false)
+    expect(isApprovalPending({ type: 'chat_turn', metadata: null })).toBe(false)
   })
 })
 

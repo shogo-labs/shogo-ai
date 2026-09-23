@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { RefreshControl, ScrollView, Text, View } from 'react-native'
-import { useFocusEffect } from 'expo-router'
+import { AppState, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { CheckCircle2, CircleAlert, Clock3, Sparkles } from 'lucide-react-native'
+import { CheckCircle2, CircleAlert, Clock3, MessageSquare, Sparkles } from 'lucide-react-native'
 import { isApprovalPending } from '@shogo/shared-app'
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, type PersonalWorkspaceActivity } from '../../lib/api'
+import { openActiveChat } from '../../lib/open-active-chat'
 import {
   ActivityCard,
   ActivityEmptyCard,
@@ -27,6 +28,7 @@ function activityIcon(item: PersonalWorkspaceActivity) {
 
 export const PersonalActivityScreen = observer(function PersonalActivityScreen() {
   const http = useDomainHttp()
+  const router = useRouter()
   const workspace = useActiveWorkspace()
   const [items, setItems] = useState<PersonalWorkspaceActivity[]>([])
   const [loading, setLoading] = useState(true)
@@ -48,11 +50,47 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
   }, [http, workspace?.id])
 
   useFocusEffect(useCallback(() => {
-    void load()
+    let focused = true
+    let appState = AppState.currentState
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer)
+      timer = null
+    }
+    const schedule = () => {
+      clearTimer()
+      if (!focused || (appState !== 'active' && appState !== null)) return
+      timer = setTimeout(async () => {
+        await load()
+        schedule()
+      }, 5_000)
+    }
+    const refresh = async () => {
+      if (!focused || (appState !== 'active' && appState !== null)) return
+      await load()
+      schedule()
+    }
+
+    void refresh()
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      appState = nextState
+      if (appState === 'active') void refresh()
+      else clearTimer()
+    })
+    return () => {
+      focused = false
+      clearTimer()
+      subscription.remove()
+    }
   }, [load]))
 
   const pendingApprovals = useMemo(() => items.filter(isApprovalPending), [items])
-  const feedItems = useMemo(() => items.filter((item) => !isApprovalPending(item)), [items])
+  const activeChats = useMemo(() => items.filter((item) => item.type === 'chat_turn'), [items])
+  const feedItems = useMemo(
+    () => items.filter((item) => item.type !== 'chat_turn' && !isApprovalPending(item)),
+    [items],
+  )
 
   const dismissApproval = useCallback((eventId: string) => {
     setItems((current) => current.filter((item) => item.id !== eventId))
@@ -88,7 +126,23 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
               />
             </View>
           ) : null}
-          {!error && feedItems.length === 0 && pendingApprovals.length === 0 ? (
+          {activeChats.length > 0 ? (
+            <View className="mt-6 gap-3">
+              <Text className="text-lg font-semibold text-foreground">Happening now</Text>
+              {activeChats.map((item) => (
+                <ActivityCard
+                  key={item.id}
+                  tone="primary"
+                  icon={<MessageSquare size={17} className="text-primary" />}
+                  title={item.sessionName || 'Active chat'}
+                  message={`${item.projectHidden ? 'Companion' : item.projectName || 'Workspace chat'} · An agent is responding now.`}
+                  footer="Live"
+                  onPress={() => openActiveChat(router, item)}
+                />
+              ))}
+            </View>
+          ) : null}
+          {!error && feedItems.length === 0 && pendingApprovals.length === 0 && activeChats.length === 0 ? (
             <View className="mt-8">
               <ActivityEmptyCard
                 title="Nothing here yet"

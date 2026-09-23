@@ -47,6 +47,12 @@ import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
 } from '../services/project-attachment.service'
+import {
+  clearActiveTurn,
+  markTurnEnded,
+  markTurnStarted,
+  startTurnHeartbeat,
+} from '../services/chat-turn-state.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -673,7 +679,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         400,
       )
     }
-
     // Normalize the body so the runtime reads the same session id from
     // `chatSessionId` (its durable buffer + resume key) that we billed under.
     if (parsedBody.chatSessionId !== sessionId) {
@@ -817,10 +822,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // we have an anchor project; a zero-attachment session degrades to a bare
     // proxy. trackUsageFromStream closes the session after the stream ends;
     // the finally guard closes an orphaned session on early exit.
-    let billingSessionHandedOff = false
+    // trackUsageFromStream owns the stream (persistence, billing close when
+    // anchored, active-turn end) once handed off, with or without a project.
+    let streamHandedOff = false
     if (billingProjectId) {
       await openSession(billingProjectId, workspaceId, billingUserId || 'system', sessionId)
     }
+    let activityTurnId: string | null = null
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       headers['x-runtime-token'] = deriveWorkspaceRuntimeToken(workspaceId)
@@ -927,6 +935,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             return new Response(null, { status: upstream.status, headers: responseHeaders })
           }
 
+          try {
+            activityTurnId = await markTurnStarted(sessionId)
+          } catch (error) {
+            // Activity is observational; a schema/database issue must not block chat.
+            console.warn(`[WorkspaceChat] Failed to mark active chat ${sessionId}:`, error)
+          }
+
           // Decoupled fan-out (same pattern as project-chat): read the
           // upstream body in a background loop and independently push chunks
           // to both the client stream and a tracking queue, so billing +
@@ -1010,7 +1025,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           // to checkpoint, but the assistant's reply must still be saved so
           // chat history survives a page reload. See the doc comment on
           // `trackUsageFromStream` in project-chat.ts.
-          if (billingProjectId) billingSessionHandedOff = true
+          streamHandedOff = true
+          const turnId = activityTurnId
+          const stopTurnHeartbeat = turnId ? startTurnHeartbeat(sessionId, turnId) : null
           trackUsageFromStream(
             trackingStream,
             parsedBody,
@@ -1037,7 +1054,14 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                 }
               },
             },
-          ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err))
+          ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
+            stopTurnHeartbeat?.()
+            if (turnId) {
+              markTurnEnded(sessionId, turnId).catch((error) =>
+                console.warn(`[WorkspaceChat] Failed to clear active chat ${sessionId}:`, error),
+              )
+            }
+          })
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
           // (the anchor is checkpointed by trackUsageFromStream). Best-effort,
@@ -1108,12 +1132,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     } finally {
       // Guard: close the billing session if trackUsageFromStream never took
       // ownership (retry exhaustion, client disconnect, thrown error).
-      if (billingProjectId && !billingSessionHandedOff) {
+      if (billingProjectId && !streamHandedOff) {
         closeSession(billingProjectId, { chatSessionId: sessionId }).catch((err: any) =>
           console.error(
             `[WorkspaceChat] Failed to close orphaned billing session for ${billingProjectId}:`,
             err,
           ),
+        )
+      }
+      if (activityTurnId && !streamHandedOff) {
+        markTurnEnded(sessionId, activityTurnId).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to clear abandoned active chat ${sessionId}:`, error),
         )
       }
     }
@@ -1243,6 +1272,14 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         body: body || '{}',
       }, runtimeExtra)
       const result = await response.json()
+      if (sessionId && response.ok) {
+        await clearActiveTurn({
+          id: sessionId,
+          OR: [{ workspaceId }, { project: { workspaceId } }],
+        }).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
+        )
+      }
       return c.json(result)
     } catch (error: any) {
       console.error('[WorkspaceChat] Stop error:', error)
