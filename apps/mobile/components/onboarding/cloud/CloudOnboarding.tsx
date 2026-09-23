@@ -306,7 +306,6 @@ export const CloudOnboarding = observer(function CloudOnboarding() {
         id: 'destination',
         title: `Welcome, ${firstName}. Where do you want to start?`,
         subtitle: 'You have both. Switch anytime from your avatar.',
-        width: 'grid',
         canContinue: !!destination,
         primaryLabel: destination === 'personal' ? 'Open my companion' : 'Continue',
         body: (
@@ -347,7 +346,6 @@ export const CloudOnboarding = observer(function CloudOnboarding() {
           eyebrow: displayTeamName,
           title: 'Start with an agent',
           subtitle: 'Pick one to install now, or start from scratch. You can add more from the marketplace anytime.',
-          width: 'grid',
           primaryLabel: selectedListing ? `Install ${selectedListing.title}` : `Open ${displayTeamName}`,
           skipLabel: selectedListing ? "I'll start from scratch" : undefined,
           body: <AgentPickerStep selected={selectedListing} onSelect={setSelectedListing} />,

@@ -29,8 +29,6 @@ export interface StepDef {
   eyebrow?: string
   title: string
   subtitle?: string
-  /** `form` = narrow column, `grid` = wide column for card grids. */
-  width?: 'form' | 'grid'
   body: ReactNode
   canContinue?: boolean
   primaryLabel?: string
@@ -140,7 +138,7 @@ export function OnboardingStepper({
         >
           <Animated.View
             style={{ opacity, transform: [{ translateX }] }}
-            className={cn('w-full self-center', step.width === 'grid' ? 'max-w-3xl' : 'max-w-xl')}
+            className="w-full max-w-3xl self-center"
           >
             {step.eyebrow ? (
               <Text className="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
