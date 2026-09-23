@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { Platform } from 'react-native'
 import { openInWorkspace, scheduleWorkspaceSwitch } from '../switch-workspace'
 import { clearActiveWorkspaceId, getActiveWorkspaceId } from '../workspace-store'
 
@@ -87,5 +88,56 @@ describe('openInWorkspace', () => {
     openInWorkspace(router, 'ws-team', '/', 'ws-personal')
     expect(getActiveWorkspaceId()).toBe('ws-team')
     expect(calls.push).toEqual([])
+  })
+
+  test('cancels a queued switch so it cannot override the target workspace', async () => {
+    const { router } = fakeRouter()
+    const loaded: string[] = []
+    scheduleWorkspaceSwitch('ws-other', {
+      clear: () => {},
+      loadAll: async ({ workspaceId }) => {
+        loaded.push(workspaceId)
+      },
+    })
+    openInWorkspace(router, 'ws-team', '/', 'ws-personal')
+    await flushSwitch()
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+    expect(loaded).toEqual([])
+  })
+
+  describe('on native', () => {
+    const originalOS = Platform.OS
+    beforeEach(() => {
+      ;(Platform as { OS: string }).OS = 'ios'
+    })
+    afterEach(() => {
+      ;(Platform as { OS: string }).OS = originalOS
+    })
+
+    test('pushes the target (keeps the back stack) and reloads projects for the new workspace', async () => {
+      const { calls, router } = fakeRouter()
+      let cleared = 0
+      const loaded: string[] = []
+      openInWorkspace(router, 'ws-team', '/(app)/marketplace', 'ws-personal', {
+        clear: () => {
+          cleared += 1
+        },
+        loadAll: async ({ workspaceId }) => {
+          loaded.push(workspaceId)
+        },
+      })
+      expect(getActiveWorkspaceId()).toBe('ws-team')
+      expect(calls.push).toEqual(['/(app)/marketplace'])
+      expect(calls.replace).toEqual([])
+      expect(cleared).toBe(1)
+      expect(loaded).toEqual(['ws-team'])
+    })
+
+    test('still navigates when no projects collection is passed', () => {
+      const { calls, router } = fakeRouter()
+      openInWorkspace(router, 'ws-team', '/', 'ws-personal')
+      expect(getActiveWorkspaceId()).toBe('ws-team')
+      expect(calls.push).toEqual(['/'])
+    })
   })
 })

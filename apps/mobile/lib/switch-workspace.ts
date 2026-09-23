@@ -30,11 +30,15 @@ export function scheduleWorkspaceSwitch(
     pending = null
     setActiveWorkspaceId(workspaceId)
     onSwitched?.()
-    projects.clear()
-    void projects.loadAll({ workspaceId }).catch((error) => {
-      console.error('[workspace] Failed to load projects after switch:', error)
-    })
+    reloadProjects(workspaceId, projects)
   }, 0)
+}
+
+function reloadProjects(workspaceId: string, projects: WorkspaceProjectCollection): void {
+  projects.clear()
+  void projects.loadAll({ workspaceId }).catch((error) => {
+    console.error('[workspace] Failed to load projects after switch:', error)
+  })
 }
 
 /**
@@ -56,22 +60,32 @@ export function reloadAfterWorkspaceSwitch(): void {
  * Make `workspaceId` active and open `path` (an Expo Router href) in it.
  * Same-workspace targets are a plain push; cross-workspace targets do a full
  * navigation on web for the reason described on `reloadAfterWorkspaceSwitch`.
+ * On native the switch is applied like `scheduleWorkspaceSwitch` (projects
+ * reloaded for the new workspace) and the target is pushed so Back still
+ * works.
  */
 export function openInWorkspace(
-  router: { push: (href: any) => void; replace: (href: any) => void },
+  router: { push: (href: any) => void },
   workspaceId: string | undefined,
   path: string,
   currentWorkspaceId: string | undefined,
+  projects?: WorkspaceProjectCollection,
 ): void {
   if (!workspaceId || workspaceId === currentWorkspaceId) {
     router.push(path)
     return
   }
+  // A queued switch from an earlier tap would otherwise land after this one.
+  if (pending != null) {
+    clearTimeout(pending)
+    pending = null
+  }
   setActiveWorkspaceId(workspaceId)
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     // Route groups like `(app)` aren't part of the URL.
     window.location.assign(path.replace(/\/\([^)]+\)/g, '') || '/')
-  } else {
-    router.replace(path)
+    return
   }
+  if (projects) reloadProjects(workspaceId, projects)
+  router.push(path)
 }

@@ -15,6 +15,7 @@ import { Sparkles, X } from "lucide-react-native";
 import { useAuth } from "../../contexts/auth";
 import {
   useDomainHttp,
+  useMemberCollection,
   useProjectCollection,
   useWorkspaceCollection,
 } from "../../contexts/domain";
@@ -23,6 +24,7 @@ import {
   useGettingStarted,
 } from "../onboarding/GetStartedChecklist";
 import { openInWorkspace } from "../../lib/switch-workspace";
+import { pickTeamWorkspace } from "../../lib/team-workspace";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill";
@@ -77,9 +79,12 @@ export const WorkspaceAgentChatScreen = observer(
     const isPersonalWorkspace = experience.kind === "personal";
     const gettingStarted = useGettingStarted();
     const workspaces = useWorkspaceCollection();
-    const teamWorkspaceId = (workspaces?.all ?? []).find(
-      (w: { kind?: string }) => w.kind !== "personal"
-    )?.id as string | undefined;
+    const members = useMemberCollection();
+    const teamWorkspaceId = pickTeamWorkspace(
+      (workspaces?.all ?? []) as Array<{ id: string; kind?: string }>,
+      (members?.all ?? []) as any[],
+      user?.id
+    )?.id;
 
     const loadWorkspaceChat = useCallback(async () => {
       if (!workspace?.id) {
@@ -388,7 +393,7 @@ export const WorkspaceAgentChatScreen = observer(
                     <Text
                       accessibilityRole="link"
                       onPress={() =>
-                        openInWorkspace(router, teamWorkspaceId, "/", workspace.id)
+                        openInWorkspace(router, teamWorkspaceId, "/", workspace.id, projects)
                       }
                       className="font-medium text-primary"
                     >

@@ -9,20 +9,26 @@
  * Only shown to users who went through the destination-based onboarding
  * (`onboardingIntent` is set), so pre-existing accounts aren't nagged.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AppState, Pressable, Text, View } from 'react-native'
+import { useFocusEffect, useRouter } from 'expo-router'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Check, ChevronDown, ChevronRight, ChevronUp, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
+import {
+  useDomainHttp,
+  useMemberCollection,
+  useProjectCollection,
+  useWorkspaceCollection,
+} from '../../contexts/domain'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api, type GettingStartedProgress } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { openInWorkspace } from '../../lib/switch-workspace'
+import { pickTeamWorkspace } from '../../lib/team-workspace'
 
 const DISMISSED_KEY = 'shogo:getting-started-dismissed:'
 const SEEN_KINDS_KEY = 'shogo:getting-started-seen-kinds:'
@@ -57,6 +63,8 @@ export function useGettingStarted(enabled = true): GettingStartedState {
   const http = useDomainHttp()
   const { localMode } = usePlatformConfig()
   const workspaces = useWorkspaceCollection()
+  const members = useMemberCollection()
+  const projects = useProjectCollection()
   const current = useActiveWorkspace() as { id: string; kind?: WorkspaceKind } | null
   const kind: WorkspaceKind = current?.kind === 'personal' ? 'personal' : 'team'
 
@@ -65,10 +73,31 @@ export function useGettingStarted(enabled = true): GettingStartedState {
   const [progress, setProgress] = useState<GettingStartedProgress | null>(null)
   const [hasConnection, setHasConnection] = useState(false)
   const [seenKinds, setSeenKinds] = useState<WorkspaceKind[]>([])
+  const [refreshKey, setRefreshKey] = useState(0)
 
   const all = (workspaces?.all ?? []) as Array<{ id: string; kind?: WorkspaceKind }>
   const personalId = all.find((w) => w.kind === 'personal')?.id
-  const teamId = all.find((w) => w.kind !== 'personal')?.id
+  const teamId = pickTeamWorkspace(all, (members?.all ?? []) as any[], user?.id)?.id
+
+  // Progress changes on other screens (sending a message, installing an
+  // agent, inviting someone), so refetch when this screen regains focus or
+  // the app returns to the foreground. The initial fetch covers first focus.
+  const focusedOnce = useRef(false)
+  useFocusEffect(
+    useCallback(() => {
+      if (!focusedOnce.current) {
+        focusedOnce.current = true
+        return
+      }
+      setRefreshKey((k) => k + 1)
+    }, []),
+  )
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setRefreshKey((k) => k + 1)
+    })
+    return () => sub.remove()
+  }, [])
 
   useEffect(() => {
     if (!enabled || localMode || !user?.id) return
@@ -122,7 +151,7 @@ export function useGettingStarted(enabled = true): GettingStartedState {
     return () => {
       cancelled = true
     }
-  }, [current?.id, dismissed, eligible, http])
+  }, [current?.id, dismissed, eligible, http, refreshKey])
 
   const track = useCallback(
     (item: ItemId) => trackEvent(posthog, EVENTS.GETTING_STARTED_ITEM_CLICKED, { item, workspace_kind: kind }),
@@ -132,7 +161,7 @@ export function useGettingStarted(enabled = true): GettingStartedState {
   const items = useMemo<ChecklistItem[]>(() => {
     const go = (item: ItemId, workspaceId: string | undefined, path: string) => () => {
       track(item)
-      openInWorkspace(router, workspaceId, path, current?.id)
+      openInWorkspace(router, workspaceId, path, current?.id, projects)
     }
     const firstMessage: ChecklistItem = {
       id: 'first-message',
@@ -184,7 +213,7 @@ export function useGettingStarted(enabled = true): GettingStartedState {
     return kind === 'personal'
       ? [firstMessage, otherSpace, connectTool, firstAgent, invite]
       : [firstAgent, invite, connectTool, otherSpace, firstMessage]
-  }, [current?.id, hasConnection, kind, personalId, progress, router, seenKinds, teamId, track])
+  }, [current?.id, hasConnection, kind, personalId, progress, projects, router, seenKinds, teamId, track])
 
   const completedCount = items.filter((i) => i.done).length
 
@@ -238,6 +267,7 @@ export function GetStartedChecklist({ state, className }: GetStartedChecklistPro
         </Pressable>
         <Pressable
           onPress={dismiss}
+          accessibilityRole="button"
           accessibilityLabel="Dismiss get started checklist"
           className="h-7 w-7 items-center justify-center rounded-full active:bg-muted web:hover:bg-muted"
         >

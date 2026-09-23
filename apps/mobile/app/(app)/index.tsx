@@ -950,7 +950,7 @@ export const HomeScreen = observer(function HomeScreen({
           className={`text-center text-muted-foreground ${isNativePhone ? 'mt-2' : 'mb-6'}`}
           style={heroSubtitleStyle}
         >
-          This is your Team workspace, where you build. Describe a project or agent and Shogo creates it.
+          This is a Team workspace, where you build. Describe a project or agent and Shogo creates it.
         </Text>
       ) : null}
     </>
