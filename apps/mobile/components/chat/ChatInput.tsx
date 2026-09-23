@@ -1638,8 +1638,8 @@ function ChatInputImpl({
       {/* Queued messages, live browser, running tasks, plan, checklist,
           changed files, worktree, and context usage all render inside the
           floating chat dock now (see ChatPanel's <ChatDock />) instead of
-          inline here. This registers the queue's dock panel + composer
-          chip; the row UI itself lives in QueueDockPanel. */}
+          inline here. This registers the queue's dock panel; the row UI
+          itself lives in QueueDockPanel. */}
       <QueueDockPanel
         queuedMessages={queuedMessages}
         onRemoveQueuedMessage={onRemoveQueuedMessage}
