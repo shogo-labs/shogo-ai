@@ -3,8 +3,8 @@
 /**
  * Settings → Updates. Desktop-only (see `desktopOnly` in settings-tabs.ts):
  * lets the user opt into the `beta` update channel, which tracks the
- * newest signed build off `main` (published on every push) instead of the
- * latest tagged stable release. See `apps/desktop/src/updater.ts` +
+ * newest manually published signed prerelease instead of the latest tagged
+ * stable release. See `apps/desktop/src/updater.ts` +
  * `update-channel.ts` for the feed-resolution side of this.
  */
 import { useState, useEffect, useCallback } from 'react'
@@ -202,10 +202,10 @@ export function UpdatesTab() {
             <View className="flex-1 gap-1">
               <View className="flex-row items-center gap-2">
                 <Text className="text-sm font-medium text-foreground">Beta</Text>
-                <Badge variant="secondary">main</Badge>
+                <Badge variant="secondary">manual</Badge>
               </View>
               <Text className="text-xs text-muted-foreground">
-                Tracks the newest build off main, published on every merge. May be unstable.
+                Tracks the newest manually published beta build from the selected commit. May be unstable.
                 Switching back to Stable keeps this build installed until a newer stable
                 release is published.
               </Text>

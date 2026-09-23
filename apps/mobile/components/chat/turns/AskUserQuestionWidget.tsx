@@ -829,7 +829,7 @@ export interface AskUserQuestionBarProps {
 
 /**
  * Collapsed in-stream placeholder for a pending ask_user call. Styled like the
- * unexpanded TodoWidget header. The interactive answer UI lives attached above
+ * unexpanded task-row header. The interactive answer UI lives attached above
  * the chat input; tapping this bar scrolls there via `onPress`.
  */
 export function AskUserQuestionBar({

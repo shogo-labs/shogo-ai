@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'bun:test'
 
 const REQUIRED_LOCAL_ROUTES = [
   'GET /api/me',
+  'POST /api/me/announcements/seen',
   'GET /api/me/activity',
   'POST /api/onboarding/complete',
   'GET /api/preview/:projectId/wake',

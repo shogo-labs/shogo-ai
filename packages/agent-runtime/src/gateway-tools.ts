@@ -2503,23 +2503,6 @@ function createPublishTool(ctx: ToolContext): AgentTool {
   }
 }
 
-// ---------------------------------------------------------------------------
-// NotifyUserError Tool (prominent error toast in chat UI)
-// ---------------------------------------------------------------------------
-
-function createNotifyUserErrorTool(): AgentTool {
-  return {
-    name: 'notify_user_error',
-    description: 'Show a prominent error notification to the user when a tool fails, an integration is broken, or you cannot complete the requested task. Call this BEFORE explaining the error in chat text. The UI renders an unmissable banner with the title and remediation steps.',
-    label: 'Error Notification',
-    parameters: Type.Object({
-      title: Type.String({ description: 'Short error title, e.g. "GitHub Access Error", "Slack Auth Expired"' }),
-      message: Type.String({ description: 'What went wrong AND how to fix it — shown in the notification body' }),
-    }),
-    execute: async () => textResult({ acknowledged: true }),
-  }
-}
-
 const BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const WEB_FETCH_TIMEOUT_MS = 30_000
 
@@ -5624,7 +5607,6 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
     createPublishTool(ctx),
-    createNotifyUserErrorTool(),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),
@@ -6133,7 +6115,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 export const ALL_TOOL_NAMES = [
   'exec', 'exec_wait', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
-  'todo_write', 'ask_user', 'notify_user_error', 'skill',
+  'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
   'heartbeat_configure', 'heartbeat_status', 'terminal_exec', 'terminal_read',
   'read_lints', 'server_sync',

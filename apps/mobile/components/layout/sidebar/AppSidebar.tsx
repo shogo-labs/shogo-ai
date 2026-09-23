@@ -600,6 +600,16 @@ export const AppSidebar = observer(function AppSidebar({
     (w: any) => w.kind === "personal",
   );
 
+  // Whether the user already has a `kind: 'team'` workspace. `false` means
+  // "Create new workspace" is still free — every account gets one free
+  // workspace of each kind (one `personal`, one `team`; see
+  // `workspaceHooks.beforeCreate`). Once both exist, further workspaces
+  // require the paid checkout flow. This mirrors `hasPersonalWorkspace`
+  // above, so it's membership- rather than ownership-based; a user merely
+  // invited into someone else's team workspace may be routed to checkout
+  // even though the server would still grant them a free one.
+  const hasTeamWorkspace = allWorkspaces.some((w: any) => w.kind === "team");
+
   const allPlans = useWorkspacePlans(
     allWorkspaces.map((w: any) => w.id),
     !!features.billing,
@@ -653,14 +663,14 @@ export const AppSidebar = observer(function AppSidebar({
   );
 
   const handleCreateWorkspace = useCallback(() => {
-    if (allWorkspaces.length >= 1) {
+    if (hasTeamWorkspace) {
       router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     } else {
       setCreateWorkspaceOpen(true);
       if (!isWide) closeNativeDrawer();
     }
-  }, [allWorkspaces.length, closeNativeDrawer, router, isWide]);
+  }, [hasTeamWorkspace, closeNativeDrawer, router, isWide]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {

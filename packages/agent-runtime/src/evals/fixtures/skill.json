@@ -18,7 +18,6 @@
       "search",
       "todo_write",
       "ask_user",
-      "notify_user_error",
       "skill",
       "memory_read",
       "memory_search",

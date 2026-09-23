@@ -27,6 +27,7 @@ export const UserModel = types
     role: types.optional(types.enumeration("UserRole", ["user", "super_admin"]), "user"),
     adminScopes: types.optional(types.array(types.string), []),
     onboardingCompleted: types.optional(types.boolean, false),
+    lastSeenAnnouncementVersion: types.optional(types.string, ""),
     homeRegion: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,

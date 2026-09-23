@@ -247,13 +247,24 @@ export const workspaceHooks: WorkspaceHooks = {
       const childCheck = await validateChildWorkspaceCreation(parentWorkspaceId, userId, ctx)
       if (!childCheck.ok) return childCheck
     } else if (userId) {
-      const ownedCount = await getUserOwnedWorkspaceCount(userId)
+      // Every account gets one free workspace of EACH kind: one `personal`
+      // and one `team`. Only the requested kind's owned count is checked,
+      // so a user who already owns their signup `personal` workspace can
+      // still create one free `team` workspace (and vice versa for legacy
+      // users whose signup workspace stayed `team`). A second workspace of
+      // the *same* kind requires a paid subscription (or, for `team`, a
+      // free child under a Business/Enterprise parent — handled above).
+      const requestedKind: 'personal' | 'team' = input.kind === 'personal' ? 'personal' : 'team'
+      const ownedCount = await getUserOwnedWorkspaceCount(userId, requestedKind)
       if (ownedCount >= 1) {
         return {
           ok: false,
           error: {
             code: "workspace_limit_reached",
-            message: "You already have a free workspace. Additional workspaces require a paid subscription.",
+            message:
+              requestedKind === 'personal'
+                ? "You already have a personal workspace."
+                : "You already have a free workspace. Additional workspaces require a paid subscription.",
           },
         }
       }

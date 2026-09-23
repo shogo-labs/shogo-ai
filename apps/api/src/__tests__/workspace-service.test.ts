@@ -102,6 +102,10 @@ const memberTable = {
       if (args.where.userId && m.userId !== args.where.userId) return false
       if (args.where.role && m.role !== args.where.role) return false
       if (args.where.workspaceId?.not !== undefined && m.workspaceId == null) return false
+      if (args.where.workspace?.kind) {
+        const ws = workspaces.get(m.workspaceId)
+        if (!ws || ws.kind !== args.where.workspace.kind) return false
+      }
       return true
     }).length
   },
@@ -306,6 +310,21 @@ describe('getUserOwnedWorkspaceCount', () => {
 
   test('returns 0 for user with no memberships', async () => {
     expect(await svc.getUserOwnedWorkspaceCount('ghost')).toBe(0)
+  })
+
+  test('scopes the count to `kind` when provided', async () => {
+    workspaces.set('w1', { id: 'w1', kind: 'personal' })
+    workspaces.set('w2', { id: 'w2', kind: 'team' })
+    workspaces.set('w3', { id: 'w3', kind: 'team' })
+    members.push(
+      { id: 'a', userId: 'u1', role: 'owner', workspaceId: 'w1' },
+      { id: 'b', userId: 'u1', role: 'owner', workspaceId: 'w2' },
+      { id: 'c', userId: 'u1', role: 'owner', workspaceId: 'w3' },
+    )
+    expect(await svc.getUserOwnedWorkspaceCount('u1', 'personal')).toBe(1)
+    expect(await svc.getUserOwnedWorkspaceCount('u1', 'team')).toBe(2)
+    // Omitting `kind` keeps the original "any kind" behavior.
+    expect(await svc.getUserOwnedWorkspaceCount('u1')).toBe(3)
   })
 })
 

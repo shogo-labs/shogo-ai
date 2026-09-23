@@ -10,7 +10,8 @@
  *      (reads, searches, fetches, edits, writes, shell commands) into
  *      a single `work-group`, and collapse consecutive same-name
  *      calls that aren't work tools (repeated MCP/skill calls) into
- *      a `tool-group`. Everything else passes through unchanged.
+ *      a `tool-group`. Hidden legacy notification calls are removed;
+ *      everything else passes through unchanged.
  *   2. `partitionTurn` — split the grouped parts into the "work log"
  *      (everything before the LAST text part) and the "final segment"
  *      (the last text part + everything after it). The work log is
@@ -63,9 +64,10 @@ const EDITING_TOOL_NAMES = new Set(["write_file", "Write", "edit_file", "Edit", 
  * still gets the one-line summary treatment (`MIN_WORK_GROUP_SIZE` is
  * 1) rather than a bare inline card.
  */
+const HIDDEN_TOOLS = new Set(["notify_user_error"])
+
 const UNGROUPABLE_TOOLS = new Set([
   "ask_user",
-  "notify_user_error",
   "TodoWrite",
   "todo_write",
   "connect",
@@ -152,10 +154,13 @@ function scanTransparentRun(
  */
 export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
   const result: GroupedMessagePart[] = []
+  const visibleParts = parts.filter(
+    (part) => part.type !== "tool" || !HIDDEN_TOOLS.has(part.tool.toolName),
+  )
   let i = 0
 
-  while (i < parts.length) {
-    const part = parts[i]
+  while (i < visibleParts.length) {
+    const part = visibleParts[i]
 
     if (part.type !== "tool") {
       result.push(part)
@@ -164,13 +169,13 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
     }
 
     if (isWorkTool(part.tool)) {
-      const { endIdx, toolCount } = scanTransparentRun(parts, i, isWorkTool)
+      const { endIdx, toolCount } = scanTransparentRun(visibleParts, i, isWorkTool)
       if (toolCount >= MIN_WORK_GROUP_SIZE) {
-        const slice = parts.slice(i, endIdx)
+        const slice = visibleParts.slice(i, endIdx)
         result.push({
           type: "work-group",
           items: slice,
-          id: `work-${parts[i].id}`,
+          id: `work-${visibleParts[i].id}`,
         })
         i = endIdx
         continue
@@ -188,17 +193,17 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
     const toolName = part.tool.toolName
     let j = i + 1
     while (
-      j < parts.length &&
-      parts[j].type === "tool" &&
-      !UNGROUPABLE_TOOLS.has((parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName) &&
-      (parts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName === toolName
+      j < visibleParts.length &&
+      visibleParts[j].type === "tool" &&
+      !UNGROUPABLE_TOOLS.has((visibleParts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName) &&
+      (visibleParts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName === toolName
     ) {
       j++
     }
 
     const runLength = j - i
     if (runLength >= MIN_GROUP_SIZE) {
-      const groupTools = parts.slice(i, j).map((p) => ({
+      const groupTools = visibleParts.slice(i, j).map((p) => ({
         tool: (p as { type: "tool"; tool: ToolCallData; id: string }).tool,
         id: p.id,
       }))
@@ -206,7 +211,7 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
         type: "tool-group",
         toolName,
         tools: groupTools,
-        id: `group-${parts[i].id}`,
+        id: `group-${visibleParts[i].id}`,
       })
     } else {
       result.push(part)

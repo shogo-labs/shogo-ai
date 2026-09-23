@@ -22,7 +22,7 @@ export {
   CollapsibleToolGroup,
   type CollapsibleToolGroupProps,
 } from "./CollapsibleToolGroup"
-export { TodoWidget, type TodoWidgetProps } from "./TodoWidget"
+export { TodoRow, type TodoRowProps } from "./TodoRow"
 export {
   AskUserQuestionWidget,
   type AskUserQuestionWidgetProps,

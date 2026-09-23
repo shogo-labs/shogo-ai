@@ -19,6 +19,7 @@ interface State {
    * `createPersonalWorkspace`) should return. `null` (default) means the
    * base slug is free. */
   txWorkspaceFindUniqueResult: any | null
+  countCallArgs: any[]
 }
 
 const s: State = {
@@ -34,6 +35,7 @@ const s: State = {
   txWorkspaceCreateCalls: [],
   txMemberCreateCalls: [],
   txWorkspaceFindUniqueResult: null,
+  countCallArgs: [],
 }
 
 const tx = {
@@ -64,7 +66,10 @@ mock.module('../../lib/prisma', () => ({
     member: {
       findMany: async (_args: any) => s.findManyMembers,
       findFirst: async (_args: any) => s.findFirstMember,
-      count: async (_args: any) => s.countResult,
+      count: async (args: any) => {
+        s.countCallArgs.push(args)
+        return s.countResult
+      },
     },
     workspace: {
       findUnique: async (_args: any) => s.findUniqueWorkspace,
@@ -105,6 +110,7 @@ beforeEach(() => {
   s.txWorkspaceCreateCalls = []
   s.txMemberCreateCalls = []
   s.txWorkspaceFindUniqueResult = null
+  s.countCallArgs = []
 })
 
 afterEach(() => {})
@@ -318,6 +324,19 @@ describe('getUserOwnedWorkspaceCount', () => {
   it('returns 0 when user owns no workspaces', async () => {
     s.countResult = 0
     expect(await getUserOwnedWorkspaceCount('u-1')).toBe(0)
+  })
+
+  it('omits the `workspace.kind` filter when no kind is given', async () => {
+    await getUserOwnedWorkspaceCount('u-1')
+    expect(s.countCallArgs[0].where.workspace).toBeUndefined()
+  })
+
+  it('scopes the prisma query to `workspace: { kind }` when a kind is given', async () => {
+    await getUserOwnedWorkspaceCount('u-1', 'team')
+    expect(s.countCallArgs[0].where.workspace).toEqual({ kind: 'team' })
+
+    await getUserOwnedWorkspaceCount('u-1', 'personal')
+    expect(s.countCallArgs[1].where.workspace).toEqual({ kind: 'personal' })
   })
 })
 

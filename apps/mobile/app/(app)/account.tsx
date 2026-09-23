@@ -70,6 +70,10 @@ export default observer(function AccountPage() {
   const hasPersonalWorkspace = allWorkspaces.some(
     (w: { kind?: string }) => w.kind === "personal",
   )
+  // See `AppSidebar.tsx`'s `hasTeamWorkspace` for the free-vs-paid gate this drives.
+  const hasTeamWorkspace = allWorkspaces.some(
+    (w: { kind?: string }) => w.kind === "team",
+  )
   const workspaceIds = useMemo(
     () => allWorkspaces.map((w: { id: string }) => w.id),
     [allWorkspaces],
@@ -115,12 +119,12 @@ export default observer(function AccountPage() {
   )
 
   const handleCreateWorkspace = useCallback(() => {
-    if (allWorkspaces.length >= 1) {
+    if (hasTeamWorkspace) {
       router.push("/(app)/new-workspace" as never)
       return
     }
     setCreateWorkspaceOpen(true)
-  }, [allWorkspaces.length, router])
+  }, [hasTeamWorkspace, router])
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {

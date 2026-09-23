@@ -53,6 +53,7 @@ import {
   KeyRound as KeyRoundIcon,
   LogOut as LogOutIcon,
   Plus as PlusIcon,
+  Sparkles as SparklesIcon,
 } from "lucide-react-native";
 import {
   Text,
@@ -60,6 +61,7 @@ import {
   useAccountSheetIcons,
 } from "../../components/settings/account-sheet-chrome";
 import { AppearanceTab } from "../../components/settings/AppearanceTab";
+import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
 import { useAuth } from "../../contexts/auth";
 import {
   useDomain,
@@ -91,6 +93,8 @@ import {
 } from "../../lib/billing-config";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { openWebAppSession } from "../../lib/openWebAppSession";
+import { usePostHogSafe } from "../../contexts/posthog";
+import { EVENTS, trackEvent } from "../../lib/analytics";
 import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
@@ -125,10 +129,12 @@ import {
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
 import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
+import whatsNewCatalog from "../../lib/whats-new/releases.generated.json";
 import {
   reloadAfterWorkspaceSwitch,
   scheduleWorkspaceSwitch,
 } from "../../lib/switch-workspace";
+
 import {
   SETTINGS_TABS,
   settingsNavItems,
@@ -156,6 +162,8 @@ import {
 } from "@shogo/shared-ui/primitives";
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
 import { useDualPlan } from "../../lib/dual-plan-preference";
+
+const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
 const SETTINGS_ICON_MAP = {
   ArrowLeft: ArrowLeftIcon,
@@ -4021,12 +4029,20 @@ export function WorkspaceAccountActions({
   variant?: "default" | "sidebar";
 }) {
   const router = useRouter();
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
   const { features, localMode } = usePlatformConfig();
   const workspaces = useWorkspaceCollection();
   const projects = useProjectCollection();
+  const actions = useDomainActions();
+  const posthog = usePostHogSafe();
   const currentWorkspace = useActiveWorkspace();
   const allWorkspaces = workspaces?.all ?? [];
+  // See `AppSidebar.tsx`'s `hasTeamWorkspace` for why this gates the free
+  // vs. paid "Create new workspace" flow.
+  const hasTeamWorkspace = allWorkspaces.some(
+    (w: { kind?: string }) => w.kind === "team"
+  );
+  const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
 
   useEffect(() => {
     void workspaces.loadAll().catch(() => undefined);
@@ -4041,8 +4057,31 @@ export function WorkspaceAccountActions({
   );
 
   const createWorkspace = useCallback(() => {
-    router.push("/(app)/new-workspace" as any);
-  }, [router]);
+    if (hasTeamWorkspace) {
+      router.push("/(app)/new-workspace" as any);
+      return;
+    }
+    setCreateWorkspaceOpen(true);
+  }, [hasTeamWorkspace, router]);
+
+  const handleCreateWorkspaceSubmit = useCallback(
+    async (name: string) => {
+      if (!user?.id) return;
+      try {
+        const created = await actions.createWorkspace(name, undefined, user.id);
+        if (created?.id) {
+          trackEvent(posthog, EVENTS.WORKSPACE_CREATED);
+          setActiveWorkspaceId(created.id);
+          await workspaces.loadAll();
+          projects.clear();
+          await projects.loadAll({ workspaceId: created.id });
+        }
+      } catch (err) {
+        console.warn("Failed to create workspace:", err);
+      }
+    },
+    [actions, posthog, projects, user?.id, workspaces]
+  );
 
   const go = useCallback((href: string) => router.push(href as any), [router]);
   const sidebar = variant === "sidebar";
@@ -4210,6 +4249,28 @@ export function WorkspaceAccountActions({
               <ZapIcon size={18} className="text-muted-foreground" />
               <Text className="flex-1 text-sm text-foreground">What's New</Text>
             </Pressable>
+            {latestAnnouncedRelease && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Replay What's New"
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/settings",
+                    params: { whatsNew: latestAnnouncedRelease.version },
+                  } as any)
+                }
+                className={cn(
+                  sidebar
+                    ? "ml-8 flex-row items-center gap-2 rounded-lg px-2.5 py-2 active:bg-muted"
+                    : "ml-9 flex-row items-center gap-3 rounded-lg px-3 py-2 active:bg-muted"
+                )}
+              >
+                <SparklesIcon size={16} className="text-primary-500" />
+                <Text className="flex-1 text-xs text-muted-foreground">
+                  Replay latest announcement
+                </Text>
+              </Pressable>
+            )}
             <Pressable
               accessibilityRole="link"
               accessibilityLabel="Open Creator"
@@ -4242,6 +4303,11 @@ export function WorkspaceAccountActions({
           <Text className="text-sm font-medium text-destructive">Sign out</Text>
         </Pressable>
       ) : null}
+      <CreateWorkspaceModal
+        visible={createWorkspaceOpen}
+        onClose={() => setCreateWorkspaceOpen(false)}
+        onSubmit={handleCreateWorkspaceSubmit}
+      />
     </View>
   );
 }
