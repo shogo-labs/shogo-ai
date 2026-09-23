@@ -72,6 +72,11 @@ export async function saveAgentAvatar(workspaceId: string, imageBuffer: Buffer):
 export async function listGoals(workspaceId: string, status?: GoalStatus) {
   return prisma.goal.findMany({
     where: { workspaceId, ...(status ? { status } : {}) },
+    include: {
+      schedules: {
+        orderBy: [{ enabled: 'desc' }, { nextRunAt: 'asc' }],
+      },
+    },
     orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
   })
 }
@@ -82,6 +87,9 @@ export async function getGoal(workspaceId: string, goalId: string) {
     include: {
       events: { orderBy: { createdAt: 'desc' } },
       agentTasks: { orderBy: { updatedAt: 'desc' } },
+      schedules: {
+        orderBy: [{ enabled: 'desc' }, { nextRunAt: 'asc' }],
+      },
     },
   })
 }
@@ -129,7 +137,7 @@ export async function updateGoal(
   })
   if (!existing) return null
 
-  return prisma.goal.update({
+  const goal = await prisma.goal.update({
     where: { id: goalId },
     data: {
       ...changes,
@@ -137,6 +145,13 @@ export async function updateGoal(
       deliverables: changes.deliverables === undefined ? undefined : (changes.deliverables as any),
     },
   })
+  if (changes.status === 'done') {
+    await prisma.agentSchedule.updateMany({
+      where: { goalId, enabled: true },
+      data: { enabled: false, lastError: 'Disabled because the goal was marked done.' },
+    })
+  }
+  return goal
 }
 
 export async function listGoalEvents(workspaceId: string, goalId: string) {

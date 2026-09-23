@@ -71,6 +71,20 @@ describe('resolveActiveWorkspaceId', () => {
     expect(getActiveWorkspaceId()).toBe('ws-1')
   })
 
+  test('self-heals a stale id without notifying subscribers during render', async () => {
+    setActiveWorkspaceId('someone-elses-workspace')
+    await Promise.resolve()
+    const seen: string[] = []
+    const unsub = subscribeActiveWorkspaceId(() => {
+      seen.push('ping')
+    })
+
+    expect(resolveActiveWorkspaceId(['ws-1', 'ws-2'])).toBe('ws-1')
+    await Promise.resolve()
+    expect(seen).toEqual([])
+    unsub()
+  })
+
   test('rejects an unverified candidate id not in the own-workspace list', () => {
     expect(resolveActiveWorkspaceId(['ws-1', 'ws-2'], 'not-mine')).toBe('ws-1')
   })

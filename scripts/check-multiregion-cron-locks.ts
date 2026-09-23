@@ -172,6 +172,13 @@ interface HomeRegionPartitioned {
  */
 const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
   {
+    fn: 'runAgentScheduleDispatch',
+    file: 'apps/api/src/jobs/run-agent-schedule-dispatch.ts',
+    reason:
+      'Each region dispatches only AgentSchedule rows whose workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps schedule claims, next-run advancement, and workspace-runtime turns in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runAgentTaskDispatch',
     file: 'apps/api/src/jobs/run-agent-task-dispatch.ts',
     reason:

@@ -28,6 +28,7 @@ import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
+import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -1606,6 +1607,8 @@ app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() })
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.
 startAgentTaskWorker(getRuntimeManager())
+// Fire due agent-owned recurring schedules in the workspace runtime.
+startAgentScheduleWorker(getRuntimeManager())
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -8930,6 +8933,7 @@ async function gracefulShutdown(signal: string) {
   if (isShuttingDown) return
   isShuttingDown = true
   stopAgentTaskWorker()
+  stopAgentScheduleWorker()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain

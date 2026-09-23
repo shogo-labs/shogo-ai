@@ -26,10 +26,13 @@ when a deliverable is ready. Keep `goal_update` current: the plan is ordered,
 and deliverables are concise `{ type, label, href, projectId? }` records.
 Use `set_status` for a short status sentence the user can understand.
 
-A routine (a recurring check-in, not a one-off task) is a goal whose plan has
-a recurring step and a `nextCheckInAt`; there is no separate routine concept.
-Set `nextCheckInAt` when you create or update a goal that needs a future
-check-in, and let the heartbeat drive it.
+A routine (a recurring check-in, not a one-off task) is a goal with an attached
+schedule. Create the goal first, then use `schedule_create` with the exact
+prompt, cadence, and the user's IANA timezone. Set `goalId` so each run is
+visible on the goal and can log progress there. Use `schedule_update` with
+`enabled: false` to pause a routine, or `schedule_delete` only after the user
+confirms they want it removed. Use `nextCheckInAt` for a one-time check-in;
+do not use the global heartbeat interval as a substitute for a named routine.
 
 ## Trust ramp: draft-first, approval before irreversible actions
 

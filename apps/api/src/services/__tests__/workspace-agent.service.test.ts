@@ -6,11 +6,13 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test'
 interface State {
   events: Record<string, { id: string; goalId: string; kind: string; metadata: unknown }>
   updateCalls: any[]
+  scheduleUpdates: any[]
 }
 
 const s: State = {
   events: {},
   updateCalls: [],
+  scheduleUpdates: [],
 }
 
 mock.module('../../lib/prisma', () => ({
@@ -28,10 +30,20 @@ mock.module('../../lib/prisma', () => ({
         return { ...event, metadata: args.data.metadata }
       },
     },
+    goal: {
+      findFirst: async (args: any) => (args.where.id === 'goal-1' ? { id: 'goal-1' } : null),
+      update: async (args: any) => ({ id: args.where.id, ...args.data }),
+    },
+    agentSchedule: {
+      updateMany: async (args: any) => {
+        s.scheduleUpdates.push(args)
+        return { count: 1 }
+      },
+    },
   },
 }))
 
-const { resolveGoalEventApproval, isApprovalPending, saveAgentAvatar } = await import('../workspace-agent.service')
+const { resolveGoalEventApproval, isApprovalPending, saveAgentAvatar, updateGoal } = await import('../workspace-agent.service')
 
 beforeEach(() => {
   s.events = {
@@ -45,6 +57,24 @@ beforeEach(() => {
     },
   }
   s.updateCalls = []
+  s.scheduleUpdates = []
+})
+
+describe('updateGoal', () => {
+  it('disables the goal\'s enabled schedules when the goal is marked done', async () => {
+    await updateGoal('workspace-1', 'goal-1', { status: 'done' })
+    expect(s.scheduleUpdates).toEqual([
+      expect.objectContaining({
+        where: { goalId: 'goal-1', enabled: true },
+        data: expect.objectContaining({ enabled: false }),
+      }),
+    ])
+  })
+
+  it('leaves schedules alone for other status changes', async () => {
+    await updateGoal('workspace-1', 'goal-1', { status: 'paused' })
+    expect(s.scheduleUpdates).toEqual([])
+  })
 })
 
 describe('resolveGoalEventApproval', () => {
