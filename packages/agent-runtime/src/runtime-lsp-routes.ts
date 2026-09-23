@@ -34,6 +34,7 @@
 import { Hono } from 'hono'
 import { realpathSync } from 'fs'
 import { isAbsolute, resolve, relative, sep } from 'path'
+import { fileURLToPath } from 'url'
 import type { WorkspaceLSPManager } from '@shogo/shared-runtime'
 
 export interface RuntimeLspRoutesConfig {
@@ -128,7 +129,13 @@ function relativeInside(root: string, target: string): string | null {
 
 function rewriteUriString(workspaceDir: string, uri: string): string {
   if (!uri.startsWith('file://')) return uri
-  const decoded = decodeURIComponent(uri.slice('file://'.length))
+  // fileURLToPath: slicing off `file://` leaves `/C:/…` for a Windows URI.
+  let decoded: string
+  try {
+    decoded = fileURLToPath(uri)
+  } catch {
+    decoded = decodeURIComponent(uri.slice('file://'.length))
+  }
   const absRoot = resolve(workspaceDir)
   // The root may be a symlink / junction (a workspace-runtime mount), and
   // the language server reports the files it opened through it by real path.

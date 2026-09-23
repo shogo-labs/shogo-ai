@@ -76,7 +76,7 @@ describe('runtime LSP routes with ?scope=project', () => {
   })
 
   test('rewrites result URIs reported by real path to project-relative paths', async () => {
-    definitionUri = decodeURIComponent(pathToFileURL(join(user, 'src', 'b.ts')).href).replace(/^file:\/\/\//, 'file://')
+    definitionUri = pathToFileURL(join(user, 'src', 'b.ts')).href
     const app = makeApp()
     const r = await post(app, '/agent/lsp/definition?scope=project', { path: 'src/a.ts', line: 0, character: 0 })
     expect(r.status).toBe(200)
