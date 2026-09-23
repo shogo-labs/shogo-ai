@@ -11,11 +11,10 @@
 # (which would otherwise block every other open PR against main until each
 # one rebased onto the new job names).
 #
-# Cost of the split: `typecheck` and `test` each redo checkout / bun setup /
-# `bun install` / `build:packages` (~1m40s), since GitHub Actions jobs don't
-# share a filesystem. That's the deliberate trade for wall-clock: the two
-# jobs' longest steps (Typecheck ~70s, Test ~3m) now overlap instead of
-# summing.
+# Each job still has its own checkout and filesystem. Dependency, workspace,
+# and TypeScript caches remove the repeated work on warm main-derived caches;
+# the test matrix keeps the remaining test work parallel without multiplying
+# the slowest package into eight full setup-heavy jobs.
 # =============================================================================
 
 name: CI
