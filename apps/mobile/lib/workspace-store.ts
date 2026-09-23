@@ -84,6 +84,10 @@ export function resolveActiveWorkspaceId(
     return id
   }
   const fallback = ownWorkspaceIds[0] ?? null
-  if (fallback && fallback !== id) setActiveWorkspaceId(fallback)
+  // This helper is called while React is rendering `useActiveWorkspace`.
+  // Persist the self-healing fallback without emitting a subscription update;
+  // notifying here schedules another render from inside render and can loop
+  // indefinitely when the browser has no active workspace cached yet.
+  if (fallback && fallback !== id) persistActiveWorkspaceId(fallback)
   return fallback
 }
