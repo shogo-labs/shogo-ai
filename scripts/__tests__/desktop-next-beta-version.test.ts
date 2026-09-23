@@ -4,8 +4,8 @@
  * Unit tests for scripts/desktop-next-beta-version.ts — see that file's
  * header for why the beta timestamp comes from the commit's committer
  * date (not wall-clock build time): the macOS + Windows release
- * workflows each compute this independently for the same push and must
- * land on the identical version string.
+ * workflows each compute this independently for the same selected commit
+ * and must land on the identical version string.
  */
 import { describe, expect, test } from 'bun:test'
 import {
@@ -142,7 +142,32 @@ describe('resolveVersion', () => {
     expect(result).toEqual({ version: '0.5.0', channel: 'beta' })
   })
 
-  test('push to main resolves a beta version off the newest stable tag', () => {
+  test('workflow_dispatch auto-computes a beta version when version is blank', () => {
+    const result = resolveVersion({
+      eventName: 'workflow_dispatch',
+      ref: 'refs/heads/main',
+      dispatchVersion: undefined,
+      dispatchChannel: 'beta',
+      tags,
+      commitDate,
+    })
+    expect(result).toEqual({ version: '1.14.10-beta.20260919t233000', channel: 'beta' })
+  })
+
+  test('workflow_dispatch requires a version for a stable build', () => {
+    expect(() =>
+      resolveVersion({
+        eventName: 'workflow_dispatch',
+        ref: 'refs/heads/main',
+        dispatchVersion: undefined,
+        dispatchChannel: undefined,
+        tags,
+        commitDate,
+      }),
+    ).toThrow('A release version is required for a stable manual build.')
+  })
+
+  test('push to main no longer auto-creates a beta version', () => {
     const result = resolveVersion({
       eventName: 'push',
       ref: 'refs/heads/main',
@@ -151,7 +176,7 @@ describe('resolveVersion', () => {
       tags,
       commitDate,
     })
-    expect(result).toEqual({ version: '1.14.10-beta.20260919t233000', channel: 'beta' })
+    expect(result).toEqual({ version: '0.0.0-dev', channel: 'stable' })
   })
 
   test('push to an unrelated branch falls back to the 0.0.0-dev placeholder', () => {

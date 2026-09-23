@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.1.0)'
-        required: true
+        description: 'Release version (e.g. 0.1.0). Leave blank with channel=beta to auto-compute the next patch + timestamp.'
+        required: false
         type: string
       channel:
         description: 'Update channel for this manual build'
@@ -16,14 +16,9 @@ on:
   push:
     tags:
       - 'v[0-9]*'
-    # Every push to main publishes a beta prerelease so opted-in desktop
-    # users get the newest main build via Settings -> Updates -> Beta. See
-    # the `resolve-version` job + scripts/desktop-next-beta-version.ts.
-    branches:
-      - main
 
 # See desktop-release-macos.yml's matching comment: tag pushes each get
-# their own group (never collide), main pushes share one and cancel any
+# their own group (never collide), and manual runs from main cancel any
 # in-flight beta build for a superseded commit.
 concurrency:
   group: desktop-release-windows-${{ github.ref }}
@@ -47,7 +42,7 @@ jobs:
   resolve-version:
     # Single source of truth for "what version/channel is this run" —
     # shared logic with the macOS workflow's identically-named job. Both
-    # MUST resolve to the same version string for the same push (they
+    # MUST resolve to the same version string for the same selected commit (they
     # publish to the same GitHub Release); see
     # scripts/desktop-next-beta-version.ts for how determinism is
     # guaranteed (HEAD's committer date, not wall-clock build time).
@@ -85,7 +80,7 @@ jobs:
     #
     # PR CI runs the same checks via .github/workflows/ci.yml; this job
     # is the backstop for the case where a regression sneaks in via
-    # direct main push, merge-queue race, or out-of-PR tag push.
+    # manual dispatch, merge-queue race, or out-of-PR tag push.
     name: Preflight checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -163,8 +158,8 @@ jobs:
         # (read from EXPO_PUBLIC_BUILD_HASH in apps/mobile/app/_layout.tsx)
         # matches the main process's `app.getVersion()`. Without this the
         # renderer defaulted every desktop build's release to `dev`.
-        # Version + channel come from the `resolve-version` job so tag,
-        # workflow_dispatch, and main-push (beta) builds agree with
+        # Version + channel come from the `resolve-version` job so tag and
+        # workflow_dispatch builds agree with
         # build-desktop and with each other.
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"
@@ -282,8 +277,8 @@ jobs:
 
       - name: Set app version
         # Version + channel come from the `resolve-version` job — see that
-        # job for why (tag / workflow_dispatch / main-push-beta logic lives
-        # in one script both this workflow and the macOS one share).
+        # job for why tag / workflow_dispatch logic lives in one script both
+        # this workflow and the macOS one share.
         shell: bash
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"

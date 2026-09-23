@@ -7,24 +7,20 @@
  * and appends both to `$GITHUB_OUTPUT`.
  *
  *   - Tag push (refs/tags/vX.Y.Z[-...]):  version = X.Y.Z[-...], channel = stable
- *   - workflow_dispatch:                  version = inputs.version,
+ *   - workflow_dispatch:                  version = inputs.version, or
+ *                                         auto-computed for a beta dispatch;
  *                                         channel = inputs.channel || stable
- *   - Push to main:                       version = <next patch of the
- *                                         newest stable vX.Y.Z tag>-beta.<UTC
- *                                         YYYYMMDDHHMMSS>, channel = beta
  *
  * The macOS and Windows workflows each run this script independently (in
- * their own `resolve-version` job) for the SAME push, and both must
+ * their own `resolve-version` job) for the SAME selected commit, and both must
  * compute the IDENTICAL version string so their `softprops/action-gh-
  * release` steps append to the SAME GitHub Release/tag instead of racing
- * to create two different releases for one push. That rules out
- * wall-clock build time as the beta timestamp source — the two
+ * to create two different releases for one manual beta build. That rules
+ * out wall-clock build time as the beta timestamp source — the two
  * workflows' jobs start at slightly different times. Instead we derive
- * the timestamp from HEAD's *committer* date, which is identical on
- * every checkout of the same commit and — because GitHub stamps merges
- * to `main` in commit order — is also monotonically increasing across
- * pushes, which Squirrel/NuGet's version comparison requires in order to
- * treat each new beta as "newer" than the last.
+ * the timestamp from HEAD's *committer* date, which is identical on every
+ * checkout of the same commit and preserves the required ordering when
+ * manual beta builds target successive commits.
  *
  * The timestamp is a fixed-width `<YYYYMMDD>t<HHMMSS>` string (no `.`)
  * because two separate constraints apply at once:
@@ -40,7 +36,7 @@
  *      version. A single 14-digit run (`20260922093736`) is ~9,400x larger
  *      than `Int32.MaxValue` (2147483647) and threw
  *      `System.OverflowException` inside `ReleaseEntry.WriteReleaseFile`,
- *      which failed EVERY Windows beta build — 0 of 30 runs on `main`
+ *      which failed EVERY Windows beta build — 0 of 30 automatic runs on `main`
  *      produced an installer (SHOG-750).
  *
  * Splitting the stamp with a literal `t` keeps it human-readable and
@@ -132,11 +128,14 @@ export function resolveVersion(input: ResolveVersionInput): ResolvedVersion {
   if (typeof ref === 'string' && ref.startsWith('refs/tags/v')) {
     return { version: ref.slice('refs/tags/v'.length), channel: 'stable' }
   }
-  if (eventName === 'workflow_dispatch' && dispatchVersion) {
-    return { version: dispatchVersion, channel: dispatchChannel === 'beta' ? 'beta' : 'stable' }
-  }
-  if (ref === 'refs/heads/main') {
-    return { version: resolveBetaVersion(tags, commitDate), channel: 'beta' }
+  if (eventName === 'workflow_dispatch') {
+    if (dispatchVersion) {
+      return { version: dispatchVersion, channel: dispatchChannel === 'beta' ? 'beta' : 'stable' }
+    }
+    if (dispatchChannel === 'beta') {
+      return { version: resolveBetaVersion(tags, commitDate), channel: 'beta' }
+    }
+    throw new Error('A release version is required for a stable manual build.')
   }
   return { version: '0.0.0-dev', channel: 'stable' }
 }
@@ -165,14 +164,22 @@ function headCommitDate(): Date {
 }
 
 function main(): void {
-  const result = resolveVersion({
-    eventName: process.env.GITHUB_EVENT_NAME,
-    ref: process.env.GITHUB_REF,
-    dispatchVersion: process.env.DISPATCH_VERSION || undefined,
-    dispatchChannel: process.env.DISPATCH_CHANNEL || undefined,
-    tags: listTags(),
-    commitDate: headCommitDate(),
-  })
+  let result: ResolvedVersion
+  try {
+    result = resolveVersion({
+      eventName: process.env.GITHUB_EVENT_NAME,
+      ref: process.env.GITHUB_REF,
+      dispatchVersion: process.env.DISPATCH_VERSION || undefined,
+      dispatchChannel: process.env.DISPATCH_CHANNEL || undefined,
+      tags: listTags(),
+      commitDate: headCommitDate(),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`::error::${message}\n`)
+    process.exit(1)
+    return
+  }
 
   const out = `version=${result.version}\nchannel=${result.channel}\n`
   process.stdout.write(out)

@@ -156,15 +156,15 @@ control agent is active. Adjust under **Settings → Security**.
 
 Shogo Desktop auto-updates via Electron's Squirrel-based `autoUpdater`. Every
 install ships on the **Stable** channel by default; users can opt into
-**Beta** from **Settings → Updates** to track the newest signed build off
-`main` instead of the latest tagged release.
+**Beta** from **Settings → Updates** to track the newest manually published
+signed build instead of the latest tagged release.
 
 | | Stable (default) | Beta (opt-in) |
 |---|---|---|
-| Tracks | Latest tagged `vX.Y.Z` release | Newest build off `main`, published on every push |
+| Tracks | Latest tagged `vX.Y.Z` release | Newest manually published build from the selected commit |
 | Feed | `update.electronjs.org` (reads this repo's GitHub Releases; ignores prereleases/drafts by design) | `releases.shogo.ai/desktop/beta/...` — a Cloudflare Worker route that speaks the same protocol but includes prereleases |
-| Version scheme | `X.Y.Z` | `<next patch>-beta.<UTC YYYYMMDDHHMMSS>`, e.g. `1.14.10-beta.20260919233000` |
-| Stability | Recommended for everyday use | May be unstable — it's whatever's on `main` right now |
+| Version scheme | `X.Y.Z` | `<next patch>-beta.<UTC YYYYMMDDtHHMMSS>`, e.g. `1.14.10-beta.20260919t233000` |
+| Stability | Recommended for everyday use | May be unstable — it's the manually selected commit |
 
 Switching channels persists to `config.json` (`updateChannel`) and immediately
 re-probes the new feed. Switching **Beta → Stable** does not downgrade — the

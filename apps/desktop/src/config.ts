@@ -34,9 +34,9 @@ export interface BugReportConfig {
   maxLogLines?: number
 }
 
-/** Desktop auto-update channel. `beta` tracks the newest build off `main`
- * (published on every push, prerelease on GitHub) instead of the latest
- * tagged stable release. See `update-channel.ts` for feed-URL resolution. */
+/** Desktop auto-update channel. `beta` tracks the newest manually published
+ * prerelease instead of the latest tagged stable release. See
+ * `update-channel.ts` for feed-URL resolution. */
 export type UpdateChannel = 'stable' | 'beta'
 
 export interface DesktopConfig {
