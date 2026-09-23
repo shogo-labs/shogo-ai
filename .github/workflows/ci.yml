@@ -38,6 +38,7 @@ on:
   # waiting for a required check that never gets reported.
   merge_group:
     branches: [main]
+    types: [checks_requested]
   # Re-running a past run replays that run's workflow definition, so a fix to
   # the job itself (a timeout, a step) cannot be verified by re-running the
   # build that motivated it. Manual dispatch gives a fresh run against the
