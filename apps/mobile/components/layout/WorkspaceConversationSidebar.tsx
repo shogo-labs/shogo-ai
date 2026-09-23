@@ -649,7 +649,7 @@ export function WorkspaceConversationSidebar() {
                         event.stopPropagation?.();
                         startProjectChat(project.id);
                       }}
-                      className="mr-1 hidden h-9 w-9 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
+                      className="mr-1 flex h-9 w-9 items-center justify-center rounded-lg opacity-0 pointer-events-none active:bg-muted group-hover:opacity-100 group-hover:pointer-events-auto"
                     >
                       <Plus size={16} className="text-muted-foreground" />
                     </Pressable>

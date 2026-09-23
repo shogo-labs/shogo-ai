@@ -810,14 +810,14 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               Hidden there — the Pinned section already groups these rows,
               and hover-reveal actions do not exist on touch. */}
           {isPinned && !comfortable && (
-            <View className="group-hover:hidden pr-1 shrink-0">
+            <View className="pr-1 shrink-0 opacity-100 group-hover:opacity-0">
               <Pin size={10} className="text-muted-foreground" />
             </View>
           )}
           {/* Hover-reveal actions (web). Siblings of the project Pressable, so
               tapping one never triggers the project-open press. */}
           {Platform.OS === "web" && (
-          <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+          <View className="flex flex-row items-center gap-0.5 shrink-0 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto">
             <Pressable
               onPress={handleCreateChat}
               className="p-0.5"

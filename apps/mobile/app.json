@@ -31,7 +31,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/shogo-icon.png"
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",

@@ -76,29 +76,32 @@ export function WorkspaceSidebarSection({
               ({count})
             </Text>
           ) : null}
-          {!collapseOnHover || hovered ? (
-            <Animated.View
-              className="ml-auto"
-              style={{
-                transform: [
-                  {
-                    rotate: progress.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ["0deg", "90deg"],
-                    }),
-                  },
-                ],
-              }}
-            >
-              <ChevronRight size={15} className="text-muted-foreground" />
-            </Animated.View>
-          ) : null}
+          <Animated.View
+            className={cn(
+              "ml-auto",
+              collapseOnHover && !hovered && "opacity-0 pointer-events-none"
+            )}
+            style={{
+              transform: [
+                {
+                  rotate: progress.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["0deg", "90deg"],
+                  }),
+                },
+              ],
+            }}
+          >
+            <ChevronRight size={15} className="text-muted-foreground" />
+          </Animated.View>
         </Pressable>
         {action ? (
           <View
             className={cn(
               "ml-1",
-              actionVisibility === "hover" && !hovered && "hidden"
+              actionVisibility === "hover" &&
+                !hovered &&
+                "opacity-0 pointer-events-none"
             )}
           >
             {action}
