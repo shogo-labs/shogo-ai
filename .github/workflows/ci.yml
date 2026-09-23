@@ -30,6 +30,14 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # Required for the `main` merge queue: GitHub tests the queue's temporary
+  # merge-group ref (the batch of queued PRs merged against latest `main`)
+  # by re-running whichever workflows are triggered on `merge_group`, then
+  # reads back the "Lint, Typecheck, Test" context from THIS run before
+  # promoting the batch. Without this trigger, queued PRs would sit forever
+  # waiting for a required check that never gets reported.
+  merge_group:
+    branches: [main]
   # Re-running a past run replays that run's workflow definition, so a fix to
   # the job itself (a timeout, a step) cannot be verified by re-running the
   # build that motivated it. Manual dispatch gives a fresh run against the
