@@ -71,6 +71,13 @@ jobs:
         with:
           bun-version: '1.3.11'
 
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
       - name: Restore prepared build artifacts
         id: workspace-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -115,17 +122,23 @@ jobs:
         # repos and this 403s intermittently. Guarded by
         # `check:ci-bun-install-token`; see that script for the full
         # writeup and the other workflows with the same fix.
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Measure installed dependency tree
-        # Temporary measurement for deciding whether a node_modules cache
-        # beats its archive/restore cost. Keep the two paths separate:
-        # Bun's isolated linker stores the actual files under .bun.
-        run: |
-          du -sh node_modules
-          du -sh node_modules/.bun
+      - name: Regenerate workspace files from cached dependencies
+        if: steps.node-modules-cache.outputs.cache-hit == 'true'
+        run: bun scripts/postinstall.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Save bun dependency cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
@@ -277,6 +290,13 @@ jobs:
         with:
           bun-version: '1.3.11'
 
+      - name: Restore node_modules
+        id: mobile-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
       - name: Restore prepared build artifacts
         id: workspace-mobile-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -306,9 +326,23 @@ jobs:
           restore-keys: bun-ci-
 
       - name: Install dependencies
+        if: steps.mobile-node-modules-cache.outputs.cache-hit != 'true'
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Regenerate workspace files from cached dependencies
+        if: steps.mobile-node-modules-cache.outputs.cache-hit == 'true'
+        run: bun scripts/postinstall.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mobile-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         if: steps.workspace-mobile-cache.outputs.cache-hit != 'true'
@@ -340,6 +374,13 @@ jobs:
         with:
           bun-version: '1.3.11'
 
+      - name: Restore node_modules
+        id: known-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
       - name: Restore prepared build artifacts
         id: workspace-known-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -360,9 +401,23 @@ jobs:
           restore-keys: bun-ci-
 
       - name: Install dependencies
+        if: steps.known-node-modules-cache.outputs.cache-hit != 'true'
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Regenerate workspace files from cached dependencies
+        if: steps.known-node-modules-cache.outputs.cache-hit == 'true'
+        run: bun scripts/postinstall.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.known-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         if: steps.workspace-known-cache.outputs.cache-hit != 'true'
@@ -419,6 +474,13 @@ jobs:
         with:
           bun-version: '1.3.11'
 
+      - name: Restore node_modules
+        id: test-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
       - name: Restore prepared build artifacts
         id: workspace-test-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -443,9 +505,23 @@ jobs:
         # See the "Install dependencies" comment in the `typecheck` job —
         # identical rationale, duplicated here because each job gets its own
         # fresh runner filesystem.
+        if: steps.test-node-modules-cache.outputs.cache-hit != 'true'
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Regenerate workspace files from cached dependencies
+        if: steps.test-node-modules-cache.outputs.cache-hit == 'true'
+        run: bun scripts/postinstall.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.test-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # See the "Build workspace packages" comment in the `typecheck` job.
@@ -617,6 +693,13 @@ jobs:
         with:
           bun-version: '1.3.11'
 
+      - name: Restore node_modules
+        id: windows-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
       - name: Restore prepared build artifacts
         id: workspace-windows-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -644,10 +727,25 @@ jobs:
         # linking expo@54.0.33 on the Windows workspace when this job used
         # --ignore-scripts. The path gate above is the safe optimization for
         # PRs that cannot affect this platform-specific guard.
+        if: steps.windows-node-modules-cache.outputs.cache-hit != 'true'
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
+
+      - name: Regenerate workspace files from cached dependencies
+        if: steps.windows-node-modules-cache.outputs.cache-hit == 'true'
+        run: bun scripts/postinstall.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.windows-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Save Windows bun dependency cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
