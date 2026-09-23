@@ -29,6 +29,7 @@ export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
   | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
+  | 'claude-opus-5-5'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -120,19 +121,22 @@ export interface ImageModelEntry {
 
 export const MODEL_CATALOG = {
   // Anthropic — current generation
-  'claude-opus-5': {
-    id: 'claude-opus-5',
+  'claude-opus-5-5': {
+    id: 'claude-opus-5-5',
     provider: 'anthropic',
-    apiModel: 'claude-opus-5',
-    displayName: 'Claude Opus 5',
-    shortDisplayName: 'Opus 5',
+    apiModel: 'claude-opus-5-5',
+    displayName: 'Claude Opus 5.5',
+    shortDisplayName: 'Opus 5.5',
     tier: 'premium',
     family: 'opus',
     generation: 'current',
-    billingModel: 'opus',
+    // Dedicated bucket — 20% cheaper than Opus 5 on input/output and 60%
+    // cheaper on cache reads (see MODEL_DOLLAR_COSTS['claude-opus-5-5']),
+    // so it can't reuse the shared 'opus' bucket.
+    billingModel: 'claude-opus-5-5',
     maxOutputTokens: 128_000,
-    // Not yet run through the subagent-smoke eval — unrated until verified
-    // (see `ModelCapabilities` doc comment above).
+    // Released 2026-09-22. Not yet run through the subagent-smoke eval —
+    // unrated until verified (see `ModelCapabilities` doc comment above).
   },
   'claude-sonnet-5': {
     id: 'claude-sonnet-5',
@@ -177,6 +181,24 @@ export const MODEL_CATALOG = {
   },
 
   // Anthropic — legacy
+  'claude-opus-5': {
+    id: 'claude-opus-5',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-5',
+    displayName: 'Claude Opus 5',
+    shortDisplayName: 'Opus 5',
+    tier: 'premium',
+    family: 'opus',
+    // Superseded by Opus 5.5 as the current-gen flagship on 2026-09-22 —
+    // kept addressable by its own id but no longer claims the shared
+    // `opus`/`claude-opus` aliases (see aliases.ts), same handoff pattern
+    // used for every prior Opus release.
+    generation: 'legacy',
+    billingModel: 'opus',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
   'claude-opus-4-7': {
     id: 'claude-opus-4-7',
     provider: 'anthropic',

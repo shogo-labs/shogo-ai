@@ -6,6 +6,13 @@
  *
  *   - Opus 4.8 (`claude-opus-4-8`) — native Anthropic, premium / opus /
  *     current, 128k output, opus-equivalent per-token pricing, alias `opus`.
+ *   - Opus 5.5 (`claude-opus-5-5`) — native Anthropic, premium / opus /
+ *     current, 128k output, launched 2026-09-22. Takes over the shared
+ *     `opus`/`claude-opus` aliases from Opus 5 (20% cheaper input/output,
+ *     60% cheaper cache reads — see MODEL_DOLLAR_COSTS['claude-opus-5-5']).
+ *     Opus 5 flips to an explicit `legacy` row in the same run (mirrors the
+ *     Opus 4.8 → Opus 5 handoff above) so it stays admin-manageable/routable
+ *     without claiming the flagship aliases or showing in the default picker.
  *   - Opus 5 (`claude-opus-5`) / Sonnet 5 (`claude-sonnet-5`) — native
  *     Anthropic, 128k output, opus/sonnet-equivalent per-token pricing.
  *     Sonnet 5 is `premium` tier (it now sits alongside Opus, not the
@@ -129,16 +136,53 @@ async function seedOpus48(): Promise<void> {
   console.log('[seed-db-models] Upserted Opus 4.8 (apiModel=claude-opus-4-8)')
 }
 
+async function seedOpus55(): Promise<void> {
+  const common = {
+    displayName: 'Claude Opus 5.5',
+    shortDisplayName: 'Opus 5.5',
+    tier: 'premium',
+    family: 'opus',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    // Takes over the shared `opus`/`claude-opus` aliases from Opus 5 (see
+    // seedOpus5 below) — same last-write-wins handoff as every prior Opus
+    // release.
+    aliases: ['claude-opus-5-5', 'opus', 'claude-opus'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // Anthropic-published rates (anthropic.com/claude-opus-5-5), launched
+    // 2026-09-22 — 20% cheaper than Opus 5 on input/output, 60% cheaper on
+    // cache reads (see MODEL_DOLLAR_COSTS['claude-opus-5-5']).
+    inputPerMillion: 4.0,
+    cachedInputPerMillion: 0.2,
+    cacheWritePerMillion: 5.0,
+    outputPerMillion: 20.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-opus-5-5' },
+    { providerId: null, sortOrder: 0, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted Opus 5.5 (apiModel=claude-opus-5-5)')
+}
+
 async function seedOpus5(): Promise<void> {
   const common = {
     displayName: 'Claude Opus 5',
     shortDisplayName: 'Opus 5',
     tier: 'premium',
     family: 'opus',
-    generation: 'current',
+    // Superseded by Opus 5.5 as the current-gen flagship (2026-09-22) — kept
+    // addressable by its own id but no longer claims the shared
+    // `opus`/`claude-opus` aliases (see seedOpus55 above), same handoff as
+    // every prior Opus release.
+    generation: 'legacy',
     maxOutputTokens: 128_000,
     enabled: true,
-    aliases: ['claude-opus-5', 'opus', 'claude-opus'],
+    aliases: ['claude-opus-5'],
     // Not yet run through the subagent-smoke eval — leave capabilities unset
     // (unrated) until verified, per the ModelCapabilities doc comment.
     capabilities: null,
@@ -429,6 +473,7 @@ async function seedGptLive1(): Promise<void> {
 
 async function main(): Promise<void> {
   await seedOpus48()
+  await seedOpus55()
   await seedOpus5()
   await seedSonnet5()
   await seedFable51()

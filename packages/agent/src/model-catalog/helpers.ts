@@ -235,6 +235,12 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
   opus:           { inputPerMillion: 5.00, cacheWritePerMillion: 6.25, cachedInputPerMillion: 0.50, outputPerMillion: 25.00 },
+  // Anthropic-published rates (anthropic.com/claude-opus-5-5, launched
+  // 2026-09-22) — 20% cheaper than Opus 5 on input/output, 60% cheaper on
+  // cache reads. `cacheWritePerMillion` is the 5-minute cache-write rate
+  // ($8/MTok for 1-hour writes isn't represented in this cost shape, same
+  // caveat as the `opus` bucket above).
+  'claude-opus-5-5': { inputPerMillion: 4.00, cacheWritePerMillion: 5.00, cachedInputPerMillion: 0.20, outputPerMillion: 20.00 },
   // Anthropic-published rates (platform.claude.com/docs/en/about-claude/pricing).
   // `cacheWritePerMillion` is the 5-minute cache-write rate (1-hour writes are
   // $20/MTok and aren't represented in this cost shape). `cachedInputPerMillion`
