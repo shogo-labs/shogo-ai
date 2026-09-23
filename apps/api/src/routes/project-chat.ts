@@ -31,6 +31,7 @@ import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { sendPushToUser } from "../lib/push-notifications"
+import { clearActiveTurn, markTurnEnded, markTurnStarted } from "../services/chat-turn-state.service"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1331,6 +1332,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (clientTurnId) {
         recordClientTurn(incomingChatSessionId, clientTurnId)
       }
+      let activityTurnId: string | null = null
 
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
@@ -1341,6 +1343,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       await openSession(projectId, project.workspaceId, billingUserId || 'system', incomingChatSessionId)
       let billingSessionHandedOff = false
       try {
+        try {
+          activityTurnId = await markTurnStarted(incomingChatSessionId)
+        } catch (error) {
+          // Activity is observational; a schema/database issue must not block chat.
+          console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)
+        }
 
       // Forward headers
       const headers: Record<string, string> = {
@@ -1642,7 +1650,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             },
           }).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
-          )
+          ).finally(() => {
+            if (activityTurnId) {
+              markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
+                console.warn(`[ProjectChat] Failed to clear active chat ${incomingChatSessionId}:`, error),
+              )
+            }
+          })
 
           chatSpan.setAttribute("chat.status", response.status)
           chatSpan.setStatus({ code: SpanStatusCode.OK })
@@ -1814,6 +1828,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
+          if (activityTurnId) {
+            clearActiveTurn(incomingChatSessionId).catch((error) =>
+              console.warn(`[ProjectChat] Failed to clear abandoned active chat ${incomingChatSessionId}:`, error),
+            )
+          }
         }
       }
     } catch (error: any) {
@@ -1997,6 +2016,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         signal: c.req.raw.signal,
       })
 
+      let parsed: any = {}
+      try { parsed = JSON.parse(body || "{}") } catch { /* noop */ }
+      const chatSessionId =
+        c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
+      if (chatSessionId) {
+        await clearActiveTurn(chatSessionId).catch((error) =>
+          console.warn(`[ProjectChat] Failed to clear stopped chat ${chatSessionId}:`, error),
+        )
+      }
       const result = await response.json()
       return c.json(result)
     } catch (error: any) {

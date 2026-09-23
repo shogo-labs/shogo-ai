@@ -32,8 +32,10 @@ process.env.DATABASE_URL = process.env.DATABASE_URL ?? 'file:./shogo.db'
 const { prisma } = await import('../apps/api/src/lib/prisma')
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../apps/api/src/routes/workspace-agent')
 const { isApprovalPending } = await import('../apps/api/src/services/workspace-agent.service')
+const { markTurnEnded, markTurnStarted } = await import('../apps/api/src/services/chat-turn-state.service')
 
 let workspaceId: string
+let teamWorkspaceId: string
 let userId: string
 let foreignUserId: string
 let memberId: string
@@ -80,10 +82,17 @@ describe('personal companion goal flow — training plan', () => {
 
     const member = await prisma.member.create({ data: { userId, workspaceId, role: 'owner' } })
     memberId = member.id
+
+    const teamWorkspace = await prisma.workspace.create({
+      data: { name: 'E2E Team Activity', slug: `e2e-team-activity-${Date.now()}`, kind: 'team' },
+    })
+    teamWorkspaceId = teamWorkspace.id
+    await prisma.member.create({ data: { userId, workspaceId: teamWorkspaceId, role: 'owner' } })
   })
 
   afterAll(async () => {
     await prisma.workspace.delete({ where: { id: workspaceId } }).catch(() => {})
+    await prisma.workspace.delete({ where: { id: teamWorkspaceId } }).catch(() => {})
     await prisma.user.delete({ where: { id: userId } }).catch(() => {})
     await prisma.user.delete({ where: { id: foreignUserId } }).catch(() => {})
   })
@@ -223,5 +232,56 @@ describe('personal companion goal flow — training plan', () => {
 
     const notFound = await app.request(req(`/api/workspaces/${workspaceId}/goals/does-not-exist`))
     expect(notFound.status).toBe(404)
+  })
+
+  test('activity includes active chats in personal and team workspaces and removes stale turns', async () => {
+    const session = await prisma.chatSession.create({
+      data: {
+        inferredName: 'Active chat fixture',
+        contextType: 'workspace',
+        workspaceId,
+      },
+    })
+    const turnId = await markTurnStarted(session.id, 'e2e-active-turn')
+
+    const activeRes = await app.request(req(`/api/workspaces/${workspaceId}/activity`))
+    expect(activeRes.status).toBe(200)
+    const activeBody = (await activeRes.json()) as { activity: Array<{ type: string; chatSessionId?: string }> }
+    expect(activeBody.activity).toContainEqual(expect.objectContaining({
+      type: 'chat_turn',
+      chatSessionId: session.id,
+    }))
+
+    const chatsRes = await app.request(req(`/api/workspaces/${workspaceId}/active-chats`))
+    expect(chatsRes.status).toBe(200)
+    expect(await chatsRes.json()).toMatchObject({
+      chats: [expect.objectContaining({ chatSessionId: session.id, turnId })],
+    })
+
+    await markTurnEnded(session.id, turnId)
+    const endedRes = await app.request(req(`/api/workspaces/${workspaceId}/active-chats`))
+    expect(await endedRes.json()).toEqual({ chats: [] })
+
+    const teamSession = await prisma.chatSession.create({
+      data: {
+        inferredName: 'Team active chat fixture',
+        contextType: 'workspace',
+        workspaceId: teamWorkspaceId,
+      },
+    })
+    const teamTurnId = await markTurnStarted(teamSession.id, 'e2e-team-active-turn')
+    const teamChatsRes = await app.request(req(`/api/workspaces/${teamWorkspaceId}/active-chats`))
+    expect(teamChatsRes.status).toBe(200)
+    expect(await teamChatsRes.json()).toMatchObject({
+      chats: [expect.objectContaining({ chatSessionId: teamSession.id, turnId: teamTurnId })],
+    })
+    const personalAfterTeamRes = await app.request(req(`/api/workspaces/${workspaceId}/active-chats`))
+    expect(await personalAfterTeamRes.json()).toEqual({ chats: [] })
+
+    await prisma.chatSession.update({
+      where: { id: teamSession.id },
+      data: { activeTurnStartedAt: new Date(Date.now() - 31 * 60 * 1000) },
+    })
+    expect(await (await app.request(req(`/api/workspaces/${teamWorkspaceId}/active-chats`))).json()).toEqual({ chats: [] })
   })
 })

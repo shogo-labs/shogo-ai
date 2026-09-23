@@ -1017,6 +1017,10 @@ model ChatSession {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @default(now()) @updatedAt
   lastActiveAt        DateTime @default(now())
+  // Set while an agent turn is in flight. The turn id makes completion
+  // updates conditional so an older stream cannot clear a newer turn.
+  activeTurnId        String?
+  activeTurnStartedAt DateTime?
 
   // BETA: per-chat git worktrees (mirrors schema.prisma). null when off.
   worktreeBranch String?
@@ -1034,6 +1038,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
+  @@index([workspaceId, activeTurnStartedAt])
   @@map("chat_sessions")
 }
 

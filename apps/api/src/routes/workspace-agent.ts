@@ -20,6 +20,7 @@
 
 import { Hono } from 'hono'
 import { hasWorkspaceAccess } from '../services/workspace.service'
+import { listActiveChatTurns } from '../services/chat-turn-state.service'
 import {
   AgentScheduleError,
   createSchedule,
@@ -417,6 +418,13 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const parsedLimit = Number(c.req.query('limit') || 100)
     const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 200) : 100
     return c.json({ activity: await listWorkspaceActivity(auth.workspaceId, limit) })
+  })
+
+  router.get('/workspaces/:workspaceId/active-chats', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const chats = await listActiveChatTurns(auth.workspaceId)
+    return c.json({ chats })
   })
 
   return router

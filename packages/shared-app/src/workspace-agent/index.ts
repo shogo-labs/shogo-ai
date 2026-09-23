@@ -7,6 +7,7 @@ export type {
   AgentScheduleSummary,
   Goal,
   WorkspaceActivityItem,
+  WorkspaceActiveChat,
   GoalPlanStep,
   GoalDeliverable,
   GoalEventRecord,

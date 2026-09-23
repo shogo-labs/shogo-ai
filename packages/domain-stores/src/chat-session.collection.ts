@@ -422,7 +422,7 @@ const relationFields = ["project","workspace","attachedProjects","messages","too
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
-  const dateFields = ["createdAt","updatedAt","lastActiveAt"]
+  const dateFields = ["createdAt","updatedAt","lastActiveAt","activeTurnStartedAt"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {

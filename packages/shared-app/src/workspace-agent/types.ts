@@ -118,7 +118,7 @@ export function parseGoalDeliverables(deliverables: unknown): GoalDeliverable[] 
 }
 
 export interface WorkspaceActivityItem {
-  type: 'goal_event' | 'agent_task'
+  type: 'goal_event' | 'agent_task' | 'chat_turn'
   id: string
   goalId?: string | null
   goalTitle?: string
@@ -129,6 +129,13 @@ export interface WorkspaceActivityItem {
   currentStep?: string | null
   resultSummary?: string | null
   errorMessage?: string | null
+  chatSessionId?: string
+  turnId?: string
+  sessionName?: string
+  projectId?: string | null
+  projectName?: string | null
+  projectHidden?: boolean
+  startedAt?: string
   /**
    * Free-form per-event detail. For `kind: 'approval'` goal events, an
    * unresolved approval has no `metadata.resolvedAt` — see
@@ -139,6 +146,16 @@ export interface WorkspaceActivityItem {
   createdAt: string
   updatedAt?: string
   completedAt?: string | null
+}
+
+export interface WorkspaceActiveChat {
+  chatSessionId: string
+  turnId: string
+  sessionName: string
+  projectId: string | null
+  projectName: string | null
+  projectHidden: boolean
+  startedAt: string
 }
 
 /**

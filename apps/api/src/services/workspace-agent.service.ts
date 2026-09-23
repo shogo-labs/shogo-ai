@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { prisma } from '../lib/prisma'
+import { listActiveChatTurns } from './chat-turn-state.service'
 
 export const GOAL_STATUSES = ['active', 'paused', 'done'] as const
 export const GOAL_EVENT_KINDS = ['progress', 'blocker', 'approval', 'note', 'deliverable'] as const
@@ -249,7 +250,7 @@ export function isApprovalPending(event: { kind: string; metadata?: unknown }): 
 }
 
 export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
-  const [events, tasks] = await Promise.all([
+  const [events, tasks, chats] = await Promise.all([
     prisma.goalEvent.findMany({
       where: { goal: { workspaceId } },
       include: { goal: { select: { id: true, title: true } } },
@@ -273,6 +274,7 @@ export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
       orderBy: { updatedAt: 'desc' },
       take: limit,
     }),
+    listActiveChatTurns(workspaceId),
   ])
 
   return [
@@ -299,10 +301,30 @@ export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
       updatedAt: task.updatedAt,
       completedAt: task.completedAt,
     })),
+    ...chats.map((chat) => ({
+      type: 'chat_turn' as const,
+      id: chat.chatSessionId,
+      chatSessionId: chat.chatSessionId,
+      turnId: chat.turnId,
+      sessionName: chat.sessionName,
+      projectId: chat.projectId,
+      projectName: chat.projectName,
+      projectHidden: chat.projectHidden,
+      startedAt: chat.startedAt,
+      createdAt: chat.startedAt,
+    })),
   ]
     .sort((a, b) => {
-      const aTime = a.type === 'goal_event' ? a.createdAt : a.updatedAt
-      const bTime = b.type === 'goal_event' ? b.createdAt : b.updatedAt
+      const aTime = a.type === 'goal_event'
+        ? a.createdAt
+        : a.type === 'chat_turn'
+          ? a.startedAt
+          : a.updatedAt
+      const bTime = b.type === 'goal_event'
+        ? b.createdAt
+        : b.type === 'chat_turn'
+          ? b.startedAt
+          : b.updatedAt
       return bTime.getTime() - aTime.getTime()
     })
     .slice(0, limit)
