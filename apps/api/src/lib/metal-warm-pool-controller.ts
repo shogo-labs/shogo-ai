@@ -1011,7 +1011,7 @@ export class MetalWarmPoolController {
     host: HostEntry,
     projectId: string,
     env: Record<string, string>,
-    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
   ): Promise<AssignResult> {
     const base = `http://${host.meshIp}:${host.agentPort}`
     const res = await this.fetchImpl(`${base}/assign`, {
