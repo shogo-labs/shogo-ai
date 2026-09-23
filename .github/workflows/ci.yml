@@ -48,13 +48,18 @@ on:
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  # Preserve cache-populating main runs; superseded PR and merge-group runs
+  # are safe to cancel.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   typecheck:
     name: Typecheck & static checks
-    runs-on: ubuntu-latest
+    # Set CI_LINUX_RUNNER=ubuntu-24.04-8core when an 8-vCPU larger runner is
+    # provisioned. The fallback keeps this workflow valid for public repos
+    # without larger-runner entitlement.
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 15
@@ -76,14 +81,14 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Restore TypeScript build info
         id: ts-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: '**/*.tsbuildinfo'
-          key: tsbuild-typecheck-${{ hashFiles('bun.lock', '**/tsconfig*.json') }}
+          key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
           restore-keys: tsbuild-typecheck-
 
       - name: Restore bun dependencies
@@ -113,6 +118,14 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Measure installed dependency tree
+        # Temporary measurement for deciding whether a node_modules cache
+        # beats its archive/restore cost. Keep the two paths separate:
+        # Bun's isolated linker stores the actual files under .bun.
+        run: |
+          du -sh node_modules
+          du -sh node_modules/.bun
 
       - name: Save bun dependency cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
@@ -157,7 +170,7 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Typecheck
         env:
@@ -170,7 +183,7 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: '**/*.tsbuildinfo'
-          key: tsbuild-typecheck-${{ hashFiles('bun.lock', '**/tsconfig*.json') }}
+          key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
       - name: Lint
         run: bun run lint
@@ -252,7 +265,7 @@ jobs:
 
   typecheck-mobile:
     name: Typecheck (mobile)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 15
@@ -274,14 +287,14 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Restore TypeScript build info
         id: ts-mobile-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: '**/*.tsbuildinfo'
-          key: tsbuild-mobile-${{ hashFiles('bun.lock', '**/tsconfig*.json') }}
+          key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
           restore-keys: tsbuild-mobile-
 
       - name: Restore bun dependencies
@@ -309,10 +322,11 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: '**/*.tsbuildinfo'
-          key: tsbuild-mobile-${{ hashFiles('bun.lock', '**/tsconfig*.json') }}
+          key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
   typecheck-known-failures:
     name: Typecheck (known failures, non-blocking)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -336,7 +350,7 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Restore bun dependencies
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -361,54 +375,42 @@ jobs:
 
   test:
     name: Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 15
+    env:
+      # Set CI_TEST_PACKAGE_CONCURRENCY=4 together with the 8-vCPU runner.
+      # The safe default matches ubuntu-latest's four-vCPU runner.
+      SHOGO_TEST_PACKAGE_CONCURRENCY: ${{ vars.CI_TEST_PACKAGE_CONCURRENCY || '2' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: agent-runtime 1/3
+          - name: agent-runtime 1/2
             packages: packages/agent-runtime
-            shard: 1/3
-            build_templates: true
-            desktop_bundle: false
-          - name: agent-runtime 2/3
-            packages: packages/agent-runtime
-            shard: 2/3
-            build_templates: true
-            desktop_bundle: false
-          - name: agent-runtime 3/3
-            packages: packages/agent-runtime
-            shard: 3/3
-            build_templates: true
-            desktop_bundle: false
-          - name: api 1/2
-            packages: apps/api
             shard: 1/2
-            build_templates: false
+            build_templates: true
             desktop_bundle: false
-          - name: api 2/2
-            packages: apps/api
+            include_e2e: false
+          - name: agent-runtime 2/2
+            packages: packages/agent-runtime
             shard: 2/2
+            build_templates: true
+            desktop_bundle: false
+            include_e2e: false
+          - name: api + mobile
+            packages: apps/api,apps/mobile
+            shard: ''
             build_templates: false
             desktop_bundle: false
-          - name: mobile 1/2
-            packages: apps/mobile
-            shard: 1/2
-            build_templates: false
-            desktop_bundle: false
-          - name: mobile 2/2
-            packages: apps/mobile
-            shard: 2/2
-            build_templates: false
-            desktop_bundle: false
+            include_e2e: false
           - name: remaining + e2e
             packages: packages/shared-runtime,packages/model-catalog,packages/sdk,scripts,packages/shared-app
             shard: ''
             build_templates: true
             desktop_bundle: true
+            include_e2e: true
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -427,7 +429,7 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Restore bun dependencies
         id: bun-cache
@@ -526,8 +528,12 @@ jobs:
         run: bun run test -- --packages "${{ matrix.packages }}" --shard "${{ matrix.shard }}"
 
       - name: Test remaining packages and e2e
-        if: matrix.shard == ''
+        if: matrix.include_e2e
         run: bun run test -- --packages "${{ matrix.packages }}" --include-e2e
+
+      - name: Test unsharded packages
+        if: matrix.shard == '' && matrix.include_e2e == false
+        run: bun run test -- --packages "${{ matrix.packages }}"
 
   # Thin aggregator so branch protection's required status check keeps its
   # original name/context ("Lint, Typecheck, Test") no matter how the real
@@ -589,7 +595,7 @@ jobs:
           changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
           printf '%s\n' "$changed"
           if printf '%s\n' "$changed" | grep -Eq \
-            '^(packages/agent-runtime/src/|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/|\.github/workflows/ci\.yml$)'; then
+            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode)\.test\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|\.github/workflows/ci\.yml$)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -621,7 +627,7 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       # Keep this cache for the platform-sensitive path. A cacheless
       # experiment remained in bun install for more than five minutes, while
@@ -666,7 +672,7 @@ jobs:
             templates/runtime-template/node_modules
             templates/runtime-template/dist
             packages/agent-runtime/templates/sales-bdr-pipeline/dist
-          key: ci-prepared-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', '**/package.json', 'prisma/schema*.prisma', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Path-boundary, merged-root and release-version tests
         shell: bash

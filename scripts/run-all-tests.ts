@@ -353,6 +353,10 @@ async function main() {
   const argv = process.argv.slice(2)
   const withCoverage = argv.includes('--coverage')
   const includeE2E = argv.includes('--include-e2e')
+  const requestedPackageConcurrency = Number(process.env.SHOGO_TEST_PACKAGE_CONCURRENCY ?? '2')
+  const packageConcurrency = Number.isFinite(requestedPackageConcurrency)
+    ? Math.max(1, Math.min(8, Math.floor(requestedPackageConcurrency)))
+    : 2
   let packageFilter: Set<string> | null = null
   let shard: string | null = null
 
@@ -387,6 +391,7 @@ async function main() {
     console.error('[test] package filter selected no test packages')
     process.exit(2)
   }
+  console.log(`[test] package concurrency=${packageConcurrency}`)
 
   // Package-filtered matrix jobs own their selected package tests. Keep the
   // in-process e2e suites in exactly one unsharded "remaining" matrix leg.
@@ -425,7 +430,7 @@ async function main() {
       console.log(`\n=== ${pkg}: no \`${scriptName}\` script — skipping ===`)
     }
   }
-  const packageResults = await runPackagePool(packageJobs, 2, printPackageResult)
+  const packageResults = await runPackagePool(packageJobs, packageConcurrency, printPackageResult)
   const results: PackageResult[] = packageResults.map((result) => ({
     pkg: result.job.name,
     exitCode: result.exitCode,
