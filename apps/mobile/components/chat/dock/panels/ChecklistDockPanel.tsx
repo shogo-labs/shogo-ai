@@ -35,7 +35,6 @@ export function ChecklistDockPanel() {
       icon: ListTodo,
       summary: `${completed}/${todos.length} complete`,
       accent: inProgress > 0 ? "running" : "default",
-      chip: { icon: ListTodo, dot: inProgress > 0 },
       render: () => <TasksList todos={todos} variant="dock" />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

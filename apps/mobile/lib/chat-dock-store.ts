@@ -36,12 +36,6 @@ export type DockPanelAccent = "default" | "running" | "warning"
 
 export type DockIconComponent = ComponentType<{ size?: number; className?: string; color?: string }>
 
-export interface DockPanelChip {
-  icon: DockIconComponent
-  count?: number
-  dot?: boolean
-}
-
 export interface DockPanelDescriptor {
   id: string
   /** Default "status". */
@@ -61,8 +55,6 @@ export interface DockPanelDescriptor {
   headerActions?: ReactNode
   /** Renders a dismiss (X) affordance in the header when set. */
   onDismiss?: () => void
-  /** Toolbar pill descriptor; omit for panels that shouldn't get a composer chip. */
-  chip?: DockPanelChip
   /** `expanded` lets costly panels (e.g. a live browser screencast) suspend work while collapsed. */
   render: (ctx: { expanded: boolean; bodyMaxHeight?: number }) => ReactNode
 }
@@ -131,12 +123,6 @@ export function createChatDockStore(): ChatDockStore {
     return (panels.get(id)?.kind ?? "status") === "blocking"
   }
 
-  function chipsEqual(a: DockPanelChip | undefined, b: DockPanelChip | undefined): boolean {
-    if (a === b) return true
-    if (!a || !b) return false
-    return a.icon === b.icon && a.count === b.count && a.dot === b.dot
-  }
-
   /**
    * Whether two descriptors for the same id differ in any way that should
    * actually trigger a re-render. Deliberately excludes `render` and
@@ -166,8 +152,7 @@ export function createChatDockStore(): ChatDockStore {
       a.accent === b.accent &&
       (a.autoShow !== false) === (b.autoShow !== false) &&
       !!a.defaultExpanded === !!b.defaultExpanded &&
-      !!a.onDismiss === !!b.onDismiss &&
-      chipsEqual(a.chip, b.chip)
+      !!a.onDismiss === !!b.onDismiss
     )
   }
 

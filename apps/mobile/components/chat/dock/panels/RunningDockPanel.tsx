@@ -136,7 +136,6 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
       accent: processes.length > 0 || runningSubagents > 0 ? "running" : "default",
       summary: parts.join(" · "),
       defaultExpanded: true,
-      chip: { icon: Terminal, dot: processes.length > 0 || runningSubagents > 0 },
       render: () => <RunningBody {...props} />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
