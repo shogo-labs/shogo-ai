@@ -125,11 +125,12 @@ describe('resolveVisibleCatalogModels — unseeded DB (first-run fallback)', () 
     const models = await resolveVisibleCatalogModels(null)
     const ids = models.map((m) => m.id)
 
-    expect(ids).toContain('claude-opus-5')
+    expect(ids).toContain('claude-opus-5-5')
     expect(ids).toContain('claude-sonnet-5')
     expect(ids).toContain('gpt-5.6-luna')
     // Legacy catalog entries are a routing-only fallback, not listed.
     expect(ids).not.toContain('claude-3-haiku-20240307')
+    expect(ids).not.toContain('claude-opus-5')
     expect(ids).not.toContain('gpt-4o-mini')
     expect(ids).not.toContain('gpt-5.4-nano')
   })
