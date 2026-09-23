@@ -125,6 +125,9 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
   // Agent tasks are mutated through /api/agent-tasks/:id. Resolve the task's
   // workspace before the home-region router decides where the mutation runs.
   'agent-tasks': directWs('agentTask'),
+  // Agent schedules are mutated through /api/workspaces/:workspaceId/schedules/:id
+  // and need the same home-region routing when addressed by schedule id.
+  schedules: directWs('agentSchedule'),
 }
 
 // Custom chain lookups above resolve these models without going through
