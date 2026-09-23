@@ -1,5 +1,41 @@
 [
   {
+    "version": "2.0",
+    "slug": "v2-0",
+    "title": "Shogo 2.0",
+    "date": "2026-09-23",
+    "announce": true,
+    "intro": "Shogo 2.0 introduces personal workspaces, a free space where your own AI companion works alongside you, and Hoshi 2.0, our new default model. It also rolls up everything shipped since 1.12: a redesigned workspace, scheduled routines, new models, and a long list of reliability fixes.",
+    "highlights": [
+      {
+        "title": "Personal workspaces",
+        "description": "Every account now gets a free personal space with an AI companion that works on your goals, routines, and notes.",
+        "icon": "sparkles"
+      },
+      {
+        "title": "Hoshi 2.0",
+        "description": "Our new default model reasons before it acts, at the same price as Hoshi 1.0.",
+        "icon": "activity"
+      },
+      {
+        "title": "Scheduled routines",
+        "description": "Ask your companion to run a task on a schedule, like a weekday morning digest, and it happens automatically.",
+        "icon": "rocket"
+      },
+      {
+        "title": "A redesigned workspace",
+        "description": "New navigation, a unified chat shell, and a fresh onboarding flow across web, desktop, and mobile.",
+        "icon": "layers"
+      },
+      {
+        "title": "Docker Compose projects",
+        "description": "Run multi-service projects with exposed ports and public previews.",
+        "icon": "server"
+      }
+    ],
+    "url": "https://docs.shogo.ai/changelog/v2-0"
+  },
+  {
     "version": "1.12",
     "slug": "v1-12",
     "title": "Shogo 1.12",
