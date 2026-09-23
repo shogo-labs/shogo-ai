@@ -244,6 +244,24 @@ describe('POST /local/cloud-login/heartbeat', () => {
     expect(body.error).toBe('key revoked')
   })
 
+  test('normalizes structured cloud errors before returning status to the renderer', async () => {
+    findUniqueMock.mockImplementation(async () => ({ value: 'sk_revoked' }))
+    mockFetch(() => bridgeErr(401, { ok: false, error: { code: 'key_revoked', message: 'Key revoked' } }))
+    const app = mountApp()
+    const res = await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+
+    expect(res.status).toBe(401)
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      cloudKeyRejected: true,
+      error: 'Key revoked',
+    })
+
+    const status = await (await app.request('/api/local/cloud-login/status')).json()
+    expect(status.lastHeartbeatOk).toBe(false)
+    expect(status.lastHeartbeatError).toBe('Key revoked')
+  })
+
   test('falls back to HTTP <status> when cloud body has no error field', async () => {
     findUniqueMock.mockImplementation(async () => ({ value: 'sk' }))
     mockFetch(() => bridgeErr(503, {}))
@@ -277,6 +295,20 @@ describe('POST /local/cloud-login/heartbeat', () => {
     const body = await res.json()
     expect(body.ok).toBe(false)
     expect(body.error).toBe('ECONNREFUSED')
+  })
+
+  test('normalizes a structured fetch error in the 502 response', async () => {
+    findUniqueMock.mockImplementation(async () => ({ value: 'sk' }))
+    mockFetch(() => {
+      throw { code: 'UPSTREAM_TIMEOUT', message: 'Cloud did not respond' }
+    })
+    const app = mountApp()
+    const res = await app.request('/api/local/cloud-login/heartbeat', { method: 'POST' })
+    expect(res.status).toBe(502)
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      error: 'Cloud did not respond',
+    })
   })
 
   test('clears cloudKeyRejected when a subsequent heartbeat succeeds', async () => {

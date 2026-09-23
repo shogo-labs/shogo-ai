@@ -77,6 +77,7 @@ export {
 export {
   PlatformApi,
   BYOK_PROVIDERS,
+  toErrorMessage,
   type BYOKProviderId,
   type PlatformConfig,
   type ApiKeyInfo,

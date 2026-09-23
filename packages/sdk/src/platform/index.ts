@@ -21,6 +21,18 @@
 import type { HttpClient } from '../http/client.js'
 import type { ShogoResponse } from '../types.js'
 
+/** Convert an unknown boundary error into a user-facing message. */
+export function toErrorMessage(error: unknown, fallback = ''): string {
+  if (typeof error === 'string' && error.trim()) return error
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return message
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code.trim()) return code
+  }
+  return fallback
+}
+
 // =============================================================================
 // Types
 // =============================================================================

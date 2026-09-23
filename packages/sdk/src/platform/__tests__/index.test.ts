@@ -17,6 +17,7 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   PlatformApi,
+  toErrorMessage,
   type ApiKeyCreateResult,
   type ApiKeyInfo,
   type ApiKeyValidation,
@@ -30,6 +31,26 @@ import {
   type ShogoKeyStatus,
   type WorkspaceSummary,
 } from '../index'
+
+describe('toErrorMessage', () => {
+  test('returns a non-empty string unchanged', () => {
+    expect(toErrorMessage('Key revoked', 'fallback')).toBe('Key revoked')
+  })
+
+  test('uses an object message', () => {
+    expect(toErrorMessage({ message: 'Key revoked' }, 'fallback')).toBe('Key revoked')
+  })
+
+  test('uses an object code when message is absent', () => {
+    expect(toErrorMessage({ code: 'key_revoked' }, 'fallback')).toBe('key_revoked')
+  })
+
+  test('uses the fallback for empty and non-message values', () => {
+    expect(toErrorMessage('  ', 'fallback')).toBe('fallback')
+    expect(toErrorMessage(null, 'fallback')).toBe('fallback')
+    expect(toErrorMessage({ message: 42 }, 'fallback')).toBe('fallback')
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Fake HttpClient — records calls + serves canned responses
