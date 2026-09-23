@@ -92,6 +92,27 @@ const EXPECTED_FAIL = new Set<string>([
   'apps/api',
 ])
 
+type TypecheckScope = 'all' | 'required' | 'expected-failures'
+
+const scope = (process.env.TYPECHECK_SCOPE || 'all') as TypecheckScope
+if (!['all', 'required', 'expected-failures'].includes(scope)) {
+  console.error(`[typecheck] invalid TYPECHECK_SCOPE: ${scope}`)
+  process.exit(1)
+}
+
+const requestedPackages = new Set(
+  (process.env.TYPECHECK_PACKAGES || '')
+    .split(',')
+    .map((pkg) => pkg.trim())
+    .filter(Boolean),
+)
+const excludedPackages = new Set(
+  (process.env.TYPECHECK_EXCLUDE || '')
+    .split(',')
+    .map((pkg) => pkg.trim())
+    .filter(Boolean),
+)
+
 interface Result {
   pkg: string
   ok: boolean
@@ -101,7 +122,17 @@ interface Result {
 
 const typecheckJobs: PackagePoolJob[] = []
 
-for (const pkg of PACKAGES) {
+const selectedPackages = PACKAGES.filter((pkg) => {
+  if (requestedPackages.size > 0 && !requestedPackages.has(pkg)) return false
+  if (excludedPackages.has(pkg)) return false
+  if (scope === 'required') return !EXPECTED_FAIL.has(pkg)
+  if (scope === 'expected-failures') return EXPECTED_FAIL.has(pkg)
+  return true
+})
+
+console.log(`[typecheck] scope=${scope} packages=${selectedPackages.length}`)
+
+for (const pkg of selectedPackages) {
   const pkgDir = join(REPO_ROOT, pkg)
   const pkgJsonPath = join(pkgDir, 'package.json')
 
@@ -129,7 +160,7 @@ for (const pkg of PACKAGES) {
   typecheckJobs.push({
     name: pkg,
     command: 'bun',
-    args: ['run', 'typecheck'],
+    args: ['run', 'typecheck', '--', '--incremental'],
     cwd: pkgDir,
   })
 }
