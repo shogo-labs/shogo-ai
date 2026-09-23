@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import {
   Platform,
   Pressable,
@@ -28,6 +28,7 @@ import {
   SidebarContextMenu,
   type SidebarMenuEntry,
 } from "../SidebarContextMenu";
+import { NativePhoneSheet } from "../../phone/NativePhoneSheet";
 import { densityFor } from "../../../lib/phone-density";
 import { usePhoneLayout } from "../../../lib/native-phone-layout";
 import { projectChatLabel } from "../../../lib/project-chat-sessions";
@@ -40,6 +41,37 @@ function sessionActivityLabel(session: any): string | null {
   const timestamp =
     typeof value === "number" ? value : new Date(value as string).getTime();
   return Number.isFinite(timestamp) ? formatRelativeTime(timestamp) : null;
+}
+
+function NativeChatAction({
+  label,
+  danger = false,
+  icon,
+  onPress,
+}: {
+  label: string;
+  danger?: boolean;
+  icon: ReactNode;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      className="min-h-11 flex-row items-center gap-3 rounded-xl px-4 py-3 active:bg-muted"
+    >
+      {icon}
+      <Text
+        className={cn(
+          "text-base",
+          danger ? "text-destructive" : "text-foreground"
+        )}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
 }
 
 // ─── ChatTreeItem (a single chat nested under a project) ────
@@ -90,6 +122,28 @@ export function ChatTreeItem({
   const [editValue, setEditValue] = useState("");
   // Web-only right-click menu anchor (viewport coords).
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [nativeActionsOpen, setNativeActionsOpen] = useState(false);
+  const suppressNextChatPressRef = useRef(false);
+
+  const openNativeActions = useCallback(() => {
+    // React Native can fire onPress after onLongPress on release. Suppress
+    // that follow-up press so the chat does not open behind its action sheet.
+    suppressNextChatPressRef.current = true;
+    setNativeActionsOpen(true);
+  }, []);
+
+  const closeNativeActions = useCallback(() => {
+    suppressNextChatPressRef.current = false;
+    setNativeActionsOpen(false);
+  }, []);
+
+  const handleChatPress = useCallback(() => {
+    if (suppressNextChatPressRef.current) {
+      suppressNextChatPressRef.current = false;
+      return;
+    }
+    onSelect(session.id);
+  }, [onSelect, session.id]);
 
   const startEdit = useCallback(() => {
     setEditValue(label);
@@ -203,7 +257,10 @@ export function ChatTreeItem({
   return (
     <>
       <Pressable
-        onPress={() => onSelect(session.id)}
+        onPress={handleChatPress}
+        onLongPress={
+          Platform.OS === "web" ? undefined : openNativeActions
+        }
         onLayout={handleLayout}
         role="link"
         accessibilityLabel={`Chat: ${label}`}
@@ -288,6 +345,61 @@ export function ChatTreeItem({
           onClose={() => setMenu(null)}
         />
       )}
+      <NativePhoneSheet
+        visible={nativeActionsOpen}
+        onClose={closeNativeActions}
+        title="Chat actions"
+        keepDrawerOpen
+      >
+        <View className="gap-1 px-2 pb-3">
+          <NativeChatAction
+            label="Rename"
+            icon={<Pencil size={20} className="text-muted-foreground" />}
+            onPress={() => {
+              closeNativeActions();
+              startEdit();
+            }}
+          />
+          <NativeChatAction
+            label={session.isPinned ? "Unpin" : "Pin"}
+            icon={
+              session.isPinned ? (
+                <PinOff size={20} className="text-muted-foreground" />
+              ) : (
+                <Pin size={20} className="text-muted-foreground" />
+              )
+            }
+            onPress={() => {
+              closeNativeActions();
+              onTogglePin(session.id, !session.isPinned);
+            }}
+          />
+          <NativeChatAction
+            label={session.isArchived ? "Unarchive" : "Archive"}
+            icon={
+              session.isArchived ? (
+                <ArchiveRestore size={20} className="text-muted-foreground" />
+              ) : (
+                <Archive size={20} className="text-muted-foreground" />
+              )
+            }
+            onPress={() => {
+              closeNativeActions();
+              onToggleArchive(session.id, !session.isArchived);
+            }}
+          />
+          <View className="my-1 h-px bg-border" />
+          <NativeChatAction
+            label="Delete"
+            danger
+            icon={<Trash2 size={20} className="text-destructive" />}
+            onPress={() => {
+              closeNativeActions();
+              onRequestDelete(session.id);
+            }}
+          />
+        </View>
+      </NativePhoneSheet>
     </>
   );
 }

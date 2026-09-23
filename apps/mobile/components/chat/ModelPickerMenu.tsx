@@ -32,6 +32,7 @@ import { Check, Lock, Settings2, ChevronRight, ChevronDown } from "lucide-react-
 import { AutoModelOption } from "./AutoModelOption"
 import { useModelPickerList, type PickerModel, type ReasoningEffort } from "../../lib/visible-models"
 import { useIsSuperAdmin } from "../../lib/use-is-super-admin"
+import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import { NativeActivitySheet } from "./NativeActivitySheet"
 import { NATIVE_PHONE_SECTION_INSET } from "../../lib/native-phone-layout"
 import { modelPickerHidesCostLabels } from "../../lib/model-build-cost"
@@ -116,6 +117,7 @@ export function ModelPickerMenu({
   const router = useRouter()
   const models = useModelPickerList()
   const isAdmin = useIsSuperAdmin()
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
   const isWeb = Platform.OS === "web"
   const isSheet = presentation === "sheet"
   const namesOnly = modelPickerHidesCostLabels(hideCostLabels, presentation)
@@ -255,7 +257,11 @@ export function ModelPickerMenu({
         <Pressable
           onPress={() => {
             onDismiss?.()
-            router.push("/(admin)/settings" as any)
+            router.push(
+              usesMobileWorkspaceChrome
+                ? ("/(app)/ai-models" as any)
+                : ("/(admin)/settings" as any)
+            )
           }}
           onHoverIn={isWeb ? () => setHoveredId(null) : undefined}
           className="flex-row items-center gap-2 px-3 py-2.5 border-t border-border/50"

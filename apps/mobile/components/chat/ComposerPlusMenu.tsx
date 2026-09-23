@@ -172,7 +172,7 @@ export function ComposerPlusModeList<T extends string>({
           </View>
           <View className="flex-1">
             <Text className={cn(PHONE_DENSITY.text.label, "font-medium text-foreground")}>Stakeholder summary</Text>
-            <Text className={PHONE_DENSITY.text.caption}>
+            <Text className={cn(PHONE_DENSITY.text.caption, "text-muted-foreground")}>
               Also generate a summary for stakeholders
             </Text>
           </View>

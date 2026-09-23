@@ -35,6 +35,8 @@ import {
 import { cn } from "@shogo/shared-ui/primitives";
 import { useTurnFooterContext } from "./TurnFooterContext";
 import { formatRelativeTime } from "./turnShaping";
+import { usePhoneLayout } from "../../../lib/native-phone-layout";
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
 
 /** How often the relative-time label re-renders to stay fresh. */
 const RELATIVE_TIME_TICK_MS = 30_000;
@@ -72,7 +74,7 @@ export interface TurnFooterProps {
   className?: string;
 }
 
-function CopyAction({ text }: { text: string }) {
+function CopyAction({ text, iconSize }: { text: string; iconSize: number }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
@@ -94,15 +96,15 @@ function CopyAction({ text }: { text: string }) {
       accessibilityLabel={copied ? "Copied" : "Copy message"}
     >
       {copied ? (
-        <Check size={ACTION_ICON_SIZE} className="text-green-500" />
+        <Check size={iconSize} className="text-green-500" />
       ) : (
-        <Copy size={ACTION_ICON_SIZE} className="text-muted-foreground" />
+        <Copy size={iconSize} className="text-muted-foreground" />
       )}
     </Pressable>
   );
 }
 
-function ShareAction({ text }: { text: string }) {
+function ShareAction({ text, iconSize }: { text: string; iconSize: number }) {
   const handleShare = useCallback(async () => {
     if (!text) return;
     try {
@@ -123,7 +125,7 @@ function ShareAction({ text }: { text: string }) {
       )}
       accessibilityLabel="Share message"
     >
-      <Share2 size={ACTION_ICON_SIZE} className="text-muted-foreground" />
+      <Share2 size={iconSize} className="text-muted-foreground" />
     </Pressable>
   );
 }
@@ -136,6 +138,11 @@ export const TurnFooter = memo(function TurnFooter({
 }: TurnFooterProps) {
   const ctx = useTurnFooterContext();
   const relativeTime = useRelativeTimeLabel(completedAt);
+  const isPhoneLayout = usePhoneLayout();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+  const usesMobileChatPresentation =
+    isPhoneLayout || usesMobileWorkspaceChrome;
+  const actionIconSize = usesMobileChatPresentation ? 12 : ACTION_ICON_SIZE;
   const [forking, setForking] = useState(false);
 
   const canAct = !!messageId && !!ctx && ctx.canActOnMessage(messageId);
@@ -174,8 +181,10 @@ export const TurnFooter = memo(function TurnFooter({
       className={cn("flex-row items-center justify-between pr-1", className)}
     >
       <View className="-ml-1 flex-row items-center gap-0.5">
-        <CopyAction text={text} />
-        {Platform.OS !== "web" ? <ShareAction text={text} /> : null}
+        <CopyAction text={text} iconSize={actionIconSize} />
+        {Platform.OS !== "web" ? (
+          <ShareAction text={text} iconSize={actionIconSize} />
+        ) : null}
 
         <Pressable
           testID="turn-footer-thumb-up"
@@ -190,7 +199,7 @@ export const TurnFooter = memo(function TurnFooter({
           }
         >
           <ThumbsUp
-            size={ACTION_ICON_SIZE}
+            size={actionIconSize}
             className={cn(
               currentThumb === "up" ? "text-primary" : "text-muted-foreground"
             )}
@@ -211,7 +220,7 @@ export const TurnFooter = memo(function TurnFooter({
           }
         >
           <ThumbsDown
-            size={ACTION_ICON_SIZE}
+            size={actionIconSize}
             className={cn(
               currentThumb === "down"
                 ? "text-destructive"
@@ -233,20 +242,25 @@ export const TurnFooter = memo(function TurnFooter({
         >
           {forking ? (
             <Loader2
-              size={ACTION_ICON_SIZE}
+              size={actionIconSize}
               className="text-muted-foreground animate-spin"
             />
           ) : (
             <GitFork
-              size={ACTION_ICON_SIZE}
+              size={actionIconSize}
               className="text-muted-foreground"
             />
           )}
         </Pressable>
       </View>
 
-      {relativeTime && (
-        <Text className="text-[11px] text-muted-foreground/60">
+      {relativeTime && !usesMobileChatPresentation && (
+        <Text
+          className={cn(
+            "text-[11px]",
+            "text-muted-foreground/60"
+          )}
+        >
           {relativeTime}
         </Text>
       )}

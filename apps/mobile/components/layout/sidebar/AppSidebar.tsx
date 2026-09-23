@@ -92,6 +92,7 @@ import {
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
 import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
+import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
 import {
   effectiveSidebarProjectFilter,
   getPinnedProjectIds,
@@ -113,7 +114,6 @@ import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
-import { workspaceExperience } from "@shogo/shared-app";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -353,7 +353,7 @@ export const AppSidebar = observer(function AppSidebar({
   }
 
   const activeWorkspaceId = currentWorkspace?.id ?? selectedWorkspaceId;
-  const experience = workspaceExperience(currentWorkspace?.kind);
+  const experience = useWorkspaceExperience();
 
   const billingData = useBillingData(
     features.billing ? currentWorkspace?.id : undefined,

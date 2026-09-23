@@ -41,6 +41,7 @@ import {
 } from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
 import { MarkdownText } from "../MarkdownText"
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { GenerateImageWidget } from "./GenerateImageWidget"
 import { BrowserWidget } from "./BrowserWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
@@ -396,6 +397,7 @@ export const AssistantContent = memo(
   }: AssistantContentProps) {
   const chatContext = useChatContextSafe()
   const nativePhone = useIsNativePhoneLayout()
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
 
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -546,7 +548,11 @@ export const AssistantContent = memo(
           return (
             <View key={part.id}>
               <MarkdownText
-                className={Platform.OS !== "web" ? "text-foreground text-base" : "text-foreground text-xs prose-sm"}
+                className={
+                  Platform.OS !== "web" || usesMobileWorkspaceChrome
+                    ? "text-foreground text-base leading-6"
+                    : "text-foreground text-xs prose-sm"
+                }
                 isStreaming={isStreaming}
               >
                 {part.text}

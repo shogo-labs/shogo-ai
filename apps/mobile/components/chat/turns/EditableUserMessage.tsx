@@ -77,6 +77,7 @@ import {
   type RestoreDraftRequest,
 } from "../ChatInput"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 
 function showNativeUserMessageActions(opts: {
   canMutate: boolean
@@ -159,6 +160,8 @@ export const EditableUserMessage = memo(function EditableUserMessage({
 }: EditableUserMessageProps) {
   const ctx = useMessageEditContext()
   const nativePhone = useIsNativePhoneLayout()
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+  const usesCompactBubble = nativePhone || usesMobileWorkspaceChrome
 
   const [isEditing, setIsEditing] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -501,22 +504,35 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   }
 
   // ─── DISPLAY MODE ─────────────────────────────────────────────
-  // Web / tablet: full-width Pressable. Click anywhere on the row →
-  // edit mode. Native phone: ChatGPT-style right-aligned gray bubble;
-  // long-press opens Copy / Edit / Retry (existing rewind dialogs
-  // still run after Edit or Retry). Image / file thumbnails inside
-  // MessageContent each own a Pressable, so opening an attachment
-  // does NOT switch the bubble into edit mode.
-  if (nativePhone) {
+  // Desktop/tablet: full-width Pressable. The companion mobile shell and
+  // native phone use a compact, right-aligned bubble. Native long-press opens
+  // Copy / Edit / Retry; mobile web keeps the normal tap-to-edit behavior.
+  // Image/file thumbnails inside MessageContent own their Pressable, so
+  // opening an attachment does not switch the bubble into edit mode.
+  if (usesCompactBubble) {
     return (
       <View className={cn("w-full items-end px-1", className)}>
         <Pressable
-          onLongPress={handleNativeLongPress}
-          delayLongPress={400}
-          disabled={busy}
+          onPress={nativePhone ? undefined : handleStartEdit}
+          onLongPress={nativePhone ? handleNativeLongPress : undefined}
+          delayLongPress={nativePhone ? 400 : undefined}
+          disabled={nativePhone ? busy : !interactive}
           accessibilityRole="button"
-          accessibilityLabel="Your message. Long press for copy, edit, and retry."
-          className={cn("max-w-[85%]", busy && "opacity-60")}
+          accessibilityLabel={
+            nativePhone
+              ? "Your message. Long press for copy, edit, and retry."
+              : "Edit this message and re-run from here."
+          }
+          accessibilityHint={
+            nativePhone
+              ? undefined
+              : "Activates an inline composer pre-filled with this message."
+          }
+          className={cn(
+            "max-w-[85%]",
+            Platform.OS === "web" && interactive && "cursor-text",
+            busy && "opacity-60",
+          )}
         >
           <MessageContent message={message} variant="userBubble" />
         </Pressable>

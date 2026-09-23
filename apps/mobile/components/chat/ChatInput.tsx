@@ -45,6 +45,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { usePlatformConfig } from "../../lib/platform-config";
+import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 import { AttachSourceSheet } from "./AttachSourceSheet";
 import { ContextTracker } from "./ContextTracker";
 import type { ContextBreakdownData } from "./ContextBreakdownPanel";
@@ -546,6 +547,7 @@ function ChatInputImpl({
 }: ChatInputProps) {
   const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER;
   const { features } = usePlatformConfig();
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
   const effectiveIsPro = features.billing ? isPro : true;
   const {
     isNative,
@@ -562,6 +564,13 @@ function ChatInputImpl({
   });
   const liquidGlass = useProminentComposer && supportsLiquidGlass();
   const sendChrome = composerSendChrome(isNative || useProminentComposer);
+  const mobileChatText = usesMobileWorkspaceChrome || useProminentComposer;
+  const showModelPicker =
+    composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId);
+  const showInlineMobileModelPicker =
+    showModelPicker && (useProminentComposer || usesMobileWorkspaceChrome);
+  const composerFontSize = mobileChatText ? 16 : 14;
+  const composerLineHeight = mobileChatText ? 24 : 20;
   const inputMinHeight = sizes.inputMinHeight;
   const inputMaxHeight = sizes.inputMaxHeight;
   const bridge = useChatBridgeOptional();
@@ -2091,8 +2100,8 @@ function ChatInputImpl({
               paints a pill behind each "@mention". The real TextInput sits on
               top (zIndex) so typed text stays crisp and the caret is native;
               only the pill backgrounds show through its transparent fill. The
-              mirror MUST match the TextInput's font/line-height/padding (shared
-              `text-sm leading-5` + `px-4 pt-3`) or the pills drift off the words. */}
+              mirror MUST match the TextInput's font/line-height/padding or the
+              pills drift off the words. */}
               <View
                 pointerEvents="none"
                 className={cn(
@@ -2102,13 +2111,13 @@ function ChatInputImpl({
                 style={{ zIndex: 0 }}
               >
                 <Text
-                  className="text-sm leading-5"
+                  className={mobileChatText ? "text-base leading-6" : "text-sm leading-5"}
                   style={[
                     {
                       color: "transparent",
                       transform: [{ translateY: -overlayScrollY }],
-                      fontSize: 14,
-                      lineHeight: 20,
+                      fontSize: composerFontSize,
+                      lineHeight: composerLineHeight,
                     },
                     Platform.OS === "web"
                       ? ({
@@ -2122,11 +2131,16 @@ function ChatInputImpl({
                     seg.mention ? (
                       <Text
                         key={idx}
-                        className="rounded bg-primary/20 text-sm leading-5"
+                        className={cn(
+                          "rounded bg-primary/20",
+                          mobileChatText
+                            ? "text-base leading-6"
+                            : "text-sm leading-5"
+                        )}
                         style={{
                           color: "transparent",
-                          fontSize: 14,
-                          lineHeight: 20,
+                          fontSize: composerFontSize,
+                          lineHeight: composerLineHeight,
                         }}
                       >
                         {seg.text}
@@ -2134,11 +2148,15 @@ function ChatInputImpl({
                     ) : (
                       <Text
                         key={idx}
-                        className="text-sm leading-5"
+                        className={
+                          mobileChatText
+                            ? "text-base leading-6"
+                            : "text-sm leading-5"
+                        }
                         style={{
                           color: "transparent",
-                          fontSize: 14,
-                          lineHeight: 20,
+                          fontSize: composerFontSize,
+                          lineHeight: composerLineHeight,
                         }}
                       >
                         {seg.text}
@@ -2244,8 +2262,8 @@ function ChatInputImpl({
                 style={{
                   height: inputHeight,
                   zIndex: 1,
-                  fontSize: 14,
-                  lineHeight: 20,
+                  fontSize: composerFontSize,
+                  lineHeight: composerLineHeight,
                   ...(Platform.OS === "web"
                     ? ({
                         outlineWidth: 0,
@@ -2259,8 +2277,8 @@ function ChatInputImpl({
                     ? "min-h-[52px] max-h-[160px] w-full"
                     : "min-h-[48px] max-h-[160px] w-full",
                   "bg-transparent",
-                  isNative
-                    ? "px-4 pt-3 text-sm leading-5 text-foreground"
+                  mobileChatText
+                    ? "px-4 pt-3 text-base leading-6 text-foreground"
                     : "px-4 pt-3 text-sm leading-5 text-foreground",
                   disabled && dimWhenDisabled && "opacity-50",
                   Platform.OS === "web" && "outline-none no-focus-ring"
@@ -2481,7 +2499,7 @@ function ChatInputImpl({
                           <Text className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                             Model
                           </Text>
-                          {composer.showModelPicker ? (
+                          {showModelPicker ? (
                             <ComposerModelPicker
                               {...composerModelPickerProps({
                                 currentModelId,
@@ -2792,7 +2810,9 @@ function ChatInputImpl({
               )}
 
               {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-              {composer.showModelPicker && presentation !== "agent" ? (
+              {showModelPicker &&
+              presentation !== "agent" &&
+              !showInlineMobileModelPicker ? (
                 <ComposerModelPicker
                   {...composerModelPickerProps({
                     currentModelId,
@@ -2887,6 +2907,27 @@ function ChatInputImpl({
                     : undefined
                 }
               >
+                {showInlineMobileModelPicker ? (
+                  <ComposerModelPicker
+                    {...composerModelPickerProps({
+                      currentModelId,
+                      effectiveIsPro,
+                      disabled,
+                      nativeSheet: isPhoneChrome,
+                      triggerClassName:
+                        "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5",
+                      triggerStyle: { maxWidth: modelTriggerMaxWidth },
+                      labelClassName: "text-[12px] text-foreground",
+                      chevronSize: 12,
+                      chevronColor: chatgptComposer.icon,
+                      chevronStrokeWidth: NATIVE_PHONE_ICON_STROKE,
+                      hitSlop: 6,
+                      label: compactNativeModelLabel(currentModelId),
+                      menuWidth: nativeModelMenuWidth,
+                      onSelect: handleModelChange,
+                    })}
+                  />
+                ) : null}
                 {useProminentComposer ? null : (
                   <>
                     <DockChipRail isNative={isNative} />

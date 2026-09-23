@@ -34,7 +34,11 @@ import { Motion, AnimatePresence } from "@legendapp/motion"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown } from "lucide-react-native"
-import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import {
+  useIsNativePhoneLayout,
+  usePhoneLayout,
+} from "../../../lib/native-phone-layout"
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { NativeActivitySheet, useInsideActivitySheet } from "../NativeActivitySheet"
 import { NativeWorkedSessionExtras } from "../NativeWorkedSessionExtras"
 
@@ -179,6 +183,8 @@ function CollapsibleToolGroupImpl({
   const nativePhone = useIsNativePhoneLayout()
   const [sheetOpen, setSheetOpen] = useState(false)
   const insideSheet = useInsideActivitySheet()
+  const isPhoneLayout = usePhoneLayout()
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
 
   const isControlled = controlledExpanded !== undefined
   const isOpen = isControlled
@@ -294,7 +300,16 @@ function CollapsibleToolGroupImpl({
   if (disabled && !(nativePhone && isTurnWorkedGroup)) {
     return (
       <View className={cn("flex-row items-center gap-1.5", className)}>
-        <Text className="text-[11px] text-muted-foreground">{label}</Text>
+        <Text
+          className={cn(
+            isPhoneLayout || usesMobileWorkspaceChrome
+              ? "text-xs"
+              : "text-[11px]",
+            "text-muted-foreground",
+          )}
+        >
+          {label}
+        </Text>
         {badge}
       </View>
     )
@@ -310,7 +325,7 @@ function CollapsibleToolGroupImpl({
           role="button"
           accessibilityLabel={label}
         >
-          <Text className="text-[15px] text-muted-foreground">{chatLabel}</Text>
+          <Text className="text-xs text-muted-foreground">{chatLabel}</Text>
           {badge}
         </Pressable>
         <NativeActivitySheet
@@ -333,7 +348,16 @@ function CollapsibleToolGroupImpl({
         role="button"
         accessibilityLabel={label}
       >
-        <Text className="text-[11px] text-muted-foreground">{label}</Text>
+        <Text
+          className={cn(
+            isPhoneLayout || usesMobileWorkspaceChrome
+              ? "text-xs"
+              : "text-[11px]",
+            "text-muted-foreground",
+          )}
+        >
+          {label}
+        </Text>
         {badge}
         <Motion.View
           animate={isOpen ? ROTATE_OPEN : ROTATE_CLOSED}
