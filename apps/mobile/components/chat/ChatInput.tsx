@@ -568,8 +568,8 @@ function ChatInputImpl({
     composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId);
   const showInlineMobileModelPicker =
     showModelPicker && (useProminentComposer || usesMobileWorkspaceChrome);
-  const composerFontSize = mobileChatText ? 16 : 14;
-  const composerLineHeight = mobileChatText ? 24 : 20;
+  const composerFontSize = mobileChatText ? 16 : 13;
+  const composerLineHeight = mobileChatText ? 24 : 19;
   const inputMinHeight = sizes.inputMinHeight;
   const inputMaxHeight = sizes.inputMaxHeight;
   const bridge = useChatBridgeOptional();
@@ -2276,7 +2276,7 @@ function ChatInputImpl({
                   "bg-transparent",
                   mobileChatText
                     ? "px-4 pt-3 text-base leading-6 text-foreground"
-                    : "px-4 pt-3 text-sm leading-5 text-foreground",
+                    : "px-4 pt-3 text-[13px] leading-[19px] text-foreground",
                   disabled && dimWhenDisabled && "opacity-50",
                   Platform.OS === "web" && "outline-none no-focus-ring"
                 )}

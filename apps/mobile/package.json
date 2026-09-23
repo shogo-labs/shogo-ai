@@ -9,7 +9,7 @@
     "dev:web": "node scripts/start-web.mjs",
     "dev:ios": "expo start --ios",
     "dev:android": "expo start --android",
-    "build": "node scripts/copy-monaco-vs.mjs && expo export --platform web --source-maps",
+    "build": "node scripts/copy-monaco-vs.mjs && expo export --platform web --source-maps && node scripts/inject-theme-bootstrap.js",
     "typecheck": "bun ../../scripts/run-mobile-typecheck.ts",
     "ios": "expo run:ios",
     "android": "expo run:android",

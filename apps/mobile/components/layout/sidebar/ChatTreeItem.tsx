@@ -314,7 +314,7 @@ export function ChatTreeItem({
           narrow web viewport still gets no functional hover affordance here
           either way, same as before this density fix. */}
         {Platform.OS === "web" && (
-          <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+          <View className="flex flex-row items-center gap-0.5 shrink-0 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto">
             {activityLabel ? (
               <Text className="mr-1 text-[11px] text-muted-foreground">
                 {activityLabel}

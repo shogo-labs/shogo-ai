@@ -135,7 +135,7 @@ export function TrustPrompt({
 
         <ModalFooter className="px-6 py-4 border-t border-outline-100 flex-col gap-2">
           <Button
-            className="w-full bg-primary-600"
+            className="w-full bg-primary active:bg-primary/80"
             onPress={() => handle('trust')}
             isDisabled={isSubmitting}
           >

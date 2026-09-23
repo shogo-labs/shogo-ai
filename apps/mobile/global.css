@@ -274,6 +274,7 @@ textarea.no-focus-ring:focus {
 html,
 body {
   height: 100%;
+  background-color: rgb(var(--color-background));
 }
 
 /* Thin overlay scrollbar — thumb only, no track/gutter. */
