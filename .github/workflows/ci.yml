@@ -383,10 +383,11 @@ jobs:
           restore-keys: bun-ci-windows-
 
       - name: Install dependencies
-        # The Windows path suites do not use generated Prisma clients or
-        # generated routes. Skipping lifecycle scripts avoids repeating the
-        # repository-wide postinstall work on the platform-specific guard.
-        run: bun install --frozen-lockfile --ignore-scripts
+        # Keep lifecycle scripts enabled: Bun 1.3.11 hit an ENOENT while
+        # linking expo@54.0.33 on the Windows workspace when this job used
+        # --ignore-scripts. The path gate above is the safe optimization for
+        # PRs that cannot affect this platform-specific guard.
+        run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
