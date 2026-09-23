@@ -65,11 +65,12 @@ function AppLayoutInner() {
   csMark("app:layout:render");
   const { isAuthenticated, isLoading, user, refreshSession } = useAuth();
   const { localMode } = usePlatformConfig();
-  // The workspace agent chrome is mobile-only. Wide web surfaces always keep
-  // the established AppSidebar + plain project view, regardless of workspace
-  // kind. `useWorkspaceExperience()` defaults to `'team'` until the active
-  // workspace has loaded, so narrow surfaces also avoid flashing the new
-  // mobile chrome before their workspace is known.
+  // The compact workspace agent chrome is mobile-only. Wide web keeps the
+  // established AppSidebar while the personal workspace can still render its
+  // agent chat content with desktop presentation. `useWorkspaceExperience()`
+  // defaults to `'team'` until the active workspace has loaded, so narrow
+  // surfaces avoid flashing the new mobile chrome before their workspace is
+  // known.
   const experience = useWorkspaceExperience();
   const router = useRouter();
   const pathname = usePathname();
@@ -100,8 +101,8 @@ function AppLayoutInner() {
     pathname !== "/(app)/projects";
   // The mobile shell is coupled to the workspace runtime: without it, the
   // legacy home remains available instead of exposing a chat that cannot run
-  // turns. All workspace kinds share this mobile chrome; wide web and IDE
-  // surfaces remain on the established classic presentation.
+  // turns. All workspace kinds share this mobile chrome; wide web keeps the
+  // AppSidebar and uses the workspace-specific content presentation.
   const mobileAgentShellEnabled = isWorkspaceRuntimeEnabled();
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";

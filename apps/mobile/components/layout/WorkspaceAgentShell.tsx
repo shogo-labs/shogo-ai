@@ -34,6 +34,7 @@ import SettingsPage from "../../app/(app)/settings";
 import { CommandPalette } from "./CommandPalette";
 import { WorkspaceConversationSidebar } from "./WorkspaceConversationSidebar";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
+import { CANVAS_NAV_HIDDEN } from "@shogo/shared-app";
 import { cn } from "@shogo/shared-ui/primitives";
 
 interface NavItem {
@@ -71,7 +72,9 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
           { label: "Activity", href: "/(app)/activity", icon: Activity },
         ]
       : []),
-    { label: "Canvases", href: "/(app)/canvases", icon: Boxes },
+    ...(CANVAS_NAV_HIDDEN
+      ? []
+      : [{ label: "Canvases", href: "/(app)/canvases", icon: Boxes }]),
     ...(experience.showMarketplace
       ? [
           {

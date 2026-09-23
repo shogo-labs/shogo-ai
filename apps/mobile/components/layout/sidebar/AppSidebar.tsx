@@ -35,6 +35,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
   Home,
+  MessageCircle,
+  ListTodo,
+  LayoutGrid,
   Activity,
   Target,
   MessagesSquare,
@@ -53,6 +56,7 @@ import {
   Check,
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
+import type { PrimaryNavId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
 import { ShogoWordmark } from "../../branding/ShogoWordmark";
@@ -779,6 +783,46 @@ export const AppSidebar = observer(function AppSidebar({
   const isMarketplacePage =
     pathname.startsWith("/marketplace") ||
     pathname.startsWith("/(app)/marketplace");
+  const primaryNavItems: Record<
+    PrimaryNavId,
+    {
+      label: string;
+      icon: typeof MessageCircle;
+      href: string;
+      active: boolean;
+    }
+  > = {
+    chat: {
+      label: "Chat",
+      icon: MessageCircle,
+      href: "/(app)",
+      active: isHomePage,
+    },
+    tasks: {
+      label: "Tasks",
+      icon: ListTodo,
+      href: "/(app)/tasks",
+      active: pathname.includes("/tasks"),
+    },
+    activity: {
+      label: "Activity",
+      icon: Activity,
+      href: "/(app)/activity",
+      active: pathname.includes("/activity"),
+    },
+    canvases: {
+      label: "Canvases",
+      icon: LayoutGrid,
+      href: "/(app)/canvases",
+      active: pathname.includes("/canvases"),
+    },
+    goals: {
+      label: "Goals",
+      icon: Target,
+      href: "/(app)/goals",
+      active: pathname.includes("/goals"),
+    },
+  };
 
   const sidebarContent = (
     <View
@@ -884,16 +928,31 @@ export const AppSidebar = observer(function AppSidebar({
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
-        {/* Primary nav */}
+        {/* Primary nav mirrors the mobile bottom bar. */}
         <View className="px-2">
-          <NavItem
-            icon={Home}
-            label="Home"
-            href="/(app)"
-            active={isHomePage}
-            collapsed={collapsed}
-            onNavPress={onNavPress}
-          />
+          {experience.primaryNav.map((id) => {
+            const item = primaryNavItems[id];
+            return (
+              <NavItem
+                key={id}
+                icon={item.icon}
+                label={item.label}
+                href={item.href}
+                active={item.active}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            );
+          })}
+        </View>
+
+        {/* Secondary navigation and utilities. */}
+        <View
+          className={cn(
+            "mx-2 mt-2 border-t border-border/50 pt-2",
+            isNativeDrawer && "mt-3 pt-3",
+          )}
+        >
           {features.marketplace && experience.showMarketplace && (
             <NavItem
               icon={Store}
@@ -930,26 +989,6 @@ export const AppSidebar = observer(function AppSidebar({
               collapsed={collapsed}
               onNavPress={onNavPress}
             />
-          )}
-          {experience.showGoalsNav && (
-            <>
-              <NavItem
-                icon={Target}
-                label="Goals"
-                href="/(app)/goals"
-                active={pathname.includes("/goals")}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-              <NavItem
-                icon={Activity}
-                label="Activity"
-                href="/(app)/activity"
-                active={pathname.includes("/activity")}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-            </>
           )}
           {experience.showSideChatsNav && (
             <NavItem
