@@ -137,8 +137,8 @@ export function OnboardingStepper({
           keyboardShouldPersistTaps="handled"
         >
           <Animated.View
-            style={{ opacity, transform: [{ translateX }] }}
-            className="w-full max-w-3xl self-center"
+            style={{ opacity, transform: [{ translateX }], width: '100%', maxWidth: 768 }}
+            className="self-center"
           >
             {step.eyebrow ? (
               <Text className="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
