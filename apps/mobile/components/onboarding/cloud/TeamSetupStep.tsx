@@ -14,6 +14,9 @@ interface TeamSetupStepProps {
   draft: string
   onDraftChange: (draft: string) => void
   error?: string | null
+  /** Invites that failed on the last save, shown under the invite field. */
+  inviteError?: string | null
+  /** Enter on an empty invite field advances the step. */
   onSubmit?: () => void
 }
 
@@ -25,10 +28,11 @@ export function TeamSetupStep({
   draft,
   onDraftChange,
   error,
+  inviteError,
   onSubmit,
 }: TeamSetupStepProps) {
   const { invalid: draftInvalid } = parseEmailDraft(draft)
-  const showDraftError = /[,;\s]/.test(draft) && draftInvalid.length > 0
+  const hasSeparator = /[,;\s]/.test(draft)
 
   const commitDraft = (raw: string) => {
     const { valid, invalid } = parseEmailDraft(raw)
@@ -65,6 +69,7 @@ export function TeamSetupStep({
             <View key={email} className="flex-row items-center gap-1 rounded-full bg-muted py-1 pl-3 pr-1.5">
               <Text className="text-sm text-foreground">{email}</Text>
               <Pressable
+                accessibilityRole="button"
                 accessibilityLabel={`Remove ${email}`}
                 onPress={() => onEmailsChange(emails.filter((e) => e !== email))}
                 className="h-5 w-5 items-center justify-center rounded-full web:hover:bg-background"
@@ -98,10 +103,19 @@ export function TeamSetupStep({
             className="min-w-[160px] flex-1 py-1 text-base text-foreground web:outline-none"
           />
         </View>
-        {showDraftError ? (
+        {draftInvalid.length > 0 && hasSeparator ? (
           <Text className="text-sm text-destructive">
-            "{draftInvalid[0]}" doesn't look like an email address.
+            {draftInvalid.length === 1
+              ? `"${draftInvalid[0]}" doesn't look like an email address.`
+              : `These don't look like email addresses: ${draftInvalid.map((t) => `"${t}"`).join(', ')}.`}{' '}
+            Fix or remove {draftInvalid.length === 1 ? 'it' : 'them'} to continue.
           </Text>
+        ) : draftInvalid.length > 0 ? (
+          <Text className="text-xs text-muted-foreground">
+            Finish typing the address, or clear it to continue.
+          </Text>
+        ) : inviteError ? (
+          <Text className="text-sm text-destructive">{inviteError}</Text>
         ) : (
           <Text className="text-xs text-muted-foreground">
             They'll get an email invite to join as editors.

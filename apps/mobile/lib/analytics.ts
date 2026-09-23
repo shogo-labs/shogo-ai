@@ -9,7 +9,7 @@ export const EVENTS = {
   ONBOARDING_STEP_VIEWED: 'onboarding_step_viewed',
   ONBOARDING_COMPLETED: 'onboarding_completed',
   ONBOARDING_INTENT_SELECTED: 'onboarding_intent_selected',
-  ONBOARDING_TEAM_SETUP: 'onboarding_team_setup',
+  ONBOARDING_TEAM_SETUP_COMPLETED: 'onboarding_team_setup_completed',
   ONBOARDING_AGENT_SELECTED: 'onboarding_agent_selected',
   GETTING_STARTED_ITEM_CLICKED: 'getting_started_item_clicked',
   GETTING_STARTED_DISMISSED: 'getting_started_dismissed',

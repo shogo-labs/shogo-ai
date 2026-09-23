@@ -13,7 +13,6 @@ import {
   Check,
   AlertTriangle,
   CheckCircle,
-  ArrowRight,
   LogIn,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -29,11 +28,15 @@ function hasDesktopBridge(): boolean {
 type AIConfigMode = 'shogo-cloud' | 'api-keys' | null
 
 interface AIConfigFormProps {
-  onComplete: () => void
-  onSkip: () => void
+  /**
+   * Whether the current choice is usable: a cloud key is connected, or
+   * own-keys mode is picked (keys are saved inline by ProviderSetupCard).
+   */
+  onReadyChange: (ready: boolean) => void
 }
 
-export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
+/** Body of the local onboarding "power your agents" step. */
+export function AIConfigForm({ onReadyChange }: AIConfigFormProps) {
   const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
 
   const [aiMode, setAiMode] = useState<AIConfigMode>(null)
@@ -42,7 +45,6 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
   const [shogoEmail, setShogoEmail] = useState('')
   const [shogoWorkspace, setShogoWorkspace] = useState('')
   const [shogoLoginStatus, setShogoLoginStatus] = useState<'idle' | 'connecting'>('idle')
-  const [isSaving, setIsSaving] = useState(false)
 
   // Pick up an existing cloud sign-in (e.g. from a previous onboarding run or
   // a separate sign-in tab that just finished). On the desktop, we get a push
@@ -62,6 +64,7 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
           setShogoWorkspace(status.workspace?.name || '')
           setShogoLoginStatus('idle')
           setShogoKeyError('')
+          setAiMode((mode) => mode ?? 'shogo-cloud')
           return true
         }
       } catch {
@@ -159,24 +162,10 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
     }
   }, [platform])
 
-  const handleSave = useCallback(async () => {
-    setIsSaving(true)
-    setShogoKeyError('')
-    try {
-      // Nothing to persist here: cloud sign-in already stored the device key,
-      // and api-keys mode saves keys + enabled models inline via ProviderSetupCard.
-      onComplete()
-    } catch {
-      // stay on step
-    } finally {
-      setIsSaving(false)
-    }
-  }, [onComplete])
-
-  const isSaveDisabled =
-    isSaving ||
-    !aiMode ||
-    (aiMode === 'shogo-cloud' && !shogoSignedIn)
+  const ready = aiMode === 'api-keys' || (aiMode === 'shogo-cloud' && shogoSignedIn)
+  useEffect(() => {
+    onReadyChange(ready)
+  }, [ready, onReadyChange])
 
   return (
     <View className="gap-4">
@@ -265,31 +254,6 @@ export function AIConfigForm({ onComplete, onSkip }: AIConfigFormProps) {
           <ProviderSetupCard platform={platform} localMode={true} embedded />
         </View>
       )}
-
-      {/* Actions */}
-      {aiMode && (
-        <Pressable
-          onPress={handleSave}
-          disabled={isSaveDisabled}
-          className={cn(
-            'flex-row items-center justify-center gap-2 py-3 rounded-xl',
-            isSaveDisabled ? 'bg-primary/30' : 'bg-primary'
-          )}
-        >
-          {isSaving ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Text className="text-sm font-semibold text-primary-foreground">Save & Continue</Text>
-              <ArrowRight size={16} color="#fff" />
-            </>
-          )}
-        </Pressable>
-      )}
-
-      <Pressable onPress={onSkip} className="items-center py-1.5">
-        <Text className="text-xs text-muted-foreground">Skip for now</Text>
-      </Pressable>
     </View>
   )
 }

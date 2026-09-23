@@ -5,7 +5,7 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { CloudOnboarding } from '../../components/onboarding/cloud/CloudOnboarding'
 
 export default function OnboardingPage() {
-  const { configLoaded } = usePlatformConfig()
+  const { configLoaded, localMode } = usePlatformConfig()
 
   if (!configLoaded) {
     return (
@@ -15,8 +15,8 @@ export default function OnboardingPage() {
     )
   }
 
-  // Local and cloud accounts now share the same destination-first flow.
-  // Local mode still uses its local API and seeded SQLite workspaces; only
-  // the onboarding presentation and decisions are shared.
-  return <CloudOnboarding />
+  // Local and cloud accounts share the same destination-first flow. Local
+  // mode prepends its machine-specific steps (name, AI provider) and still
+  // uses its local API and seeded SQLite workspaces.
+  return <CloudOnboarding localMode={localMode} />
 }
