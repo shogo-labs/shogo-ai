@@ -305,7 +305,7 @@ export const CloudOnboarding = observer(function CloudOnboarding() {
       {
         id: 'destination',
         title: `Welcome, ${firstName}. Where do you want to start?`,
-        subtitle: 'You have both. Switch anytime from your avatar.',
+        subtitle: 'You have a Personal space and a Team workspace. Start wherever you like—you can switch between them anytime.',
         canContinue: !!destination,
         primaryLabel: destination === 'personal' ? 'Open my companion' : 'Continue',
         body: (
