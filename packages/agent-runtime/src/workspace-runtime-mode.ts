@@ -41,6 +41,93 @@ export function workspaceRuntimeId(env: NodeJS.ProcessEnv = process.env): string
   return env.WORKSPACE_ID || null
 }
 
+/**
+ * One entry of the host's merged-root mount table (`WORKSPACE_MOUNTS`, set by
+ * the API's RuntimeManager): `<WORKSPACE_DIR>/<mount>` links to `path`.
+ * Mirrors `WorkspaceMount` in apps/api/src/lib/runtime/manager.ts.
+ *
+ * - `managed`  — a Shogo-owned project dir.
+ * - `external` — a folder-linked project's primary folder, i.e. the user's
+ *                own repo, mounted under the project id.
+ * - `folder`   — an extra host folder linked to `projectId` (the anchor).
+ */
+export interface WorkspaceMount {
+  mount: string
+  path: string
+  projectId: string
+  kind: 'managed' | 'external' | 'folder'
+  runtimeEnabled?: boolean
+}
+
+/** Parse `WORKSPACE_MOUNTS`. Empty for non-workspace runtimes, unset or malformed values. */
+export function parseWorkspaceMounts(env: NodeJS.ProcessEnv = process.env): WorkspaceMount[] {
+  if (!isWorkspaceRuntimeMode(env)) return []
+  const raw = env.WORKSPACE_MOUNTS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (m): m is WorkspaceMount =>
+        !!m &&
+        typeof m.mount === 'string' && m.mount.length > 0 &&
+        typeof m.path === 'string' && m.path.length > 0 &&
+        typeof m.projectId === 'string' &&
+        (m.kind === 'managed' || m.kind === 'external' || m.kind === 'folder'),
+    )
+  } catch {
+    return []
+  }
+}
+
+/** Mounts whose content belongs to the user rather than to Shogo. */
+export function isUserOwnedMount(mount: WorkspaceMount): boolean {
+  return mount.kind === 'external' || mount.kind === 'folder'
+}
+
+/**
+ * Group user-owned mounts by the project whose trust governs them. A group
+ * is `external` (fail-closed until trust is read) when its project is
+ * folder-linked; extra folders linked to a managed project default open,
+ * matching that project's own default.
+ */
+export function userOwnedTrustGroups(
+  mounts: readonly WorkspaceMount[],
+): Array<{ projectId: string; external: boolean; roots: string[] }> {
+  const external = new Set(mounts.filter((m) => m.kind === 'external').map((m) => m.projectId))
+  const groups = new Map<string, { projectId: string; external: boolean; roots: string[] }>()
+  for (const mount of mounts) {
+    if (!isUserOwnedMount(mount) || !mount.projectId) continue
+    const group = groups.get(mount.projectId) ?? {
+      projectId: mount.projectId,
+      external: external.has(mount.projectId),
+      roots: [],
+    }
+    group.roots.push(mount.path)
+    groups.set(mount.projectId, group)
+  }
+  return [...groups.values()]
+}
+
+/** Project ids whose mount is a folder-linked (external) project's own folder. */
+export function workspaceExternalProjectIds(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  return new Set(parseWorkspaceMounts(env).filter((m) => m.kind === 'external').map((m) => m.projectId))
+}
+
+/**
+ * Whether to auto-start the anchor project's preview at boot. A folder-linked
+ * anchor is the user's own repo: like a single-project external runtime, it
+ * only gets a preview when the user opted in (`RUNTIME_ENABLED=true`).
+ */
+export function shouldAutoStartAnchorPreview(
+  anchorId: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!anchorId) return false
+  if (!workspaceExternalProjectIds(env).has(anchorId)) return true
+  return env.RUNTIME_ENABLED === 'true'
+}
+
 /** Workspace product mode, defaulting to the team experience for compatibility. */
 export function workspaceKind(env: NodeJS.ProcessEnv = process.env): 'personal' | 'team' {
   return env.WORKSPACE_KIND === 'personal' ? 'personal' : 'team'
@@ -166,7 +253,12 @@ export function workspaceAvailableProjectsManifest(
 export function renderWorkspaceManifestMarkdown(
   workspaceId: string,
   projects: WorkspaceProjectEntry[],
+  mounts: readonly WorkspaceMount[] = [],
 ): string {
+  const externalPathById = new Map(
+    mounts.filter((m) => m.kind === 'external').map((m) => [m.projectId, m.path] as const),
+  )
+  const folderMounts = mounts.filter((m) => m.kind === 'folder')
   const lines: string[] = [
     '# Workspace',
     '',
@@ -181,9 +273,32 @@ export function renderWorkspaceManifestMarkdown(
     lines.push('_No projects attached._')
   } else {
     for (const p of projects) {
-      lines.push(`- \`${p.id}/\` — **${p.name}**`)
+      const hostPath = externalPathById.get(p.id)
+      lines.push(
+        hostPath
+          ? `- \`${p.id}/\` — **${p.name}** (the user's own folder \`${hostPath}\`)`
+          : `- \`${p.id}/\` — **${p.name}**`,
+      )
     }
   }
+  if (folderMounts.length > 0) {
+    lines.push('')
+    lines.push('## Linked folders')
+    lines.push('')
+    lines.push('Host folders the user linked to this workspace, mounted as top-level folders:')
+    lines.push('')
+    for (const m of folderMounts) {
+      lines.push(`- \`${m.mount}/\` — \`${m.path}\``)
+    }
+  }
+  if (externalPathById.size > 0 || folderMounts.length > 0) {
+    lines.push('')
+    lines.push(
+      "Folders marked as the user's own are their real files on disk, not Shogo copies. " +
+        'Edit them in place and do not add Shogo scaffolding to them.',
+    )
+  }
+  lines.push('')
   lines.push('## Available projects')
   lines.push('')
   lines.push(

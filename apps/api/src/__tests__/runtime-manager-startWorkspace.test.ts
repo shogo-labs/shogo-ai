@@ -4,9 +4,20 @@
 // RuntimeManager.startWorkspace() — workspace (merged-root) runtime spawn.
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { deriveWebhookToken } from '../lib/runtime-token'
 
 // Stub the workspace env builder so the spawn path never touches the DB.
 mock.module('../lib/runtime/build-workspace-env', () => ({
@@ -22,7 +33,9 @@ mock.module('../lib/runtime/build-workspace-env', () => ({
   }),
 }))
 
-const { RuntimeManager, workspaceRuntimeKey, projectWorkspaceRuntimeKey } = await import('../lib/runtime/manager')
+const { RuntimeManager, workspaceRuntimeKey, projectWorkspaceRuntimeKey, upsertMountGitignore } = await import(
+  '../lib/runtime/manager'
+)
 
 let dirs: string[] = []
 const origEnv = { ...process.env }
@@ -37,7 +50,13 @@ afterEach(() => {
   for (const d of dirs) if (existsSync(d)) rmSync(d, { recursive: true, force: true })
 })
 
-function makeManager(opts: { agentStatus?: any; agentThrows?: Error } = {}) {
+type ProjectInfo = {
+  workingMode?: 'managed' | 'external'
+  runtimeEnabled?: boolean
+  folders?: { path: string; isPrimary: boolean }[]
+}
+
+function makeManager(opts: { agentStatus?: any; agentThrows?: Error; projectInfo?: Record<string, ProjectInfo> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'rm-ws-'))
   dirs.push(root)
   const workspacesDir = join(root, 'workspaces')
@@ -52,11 +71,15 @@ function makeManager(opts: { agentStatus?: any; agentThrows?: Error } = {}) {
   rm.startHealthCheck = mock(() => {})
   // Hermetic seeding: create the member project dir without the real
   // template-copy + `bun install` so the merged-root symlinks resolve.
-  rm.ensureProjectDirectory = mock(async (id: string) => {
+  // Mirrors the real method's external branch: a folder-linked project's
+  // directory IS its primary folder, and nothing is seeded.
+  rm.ensureProjectDirectory = mock(async (id: string, _techStackId?: string, external?: { primaryPath: string }) => {
+    if (external?.primaryPath) return external.primaryPath
     const d = join(workspacesDir, id)
     mkdirSync(d, { recursive: true })
     return d
   })
+  rm.getProjectInfo = mock(async (id: string) => opts.projectInfo?.[id] ?? { workingMode: 'managed' })
   rm.agentManager = {
     ensureRunning: mock(async () => {
       if (opts.agentThrows) throw opts.agentThrows
@@ -246,5 +269,163 @@ describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () =
     const spawnConfig = rm.agentManager.ensureRunning.mock.calls[0][1]
     expect(spawnConfig.extraEnv.PROJECT_ID).toBe('anchor-1')
     expect(spawnConfig.extraEnv.PROJECT_ID).not.toBe(projectWorkspaceRuntimeKey('anchor-1'))
+  })
+
+  test('ships a WEBHOOK_TOKEN the API can authenticate refresh-trust pings with', async () => {
+    const { rm } = makeManager()
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    const spawnConfig = rm.agentManager.ensureRunning.mock.calls[0][1]
+    expect(spawnConfig.extraEnv.WEBHOOK_TOKEN).toBe(deriveWebhookToken('anchor-1'))
+  })
+})
+
+/** The real directory a link resolves to, compared the way the filesystem does. */
+function realOf(p: string): string {
+  const real = realpathSync(p)
+  return process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real
+}
+
+function makeUserFolder(workspacesDir: string, name = 'alignment-project-server'): string {
+  const folder = join(workspacesDir, '..', name)
+  mkdirSync(join(folder, 'agents'), { recursive: true })
+  writeFileSync(join(folder, 'app.py'), 'app = 1\n')
+  return folder
+}
+
+describe('RuntimeManager merged root for folder-linked projects', () => {
+  function externalInfo(folder: string, runtimeEnabled = false): ProjectInfo {
+    return { workingMode: 'external', runtimeEnabled, folders: [{ path: folder, isPrimary: true }] }
+  }
+
+  test("mounts the anchor at the user's folder without seeding a managed template", async () => {
+    const { rm, workspacesDir } = makeManager()
+    const own = makeUserFolder(workspacesDir)
+    rm.getProjectInfo = mock(async () => externalInfo(own))
+
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1', localFolders: [own] })
+
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    expect(realOf(join(mergedRoot, 'anchor-1'))).toBe(realOf(own))
+    expect(existsSync(join(mergedRoot, 'anchor-1', 'app.py'))).toBe(true)
+    // No template dir, and the primary folder is not mounted a second time by basename.
+    expect(existsSync(join(workspacesDir, 'anchor-1'))).toBe(false)
+    expect(existsSync(join(mergedRoot, 'alignment-project-server'))).toBe(false)
+    expect(rm.ensureProjectDirectory.mock.calls[0]).toEqual(['anchor-1', undefined, { primaryPath: own }])
+
+    const env = rm.agentManager.ensureRunning.mock.calls[0][1].extraEnv
+    expect(JSON.parse(env.WORKSPACE_MOUNTS)).toEqual([
+      { mount: 'anchor-1', path: resolve(own), projectId: 'anchor-1', kind: 'external', runtimeEnabled: false },
+    ])
+    expect(env.RUNTIME_ENABLED).toBe('false')
+    expect(JSON.parse(env.LINKED_FOLDERS)).toEqual([resolve(own)])
+    // The merged root itself stays a Shogo-owned (managed) workspace.
+    expect(env.WORKING_MODE).toBe('managed')
+    // The user's repo is kept out of the merged root's checkpoint repo.
+    expect(readFileSync(join(mergedRoot, '.gitignore'), 'utf8')).toContain('\n/anchor-1\n')
+  })
+
+  test('passes RUNTIME_ENABLED through when the user opted the folder into preview', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const folder = makeUserFolder(workspacesDir)
+    rm.getProjectInfo = mock(async () => externalInfo(folder, true))
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    expect(rm.agentManager.ensureRunning.mock.calls[0][1].extraEnv.RUNTIME_ENABLED).toBe('true')
+  })
+
+  test('self-heals a merged root built by an earlier build (template mount + basename link)', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const folder = makeUserFolder(workspacesDir)
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    const template = join(workspacesDir, 'anchor-1')
+    mkdirSync(join(template, 'src'), { recursive: true })
+    mkdirSync(mergedRoot, { recursive: true })
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    symlinkSync(template, join(mergedRoot, 'anchor-1'), linkType)
+    symlinkSync(folder, join(mergedRoot, 'alignment-project-server'), linkType)
+    rm.getProjectInfo = mock(async () => externalInfo(folder))
+
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1', localFolders: [folder] })
+
+    expect(realOf(join(mergedRoot, 'anchor-1'))).toBe(realOf(folder))
+    expect(existsSync(join(mergedRoot, 'alignment-project-server'))).toBe(false)
+    // The old template dir is left alone: it may hold edits made under 2.0.
+    expect(existsSync(join(template, 'src'))).toBe(true)
+  })
+
+  test('skips a folder-linked member whose folder is gone instead of seeding a template', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const missing = join(workspacesDir, '..', 'deleted-folder')
+    rm.getProjectInfo = mock(async () => externalInfo(missing))
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    expect(existsSync(join(mergedRoot, 'anchor-1'))).toBe(false)
+    expect(existsSync(join(workspacesDir, 'anchor-1'))).toBe(false)
+  })
+
+  test('extra linked folders of a managed anchor are mounted by basename and git-ignored', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const folder = makeUserFolder(workspacesDir, 'shared-lib')
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1', localFolders: [folder] })
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    const env = rm.agentManager.ensureRunning.mock.calls[0][1].extraEnv
+    expect(JSON.parse(env.WORKSPACE_MOUNTS).map((m: any) => [m.mount, m.kind, m.projectId])).toEqual([
+      ['anchor-1', 'managed', 'anchor-1'],
+      ['shared-lib', 'folder', 'anchor-1'],
+    ])
+    expect(env.RUNTIME_ENABLED).toBeUndefined()
+    const gitignore = readFileSync(join(mergedRoot, '.gitignore'), 'utf8')
+    expect(gitignore).toContain('/shared-lib')
+    expect(gitignore).not.toContain('/anchor-1')
+  })
+})
+
+describe('RuntimeManager merged-root refresh on warm reuse', () => {
+  const linkIdentity = (p: string) => {
+    const st = lstatSync(p)
+    return `${st.ino}:${st.birthtimeMs}`
+  }
+
+  test('leaves links that already point at their target untouched', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const folder = makeUserFolder(workspacesDir, 'shared-lib')
+    const opts = { workspaceId: 'ws-1', localFolders: [folder] }
+    await rm.startProjectWorkspace('anchor-1', opts)
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    const before = [linkIdentity(join(mergedRoot, 'anchor-1')), linkIdentity(join(mergedRoot, 'shared-lib'))]
+
+    await new Promise((r) => setTimeout(r, 50))
+    await rm.startProjectWorkspace('anchor-1', opts) // warm reuse → refresh
+    await Promise.all(Array.from({ length: 10 }, () => rm.startProjectWorkspace('anchor-1', opts)))
+
+    expect(rm.agentManager.ensureRunning.mock.calls.length).toBe(1)
+    expect([linkIdentity(join(mergedRoot, 'anchor-1')), linkIdentity(join(mergedRoot, 'shared-lib'))]).toEqual(before)
+  })
+
+  test('re-points a link whose target changed', async () => {
+    const { rm, workspacesDir } = makeManager()
+    const first = makeUserFolder(workspacesDir, 'first')
+    const second = makeUserFolder(workspacesDir, 'second')
+    rm.getProjectInfo = mock(async () => ({ workingMode: 'external', folders: [{ path: first, isPrimary: true }] }))
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    rm.getProjectInfo = mock(async () => ({ workingMode: 'external', folders: [{ path: second, isPrimary: true }] }))
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    const mergedRoot = join(workspacesDir, '.workspace-roots', 'proj-anchor-1')
+    expect(realOf(join(mergedRoot, 'anchor-1'))).toBe(realOf(second))
+  })
+})
+
+describe('upsertMountGitignore', () => {
+  test('keeps user content, replaces the managed block, and removes it when empty', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rm-gitignore-'))
+    dirs.push(dir)
+    const file = join(dir, '.gitignore')
+    writeFileSync(file, 'node_modules\n')
+    upsertMountGitignore(dir, ['a', 'b'])
+    upsertMountGitignore(dir, ['b'])
+    expect(readFileSync(file, 'utf8')).toBe(
+      'node_modules\n# >>> shogo workspace mounts (managed) >>>\n/b\n# <<< shogo workspace mounts (managed) <<<\n',
+    )
+    upsertMountGitignore(dir, [])
+    expect(readFileSync(file, 'utf8')).toBe('node_modules\n')
   })
 })

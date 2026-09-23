@@ -228,7 +228,9 @@ export async function resolveWorkspaceRuntimeUrl(
   // Metal takes precedence over the k8s (Knative) branch: in metal regions the
   // API pod runs IN Kubernetes, so a workspace runtime must resolve to a
   // merged-root microVM rather than creating a Knative Service.
-  if (isMetalEnabled()) {
+  // The SHOGO_LOCAL_MODE checks let the desktop bundle dead-code-eliminate
+  // both cloud islands (see local-bundle-integrity.test.ts).
+  if (process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()) {
     if (!opts._metalResolver && !defaultIsMetalEnabled()) {
       throw new Error(
         `[${tag}] metal workspace runtime driver not configured (merged-root metal microVM ` +
@@ -242,9 +244,7 @@ export async function resolveWorkspaceRuntimeUrl(
         ids: string[],
         resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
       ) => {
-        const { getMetalWarmPoolController } = await import(
-          new URL('./metal-warm-pool-controller.ts', import.meta.url).href
-        )
+        const { getMetalWarmPoolController } = await import('./metal-warm-pool-controller')
         return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
       })
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
@@ -263,14 +263,14 @@ export async function resolveWorkspaceRuntimeUrl(
     return { mode: 'metal', url }
   }
 
-  if (isKubernetes()) {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true' && isKubernetes()) {
     // Default to the Knative workspace driver (creates/short-circuits the
     // `workspace-{id}` — or `workspace-proj-<anchor>` when anchored — Service).
     // Lazy import keeps k8s deps off the cold path until the first cloud
     // resolution, mirroring resolve-pod-url.ts.
     const resolver =
       opts._k8sResolver ??
-      (await import(new URL('./knative-workspace-manager.ts', import.meta.url).href)).getWorkspacePodUrl
+      (await import('./knative-workspace-manager')).getWorkspacePodUrl
     // Serialize across replicas: only one builds the workspace KSvc; others
     // wait and re-resolve via the same resolver (which short-circuits on an
     // existing service). Anchored runtimes lease on the anchor id so two

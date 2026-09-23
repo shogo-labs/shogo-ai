@@ -1390,9 +1390,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const metalChat = process.env.KUBERNETES_SERVICE_HOST
-        ? (await import(new URL('../lib/metal-eligibility.ts', import.meta.url).href))
-            .isMetalEligibleProject(projectId)
+      const metalChat = process.env.SHOGO_LOCAL_MODE !== 'true' && process.env.KUBERNETES_SERVICE_HOST
+        ? (await import('../lib/metal-eligibility')).isMetalEligibleProject(projectId)
         : false
       // Metal guests currently hang rather than refuse — a 4h fetch timeout
       // never fires before the client aborts, so we never invalidate the
@@ -1457,16 +1456,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // Threshold is intentionally higher than other callers because the
             // chat path sees transient 401s during normal warm-pool transitions.
             const EVICT_AFTER_ATTEMPTS = 8
-            const { evictIfPodMissingAuth } = await import(
-              new URL('../lib/warm-pool-self-heal.ts', import.meta.url).href
-            )
-            const evicted = await evictIfPodMissingAuth(
-              projectId,
-              response.status,
-              errorText,
-              attempt,
-              EVICT_AFTER_ATTEMPTS,
-            )
+            // Warm pools are cloud-only; the guard lets the desktop bundle
+            // dead-code-eliminate the island (see local-bundle-integrity.test.ts).
+            const evicted = process.env.SHOGO_LOCAL_MODE !== 'true'
+              ? await (await import('../lib/warm-pool-self-heal')).evictIfPodMissingAuth(
+                  projectId,
+                  response.status,
+                  errorText,
+                  attempt,
+                  EVICT_AFTER_ATTEMPTS,
+                )
+              : false
             if (evicted) {
               return c.json(
                 { error: { code: "pod_restarted", message: "Your session pod restarted. Please try again — a fresh pod will be assigned automatically." } },
@@ -1717,7 +1717,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             fetchError.name === 'TimeoutError' ||
             (fetchError.name === 'AbortError' && fetchSignal.aborted && !clientSignal?.aborted)
 
-          if (isUpstreamTimeout && metalChat) {
+          if (process.env.SHOGO_LOCAL_MODE !== 'true' && isUpstreamTimeout && metalChat) {
             // Invalidate + destroy so the next client retry cold-boots. Do
             // not await destroy in a way a later 499 can cancel — fire and
             // forget after cache invalidation.
@@ -1726,7 +1726,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             )
             try {
               const { getMetalWarmPoolController, destroyMetalProject } = await import(
-                new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
+                '../lib/metal-warm-pool-controller'
               )
               getMetalWarmPoolController().invalidateUrlCache(projectId)
               void destroyMetalProject(projectId).catch((err: any) =>
@@ -2125,13 +2125,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Metal-only mode: the project runs on the metal microVM substrate, not
       // Knative. Report readiness off the live host fleet — the actual resume
       // happens on the chat call (fast), same contract as the warm pool.
-      const { isMetalAllProjects } = await import(
-        new URL('../lib/metal-eligibility.ts', import.meta.url).href
-      )
-      if (isMetalAllProjects()) {
-        const { getMetalWarmPoolController } = await import(
-          new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
-        )
+      const { isMetalAllProjects } = await import('../lib/metal-eligibility')
+      if (process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalAllProjects()) {
+        const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
         const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",
@@ -2142,11 +2138,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         })
       }
 
-      if (isKubernetes()) {
+      if (process.env.SHOGO_LOCAL_MODE !== 'true' && isKubernetes()) {
         // In Kubernetes: Check Knative Service status
-        const { getKnativeProjectManager } = await import(
-          new URL('../lib/knative-project-manager.ts', import.meta.url).href
-        )
+        const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
         const manager = getKnativeProjectManager()
         const status = await manager.getStatus(projectId)
 
@@ -2206,10 +2200,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const url = await getProjectUrl(projectId)
 
       // In Kubernetes, wait for pod to be ready
-      if (isKubernetes()) {
-        const { getKnativeProjectManager } = await import(
-          new URL('../lib/knative-project-manager.ts', import.meta.url).href
-        )
+      if (process.env.SHOGO_LOCAL_MODE !== 'true' && isKubernetes()) {
+        const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
         const manager = getKnativeProjectManager()
         await manager.waitForReady(projectId, 60000)
       }

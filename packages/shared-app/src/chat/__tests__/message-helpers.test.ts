@@ -106,6 +106,18 @@ describe('isTunnelDisconnectError', () => {
 })
 
 describe('formatErrorMessage', () => {
+  it('never renders an error envelope with nothing readable in it verbatim', () => {
+    expect(formatErrorMessage('{"error":{}}')).toBe('The request failed. Please tap Retry to try again.')
+    expect(formatErrorMessage('{"error":null}')).toBe('The request failed. Please tap Retry to try again.')
+  })
+
+  it('surfaces an unmapped error code and a plain-string error', () => {
+    expect(formatErrorMessage('{"error":{"code":"bad_gateway"}}')).toBe(
+      'The request failed. Please tap Retry to try again. (bad_gateway)',
+    )
+    expect(formatErrorMessage('{"error":"usage_limit"}')).toBe('usage_limit')
+  })
+
   it('returns friendly message for known error codes in JSON', () => {
     const json = JSON.stringify({ error: { code: 'rate_limit_exceeded' } })
     expect(formatErrorMessage(json)).toBe(ERROR_CODE_MESSAGES.rate_limit_exceeded)

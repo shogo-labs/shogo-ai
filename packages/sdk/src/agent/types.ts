@@ -137,4 +137,16 @@ export interface AgentClientConfig {
    * Defaults to global `fetch`.
    */
   fetch?: typeof fetch
+  /**
+   * Path space for the workspace file APIs (tree, files, download, mkdir,
+   * and the live event stream).
+   *
+   * - `'workspace'` (default): paths are relative to the runtime's
+   *   `WORKSPACE_DIR`. On a multi-project workspace runtime that is the
+   *   merged root holding one folder per mounted project.
+   * - `'project'`: paths are relative to the runtime's own project, i.e. the
+   *   folder a code editor should show. Identical to `'workspace'` on
+   *   single-project runtimes; runtimes without scope support ignore it.
+   */
+  workspaceScope?: 'workspace' | 'project'
 }

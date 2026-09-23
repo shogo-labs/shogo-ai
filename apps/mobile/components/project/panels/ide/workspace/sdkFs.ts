@@ -120,6 +120,10 @@ export class SdkFs implements WorkspaceService {
     this.client = new AgentClient({
       baseUrl: agentUrl,
       ...(fetchImpl ? { fetch: fetchImpl } : {}),
+      // The IDE shows the project, not the runtime's merged root: tree,
+      // editor paths, Source Control and live events all share the project's
+      // path space. See `AgentClientConfig.workspaceScope`.
+      workspaceScope: 'project',
     })
   }
 

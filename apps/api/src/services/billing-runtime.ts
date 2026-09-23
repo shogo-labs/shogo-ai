@@ -7,32 +7,83 @@
  * cloud implementation behind this seam prevents the local route graph from
  * importing the Stripe-heavy billing service while preserving the same route
  * code and authorization behavior in cloud mode.
+ *
+ * The local implementation is typed against the real module (the type-only
+ * import is erased at build time) and must reproduce what `billing.service`
+ * itself does when `SHOGO_LOCAL_MODE=true`.
  */
-let cloudBilling: any = null
+import type * as CloudBillingModule from './billing.service'
+import type { UsageWindowKind, UsageWindowSnapshot } from './billing.service'
+import { usageLimitErrorPayload as localUsageLimitErrorPayload } from './usage-limits'
+import { recordLocalUsage } from './billing-local'
+
+type CloudBilling = typeof CloudBillingModule
+type BillingSeam = Pick<
+  CloudBilling,
+  | 'SYSTEM_WORKSPACE_ID'
+  | 'checkUsageBalance'
+  | 'usageLimitErrorPayload'
+  | 'hasAdvancedModelAccess'
+  | 'allocateMonthlyIncluded'
+  | 'consumeUsage'
+  | 'ensureSystemWorkspace'
+  | 'getSubscription'
+  | 'getUsageWallet'
+  | 'getUsageWindows'
+  | 'syncFromStripe'
+  | 'hasBalance'
+>
+
+let cloudBilling: CloudBilling | null = null
 if (process.env.SHOGO_LOCAL_MODE !== 'true') {
-  cloudBilling = await import(new URL('./billing.service.ts', import.meta.url).href)
+  cloudBilling = await import('./billing.service')
 }
 
-export const SYSTEM_WORKSPACE_ID = cloudBilling?.SYSTEM_WORKSPACE_ID ?? 'local-system'
-export const checkUsageBalance = (...args: any[]) =>
-  cloudBilling?.checkUsageBalance?.(...args) ?? Promise.resolve({ allowed: true })
-export const usageLimitErrorPayload = (...args: any[]) =>
-  cloudBilling?.usageLimitErrorPayload?.(...args) ?? { error: 'usage_limit' }
-export const hasAdvancedModelAccess = (...args: any[]) =>
-  cloudBilling?.hasAdvancedModelAccess?.(...args) ?? Promise.resolve(true)
-export const allocateMonthlyIncluded = (...args: any[]) =>
-  cloudBilling?.allocateMonthlyIncluded?.(...args) ?? Promise.resolve(null)
-export const consumeUsage = (...args: any[]) =>
-  cloudBilling?.consumeUsage?.(...args) ?? Promise.resolve(null)
-export const ensureSystemWorkspace = (...args: any[]) =>
-  cloudBilling?.ensureSystemWorkspace?.(...args) ?? Promise.resolve(null)
-export const getSubscription = (...args: any[]) =>
-  cloudBilling?.getSubscription?.(...args) ?? Promise.resolve(null)
-export const getUsageWallet = (...args: any[]) =>
-  cloudBilling?.getUsageWallet?.(...args) ?? Promise.resolve(null)
-export const getUsageWindows = (...args: any[]) =>
-  cloudBilling?.getUsageWindows?.(...args) ?? Promise.resolve(null)
-export const syncFromStripe = (...args: any[]) =>
-  cloudBilling?.syncFromStripe?.(...args) ?? Promise.resolve(null)
-export const hasBalance = (...args: any[]) =>
-  cloudBilling?.hasBalance?.(...args) ?? Promise.resolve(true)
+const uncappedWindow = (kind: UsageWindowKind): UsageWindowSnapshot => ({
+  kind,
+  usedUsd: 0,
+  limitUsd: null,
+  utilization: 0,
+  resetsAt: null,
+})
+
+const unavailableLocally = (operation: string) => async (): Promise<never> => {
+  throw new Error(`${operation} is not available in local mode (no Stripe billing on desktop)`)
+}
+
+/** Local installs are uncapped and have no subscriptions or wallets. */
+export const localBilling: BillingSeam = {
+  SYSTEM_WORKSPACE_ID: 'system',
+  checkUsageBalance: async () => ({ ok: true }),
+  usageLimitErrorPayload: localUsageLimitErrorPayload,
+  hasAdvancedModelAccess: async () => true,
+  hasBalance: async () => true,
+  ensureSystemWorkspace: async () => {},
+  consumeUsage: recordLocalUsage,
+  getSubscription: async () => null,
+  getUsageWallet: async () => null,
+  getUsageWindows: async () => ({ fiveHour: uncappedWindow('five_hour'), weekly: uncappedWindow('weekly') }),
+  allocateMonthlyIncluded: unavailableLocally('allocateMonthlyIncluded'),
+  syncFromStripe: unavailableLocally('syncFromStripe'),
+}
+
+// Looked up per call (not bound at load) so tests that `mock.module()` the
+// cloud service after this seam was imported still reach the mock.
+const billing = (): BillingSeam => cloudBilling ?? localBilling
+
+export const SYSTEM_WORKSPACE_ID: BillingSeam['SYSTEM_WORKSPACE_ID'] = billing().SYSTEM_WORKSPACE_ID
+export const checkUsageBalance: BillingSeam['checkUsageBalance'] = (...args) => billing().checkUsageBalance(...args)
+export const usageLimitErrorPayload: BillingSeam['usageLimitErrorPayload'] = (...args) =>
+  billing().usageLimitErrorPayload(...args)
+export const hasAdvancedModelAccess: BillingSeam['hasAdvancedModelAccess'] = (...args) =>
+  billing().hasAdvancedModelAccess(...args)
+export const allocateMonthlyIncluded: BillingSeam['allocateMonthlyIncluded'] = (...args) =>
+  billing().allocateMonthlyIncluded(...args)
+export const consumeUsage: BillingSeam['consumeUsage'] = (...args) => billing().consumeUsage(...args)
+export const ensureSystemWorkspace: BillingSeam['ensureSystemWorkspace'] = (...args) =>
+  billing().ensureSystemWorkspace(...args)
+export const getSubscription: BillingSeam['getSubscription'] = (...args) => billing().getSubscription(...args)
+export const getUsageWallet: BillingSeam['getUsageWallet'] = (...args) => billing().getUsageWallet(...args)
+export const getUsageWindows: BillingSeam['getUsageWindows'] = (...args) => billing().getUsageWindows(...args)
+export const syncFromStripe: BillingSeam['syncFromStripe'] = (...args) => billing().syncFromStripe(...args)
+export const hasBalance: BillingSeam['hasBalance'] = (...args) => billing().hasBalance(...args)

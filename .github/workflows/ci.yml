@@ -315,7 +315,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -336,20 +336,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Path-boundary and release-version tests
+      - name: Build workspace packages
+        # The API suites and the desktop-bundle build below resolve some
+        # workspace packages (e.g. `@shogo-ai/sdk`) through their `dist/`.
+        run: bun run build:packages
+
+      - name: Path-boundary, merged-root and release-version tests
         shell: bash
         # LINKED_FOLDERS / SHOGO_LOCAL_MODE are unset explicitly: when these
         # tests run under a Shogo agent the inherited values silently change
         # which branch of assertWithinWorkspace is taken.
+        #
+        # The merged-root suites create directory links the way the desktop
+        # does (junctions on Windows, which need no elevation), so they run
+        # for real here rather than skipping.
         env:
           LINKED_FOLDERS: ''
           SHOGO_LOCAL_MODE: ''
         run: |
           set -euo pipefail
           cd packages/agent-runtime
-          bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts
+          bun --no-env-file test src/__tests__/path-boundary.test.ts src/__tests__/permission-engine.test.ts src/__tests__/runtime-trust.test.ts src/__tests__/canvas-file-watcher.test.ts src/__tests__/fs-tree-walker.test.ts src/__tests__/workspace-file-routes.test.ts src/__tests__/canvas-file-watcher-mounts.test.ts src/__tests__/trust-resolver-workspace-mounts.test.ts src/__tests__/runtime-lsp-routes-scope.test.ts src/__tests__/workspace-runtime-mode.test.ts
           cd ../..
           bun --no-env-file test scripts/__tests__/desktop-next-beta-version.test.ts
+          # The Windows installer ships this bundle; build it on the platform that packages it.
+          bun --no-env-file test apps/api/src/__tests__/runtime-manager-startWorkspace.test.ts apps/api/src/lib/runtime/__tests__/local-bundle-integrity.test.ts
 
   ci:
     name: Lint, Typecheck, Test

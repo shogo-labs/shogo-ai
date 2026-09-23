@@ -16,7 +16,9 @@ import {
   inferProviderFromModel,
   resolveAgentModeDefault,
 } from '@shogo/model-catalog'
-import * as billingService from '../../services/billing.service'
+// The seam, not billing.service: this resolver also runs in the desktop's
+// local bundle, which must not pull in the Stripe-backed billing service.
+import * as billingService from '../../services/billing-runtime'
 import { resolvePublicModelSync } from '../../services/public-models.service'
 import { getMergedModelEntrySync } from '../../services/model-registry.service'
 import { prisma } from '../prisma'

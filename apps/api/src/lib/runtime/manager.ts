@@ -18,6 +18,7 @@ import {
   rmSync,
   symlinkSync,
   lstatSync,
+  realpathSync,
   renameSync,
   copyFileSync,
 } from 'fs'
@@ -45,7 +46,7 @@ import { getShogoCloudUrl, buildAiProxyUrl, buildToolsProxyUrl } from '../cloud-
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
-import { resolveAgentModelEnv } from './agent-model-defaults-runtime'
+import { resolveAgentModelEnv } from './agent-model-defaults'
 
 type CloudContentSyncModule = typeof import('./cloud-content-sync')
 
@@ -104,6 +105,71 @@ const TEMPLATE_SKIP_SEGMENTS = new Set(['node_modules', '.git'])
 
 export function isTemplateCopyExcluded(src: string): boolean {
   return src.split(/[\\/]+/).some((segment) => TEMPLATE_SKIP_SEGMENTS.has(segment))
+}
+
+/**
+ * One entry in a merged root: `<mergedRoot>/<mount>` links to `path`.
+ *
+ * - `managed`  — a Shogo-owned project dir (`workspaces/<projectId>`).
+ * - `external` — a folder-linked project's primary folder (the user's repo),
+ *                mounted under the project id in place of a managed dir.
+ * - `folder`   — an extra host folder linked to the anchor project.
+ *
+ * Shipped to agent-runtime as `WORKSPACE_MOUNTS` so it can scope the IDE,
+ * trust and the file watcher per mount instead of per merged root.
+ */
+export interface WorkspaceMount {
+  mount: string
+  path: string
+  projectId: string
+  kind: 'managed' | 'external' | 'folder'
+  /** Only for `external` mounts: whether the user opted the folder into preview. */
+  runtimeEnabled?: boolean
+}
+
+function normalizeFsPathForCompare(p: string): string {
+  let out = resolve(p)
+  try {
+    out = realpathSync(out)
+  } catch {
+    /* not on disk — compare the lexical path */
+  }
+  return process.platform === 'win32' || process.platform === 'darwin' ? out.toLowerCase() : out
+}
+
+/** Same filesystem location, following links; case-folded where the filesystem is. */
+export function isSameFsPath(a: string, b: string): boolean {
+  return normalizeFsPathForCompare(a) === normalizeFsPathForCompare(b)
+}
+
+const MOUNT_GITIGNORE_BEGIN = '# >>> shogo workspace mounts (managed) >>>'
+const MOUNT_GITIGNORE_END = '# <<< shogo workspace mounts (managed) <<<'
+
+/**
+ * Keep user-owned mounts out of the merged root's checkpoint repo. Git would
+ * otherwise walk into the user's own repository through the junction and
+ * snapshot it. No trailing slash: git sees a symlink as a file, and a
+ * directory-only pattern would not match it.
+ */
+export function upsertMountGitignore(mergedRoot: string, mountNames: string[]): void {
+  const file = join(mergedRoot, '.gitignore')
+  const existing = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  const begin = existing.indexOf(MOUNT_GITIGNORE_BEGIN)
+  const end = existing.indexOf(MOUNT_GITIGNORE_END)
+  const outside = begin >= 0 && end > begin
+    ? existing.slice(0, begin) + existing.slice(end + MOUNT_GITIGNORE_END.length).replace(/^\r?\n/, '')
+    : existing
+  const block = mountNames.length > 0
+    ? [MOUNT_GITIGNORE_BEGIN, ...mountNames.map((n) => `/${n}`), MOUNT_GITIGNORE_END, ''].join('\n')
+    : ''
+  const base = outside.length > 0 && !outside.endsWith('\n') ? `${outside}\n` : outside
+  const next = base + block
+  if (next === existing) return
+  if (next.length === 0) {
+    if (existsSync(file)) unlinkSync(file)
+    return
+  }
+  writeFileSync(file, next)
 }
 
 /** Copy the template's `.gitignore` into a workspace that lacks one (self-heal for existing installs). */
@@ -231,6 +297,12 @@ export class RuntimeManager implements IRuntimeManager {
   private usedPorts: Set<number> = new Set()
   private healthCheckTimers: Map<string, NodeJS.Timeout> = new Map()
   private startingPromises: Map<string, Promise<IProjectRuntime>> = new Map()
+  /**
+   * Tail of the in-flight `buildWorkspaceMergedRoot` chain per merged root.
+   * Every proxied request refreshes the root on warm reuse, so concurrent
+   * builders must not interleave their link / prune passes.
+   */
+  private mergedRootBuilds: Map<string, Promise<unknown>> = new Map()
   /**
    * Monotonic "boot generation" per merged-root runtime key. Bumped every
    * time a NEW agent process is spawned for that key (cold start or restart —
@@ -1809,7 +1881,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
     if (!existsSync(workspacesDir)) mkdirSync(workspacesDir, { recursive: true })
 
-    const { dir: mergedRootDir, linkedFolders, readonlyFolders } = await this.buildWorkspaceMergedRoot(
+    const { dir: mergedRootDir, linkedFolders, readonlyFolders, mounts } = await this.buildWorkspaceMergedRoot(
       workspacesDir,
       rootName,
       memberProjectIds,
@@ -1863,6 +1935,25 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // denied for writes by assertAllowedPath (see runtime-trust.ts).
       if (readonlyFolders.length > 0) {
         runtimeEnv.READONLY_ROOTS = JSON.stringify(readonlyFolders)
+      }
+      // The mount table lets the runtime tell Shogo-owned mounts apart from
+      // user-owned ones (folder-linked projects, extra linked folders): the
+      // IDE scopes to the anchor mount, trust applies per owning project, and
+      // nothing Shogo-specific is written into a user's folder.
+      runtimeEnv.WORKSPACE_MOUNTS = JSON.stringify(mounts)
+      const anchorMount = spec.anchorProjectId
+        ? mounts.find((m) => m.projectId === spec.anchorProjectId && m.mount === spec.anchorProjectId)
+        : undefined
+      if (anchorMount?.kind === 'external') {
+        runtimeEnv.RUNTIME_ENABLED = anchorMount.runtimeEnabled ? 'true' : 'false'
+      }
+      if (spec.anchorProjectId) {
+        // `pingRuntimeRefreshTrust` (local-projects.ts) authenticates with the
+        // API-derived token for the bare anchor id. Without this the worker's
+        // own `WEBHOOK_TOKEN` (derived for `ws:proj:<id>` with a per-process
+        // secret) wins and every refresh-trust ping 401s.
+        const { deriveWebhookToken } = await import('../runtime-token')
+        runtimeEnv.WEBHOOK_TOKEN = deriveWebhookToken(spec.anchorProjectId)
       }
 
       const apiPort = process.env.API_PORT || '8002'
@@ -1959,22 +2050,47 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * (pointing at its real `workspaces/<projectId>` dir) plus one symlink per
    * linked local folder (by basename), and nothing else.
    *
-   * Each member project's real dir is seeded first (template + deps via
+   * A managed member's real dir is seeded first (template + deps via
    * `ensureProjectDirectory`, idempotent) so the merged tree actually
-   * contains a working project rather than a dangling link.
+   * contains a working project rather than a dangling link. A folder-linked
+   * (external) member is mounted at its primary folder instead — the user's
+   * folder IS that project's content, so no template is seeded for it.
    *
    * Returns the merged-root path, the list of all real member dirs (for
-   * LINKED_FOLDERS path-allowance), and the subset that is read-only (for
-   * READONLY_ROOTS write-denial — see the caller). Symlinks are recreated
-   * on every start so attach/detach/folder changes reflect after a restart.
+   * LINKED_FOLDERS path-allowance), the subset that is read-only (for
+   * READONLY_ROOTS write-denial — see the caller), and the mount table.
+   *
+   * Runs on every start AND on every warm reuse (i.e. every proxied request),
+   * so it must be idempotent: a link that already points at its target is
+   * left alone (relinking would make the mount briefly vanish for the
+   * runtime and any request in flight), and concurrent builds of the same
+   * root are serialized.
    */
   private async buildWorkspaceMergedRoot(
     workspacesDir: string,
     rootName: string,
     memberProjectIds: string[],
     opts: { localFolders?: string[]; readonlyProjectIds?: string[] } = {},
-  ): Promise<{ dir: string; linkedFolders: string[]; readonlyFolders: string[] }> {
+  ): Promise<{ dir: string; linkedFolders: string[]; readonlyFolders: string[]; mounts: WorkspaceMount[] }> {
     const mergedRoot = join(workspacesDir, '.workspace-roots', rootName)
+    const previous = this.mergedRootBuilds.get(mergedRoot) ?? Promise.resolve()
+    const run = previous
+      .catch(() => {})
+      .then(() => this.buildWorkspaceMergedRootNow(mergedRoot, workspacesDir, memberProjectIds, opts))
+    this.mergedRootBuilds.set(mergedRoot, run)
+    try {
+      return await run
+    } finally {
+      if (this.mergedRootBuilds.get(mergedRoot) === run) this.mergedRootBuilds.delete(mergedRoot)
+    }
+  }
+
+  private async buildWorkspaceMergedRootNow(
+    mergedRoot: string,
+    workspacesDir: string,
+    memberProjectIds: string[],
+    opts: { localFolders?: string[]; readonlyProjectIds?: string[] },
+  ): Promise<{ dir: string; linkedFolders: string[]; readonlyFolders: string[]; mounts: WorkspaceMount[] }> {
     mkdirSync(mergedRoot, { recursive: true })
 
     const linkType = pkg.isWindows ? 'junction' : 'dir'
@@ -1982,19 +2098,38 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     const readonlyFolders: string[] = []
     const readonlySet = new Set(opts.readonlyProjectIds ?? [])
     const expectedLinkNames = new Set<string>()
+    const mounts: WorkspaceMount[] = []
 
-    // (Re)create a single symlink `<mergedRoot>/<linkName> -> <absTarget>`,
-    // replacing whatever is currently there. Records the name so the prune
-    // pass below keeps it.
+    const linkPointsAt = (linkPath: string, absTarget: string): boolean => {
+      try {
+        return isSameFsPath(realpathSync(linkPath), absTarget)
+      } catch {
+        return false
+      }
+    }
+
+    // Ensure `<mergedRoot>/<linkName> -> <absTarget>`. Records the name so
+    // the prune pass below keeps it.
     const linkInto = (absTarget: string, linkName: string) => {
       expectedLinkNames.add(linkName)
       const linkPath = join(mergedRoot, linkName)
+      let st: ReturnType<typeof lstatSync> | null = null
       try {
-        const st = lstatSync(linkPath)
-        if (st.isSymbolicLink()) unlinkSync(linkPath)
-        else rmSync(linkPath, { recursive: true, force: true })
+        st = lstatSync(linkPath)
       } catch {
-        /* nothing at linkPath yet */
+        st = null
+      }
+      if (st?.isSymbolicLink() && linkPointsAt(linkPath, absTarget)) return
+      if (st) {
+        try {
+          if (st.isSymbolicLink()) unlinkSync(linkPath)
+          else rmSync(linkPath, { recursive: true, force: true })
+        } catch (err: any) {
+          console.warn(
+            `[RuntimeManager] buildWorkspaceMergedRoot: failed to replace ${linkName}: ${err?.message ?? err}`,
+          )
+          return
+        }
       }
       try {
         symlinkSync(absTarget, linkPath, linkType)
@@ -2007,16 +2142,32 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     // Member projects (anchor + attachments) — symlinked by project id.
     for (const projectId of memberProjectIds) {
-      // Seed the real project dir (template + deps). Idempotent — the
-      // install is sentinel-gated, so repeat starts are cheap.
+      const info = await this.getProjectInfo(projectId)
       let realProjectDir: string
-      try {
-        realProjectDir = await this.ensureProjectDirectory(projectId)
-      } catch (err: any) {
-        console.warn(
-          `[RuntimeManager] buildWorkspaceMergedRoot: failed to seed member project ${projectId}: ${err?.message ?? err}`,
-        )
-        realProjectDir = join(workspacesDir, projectId)
+      let kind: WorkspaceMount['kind'] = 'managed'
+      if (info.workingMode === 'external') {
+        const folders = info.folders ?? []
+        const primary = (folders.find((f) => f.isPrimary) ?? folders[0])?.path
+        if (!primary || !existsSync(primary)) {
+          console.warn(
+            `[RuntimeManager] buildWorkspaceMergedRoot: folder-linked project ${projectId} has no primary folder on disk` +
+              `${primary ? ` (${primary})` : ''} — skipping link`,
+          )
+          continue
+        }
+        kind = 'external'
+        realProjectDir = await this.ensureProjectDirectory(projectId, undefined, { primaryPath: primary })
+      } else {
+        // Seed the real project dir (template + deps). Idempotent — the
+        // install is sentinel-gated, so repeat starts are cheap.
+        try {
+          realProjectDir = await this.ensureProjectDirectory(projectId)
+        } catch (err: any) {
+          console.warn(
+            `[RuntimeManager] buildWorkspaceMergedRoot: failed to seed member project ${projectId}: ${err?.message ?? err}`,
+          )
+          realProjectDir = join(workspacesDir, projectId)
+        }
       }
       if (!existsSync(realProjectDir)) {
         console.warn(
@@ -2028,21 +2179,43 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       linkedFolders.push(absProjectDir)
       if (readonlySet.has(projectId)) readonlyFolders.push(absProjectDir)
       linkInto(absProjectDir, projectId)
+      mounts.push({
+        mount: projectId,
+        path: absProjectDir,
+        projectId,
+        kind,
+        ...(kind === 'external' ? { runtimeEnabled: info.runtimeEnabled === true } : {}),
+      })
     }
 
     // Linked local host folders — symlinked by basename (collision-safe).
+    // A folder-linked anchor's primary folder is already mounted under the
+    // project id; mounting it a second time by basename would give the agent
+    // and the IDE two paths to the same files.
+    const folderOwner = memberProjectIds[0] ?? ''
     for (const folder of opts.localFolders ?? []) {
       const abs = resolve(folder)
       if (!existsSync(abs)) {
         console.warn(`[RuntimeManager] buildWorkspaceMergedRoot: linked folder missing on disk: ${abs} — skipping`)
         continue
       }
+      if (mounts.some((m) => isSameFsPath(m.path, abs))) continue
       const base = basename(abs) || 'folder'
       let name = base
       let i = 2
       while (expectedLinkNames.has(name)) name = `${base}-${i++}`
       linkedFolders.push(abs)
       linkInto(abs, name)
+      mounts.push({ mount: name, path: abs, projectId: folderOwner, kind: 'folder' })
+    }
+
+    try {
+      upsertMountGitignore(
+        mergedRoot,
+        mounts.filter((m) => m.kind !== 'managed').map((m) => m.mount),
+      )
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] buildWorkspaceMergedRoot: failed to update .gitignore: ${err?.message ?? err}`)
     }
 
     // Prune stale links no longer expected so detached projects / removed
@@ -2063,7 +2236,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       /* merged root just created / unreadable — nothing to prune */
     }
 
-    return { dir: mergedRoot, linkedFolders, readonlyFolders }
+    return { dir: mergedRoot, linkedFolders, readonlyFolders, mounts }
   }
 
   /**

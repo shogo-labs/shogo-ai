@@ -32,7 +32,9 @@
  */
 
 import { Hono } from 'hono'
-import { resolve, relative, sep } from 'path'
+import { realpathSync } from 'fs'
+import { isAbsolute, resolve, relative, sep } from 'path'
+import { fileURLToPath } from 'url'
 import type { WorkspaceLSPManager } from '@shogo/shared-runtime'
 
 export interface RuntimeLspRoutesConfig {
@@ -40,6 +42,12 @@ export interface RuntimeLspRoutesConfig {
   workspaceDir: string
   /** Returns the live LSP manager owned by AgentGateway, or null when not started. */
   getLspManager: () => WorkspaceLSPManager | null
+  /**
+   * Root for `?scope=project` requests — the IDE addresses documents
+   * relative to the project, which on a workspace runtime is a mount below
+   * `workspaceDir`. Defaults to `workspaceDir`.
+   */
+  getProjectRoot?: () => string
 }
 
 /**
@@ -113,12 +121,32 @@ function rewriteUrisInResponse(
   return value
 }
 
+function relativeInside(root: string, target: string): string | null {
+  const rel = relative(root, target)
+  if (!rel || rel.startsWith('..' + sep) || rel === '..' || isAbsolute(rel)) return null
+  return rel
+}
+
 function rewriteUriString(workspaceDir: string, uri: string): string {
   if (!uri.startsWith('file://')) return uri
-  const decoded = decodeURIComponent(uri.slice('file://'.length))
+  // fileURLToPath: slicing off `file://` leaves `/C:/…` for a Windows URI.
+  let decoded: string
+  try {
+    decoded = fileURLToPath(uri)
+  } catch {
+    decoded = decodeURIComponent(uri.slice('file://'.length))
+  }
   const absRoot = resolve(workspaceDir)
-  const rel = relative(absRoot, decoded)
-  if (!rel || rel.startsWith('..' + sep) || rel === '..') {
+  // The root may be a symlink / junction (a workspace-runtime mount), and
+  // the language server reports the files it opened through it by real path.
+  let realRoot = absRoot
+  try {
+    realRoot = realpathSync(absRoot)
+  } catch {
+    /* not on disk */
+  }
+  const rel = relativeInside(absRoot, decoded) ?? (realRoot !== absRoot ? relativeInside(realRoot, decoded) : null)
+  if (!rel) {
     // Outside the workspace — return as-is so the client can decide what to
     // do (Monaco will fail to navigate, which is the safe default).
     return uri
@@ -153,8 +181,10 @@ function parsePosition(workspaceDir: string, body: PositionPayload): ParsedPosit
 }
 
 export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
-  const { workspaceDir, getLspManager } = config
+  const { workspaceDir, getLspManager, getProjectRoot } = config
   const app = new Hono()
+  const rootFor = (c: any): string =>
+    c.req.query('scope') === 'project' && getProjectRoot ? getProjectRoot() : workspaceDir
 
   // Quick guard middleware — every LSP route requires the manager to exist.
   // We keep `ready` separate so the IDE can poll it during cold-start without
@@ -189,7 +219,7 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
       path?: string; languageId?: string; version?: number; text?: string
     } | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(workspaceDir, body.path) : null
+    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(rootFor(c), body.path) : null
     if (!filePath) return c.json({ error: { code: 'bad_request', message: 'Invalid `path`' } }, 400)
     if (typeof body.text !== 'string') {
       return c.json({ error: { code: 'bad_request', message: '`text` is required' } }, 400)
@@ -208,7 +238,7 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
       path?: string; version?: number; text?: string
     } | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(workspaceDir, body.path) : null
+    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(rootFor(c), body.path) : null
     if (!filePath) return c.json({ error: { code: 'bad_request', message: 'Invalid `path`' } }, 400)
     if (typeof body.text !== 'string') {
       return c.json({ error: { code: 'bad_request', message: '`text` is required' } }, 400)
@@ -222,7 +252,7 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
   app.post('/agent/lsp/didClose', requireLsp, async (c) => {
     const body = await c.req.json().catch(() => null) as { path?: string } | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(workspaceDir, body.path) : null
+    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(rootFor(c), body.path) : null
     if (!filePath) return c.json({ error: { code: 'bad_request', message: 'Invalid `path`' } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     lsp.didCloseDocument(filePath)
@@ -236,12 +266,12 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
   app.post('/agent/lsp/hover', requireLsp, async (c) => {
     const body = await c.req.json().catch(() => null) as PositionPayload | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const parsed = parsePosition(workspaceDir, body)
+    const parsed = parsePosition(rootFor(c), body)
     if ('error' in parsed) return c.json({ error: { code: 'bad_request', message: parsed.error } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
       const result = await lsp.hover(parsed.filePath, parsed.line, parsed.character)
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'hover failed' } }, 500)
     }
@@ -252,12 +282,12 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
       context?: { triggerKind?: number; triggerCharacter?: string }
     }) | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const parsed = parsePosition(workspaceDir, body)
+    const parsed = parsePosition(rootFor(c), body)
     if ('error' in parsed) return c.json({ error: { code: 'bad_request', message: parsed.error } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
       const result = await lsp.completion(parsed.filePath, parsed.line, parsed.character, body.context)
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'completion failed' } }, 500)
     }
@@ -266,12 +296,12 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
   app.post('/agent/lsp/definition', requireLsp, async (c) => {
     const body = await c.req.json().catch(() => null) as PositionPayload | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const parsed = parsePosition(workspaceDir, body)
+    const parsed = parsePosition(rootFor(c), body)
     if ('error' in parsed) return c.json({ error: { code: 'bad_request', message: parsed.error } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
       const result = await lsp.definition(parsed.filePath, parsed.line, parsed.character)
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'definition failed' } }, 500)
     }
@@ -282,7 +312,7 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
       includeDeclaration?: boolean
     }) | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const parsed = parsePosition(workspaceDir, body)
+    const parsed = parsePosition(rootFor(c), body)
     if ('error' in parsed) return c.json({ error: { code: 'bad_request', message: parsed.error } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
@@ -292,7 +322,7 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
         parsed.character,
         body.includeDeclaration !== false,
       )
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'references failed' } }, 500)
     }
@@ -301,12 +331,12 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
   app.post('/agent/lsp/documentSymbol', requireLsp, async (c) => {
     const body = await c.req.json().catch(() => null) as { path?: string } | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(workspaceDir, body.path) : null
+    const filePath = typeof body.path === 'string' ? resolveWorkspacePath(rootFor(c), body.path) : null
     if (!filePath) return c.json({ error: { code: 'bad_request', message: 'Invalid `path`' } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
       const result = await lsp.documentSymbol(filePath)
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'documentSymbol failed' } }, 500)
     }
@@ -315,12 +345,12 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
   app.post('/agent/lsp/signatureHelp', requireLsp, async (c) => {
     const body = await c.req.json().catch(() => null) as PositionPayload | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const parsed = parsePosition(workspaceDir, body)
+    const parsed = parsePosition(rootFor(c), body)
     if ('error' in parsed) return c.json({ error: { code: 'bad_request', message: parsed.error } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
       const result = await lsp.signatureHelp(parsed.filePath, parsed.line, parsed.character)
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'signatureHelp failed' } }, 500)
     }
@@ -331,14 +361,14 @@ export function runtimeLspRoutes(config: RuntimeLspRoutesConfig) {
       newName?: string
     }) | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Body must be JSON' } }, 400)
-    const parsed = parsePosition(workspaceDir, body)
+    const parsed = parsePosition(rootFor(c), body)
     if ('error' in parsed) return c.json({ error: { code: 'bad_request', message: parsed.error } }, 400)
     const newName = typeof body.newName === 'string' ? body.newName.trim() : ''
     if (!newName) return c.json({ error: { code: 'bad_request', message: '`newName` must be a non-empty string' } }, 400)
     const lsp = c.get('lsp') as WorkspaceLSPManager
     try {
       const result = await lsp.rename(parsed.filePath, parsed.line, parsed.character, newName)
-      return c.json({ result: rewriteUrisInResponse(workspaceDir, result ?? null) })
+      return c.json({ result: rewriteUrisInResponse(rootFor(c), result ?? null) })
     } catch (err: any) {
       return c.json({ error: { code: 'lsp_error', message: err?.message || 'rename failed' } }, 500)
     }

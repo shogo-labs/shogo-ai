@@ -79,7 +79,12 @@ import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
-import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds, workspaceProjectsManifest } from './workspace-runtime-mode'
+import {
+  isWorkspaceRuntimeMode,
+  workspaceAttachedProjectIds,
+  workspaceExternalProjectIds,
+  workspaceProjectsManifest,
+} from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
@@ -1318,8 +1323,13 @@ export class AgentGateway {
       // tsconfig per project, but the watch-exclusion patch must be applied
       // to each attached project's tsconfig so program loads skip
       // node_modules/dist. Single-project runtimes leave this empty.
+      // Folder-linked members are skipped: their tsconfig is the user's own
+      // file, which Shogo must not rewrite (external mode never did).
+      const externalIds = workspaceExternalProjectIds()
       const tsconfigDirs = isWorkspaceRuntimeMode()
-        ? workspaceAttachedProjectIds().map((id) => join(this.workspaceDir, id))
+        ? workspaceAttachedProjectIds()
+            .filter((id) => !externalIds.has(id))
+            .map((id) => join(this.workspaceDir, id))
         : []
 
       this.lspManager = new WorkspaceLSPManager({
