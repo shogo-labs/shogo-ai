@@ -50,7 +50,7 @@ import { resolveAgentModelEnv } from './agent-model-defaults-runtime'
 type CloudContentSyncModule = typeof import('./cloud-content-sync')
 
 async function loadCloudContentSync(): Promise<CloudContentSyncModule> {
-  return import(new URL('./cloud-content-sync.ts', import.meta.url).href)
+  return import('./cloud-content-sync')
 }
 
 async function isProjectCloudLinked(projectId: string): Promise<boolean> {
@@ -3331,9 +3331,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // Stop cloud-content-sync watchers last. Keep the cloud island lazy so
     // local API startup/tests do not resolve cloud-only SDK subpaths.
     try {
-      const { stopAllCloudSyncWatchers } = await import(
-        new URL('./cloud-content-sync.ts', import.meta.url).href
-      )
+      const { stopAllCloudSyncWatchers } = await import('./cloud-content-sync')
       await stopAllCloudSyncWatchers()
     } catch (err) {
       console.error('[RuntimeManager] Failed to stop cloud sync watchers:', err)
