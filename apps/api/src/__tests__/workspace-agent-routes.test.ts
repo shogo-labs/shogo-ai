@@ -4,6 +4,19 @@
 import { describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
 
+mock.module('../services/chat-turn-state.service', () => ({
+  listActiveChatTurns: async () => [{
+    chatSessionId: 'chat-1',
+    turnId: 'turn-1',
+    sessionName: 'Planning',
+    isPrimary: false,
+    projectId: 'project-1',
+    projectName: 'Website',
+    projectHidden: false,
+    startedAt: new Date('2026-09-23T05:00:00.000Z'),
+  }],
+}))
+
 const profile = {
   id: 'profile-1',
   workspaceId: 'workspace-1',
@@ -82,19 +95,6 @@ mock.module('../services/agent-schedule.service', () => ({
   createSchedule: async (input: any) => ({ ...schedule, ...input, id: 'schedule-1' }),
   updateSchedule: async (_workspaceId: string, _scheduleId: string, changes: any) => ({ ...schedule, ...changes }),
   deleteSchedule: async () => true,
-}))
-
-mock.module('../services/chat-turn-state.service', () => ({
-  listActiveChatTurns: async () => [{
-    chatSessionId: 'chat-1',
-    turnId: 'turn-1',
-    sessionName: 'Planning',
-    isPrimary: false,
-    projectId: 'project-1',
-    projectName: 'Website',
-    projectHidden: false,
-    startedAt: new Date('2026-09-23T05:00:00.000Z'),
-  }],
 }))
 
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../routes/workspace-agent')
