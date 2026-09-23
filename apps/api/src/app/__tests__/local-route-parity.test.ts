@@ -30,6 +30,10 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/workspaces/:id/leave',
   'GET /api/workspaces/:id/visible-models',
   'PUT /api/workspaces/:id/visible-models',
+  'GET /api/workspaces/:workspaceId/schedules',
+  'POST /api/workspaces/:workspaceId/schedules',
+  'PATCH /api/workspaces/:workspaceId/schedules/:scheduleId',
+  'DELETE /api/workspaces/:workspaceId/schedules/:scheduleId',
   'GET /api/types-proxy',
 ] as const
 
