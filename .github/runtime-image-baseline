@@ -28,5 +28,23 @@
 # added to canvas-bridge.js — a commit that is inside v1.13.26 and absent from the
 # previous baseline. So the fleet has rebuilt, and leaving the baseline behind it
 # would have had the next release rebuild for a guest change already shipped.
+#
+# c09700b (v2.0.0) verified on all four production hosts 2026-09-23, but only
+# after finding the ROOTFS_SHA marker itself is not trustworthy: the 2026-09-23
+# release raced its rootfs-rebuild dispatch against the runtime-multiarch image
+# publish — hosts pulled `production-multiarch-latest` and rebuilt at 09:18 UTC,
+# 22 minutes BEFORE the real c09700b image finished pushing to that tag at
+# 09:40:23 UTC, so all four hosts baked in the stale prior image (dated 2026-09-18)
+# while writeRootfsMarker() stamped ROOTFS_SHA=c09700b anyway — silently blocking
+# the correctly-timed second dispatch via the version-based dedup in
+# shouldRebuildRootfs(). Symbol grep for `getRootPreviewManager`/`getAnchorProjectId`
+# (added in ac4ea2c75, inside v2.0.0, absent from the prior baseline) was 0 on all
+# four hosts despite ROOTFS_SHA already reading c09700b — a real fleet-wide gap of
+# ~191 commits behind the reported version. Fixed by manually re-pulling the (by
+# then genuinely published) image and clearing each host's ROOTFS_SHA marker so
+# the agent's own heartbeat re-triggered a real rebuild; re-verified afterward —
+# all four hosts now show 10/5 matches for those symbols. The image-publish vs.
+# rebuild-dispatch race itself is still unfixed in the pipeline; see the
+# 2026-09-23 investigation for the follow-up.
 
-be0c37c22
+c09700b402a3e97b6824e06a5a2d364f301b1f12

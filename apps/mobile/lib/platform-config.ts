@@ -83,6 +83,16 @@ export function isWorkspaceRuntimeEnabled(): boolean {
   return true
 }
 
+/**
+ * Whether the project page routes every chat tab through the project-pinned
+ * workspace session. The pinned-session and "+ new chat" endpoints live under
+ * `/api/local/projects`, which the API only mounts in local mode, so cloud
+ * builds keep project-scoped chat for project tabs.
+ */
+export function isProjectWorkspaceRuntimeEnabled(): boolean {
+  return isLocalMode()
+}
+
 let cachedConfig: PlatformConfig | null = null
 
 function getInitialConfig(): PlatformConfig {
