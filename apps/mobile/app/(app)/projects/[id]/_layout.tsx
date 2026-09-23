@@ -66,7 +66,10 @@ import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
-import { usePlatformConfig } from "../../../../lib/platform-config";
+import {
+  isProjectWorkspaceRuntimeEnabled,
+  usePlatformConfig,
+} from "../../../../lib/platform-config";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -478,10 +481,9 @@ export default observer(function ProjectLayout() {
     () => params.chatSessionId ?? null
   );
 
-  // Workspace runtimes are the only supported project runtime topology. Keep
-  // this local boolean because the surrounding state machine still uses it to
-  // coordinate pinned-session resolution and avoid remount races.
-  const workspaceRuntimeEnabled = true
+  // Coordinates pinned-session resolution and avoids remount races. Off in
+  // cloud builds, where the project-pinned session endpoints are not mounted.
+  const workspaceRuntimeEnabled = isProjectWorkspaceRuntimeEnabled()
   // The project-pinned workspace session id (resolved from the API when the
   // flag is on). Tabs whose id is this session chat in 'workspace' scope.
   const [pinnedWorkspaceSessionId, setPinnedWorkspaceSessionId] = useState<
