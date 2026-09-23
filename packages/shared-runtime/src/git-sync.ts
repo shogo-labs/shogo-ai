@@ -133,6 +133,12 @@ export interface GitWorkspaceSyncConfig {
    * throw is logged and ignored so it can never block the commit/push.
    */
   beforeStage?: () => Promise<void> | void
+  /**
+   * Workspace-relative paths never staged, whatever the project's
+   * `.gitignore` says. The runtime keeps pod-local state (including the
+   * host's repo-hydrate staging dir, which contains a `.git`) under these.
+   */
+  stageExcludes?: string[]
 }
 
 export interface SpawnGitFn {
@@ -218,11 +224,15 @@ export class GitWorkspaceSync {
   private isPushing = false
   private pushQueuedDuringPush = false
   private shuttingDown = false
+  private paused = false
+  private pendingWhilePaused = false
 
   /** Total consecutive failed-push attempts since the last success. */
   private _consecutiveFailures = 0
   /** Whether we've fired `onDegrade` for the current degraded window. */
   private _degraded = false
+  /** HEAD sha of the last successful durability step (push / afterCommit). */
+  private _lastDurableSha: string | null = null
 
   constructor(config: GitWorkspaceSyncConfig) {
     this.cfg = {
@@ -242,6 +252,7 @@ export class GitWorkspaceSync {
       authorName: config.authorName ?? 'Shogo Agent',
       afterCommit: config.afterCommit ?? null,
       beforeStage: config.beforeStage ?? null,
+      stageExcludes: config.stageExcludes ?? [],
     }
   }
 
@@ -301,6 +312,27 @@ export class GitWorkspaceSync {
   }
 
   /**
+   * Stop starting new cycles and wait for an in-flight one to finish. Used
+   * while `.git` is swapped out from under the sync (host repo hydrate);
+   * triggers that arrive meanwhile run once on {@link resume}.
+   */
+  async pause(): Promise<void> {
+    this.paused = true
+    while (this.isPushing) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+
+  resume(): void {
+    if (!this.paused) return
+    this.paused = false
+    if (this.pendingWhilePaused) {
+      this.pendingWhilePaused = false
+      this.triggerSync(false)
+    }
+  }
+
+  /**
    * Drain pending work, attempt one last push, then stop.
    *
    * If the push fails (e.g. cloud unreachable during shutdown), this
@@ -334,6 +366,10 @@ export class GitWorkspaceSync {
    * changes when it loops.
    */
   private async runPushCycle(): Promise<void> {
+    if (this.paused) {
+      this.pendingWhilePaused = true
+      return
+    }
     if (this.isPushing) {
       this.pushQueuedDuringPush = true
       return
@@ -373,32 +409,48 @@ export class GitWorkspaceSync {
       }
 
       // Stage everything (respects `.gitignore`).
-      await this.runGit(spawnGit, ['add', '-A'], workspaceDir, commitEnv)
-
-      // `git diff --cached --quiet` exits non-zero when there's something to commit.
-      const diff = await spawnGit(['diff', '--cached', '--quiet'], workspaceDir, commitEnv)
-      const hasChanges = diff.exitCode !== 0
-      if (!hasChanges) {
-        // Nothing to do — clear failure state if we were retrying a
-        // previous failure that turned out to be empty.
-        return
-      }
-
-      const message = `auto: ${new Date().toISOString()}`
+      const excludes = this.cfg.stageExcludes.map((p) => `:(exclude)${p}`)
       await this.runGit(
         spawnGit,
-        ['commit', '-m', message, '--no-verify'],
+        excludes.length ? ['add', '-A', '--', '.', ...excludes] : ['add', '-A'],
         workspaceDir,
         commitEnv,
       )
 
+      // `git diff --cached --quiet` exits 0 when nothing is staged, 1 when
+      // there is; anything else (e.g. dubious ownership) is an error.
+      const diff = await spawnGit(['diff', '--cached', '--quiet'], workspaceDir, commitEnv)
+      if (diff.exitCode !== 0 && diff.exitCode !== 1) {
+        throw new Error(`git diff exited ${diff.exitCode}: ${(diff.stderr || '').slice(0, 500)}`)
+      }
+      const hasChanges = diff.exitCode === 1
+
+      if (hasChanges) {
+        const message = `auto: ${new Date().toISOString()}`
+        await this.runGit(
+          spawnGit,
+          ['commit', '-m', message, '--no-verify'],
+          workspaceDir,
+          commitEnv,
+        )
+      }
+
+      // A clean tree can still hold commits that never reached durable
+      // storage: the agent (or user) can `git commit` from the shell, which
+      // leaves nothing staged for us. Compare HEAD to the last sha we made
+      // durable and run the durability step whenever it moved.
+      const head = await spawnGit(['rev-parse', 'HEAD'], workspaceDir, commitEnv)
+      const sha = head.exitCode === 0 ? head.stdout.trim() : ''
+      if (!hasChanges && (!sha || sha === this._lastDurableSha)) {
+        // Nothing new (or an unborn HEAD) — nothing to persist.
+        return
+      }
+
       if (this.cfg.localOnly) {
-        // Pod-owned durability: no cloud origin to push to. Resolve the new
-        // HEAD and hand it to afterCommit (persist `.git` to object storage
-        // + record the ProjectCheckpoint row). Throwing here is treated like
-        // a push failure → retry/backoff/degrade.
-        const head = await spawnGit(['rev-parse', 'HEAD'], workspaceDir, commitEnv)
-        const sha = head.stdout.trim()
+        // Pod-owned durability: no cloud origin to push to. Hand HEAD to
+        // afterCommit (persist `.git` to object storage + record the
+        // ProjectCheckpoint row). Throwing here is treated like a push
+        // failure → retry/backoff/degrade.
         if (this.cfg.afterCommit) {
           await this.cfg.afterCommit(sha)
         }
@@ -414,6 +466,7 @@ export class GitWorkspaceSync {
       }
 
       // SUCCESS — clear backoff + recover from degraded state if applicable.
+      if (sha) this._lastDurableSha = sha
       if (this.backoffTimer) {
         clearTimeout(this.backoffTimer)
         this.backoffTimer = null
@@ -524,7 +577,7 @@ export function resolveCloudSyncMode(env: NodeJS.ProcessEnv = process.env): Clou
  */
 export function createGitSyncFromEnv(
   workspaceDir: string,
-  opts: Pick<GitWorkspaceSyncConfig, 'onDegrade' | 'onRecovered' | 'debounceMs' | 'degradeAfterFailures' | 'logger' | 'localOnly' | 'afterCommit' | 'beforeStage'> = {},
+  opts: Pick<GitWorkspaceSyncConfig, 'onDegrade' | 'onRecovered' | 'debounceMs' | 'degradeAfterFailures' | 'logger' | 'localOnly' | 'afterCommit' | 'beforeStage' | 'stageExcludes'> = {},
 ): GitWorkspaceSync | null {
   const cloudApiUrl = process.env.SHOGO_API_URL
   const runtimeAuthSecret = process.env.RUNTIME_AUTH_SECRET

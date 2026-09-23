@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool, type AssignedVm } from './pool'
+import { MetalWarmPool, REPO_STAGING_DIR, type AssignedVm } from './pool'
 import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
@@ -96,6 +96,59 @@ describe('pool host-mediated repo persist', () => {
     const a = pool.add('p1')
     expect(await pool.saveRepoToStore(a)).toBe(true)
     expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })
+  })
+
+  describe('cold-boot repo hydrate', () => {
+    const ref = { url: 'https://store/p1/repo.git.tar.gz', bytes: 10, etag: '"r1"' } as any
+
+    async function hydrate(pool: TestPool, guest: (path: string, body: any) => Response) {
+      const seen: Array<{ path: string; body: any }> = []
+      const realFetch = globalThis.fetch
+      globalThis.fetch = mock((url: string, init?: RequestInit) => {
+        const path = new URL(url).pathname
+        const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : null
+        seen.push({ path, body })
+        return Promise.resolve(guest(path, body))
+      }) as any
+      ;(pool as any).repoRef = async () => ref
+      try {
+        const r = await (pool as any).hydrateRepo('p1', HANDLE, { RUNTIME_AUTH_SECRET: 'tok' })
+        return { r, seen }
+      } finally {
+        globalThis.fetch = realFetch
+      }
+    }
+
+    test('stages the durable .git and has the guest swap it in and reset to HEAD', async () => {
+      const pool = makePool(dir)
+      const { r, seen } = await hydrate(pool, () => new Response('{}', { status: 200 }))
+
+      expect(r).toEqual({ hydrated: true, parentEtag: '"r1"' })
+      expect(seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated', '/pool/hydrate-url', '/pool/repo-hydrated'])
+      expect(seen[0].body).toEqual({ probe: true })
+      expect(seen[1].body.destDir).toBe(REPO_STAGING_DIR)
+      expect(seen[2].body).toEqual({ stagingDir: REPO_STAGING_DIR })
+    })
+
+    test('an older guest (no /pool/repo-hydrated) gets the legacy overlay and never a staged .git', async () => {
+      const pool = makePool(dir)
+      const { r, seen } = await hydrate(pool, (path) =>
+        new Response('{}', { status: path === '/pool/repo-hydrated' ? 404 : 200 }),
+      )
+
+      expect(r.hydrated).toBe(true)
+      expect(seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated', '/pool/hydrate-url'])
+      expect(seen[1].body.destDir).toBeUndefined()
+    })
+
+    test('a failed swap surfaces so assign() distrusts the repo', async () => {
+      const pool = makePool(dir)
+      await expect(
+        hydrate(pool, (path, body) =>
+          new Response('{"error":"reset failed"}', { status: path === '/pool/repo-hydrated' && body?.stagingDir ? 500 : 200 }),
+        ),
+      ).rejects.toThrow('/pool/repo-hydrated failed (500)')
+    })
   })
 
   test('pollActivity exports when repoHeadSha changes', async () => {

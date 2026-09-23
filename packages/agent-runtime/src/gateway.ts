@@ -99,6 +99,7 @@ import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadCustomAgents } from './subagent'
 import { CommandRegistry } from './command-registry'
+import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
 import {
@@ -1962,13 +1963,14 @@ export class AgentGateway {
     return this.getOrCreateCommandRegistry(sessionId).kill(runId)
   }
 
-  /** Tear down per-session bookkeeping. Kills any backgrounded shell runs. */
+  /** Tear down per-session bookkeeping. Kills any backgrounded shell runs and releases browsers. */
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
     if (reg) {
       reg.killAll()
       this.commandRegistries.delete(sessionId)
     }
+    void releaseSessionBrowsers(sessionId)
   }
 
   // ---------------------------------------------------------------------------
@@ -2006,6 +2008,7 @@ export class AgentGateway {
       if (this.turnLocks.get(sessionId) === turnPromise) {
         this.turnLocks.delete(sessionId)
       }
+      reapOrphanChromium()
     }
   }
 

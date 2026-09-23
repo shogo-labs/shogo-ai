@@ -44,6 +44,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # runtime materializes object bytes explicitly via `git lfs pull`. LFS only
     # activates for repos that opt in via .gitattributes (git_only mode).
     git lfs install --system --skip-smudge && \
+    # Metal (Firecracker) guests run the runtime as root, but /app/workspace is
+    # chowned to appuser below. Without this, git refuses every command there
+    # with "detected dubious ownership" and nothing is ever committed.
+    git config --system --add safe.directory '*' && \
     # Cleanup
     apt-get purge -y gnupg unzip && \
     apt-get autoremove -y && \

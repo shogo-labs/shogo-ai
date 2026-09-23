@@ -18,7 +18,7 @@ import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import { isSearchEnabled } from './search-flag'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool, textResult } from './gateway-tools'
+import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -842,6 +842,7 @@ export async function runSubagent(
   }
 
   let tools: AgentTool[]
+  let ownBrowserTool: AgentTool | undefined
   let systemPrompt: string
   let history: Message[]
   let thinkingLevel: ThinkingLevel = 'medium'
@@ -888,7 +889,8 @@ export async function runSubagent(
         )
       }
       tools = tools.filter(t => t.name !== 'browser')
-      tools.push(createBrowserTool(subCtx))
+      ownBrowserTool = createBrowserTool(subCtx)
+      tools.push(ownBrowserTool)
     } else if (debugScreencast) {
       console.log(
         `[screencast] runSubagent no browser tool to rebuild instanceId=${options?.instanceId ?? '<none>'} ` +
@@ -1143,6 +1145,8 @@ export async function runSubagent(
       escalated: false,
       responseEmpty: true,
     }
+  } finally {
+    void disposeBrowserTool(ownBrowserTool)
   }
 }
 

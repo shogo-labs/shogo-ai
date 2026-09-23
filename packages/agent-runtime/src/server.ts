@@ -63,6 +63,7 @@ import {
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
+  adoptHydratedRepo,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
   ensureLfsRepoSetup,
@@ -72,6 +73,8 @@ import {
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
   extractTarFastNonBlocking,
+  applyGitSafeDirectoryEnv,
+  checkGitUsable,
   type CloudSyncMode,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
@@ -183,6 +186,9 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // =============================================================================
 
 let WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
+if (applyGitSafeDirectoryEnv()) {
+  console.log('[agent-runtime] running as root: exported safe.directory=* for git child processes')
+}
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 const POOL_STATE_ROOT = process.env.SHOGO_POOL_STATE_DIR || join(tmpdir(), 'shogo-local')
@@ -3026,6 +3032,31 @@ app.post('/pool/hydrate', async (c) => {
   }
 })
 
+/** Upper bound on the pre-export commit so a wedged git never blocks a host export. */
+const EXPORT_FLUSH_TIMEOUT_MS = 20_000
+
+/**
+ * Commit the live working tree before the host packs it, so the exported
+ * `.git` (and source) include every edit made since the last turn-complete.
+ * Without this the 2-minute host repo export only carries whatever the last
+ * turn happened to commit. Best-effort and bounded.
+ */
+async function flushGitBeforeExport(dir: string): Promise<void> {
+  if (!gitSyncInstance || dir !== WORKSPACE_DIR) return
+  const sync = gitSyncInstance
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      gitLayerReady.then(() => sync.flush()),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, EXPORT_FLUSH_TIMEOUT_MS) }),
+    ])
+  } catch (err: any) {
+    console.warn('[pool/export] pre-export git flush failed:', err?.message ?? err)
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 // Metal write-side backup (host-driven). On stop/suspend the metal-agent calls
 // this to pull the project's LATEST source, then uploads it to the durable S3
 // backup ITSELF — the metal guest deliberately holds no S3 credentials. This is
@@ -3051,6 +3082,7 @@ app.post('/pool/export', async (c) => {
         suppressProjectArchive: true,
       })
     if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
+    await flushGitBeforeExport(destinationDir)
     const packed = await sync.packProjectArchive(tmp)
     if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
     const size = statSync(tmp).size
@@ -3094,6 +3126,7 @@ app.post('/pool/export-repo', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}))
     const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+    await flushGitBeforeExport(destinationDir)
     let excludeLfsObjects = false
     if (isLfsActive()) {
       const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
@@ -3115,6 +3148,53 @@ app.post('/pool/export-repo', async (c) => {
         unlinkSync(tmp)
       } catch {}
     }
+  }
+})
+
+// Metal cold-boot counterpart of `/pool/export-repo`. The host extracts the
+// durable `.git` into a staging dir (not over the live `.git`: a fresh guest
+// may have seeded one from the template) and then calls this to swap it in
+// and rebuild the working tree from its HEAD. See `adoptHydratedRepo`.
+//
+// A host that predates this endpoint never stages, so the legacy overlay
+// hydrate keeps working; a guest that predates it answers 404 and the host
+// re-applies the archive the legacy way.
+app.post('/pool/repo-hydrated', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  // Capability probe: the host asks before staging so an old guest never
+  // ends up with a stray `.git` inside its working tree.
+  if (body?.probe === true) return c.json({ ok: true, supported: true })
+  let stagingDir: string
+  try {
+    stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
+  }
+  if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
+
+  await gitLayerReady.catch(() => {})
+  const sync = gitSyncInstance
+  await sync?.pause()
+  try {
+    const res = await adoptHydratedRepo(WORKSPACE_DIR, stagingDir, { logger: console })
+    if (res.headSha) cachedRepoHeadSha = res.headSha
+    if (res.reset && isLfsActive()) {
+      // Smudge is skipped on checkout, so files the reset rewrote may be LFS
+      // pointers until their bytes are pulled.
+      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      if (lfsCfg) {
+        await lfsPull(lfsCfg).catch((err: any) =>
+          console.warn('[pool/repo-hydrated] git lfs pull failed:', err?.message ?? err),
+        )
+      }
+    }
+    if (res.reset) scheduleHydrateRebuild()
+    return c.json({ ok: true, ...res })
+  } catch (err: any) {
+    console.error('[pool/repo-hydrated] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'repo adopt failed' }, 500)
+  } finally {
+    sync?.resume()
   }
 })
 
@@ -6140,6 +6220,15 @@ async function initializeEssentials(): Promise<void> {
       } catch (error: any) {
         console.error('[agent-runtime] git repo bootstrap failed (falling back to S3 durability):', error.message)
       }
+      if (existsSync(join(WORKSPACE_DIR, '.git'))) {
+        const usable = await checkGitUsable(WORKSPACE_DIR)
+        if (!usable.ok) {
+          console.error(
+            `[agent-runtime] GIT_UNUSABLE workspace=${WORKSPACE_DIR} dubiousOwnership=${usable.dubiousOwnership} ` +
+              `uid=${process.getuid?.() ?? '?'} — per-turn commits will fail and nothing reaches durable history: ${usable.stderr}`,
+          )
+        }
+      }
       try {
         const sha = await getHeadSha(WORKSPACE_DIR)
         if (sha) cachedRepoHeadSha = sha
@@ -6198,6 +6287,7 @@ async function initializeEssentials(): Promise<void> {
         beforeStage: isLfsActive()
           ? async () => { await autoTrackLargeFiles(WORKSPACE_DIR) }
           : undefined,
+        stageExcludes: ['.shogo/local'],
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,

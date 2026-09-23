@@ -145,6 +145,12 @@ export const M = {
   // Should be zero; a non-zero gauge is the 2026-08 wedged-guest fingerprint.
   assignedUnhealthy: 'metal_assigned_unhealthy',
   healthGateDiscard: 'metal_health_gate_discard_total',
+  // Saving a VM's workspace before it is discarded (see pool.rescueWorkspace).
+  // `failed` means the workspace is only in a quarantined disk — page on it.
+  rescueGuest: 'metal_rescue_guest_export_total',
+  rescueDisk: 'metal_rescue_disk_extract_total',
+  rescueFailed: 'metal_rescue_failed_quarantined_total',
+  staleSnapshotSkipped: 'metal_stale_snapshot_skipped_total',
   // Host-mediated `.git` durability (see pool.saveRepoToStore).
   repoConflict: 'metal_repo_conflict_total',
   repoRefused: 'metal_repo_refused_untrusted_total',

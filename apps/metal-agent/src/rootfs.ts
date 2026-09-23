@@ -37,6 +37,7 @@ import {
   ftruncateSync,
   mkdirSync,
   openSync,
+  renameSync,
   rmSync,
   statSync,
 } from 'fs'
@@ -249,6 +250,50 @@ export class RootfsProvisioner {
    */
   deviceMapped(vmId: string): boolean {
     return this.mode === 'dm' && this.dmExists(vmId)
+  }
+
+  /**
+   * The block device / image to mount when reading a STOPPED VM's disk from
+   * the host. dm: the mapper device (re-attached if it was dropped); file
+   * modes: the image itself, which needs a loop mount.
+   */
+  readOnlySource(rootfsPath: string): { device: string; loop: boolean } {
+    if (this.isDmPath(rootfsPath)) {
+      this.attachDm(this.vmIdFromDmPath(rootfsPath))
+      return { device: rootfsPath, loop: false }
+    }
+    if (!existsSync(rootfsPath)) throw new Error(`rootfs missing: ${rootfsPath}`)
+    return { device: rootfsPath, loop: true }
+  }
+
+  /**
+   * Keep a dead VM's disk instead of releasing it, moved under
+   * `<dir>/quarantine/` where neither the GC's top-level sweeps nor
+   * reconcileOrphanDevices look. dm: the device is removed and the CoW store
+   * moved; it is only readable against the golden base it was taken from (the
+   * caller records that identity). Returns the kept path, or null on failure.
+   */
+  quarantine(rootfsPath: string, label: string): string | null {
+    const safe = label.replace(/[^A-Za-z0-9._-]/g, '_')
+    try {
+      if (this.isDmPath(rootfsPath)) {
+        const vmId = this.vmIdFromDmPath(rootfsPath)
+        this.detachDm(vmId)
+        const dir = join(this.cfg.dmCowDir, 'quarantine')
+        mkdirSync(dir, { recursive: true })
+        const dest = join(dir, `${safe}.cow`)
+        renameSync(this.cowFile(vmId), dest)
+        return dest
+      }
+      const dir = join(this.cfg.runDir, 'quarantine')
+      mkdirSync(dir, { recursive: true })
+      const dest = join(dir, `${safe}.rootfs.ext4`)
+      renameSync(rootfsPath, dest)
+      return dest
+    } catch (err: any) {
+      console.error(`[rootfs] could not quarantine ${rootfsPath}:`, err?.message ?? err)
+      return null
+    }
   }
 
   /** Tear down per-VM rootfs resources (device/loop/cow or the copy). */

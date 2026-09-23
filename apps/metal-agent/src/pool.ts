@@ -21,7 +21,7 @@
  *     suspend or evict a project that is actively serving.
  */
 
-import { existsSync, readdirSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
 import { Semaphore, Singleflight } from './concurrency'
@@ -74,6 +74,12 @@ import type { ArchiveRef } from './archive-ref'
 const PRESIGN_TTL_SEC = 30 * 60
 
 /**
+ * Workspace-relative dir the durable `.git` is extracted into before the guest
+ * swaps it in. Under `.shogo/local`, which the guest's committer never stages.
+ */
+export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
+
+/**
  * After this long without a successful `/pool/activity`, a leftover
  * `activeStreams > 0` is a frozen turn, not a live one. Expire it so the
  * reaper and `/stop` can actually act. 3 minutes is comfortably longer than
@@ -82,8 +88,10 @@ const PRESIGN_TTL_SEC = 30 * 60
 const STALE_STREAM_TTL_MS = 3 * 60_000
 /** Poll-fail + this long since last agent turn → treat as not busy. */
 const MUTE_AGENT_IDLE_MS = 5 * 60_000
-const HEALTH_GATE_TIMEOUT_MS = 1000
-const HEALTH_GATE_RETRIES = 3
+// A guest under memory pressure can take seconds to answer; failing this gate
+// now costs a rescue, not just a reboot, so give it room before giving up.
+const HEALTH_GATE_TIMEOUT_MS = 2000
+const HEALTH_GATE_RETRIES = 4
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -967,18 +975,19 @@ export class MetalWarmPool {
           // The control plane records this as a warm hit, not a cold miss.
           return { handle: live.handle, mode: 'assigned' as const, reused: true }
         }
-        if (this.mgr.isRunning(live.handle)) {
+        const mute = this.mgr.isRunning(live.handle)
+        if (mute) {
           metrics.inc(M.healthGateDiscard)
           this.dumpGuestSerial(live, 'health-gate')
           console.warn(
-            `[pool] assigned VM ${live.handle.id} for ${projectId} is running but guest HTTP is mute — discarding and reprovisioning`,
+            `[pool] assigned VM ${live.handle.id} for ${projectId} is running but guest HTTP is mute — rescuing workspace, then reprovisioning`,
           )
         } else {
           console.warn(
-            `[pool] assigned VM ${live.handle.id} for ${projectId} is dead (fc process gone) — discarding and reprovisioning`,
+            `[pool] assigned VM ${live.handle.id} for ${projectId} is dead (fc process gone) — rescuing workspace, then reprovisioning`,
           )
         }
-        await this.discardDeadVm(live)
+        await this.discardDeadVm(live, mute ? 'health-gate: guest mute' : 'health-gate: fc process gone')
       }
       if (await this.canResume(projectId)) {
         try {
@@ -1440,6 +1449,14 @@ export class MetalWarmPool {
       console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
       return
     }
+    await this.storeSourceBytes(a, bytes)
+  }
+
+  /**
+   * Upload source bytes under the lineage guard. Returns true when the bytes
+   * are durable somewhere — written, or diverted to a quarantine key.
+   */
+  private async storeSourceBytes(a: AssignedVm, bytes: Uint8Array): Promise<boolean> {
     const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
       parentEtag: a.backupParentEtag,
       // Only a resumed legacy snapshot (origin 'snapshot' with no stamped ETag)
@@ -1464,7 +1481,7 @@ export class MetalWarmPool {
         a.workspaceOrigin = 'backup'
         this.writeLive(a)
         console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`)
-        break
+        return true
       case 'conflict': {
         metrics.inc(M.backupConflict)
         if (outcome.reason === 'size-regression') metrics.inc(M.backupSizeRegression)
@@ -1480,11 +1497,12 @@ export class MetalWarmPool {
             `Export quarantined at ${outcome.quarantineKey} (${bytes.byteLength} bytes) — ` +
             `durable backup left intact.`,
         )
-        break
+        return !!outcome.quarantineKey
       }
       case 'skipped':
-        break
+        return false
     }
+    return false
   }
 
   private async saveWorkspaceMembersToStore(a: AssignedVm): Promise<void> {
@@ -1659,8 +1677,17 @@ export class MetalWarmPool {
     }
     const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
     if (!bytes) return false
+    return (await this.storeRepoBytes(a, bytes)) === 'written'
+  }
+
+  /**
+   * Upload `.git` bytes under the lineage guard. `written` = the durable repo
+   * now holds them; `quarantined` = diverted to a conflict key (still durable,
+   * needs a human); `lost` = nowhere durable.
+   */
+  private async storeRepoBytes(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
-      lineage,
+      lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
     })
     switch (outcome.status) {
@@ -1671,27 +1698,27 @@ export class MetalWarmPool {
         console.log(
           `[pool] saved repo archive for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
         )
-        return true
+        return 'written'
       case 'conflict':
         metrics.inc(M.repoConflict)
         console.error(
           `[pool] REFUSED to overwrite repo.git.tar.gz for ${a.projectId} — lineage ` +
             `(etag=${a.repoParentEtag ?? 'none'}) does not match. Quarantined at ${outcome.quarantineKey}.`,
         )
-        return false
+        return outcome.quarantineKey ? 'quarantined' : 'lost'
       case 'refused':
         metrics.inc(M.repoRefused)
-        return false
+        return outcome.quarantineKey ? 'quarantined' : 'lost'
       case 'too-large':
         metrics.inc(M.repoTooLarge)
         console.error(
           `[pool] repo archive for ${a.projectId} is too large (${outcome.bytes} > ${outcome.limit}) — not persisted`,
         )
-        return false
+        return 'lost'
       case 'skipped':
-        return false
+        return 'lost'
     }
-    return false
+    return 'lost'
   }
 
   private async hydrateRepo(
@@ -1704,9 +1731,37 @@ export class MetalWarmPool {
       console.log(`[pool] no durable repo for ${projectId} — guest keeps its seeded .git`)
       return { hydrated: false }
     }
-    await this.applyArchive(handle, env, ref, `${projectId} repo`)
+    // Stage, then have the guest swap `.git` in and reset the tree to HEAD.
+    // Overlaying straight onto the live `.git` leaves a template seed commit
+    // as HEAD when the durable repo is older or empty, and never rebuilds the
+    // working tree, so the (older) source archive would be committed as a revert.
+    if (await this.callRepoHydrated(handle, env, { probe: true })) {
+      await this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR)
+      await this.callRepoHydrated(handle, env, { stagingDir: REPO_STAGING_DIR })
+    } else {
+      console.log(`[pool] guest has no /pool/repo-hydrated — overlaying ${projectId} repo the legacy way`)
+      await this.applyArchive(handle, env, ref, `${projectId} repo`)
+    }
     console.log(`[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`)
     return { hydrated: true, parentEtag: ref.etag ?? undefined }
+  }
+
+  /** Returns false when the guest predates `/pool/repo-hydrated` (404). */
+  protected async callRepoHydrated(
+    handle: FcVmHandle,
+    env: Record<string, string>,
+    body: { probe: true } | { stagingDir: string },
+  ): Promise<boolean> {
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/repo-hydrated`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 404) return false
+    if (!res.ok) throw new Error(`/pool/repo-hydrated failed (${res.status}): ${await res.text()}`)
+    return true
   }
 
   protected repoRef(projectId: string): Promise<ArchiveRef | null> {
@@ -2190,6 +2245,43 @@ export class MetalWarmPool {
   }
 
   /**
+   * Whether durable storage has moved past a snapshot. A snapshot records the
+   * ETags of the source / repo / data archives current when it was taken. The
+   * only thing that overwrites them afterwards is a VM that ran from that
+   * snapshot and then died without suspending (periodic exports, or a rescue)
+   * — and its work is in storage, not in the snapshot. Resuming the snapshot
+   * anyway is what silently rolled projects back to their last suspend.
+   *
+   * Returns a reason when stale, else null. Unstamped archives are not
+   * compared (legacy snapshots), and an unreachable store does not block a
+   * resume.
+   */
+  protected async snapshotBehindStore(
+    projectId: string,
+    stamps: { backupEtag?: string; repoEtag?: string; dataEtag?: string },
+  ): Promise<string | null> {
+    const norm = (e?: string | null) => (e ? e.replace(/"/g, '') : undefined)
+    const checks: Array<[string, string | undefined, () => Promise<ArchiveRef | null>]> = [
+      ['source', stamps.backupEtag, () => this.sourceRef(projectId)],
+      ['repo', stamps.repoEtag, () => this.repoRef(projectId)],
+      ['data', stamps.dataEtag, () => this.projectDataRef(projectId)],
+    ]
+    for (const [what, stamped, ref] of checks) {
+      if (!stamped) continue
+      let current: string | undefined
+      try {
+        current = norm((await ref())?.etag)
+      } catch {
+        continue
+      }
+      if (current && current !== norm(stamped)) {
+        return `${what} archive (etag=${current}) is newer than the snapshot's (etag=${norm(stamped)})`
+      }
+    }
+    return null
+  }
+
+  /**
    * Resume a suspended project. Prefers the hot local snapshot (sub-second);
    * on a local miss (node-agent restarted, or the project was suspended on
    * another host) it pulls from the durable store, discarding it as stale if
@@ -2217,8 +2309,26 @@ export class MetalWarmPool {
       s = undefined
     }
 
+    if (s) {
+      const behind = await this.snapshotBehindStore(projectId, s)
+      if (behind) {
+        metrics.inc(M.staleSnapshotSkipped)
+        console.warn(`[pool] local snapshot for ${projectId} is behind durable storage — ${behind}; evicting it`)
+        this.evictLocal(projectId)
+        s = undefined
+      }
+    }
+
     if (!s) {
       if (this.store.kind === 'none') {
+        metrics.inc(M.resumeColdMiss)
+        return null
+      }
+      const meta = await this.store.head(projectId)
+      const behind = meta ? await this.snapshotBehindStore(projectId, meta) : null
+      if (behind) {
+        metrics.inc(M.staleSnapshotSkipped)
+        console.warn(`[pool] durable snapshot for ${projectId} is behind durable storage — ${behind}; cold-booting instead`)
         metrics.inc(M.resumeColdMiss)
         return null
       }
@@ -2544,10 +2654,105 @@ export class MetalWarmPool {
    * For a mute guest the Firecracker process is still alive — stopVM kills it,
    * which is the intended self-heal once durability has a current copy.
    */
-  private async discardDeadVm(a: AssignedVm): Promise<void> {
+  private async discardDeadVm(a: AssignedVm, why: string): Promise<void> {
     this.assigned.delete(a.projectId)
     this.live.remove(a.projectId)
-    await this.mgr.stopVM(a.handle).catch(() => {})
+    await this.rescueWorkspace(a, why)
+  }
+
+  /**
+   * Save a VM's workspace before it is thrown away. Everything since the last
+   * suspend lives only on this VM (source is backed up at suspend; `.git` and
+   * writable state every couple of minutes), so a plain stop is data loss.
+   *
+   *   1. Guest still running → ask it to export (bounded: a guest under memory
+   *      pressure is often slow, not dead).
+   *   2. Otherwise stop it WITHOUT releasing its disk, mount the rootfs
+   *      read-only on the host, and pack `/app/workspace` directly.
+   *   3. If that fails too, keep the disk in quarantine and alert. Never just
+   *      release it: the next open would silently restore an older state.
+   */
+  protected async rescueWorkspace(a: AssignedVm, why: string): Promise<void> {
+    if (this.mgr.isRunning(a.handle) && (await this.rescueFromGuest(a))) {
+      metrics.inc(M.rescueGuest)
+      console.log(`[pool] rescued ${a.projectId} via guest export before discard (${why})`)
+      await this.mgr.stopVM(a.handle).catch(() => {})
+      return
+    }
+    await this.mgr.stopVM(a.handle, { keepRootfs: true }).catch(() => {})
+    if (!a.projectId.startsWith('ws:')) {
+      try {
+        if (await this.rescueFromDisk(a)) {
+          metrics.inc(M.rescueDisk)
+          console.log(`[pool] rescued ${a.projectId} from its rootfs before discard (${why})`)
+          try { this.mgr.releaseRootfs(a.handle.rootfs) } catch { /* GC reclaims it */ }
+          return
+        }
+      } catch (err: any) {
+        console.error(`[pool] disk rescue failed for ${a.projectId}:`, err?.message ?? err)
+      }
+    }
+    metrics.inc(M.rescueFailed)
+    const label = `${a.projectId}-${Date.now()}`
+    let kept: string | null = null
+    try { kept = this.mgr.quarantineRootfs(a.handle.rootfs, label) } catch { /* reported below */ }
+    if (kept) {
+      try {
+        writeFileSync(
+          `${kept}.json`,
+          JSON.stringify({
+            projectId: a.projectId,
+            why,
+            at: new Date().toISOString(),
+            rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
+            backupParentEtag: a.backupParentEtag,
+            repoParentEtag: a.repoParentEtag,
+          }),
+        )
+      } catch { /* the disk itself is what matters */ }
+    }
+    console.error(
+      `[pool] RESCUE FAILED for ${a.projectId} (${why}) — its unsaved workspace is ONLY on ` +
+        `${kept ?? `${a.handle.rootfs} (quarantine failed; left in place)`}. Recover it before it is lost.`,
+    )
+  }
+
+  private async rescueFromGuest(a: AssignedVm): Promise<boolean> {
+    const bounded = <T>(p: Promise<T>): Promise<T> =>
+      Promise.race([
+        p,
+        Bun.sleep(this.cfg.rescueGuestTimeoutMs).then(() => {
+          throw new Error(`guest export timed out after ${this.cfg.rescueGuestTimeoutMs}ms`)
+        }),
+      ])
+    try {
+      if (a.projectId.startsWith('ws:')) {
+        await bounded(this.saveWorkspaceMembersToStore(a))
+        return true
+      }
+      // `.git` first: it is small and, once git works, carries every commit.
+      await bounded(this.saveRepoToStore(a))
+      await bounded(this.saveBackupToStore(a))
+      await bounded(this.saveProjectDataToStore(a, { final: true }))
+      return true
+    } catch (err: any) {
+      console.warn(`[pool] guest export for ${a.projectId} failed, falling back to disk:`, err?.message ?? err)
+      return false
+    }
+  }
+
+  /** True when every artifact found on the disk is durable (written or quarantined). */
+  private async rescueFromDisk(a: AssignedVm): Promise<boolean> {
+    const outDir = mkdtempSync(join(this.cfg.runDir, 'rescue-out-'))
+    try {
+      const { source, repo } = await this.mgr.extractWorkspaceFromRootfs(a.handle.rootfs, outDir)
+      let ok = true
+      if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)))) !== 'lost' && ok
+      if (source) ok = (await this.storeSourceBytes(a, new Uint8Array(readFileSync(source)))) && ok
+      return ok
+    } finally {
+      rmSync(outDir, { recursive: true, force: true })
+    }
   }
 
   /**
@@ -2566,7 +2771,7 @@ export class MetalWarmPool {
     const reaped: string[] = []
     for (const a of dead) {
       console.warn(`[pool] reaping dead assigned VM ${a.handle.id} for ${a.projectId} (fc process gone)`)
-      await this.discardDeadVm(a)
+      await this.discardDeadVm(a, 'reaper: fc process gone')
       reaped.push(a.projectId)
     }
     return reaped

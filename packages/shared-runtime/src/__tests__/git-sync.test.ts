@@ -121,9 +121,9 @@ describe('argv construction', () => {
     sync.triggerSync(true)
     await wait(40)
 
-    const kinds = fake.calls.map((c) => c.args.find((a) =>
-      ['add', 'diff', 'commit', 'push'].includes(a)
-    ))
+    const kinds = fake.calls
+      .map((c) => c.args.find((a) => ['add', 'diff', 'commit', 'push'].includes(a)))
+      .filter(Boolean)
     expect(kinds).toEqual(['add', 'diff', 'commit', 'push'])
 
     const push = fake.calls.find((c) => c.args.includes('push'))!
@@ -159,6 +159,18 @@ describe('argv construction', () => {
     expect(kinds).toContain('diff')
     expect(kinds).not.toContain('commit')
     expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
+  })
+
+  test('pushes a HEAD the agent committed itself even though nothing is staged', async () => {
+    const sync = mkSync()
+    fake.queueResponse('diff', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'agentcommit1\n' })
+
+    sync.triggerSync(true)
+    await wait(40)
+
+    expect(fake.calls.find((c) => c.args.includes('commit'))).toBeUndefined()
+    expect(fake.calls.find((c) => c.args.includes('push'))).toBeDefined()
   })
 })
 
@@ -222,6 +234,64 @@ describe('localOnly (pod-owned)', () => {
     expect(called).toBe(0)
     expect(fake.calls.find((c) => c.args.includes('commit'))).toBeUndefined()
     expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
+  })
+
+  test('persists a commit the agent made itself (clean tree, HEAD moved)', async () => {
+    const seen: string[] = []
+    const sync = mkLocalSync((sha) => { seen.push(sha) })
+    // First cycle: our own commit lands and is persisted.
+    fake.queueResponse('diff', { exitCode: 1 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'aaa111\n' })
+    sync.triggerSync(true)
+    await wait(30)
+    // The agent then runs `git commit` in its shell: nothing is staged for
+    // us, but HEAD has moved past the last durable sha.
+    fake.queueResponse('diff', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'bbb222\n' })
+    sync.triggerSync(true)
+    await wait(30)
+    // Same HEAD again → no redundant persist.
+    fake.queueResponse('diff', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'bbb222\n' })
+    sync.triggerSync(true)
+    await wait(30)
+
+    expect(seen).toEqual(['aaa111', 'bbb222'])
+    expect(fake.calls.filter((c) => c.args.includes('commit'))).toHaveLength(1)
+  })
+
+  test('a failed persist of an agent commit is retried on the next cycle', async () => {
+    const seen: string[] = []
+    let fail = true
+    const sync = mkLocalSync((sha) => {
+      if (fail) throw new Error('object storage unreachable')
+      seen.push(sha)
+    })
+    fake.queueResponse('diff', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'ccc333\n' })
+    sync.triggerSync(true)
+    await wait(30)
+    expect(sync.consecutiveFailures).toBe(1)
+
+    fail = false
+    fake.queueResponse('diff', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'ccc333\n' })
+    sync.triggerSync(true)
+    await wait(30)
+    expect(seen).toEqual(['ccc333'])
+    expect(sync.consecutiveFailures).toBe(0)
+  })
+
+  test('git errors from `diff --cached` count as failures instead of "nothing to do"', async () => {
+    let called = 0
+    const sync = mkLocalSync(() => { called += 1 }, { degradeAfter: 1 })
+    fake.queueResponse('diff', { exitCode: 128, stderr: "fatal: detected dubious ownership in repository at '/app/workspace'" })
+    sync.triggerSync(true)
+    await wait(30)
+
+    expect(called).toBe(0)
+    expect(sync.consecutiveFailures).toBe(1)
+    expect(sync.isDegraded).toBe(true)
   })
 
   test('afterCommit throwing trips degrade after N consecutive failures (S3 fallback)', async () => {
