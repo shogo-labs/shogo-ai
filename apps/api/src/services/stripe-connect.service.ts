@@ -8,6 +8,32 @@ import { getFrontendUrl } from '../lib/cloud-urls';
 
 export const PLATFORM_FEE_PERCENT = 20;
 
+/**
+ * Countries we've verified work end-to-end with our Stripe Express Connect
+ * setup (`type: 'express'`, `capabilities.transfers`, manual payout
+ * schedule). Stripe Express itself supports many more countries, but each one
+ * has its own capability/requirement rules and tax-form implications (e.g. US
+ * 1099-NEC vs Canadian T4A), so we only self-serve a vetted allow-list rather
+ * than passing through whatever the client sends. Add a country here once
+ * onboarding + payouts have been confirmed to work for it end-to-end.
+ *
+ * NOTE: a Stripe Connect account's `country` is immutable once created — this
+ * only affects NEW accounts. A creator/affiliate whose account already exists
+ * (e.g. auto-provisioned as 'US' before this list existed) needs a fresh
+ * account to change country; see `resetConnectAccountForCountryChange`.
+ */
+export const SUPPORTED_CONNECT_COUNTRIES = ['US', 'CA'] as const;
+export type SupportedConnectCountry = (typeof SUPPORTED_CONNECT_COUNTRIES)[number];
+
+export function isSupportedConnectCountry(
+  country: unknown,
+): country is SupportedConnectCountry {
+  return (
+    typeof country === 'string' &&
+    (SUPPORTED_CONNECT_COUNTRIES as readonly string[]).includes(country.toUpperCase())
+  );
+}
+
 let stripeInstance: Stripe | null = null;
 
 function isStripeConfigured(): boolean {
@@ -144,6 +170,7 @@ export async function createCustomAccount(
  */
 export async function createCustomAccountForAffiliate(
   affiliateId: string,
+  country?: string,
 ): Promise<string> {
   const affiliate = await prisma.affiliate.findUnique({
     where: { id: affiliateId },
@@ -154,7 +181,11 @@ export async function createCustomAccountForAffiliate(
 
   const email =
     (affiliate as any).user?.email ?? `affiliate+${affiliateId}@shogo.local`;
-  return getOrCreateSharedConnectAccountId({ userId: affiliate.userId, email });
+  return getOrCreateSharedConnectAccountId({
+    userId: affiliate.userId,
+    email,
+    country,
+  });
 }
 
 /**
@@ -196,8 +227,9 @@ async function createConnectOnboardingLink(
  */
 export async function createAffiliateOnboardingLink(
   affiliateId: string,
+  country?: string,
 ): Promise<string> {
-  const accountId = await createCustomAccountForAffiliate(affiliateId);
+  const accountId = await createCustomAccountForAffiliate(affiliateId, country);
   // Return into the unified Creator hub's Referrals tab so the `connect=done`
   // param survives (the legacy `/affiliate` route just redirects and drops it).
   return createConnectOnboardingLink(accountId, '/creator?tab=refer');
@@ -314,6 +346,63 @@ export async function getAccountStatus(creatorProfileId: string): Promise<{
     requiresAction: currentlyDue.length > 0 || pastDue.length > 0,
     currentlyDue,
   };
+}
+
+/**
+ * Support-assisted workaround for a user who was auto-provisioned onto a
+ * 'US' Express account (the pre-country-picker default) but is actually in a
+ * different, now-supported country (e.g. Canada). A Connect account's
+ * `country` is immutable, so the only fix is to detach the unfinished
+ * account and let the next onboarding call create a fresh one with the
+ * right country.
+ *
+ * Refuses to touch an account that has ever gone verified / started
+ * receiving payouts (`payouts_enabled` or `details_submitted`) — those are
+ * real accounts with real KYC state, not just an empty shell, and detaching
+ * them here would orphan them. In that case Stripe support (or a manual
+ * migration) is required instead.
+ *
+ * Deliberately does NOT delete the old Stripe account (Stripe accounts with
+ * any activity can't always be deleted, and there's no user-facing harm in
+ * an unused shell account lingering) — it only clears our pointer so a new
+ * `createCustomAccount` / `createCustomAccountForAffiliate` call provisions
+ * a fresh one with `country`.
+ */
+export async function resetConnectAccountForCountryChange(
+  userId: string,
+): Promise<{ reset: boolean; reason?: string }> {
+  const [profile, affiliate] = await Promise.all([
+    prisma.creatorProfile.findUnique({ where: { userId } }),
+    prisma.affiliate.findUnique({ where: { userId } }),
+  ]);
+  const accountId = profile?.stripeCustomAccountId ?? affiliate?.stripeCustomAccountId;
+  if (!accountId) {
+    return { reset: false, reason: 'no_account' };
+  }
+
+  if (isStripeConfigured() && !accountId.startsWith('acct_mock')) {
+    const stripe = getStripe();
+    const acct = await stripe.accounts.retrieve(accountId);
+    if (acct.payouts_enabled || acct.details_submitted) {
+      return { reset: false, reason: 'account_has_activity' };
+    }
+  }
+
+  await Promise.all([
+    profile
+      ? prisma.creatorProfile.update({
+          where: { id: profile.id },
+          data: { stripeCustomAccountId: null, payoutStatus: PayoutStatus.pending_verification as any },
+        })
+      : Promise.resolve(),
+    affiliate
+      ? prisma.affiliate.update({
+          where: { id: affiliate.id },
+          data: { stripeCustomAccountId: null, payoutStatus: PayoutStatus.pending_verification as any },
+        })
+      : Promise.resolve(),
+  ]);
+  return { reset: true };
 }
 
 function derivePayoutStatusFromAccount(acct: Stripe.Account): PayoutStatus {

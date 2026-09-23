@@ -226,8 +226,14 @@ export const affiliateApi = {
     return res.data ?? { downline: [] }
   },
 
-  async onboardStripeConnect(http: HttpClient): Promise<{ onboardUrl: string }> {
-    const res = await http.post<any>('/api/affiliates/me/stripe-connect/onboard', {})
+  async onboardStripeConnect(
+    http: HttpClient,
+    country?: string,
+  ): Promise<{ onboardUrl: string }> {
+    const res = await http.post<any>(
+      '/api/affiliates/me/stripe-connect/onboard',
+      country ? { country } : {},
+    )
     return res.data ?? { onboardUrl: '' }
   },
 

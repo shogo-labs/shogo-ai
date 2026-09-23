@@ -30,11 +30,15 @@ mock.module('../../middleware/auth', () => ({
 }))
 
 // ---- mock stripe-connect (only the affiliate helpers we route to) ----
+const SUPPORTED_CONNECT_COUNTRIES = ['US', 'CA']
 mock.module('../../services/stripe-connect.service', () => ({
   createCustomAccountForAffiliate: async (affId: string) => `acct_${affId}`,
-  createAffiliateOnboardingLink: async (affId: string) =>
-    `https://connect.stripe.com/setup/e/${affId}`,
+  createAffiliateOnboardingLink: async (affId: string, country?: string) =>
+    `https://connect.stripe.com/setup/e/${affId}${country ? `?country=${country}` : ''}`,
   syncAffiliatePayoutStatus: async () => 'verified',
+  SUPPORTED_CONNECT_COUNTRIES,
+  isSupportedConnectCountry: (country: unknown) =>
+    typeof country === 'string' && SUPPORTED_CONNECT_COUNTRIES.includes(country.toUpperCase()),
   // Re-export every other stripe-connect symbol as undefined so this
   // mock doesn't claim to provide things it doesn't; bun will only
   // intercept the names we declare here, leaving real consumers alone.
@@ -480,6 +484,32 @@ describe('POST /api/affiliates/me/stripe-connect/onboard', () => {
     expect(res.status).toBe(200)
     const json: any = await res.json()
     expect(json.onboardUrl).toBe('https://connect.stripe.com/setup/e/aff_1')
+  })
+
+  test('forwards a supported country (e.g. CA) to the onboarding link helper', async () => {
+    affiliateRows.set('aff_1', { id: 'aff_1', userId: 'u1', payoutStatus: 'pending_verification' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/onboard', {
+      method: 'POST',
+      headers: { 'x-test-user-id': 'u1', 'content-type': 'application/json' },
+      body: JSON.stringify({ country: 'ca' }),
+    })
+    expect(res.status).toBe(200)
+    const json: any = await res.json()
+    expect(json.onboardUrl).toBe('https://connect.stripe.com/setup/e/aff_1?country=CA')
+  })
+
+  test('400s on an unsupported country', async () => {
+    affiliateRows.set('aff_1', { id: 'aff_1', userId: 'u1', payoutStatus: 'pending_verification' })
+    const app = makeApp()
+    const res = await app.request('/api/affiliates/me/stripe-connect/onboard', {
+      method: 'POST',
+      headers: { 'x-test-user-id': 'u1', 'content-type': 'application/json' },
+      body: JSON.stringify({ country: 'FR' }),
+    })
+    expect(res.status).toBe(400)
+    const json: any = await res.json()
+    expect(json.error.code).toBe('unsupported_country')
   })
 })
 

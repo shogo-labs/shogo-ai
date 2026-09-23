@@ -42,6 +42,9 @@ mock.module('../middleware/super-admin', () => ({
 const stripeSpies = {
   getAccountBalance: mock(async (_: string): Promise<number> => 0),
   triggerPayout: mock(async (_creatorId: string, _amount?: number): Promise<string> => 'po_default'),
+  resetConnectAccountForCountryChange: mock(
+    async (_userId: string): Promise<{ reset: boolean; reason?: string }> => ({ reset: true }),
+  ),
 }
 mock.module('../services/stripe-connect.service', () => stripeSpies)
 
@@ -63,8 +66,10 @@ function resetState() {
   updateThrow = null
   stripeSpies.getAccountBalance.mockClear()
   stripeSpies.triggerPayout.mockClear()
+  stripeSpies.resetConnectAccountForCountryChange.mockClear()
   stripeSpies.getAccountBalance.mockImplementation(async () => 0)
   stripeSpies.triggerPayout.mockImplementation(async () => 'po_default')
+  stripeSpies.resetConnectAccountForCountryChange.mockImplementation(async () => ({ reset: true }))
 }
 resetState()
 
@@ -441,6 +446,52 @@ describe('POST /payouts/hold', () => {
     expect(res.status).toBe(200)
     expect(res.body.data).toEqual({ creatorId: 'c1', reason: 'fraud' })
     expect(creators.get('c1')!.payoutStatus).toBe('disabled')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// POST /payouts/stripe-connect/reset
+// ──────────────────────────────────────────────────────────────────────
+
+describe('POST /payouts/stripe-connect/reset', () => {
+  test('400 on bad JSON', async () => {
+    const res = await call('POST', '/payouts/stripe-connect/reset', 'nope')
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('invalid_json')
+  })
+
+  test('400 when userId missing', async () => {
+    const res = await call('POST', '/payouts/stripe-connect/reset', {})
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('invalid_body')
+  })
+
+  test('200 + ok:true when the service resets the account', async () => {
+    stripeSpies.resetConnectAccountForCountryChange.mockImplementation(async () => ({ reset: true }))
+    const res = await call('POST', '/payouts/stripe-connect/reset', { userId: 'u1' })
+    expect(res.status).toBe(200)
+    expect(res.body.ok).toBe(true)
+    expect(stripeSpies.resetConnectAccountForCountryChange).toHaveBeenCalledWith('u1')
+  })
+
+  test('409 when the account already has activity (refuses to reset)', async () => {
+    stripeSpies.resetConnectAccountForCountryChange.mockImplementation(async () => ({
+      reset: false,
+      reason: 'account_has_activity',
+    }))
+    const res = await call('POST', '/payouts/stripe-connect/reset', { userId: 'u1' })
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('account_has_activity')
+  })
+
+  test('409 when there is no account to reset', async () => {
+    stripeSpies.resetConnectAccountForCountryChange.mockImplementation(async () => ({
+      reset: false,
+      reason: 'no_account',
+    }))
+    const res = await call('POST', '/payouts/stripe-connect/reset', { userId: 'u1' })
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('no_account')
   })
 })
 
