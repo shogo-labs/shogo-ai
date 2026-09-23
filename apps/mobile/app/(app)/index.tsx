@@ -909,12 +909,12 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
-  // The workspace agent chat surface is mobile-only. Personal and shared
-  // workspaces use the same phone chrome; wide web retains the classic
-  // builder home.
+  // Personal workspaces use the agent chat surface on every platform.
+  // Shared workspaces use it on narrow surfaces while wide web retains the
+  // established builder home.
   const workspaceAgentChatEnabled =
     isWorkspaceRuntimeEnabled() &&
-    isNarrowAgentSurface
+    (isNarrowAgentSurface || currentExperience.kind === 'personal')
   if (!forceBuilder && workspaceAgentChatEnabled) {
     return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
   }

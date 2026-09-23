@@ -27,6 +27,9 @@
 export type WorkspaceExperienceKind = 'personal' | 'team'
 
 export type BottomTabId = 'chat' | 'goals' | 'activity' | 'tasks' | 'canvases' | 'more'
+/** Temporary UI switch; Canvas routes and runtime behavior remain available. */
+export const CANVAS_NAV_HIDDEN = true
+export type PrimaryNavId = Exclude<BottomTabId, 'more'>
 
 export interface WorkspaceExperienceComposer {
   /** Show the model picker control in ChatInput. */
@@ -72,6 +75,8 @@ export interface WorkspaceExperience {
   showSideChatsNav: boolean
   /** Bottom tab bar item ids, in display order. */
   bottomTabs: BottomTabId[]
+  /** Desktop primary navigation ids, matching bottom tabs without More. */
+  primaryNav: PrimaryNavId[]
   /**
    * Whether tapping the Chat tab should restore the last active project's
    * chat (team) or always return to the workspace's primary/home chat
@@ -94,6 +99,24 @@ export function workspaceExperience(
   kind: WorkspaceExperienceKind | string | null | undefined,
 ): WorkspaceExperience {
   const isPersonal = kind === 'personal'
+  const bottomTabs: BottomTabId[] = isPersonal
+    ? [
+        'chat',
+        'activity',
+        'goals',
+        ...(CANVAS_NAV_HIDDEN ? [] : ['canvases' as const]),
+        'more',
+      ]
+    : [
+        'chat',
+        'tasks',
+        'activity',
+        ...(CANVAS_NAV_HIDDEN ? [] : ['canvases' as const]),
+        'more',
+      ]
+  const primaryNav = bottomTabs.filter(
+    (id): id is PrimaryNavId => id !== 'more',
+  )
   return {
     kind: isPersonal ? 'personal' : 'team',
     homeScreen: isPersonal ? 'companion' : 'builder',
@@ -102,9 +125,8 @@ export function workspaceExperience(
     showNewChat: !isPersonal,
     showGoalsNav: isPersonal,
     showSideChatsNav: isPersonal,
-    bottomTabs: isPersonal
-      ? ['chat', 'canvases', 'activity', 'goals', 'more']
-      : ['chat', 'tasks', 'activity', 'canvases', 'more'],
+    bottomTabs,
+    primaryNav,
     chatReturnsToProjectContext: !isPersonal,
     composer: {
       showModelPicker: !isPersonal,
