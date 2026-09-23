@@ -140,6 +140,8 @@ jobs:
           bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
           (cd templates/runtime-template && bun install && bun run build)
           git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build agent template for prepared cache
         if: steps.workspace-cache.outputs.cache-hit != 'true'
