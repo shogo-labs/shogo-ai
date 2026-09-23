@@ -15,6 +15,9 @@ function userIdFrom(c: any): string | null {
   return auth?.isAuthenticated && auth.userId ? auth.userId : null
 }
 
+const ONBOARDING_INTENTS = ['personal', 'team'] as const
+type OnboardingIntent = (typeof ONBOARDING_INTENTS)[number]
+
 function compareAnnouncementVersions(a: string, b: string): number {
   const [aMajor, aMinor] = a.split('.').map(Number)
   const [bMajor, bMinor] = b.split('.').map(Number)
@@ -48,6 +51,7 @@ export function userProfileRoutes(): Hono {
         role: true,
         adminScopes: true,
         onboardingCompleted: true,
+        onboardingIntent: true,
         lastSeenAnnouncementVersion: true,
         createdAt: true,
         updatedAt: true,
@@ -105,11 +109,92 @@ export function userProfileRoutes(): Hono {
     if (!userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
     }
+
+    // Body is optional: the local wizard posts without one.
+    let body: { intent?: unknown } = {}
+    try {
+      body = await c.req.json<{ intent?: unknown }>()
+    } catch {}
+    const intent = body?.intent
+    if (intent !== undefined && !ONBOARDING_INTENTS.includes(intent as OnboardingIntent)) {
+      return c.json({
+        error: { code: 'invalid_intent', message: `intent must be one of: ${ONBOARDING_INTENTS.join(', ')}` },
+      }, 400)
+    }
+
     await prisma.user.update({
       where: { id: userId },
-      data: { onboardingCompleted: true },
+      data: {
+        onboardingCompleted: true,
+        ...(intent ? { onboardingIntent: intent as OnboardingIntent } : {}),
+      },
     })
     return c.json({ ok: true })
+  })
+
+  /**
+   * Server-derived progress for the in-app "Get started" checklist. Mirrors
+   * the activation funnel in `analytics.service.ts#getUserFunnel`.
+   * Composio connections live outside the DB, so `connectedIntegration`
+   * only reflects Slack here; the client ORs in its own connection list.
+   */
+  router.get('/me/getting-started', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    const ownedTeamWorkspaceIds = (
+      await prisma.member.findMany({
+        where: { userId, role: 'owner', workspace: { kind: 'team' } },
+        select: { workspaceId: true },
+      })
+    )
+      .map((m) => m.workspaceId)
+      .filter((id): id is string => typeof id === 'string')
+
+    const [sentMessage, createdProject, installedAgent, slackInstall, slackLink, otherMember, invitation] =
+      await Promise.all([
+        prisma.chatMessage.findFirst({
+          where: {
+            role: 'user',
+            session: {
+              OR: [
+                { project: { createdBy: userId } },
+                { workspace: { members: { some: { userId } } } },
+              ],
+            },
+          },
+          select: { id: true },
+        }),
+        prisma.project.findFirst({ where: { createdBy: userId }, select: { id: true } }),
+        prisma.marketplaceInstall.findFirst({ where: { userId }, select: { id: true } }),
+        ownedTeamWorkspaceIds.length > 0
+          ? prisma.slackWorkspaceInstallation.findFirst({
+              where: { workspaceId: { in: ownedTeamWorkspaceIds } },
+              select: { id: true },
+            })
+          : null,
+        prisma.slackUserLink.findFirst({ where: { shogoUserId: userId }, select: { id: true } }),
+        ownedTeamWorkspaceIds.length > 0
+          ? prisma.member.findFirst({
+              where: { workspaceId: { in: ownedTeamWorkspaceIds }, userId: { not: userId } },
+              select: { id: true },
+            })
+          : null,
+        prisma.invitation.findFirst({ where: { invitedBy: userId }, select: { id: true } }),
+      ])
+
+    return c.json({
+      ok: true,
+      data: {
+        sentFirstMessage: !!sentMessage,
+        createdProject: !!createdProject,
+        installedAgent: !!installedAgent,
+        connectedIntegration: !!slackInstall || !!slackLink,
+        invitedTeammate: !!otherMember || !!invitation,
+      },
+    })
   })
 
   router.get('/me/activity', async (c) => {

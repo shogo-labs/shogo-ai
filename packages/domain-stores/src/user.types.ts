@@ -18,6 +18,7 @@ export interface UserType {
   adminScopes: string
   onboardingCompleted: boolean
   lastSeenAnnouncementVersion?: string
+  onboardingIntent?: string
   homeRegion?: string
   createdAt: Date
   updatedAt: Date
@@ -32,6 +33,7 @@ export interface UserCreateInput {
   adminScopes?: string
   onboardingCompleted?: boolean
   lastSeenAnnouncementVersion?: string
+  onboardingIntent?: string
   homeRegion?: string
 }
 
@@ -44,5 +46,6 @@ export interface UserUpdateInput {
   adminScopes?: string
   onboardingCompleted?: boolean
   lastSeenAnnouncementVersion?: string
+  onboardingIntent?: string
   homeRegion?: string
 }

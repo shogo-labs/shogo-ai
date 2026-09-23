@@ -38,6 +38,18 @@ export function isInvitationExpired(invitation: { status?: string; expiresAt?: s
 // that aren't covered by the domain stores. They use the SDK HttpClient
 // available via `useDomainHttp()`.
 
+/** Where a new cloud user chose to start (mirror of `ONBOARDING_INTENTS` in apps/api/src/routes/local-user.ts). */
+export type OnboardingIntent = 'personal' | 'team'
+
+/** `GET /api/me/getting-started` — drives the in-app Get started checklist. */
+export interface GettingStartedProgress {
+  sentFirstMessage: boolean
+  createdProject: boolean
+  installedAgent: boolean
+  connectedIntegration: boolean
+  invitedTeammate: boolean
+}
+
 /** An assignable admin permission scope (mirror of apps/api/src/lib/admin-scopes.ts). */
 export interface AdminScopeDef {
   id: string
@@ -1931,7 +1943,7 @@ export const api = {
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
-    const res = await http.get<{ ok: boolean; data?: { role?: string; adminScopes?: string[]; onboardingCompleted?: boolean } }>('/api/me')
+    const res = await http.get<{ ok: boolean; data?: { role?: string; adminScopes?: string[]; onboardingCompleted?: boolean; onboardingIntent?: OnboardingIntent | null } }>('/api/me')
     return res.data
   },
 
@@ -2019,9 +2031,14 @@ export const api = {
     return res.data
   },
 
-  async completeOnboarding(http: HttpClient) {
-    const res = await http.post<{ ok: boolean }>('/api/onboarding/complete')
+  async completeOnboarding(http: HttpClient, body?: { intent?: OnboardingIntent }) {
+    const res = await http.post<{ ok: boolean }>('/api/onboarding/complete', body)
     return res.data
+  },
+
+  async getGettingStarted(http: HttpClient): Promise<GettingStartedProgress | null> {
+    const res = await http.get<{ ok: boolean; data?: GettingStartedProgress }>('/api/me/getting-started')
+    return res.data?.data ?? null
   },
 
   async markAnnouncementSeen(http: HttpClient, version: string) {

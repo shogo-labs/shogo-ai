@@ -15,8 +15,10 @@ export default function AuthLayout() {
     return <Redirect href="/" />
   }
 
+  // Hand off to the root gate rather than `/(app)` so the onboarding check
+  // in `app/index.tsx` can't be bypassed.
   if (!isLoading && isAuthenticated && !isResetPassword && !isVerifyEmail) {
-    return <Redirect href="/(app)" />
+    return <Redirect href="/" />
   }
 
   return (

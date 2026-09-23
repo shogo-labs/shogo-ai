@@ -59,8 +59,9 @@ mock.module('@better-auth/expo', () => ({
 
 const wsState: {
   createCalls: Array<{ userId: string; name: string }>
+  teamCreateCalls: Array<{ userId: string; name: string }>
   shouldFailTimes: number
-} = { createCalls: [], shouldFailTimes: 0 }
+} = { createCalls: [], teamCreateCalls: [], shouldFailTimes: 0 }
 
 mock.module('../services/workspace.service', () => ({
   createPersonalWorkspace: async (userId: string, name: string) => {
@@ -70,6 +71,10 @@ mock.module('../services/workspace.service', () => ({
       throw new Error('workspace create failed')
     }
     return { id: 'ws-1' }
+  },
+  createDefaultTeamWorkspace: async (userId: string, name: string) => {
+    wsState.teamCreateCalls.push({ userId, name })
+    return { id: 'ws-team-1' }
   },
 }))
 
@@ -160,6 +165,7 @@ beforeEach(() => {
   console.error = () => {}
   // Reset mutable state
   wsState.createCalls.length = 0
+  wsState.teamCreateCalls.length = 0
   wsState.shouldFailTimes = 0
   emailState.welcomeCalls = 0
   emailState.resetCalls = 0
@@ -394,6 +400,7 @@ describe('databaseHooks.user.create.after', () => {
       {},
     )
     expect(wsState.createCalls).toHaveLength(1)
+    expect(wsState.teamCreateCalls).toEqual([{ userId: 'u-1', name: 'Alice' }])
     // Fire-and-forget welcome — give microtask queue a tick
     await new Promise(r => setTimeout(r, 10))
     expect(emailState.welcomeCalls).toBe(1)

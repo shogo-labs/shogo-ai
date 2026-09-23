@@ -112,6 +112,70 @@ export async function createPersonalWorkspace(
 }
 
 /**
+ * Default name for the team workspace every cloud user gets at signup,
+ * e.g. "Alice's Workspace". Falls back to "My Workspace" for blank names.
+ */
+export function defaultTeamWorkspaceName(userName: string | null | undefined): string {
+  const firstName = (userName ?? '').trim().split(/\s+/)[0];
+  return firstName ? `${firstName}'s Workspace` : 'My Workspace';
+}
+
+/**
+ * Create the free default `kind: 'team'` workspace for a new cloud user.
+ * Called from the Better Auth signup hook alongside `createPersonalWorkspace`
+ * so every account starts with both spaces. Written directly through Prisma,
+ * so it bypasses `workspaceHooks.beforeCreate` — it is the one free team
+ * workspace that hook would otherwise allow.
+ */
+export async function createDefaultTeamWorkspace(
+  userId: string,
+  userName: string
+): Promise<CreatePersonalWorkspaceResult> {
+  const userIdPrefix = userId.substring(0, 8).replace(/-/g, '');
+  const baseSlug = `user-${userIdPrefix}-team`;
+  const workspaceName = defaultTeamWorkspaceName(userName);
+
+  const result = await prisma.$transaction(async (tx) => {
+    const existing = await tx.workspace.findUnique({ where: { slug: baseSlug } });
+    const slug = existing ? `${baseSlug}-${nanoid()}` : baseSlug;
+
+    const workspace = await tx.workspace.create({
+      data: {
+        name: workspaceName,
+        slug,
+        kind: 'team',
+        ...workspaceHomeRegionField(),
+      },
+    });
+
+    const member = await tx.member.create({
+      data: {
+        userId,
+        role: 'owner',
+        workspaceId: workspace.id,
+        isBillingAdmin: true,
+      },
+    });
+
+    return { workspace, member };
+  }, { maxWait: 15_000, timeout: 30_000 });
+
+  return {
+    workspace: {
+      id: result.workspace.id,
+      name: result.workspace.name,
+      slug: result.workspace.slug,
+    },
+    member: {
+      id: result.member.id,
+      userId: result.member.userId,
+      role: result.member.role,
+      workspaceId: result.member.workspaceId!,
+    },
+  };
+}
+
+/**
  * Get all workspaces for a user (via membership)
  */
 export async function getWorkspacesForUser(userId: string) {

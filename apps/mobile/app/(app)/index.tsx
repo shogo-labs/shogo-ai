@@ -71,6 +71,7 @@ import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
+import { GetStartedChecklist, useGettingStarted } from '../../components/onboarding/GetStartedChecklist'
 import { useMobileWorkspaceChrome } from '../../components/layout/MobileWorkspaceChromeContext'
 
 /**
@@ -351,6 +352,13 @@ export const HomeScreen = observer(function HomeScreen({
 
   const currentWorkspace = useActiveWorkspace()
   const currentExperience = workspaceExperience(currentWorkspace?.kind)
+  // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`, which
+  // mounts its own checklist.
+  const rendersAgentChat =
+    !forceBuilder &&
+    isWorkspaceRuntimeEnabled() &&
+    (isNarrowAgentSurface || currentExperience.kind === 'personal')
+  const gettingStarted = useGettingStarted(!rendersAgentChat)
 
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces `CreatePersonalSpaceBanner` below — see that component for why
@@ -912,10 +920,7 @@ export const HomeScreen = observer(function HomeScreen({
   // Personal workspaces use the agent chat surface on every platform.
   // Shared workspaces use it on narrow surfaces while wide web retains the
   // established builder home.
-  const workspaceAgentChatEnabled =
-    isWorkspaceRuntimeEnabled() &&
-    (isNarrowAgentSurface || currentExperience.kind === 'personal')
-  if (!forceBuilder && workspaceAgentChatEnabled) {
+  if (rendersAgentChat) {
     return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
   }
 
@@ -929,12 +934,25 @@ export const HomeScreen = observer(function HomeScreen({
           />
         </View>
       ) : null}
+      {gettingStarted.visible ? (
+        <View className={isNativePhone ? 'mb-6 w-full' : 'mb-8 w-full max-w-2xl'}>
+          <GetStartedChecklist state={gettingStarted} />
+        </View>
+      ) : null}
       <Text
         className={`text-center text-foreground ${isNativePhone ? 'font-medium' : 'font-bold mb-2'}`}
         style={heroTitleStyle}
       >
         {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
       </Text>
+      {!localMode && currentExperience.kind === 'team' ? (
+        <Text
+          className={`text-center text-muted-foreground ${isNativePhone ? 'mt-2' : 'mb-6'}`}
+          style={heroSubtitleStyle}
+        >
+          This is your Team workspace, where you build. Describe a project or agent and Shogo creates it.
+        </Text>
+      ) : null}
     </>
   )
 

@@ -9,7 +9,6 @@ export type WidgetType =
   | 'ai-config'
   | 'security'
   | 'meeting-setup'
-  | 'features'
   | 'complete'
 
 export interface OnboardingStep {

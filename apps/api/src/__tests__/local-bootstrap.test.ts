@@ -54,6 +54,9 @@ mock.module('../services/workspace.service', () => ({
       member: { id: `mem-team-${userId}`, userId, role: 'owner', workspaceId: `ws-team-${userId}` },
     }
   },
+  createDefaultTeamWorkspace: async () => {
+    throw new Error('createDefaultTeamWorkspace is cloud-only')
+  },
   createPersonalWorkspace: async (userId: string, userName: string) => {
     createPersonalWorkspaceCalls.push({ userId, name: userName })
     return {

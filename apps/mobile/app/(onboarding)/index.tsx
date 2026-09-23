@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useMemo } from 'react'
-import { KeyboardAvoidingView, Platform, Text, View } from 'react-native'
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { usePlatformConfig } from '../../lib/platform-config'
@@ -12,8 +12,8 @@ import { NameInput } from '../../components/onboarding/steps/NameInput'
 import { AIConfigForm } from '../../components/onboarding/steps/AIConfigForm'
 import { SecurityForm } from '../../components/onboarding/steps/SecurityForm'
 import { MeetingSetupForm } from '../../components/onboarding/steps/MeetingSetupForm'
-import { FeaturesWidget } from '../../components/onboarding/steps/FeaturesWidget'
 import { CompleteWidget } from '../../components/onboarding/steps/CompleteWidget'
+import { CloudOnboarding } from '../../components/onboarding/cloud/CloudOnboarding'
 
 // ---------------------------------------------------------------------------
 // Step sequences
@@ -69,40 +69,32 @@ function getLocalSteps(): OnboardingStep[] {
   return steps
 }
 
-function getCloudSteps(): OnboardingStep[] {
-  return [
-    {
-      id: 'welcome',
-      text: "Hello, I am Shogo. I'm going to show you around.",
-      autoAdvance: true,
-      advanceDelay: 800,
-    },
-    {
-      id: 'features',
-      text: "Here\u2019s what you can build:",
-      widget: 'features',
-    },
-    {
-      id: 'complete',
-      text: "You\u2019re all set! Let\u2019s go.",
-      widget: 'complete',
-    },
-  ]
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function OnboardingPage() {
+  const { localMode, configLoaded } = usePlatformConfig()
+  // The pre-fetch default is cloud on plain web, so wait for the real mode
+  // before mounting either flow.
+  if (!configLoaded) {
+    return (
+      <View className="flex-1 items-center justify-center bg-background">
+        <ActivityIndicator size="large" />
+      </View>
+    )
+  }
+  if (!localMode) return <CloudOnboarding />
+  return <LocalOnboarding />
+}
+
+function LocalOnboarding() {
   const router = useRouter()
   const posthog = usePostHogSafe()
-  const { localMode, needsSetup } = usePlatformConfig()
 
   const [userName, setUserName] = useState('')
 
-  const isLocal = !!localMode
-  const steps = useMemo(() => (isLocal ? getLocalSteps() : getCloudSteps()), [isLocal])
+  const steps = useMemo(() => getLocalSteps(), [])
 
   const context = useMemo(
     () => ({ userName }),
@@ -113,12 +105,10 @@ export default function OnboardingPage() {
     try {
       const http = createHttpClient()
       await api.completeOnboarding(http)
-      trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
-        mode: isLocal ? 'local' : 'cloud',
-      })
+      trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, { mode: 'local' })
     } catch {}
     router.replace('/(app)')
-  }, [router, posthog, isLocal])
+  }, [router, posthog])
 
   const renderWidget = useCallback((widget: WidgetType, onComplete: () => void) => {
     switch (widget) {
@@ -137,8 +127,6 @@ export default function OnboardingPage() {
         return <SecurityForm onComplete={onComplete} />
       case 'meeting-setup':
         return <MeetingSetupForm onComplete={onComplete} />
-      case 'features':
-        return <FeaturesWidget onComplete={onComplete} />
       case 'complete':
         return <CompleteWidget onEnter={handleComplete} />
       default:

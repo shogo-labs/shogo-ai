@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { scheduleWorkspaceSwitch } from '../switch-workspace'
+import { openInWorkspace, scheduleWorkspaceSwitch } from '../switch-workspace'
 import { clearActiveWorkspaceId, getActiveWorkspaceId } from '../workspace-store'
 
 afterEach(() => {
@@ -54,5 +54,38 @@ describe('scheduleWorkspaceSwitch', () => {
 
     expect(loaded).toEqual(['ws-2'])
     expect(getActiveWorkspaceId()).toBe('ws-2')
+  })
+})
+
+describe('openInWorkspace', () => {
+  function fakeRouter() {
+    const calls = { push: [] as string[], replace: [] as string[] }
+    return {
+      calls,
+      router: {
+        push: (href: string) => calls.push.push(href),
+        replace: (href: string) => calls.replace.push(href),
+      },
+    }
+  }
+
+  test('pushes without switching when the target is the current workspace', () => {
+    const { calls, router } = fakeRouter()
+    openInWorkspace(router, 'ws-1', '/(app)/marketplace', 'ws-1')
+    expect(calls.push).toEqual(['/(app)/marketplace'])
+    expect(getActiveWorkspaceId()).toBeNull()
+  })
+
+  test('pushes without switching when no target workspace is known', () => {
+    const { calls, router } = fakeRouter()
+    openInWorkspace(router, undefined, '/(app)/settings?tab=people', 'ws-1')
+    expect(calls.push).toEqual(['/(app)/settings?tab=people'])
+  })
+
+  test('makes the target workspace active before navigating across workspaces', () => {
+    const { calls, router } = fakeRouter()
+    openInWorkspace(router, 'ws-team', '/', 'ws-personal')
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+    expect(calls.push).toEqual([])
   })
 })

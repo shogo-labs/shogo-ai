@@ -40,14 +40,17 @@ export default function RootIndex() {
     fetch(`${API_URL}/api/me`, { credentials: 'include' })
       .then(r => r.json())
       .then((data: any) => {
-        setOnboardingCompleted(data.data?.onboardingCompleted ?? true)
+        // Only a well-formed `false` sends the user to onboarding; anything
+        // else (error body, missing field) fails open like a network error.
+        setOnboardingCompleted(data?.data?.onboardingCompleted !== false)
       })
       .catch(() => setOnboardingCompleted(true))
       .finally(() => setCheckingOnboarding(false))
   }, [isAuthenticated, authLoading])
 
   // Wait for platform config to load from the API
-  if (!platformConfig.configLoaded || authLoading || checkingOnboarding || autoSigningIn) {
+  const onboardingUnknown = isAuthenticated && onboardingCompleted === null
+  if (!platformConfig.configLoaded || authLoading || checkingOnboarding || autoSigningIn || onboardingUnknown) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
         <ActivityIndicator size="large" />

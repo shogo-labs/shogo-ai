@@ -17,7 +17,7 @@
 import { betterAuth, type BetterAuthPlugin } from "better-auth"
 import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
-import { createPersonalWorkspace } from "./services/workspace.service"
+import { createDefaultTeamWorkspace, createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, identifyUser, trackEvent, resolveAttributionForUser } from "./services/auth-integrations"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
 import { prisma } from "./lib/prisma"
@@ -597,22 +597,31 @@ export const auth = betterAuth({
             }
           }
 
-          const maxAttempts = 5
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              await createPersonalWorkspace(user.id, user.name || "User")
-              console.log(`Created personal workspace for user ${user.email}${attempt > 1 ? ` (attempt ${attempt})` : ''}`)
-              break
-            } catch (error) {
-              const msg = error instanceof Error ? error.message : String(error)
-              if (attempt < maxAttempts) {
-                const delay = attempt * 1000 + Math.random() * 500
-                console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${Math.round(delay)}ms`)
-                await new Promise((r) => setTimeout(r, delay))
-              } else {
-                console.error(`Failed to create personal workspace for ${user.email} after ${maxAttempts} attempts: ${msg}`)
+          const createWithRetry = async (label: string, create: () => Promise<unknown>) => {
+            const maxAttempts = 5
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                await create()
+                console.log(`Created ${label} workspace for user ${user.email}${attempt > 1 ? ` (attempt ${attempt})` : ''}`)
+                return
+              } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error)
+                if (attempt < maxAttempts) {
+                  const delay = attempt * 1000 + Math.random() * 500
+                  console.warn(`Workspace creation attempt ${attempt}/${maxAttempts} failed for ${user.email}: ${msg} — retrying in ${Math.round(delay)}ms`)
+                  await new Promise((r) => setTimeout(r, delay))
+                } else {
+                  console.error(`Failed to create ${label} workspace for ${user.email} after ${maxAttempts} attempts: ${msg}`)
+                }
               }
             }
+          }
+
+          await createWithRetry('personal', () => createPersonalWorkspace(user.id, user.name || "User"))
+          // Every cloud account starts with both spaces: Personal (companion)
+          // and Team (where you build). Desktop stays single-workspace.
+          if (!isLocalMode) {
+            await createWithRetry('team', () => createDefaultTeamWorkspace(user.id, user.name || "User"))
           }
 
           // FIRE-AND-FORGET: Send welcome email (non-blocking)

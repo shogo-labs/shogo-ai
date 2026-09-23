@@ -51,3 +51,27 @@ export function reloadAfterWorkspaceSwitch(): void {
     window.location.reload()
   }
 }
+
+/**
+ * Make `workspaceId` active and open `path` (an Expo Router href) in it.
+ * Same-workspace targets are a plain push; cross-workspace targets do a full
+ * navigation on web for the reason described on `reloadAfterWorkspaceSwitch`.
+ */
+export function openInWorkspace(
+  router: { push: (href: any) => void; replace: (href: any) => void },
+  workspaceId: string | undefined,
+  path: string,
+  currentWorkspaceId: string | undefined,
+): void {
+  if (!workspaceId || workspaceId === currentWorkspaceId) {
+    router.push(path)
+    return
+  }
+  setActiveWorkspaceId(workspaceId)
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    // Route groups like `(app)` aren't part of the URL.
+    window.location.assign(path.replace(/\/\([^)]+\)/g, '') || '/')
+  } else {
+    router.replace(path)
+  }
+}

@@ -29,6 +29,7 @@ model User {
   role                String   @default("user")
   onboardingCompleted Boolean  @default(false)
   lastSeenAnnouncementVersion String?
+  onboardingIntent    String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
