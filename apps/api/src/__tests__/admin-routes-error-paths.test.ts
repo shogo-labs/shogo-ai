@@ -57,6 +57,7 @@ mock.module('../services/analytics.service', () => ({
   getUsageAnalytics: thrower(),
   getActiveUsers: thrower(),
   getDesktopInstalls: thrower(),
+  getAppInstalls: thrower(),
   getChatAnalytics: thrower(),
   getProjectAnalytics: thrower(),
   getBillingAnalytics: thrower(),
@@ -203,6 +204,9 @@ describe('analytics endpoints — catch handlers', () => {
   })
   test('GET /analytics/desktop-installs → 500 analytics_failed', async () => {
     await expect500(adminRoutes(), '/analytics/desktop-installs', 'analytics_failed')
+  })
+  test('GET /analytics/app-installs → 500 analytics_failed', async () => {
+    await expect500(adminRoutes(), '/analytics/app-installs', 'analytics_failed')
   })
   test('GET /analytics/chat → 500 analytics_failed', async () => {
     await expect500(adminRoutes(), '/analytics/chat', 'analytics_failed')

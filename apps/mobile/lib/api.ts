@@ -528,6 +528,17 @@ export const api = {
     return res.data
   },
 
+  async sendAppInstallHeartbeat(http: HttpClient, body: {
+    deviceId: string
+    platform: 'ios' | 'android'
+    appVersion?: string | null
+    osVersion?: string | null
+    deviceModel?: string | null
+  }) {
+    const res = await http.post<{ ok?: boolean; id?: string }>('/api/app-installs/heartbeat', body)
+    return res.data
+  },
+
   async listAgentTasks(http: HttpClient, params: { status?: string; projectId?: string } = {}) {
     const query = new URLSearchParams()
     if (params.status) query.set('status', params.status)

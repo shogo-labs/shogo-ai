@@ -45,6 +45,7 @@ import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
 import { useNotificationClickRouter } from "../../lib/notifications/useNotificationClickRouter";
 import { useMobilePushRegistration } from "../../lib/notifications/mobile-push-registration";
+import { useAppInstallHeartbeat } from "../../lib/app-install-heartbeat";
 import { useNotifyOnTurnComplete } from "../../lib/notifications/preferences";
 import { mark as csMark } from "../../lib/cold-start-timing";
 import {
@@ -149,6 +150,7 @@ function AppLayoutInner() {
   useNotificationClickRouter();
   const [notifyOnTurnComplete] = useNotifyOnTurnComplete();
   useMobilePushRegistration(user?.id ?? null, notifyOnTurnComplete);
+  useAppInstallHeartbeat(user?.id ?? null);
 
   useEffect(() => {
     if (isAuthenticated && posthog) {

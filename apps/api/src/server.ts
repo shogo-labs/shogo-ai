@@ -196,6 +196,7 @@ const handleInstanceWsClose: any = cloud.handleInstanceWsClose ?? (() => {})
 const startTunnelHeartbeat: any = cloud.startTunnelHeartbeat ?? (() => {})
 const remoteAuditRoutes: any = cloud.remoteAuditRoutes ?? emptyRouter
 const mobilePushRoutes: any = cloud.mobilePushRoutes ?? emptyRouter
+const appInstallRoutes: any = cloud.appInstallRoutes ?? emptyRouter
 const syncRoutes: any = cloud.syncRoutes ?? emptyRouter
 const internalRoutes: any = cloud.internalRoutes ?? new Hono()
 const internalE2eRoutes: any = cloud.internalE2eRoutes ?? new Hono()
@@ -1593,6 +1594,7 @@ app.route('/api', cliAuthRoutes())
 app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
 app.route('/api', mobilePushRoutes())
+app.route('/api', appInstallRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder

@@ -289,6 +289,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'The authenticated mobile registration route upserts one globally unique Expo token and transfers ownership when a signed-in account re-registers the same device.',
   },
   {
+    key: 'AppInstall.deviceId',
+    category: 'single_tenant_upsert',
+    reason:
+      'The authenticated mobile heartbeat upserts one client-generated install UUID and transfers ownership when a signed-in account reports the same install.',
+  },
+  {
     key: 'BillingAccount.workspaceId',
     category: 'single_tenant_upsert',
     reason: 'billing.service.ts:900 upserts on workspaceId from Stripe flow.',

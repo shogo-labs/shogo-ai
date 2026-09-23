@@ -36,6 +36,7 @@ type Store = {
   toolCallLogs: any[]
   sessions: any[]
   apiKeys: any[]
+  appInstalls: any[]
 }
 
 const store: Store = {
@@ -50,6 +51,7 @@ const store: Store = {
   toolCallLogs: [],
   sessions: [],
   apiKeys: [],
+  appInstalls: [],
 }
 
 // Stateful $queryRawUnsafe handler so getUserActivityTable / getUserFunnel tests
@@ -156,6 +158,7 @@ const mockPrisma: any = {
   toolCallLog: makeModel(store.toolCallLogs),
   session: makeModel(store.sessions),
   apiKey: makeModel(store.apiKeys),
+  appInstall: makeModel(store.appInstalls),
   $queryRawUnsafe: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
   $queryRaw: async () => (queryRawQueue.length ? queryRawQueue.shift()! : []),
 }
@@ -188,6 +191,7 @@ function rebuildModels() {
   mockPrisma.toolCallLog = makeModel(store.toolCallLogs)
   mockPrisma.session = makeModel(store.sessions)
   mockPrisma.apiKey = makeModel(store.apiKeys)
+  mockPrisma.appInstall = makeModel(store.appInstalls)
 }
 
 beforeEach(() => {
@@ -202,6 +206,7 @@ beforeEach(() => {
   store.toolCallLogs.length = 0
   store.sessions.length = 0
   store.apiKeys.length = 0
+  store.appInstalls.length = 0
   queryRawQueue = []
   rebuildModels()
 })
@@ -902,6 +907,69 @@ describe('getDesktopInstalls', () => {
       { platform: 'darwin', count: 1 },
       { platform: 'unknown', count: 1 },
       { platform: 'win32', count: 1 },
+    ])
+  })
+})
+
+describe('getAppInstalls', () => {
+  test('aggregates desktop, iOS, and Android segments and unions users', async () => {
+    const now = Date.now()
+    store.apiKeys.push({
+      kind: 'device',
+      revokedAt: null,
+      deviceId: 'desktop-1',
+      devicePlatform: 'darwin',
+      deviceAppVersion: '2.0.0',
+      lastSeenAt: new Date(now - 60 * 60 * 1000),
+      createdAt: new Date(now - 5 * 24 * 60 * 60 * 1000),
+      userId: 'shared-user',
+    })
+    store.appInstalls.push(
+      {
+        deviceId: 'ios-1',
+        platform: 'ios',
+        appVersion: '3.0.0',
+        osVersion: '18.6',
+        lastSeenAt: new Date(now - 2 * 60 * 60 * 1000),
+        firstSeenAt: new Date(now - 3 * 24 * 60 * 60 * 1000),
+        userId: 'shared-user',
+      },
+      {
+        deviceId: 'ios-2',
+        platform: 'ios',
+        appVersion: '2.9.0',
+        osVersion: '17.5',
+        lastSeenAt: new Date(now - 8 * 24 * 60 * 60 * 1000),
+        firstSeenAt: new Date(now - 40 * 24 * 60 * 60 * 1000),
+        userId: 'ios-user',
+      },
+      {
+        deviceId: 'android-1',
+        platform: 'android',
+        appVersion: '3.0.0',
+        osVersion: '15',
+        lastSeenAt: new Date(now - 2 * 24 * 60 * 60 * 1000),
+        firstSeenAt: new Date(now - 2 * 24 * 60 * 60 * 1000),
+        userId: 'android-user',
+      },
+    )
+    rebuildModels()
+
+    const out = await analytics.getAppInstalls()
+
+    expect(out.desktop.totalDevices).toBe(1)
+    expect(out.ios.totalDevices).toBe(2)
+    expect(out.ios.active).toEqual({ d1: 1, d7: 1, d30: 2 })
+    expect(out.android.totalDevices).toBe(1)
+    expect(out.totals).toMatchObject({
+      totalDevices: 4,
+      active: { d1: 2, d7: 3, d30: 4 },
+      newLast30d: 3,
+      distinctUsers: 3,
+    })
+    expect(out.ios.byPlatform).toEqual([
+      { platform: '17.5', count: 1 },
+      { platform: '18.6', count: 1 },
     ])
   })
 })
