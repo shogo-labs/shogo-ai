@@ -166,26 +166,28 @@ Shogo.app/Contents/
 ## Beta Channel Releases (CI)
 
 `.github/workflows/desktop-release-macos.yml` and `desktop-release-windows.yml`
-run on both `push: tags: v*` (stable) and `push: branches: [main]` (beta) —
-tag pushes are unaffected by anything below. A `resolve-version` job
+run on `push: tags: v*` (stable) and `workflow_dispatch` (stable or beta).
+Tag pushes are unaffected by anything below. Run both desktop workflows
+manually with the same ref when publishing a beta. A `resolve-version` job
 (`scripts/desktop-next-beta-version.ts`) computes the version deterministically
-for both workflows from the same commit:
+for both workflows from the selected commit:
 
 - **Tag push** → `channel=stable`, `version=<tag without the v>`.
-- **Main push** → `channel=beta`,
-  `version=<latest stable tag, patch+1>-beta.<UTC YYYYMMDDHHMMSS>`, where the
-  timestamp comes from the commit's **committer date** (not wall-clock build
-  time) so both OS workflows produce the identical version string for the
-  same commit — required because `softprops/action-gh-release` appends
-  assets to one shared GitHub Release keyed by `tag_name`.
+- **Manual stable dispatch** → `channel=stable`, `version=<version input>`.
+- **Manual beta dispatch with a blank version** → `channel=beta`,
+  `version=<latest stable tag, patch+1>-beta.<UTC YYYYMMDDtHHMMSS>`, where the
+  timestamp comes from the selected commit's **committer date** (not
+  wall-clock build time) so both OS workflows produce the identical version
+  string — required because `softprops/action-gh-release` appends assets to
+  one shared GitHub Release keyed by `tag_name`.
+- **Manual beta dispatch with an explicit version** → `channel=beta`,
+  `version=<version input>`.
 
 Beta releases are published as GitHub **prereleases** (`prerelease: true`,
 `draft: false`, `make_latest: false`) — signed and notarized exactly like
-stable. `push: branches: [main]` uses `cancel-in-progress: true` concurrency,
-so only the newest commit's build runs; superseded beta builds for older
-commits on `main` are cancelled automatically. A retention step on the macOS
-job keeps only the newest 10 beta prereleases (`gh release delete
---cleanup-tag` for the rest — pruning tags too).
+stable. A retention step on the macOS job keeps only the newest 10 beta
+prereleases (`gh release delete --cleanup-tag` for the rest — pruning tags
+too).
 
 Because these releases are created with the workflow's own `GITHUB_TOKEN`,
 they do **not** re-trigger `push: tags` workflows (`finalize-release.yml`,
@@ -198,13 +200,15 @@ Use this to validate the full update path end to end after changing anything
 in the beta pipeline (worker route, versioning script, or the CI workflows
 above). It never touches the stable channel or its users.
 
-1. Merge to `main`. Confirm both release workflows finish and a new
-   `vX.Y.Z-beta.<ts>` GitHub prerelease appears with `.dmg`/`.zip` (macOS) and
-   `Shogo-Setup.exe`/`.nupkg`/`RELEASES` (Windows), all signed and notarized,
-   and **not** marked "Latest release".
+1. Manually run both desktop release workflows for the same `main` ref with
+   `channel=beta` and a blank version. Confirm both release workflows finish
+   and a new `vX.Y.Z-beta.<ts>` GitHub prerelease appears with `.dmg`/`.zip`
+   (macOS) and `Shogo-Setup.exe`/`.nupkg`/`RELEASES` (Windows), all signed and
+   notarized, and **not** marked "Latest release".
 2. Install that beta build (the DMG, or the Windows installer). It already
    ships the Updates tab — go to **Settings → Updates** and opt into **Beta**.
-3. Push any commit to `main`. A new `vX.Y.Z-beta.<ts2>` prerelease is
+3. Manually run both workflows again for a newer `main` commit, with
+   `channel=beta` and a blank version. A new `vX.Y.Z-beta.<ts2>` prerelease is
    published. Within 10 minutes (or immediately via **Check for updates** in
    Settings) the in-app banner offers `X.Y.Z-beta.<ts2>` with a "Beta" tag.
    Click **Download**, then **Restart** — this exercises the real

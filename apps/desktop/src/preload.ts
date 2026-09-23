@@ -197,7 +197,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     ipcRenderer.removeAllListeners('desktop-update-status')
   },
   // Update channel — 'stable' (default) tracks tagged releases; 'beta' is an
-  // opt-in channel that tracks the newest build off `main`. See
+  // opt-in channel that tracks the newest manually published prerelease. See
   // apps/desktop/src/update-channel.ts + updater.ts.
   getUpdateChannel: (): Promise<{ channel: 'stable' | 'beta' }> =>
     ipcRenderer.invoke('get-update-channel'),

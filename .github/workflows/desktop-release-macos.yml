@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.1.0)'
-        required: true
+        description: 'Release version (e.g. 0.1.0). Leave blank with channel=beta to auto-compute the next patch + timestamp.'
+        required: false
         type: string
       channel:
         description: 'Update channel for this manual build'
@@ -16,18 +16,11 @@ on:
   push:
     tags:
       - 'v[0-9]*'
-    # Every push to main publishes a beta prerelease so opted-in desktop
-    # users get the newest main build via Settings -> Updates -> Beta. See
-    # the `resolve-version` job + scripts/desktop-next-beta-version.ts.
-    branches:
-      - main
 
 # Tag pushes each get their own concurrency group (the ref IS the tag, so
-# these never collide with each other regardless of cancel-in-progress).
-# main pushes share one group and cancel any in-flight beta build for the
-# previous commit — there's no reason to finish building/publishing a beta
-# that's already superseded, and it keeps the (~25min x2 archs) cost down
-# on a busy day.
+# these never collide with each other). Manual runs use the selected ref,
+# and cancel an in-flight run when dispatched from main so superseded beta
+# builds do not consume the (~25min x2 archs) cost.
 concurrency:
   group: desktop-release-macos-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
@@ -51,8 +44,8 @@ jobs:
     # release workflow) don't drift. See scripts/desktop-next-beta-version.ts
     # for why the beta timestamp is derived from HEAD's committer date
     # rather than wall-clock build time — this job's Windows-workflow
-    # twin must land on the IDENTICAL version string for the same push so
-    # both publish to the same GitHub Release.
+    # twin must land on the IDENTICAL version string for the same selected
+    # commit so both publish to the same GitHub Release.
     name: Resolve version
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -64,7 +57,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Need full tag history to find the newest stable vX.Y.Z tag when
-          # resolving a beta version off a main push.
+          # resolving an auto-computed manual beta version.
           fetch-depth: 0
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -151,8 +144,8 @@ jobs:
         # (read from EXPO_PUBLIC_BUILD_HASH in apps/mobile/app/_layout.tsx)
         # matches the main process's `app.getVersion()`. Without this the
         # renderer defaulted every desktop build's release to `dev`.
-        # Version + channel come from the `resolve-version` job so tag,
-        # workflow_dispatch, and main-push (beta) builds agree with
+        # Version + channel come from the `resolve-version` job so tag and
+        # workflow_dispatch builds agree with
         # build-desktop and with each other.
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"
@@ -249,8 +242,8 @@ jobs:
 
       - name: Set app version
         # Version + channel come from the `resolve-version` job — see that
-        # job for why (tag / workflow_dispatch / main-push-beta logic lives
-        # in one script both this workflow and the Windows one share).
+        # job for why tag / workflow_dispatch logic lives in one script both
+        # this workflow and the Windows one share.
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -888,8 +881,8 @@ jobs:
 
       - name: Prune old beta prereleases
         # Keep the newest 10 beta prereleases (and their tags) so the
-        # releases list doesn't grow unbounded on a repo that publishes one
-        # per push to main. Only runs from the macOS job — the Windows
+        # releases list doesn't grow unbounded when manual beta builds are
+        # published. Only runs from the macOS job — the Windows
         # release job targets the same tags, so doing this from both would
         # just race two `gh release delete` calls against the same list.
         if: needs.resolve-version.outputs.channel == 'beta'
