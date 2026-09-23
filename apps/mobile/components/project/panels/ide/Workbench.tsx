@@ -1890,6 +1890,14 @@ export function Workbench({
           return;
         }
       }
+      // A folder-linked project's repo is its folder. Resolve that before
+      // the managed-workspace bridge: `workspaces/<id>` can exist for such a
+      // project too (older builds seeded a template there), and the git
+      // registry above is in-memory, so it is empty after an app restart.
+      if (folderPath) {
+        setGitWorkspaceRoot(folderPath);
+        return;
+      }
       const fsBridge = getDesktopFsBridge();
       if (!fsBridge) {
         setGitWorkspaceRoot(null);
@@ -1899,12 +1907,6 @@ export function Workbench({
       if (cancelled) return;
       if (r.ok && r.root) {
         setGitWorkspaceRoot(r.root);
-        return;
-      }
-      // G2 fallback: for external projects where neither bridge resolved
-      // the root, use the project's primary folder path directly.
-      if (folderPath) {
-        setGitWorkspaceRoot(folderPath);
         return;
       }
       setGitWorkspaceRoot(null);

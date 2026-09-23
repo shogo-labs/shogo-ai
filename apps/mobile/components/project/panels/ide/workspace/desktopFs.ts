@@ -93,6 +93,19 @@ export function getDesktopFsBridge(): DesktopFsBridge | null {
   return fs
 }
 
+/**
+ * Folder-linked projects must not use the IPC fast path: `fs:resolveWorkspace`
+ * only knows `workspaces/<projectId>`, which for such a project is not its
+ * content (the user's folder is). Reads would come from one tree while
+ * writes, going through the scoped `SdkFs`, land in another.
+ */
+export function isFolderLinkedProject(project: {
+  isExternalProject?: boolean | null
+  folderPath?: string | null
+}): boolean {
+  return project.isExternalProject === true || (typeof project.folderPath === 'string' && project.folderPath.length > 0)
+}
+
 const LANG_BY_EXT: Record<string, string> = {
   '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
   '.mjs': 'javascript', '.cjs': 'javascript',

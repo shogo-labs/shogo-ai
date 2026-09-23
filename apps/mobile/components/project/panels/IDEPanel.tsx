@@ -5,7 +5,7 @@ import { Platform, View, Text } from 'react-native'
 import { Code2 } from 'lucide-react-native'
 import { Workbench } from './ide/Workbench'
 import { sdkFsFor } from './ide/workspace/sdkFs'
-import { DesktopFs, getDesktopFsBridge } from './ide/workspace/desktopFs'
+import { DesktopFs, getDesktopFsBridge, isFolderLinkedProject } from './ide/workspace/desktopFs'
 import type { WorkspaceService } from './ide/workspace/types'
 import { agentFetch } from '../../../lib/agent-fetch'
 
@@ -57,13 +57,18 @@ export function IDEPanel({
   // wrap SdkFs in DesktopFs so reads + tree listing skip the loopback HTTP
   // round-trip to agent-runtime. If no (web build, cloud mode, or external
   // folder-bound project), fall through to plain SdkFs.
+  const folderLinked = isFolderLinkedProject({ isExternalProject, folderPath })
   const [agentService, setAgentService] = useState<WorkspaceService | null>(sdkService)
   const [desktopWorkspaceRoot, setDesktopWorkspaceRoot] = useState<string | null | undefined>(undefined)
   useEffect(() => {
     setAgentService(sdkService)
     setDesktopWorkspaceRoot(undefined)
     const bridge = getDesktopFsBridge()
-    if (!bridge) {
+    // A folder-linked project's content is the user's folder, not
+    // `workspaces/<id>`. That managed dir can still exist (older builds
+    // seeded a template there), so asking the bridge would make the IDE
+    // read one tree and write another. Stay on scoped SdkFs.
+    if (!bridge || folderLinked) {
       setDesktopWorkspaceRoot(null)
       return
     }
@@ -83,7 +88,7 @@ export function IDEPanel({
         if (!cancelled) setDesktopWorkspaceRoot(null)
       })
     return () => { cancelled = true }
-  }, [sdkService, projectId])
+  }, [sdkService, projectId, folderLinked])
 
   if (Platform.OS !== 'web') {
     if (!visible) return null

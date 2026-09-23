@@ -14,7 +14,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -26,6 +26,7 @@ import {
   workspaceAttachedProjectIds,
   workspaceAvailableProjectsManifest,
   workspaceProjectsManifest,
+  parseWorkspaceMounts,
   type WorkspaceProjectEntry,
 } from './workspace-runtime-mode'
 import { updateWorkspaceFolders } from './trust-resolver'
@@ -88,7 +89,10 @@ function realPathForMount(id: string, supplied?: string): string | undefined {
   if (supplied) return resolve(supplied)
   const path = memberPath(id)
   try {
-    if (lstatSync(path).isSymbolicLink()) return resolve(state.workspaceDir, readlinkSync(path))
+    // realpath, not readlink: a Windows junction's link text is an
+    // extended-length `\\?\C:\…` path, and a relative link resolves against
+    // its own directory rather than the workspace root.
+    if (lstatSync(path).isSymbolicLink()) return realpathSync(path)
   } catch {
     // The path may be a cloud directory or may not exist yet.
   }
@@ -113,11 +117,29 @@ function writeManifest(): void {
       '## Mounted projects',
       '',
     ]
+    const mounts = parseWorkspaceMounts()
+    const externalPathById = new Map(
+      mounts.filter((m) => m.kind === 'external').map((m) => [m.projectId, m.path] as const),
+    )
+    const folderMounts = mounts.filter((m) => m.kind === 'folder')
     if (mounted.length === 0) lines.push('_No projects are mounted._')
     for (const project of mounted) {
+      const hostPath = externalPathById.get(project.id)
       lines.push(
         `- \`${project.id}/\` — **${project.name}**${project.readonly ? ' (read-only)' : ''}` +
+          (hostPath ? ` (the user's own folder \`${hostPath}\`)` : '') +
           (project.description ? ` — ${project.description}` : ''),
+      )
+    }
+    if (folderMounts.length > 0) {
+      lines.push('', '## Linked folders', '', 'Host folders the user linked to this workspace, mounted as top-level folders:', '')
+      for (const m of folderMounts) lines.push(`- \`${m.mount}/\` — \`${m.path}\``)
+    }
+    if (externalPathById.size > 0 || folderMounts.length > 0) {
+      lines.push(
+        '',
+        "Folders marked as the user's own are their real files on disk, not Shogo copies. " +
+          'Edit them in place and do not add Shogo scaffolding to them.',
       )
     }
     lines.push('', '## Available projects', '')
@@ -141,7 +163,7 @@ function writeManifest(): void {
     writeFileSync(
       join(shogoDir, 'workspace.json'),
       JSON.stringify(
-        { workspaceId: state.workspaceId, mounted, available },
+        { workspaceId: state.workspaceId, mounted, available, mounts },
         null,
         2,
       ),
@@ -212,7 +234,9 @@ export async function mountWorkspaceMember(input: MountWorkspaceMemberInput): Pr
 
     if (realPath && resolve(realPath) !== resolve(mountPath) && !existsSync(mountPath)) {
       mkdirSync(state.workspaceDir, { recursive: true })
-      symlinkSync(realPath, mountPath, 'dir')
+      // Junctions on Windows: a `dir` symlink needs elevation or Developer
+      // Mode there and fails with EPERM. Matches the API's merged-root links.
+      symlinkSync(realPath, mountPath, process.platform === 'win32' ? 'junction' : 'dir')
     } else if (!existsSync(mountPath)) {
       mkdirSync(mountPath, { recursive: true })
     }

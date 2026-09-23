@@ -52,15 +52,23 @@ export class AgentClient {
   /** Auth / context headers only — never `Content-Type` (set per request from the body). */
   private ambientHeaders: Record<string, string>
   private doFetch: typeof fetch
+  private workspaceScope: 'workspace' | 'project'
 
   constructor(config?: AgentClientConfig) {
     this.baseUrl = config?.baseUrl?.replace(/\/$/, '') ?? ''
     this.ambientHeaders = withoutContentType(config?.headers ?? {})
     this.doFetch = config?.fetch ?? globalThis.fetch.bind(globalThis)
+    this.workspaceScope = config?.workspaceScope ?? 'workspace'
   }
 
   private url(path: string): string {
     return `${this.baseUrl}${path}`
+  }
+
+  /** `url()` for the scoped workspace file routes — see `AgentClientConfig.workspaceScope`. */
+  private fsUrl(path: string): string {
+    if (this.workspaceScope !== 'project') return this.url(path)
+    return this.url(`${path}${path.includes('?') ? '&' : '?'}scope=project`)
   }
 
   /** Encode each segment of a relative path individually so slashes are preserved. */
@@ -68,8 +76,8 @@ export class AgentClient {
     return relativePath.split('/').map(encodeURIComponent).join('/')
   }
 
-  private async fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await this.doFetch(this.url(path), {
+  private async fetchJson<T>(path: string, init?: RequestInit, opts?: { scoped?: boolean }): Promise<T> {
+    const res = await this.doFetch(opts?.scoped ? this.fsUrl(path) : this.url(path), {
       ...init,
       headers: { ...this.ambientHeaders, ...init?.headers },
     })
@@ -148,7 +156,7 @@ export class AgentClient {
 
     const open = () => {
       if (closed) return
-      const url = this.url('/agent/canvas/stream')
+      const url = this.fsUrl('/agent/canvas/stream')
       es = new EventSource(url, { withCredentials: true })
       es.onmessage = (ev) => {
         let parsed: unknown
@@ -192,7 +200,7 @@ export class AgentClient {
    */
   async getWorkspaceTree(path?: string): Promise<FileNode[]> {
     const qs = path ? `?path=${encodeURIComponent(path)}` : ''
-    const data = await this.fetchJson<{ tree: FileNode[] }>(`/agent/workspace/tree${qs}`)
+    const data = await this.fetchJson<{ tree: FileNode[] }>(`/agent/workspace/tree${qs}`, undefined, { scoped: true })
     return data.tree ?? []
   }
 
@@ -205,7 +213,7 @@ export class AgentClient {
   }
 
   async readFile(path: string): Promise<string> {
-    const res = await this.doFetch(this.url(`/agent/workspace/files/${this.encodePath(path)}`), {
+    const res = await this.doFetch(this.fsUrl(`/agent/workspace/files/${this.encodePath(path)}`), {
       headers: this.ambientHeaders,
     })
     if (!res.ok) {
@@ -246,7 +254,7 @@ export class AgentClient {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
-    })
+    }, { scoped: true })
   }
 
   /** Write raw bytes to a workspace file. Wire format is base64 over
@@ -267,13 +275,13 @@ export class AgentClient {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contentBase64 }),
-    })
+    }, { scoped: true })
   }
 
   async deleteFile(path: string): Promise<void> {
     await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
       method: 'DELETE',
-    })
+    }, { scoped: true })
   }
 
   async searchFiles(
@@ -310,7 +318,7 @@ export class AgentClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: relativePath }),
-    })
+    }, { scoped: true })
   }
 
   // ---------------------------------------------------------------------------
@@ -366,7 +374,7 @@ export class AgentClient {
 
   /** Absolute URL for browser download / native WebView (GET returns raw bytes). */
   workspaceFileDownloadUrl(relativePath: string): string {
-    return this.url(`/agent/workspace/download/${this.encodePath(relativePath)}`)
+    return this.fsUrl(`/agent/workspace/download/${this.encodePath(relativePath)}`)
   }
 
   /**
@@ -377,7 +385,7 @@ export class AgentClient {
    */
   async readFileBlob(relativePath: string): Promise<Blob> {
     const res = await this.doFetch(
-      this.url(`/agent/workspace/download/${this.encodePath(relativePath)}`),
+      this.fsUrl(`/agent/workspace/download/${this.encodePath(relativePath)}`),
       { headers: this.ambientHeaders },
     )
     if (!res.ok) {

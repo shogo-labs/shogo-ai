@@ -106,12 +106,6 @@ import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
 import { staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
-import {
-  walkFilesTree,
-  WORKSPACE_TREE_HIDDEN_DIRS,
-  WORKSPACE_TREE_LAZY_DIRS,
-  WORKSPACE_TREE_HIDDEN_FILES,
-} from './fs-tree-walker'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
@@ -140,7 +134,17 @@ import {
   buildWorkspacePreviewPath,
   parseWorkspacePreviewUrls,
   isAttachedProjectId,
+  parseWorkspaceMounts,
+  shouldAutoStartAnchorPreview,
+  userOwnedTrustGroups,
 } from './workspace-runtime-mode'
+import {
+  workspaceFileRoutes,
+  resolveWithinRoot,
+  projectScopeRoot as projectScopeRootFor,
+  workspaceRelativePath,
+  scopeCanvasEvent,
+} from './workspace-file-routes'
 import {
   initWorkspaceMembers,
   mountWorkspaceMember,
@@ -274,6 +278,7 @@ initTrustResolver({
   linkedFolders: LINKED_FOLDERS,
   readonlyRoots: READONLY_ROOTS,
   isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
+  rootGroups: userOwnedTrustGroups(parseWorkspaceMounts()),
 })
 refreshTrust().catch(() => {
   // Best-effort at boot; per-turn refresh in gateway.ts is the
@@ -972,13 +977,14 @@ function safeMoveSync(src: string, dest: string): void {
 function writeWorkspaceManifest(workspaceDir: string): void {
   try {
     const projects = workspaceProjectsManifest()
+    const mounts = parseWorkspaceMounts()
     const workspaceId = process.env.WORKSPACE_ID || ''
-    writeFileSync(join(workspaceDir, 'WORKSPACE.md'), renderWorkspaceManifestMarkdown(workspaceId, projects))
+    writeFileSync(join(workspaceDir, 'WORKSPACE.md'), renderWorkspaceManifestMarkdown(workspaceId, projects, mounts))
     const shogoDir = join(workspaceDir, '.shogo')
     mkdirSync(shogoDir, { recursive: true })
     writeFileSync(
       join(shogoDir, 'workspace.json'),
-      JSON.stringify({ workspaceId, projects }, null, 2),
+      JSON.stringify({ workspaceId, projects, mounts }, null, 2),
     )
     console.log(`[agent-runtime] Workspace catalog written (${projects.length} projects)`)
   } catch (err: any) {
@@ -2770,6 +2776,9 @@ function getCanvasFileWatcher(): any {
   if (!_canvasFileWatcher) {
     const { CanvasFileWatcher } = require('./canvas-file-watcher')
     _canvasFileWatcher = CanvasFileWatcher.getInstance(WORKSPACE_DIR)
+    for (const mount of parseWorkspaceMounts()) {
+      void _canvasFileWatcher.addMountRoot(mount.path, mount.mount)
+    }
   }
   return _canvasFileWatcher
 }
@@ -3918,9 +3927,12 @@ function getIndexEngine(): IndexEngine {
 const FILES_DIR = join(WORKSPACE_DIR, 'files')
 
 function resolveFilesPath(subPath: string): string | null {
-  const resolved = resolve(FILES_DIR, subPath)
-  if (!resolved.startsWith(resolve(FILES_DIR))) return null
-  return resolved
+  return resolveWithinRoot(FILES_DIR, subPath)
+}
+
+/** Root of the `?scope=project` path space — see workspace-file-routes.ts. */
+function projectScopeRoot(): string {
+  return projectScopeRootFor(WORKSPACE_DIR, getAnchorProjectId())
 }
 
 const MIME_EXTENSIONS: Record<string, string> = {
@@ -4019,192 +4031,15 @@ app.get('/agent/workspace/bundle', (c) => {
   return c.json({ files })
 })
 
-function resolveWorkspacePath(subPath: string): string | null {
-  const resolved = resolve(WORKSPACE_DIR, subPath)
-  if (!resolved.startsWith(resolve(WORKSPACE_DIR))) return null
-  return resolved
-}
-
-// Recursive file tree for the file browser UI.
-//
-// Without `?path=`, walks from the workspace root. With `?path=<rel>`, walks
-// just that subtree — used by the IDE to lazy-load `node_modules/`, `dist/`,
-// and friends only when the user expands them. The same three exclusion sets
-// apply at every depth, so a `node_modules/foo/node_modules` nested dep still
-// comes back as a `lazy: true` entry rather than recursing.
-app.get('/agent/workspace/tree', async (c) => {
-  const subPath = c.req.query('path') ?? ''
-  const rootResolved = resolve(WORKSPACE_DIR)
-  let startDir = WORKSPACE_DIR
-  if (subPath) {
-    const resolved = resolveWorkspacePath(subPath)
-    if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-    if (!existsSync(resolved)) return c.json({ error: 'Path not found' }, 404)
-    if (!statSync(resolved).isDirectory()) {
-      return c.json({ error: 'Path is not a directory' }, 400)
-    }
-    startDir = resolved
-  }
-  // `eagerDepth: 1` keeps first-paint cheap on big repos — the walker
-  // returns the requested dir's children plus one level of descent, with
-  // anything deeper marked `lazy: true`. The IDE fetches deeper subtrees
-  // on demand by hitting this same route with `?path=…`, which is exactly
-  // how lazy expansion already works for `node_modules` etc. See
-  // `apps/mobile/components/project/panels/ide/workspace/desktopFs.ts`
-  // and `sdkFs.ts` for the IDE-side handling.
-  // `signal: c.req.raw.signal` wires Hono's per-request abort straight
-  // into the walker. If the IDE navigates away mid-walk (close folder,
-  // panel-resize re-render, ⌘W during cold open) the underlying Fetch
-  // Request's signal fires, the walker's `withinBudget` flips on its
-  // next iteration, and we stop reading directories. Pre-2026-05-25 the
-  // walk ran to completion regardless and the client discarded the
-  // result, which on a 95k repo wasted ~3s of fs handles + event-loop
-  // budget per superseded request.
-  const tree = await walkFilesTree(startDir, rootResolved, {
-    hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
-    lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
-    hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
-    eagerDepth: 1,
-    signal: c.req.raw.signal,
-  })
-  return c.json({ tree })
-})
-
-// `isBinaryFilePath` / `BINARY_FILE_EXTENSIONS` are the canonical "should
-// this file be wire-encoded as base64?" predicate, imported above from
-// `@shogo/shared-runtime` (which re-exports `@shogo-ai/core/file-types`).
-// One source of truth across agent-runtime, IDE Workbench, live-edit
-// sync, and the local FS layer.
-
-// Read a file from the workspace. Text files come back as `content`
-// (utf-8 string); binary files come back as `contentBase64` (base64-
-// encoded raw bytes) — see `isBinaryFilePath` (canonical extension list
-// in `@shogo-ai/core/file-types`). Callers must branch on the `encoding`
-// field; the SDK's `readFile()` does this for you and throws if asked to
-// text-read a binary file.
-app.get('/agent/workspace/files/*', (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/files/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-
-  let target = resolved
-  if (!existsSync(resolved)) {
-    const fallback = resolveFilesPath(subPath)
-    if (!fallback || !existsSync(fallback)) {
-      return c.json({ error: 'File not found' }, 404)
-    }
-    target = fallback
-  }
-
-  const buf = readFileSync(target)
-  if (isBinaryFilePath(target) || isBinaryBuffer(buf)) {
-    return c.json({
-      path: subPath,
-      contentBase64: buf.toString('base64'),
-      encoding: 'base64',
-      bytes: buf.length,
-    })
-  }
-
-  const content = buf.toString('utf-8')
-  return c.json({ path: subPath, content, encoding: 'utf-8', bytes: content.length })
-})
-
-// Write/create a file in the workspace. Accepts either:
-//   { content: "<utf-8 string>" }                — text files
-//   { contentBase64: "<base64-encoded bytes>" } — binary files
-//
-// To prevent the read-as-utf-8 / write-as-utf-8 corruption round-trip
-// that previously bloated `.mp4` / `.zip` / etc. by ~2×, this endpoint
-// refuses to accept utf-8 `content` for any path that `isBinaryFilePath`
-// flags (see `@shogo-ai/core/file-types` for the canonical extension
-// list) — callers MUST send `contentBase64` for those. The SDK's
-// `writeFile()` covers this seamlessly for SDK users; raw HTTP callers
-// get a 400 with an explicit error.
-app.put('/agent/workspace/files/*', async (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/files/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-
-  const body = (await c.req.json()) as { content?: unknown; contentBase64?: unknown }
-  const dir = dirname(resolved)
-  mkdirSync(dir, { recursive: true })
-
-  if (typeof body.contentBase64 === 'string') {
-    let buf: Buffer
-    try {
-      buf = Buffer.from(body.contentBase64, 'base64')
-    } catch {
-      return c.json({ error: 'Invalid base64 in contentBase64' }, 400)
-    }
-    writeFileSync(resolved, buf)
-    notifyCanvasWorkspaceWrite(subPath, resolved)
-    return c.json({
-      ok: true,
-      path: subPath,
-      bytes: buf.length,
-      encoding: 'base64',
-    })
-  }
-
-  if (typeof body.content !== 'string') {
-    return c.json(
-      { error: 'Missing content (utf-8 string) or contentBase64' },
-      400,
-    )
-  }
-
-  const existingBytes = existsSync(resolved) ? readFileSync(resolved) : null
-  if (isBinaryFilePath(resolved) || (existingBytes && isBinaryBuffer(existingBytes))) {
-    return c.json(
-      {
-        error:
-          'Refusing to write a binary file path with utf-8 string content — use contentBase64 to avoid corruption',
-        path: subPath,
-      },
-      400,
-    )
-  }
-
-  writeFileSync(resolved, body.content, 'utf-8')
-  notifyCanvasWorkspaceWrite(subPath, resolved)
-  return c.json({
-    ok: true,
-    path: subPath,
-    bytes: body.content.length,
-    encoding: 'utf-8',
-  })
-})
-
-// Delete a file from the workspace
-app.delete('/agent/workspace/files/*', (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/files/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
-
-  unlinkSync(resolved)
-  notifyCanvasWorkspaceDelete(subPath)
-  return c.json({ ok: true, deleted: subPath })
-})
-
-// Create a directory
-app.post('/agent/workspace/mkdir', async (c) => {
-  const { path: dirPath } = await c.req.json() as { path: string }
-  if (!dirPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveFilesPath(dirPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
-
-  mkdirSync(resolved, { recursive: true })
-  return c.json({ ok: true, path: dirPath })
-})
+// Tree / read / write / delete / mkdir / download — see workspace-file-routes.ts
+// for the default vs `?scope=project` path spaces.
+app.route('/', workspaceFileRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  filesDir: FILES_DIR,
+  getProjectRoot: projectScopeRoot,
+  onFileWritten: notifyCanvasWorkspaceWrite,
+  onFileDeleted: notifyCanvasWorkspaceDelete,
+}))
 
 // Upload files (multipart/form-data)
 app.post('/agent/workspace/upload', async (c) => {
@@ -4236,56 +4071,6 @@ app.post('/agent/workspace/upload', async (c) => {
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
   }
-})
-
-// Download a file
-const DOWNLOAD_MIME_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.pdf': 'application/pdf',
-  '.json': 'application/json',
-  '.txt': 'text/plain',
-  '.csv': 'text/csv',
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'application/javascript',
-}
-
-app.get('/agent/workspace/download/*', (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/download/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  let resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-
-  if (!existsSync(resolved)) {
-    const fallback = resolveFilesPath(subPath)
-    if (fallback && existsSync(fallback)) {
-      resolved = fallback
-    } else {
-      return c.json({ error: 'File not found' }, 404)
-    }
-  }
-
-  const content = readFileSync(resolved)
-  const fileName = subPath.split('/').pop() || 'download'
-  const ext = extname(fileName).toLowerCase()
-  const contentType = DOWNLOAD_MIME_TYPES[ext] || 'application/octet-stream'
-  const isInline = contentType.startsWith('image/') || contentType === 'application/pdf'
-
-  return new Response(content, {
-    headers: {
-      'Content-Type': contentType,
-      'Content-Disposition': `${isInline ? 'inline' : 'attachment'}; filename="${fileName}"`,
-      'Content-Length': String(content.length),
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Access-Control-Allow-Origin': '*',
-    },
-  })
 })
 
 // Search files via RAG engine
@@ -5310,6 +5095,12 @@ const STATIC_MIME: Record<string, string> = {
 
 app.get('/agent/canvas/stream', (c) => {
   const watcher = getCanvasFileWatcher()
+  // `?scope=project`: the IDE subscribes in the project's path space. Watcher
+  // events are merged-root-relative; keep only those under the project root
+  // and strip that prefix, so event paths match the scoped tree / file API.
+  const scopePrefix = c.req.query('scope') === 'project'
+    ? workspaceRelativePath(WORKSPACE_DIR, resolve(projectScopeRoot()))
+    : ''
 
   const stream = new ReadableStream({
     start(controller) {
@@ -5325,7 +5116,8 @@ app.get('/agent/canvas/stream', (c) => {
 
       // Subscribe to live updates
       const handler = (event: import('./canvas-file-watcher').CanvasEvent) => {
-        send(JSON.stringify(event))
+        const out = scopeCanvasEvent(event, scopePrefix)
+        if (out) send(JSON.stringify(out))
       }
       watcher.subscribe(handler)
 
@@ -5508,6 +5300,7 @@ app.route('/', runtimeDiagnosticsRoutes({
 app.route('/', runtimeLspRoutes({
   workspaceDir: WORKSPACE_DIR,
   getLspManager: () => agentGateway?.getLspManager?.() ?? null,
+  getProjectRoot: projectScopeRoot,
 }))
 
 // =============================================================================
@@ -6405,7 +6198,11 @@ async function initializeEssentials(): Promise<void> {
     // `/p/:projectId/*` static route. `start()` is idempotent.
     const anchorId =
       process.env.WORKSPACE_ANCHOR_PROJECT_ID || WORKSPACE_RUNTIME_PROJECT_IDS[0]
-    const wpm = anchorId ? getWorkspacePreviewManager(anchorId) : null
+    const autoStartAnchor = shouldAutoStartAnchorPreview(anchorId)
+    const wpm = autoStartAnchor && anchorId ? getWorkspacePreviewManager(anchorId) : null
+    if (anchorId && !autoStartAnchor) {
+      logTiming(`Workspace runtime: anchor ${anchorId} is a folder-linked project without runtime enabled — preview not auto-started`)
+    }
     if (wpm && wpm.phase === 'idle') {
       logTiming(`Workspace runtime: auto-starting preview for anchor ${anchorId}`)
       setTimeout(() => {

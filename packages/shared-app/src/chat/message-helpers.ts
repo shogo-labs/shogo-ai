@@ -131,6 +131,8 @@ export function stripInternalErrorMarkers(message: string): string {
   return message.replace(STREAM_ERROR_MARKER_PATTERN, '').trim()
 }
 
+const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'
+
 export function formatErrorMessage(rawMessage: string): string {
   const cleaned = stripInternalErrorMarkers(rawMessage)
   try {
@@ -143,6 +145,17 @@ export function formatErrorMessage(rawMessage: string): string {
     }
     if (parsed?.message) {
       return stripInternalErrorMarkers(parsed.message)
+    }
+    // An error envelope with nothing human-readable in it (e.g.
+    // `{"error":{}}`) must not be rendered verbatim.
+    if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        return stripInternalErrorMarkers(parsed.error)
+      }
+      if (typeof parsed.error?.code === 'string' && parsed.error.code) {
+        return `${GENERIC_REQUEST_FAILED} (${parsed.error.code})`
+      }
+      return GENERIC_REQUEST_FAILED
     }
   } catch {
     // Not JSON

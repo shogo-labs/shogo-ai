@@ -291,6 +291,8 @@ async function walkInner(
   depth: number,
   state: WalkState,
   chain: IgnoreLayer[],
+  ancestors: ReadonlySet<string>,
+  realCurrent: string,
 ): Promise<WorkspaceTreeNode[]> {
   if (depth > state.maxDepth) return []
 
@@ -332,7 +334,11 @@ async function walkInner(
       continue
     }
     state.entriesScanned++
-    const isDir = entry.isDirectory()
+    // Classify from `stat()` (which follows links), not the Dirent: a
+    // symlink / Windows junction to a directory reports
+    // `Dirent.isDirectory() === false`, and workspace runtimes mount every
+    // project and linked folder into the merged root as exactly such a link.
+    const isDir = stat.isDirectory()
     // The `ignore` lib treats trailing-slash patterns as directory-only,
     // so we append a slash for directory paths before checking — matches
     // how `git check-ignore` reads `.gitignore`. Tested against every layer
@@ -352,10 +358,22 @@ async function walkInner(
       //   4. (implicit) `maxDepth` exceeded — handled at the top of the
       //      next recursion call; we keep the dir visible by emitting
       //      `lazy: true` here so the user can still try to expand it.
+      // Following links makes cycles possible (`a/loop -> a`). The real path
+      // of every directory on the current descent chain is tracked; a link
+      // back into that chain is returned as a lazy stub instead of walked.
+      let realDir = join(realCurrent, entry.name)
+      if (entry.isSymbolicLink()) {
+        try {
+          realDir = await fsp.realpath(absPath)
+        } catch {
+          continue
+        }
+      }
       if (
         state.lazyDirs.has(entry.name) ||
         isGitignored ||
-        depth >= state.eagerDepth
+        depth >= state.eagerDepth ||
+        ancestors.has(realDir)
       ) {
         // Visible in the tree but children not walked. Callers fetch
         // children on demand by re-invoking the walker rooted here.
@@ -373,7 +391,7 @@ async function walkInner(
         path: relPath,
         type: 'directory',
         modified: stat.mtimeMs,
-        children: await walkInner(absPath, depth + 1, state, localChain),
+        children: await walkInner(absPath, depth + 1, state, localChain, new Set([...ancestors, realDir]), realDir),
       })
     } else {
       if (state.hiddenFiles.has(entry.name)) continue
@@ -426,5 +444,11 @@ export async function walkFilesTree(
   // lazy re-fetch rooted deep in the tree still honours nested ignores it
   // didn't load directly. `walkInner` then adds `dir`'s own layer.
   const ancestorChain = respectGitignore ? await loadAncestorChain(rootDir, dir) : []
-  return walkInner(dir, 0, state, ancestorChain)
+  let realStart = resolve(dir)
+  try {
+    realStart = await fsp.realpath(dir)
+  } catch {
+    /* missing dir — walkInner returns [] */
+  }
+  return walkInner(dir, 0, state, ancestorChain, new Set([realStart]), realStart)
 }

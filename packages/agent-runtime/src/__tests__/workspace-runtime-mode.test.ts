@@ -17,7 +17,72 @@ import {
   isAttachedProjectId,
   parseWorkspacePreviewUrls,
   resolveRuntimeIdentity,
+  parseWorkspaceMounts,
+  workspaceExternalProjectIds,
+  shouldAutoStartAnchorPreview,
+  userOwnedTrustGroups,
+  type WorkspaceMount,
 } from '../workspace-runtime-mode'
+
+const MOUNTS: WorkspaceMount[] = [
+  { mount: 'anchor', path: '/home/u/repo', projectId: 'anchor', kind: 'external', runtimeEnabled: false },
+  { mount: 'lib', path: '/home/u/lib', projectId: 'anchor', kind: 'folder' },
+  { mount: 'managed-1', path: '/data/workspaces/managed-1', projectId: 'managed-1', kind: 'managed' },
+]
+const WS_ENV = { WORKSPACE_RUNTIME: 'true', WORKSPACE_MOUNTS: JSON.stringify(MOUNTS) } as any
+
+describe('workspace mounts', () => {
+  it('parses WORKSPACE_MOUNTS on workspace runtimes only', () => {
+    expect(parseWorkspaceMounts(WS_ENV)).toEqual(MOUNTS)
+    expect(parseWorkspaceMounts({ WORKSPACE_MOUNTS: JSON.stringify(MOUNTS) } as any)).toEqual([])
+  })
+
+  it('drops malformed entries and malformed JSON', () => {
+    const env = {
+      WORKSPACE_RUNTIME: 'true',
+      WORKSPACE_MOUNTS: JSON.stringify([...MOUNTS, { mount: '', path: '/x', projectId: 'p', kind: 'managed' }, { kind: 'bogus' }]),
+    } as any
+    expect(parseWorkspaceMounts(env)).toEqual(MOUNTS)
+    expect(parseWorkspaceMounts({ WORKSPACE_RUNTIME: 'true', WORKSPACE_MOUNTS: '{nope' } as any)).toEqual([])
+  })
+
+  it('identifies folder-linked members', () => {
+    expect([...workspaceExternalProjectIds(WS_ENV)]).toEqual(['anchor'])
+  })
+
+  it('does not auto-start preview for a folder-linked anchor unless runtime is enabled', () => {
+    expect(shouldAutoStartAnchorPreview('anchor', WS_ENV)).toBe(false)
+    expect(shouldAutoStartAnchorPreview('anchor', { ...WS_ENV, RUNTIME_ENABLED: 'true' })).toBe(true)
+    expect(shouldAutoStartAnchorPreview('managed-1', WS_ENV)).toBe(true)
+    expect(shouldAutoStartAnchorPreview(undefined, WS_ENV)).toBe(false)
+  })
+
+  it('groups user-owned mounts by the project whose trust governs them', () => {
+    expect(userOwnedTrustGroups(MOUNTS)).toEqual([
+      { projectId: 'anchor', external: true, roots: ['/home/u/repo', '/home/u/lib'] },
+    ])
+  })
+})
+
+describe('renderWorkspaceManifestMarkdown with mounts', () => {
+  it("marks the folder-linked project as the user's own folder and lists linked folders", () => {
+    const md = renderWorkspaceManifestMarkdown(
+      'ws-1',
+      [{ id: 'anchor', name: 'alignment-project-server' }, { id: 'managed-1', name: 'App' }],
+      MOUNTS,
+    )
+    expect(md).toContain("- `anchor/` — **alignment-project-server** (the user's own folder `/home/u/repo`)")
+    expect(md).toContain('- `managed-1/` — **App**\n')
+    expect(md).toContain('## Linked folders')
+    expect(md).toContain('- `lib/` — `/home/u/lib`')
+  })
+
+  it('renders no mount sections without user-owned mounts', () => {
+    const md = renderWorkspaceManifestMarkdown('ws-1', [{ id: 'managed-1', name: 'App' }], [MOUNTS[2]!])
+    expect(md).not.toContain('## Linked folders')
+    expect(md).not.toContain("user's own folder")
+  })
+})
 
 describe('resolveRuntimeIdentity', () => {
   it('resolves a workspace-mode personal identity', () => {

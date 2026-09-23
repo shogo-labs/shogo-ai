@@ -821,13 +821,14 @@ export async function syncAfterCheckpoint(
       return; // No connection or sync disabled -- nothing to do
     }
 
+    // Pushing needs the server-side GitHub App, which desktop never has
+    // (`isConfigured()` is always false there). The guard lets the desktop
+    // bundle dead-code-eliminate the GitHub client and its Redis-backed
+    // dependencies (see local-bundle-integrity.test.ts).
     // Lazy import github service to avoid loading jsonwebtoken when not needed
-    // Keep the cloud-only GitHub client outside the local API graph. Bun
-    // retains literal dynamic imports in bundles even behind a local-mode
-    // branch, while this URL form is resolved only when cloud push is used.
-    const githubService = await import(new URL('./github.service.ts', import.meta.url).href);
+    const githubService = process.env.SHOGO_LOCAL_MODE !== 'true' ? await import('./github.service') : null;
 
-    if (!githubService.isConfigured()) {
+    if (!githubService?.isConfigured()) {
       return; // GitHub App not configured on this server
     }
 

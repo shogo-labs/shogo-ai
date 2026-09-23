@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolveRepoRoot()
 const outputDir = mkdtempSync(join(tmpdir(), 'shogo-api-local-bundle-'))
@@ -25,7 +26,8 @@ const externals = [
 ]
 
 function resolveRepoRoot(): string {
-  return new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+  // fileURLToPath, not `.pathname`: on Windows the pathname is `/C:/…`.
+  return fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 }
 
 try {

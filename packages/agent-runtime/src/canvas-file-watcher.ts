@@ -403,6 +403,14 @@ export class CanvasFileWatcher {
   private readonly DEDUPE_WINDOW_MS = 120
 
   private chokidar: FSWatcher | null = null
+  /**
+   * Extra watchers for workspace-runtime mounts, keyed by mount name. The
+   * root watcher runs with `followSymlinks: false`, so nothing under a
+   * mounted project / linked folder (each a symlink or junction in the
+   * merged root) would otherwise emit events — edits made by agent `exec`,
+   * an external editor or `git checkout` never reached the IDE.
+   */
+  private mountWatchers = new Map<string, FSWatcher>()
 
   constructor(workspaceDir: string) {
     this.workspaceDir = resolvePath(workspaceDir)
@@ -466,13 +474,55 @@ export class CanvasFileWatcher {
     }
   }
 
-  private handleChokidarFileEvent(op: 'add' | 'change' | 'unlink', absPath: string): void {
+  /**
+   * Watch the real directory behind a workspace mount and report its events
+   * under `<mount>/…`, the path the same file has inside the merged root.
+   * Idempotent per mount name.
+   */
+  async addMountRoot(realDir: string, mount: string): Promise<void> {
+    if (this.mountWatchers.has(mount)) return
+    const root = resolvePath(realDir)
+    try {
+      const gitignoredDirs = await loadSimpleIgnoredDirsFromGitignore(root)
+      const watcher = chokidarWatch(root, {
+        ignoreInitial: true,
+        persistent: true,
+        followSymlinks: false,
+        depth: 30,
+        awaitWriteFinish: {
+          stabilityThreshold: 60,
+          pollInterval: 20,
+        },
+        ignored: buildIgnoreGlobs(root, gitignoredDirs),
+      })
+      const forward = (op: 'add' | 'change' | 'unlink') => (absPath: string) =>
+        this.handleChokidarFileEvent(op, absPath, { root, mount })
+      watcher.on('add', forward('add'))
+      watcher.on('change', forward('change'))
+      watcher.on('unlink', forward('unlink'))
+      watcher.on('error', (err) => {
+        console.warn(`[CanvasFileWatcher] chokidar error (mount ${mount}):`, (err as Error).message)
+      })
+      this.mountWatchers.set(mount, watcher)
+    } catch (err) {
+      console.warn(`[CanvasFileWatcher] mount watcher init failed for ${mount}:`, (err as Error).message)
+    }
+  }
+
+  private handleChokidarFileEvent(
+    op: 'add' | 'change' | 'unlink',
+    absPath: string,
+    mount?: { root: string; mount: string },
+  ): void {
     // Normalise to POSIX separators BEFORE the ignore check: shouldIgnore()
     // compares against forward-slash prefixes like 'src/generated', and on
     // Windows path.relative() returns backslashes, so nested paths under an
     // ignored prefix never matched and were watched anyway (SHOG-749).
-    const path = normalizeRelativePath(relative(this.workspaceDir, absPath))
-    if (shouldIgnore(path)) return
+    const withinBase = normalizeRelativePath(relative(mount?.root ?? this.workspaceDir, absPath))
+    if (shouldIgnore(withinBase)) return
+    const path = mount ? `${mount.mount}/${withinBase}` : withinBase
+    // Downstream consumers (LSP) were configured with merged-root paths.
+    if (mount) absPath = joinPath(this.workspaceDir, mount.mount, ...withinBase.split('/'))
 
     if (op === 'unlink') {
       // LSP bridge fires regardless of dedupe — the deletion event is
@@ -589,5 +639,7 @@ export class CanvasFileWatcher {
   close(): void {
     this.chokidar?.close().catch(() => {})
     this.chokidar = null
+    for (const watcher of this.mountWatchers.values()) watcher.close().catch(() => {})
+    this.mountWatchers.clear()
   }
 }
