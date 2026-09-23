@@ -31,7 +31,12 @@ import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { sendPushToUser } from "../lib/push-notifications"
-import { clearActiveTurn, markTurnEnded, markTurnStarted } from "../services/chat-turn-state.service"
+import {
+  clearActiveTurn,
+  markTurnEnded,
+  markTurnStarted,
+  startTurnHeartbeat,
+} from "../services/chat-turn-state.service"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1343,12 +1348,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       await openSession(projectId, project.workspaceId, billingUserId || 'system', incomingChatSessionId)
       let billingSessionHandedOff = false
       try {
-        try {
-          activityTurnId = await markTurnStarted(incomingChatSessionId)
-        } catch (error) {
-          // Activity is observational; a schema/database issue must not block chat.
-          console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)
-        }
 
       // Forward headers
       const headers: Record<string, string> = {
@@ -1542,6 +1541,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // resolves (Bun has historically mis-handled that path and
           // left the tracking consumer hung). A cancel() handler also
           // unblocks pull() if the consumer goes away.
+          try {
+            activityTurnId = await markTurnStarted(incomingChatSessionId)
+          } catch (error) {
+            // Activity is observational; a schema/database issue must not block chat.
+            console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)
+          }
           const bgReader = response.body!.getReader()
           const trackingChunks: Uint8Array[] = []
           let trackingDone = false
@@ -1613,6 +1618,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // closeSession after the stream finishes. Mark the handoff so
           // our finally guard doesn't double-close.
           billingSessionHandedOff = true
+          const turnId = activityTurnId
+          const stopTurnHeartbeat = turnId ? startTurnHeartbeat(incomingChatSessionId, turnId) : null
           trackUsageFromStream(trackingStream, parsedBody, project, {
             // Single source of truth for the chat-session id. The route
             // handler resolved it from `X-Chat-Session-Id` || body, and
@@ -1651,8 +1658,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           }).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
           ).finally(() => {
-            if (activityTurnId) {
-              markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
+            stopTurnHeartbeat?.()
+            if (turnId) {
+              markTurnEnded(incomingChatSessionId, turnId).catch((error) =>
                 console.warn(`[ProjectChat] Failed to clear active chat ${incomingChatSessionId}:`, error),
               )
             }
@@ -1829,7 +1837,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
           if (activityTurnId) {
-            clearActiveTurn(incomingChatSessionId).catch((error) =>
+            markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
               console.warn(`[ProjectChat] Failed to clear abandoned active chat ${incomingChatSessionId}:`, error),
             )
           }
@@ -2020,8 +2028,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       try { parsed = JSON.parse(body || "{}") } catch { /* noop */ }
       const chatSessionId =
         c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
-      if (chatSessionId) {
-        await clearActiveTurn(chatSessionId).catch((error) =>
+      if (typeof chatSessionId === "string" && chatSessionId && response.ok) {
+        await clearActiveTurn({ id: chatSessionId, contextId: projectId }).catch((error) =>
           console.warn(`[ProjectChat] Failed to clear stopped chat ${chatSessionId}:`, error),
         )
       }

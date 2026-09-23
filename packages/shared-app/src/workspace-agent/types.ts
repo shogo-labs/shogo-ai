@@ -132,6 +132,7 @@ export interface WorkspaceActivityItem {
   chatSessionId?: string
   turnId?: string
   sessionName?: string
+  isPrimary?: boolean
   projectId?: string | null
   projectName?: string | null
   projectHidden?: boolean
@@ -152,6 +153,7 @@ export interface WorkspaceActiveChat {
   chatSessionId: string
   turnId: string
   sessionName: string
+  isPrimary: boolean
   projectId: string | null
   projectName: string | null
   projectHidden: boolean

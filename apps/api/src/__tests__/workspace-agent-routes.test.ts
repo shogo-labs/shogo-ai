@@ -89,6 +89,7 @@ mock.module('../services/chat-turn-state.service', () => ({
     chatSessionId: 'chat-1',
     turnId: 'turn-1',
     sessionName: 'Planning',
+    isPrimary: false,
     projectId: 'project-1',
     projectName: 'Website',
     projectHidden: false,

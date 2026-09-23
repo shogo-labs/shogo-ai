@@ -303,10 +303,11 @@ export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
     })),
     ...chats.map((chat) => ({
       type: 'chat_turn' as const,
-      id: chat.chatSessionId,
+      id: `${chat.chatSessionId}:${chat.turnId}`,
       chatSessionId: chat.chatSessionId,
       turnId: chat.turnId,
       sessionName: chat.sessionName,
+      isPrimary: chat.isPrimary,
       projectId: chat.projectId,
       projectName: chat.projectName,
       projectHidden: chat.projectHidden,

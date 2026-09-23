@@ -280,7 +280,7 @@ describe('personal companion goal flow — training plan', () => {
 
     await prisma.chatSession.update({
       where: { id: teamSession.id },
-      data: { activeTurnStartedAt: new Date(Date.now() - 31 * 60 * 1000) },
+      data: { activeTurnHeartbeatAt: new Date(Date.now() - 6 * 60 * 1000) },
     })
     expect(await (await app.request(req(`/api/workspaces/${teamWorkspaceId}/active-chats`))).json()).toEqual({ chats: [] })
   })
