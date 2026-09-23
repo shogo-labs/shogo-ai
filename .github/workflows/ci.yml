@@ -630,9 +630,8 @@ jobs:
         id: bun-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: ~/.bun/install/cache
-          key: bun-ci-windows-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-windows-
+          path: ${{ github.workspace }}\.bun-install-cache
+          key: bun-ci-windows-v2-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
         # Keep lifecycle scripts enabled: Bun 1.3.11 hit an ENOENT while
@@ -642,13 +641,14 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
 
       - name: Save Windows bun dependency cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: ~/.bun/install/cache
-          key: bun-ci-windows-${{ hashFiles('bun.lock') }}
+          path: ${{ github.workspace }}\.bun-install-cache
+          key: bun-ci-windows-v2-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # The API suites and the desktop-bundle build below resolve some
