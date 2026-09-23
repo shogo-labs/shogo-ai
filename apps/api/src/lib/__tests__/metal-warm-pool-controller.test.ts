@@ -2,7 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { MetalWarmPoolController, NoMetalHostError, isAssignTimeout } from '../metal-warm-pool-controller'
+import {
+  MetalWarmPoolController,
+  NoMetalHostError,
+  isAssignTimeout,
+  workspaceRuntimeKey,
+} from '../metal-warm-pool-controller'
 import {
   MetalPlacementRegistry,
   _setMetalPlacementRegistry,
@@ -48,6 +53,12 @@ describe('MetalWarmPoolController', () => {
   })
   afterEach(() => {
     _setMetalPlacementRegistry(null)
+  })
+
+  it('isolates anchored project canvases within the same workspace', () => {
+    expect(workspaceRuntimeKey('workspace-1', 'project-a')).toBe('ws:proj:project-a')
+    expect(workspaceRuntimeKey('workspace-1', 'project-b')).toBe('ws:proj:project-b')
+    expect(workspaceRuntimeKey('workspace-1')).toBe('ws:workspace-1')
   })
 
   it('throws NoMetalHostError when no host has registered', async () => {
