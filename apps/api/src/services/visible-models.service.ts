@@ -207,7 +207,8 @@ export async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
   options: { includeLive?: boolean } = {},
 ): Promise<VisibleCatalogModel[]> {
-  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync } = await import('./model-registry.service')
+  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync } =
+    await import('./model-registry.service')
   const toVisible = (entry: any): VisibleCatalogModel => ({
     id: entry.id,
     provider: entry.provider,
@@ -224,25 +225,38 @@ export async function resolveVisibleCatalogModels(
     ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
   })
   if (catalogIds === null) {
-    // DB-managed picker: when any models are defined in the DB, the picker
-    // reflects exactly those (the admin-curated/seeded set) so super admins
-    // can fully control — and remove — what users see. The static
-    // MODEL_CATALOG is a routing-only fallback, used here ONLY when the DB
-    // has no models yet, so a fresh/unseeded instance is never empty.
+    // DB-managed picker: when any models are admin-managed — either defined
+    // in this instance's own DB, or mirrored from a connected cloud in
+    // cloud-proxy mode — the picker reflects exactly that set so admins (this
+    // instance's or the upstream cloud's) can fully control what users see.
+    // The static MODEL_CATALOG is a routing-only fallback, used here ONLY
+    // when NEITHER source has anything yet, so a fresh/unseeded instance is
+    // never empty.
+    //
+    // Critically, the static catalog must never be mixed in *alongside* an
+    // admin-managed source: static entries are keyed by their human slug
+    // (e.g. `gpt-6-astra`) while DB/cloud rows are keyed by UUID, so the same
+    // conceptual model surviving under both keys renders as two picker rows.
+    // That's exactly what happened on a cloud-connected desktop build with an
+    // empty local DB (2026-09-23): `getMergedCatalogSync()` returned the
+    // static catalog *and* the cloud-mirrored rows together, and Astra /
+    // Fable 5.1 / Sonnet 5 — present in both — each showed up twice.
     const dbEntries = getDbModelEntriesSync()
-    const usingStaticFallback = dbEntries.length === 0
-    const source = usingStaticFallback ? getMergedCatalogSync() : dbEntries
+    const cloudEntries = getCloudModelEntriesSync()
+    const dbIds = new Set(dbEntries.map((e) => e.id))
+    const usingStaticFallback = dbEntries.length === 0 && cloudEntries.length === 0
+    const source = usingStaticFallback ? getMergedCatalogSync() : [...dbEntries, ...cloudEntries]
     return bySortOrder(
       source
         .filter((e) => e.generation === 'current')
         .filter((e) => options.includeLive || e.kind !== 'live')
-        // Provider-key gating is meaningful for admin-managed rows: if the
-        // admin has configured models but removed the backing provider key,
-        // those models should disappear from the picker. The static catalog is
-        // only a first-run fallback for an unseeded DB; gating it would make a
-        // fresh dev instance empty before the admin has had a chance to add
-        // keys or DB rows.
-        .filter((e) => usingStaticFallback || isModelProviderConfigured(e.provider))
+        // Provider-key gating only makes sense for this instance's own DB
+        // rows — they route natively and need a real local key. Cloud-
+        // mirrored rows are forwarded upstream by the connected cloud, which
+        // holds its own keys, so they're never locally gated; the true
+        // static-catalog fallback is also ungated (first-run/dev instance,
+        // before an admin has added keys or DB rows).
+        .filter((e) => usingStaticFallback || !dbIds.has(e.id) || isModelProviderConfigured(e.provider))
         .map(toVisible),
     )
   }
