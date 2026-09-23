@@ -377,7 +377,13 @@ function AppLayoutInner() {
     !isSettingsPage &&
     !isBillingPage;
   const nativeEdgeToEdgeChrome =
-    isNativeApp && !isIdeEmbed && (isHomePage || isSearchPage || isAccountPage);
+    isNativeApp &&
+    !isIdeEmbed &&
+    (isHomePage ||
+      isSearchPage ||
+      isAccountPage ||
+      isNotificationsPage ||
+      useMobileWorkspaceShell);
 
   return (
     <NativeSheetDrawerShell

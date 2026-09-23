@@ -1530,9 +1530,7 @@ function ChatInputImpl({
         flush
           ? "pb-3"
           : useProminentComposer
-          ? isNative
-            ? "pt-0"
-            : "px-3 pb-2 pt-0"
+          ? "px-3 pb-2 pt-0"
           : isNative
           ? "px-2 pb-4 pt-0"
           : "p-3 pt-0",

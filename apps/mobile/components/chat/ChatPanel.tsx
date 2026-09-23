@@ -1179,7 +1179,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [hasScrollableTranscript, setHasScrollableTranscript] = useState(false);
   const [nativeInlineEditing, setNativeInlineEditing] = useState(false);
   const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false);
-  const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP);
+  // Phone chrome renders the bottom nav outside this chat surface and that
+  // nav owns the home-indicator inset. Reserving it here too created an extra
+  // blank row between the composer and nav on native, unlike mobile web.
+  const restComposerPad = isPhoneViewport
+    ? NATIVE_COMPOSER_KEYBOARD_GAP
+    : Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP);
   // Native phone chat uses the measured keyboard overlap below. Keeping the
   // KAV lift enabled here makes the composer depend on two independent layout
   // adjustments, which can leave it behind the keyboard in project chat.
@@ -7185,6 +7190,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               chat input). */}
                 {hasScrollableTranscript &&
                   !isFollowing &&
+                  !nativeKeyboardOpen &&
                   displayMessages.length > 0 && (
                     <View
                       pointerEvents="box-none"

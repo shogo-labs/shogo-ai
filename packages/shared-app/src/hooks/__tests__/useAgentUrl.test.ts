@@ -14,10 +14,15 @@
 // the exact delay passed to `setTimeout` for the stall timer, which is the
 // single code path shared with the (fully exercised, short-override) flip
 // + continued-polling test below.
-import { restoreHappyDom } from './happy-dom-setup.ts'
+import { installHappyDom, restoreHappyDom } from './happy-dom-setup.ts'
 import { describe, it, expect, afterAll, afterEach, mock, spyOn } from 'bun:test'
 import { renderHook, waitFor, cleanup } from '@testing-library/react'
 import { useAgentUrl } from '../useAgentUrl'
+
+// Another shared-app test file restores the process-wide DOM globals in its
+// afterAll hook. Re-install explicitly so this file is order-independent when
+// Bun discovers SDKDomainProvider.test.tsx before this one.
+installHappyDom()
 
 function notReadyResponse(): Response {
   return new Response(JSON.stringify({ ready: false, status: 'building' }), {

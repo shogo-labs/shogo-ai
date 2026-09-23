@@ -42,7 +42,9 @@ export function restoreHappyDom(): void {
   previousGlobals.clear()
 }
 
-if (!globalThis.__happyDomInstalled) {
+export function installHappyDom(): void {
+  if (globalThis.__happyDomInstalled && typeof globalThis.document !== 'undefined') return
+  previousGlobals.clear()
   const win = new GlobalWindow()
   // Mirror DOM-ish keys onto globalThis. Skip keys that node already owns
   // (Array, Map, Promise, etc.) or that conflict with bun:test.
@@ -85,3 +87,5 @@ if (!globalThis.__happyDomInstalled) {
   rememberGlobal('__happyDomInstalled')
   globalThis.__happyDomInstalled = true
 }
+
+installHappyDom()

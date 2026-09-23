@@ -14,7 +14,7 @@
  * This makes the desktop the source of truth while connected.
  */
 
-import { createContext, useContext, useRef, useEffect, useState, useMemo, useCallback, type ReactNode } from 'react'
+import { Fragment, createContext, useContext, useRef, useEffect, useState, useMemo, useCallback, type ReactNode } from 'react'
 import { HttpClient } from '@shogo-ai/sdk'
 import {
   createDomainStore,
@@ -83,8 +83,9 @@ function getOrCreateStore(
 
   if (moduleStore !== null && moduleUserId !== userId) {
     moduleUserId = userId
-    moduleStore.clearAll()
-    clearSessionChatCollections()
+    if (moduleEnv) {
+      moduleEnv.context = userId ? { userId } : undefined
+    }
     return { rawHttp: moduleRawHttpClient!, http: moduleProxiedHttpClient!, store: moduleStore, facades: moduleFacades! }
   }
 
@@ -195,7 +196,9 @@ export function SDKDomainProvider({
 }: SDKDomainProviderProps) {
   const [isReady, setIsReady] = useState(false)
   const [remoteError, setRemoteError] = useState<string | null>(null)
-  const prevUserIdRef = useRef<string | null | undefined>(undefined)
+  const [storeUserId, setStoreUserId] = useState<string | null>(
+    () => moduleStore ? moduleUserId : userId,
+  )
   const prevRemoteUrlRef = useRef<string | null | undefined>(undefined)
 
   // ─── Remote config ref ──────────────────────────────────────────────
@@ -270,8 +273,13 @@ export function SDKDomainProvider({
   }, [remoteProxyBaseUrl, store])
 
   useEffect(() => {
-    prevUserIdRef.current = userId
-  }, [userId])
+    if (storeUserId !== userId) {
+      store.clearAll()
+      clearSessionChatCollections()
+      setRemoteError(null)
+      setStoreUserId(userId)
+    }
+  }, [store, storeUserId, userId])
 
   useEffect(() => { setIsReady(true) }, [])
 
@@ -293,7 +301,9 @@ export function SDKDomainProvider({
 
   return (
     <SDKDomainContext.Provider value={contextValue}>
-      {children}
+      {storeUserId === userId ? (
+        <Fragment key={userId ?? 'signed-out'}>{children}</Fragment>
+      ) : null}
     </SDKDomainContext.Provider>
   )
 }

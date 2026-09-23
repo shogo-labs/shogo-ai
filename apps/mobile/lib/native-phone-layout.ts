@@ -260,9 +260,14 @@ export function hexToRgbChannels(hex: string): [number, number, number] {
 export function nativePhoneDockFadeColors(
   isDark: boolean,
   canvasHex?: string,
+  endOpacity = 0.94,
 ): readonly [string, string, string] {
   const [r, g, b] = hexToRgbChannels(canvasHex ?? nativePhoneCanvas(isDark))
-  return [`rgba(${r},${g},${b},0)`, `rgba(${r},${g},${b},0.42)`, `rgba(${r},${g},${b},0.94)`]
+  return [
+    `rgba(${r},${g},${b},0)`,
+    `rgba(${r},${g},${b},0.42)`,
+    `rgba(${r},${g},${b},${endOpacity})`,
+  ]
 }
 
 /** Dark-only chrome for sheets that rise from the bottom of the screen. */

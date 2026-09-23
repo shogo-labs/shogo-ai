@@ -6,6 +6,7 @@ import { Redirect } from 'expo-router'
 import { useAuth } from '../contexts/auth'
 import { usePlatformConfig } from '../lib/platform-config'
 import { API_URL } from '../lib/api'
+import { autoSignInLocally } from '../lib/auth-client'
 
 export default function RootIndex() {
   const { isAuthenticated, isLoading: authLoading, refreshSession } = useAuth()
@@ -25,11 +26,8 @@ export default function RootIndex() {
     if (isAuthenticated || authLoading || autoSignInAttempted.current) return
     autoSignInAttempted.current = true
     setAutoSigningIn(true)
-    fetch(`${API_URL}/api/local/auto-sign-in`, {
-      method: 'POST',
-      credentials: 'include',
-    })
-      .then(() => refreshSession())
+    autoSignInLocally()
+      .then(refreshSession)
       .catch((err) => console.error('[LocalMode] Auto-sign-in failed:', err))
       .finally(() => setAutoSigningIn(false))
   }, [platformConfig.configLoaded, platformConfig.localMode, isAuthenticated, authLoading, refreshSession])
