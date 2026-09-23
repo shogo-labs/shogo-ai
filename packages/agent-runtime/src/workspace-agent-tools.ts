@@ -316,6 +316,7 @@ export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
+      if (!ctx.userId) return noUser()
       const input = params as {
         scheduleId: string
         name?: string
@@ -332,6 +333,7 @@ export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
         timezone: input.timezone,
         goalId: input.goalId,
         enabled: input.enabled,
+        userId: ctx.userId,
       })
       return result.ok && result.data
         ? textResult({ ok: true, schedule: result.data })
@@ -351,8 +353,9 @@ export function createScheduleDeleteTool(ctx: ToolContext): AgentTool {
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
+      if (!ctx.userId) return noUser()
       const input = params as { scheduleId: string }
-      const result = await apiDeleteSchedule(workspaceId, input.scheduleId)
+      const result = await apiDeleteSchedule(workspaceId, input.scheduleId, ctx.userId)
       return result.ok ? textResult({ ok: true }) : apiError(result, 'Could not delete the schedule')
     },
   }

@@ -24,6 +24,7 @@ import {
   AgentScheduleError,
   createSchedule,
   deleteSchedule,
+  getSchedule,
   listSchedules,
   updateSchedule,
 } from '../services/agent-schedule.service'
@@ -58,6 +59,11 @@ export type WorkspaceAgentAuthorize = (
   c: any,
 ) => Promise<WorkspaceAgentAuthContext | Response>
 
+/** Roles allowed to create schedules that run as themselves. */
+const SCHEDULE_CREATOR_ROLES = ['owner', 'admin', 'member']
+/** Roles allowed to manage schedules created by someone else. */
+const SCHEDULE_ADMIN_ROLES = ['owner', 'admin']
+
 export interface WorkspaceAgentRoutesConfig {
   authorize: WorkspaceAgentAuthorize
   saveAgentAvatar?: (workspaceId: string, imageBuffer: Buffer) => Promise<string>
@@ -88,6 +94,54 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   function scheduleError(c: any, error: unknown) {
     if (!(error instanceof AgentScheduleError)) throw error
     return c.json({ error: { code: error.code, message: error.message } }, error.status)
+  }
+
+  function forbidden(c: any, message = 'No access to this workspace') {
+    return c.json({ error: { code: 'forbidden', message } }, 403)
+  }
+
+  /**
+   * Scheduled runs execute as the schedule's user (chat identity, billing,
+   * integrations), so every schedule mutation must be attributed to a real
+   * workspace member. The internal mount authenticates the runtime pod, not a
+   * user, so it must name the acting user in the body.
+   */
+  async function resolveScheduleActor(
+    c: any,
+    auth: WorkspaceAgentAuthContext,
+    body: Record<string, unknown> | null,
+  ): Promise<string | Response> {
+    const userId =
+      auth.userId ||
+      (typeof body?.userId === 'string' && body.userId.trim() ? body.userId.trim() : null)
+    if (!userId) {
+      return c.json({
+        error: { code: 'invalid_body', message: 'userId is required for an internal schedule request' },
+      }, 400)
+    }
+    if (!auth.userId && !(await hasWorkspaceAccess(auth.workspaceId, userId))) {
+      return forbidden(c)
+    }
+    return userId
+  }
+
+  /** Only the schedule's creator or a workspace owner/admin may change it. */
+  async function authorizeScheduleManagement(
+    c: any,
+    auth: WorkspaceAgentAuthContext,
+    body: Record<string, unknown> | null,
+  ): Promise<Response | null> {
+    const actor = await resolveScheduleActor(c, auth, body)
+    if (actor instanceof Response) return actor
+    const existing = await getSchedule(auth.workspaceId, c.req.param('scheduleId'))
+    if (!existing) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
+    if (
+      existing.userId !== actor &&
+      !(await hasWorkspaceAccess(auth.workspaceId, actor, SCHEDULE_ADMIN_ROLES))
+    ) {
+      return forbidden(c, 'Only the schedule creator or a workspace admin can change this schedule')
+    }
+    return null
   }
 
   router.get('/workspaces/:workspaceId/agent-profile', async (c) => {
@@ -224,16 +278,10 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
-    const userId =
-      auth.userId ||
-      (typeof body?.userId === 'string' && body.userId.trim() ? body.userId.trim() : null)
-    if (!userId) {
-      return c.json({
-        error: { code: 'invalid_body', message: 'userId is required for an internal schedule request' },
-      }, 400)
-    }
-    if (!auth.userId && !(await hasWorkspaceAccess(auth.workspaceId, userId))) {
-      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    const userId = await resolveScheduleActor(c, auth, body)
+    if (userId instanceof Response) return userId
+    if (!(await hasWorkspaceAccess(auth.workspaceId, userId, SCHEDULE_CREATOR_ROLES))) {
+      return forbidden(c, 'Viewers cannot create schedules')
     }
     if (
       !body ||
@@ -278,6 +326,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (!body || typeof body !== 'object') {
       return c.json({ error: { code: 'invalid_body', message: 'Request body must be an object' } }, 400)
     }
+    const denied = await authorizeScheduleManagement(c, auth, body)
+    if (denied) return denied
     if (body.goalId !== undefined && body.goalId !== null && typeof body.goalId !== 'string') {
       return c.json({ error: { code: 'invalid_field', message: 'goalId must be a string or null' } }, 400)
     }
@@ -308,6 +358,9 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   router.delete('/workspaces/:workspaceId/schedules/:scheduleId', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const denied = await authorizeScheduleManagement(c, auth, body)
+    if (denied) return denied
     const deleted = await deleteSchedule(auth.workspaceId, c.req.param('scheduleId'))
     if (!deleted) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
     return c.json({ ok: true })

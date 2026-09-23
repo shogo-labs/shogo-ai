@@ -78,6 +78,17 @@ describe('workspace schedule tools', () => {
       userId: 'user-1',
     })
     expect(calls[1]?.args).toEqual(['workspace-1', 'goal-1'])
-    expect(calls[3]?.args).toEqual(['workspace-1', 'schedule-1'])
+    expect(calls[2]?.args[2]).toMatchObject({ enabled: false, userId: 'user-1' })
+    expect(calls[3]?.args).toEqual(['workspace-1', 'schedule-1', 'user-1'])
+  })
+
+  test('refuses to update or delete without an acting user', async () => {
+    calls.length = 0
+    const anonymous: any = { ...ctx, userId: undefined }
+    expect(await execute(createScheduleUpdateTool(anonymous), { scheduleId: 'schedule-1', enabled: false }))
+      .toMatchObject({ code: 'no_user' })
+    expect(await execute(createScheduleDeleteTool(anonymous), { scheduleId: 'schedule-1' }))
+      .toMatchObject({ code: 'no_user' })
+    expect(calls).toEqual([])
   })
 })

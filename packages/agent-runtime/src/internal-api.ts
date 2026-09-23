@@ -516,6 +516,7 @@ export interface AgentScheduleUpdateRequest {
   timezone?: string
   goalId?: string | null
   enabled?: boolean
+  userId?: string
 }
 
 async function personalFetch<T>(
@@ -651,10 +652,11 @@ export async function updateSchedule(
 export async function deleteSchedule(
   workspaceId: string,
   scheduleId: string,
+  userId?: string,
 ): Promise<CheckpointCallResult<{ ok: true }>> {
   return personalFetch(
     `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules/${encodeURIComponent(scheduleId)}`,
-    { method: 'DELETE', parse: (j) => j as { ok: true } },
+    { method: 'DELETE', body: JSON.stringify({ userId }), parse: (j) => j as { ok: true } },
   )
 }
 

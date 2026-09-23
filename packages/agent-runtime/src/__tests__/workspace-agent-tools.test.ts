@@ -113,7 +113,8 @@ describe('personal runtime tools', () => {
 
   test('creates, lists, updates, and deletes workspace schedules', async () => {
     calls.length = 0
-    await execute(createScheduleCreateTool({ ...ctx, userId: 'user-1' }), {
+    const userCtx = { ...ctx, userId: 'user-1' }
+    await execute(createScheduleCreateTool(userCtx), {
       name: 'Morning digest',
       prompt: 'Review my inbox and summarize anything urgent.',
       cron: '0 9 * * 1-5',
@@ -121,8 +122,8 @@ describe('personal runtime tools', () => {
       goalId: 'goal-1',
     })
     await execute(createScheduleListTool(ctx), { goalId: 'goal-1' })
-    await execute(createScheduleUpdateTool(ctx), { scheduleId: 'schedule-1', enabled: false })
-    await execute(createScheduleDeleteTool(ctx), { scheduleId: 'schedule-1' })
+    await execute(createScheduleUpdateTool(userCtx), { scheduleId: 'schedule-1', enabled: false })
+    await execute(createScheduleDeleteTool(userCtx), { scheduleId: 'schedule-1' })
 
     expect(calls.map((call) => call.name)).toEqual([
       'createSchedule',
@@ -150,8 +151,9 @@ describe('personal runtime tools', () => {
       timezone: undefined,
       goalId: undefined,
       enabled: false,
+      userId: 'user-1',
     }])
-    expect(calls[3]?.args).toEqual(['workspace-1', 'schedule-1'])
+    expect(calls[3]?.args).toEqual(['workspace-1', 'schedule-1', 'user-1'])
   })
 })
 

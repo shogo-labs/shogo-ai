@@ -15,9 +15,18 @@ const profile = {
   statusUpdatedAt: null,
 }
 
+const memberRoles: Record<string, string> = {
+  'user-1': 'member',
+  'user-admin': 'admin',
+  'user-other': 'member',
+  'user-viewer': 'viewer',
+}
+
 mock.module('../services/workspace.service', () => ({
-  hasWorkspaceAccess: async (workspaceId: string, userId: string) =>
-    workspaceId === 'workspace-1' && userId === 'user-1',
+  hasWorkspaceAccess: async (workspaceId: string, userId: string, requiredRoles?: string[]) => {
+    const role = workspaceId === 'workspace-1' ? memberRoles[userId] : undefined
+    return !!role && (!requiredRoles || requiredRoles.includes(role))
+  },
 }))
 
 mock.module('../services/workspace-agent.service', () => ({
@@ -68,6 +77,8 @@ mock.module('../services/agent-schedule.service', () => ({
     status = 400
   },
   listSchedules: async () => [schedule],
+  getSchedule: async (_workspaceId: string, scheduleId: string) =>
+    scheduleId === 'schedule-1' ? schedule : null,
   createSchedule: async (input: any) => ({ ...schedule, ...input, id: 'schedule-1' }),
   updateSchedule: async (_workspaceId: string, _scheduleId: string, changes: any) => ({ ...schedule, ...changes }),
   deleteSchedule: async () => true,
@@ -248,6 +259,55 @@ describe('workspace agent routes (session-authorized mount)', () => {
     })
     expect(remove.status).toBe(200)
   })
+
+  test('rejects non-members on every schedule route', async () => {
+    const app = appFor('user-2')
+    const json = { 'content-type': 'application/json' }
+    const responses = await Promise.all([
+      app.request('/api/workspaces/workspace-1/schedules'),
+      app.request('/api/workspaces/workspace-1/schedules', {
+        method: 'POST',
+        headers: json,
+        body: JSON.stringify({ name: 'x', prompt: 'y', cronExpression: '0 9 * * *' }),
+      }),
+      app.request('/api/workspaces/workspace-1/schedules/schedule-1', {
+        method: 'PATCH',
+        headers: json,
+        body: JSON.stringify({ enabled: false }),
+      }),
+      app.request('/api/workspaces/workspace-1/schedules/schedule-1', { method: 'DELETE' }),
+    ])
+    expect(responses.map((res) => res.status)).toEqual([403, 403, 403, 403])
+  })
+
+  test('viewers cannot create schedules', async () => {
+    const res = await appFor('user-viewer').request('/api/workspaces/workspace-1/schedules', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'x', prompt: 'y', cronExpression: '0 9 * * *' }),
+    })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ error: { code: 'forbidden' } })
+  })
+
+  test('only the creator or a workspace admin can update or delete a schedule', async () => {
+    const patch = (userId: string) =>
+      appFor(userId).request('/api/workspaces/workspace-1/schedules/schedule-1', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+      })
+    const remove = (userId: string) =>
+      appFor(userId).request('/api/workspaces/workspace-1/schedules/schedule-1', { method: 'DELETE' })
+
+    expect((await patch('user-other')).status).toBe(403)
+    expect((await remove('user-other')).status).toBe(403)
+    expect((await patch('user-viewer')).status).toBe(403)
+    expect((await patch('user-1')).status).toBe(200)
+    expect((await remove('user-1')).status).toBe(200)
+    expect((await patch('user-admin')).status).toBe(200)
+    expect((await remove('user-admin')).status).toBe(200)
+  })
 })
 
 describe('workspace agent routes (authorize-strategy agnostic)', () => {
@@ -273,5 +333,35 @@ describe('workspace agent routes (authorize-strategy agnostic)', () => {
     const res = await app.request('/api/internal/workspaces/workspace-1/agent-profile')
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ profile: { name: 'Shogo' } })
+  })
+
+  describe('internal schedule mutations', () => {
+    const app = appWithAuthorize(async (c) => ({ workspaceId: c.req.param('workspaceId') }))
+    const send = (method: string, path: string, body?: Record<string, unknown>) =>
+      app.request(`/api/internal/workspaces/workspace-1/schedules${path}`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+
+    test('create requires a member userId', async () => {
+      const draft = { name: 'x', prompt: 'y', cronExpression: '0 9 * * *' }
+      expect((await send('POST', '', { ...draft, userId: 'user-2' })).status).toBe(403)
+      expect((await send('POST', '', { ...draft, userId: 'user-viewer' })).status).toBe(403)
+      expect((await send('POST', '', { ...draft, userId: 'user-1' })).status).toBe(201)
+    })
+
+    test('update and delete reject requests without an acting user', async () => {
+      expect((await send('PATCH', '/schedule-1', { enabled: false })).status).toBe(400)
+      expect((await send('DELETE', '/schedule-1')).status).toBe(400)
+    })
+
+    test('update and delete enforce creator-or-admin for the acting user', async () => {
+      expect((await send('PATCH', '/schedule-1', { enabled: false, userId: 'user-2' })).status).toBe(403)
+      expect((await send('PATCH', '/schedule-1', { enabled: false, userId: 'user-other' })).status).toBe(403)
+      expect((await send('DELETE', '/schedule-1', { userId: 'user-other' })).status).toBe(403)
+      expect((await send('PATCH', '/schedule-1', { enabled: false, userId: 'user-1' })).status).toBe(200)
+      expect((await send('DELETE', '/schedule-1', { userId: 'user-admin' })).status).toBe(200)
+    })
   })
 })
