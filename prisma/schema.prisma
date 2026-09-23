@@ -1338,8 +1338,11 @@ model ChatSession {
   lastActiveAt        DateTime    @default(now())
   // Set while an agent turn is in flight. The turn id makes completion
   // updates conditional so an older stream cannot clear a newer turn.
-  activeTurnId        String?
-  activeTurnStartedAt DateTime?
+  // The heartbeat is refreshed while the stream runs; activity treats a
+  // turn with an old heartbeat as dead (e.g. the API restarted mid-turn).
+  activeTurnId          String?
+  activeTurnStartedAt   DateTime?
+  activeTurnHeartbeatAt DateTime?
 
   // BETA: per-chat git worktrees. When the project's gitWorktreesEnabled flag
   // is on, each chat runs on its own branch in an isolated worktree. These
@@ -1361,7 +1364,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
-  @@index([workspaceId, activeTurnStartedAt])
+  @@index([activeTurnHeartbeatAt])
   @@index([createdAt])
   @@map("chat_sessions")
 }

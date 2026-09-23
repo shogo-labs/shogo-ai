@@ -625,6 +625,9 @@ model ChatSession {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @default(now()) @updatedAt
   lastActiveAt        DateTime @default(now())
+  activeTurnId          String?
+  activeTurnStartedAt   DateTime?
+  activeTurnHeartbeatAt DateTime?
 
   project      Project?      @relation(fields: [contextId], references: [id], onDelete: Cascade)
   messages     ChatMessage[]
@@ -632,6 +635,7 @@ model ChatSession {
   agentTasks   AgentTask[]
 
   @@index([contextType, contextId])
+  @@index([activeTurnHeartbeatAt])
   @@map("chat_sessions")
 }
 

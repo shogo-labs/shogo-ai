@@ -40,6 +40,7 @@ export const ChatSessionModel = types
     lastActiveAt: types.optional(types.number, 0),
     activeTurnId: types.optional(types.string, ""),
     activeTurnStartedAt: types.optional(types.number, 0),
+    activeTurnHeartbeatAt: types.optional(types.number, 0),
     worktreeBranch: types.optional(types.string, ""),
     worktreeStatus: types.optional(types.string, ""),
     worktreePath: types.optional(types.string, ""),

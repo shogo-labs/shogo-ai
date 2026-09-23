@@ -28,6 +28,7 @@ export interface ChatSessionType {
   lastActiveAt: Date
   activeTurnId?: string
   activeTurnStartedAt?: Date
+  activeTurnHeartbeatAt?: Date
   worktreeBranch?: string
   worktreeStatus?: string
   worktreePath?: string
@@ -50,6 +51,7 @@ export interface ChatSessionCreateInput {
   lastActiveAt?: Date
   activeTurnId?: string
   activeTurnStartedAt?: Date
+  activeTurnHeartbeatAt?: Date
   worktreeBranch?: string
   worktreeStatus?: string
   worktreePath?: string
@@ -72,6 +74,7 @@ export interface ChatSessionUpdateInput {
   lastActiveAt?: Date
   activeTurnId?: string
   activeTurnStartedAt?: Date
+  activeTurnHeartbeatAt?: Date
   worktreeBranch?: string
   worktreeStatus?: string
   worktreePath?: string

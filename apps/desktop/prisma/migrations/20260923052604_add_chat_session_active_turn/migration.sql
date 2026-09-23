@@ -13,7 +13,8 @@
 -- AlterTable
 ALTER TABLE "chat_sessions" ADD COLUMN "activeTurnId" TEXT;
 ALTER TABLE "chat_sessions" ADD COLUMN "activeTurnStartedAt" DATETIME;
+ALTER TABLE "chat_sessions" ADD COLUMN "activeTurnHeartbeatAt" DATETIME;
 
 -- CreateIndex
-CREATE INDEX "chat_sessions_workspaceId_activeTurnStartedAt_idx" ON "chat_sessions"("workspaceId", "activeTurnStartedAt");
+CREATE INDEX "chat_sessions_activeTurnHeartbeatAt_idx" ON "chat_sessions"("activeTurnHeartbeatAt");
 
