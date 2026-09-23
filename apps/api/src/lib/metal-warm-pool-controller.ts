@@ -39,6 +39,14 @@ export function publishedRuntimeKey(projectId: string): string {
   return `published:${projectId}`
 }
 
+/**
+ * Workspace-session runtimes are keyed by workspace. Project canvases instead
+ * get an anchored merged-root runtime, isolated by their anchor project.
+ */
+export function workspaceRuntimeKey(workspaceId: string, anchorProjectId?: string): string {
+  return anchorProjectId ? `ws:proj:${anchorProjectId}` : `ws:${workspaceId}`
+}
+
 const tracer = trace.getTracer('shogo-metal-pool')
 const meter = metrics.getMeter('shogo-metal-pool')
 
@@ -524,14 +532,17 @@ export class MetalWarmPoolController {
     attachedProjectIds: string[],
     opts: { anchorProjectId?: string; readonlyProjectIds?: string[] } = {},
   ): Promise<string> {
-    const key = `ws:${workspaceId}`
+    // Project canvases are anchored workspace runtimes. Their merged roots
+    // differ even when the projects share a workspace, so they must never
+    // share the workspace-session VM/cache/placement key.
+    const key = workspaceRuntimeKey(workspaceId, opts.anchorProjectId)
     return this.resolveRuntime(key, () =>
       buildWorkspaceEnv(workspaceId, attachedProjectIds, {
         forMetal: true,
         anchorProjectId: opts.anchorProjectId,
         readonlyProjectIds: opts.readonlyProjectIds,
       }),
-      { workspaceId, attachedProjectIds },
+      { workspaceId, attachedProjectIds, anchorProjectId: opts.anchorProjectId },
     )
   }
 
@@ -578,7 +589,7 @@ export class MetalWarmPoolController {
   private async resolveRuntime(
     runtimeKey: string,
     buildEnv: () => Promise<Record<string, string>>,
-    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
   ): Promise<string> {
     // Fast path: an already-resolved, still-running runtime returns its cached
     // URL without touching the host — killing the per-request /assign churn that
@@ -621,7 +632,7 @@ export class MetalWarmPoolController {
   private async _resolve(
     projectId: string,
     buildEnv: () => Promise<Record<string, string>>,
-    bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
   ): Promise<string> {
     return tracer.startActiveSpan('metal.get_pod_url', { attributes: { 'project.id': projectId } }, async (span) => {
       try {
@@ -1010,7 +1021,11 @@ export class MetalWarmPoolController {
         projectId,
         env,
         ...(bind?.workspaceId
-          ? { workspaceId: bind.workspaceId, attachedProjectIds: bind.attachedProjectIds ?? [] }
+          ? {
+              workspaceId: bind.workspaceId,
+              attachedProjectIds: bind.attachedProjectIds ?? [],
+              anchorProjectId: bind.anchorProjectId,
+            }
           : {}),
       }),
       signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
