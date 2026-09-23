@@ -58,6 +58,7 @@ import type {
   WorkspaceAgentProfile as SharedWorkspaceAgentProfile,
   Goal as SharedGoal,
   WorkspaceActivityItem as SharedWorkspaceActivityItem,
+  WorkspaceActiveChat as SharedWorkspaceActiveChat,
   GoalEventRecord as SharedGoalEventRecord,
   GoalPlanStep as SharedGoalPlanStep,
   GoalDeliverable as SharedGoalDeliverable,
@@ -69,6 +70,7 @@ export type PersonalGoalEventKind = SharedGoalEventKind
 export type PersonalAgentProfile = SharedWorkspaceAgentProfile
 export type PersonalGoal = SharedGoal
 export type PersonalWorkspaceActivity = SharedWorkspaceActivityItem
+export type ActiveChatTurn = SharedWorkspaceActiveChat
 export type PersonalGoalEvent = SharedGoalEventRecord
 export type PersonalGoalPlanStep = SharedGoalPlanStep
 export type PersonalGoalDeliverable = SharedGoalDeliverable
@@ -1472,6 +1474,13 @@ export const api = {
       `/api/workspaces/${encodeURIComponent(workspaceId)}/activity?limit=${Math.min(Math.max(limit, 1), 200)}`,
     )
     return res.data?.activity ?? []
+  },
+
+  async listWorkspaceActiveChats(http: HttpClient, workspaceId: string): Promise<ActiveChatTurn[]> {
+    const res = await http.get<{ chats?: ActiveChatTurn[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats`,
+    )
+    return res.data?.chats ?? []
   },
 
   /** Attach a project to an existing workspace session. */

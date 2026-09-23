@@ -5,14 +5,15 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { AppState, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { ChevronRight, Clock3, Folder, ListTodo, XCircle } from 'lucide-react-native'
+import { ChevronRight, Clock3, Folder, ListTodo, MessageSquare, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useNotificationCollection, useProjectCollection } from '../../contexts/domain'
 import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
-import { api, createHttpClient, type AgentTask } from '../../lib/api'
+import { api, createHttpClient, type ActiveChatTurn, type AgentTask } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
+import { openActiveChat } from '../../lib/open-active-chat'
 import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
@@ -47,8 +48,8 @@ function timestamp(value: unknown): number {
   return Number.isNaN(parsed) ? 0 : parsed
 }
 
-function elapsed(task: AgentTask) {
-  const start = task.startedAt || task.queuedAt || task.createdAt
+function elapsed(task: { startedAt?: string | null; queuedAt?: string | null; createdAt?: string }) {
+  const start = task.startedAt || task.queuedAt || task.createdAt || ''
   const epoch = Date.parse(start)
   if (!Number.isFinite(epoch)) return '—'
   const minutes = Math.max(0, Math.floor((Date.now() - epoch) / 60_000))
@@ -160,6 +161,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
   const projects = useProjectCollection()
   const isRemoteSource = useIsRemoteSource()
   const [tasks, setTasks] = useState<AgentTask[]>([])
+  const [activeChats, setActiveChats] = useState<ActiveChatTurn[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -186,12 +188,17 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
               projectLoadScope.current = projectScope
             })
           : Promise.resolve()
-        const [, , next] = await Promise.all([
+        const [, , next, chats] = await Promise.all([
           notifications.loadAll(),
           projectLoad,
           api.listAgentTasks(http),
+          // Active chats are supplementary; a failure here must not hide agent tasks.
+          workspace?.id
+            ? api.listWorkspaceActiveChats(http, workspace.id).catch(() => null)
+            : Promise.resolve([]),
         ])
         setTasks(next.filter((task) => !workspace?.id || task.workspaceId === workspace.id))
+        if (chats) setActiveChats(chats)
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : 'Could not load activity')
       } finally {
@@ -259,6 +266,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
 
   const agentTasks = tasks
   const active = useMemo(() => agentTasks.filter((task) => task.status === 'queued' || task.status === 'running'), [agentTasks])
+  const runningCount = active.length + activeChats.length
   const failedOrCancelled = useMemo(() => agentTasks.filter((task) => task.status === 'failed' || task.status === 'cancelled'), [agentTasks])
   const projectList = projects.all
   const projectActivity = useMemo(() => {
@@ -367,12 +375,13 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
             </View>
           </View>
 
-          <SectionHeader title="Running now" count={active.length} subtitle="Live agent work across this workspace" />
-          {active.length === 0 ? (
+          <SectionHeader title="Running now" count={runningCount} subtitle="Live agent work and active chats across this workspace" />
+          {runningCount === 0 ? (
             <View className="mx-4 mt-3">
-              <ActivityEmptyCard title="No agents are currently working" message="When you start an agent, its live progress will appear here." />
+              <ActivityEmptyCard title="No agents or chats are currently working" message="When you start an agent or send a chat message, its live progress will appear here." />
             </View>
-          ) : active.map((task) => (
+          ) : <>
+            {active.map((task) => (
             <View key={task.id} className="mx-4 mt-3">
               <ActivityCard
                 tone="primary"
@@ -384,7 +393,21 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
                 onPress={() => openTaskChat(task)}
               />
             </View>
-          ))}
+            ))}
+            {activeChats.map((chat) => (
+              <View key={`${chat.chatSessionId}:${chat.turnId}`} className="mx-4 mt-3">
+                <ActivityCard
+                  tone="primary"
+                  icon={<MessageSquare size={19} className="text-primary" />}
+                  title={chat.sessionName}
+                  subtitle={`${chat.projectHidden ? 'Companion' : chat.projectName || 'Workspace chat'} · Chatting · ${elapsed(chat)}`}
+                  message={<View className="rounded-xl bg-background/70 px-3 py-2.5"><Text className="text-sm leading-5 text-foreground">An agent is responding in this chat.</Text></View>}
+                  trailing={<ChevronRight size={17} className="mt-0.5 text-primary" />}
+                  onPress={() => openActiveChat(router, chat)}
+                />
+              </View>
+            ))}
+          </>}
 
           <SectionHeader title="Workspace projects" count={projectActivity.length} subtitle="Monitor every project in this workspace" />
           {projectActivity.length === 0 ? (
@@ -412,7 +435,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
             ))}
           </> : null}
 
-          {agentTasks.length === 0 && projectActivity.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Create a project or start a task to see activity here." /></View> : null}
+          {agentTasks.length === 0 && activeChats.length === 0 && projectActivity.length === 0 ? <View className="mx-4 mt-4"><PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="Nothing to report yet" message="Create a project or start a task to see activity here." /></View> : null}
         </ScrollView>
       )}
     </View>
