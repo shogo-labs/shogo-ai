@@ -15,6 +15,7 @@ CREATE TABLE "agent_schedules" (
   "lastError" TEXT,
   "chatSessionId" TEXT,
   "runningAt" DATETIME,
+  "consecutiveFailures" INTEGER NOT NULL DEFAULT 0,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
   CONSTRAINT "agent_schedules_workspaceId_fkey"

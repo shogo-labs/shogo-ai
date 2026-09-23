@@ -15,6 +15,7 @@ CREATE TABLE "agent_schedules" (
   "lastError" TEXT,
   "chatSessionId" TEXT,
   "runningAt" TIMESTAMP(3),
+  "consecutiveFailures" INTEGER NOT NULL DEFAULT 0,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" TIMESTAMP(3) NOT NULL,
   CONSTRAINT "agent_schedules_pkey" PRIMARY KEY ("id")

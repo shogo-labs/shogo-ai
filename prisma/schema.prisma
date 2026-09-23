@@ -57,7 +57,7 @@ model User {
   members              Member[]
   notifications        Notification[]
   agentTasks            AgentTask[]
-  agentSchedules        AgentSchedule[]
+  agentSchedules       AgentSchedule[]
   starredProjects      StarredProject[]
   signupAttribution    SignupAttribution?
   apiKeys              ApiKey[]
@@ -195,7 +195,7 @@ model Workspace {
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
   agentTasks             AgentTask[]
-  agentSchedules          AgentSchedule[]
+  agentSchedules         AgentSchedule[]
   apiKeys                ApiKey[]
   instances              Instance[]
   meetings               Meeting[]
@@ -262,24 +262,25 @@ model Goal {
 }
 
 model AgentSchedule {
-  id             String   @id @default(uuid())
-  workspaceId    String
-  goalId         String?
-  userId         String
-  name           String
-  prompt         String
-  cronExpression String
-  timezone       String   @default("UTC")
-  enabled        Boolean  @default(true)
-  nextRunAt      DateTime
-  lastRunAt      DateTime?
-  lastRunStatus  String?
-  lastRunSummary String?
-  lastError      String?
-  chatSessionId  String?
-  runningAt      DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                  String    @id @default(uuid())
+  workspaceId         String
+  goalId              String?
+  userId              String
+  name                String
+  prompt              String
+  cronExpression      String
+  timezone            String    @default("UTC")
+  enabled             Boolean   @default(true)
+  nextRunAt           DateTime
+  lastRunAt           DateTime?
+  lastRunStatus       String?
+  lastRunSummary      String?
+  lastError           String?
+  chatSessionId       String?
+  runningAt           DateTime?
+  consecutiveFailures Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   goal      Goal?     @relation(fields: [goalId], references: [id], onDelete: Cascade)
