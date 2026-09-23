@@ -52,6 +52,7 @@ const EXEMPT: Record<string, string> = {
   agentCostMetric: 'Written via project/workspace-scoped agent routes — resolved by path params.',
   agentEvalResult: 'Mutated via workspace/project-scoped eval routes — resolved by path params.',
   agentEvalSet: 'Mutated via workspace/project-scoped eval routes — resolved by path params.',
+  agentSchedule: 'Mutated via /api/workspaces/:workspaceId/schedules — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',
   budgetAlert: 'Mutated via /api/workspaces/:id/... budget routes — resolved by path workspaceId.',
   customDomain: 'Mutated via /api/projects/:projectId/domains — resolved by path projectId.',
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',
