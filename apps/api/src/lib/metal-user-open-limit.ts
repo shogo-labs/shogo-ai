@@ -21,7 +21,15 @@
  */
 
 import { getMetalPlacementRegistry } from './metal-placement-registry'
-import { stopMetalProject } from './metal-warm-pool-controller'
+import { stopMetalProject, workspaceRuntimeKey } from './metal-warm-pool-controller'
+
+/**
+ * Suspend the runtime that actually serves an opened project: its anchored
+ * workspace runtime (`ws:proj:<projectId>`), not a bare per-project VM.
+ */
+export function stopOpenedProjectRuntime(projectId: string): Promise<StopOutcome> {
+  return stopMetalProject(workspaceRuntimeKey('', projectId))
+}
 
 /**
  * Max projects a single user may keep open (running/resumed) on metal at once.
@@ -40,7 +48,7 @@ export interface StopOutcome {
 
 export interface EnforceDeps {
   registry?: ReturnType<typeof getMetalPlacementRegistry>
-  /** Suspend-to-snapshot a project (default: stopMetalProject). */
+  /** Suspend-to-snapshot a project (default: stopOpenedProjectRuntime). */
   stop?: (projectId: string) => Promise<StopOutcome>
   max?: number
   now?: () => number
@@ -66,7 +74,7 @@ export async function enforceUserMetalOpenLimit(
   if (!userId || !projectId || max <= 0) return []
 
   const registry = deps.registry ?? getMetalPlacementRegistry()
-  const stop = deps.stop ?? stopMetalProject
+  const stop = deps.stop ?? stopOpenedProjectRuntime
   const now = deps.now ?? (() => Date.now())
   const log = deps.log ?? ((msg: string) => console.log(msg))
 

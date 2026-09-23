@@ -102,4 +102,37 @@ describe('hydrateWorkspaceMembers', () => {
     expect(result.failed).toEqual(['p2'])
     expect([...result.syncs.keys()]).toEqual(['p1', 'p3'])
   })
+
+  test('a download that reports errors (S3Sync never throws) is failed and gets no sync', async () => {
+    const result = await hydrateWorkspaceMembers('/ws', ['p1', 'p2'], {
+      ensureDir: () => {},
+      createSync: (_dir, projectId) => ({
+        downloadAll: async () =>
+          projectId === 'p1'
+            ? { downloaded: 0, errors: ['Download failed: Could not load credentials from any providers'] }
+            : { downloaded: 12, errors: [] },
+      }),
+      log: silentLog,
+    })
+    expect(result.failed).toEqual(['p1'])
+    expect(result.hydrated).toEqual(['p2'])
+    expect([...result.syncs.keys()]).toEqual(['p2'])
+    expect(result.newProjects).toEqual([])
+  })
+
+  test('reports members whose clean download found no archive as new projects', async () => {
+    const result = await hydrateWorkspaceMembers('/ws', ['fresh', 'existing', 'unknown'], {
+      ensureDir: () => {},
+      createSync: (_dir, projectId) => ({
+        downloadAll: async () => {
+          if (projectId === 'fresh') return { downloaded: 0, errors: [] }
+          if (projectId === 'existing') return { downloaded: 40, errors: [] }
+          return {}
+        },
+      }),
+      log: silentLog,
+    })
+    expect(result.hydrated).toEqual(['fresh', 'existing', 'unknown'])
+    expect(result.newProjects).toEqual(['fresh'])
+  })
 })

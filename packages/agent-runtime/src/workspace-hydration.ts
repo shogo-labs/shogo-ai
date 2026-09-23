@@ -36,6 +36,11 @@ export interface HydrateWorkspaceMembersResult {
   skipped: string[]
   failed: string[]
   /**
+   * Subset of `hydrated` whose download completed cleanly and found no archive
+   * at all — genuinely new projects with no durable source anywhere.
+   */
+  newProjects: string[]
+  /**
    * The sync instances that downloaded successfully, keyed by project id. The
    * caller starts the periodic uploader / watcher on these and flushes them on
    * shutdown (the hydration step itself is download-only so it stays a pure,
@@ -64,6 +69,7 @@ export async function hydrateWorkspaceMembers(
     hydrated: [],
     skipped: [],
     failed: [],
+    newProjects: [],
     syncs: new Map(),
   }
   // Dedupe so a project listed twice isn't downloaded twice into the same dir.
@@ -79,10 +85,22 @@ export async function hydrateWorkspaceMembers(
         result.skipped.push(projectId)
         continue
       }
-      await sync.downloadAll()
+      const stats = (await sync.downloadAll()) as { downloaded?: unknown; errors?: unknown } | undefined
+      // `S3Sync.downloadAll` reports failures in `stats.errors` rather than
+      // throwing. A member whose download failed must not get a sync back: the
+      // caller would start an uploader on a directory that may be empty or
+      // partial and could overwrite the real archive (the same reason
+      // `initializeS3Sync` refuses to start the uploader after a failed pull).
+      const errors = Array.isArray(stats?.errors) ? (stats!.errors as unknown[]) : []
+      if (errors.length > 0) {
+        log(`[agent-runtime] hydrateWorkspaceMembers: ${projectId} download failed: ${errors.map(String).join('; ')}`)
+        result.failed.push(projectId)
+        continue
+      }
       log(`[agent-runtime] hydrateWorkspaceMembers: hydrated ${projectId} -> ${localDir}`)
       result.hydrated.push(projectId)
       result.syncs.set(projectId, sync)
+      if (stats?.downloaded === 0) result.newProjects.push(projectId)
     } catch (err: any) {
       log(`[agent-runtime] hydrateWorkspaceMembers: ${projectId} failed: ${err?.message ?? err}`)
       result.failed.push(projectId)
