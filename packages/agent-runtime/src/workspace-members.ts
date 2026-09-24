@@ -27,6 +27,7 @@ import {
   workspaceAvailableProjectsManifest,
   workspaceProjectsManifest,
   parseWorkspaceMounts,
+  renderCurrentProjectSection,
   type WorkspaceProjectEntry,
 } from './workspace-runtime-mode'
 import { updateWorkspaceFolders } from './trust-resolver'
@@ -114,6 +115,10 @@ function writeManifest(): void {
       'relevant project. Use `unmount_project` when a project is no longer',
       'needed. Mounted projects are sibling folders under this directory.',
       '',
+      ...renderCurrentProjectSection(
+        mountedIds.has(process.env.WORKSPACE_ANCHOR_PROJECT_ID ?? '') ? process.env.WORKSPACE_ANCHOR_PROJECT_ID : undefined,
+        mounted,
+      ),
       '## Mounted projects',
       '',
     ]
