@@ -145,13 +145,6 @@ async function startServer() {
       stdin: "inherit",
       env: {
         ...process.env,
-        // Local project runtimes may live under macOS paths containing
-        // spaces (for example, `Library/Application Support`). The
-        // `bun x shogo generate` fallback is not path-safe there, so point
-        // the runtime at the repo's bundled CLI just like the desktop
-        // local-server does in development.
-        SHOGO_BUNDLED_SDK_CLI: process.env.SHOGO_BUNDLED_SDK_CLI
-          ?? resolve(ROOT, "packages/sdk/bin/cli.mjs"),
       },
     });
 

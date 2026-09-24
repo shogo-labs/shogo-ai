@@ -27,7 +27,7 @@ afterEach(() => {
   // Stop every manager spawned by mk() so its schema/custom-routes watchers
   // are closed before we rmSync(dir). Otherwise the watcher fires an async
   // ENOENT error into the next test's macrotask queue (visible failure:
-  // 'detects legacy "bunx shogo generate" scripts and refuses to invoke them').
+  // 'runs migrated SDK generate scripts through bun run').
   for (const m of managers) {
     try { m.stop() } catch {}
   }
@@ -133,22 +133,25 @@ describe('PreviewManager runShogoGenerate (private — invoked indirectly)', () 
     expect(ok).toBe(false)
   })
 
-  it('detects legacy "bunx shogo generate" scripts and refuses to invoke them', async () => {
+  it('runs the migrated path-based SDK generate script through bun run', async () => {
     const cwd = join(dir, 'project')
     mkdirSync(cwd, { recursive: true })
     // PreviewManager.runShogoGenerate watches prisma/schema.prisma to
     // detect a successful regen (mtime bump). Without the file the fs.watch
-    // call throws ENOENT before the legacy-script detector even runs.
+    // call throws ENOENT before the generate command runs.
     mkdirSync(join(cwd, 'prisma'), { recursive: true })
     writeFileSync(join(cwd, 'prisma', 'schema.prisma'), 'datasource db {}')
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({
-      scripts: { generate: 'bunx shogo generate' },
+      scripts: { generate: 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate' },
     }))
     const m = mk() as any
-    // Stub spawn so runShogoGenerate's bun-x-shogo fallback can't escape
+    // Stub spawn so the generate command cannot escape the test process.
     let spawnedCmd = ''
-    const spawnSpy = spyOn(childProc, 'spawn').mockImplementation((cmd: any, _args: any, _opts: any) => {
+    let spawnedArgs: string[] = []
+    const spawnSpy = spyOn(childProc, 'spawn').mockImplementation((...spawnCall: any[]) => {
+      const [cmd, args] = spawnCall
       spawnedCmd = String(cmd)
+      spawnedArgs = [...args]
       const fakeProc = {
         stdout: { on: () => {} },
         stderr: { on: () => {} },
@@ -165,12 +168,9 @@ describe('PreviewManager runShogoGenerate (private — invoked indirectly)', () 
     const err = spyOn(console, 'error').mockImplementation(() => {})
     try {
       const ok = await m.runShogoGenerate()
-      // The legacy detector OR the fallback all return false on close=1
       expect(ok).toBe(false)
-      // Crucially, the cmd actually invoked must NOT be `bunx shogo` —
-      // legacy detection takes precedence and routes through the
-      // path-based fallback (bun ./node_modules/...) or `bun x shogo`.
-      expect(spawnedCmd).not.toMatch(/^bunx shogo/)
+      expect(spawnedCmd).toBeTruthy()
+      expect(spawnedArgs).toEqual(['run', 'generate'])
     } finally {
       spawnSpy.mockRestore()
       log.mockRestore()

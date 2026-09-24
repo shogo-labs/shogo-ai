@@ -819,28 +819,6 @@ export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'r
 /** Shared return shape for {@link PreviewManager.start} and {@link PreviewManager.restart}. */
 export type PreviewStartResult = { mode: string; port: number | null; timings: Record<string, number> }
 
-/**
- * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
- * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
- * that truncates the path at the first space. macOS desktop installs
- * live under `~/Library/Application Support/` — every path contains a
- * space — so the truncation is universal, not edge-case. The fix is
- * in HEAD but was never published (npm jumps 0.4.0 → 1.0.0), so
- * runtime version-sniffing is the only way to recognise the bad
- * install. Best-effort: any read/parse failure returns false (we'd
- * rather risk a redundant install than refuse to use a healthy CLI).
- */
-function isKnownBrokenSdkInstall(sdkPkgDir: string): boolean {
-  try {
-    const pkgJsonPath = join(sdkPkgDir, 'package.json')
-    if (!existsSync(pkgJsonPath)) return false
-    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
-    return pkg?.version === '0.4.0'
-  } catch {
-    return false
-  }
-}
-
 export class PreviewManager {
   private workspaceDir: string
   private runtimePort: number
@@ -1558,35 +1536,14 @@ export class PreviewManager {
     // indirection lets user-customised projects splice extra steps into
     // the pipeline without us having to teach PreviewManager about every
     // variation.
-    //
-    // EXCEPTION: legacy workspaces (pre-May 2026) carry the older
-    // `"generate": "bunx shogo generate"` script in their package.json.
-    // `bunx shogo` resolves to the only published `@shogo-ai/sdk` version
-    // that satisfies the pinned `^0.4.0` constraint — namely 0.4.0,
-    // which has the unquoted-`execSync` path-truncation bug. The fix
-    // (commit 68ab3e7d, May 8) was tagged as 0.4.1 internally but never
-    // published; npm's @shogo-ai/sdk goes 0.4.0 → 1.0.0 with no 0.4.x
-    // patch in between. Until the user upgrades their pin (or 0.4.1
-    // gets published), we must NOT honour that script — it will crash
-    // every workspace whose path contains a space (which is every
-    // standard macOS install under "~/Library/Application Support").
     let useBunRun = false
-    let legacyShogoGenerate = false
     try {
       const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
         scripts?: Record<string, string>
       }
       const gen = pkgJson.scripts?.generate?.trim()
       if (gen) {
-        // Match `bunx shogo …` and `bun x shogo …`, with or without
-        // `--bun`. We deliberately do NOT match the runtime-template
-        // form `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
-        // — that path-based form is path-safe.
-        if (/^\s*(bunx|bun\s+x)(\s+--bun)?\s+shogo(\s|$)/.test(gen)) {
-          legacyShogoGenerate = true
-        } else {
-          useBunRun = true
-        }
+        useBunRun = true
       }
     } catch {
       // Malformed package.json — fall through to the path-based CLI.
@@ -1600,56 +1557,19 @@ export class PreviewManager {
     // crashed installs, etc.) would 404 there.
     const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
     const hasSdkCli = existsSync(sdkCliPath)
-    // The installed CLI in node_modules is whatever version `bun install`
-    // resolved — frequently the broken `@shogo-ai/sdk@0.4.0` that ships
-    // an `execSync(\`bun ${absScriptPath}\`)` for the Step 2 script
-    // (templating the path into the shell command line truncates it on
-    // the first space, blowing up with `Module not found
-    // "/Users/foo/Library/Application"` on every macOS install). 0.4.1
-    // never made it to the npm registry, so the installed copy stays
-    // broken indefinitely. Detect that exact version and refuse to use it.
-    const installedSdkBroken = hasSdkCli && isKnownBrokenSdkInstall(join(cwd, 'node_modules', '@shogo-ai', 'sdk'))
-    const useInstalledCli = hasSdkCli && !installedSdkBroken
-    // Bundled with the desktop app at packaging time. Set by
-    // apps/desktop/src/local-server.ts. In dev mode it points at the
-    // monorepo source; in packaged mode at `Resources/sdk-cli.mjs`.
-    const bundledSdkCli = process.env.SHOGO_BUNDLED_SDK_CLI
-    const hasBundledSdkCli = !!(bundledSdkCli && existsSync(bundledSdkCli))
-
-    if (installedSdkBroken) {
-      console.warn(
-        `[${LOG_PREFIX}] installed @shogo-ai/sdk has a known path-truncation bug — ignoring it in favour of bundled CLI`,
-      )
-    }
 
     // Resolution order, in priority:
-    //   1. project-local node_modules CLI — only when NOT the known-broken
-    //      0.4.0 build (path-safe in 0.4.1+ / 1.x)
-    //   2. desktop-bundled CLI (always path-safe in HEAD)
-    //   3. project's `generate` script (only if it isn't the broken
-    //      `bunx shogo` pattern)
-    //   4. `bun x shogo` last-ditch (broken on space-paths, but better
-    //      than nothing for non-macOS installs)
+    //   1. project's `generate` script
+    //   2. project-local node_modules CLI
+    //   3. `bun x shogo` last-ditch
     let args: string[]
     let cmdLabel: string
-    if (legacyShogoGenerate && useInstalledCli) {
-      args = [sdkCliPath, 'generate']
-      cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate (legacy script bypass)'
-    } else if (legacyShogoGenerate && hasBundledSdkCli) {
-      args = [bundledSdkCli!, 'generate']
-      cmdLabel = `bun ${bundledSdkCli} generate (legacy script bypass — bundled fallback)`
-    } else if (installedSdkBroken && hasBundledSdkCli) {
-      args = [bundledSdkCli!, 'generate']
-      cmdLabel = `bun ${bundledSdkCli} generate (broken installed SDK — bundled fallback)`
-    } else if (useBunRun && !installedSdkBroken) {
+    if (useBunRun) {
       args = ['run', 'generate']
       cmdLabel = 'bun run generate'
-    } else if (useInstalledCli) {
+    } else if (hasSdkCli) {
       args = [sdkCliPath, 'generate']
       cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
-    } else if (hasBundledSdkCli) {
-      args = [bundledSdkCli!, 'generate']
-      cmdLabel = `bun ${bundledSdkCli} generate (bundled fallback)`
     } else {
       args = ['x', 'shogo', 'generate']
       cmdLabel = 'bun x shogo generate'
