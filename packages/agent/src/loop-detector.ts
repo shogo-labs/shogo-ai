@@ -229,31 +229,61 @@ const ERROR_TEXT_RE =
   /\b(error|failed|failure|refused|unreachable|denied|forbidden|not\s*found|cannot|could\s*not|couldn'?t|unable|timed\s*out|timeout)\b|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|EAI_AGAIN|\b[45]\d\d\b/i
 
 /**
+ * Only the head of free-form text is scanned: tool failures lead with the
+ * error, while successful payloads (emails, logs, alerts, CI output) routinely
+ * contain words like "error" or numbers like 404 deep in their content.
+ */
+const ERROR_SCAN_CHARS = 300
+
+function textLooksLikeError(text: string): boolean {
+  return ERROR_TEXT_RE.test(text.slice(0, ERROR_SCAN_CHARS))
+}
+
+/**
  * Classify whether a tool output represents a failure / lack of progress.
  * Structured signals (exit code, ok/success flags, HTTP status, error field)
- * win; otherwise we scan failure-ish text. Explicit success signals short-
- * circuit to "productive" so we never count a successful step against the agent.
+ * win; otherwise we scan the head of failure-ish text. Explicit success
+ * signals short-circuit to "productive" so we never count a successful step
+ * against the agent.
  */
 function isUnproductiveOutput(output: any): boolean {
   if (output == null) return false
 
-  if (typeof output === 'string') return ERROR_TEXT_RE.test(output)
-
-  if (typeof output === 'object') {
-    // Explicit success → definitely productive.
-    if (output.ok === true || output.success === true) return false
-    if (typeof output.exitCode === 'number' && output.exitCode === 0) return false
-
-    // Explicit failure signals.
-    if (typeof output.exitCode === 'number' && output.exitCode !== 0) return true
-    if (output.ok === false || output.success === false) return true
-    if (typeof output.status === 'number' && output.status >= 400) return true
-    if (output.error != null && output.error !== false && output.error !== '') return true
-
-    // Fall back to scanning the usual error-bearing fields.
-    const text = `${output.stderr ?? ''} ${output.message ?? ''} ${output.stdout ?? ''}`.trim()
-    if (text) return ERROR_TEXT_RE.test(text)
+  if (typeof output === 'string') {
+    const trimmed = output.trim()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (parsed !== null && typeof parsed === 'object') return isUnproductiveObject(parsed)
+      } catch {
+        // Not JSON — classify as plain text.
+      }
+    }
+    return textLooksLikeError(trimmed)
   }
+
+  if (typeof output === 'object') return isUnproductiveObject(output)
+
+  return false
+}
+
+function isUnproductiveObject(output: any): boolean {
+  if (Array.isArray(output)) return false
+
+  // Explicit success → definitely productive.
+  if (output.ok === true || output.success === true || output.successful === true) return false
+  if (typeof output.exitCode === 'number' && output.exitCode === 0) return false
+
+  // Explicit failure signals.
+  if (typeof output.exitCode === 'number' && output.exitCode !== 0) return true
+  if (output.ok === false || output.success === false || output.successful === false) return true
+  if (typeof output.status === 'number' && output.status >= 400) return true
+  if (output.error != null && output.error !== false && output.error !== '') return true
+
+  // Fall back to scanning the usual error-bearing fields.
+  if (typeof output.stderr === 'string' && output.stderr.trim() && ERROR_TEXT_RE.test(output.stderr)) return true
+  const text = `${output.message ?? ''} ${output.stdout ?? ''}`.trim()
+  if (text) return textLooksLikeError(text)
 
   return false
 }

@@ -537,6 +537,8 @@ export class AgentGateway {
     success: boolean
     hitMaxTurns: boolean
     loopDetected: boolean
+    /** The loop detector's description when `loopDetected` is true. */
+    loopPattern?: string
     escalated: boolean
     responseEmpty: boolean
     /**
@@ -3525,6 +3527,7 @@ export class AgentGateway {
         success: !result.error && !result.maxIterationsExhausted && !result.loopBreak && !responseEmpty,
         hitMaxTurns: !!result.maxIterationsExhausted,
         loopDetected: !!result.loopBreak,
+        ...(result.loopBreak?.pattern ? { loopPattern: result.loopBreak.pattern } : {}),
         escalated: false,
         responseEmpty,
         wasAborted: result.abortReason === 'external',
@@ -3548,6 +3551,18 @@ export class AgentGateway {
           console.warn(
             `${this.logPrefix} Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
           )
+          // The loop abort ends the turn without an error, so without this
+          // notice the turn looks finished even though the work was cut off.
+          if (uiWriter) {
+            const noticeId = `text-${Date.now()}-loop-break`
+            uiWriter.write({ type: 'text-start', id: noticeId })
+            uiWriter.write({
+              type: 'text-delta',
+              id: noticeId,
+              delta: `\n\nI stopped this turn early because I seemed to be stuck (${result.loopBreak.pattern}). The task may be incomplete — reply to continue.`,
+            })
+            uiWriter.write({ type: 'text-end', id: noticeId })
+          }
         }
 
         const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
