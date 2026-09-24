@@ -115,6 +115,10 @@ import { cn } from "@shogo/shared-ui/primitives";
 import { API_URL, api, createHttpClient } from "../../lib/api";
 import { workspaceProjectFilter } from "../../lib/project-load";
 import {
+  getActiveWorkspaceId,
+  setActiveWorkspaceId,
+} from "../../lib/workspace-store";
+import {
   hasAcceptedAiConsent,
   acceptAiConsent,
   revokeAiConsent,
@@ -2783,6 +2787,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setEmptyResponseError(nextError);
 
       if (currentSessionId) {
+        // The chat's workspace is authoritative for this turn. A legacy
+        // project session can trigger several collection refreshes while it
+        // is upgraded to a workspace session; if one of those refreshes
+        // briefly omits the team, restore the workspace that owns the chat
+        // before the sidebar reconciles its selection.
+        if (workspaceId && getActiveWorkspaceId() !== workspaceId) {
+          setActiveWorkspaceId(workspaceId);
+        }
         refetchUsageWallet();
 
         // Read-only reconcile (no client writes). The assistant message is

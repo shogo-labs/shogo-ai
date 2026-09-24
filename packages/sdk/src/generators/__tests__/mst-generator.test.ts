@@ -193,6 +193,8 @@ describe('MST Collection Generator', () => {
     const result = generateMSTCollection(mockWorkspaceModel as any)
 
     expect(result.code).toContain('loadAll: flow(function*')
+    expect(result.code).toContain('let latestLoadRequestId = 0')
+    expect(result.code).toContain('const hasFilter = Object.entries(filter ?? {}).some(')
     expect(result.code).toContain('loadById: flow(function*')
     expect(result.code).toContain('create: flow(function*')
     expect(result.code).toContain('update: flow(function*')
