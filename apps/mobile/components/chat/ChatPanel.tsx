@@ -67,6 +67,7 @@ import {
   getToolCategory,
   ERROR_CODE_MESSAGES,
   buildChatStreamErrorReport,
+  isReactUpdateDepthError,
 } from "@shogo/shared-app/chat";
 import {
   useChatTransportConfig,
@@ -103,6 +104,7 @@ import {
   computeRecoveryBackoff,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
+  shouldAutoRecoverStalledTurn,
 } from "./stall-recovery";
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker";
 import {
@@ -1754,6 +1756,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `handleRetryRef`). `currentSessionIdRef` lets the async recovery loop
   // detect a session switch and bail before reattaching to a stale stream.
   const recoveredTurnIdRef = useRef<string | null>(null);
+  const renderDepthErrorTurnIdRef = useRef<string | null>(null);
   const stallRecoveryRef = useRef<(() => void) | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
   currentSessionIdRef.current = currentSessionId;
@@ -1898,6 +1901,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // event so the production_web noise filter keeps it despite the raw
       // "Failed to fetch"-style message. The stall watchdog already owns the
       // separate "stuck with no error" case (`chat_stall_watchdog_tripped`).
+      if (isReactUpdateDepthError(err)) {
+        renderDepthErrorTurnIdRef.current = currentTurnIdRef.current;
+      }
       try {
         const report = buildChatStreamErrorReport(err, {
           turnId: currentTurnIdRef.current,
@@ -3657,6 +3663,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     prevIsStreamingForTurnRef.current = isStreaming;
     if (isStreaming && !wasStreaming) {
       turnStalledRef.current = false;
+      renderDepthErrorTurnIdRef.current = null;
       return;
     }
     if (wasStreaming && !isStreaming) {
@@ -3677,10 +3684,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // (that's an intentional terminal state, not a dropped connection),
         // and fire at most once per turn so we never loop.
         const stalledTurnId = currentTurnIdRef.current;
-        if (
-          !userInitiatedStopRef.current &&
-          recoveredTurnIdRef.current !== stalledTurnId
-        ) {
+        if (shouldAutoRecoverStalledTurn({
+          stalledTurnId,
+          recoveredTurnId: recoveredTurnIdRef.current,
+          renderDepthErrorTurnId: renderDepthErrorTurnIdRef.current,
+          userInitiatedStop: userInitiatedStopRef.current,
+        })) {
           recoveredTurnIdRef.current = stalledTurnId;
           stallRecoveryRef.current?.();
         }
