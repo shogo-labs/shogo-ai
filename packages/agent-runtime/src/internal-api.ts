@@ -28,6 +28,18 @@ export function derivePublicApiUrl(): string | null {
   return deriveApiUrl()
 }
 
+/**
+ * Returns `projectId` only when it names a real project. A workspace runtime
+ * bound with no attached projects gets its runtime key (`ws:<workspaceId>`)
+ * as PROJECT_ID, and an unassigned pool runtime has `__POOL__`; the API
+ * rejects project-scoped internal calls for either, so callers must skip the
+ * call or omit the field instead.
+ */
+export function projectScopedId(projectId: string | null | undefined): string | undefined {
+  if (!projectId || projectId === '__POOL__' || projectId.startsWith('ws:')) return undefined
+  return projectId
+}
+
 export function getInternalHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
@@ -94,7 +106,8 @@ export async function postCheckpointRecord(
   payload: CheckpointRecordPayload,
 ): Promise<boolean> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return false
+  // A projectless workspace runtime has no project to attach the row to.
+  if (!apiUrl || !projectScopedId(projectId)) return false
   try {
     const res = await fetch(
       `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/checkpoints/record`,
