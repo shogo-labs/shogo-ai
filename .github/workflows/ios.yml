@@ -29,6 +29,10 @@
 #   APPLE_CERTIFICATE_BASE64            - Base64 of the iOS Distribution .p12
 #   APPLE_CERTIFICATE_PASSWORD          - Password for the .p12
 #   APPLE_PROVISIONING_PROFILE_BASE64   - Base64 of the App Store .mobileprovision
+#   ASC_APP_ID                         - App Store Connect numeric app ID
+#   ASC_KEY_ID                         - App Store Connect API key ID
+#   ASC_ISSUER_ID                      - App Store Connect API issuer UUID
+#   ASC_PRIVATE_KEY                    - App Store Connect API .p8 private key
 #   EXPO_PUBLIC_SENTRY_DSN_IOS          - (optional) Sentry DSN for the iOS
 #                                          binary's runtime, sourced into the
 #                                          JS bundle by Metro. Should match
@@ -940,6 +944,21 @@ jobs:
             fi
             exit $STATUS
           fi
+
+      - name: Wait for Apple processing and assign TestFlight groups
+        # Uploading the IPA only starts Apple's asynchronous processing. Once
+        # the build is VALID, make it visible to the configured internal and
+        # external tester groups through the App Store Connect API.
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          TESTFLIGHT_GROUP_IDS: 56865043-fc4a-40f8-ab20-ec2a8ebdd76c,98287cb2-a201-484d-9371-4619b9858daa
+        run: |
+          set -euo pipefail
+          TESTFLIGHT_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \
+            ruby "$GITHUB_WORKSPACE/.github/scripts/testflight-distribute.rb"
 
       - name: Summary
         run: |
