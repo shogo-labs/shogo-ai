@@ -39,6 +39,10 @@ function normalizeAttachMode(mode: string | undefined | null): AttachMode {
  * initial set of projects. Project ids that don't belong to the
  * workspace are rejected (the whole call fails) to avoid a session that
  * silently drops attachments.
+ *
+ * `anchorProjectId` pins the session to a project (`contextId`), so chat
+ * resolves the same `ws:proj:<anchor>` runtime that serves that project's
+ * canvas preview. The anchor is always attached read-write.
  */
 export async function createWorkspaceSession(
   workspaceId: string,
@@ -47,9 +51,11 @@ export async function createWorkspaceSession(
     inferredName?: string
     attachProjectIds?: string[]
     attachMode?: AttachMode
+    anchorProjectId?: string
   } = {},
-): Promise<{ id: string; workspaceId: string; attached: AttachedProject[] }> {
-  const attachIds = dedupe(opts.attachProjectIds ?? [])
+): Promise<{ id: string; workspaceId: string; contextId: string | null; attached: AttachedProject[] }> {
+  const anchorProjectId = opts.anchorProjectId || undefined
+  const attachIds = dedupe([...(anchorProjectId ? [anchorProjectId] : []), ...(opts.attachProjectIds ?? [])])
   if (attachIds.length > 0) {
     await assertProjectsInWorkspace(workspaceId, attachIds)
   }
@@ -59,10 +65,16 @@ export async function createWorkspaceSession(
     data: {
       contextType: 'workspace',
       workspaceId,
+      contextId: anchorProjectId ?? null,
       name: opts.name ?? null,
       inferredName: opts.inferredName ?? opts.name ?? 'Workspace chat',
       attachedProjects: attachIds.length
-        ? { create: attachIds.map((projectId) => ({ projectId, attachMode: mode })) }
+        ? {
+            create: attachIds.map((projectId) => ({
+              projectId,
+              attachMode: projectId === anchorProjectId ? 'readwrite' : mode,
+            })),
+          }
         : undefined,
     } as any,
     include: { attachedProjects: true } as any,
@@ -71,8 +83,47 @@ export async function createWorkspaceSession(
   return {
     id: session.id,
     workspaceId,
+    contextId: anchorProjectId ?? null,
     attached: (session.attachedProjects ?? []).map(toAttachedProject),
   }
+}
+
+/**
+ * Pin an existing workspace session to `projectId` (set `contextId`) when
+ * doing so can't change which runtime its other projects live on: the
+ * session must not be the workspace's primary chat, must not already be
+ * pinned, and must have no attachments besides `projectId`. `pinned` says
+ * whether the session is pinned to `projectId` afterwards; `changed` whether
+ * this call did the pinning.
+ */
+export async function pinWorkspaceSessionToProject(
+  sessionId: string,
+  projectId: string,
+): Promise<{ pinned: boolean; changed: boolean }> {
+  const session = (await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    select: { contextType: true, contextId: true, isPrimary: true } as any,
+  })) as { contextType?: string; contextId?: string | null; isPrimary?: boolean } | null
+  if (!session || session.contextType !== 'workspace') return { pinned: false, changed: false }
+  if (session.contextId) return { pinned: session.contextId === projectId, changed: false }
+  if (session.isPrimary) return { pinned: false, changed: false }
+
+  const attached = await getAttachedProjects(sessionId)
+  if (attached.some((a) => a.projectId !== projectId)) return { pinned: false, changed: false }
+
+  const res = (await prisma.chatSession.updateMany({
+    where: { id: sessionId, contextType: 'workspace', contextId: null } as any,
+    data: { contextId: projectId } as any,
+  })) as { count: number }
+  return { pinned: res.count > 0, changed: res.count > 0 }
+}
+
+/** Undo `pinWorkspaceSessionToProject` (used to roll back a failed attach). */
+export async function unpinWorkspaceSession(sessionId: string, projectId: string): Promise<void> {
+  await prisma.chatSession.updateMany({
+    where: { id: sessionId, contextId: projectId } as any,
+    data: { contextId: null } as any,
+  })
 }
 
 /**

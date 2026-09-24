@@ -35,6 +35,8 @@ import {
   getOrCreatePrimaryWorkspaceSession,
   getAttachedProjects,
   listWorkspaceSessions,
+  pinWorkspaceSessionToProject,
+  unpinWorkspaceSession,
   WorkspaceSessionError,
   type AttachMode,
 } from '../services/workspace-session.service'
@@ -171,11 +173,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
    * spawn time. Scope mutations are therefore not complete until the active
    * runtime has been stopped and a replacement resolves with the new args.
    */
-  const refreshSessionRuntime = async (workspaceId: string, sessionId: string) => {
+  const refreshSessionRuntime = async (
+    workspaceId: string,
+    sessionId: string,
+    opts: { keepAnchorRuntime?: boolean } = {},
+  ) => {
     const args = await loadRuntimeArgs(workspaceId, sessionId)
     const manager: any = runtimeManager
     if (args.extra.anchorProjectId) {
-      await stopAnchorRuntime(args.extra.anchorProjectId, manager)
+      if (!opts.keepAnchorRuntime) await stopAnchorRuntime(args.extra.anchorProjectId, manager)
     } else if (typeof manager?.stopWorkspace === 'function') {
       await manager.stopWorkspace(workspaceId)
     }
@@ -373,6 +379,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         inferredName: body?.inferredName,
         attachProjectIds: Array.isArray(body?.attachProjectIds) ? body.attachProjectIds : undefined,
         attachMode: body?.attachMode as AttachMode | undefined,
+        anchorProjectId: typeof body?.anchorProjectId === 'string' ? body.anchorProjectId : undefined,
       })
       return c.json({ session }, 201)
     } catch (err) {
@@ -393,7 +400,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     return c.json({ attached })
   })
 
-  // Attach a project to a session.
+  // Attach a project to a session. `pinAsAnchor` additionally pins the session
+  // to that project when safe (see pinWorkspaceSessionToProject) so a chat
+  // handed off to the project page runs on the runtime serving its preview;
+  // the response's `pinned` tells the caller whether that happened.
   router.post('/workspaces/:workspaceId/sessions/:sessionId/projects', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
@@ -411,11 +421,18 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         body.projectId,
         (body.attachMode as AttachMode) ?? 'readwrite',
       )
+      const pin = body.pinAsAnchor === true
+        ? await pinWorkspaceSessionToProject(sessionId, body.projectId)
+        : { pinned: false, changed: false }
       try {
-        await refreshSessionRuntime(workspaceId, sessionId)
+        // A fresh pin means the session's only project is the anchor, which
+        // its `ws:proj:` runtime (possibly already warming for the canvas)
+        // mounts anyway, so there's no reason to restart it.
+        await refreshSessionRuntime(workspaceId, sessionId, { keepAnchorRuntime: pin.changed })
       } catch (err) {
         // Do not leave a durable scope that the currently selected runtime
         // cannot actually mount. Restore the prior relationship on failure.
+        if (pin.changed) await unpinWorkspaceSession(sessionId, body.projectId)
         if (previous) {
           await attachProject(sessionId, previous.projectId, previous.attachMode)
         } else {
@@ -423,7 +440,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         }
         throw err
       }
-      return c.json({ attached, runtime: { ready: true } }, 201)
+      return c.json({ attached, pinned: pin.pinned, runtime: { ready: true } }, 201)
     } catch (err) {
       if (err instanceof WorkspaceRuntimeNotEnabledError) {
         return c.json({ error: { code: 'workspace_runtime_unavailable', message: 'Workspace runtime is unavailable' } }, 503)
@@ -579,50 +596,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     })
 
     return c.json({ success: true, workspaceId, status: 'warming' }, 202)
-  })
-
-  // Preemptively warm a workspace runtime. Returns 202 immediately and
-  // resolves the runtime in the background, so a merged-root pod is being
-  // claimed/cold-started while the user composes their first message. The
-  // homepage calls this on Send (the workspace-aware sibling of the
-  // per-project /runtime/prewarm). Body accepts `sessionId` and/or
-  // `attachProjectIds` to determine which subfolders the runtime mounts.
-  router.post('/workspaces/:workspaceId/runtime/prewarm', async (c) => {
-    const auth = await authorize(c)
-    if ('res' in auth) return auth.res
-    const workspaceId = c.req.param('workspaceId')
-
-    const body = await c.req.json().catch(() => ({} as any))
-    let attachedProjectIds: string[] = Array.isArray(body?.attachProjectIds)
-      ? body.attachProjectIds.filter((x: unknown) => typeof x === 'string')
-      : []
-    let runtimeExtra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] } = {}
-    if (typeof body?.sessionId === 'string' && body.sessionId) {
-      try {
-        const args = await loadRuntimeArgs(body.sessionId)
-        if (attachedProjectIds.length === 0) attachedProjectIds = args.attachedProjectIds
-        runtimeExtra = args.extra
-      } catch {
-        /* best-effort */
-      }
-    }
-
-    // Fire-and-forget: resolve (and thus spawn/claim) the workspace runtime.
-    // Swallow the disabled-flag 501 and transient errors — this is a warm-up
-    // hint, not a correctness path.
-    void resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
-      logTag: 'WorkspacePrewarm',
-      runtimeManager,
-      ...runtimeExtra,
-    }).catch((err) => {
-      console.warn(
-        `[WorkspaceChat] Prewarm failed for ${workspaceId} (non-blocking):`,
-        err?.message ?? err,
-      )
-    })
-
-    return c.json({ accepted: true }, 202)
   })
 
   // Proxy chat to the workspace runtime.
