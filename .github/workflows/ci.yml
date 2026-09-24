@@ -11,11 +11,10 @@
 # (which would otherwise block every other open PR against main until each
 # one rebased onto the new job names).
 #
-# Cost of the split: `typecheck` and `test` each redo checkout / bun setup /
-# `bun install` / `build:packages` (~1m40s), since GitHub Actions jobs don't
-# share a filesystem. That's the deliberate trade for wall-clock: the two
-# jobs' longest steps (Typecheck ~70s, Test ~3m) now overlap instead of
-# summing.
+# Each job still has its own checkout and filesystem. Dependency, workspace,
+# and TypeScript caches remove the repeated work on warm main-derived caches;
+# the test matrix keeps the remaining test work parallel without multiplying
+# the slowest package into eight full setup-heavy jobs.
 # =============================================================================
 
 name: CI
@@ -48,13 +47,18 @@ on:
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  # Preserve cache-populating main runs; superseded PR and merge-group runs
+  # are safe to cancel.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   typecheck:
     name: Typecheck & static checks
-    runs-on: ubuntu-latest
+    # Set CI_LINUX_RUNNER=ubuntu-24.04-8core when an 8-vCPU larger runner is
+    # provisioned. The fallback keeps this workflow valid for public repos
+    # without larger-runner entitlement.
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 15
@@ -66,8 +70,36 @@ jobs:
         with:
           bun-version: '1.3.11'
 
-      - name: Cache bun dependencies
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore TypeScript build info
+        id: ts-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: '**/*.tsbuildinfo'
+          key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
+          restore-keys: tsbuild-typecheck-
+
+      - name: Restore bun dependencies
+        id: bun-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
           key: bun-ci-${{ hashFiles('bun.lock') }}
@@ -89,9 +121,29 @@ jobs:
         # repos and this 403s intermittently. Guarded by
         # `check:ci-bun-install-token`; see that script for the full
         # writeup and the other workflows with the same fix.
+        #
+        # Runs even on a node_modules cache hit: the cache holds only the root
+        # node_modules, while Bun links each workspace package's own
+        # `node_modules/.bin` (tsup, tsc, prisma, ...). Skipping install on a
+        # hit leaves those missing and `build:packages` fails with exit 127.
+        # With the root tree and Bun cache warm this is a fast relink.
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Save bun dependency cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # Required before typecheck so cross-package imports of
@@ -103,10 +155,46 @@ jobs:
         # The `paths` aliases in `tsconfig.base.json` only redirect a
         # subset of workspace packages to source; published-shape
         # imports still need `dist/`.
+        if: steps.workspace-cache.outputs.cache-hit != 'true'
         run: bun run build:packages
 
+      - name: Build runtime-template for prepared cache
+        if: steps.workspace-cache.outputs.cache-hit != 'true'
+        run: |
+          bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
+          (cd templates/runtime-template && bun install && bun run build)
+          git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build agent template for prepared cache
+        if: steps.workspace-cache.outputs.cache-hit != 'true'
+        run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
+
+      - name: Save prepared build artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.workspace-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
       - name: Typecheck
+        env:
+          TYPECHECK_SCOPE: required
+          TYPECHECK_EXCLUDE: apps/mobile
         run: bun run typecheck
+
+      - name: Save TypeScript build info
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: '**/*.tsbuildinfo'
+          key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
       - name: Lint
         run: bun run lint
@@ -186,9 +274,9 @@ jobs:
         # then add `--strict` here.
         run: bun run check:desktop-schema-drift
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
+  typecheck-mobile:
+    name: Typecheck (mobile)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 15
@@ -200,8 +288,200 @@ jobs:
         with:
           bun-version: '1.3.11'
 
-      - name: Cache bun dependencies
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      - name: Restore node_modules
+        id: mobile-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-mobile-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore TypeScript build info
+        id: ts-mobile-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: '**/*.tsbuildinfo'
+          key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
+          restore-keys: tsbuild-mobile-
+
+      - name: Restore bun dependencies
+        id: bun-mobile-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-
+
+      - name: Install dependencies
+        # Runs even on a node_modules cache hit — see the `typecheck` job.
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mobile-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Build workspace packages
+        if: steps.workspace-mobile-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: Typecheck mobile
+        run: bun run --cwd apps/mobile typecheck
+
+      - name: Save mobile TypeScript build info
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-mobile-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: '**/*.tsbuildinfo'
+          key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
+
+  typecheck-known-failures:
+    name: Typecheck (known failures, non-blocking)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Restore node_modules
+        id: known-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-known-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-
+
+      - name: Install dependencies
+        # Runs even on a node_modules cache hit — see the `typecheck` job.
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.known-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Build workspace packages
+        if: steps.workspace-known-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: Typecheck known failures
+        env:
+          TYPECHECK_SCOPE: expected-failures
+        run: bun run typecheck
+
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    env:
+      # Set CI_TEST_PACKAGE_CONCURRENCY=4 together with the 8-vCPU runner.
+      # The safe default matches ubuntu-latest's four-vCPU runner.
+      SHOGO_TEST_PACKAGE_CONCURRENCY: ${{ vars.CI_TEST_PACKAGE_CONCURRENCY || '2' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: agent-runtime 1/2
+            packages: packages/agent-runtime
+            shard: 1/2
+            build_templates: true
+            desktop_bundle: false
+            include_e2e: false
+          - name: agent-runtime 2/2
+            packages: packages/agent-runtime
+            shard: 2/2
+            build_templates: true
+            desktop_bundle: false
+            include_e2e: false
+          - name: api + mobile
+            packages: apps/api,apps/mobile
+            shard: ''
+            build_templates: false
+            desktop_bundle: false
+            include_e2e: false
+          - name: remaining + e2e
+            packages: packages/shared-runtime,packages/model-catalog,packages/sdk,scripts,packages/shared-app
+            shard: ''
+            build_templates: true
+            desktop_bundle: true
+            include_e2e: true
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Restore node_modules
+        id: test-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-test-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        id: bun-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
           key: bun-ci-${{ hashFiles('bun.lock') }}
@@ -210,18 +490,27 @@ jobs:
       - name: Install dependencies
         # See the "Install dependencies" comment in the `typecheck` job —
         # identical rationale, duplicated here because each job gets its own
-        # fresh runner filesystem.
+        # fresh runner filesystem. Runs even on a node_modules cache hit.
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.test-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # See the "Build workspace packages" comment in the `typecheck` job.
         # `bun run test` needs the same compiled `dist/` artifacts as
         # typecheck for the same cross-package import reasons.
+        if: steps.workspace-test-cache.outputs.cache-hit != 'true'
         run: bun run build:packages
 
       - name: Build runtime-template (Vite dist for workspace-seeding tests)
+        if: steps.workspace-test-cache.outputs.cache-hit != 'true' && matrix.build_templates
         # `templates/runtime-template/dist/` is gitignored — it's a Vite
         # build artifact. Several agent-runtime tests (notably
         # workspace-seeding.test.ts) assert that `seedRuntimeTemplate`
@@ -258,6 +547,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build one agent template (sales-bdr-pipeline) for overlay tests
+        if: steps.workspace-test-cache.outputs.cache-hit != 'true' && matrix.build_templates
         # `packages/agent-runtime/templates/<id>/dist/` is also gitignored.
         # workspace-seeding.test.ts > "overlays the template-shipped
         # pre-built dist over the runtime-template stub" depends on
@@ -271,6 +561,7 @@ jobs:
         run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
 
       - name: Desktop bundle + launcher assertions
+        if: matrix.desktop_bundle
         # test-web-bundle.ts / test-sync-web.ts / test-forge-config.ts are
         # hand-rolled assertion scripts rather than `bun test` files, so
         # `bun run test` never picked them up and nothing ran them in CI —
@@ -288,7 +579,16 @@ jobs:
         run: bun run --cwd apps/desktop test:desktop-bundle:ci
 
       - name: Test
-        run: bun run test
+        if: matrix.shard != ''
+        run: bun run test -- --packages "${{ matrix.packages }}" --shard "${{ matrix.shard }}"
+
+      - name: Test remaining packages and e2e
+        if: matrix.include_e2e
+        run: bun run test -- --packages "${{ matrix.packages }}" --include-e2e
+
+      - name: Test unsharded packages
+        if: matrix.shard == '' && matrix.include_e2e == false
+        run: bun run test -- --packages "${{ matrix.packages }}"
 
   # Thin aggregator so branch protection's required status check keeps its
   # original name/context ("Lint, Typecheck, Test") no matter how the real
@@ -310,8 +610,56 @@ jobs:
   # test suite: several unrelated suites still assert POSIX-shaped paths and
   # would keep this job permanently red, which guards nothing. Widen the
   # list as those are fixed.
+  windows-changes:
+    name: Detect Windows-sensitive changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check changed paths
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Main pushes and manually dispatched runs should retain the full
+          # platform guard. PR/merge-group runs can skip it when their diff
+          # cannot affect Windows path behavior or the guard itself.
+          if [[ "$EVENT_NAME" != "pull_request" && "$EVENT_NAME" != "merge_group" ]]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo "Unable to resolve the comparison SHAs; failing open."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq \
+            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode)\.test\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|\.github/workflows/ci\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test-windows:
     name: Test (Windows path handling)
+    needs: windows-changes
+    if: needs.windows-changes.outputs.relevant == 'true'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -324,22 +672,65 @@ jobs:
         with:
           bun-version: '1.3.11'
 
-      - name: Cache bun dependencies
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      # No node_modules cache on Windows: installing over a restored tree fails
+      # with EPERM inside node_modules/.bun during postinstall's prisma generate.
+      # The Bun download cache below keeps the full install reasonably fast.
+      - name: Restore prepared build artifacts
+        id: workspace-windows-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: ~/.bun/install/cache
-          key: bun-ci-windows-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-windows-
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      # Keep this cache for the platform-sensitive path. A cacheless
+      # experiment remained in bun install for more than five minutes, while
+      # the previous cached run completed installation in about four minutes.
+      - name: Restore bun dependencies
+        id: bun-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ github.workspace }}\.bun-install-cache
+          key: bun-ci-windows-v2-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
+        # Keep lifecycle scripts enabled: Bun 1.3.11 hit an ENOENT while
+        # linking expo@54.0.33 on the Windows workspace when this job used
+        # --ignore-scripts. The path gate above is the safe optimization for
+        # PRs that cannot affect this platform-specific guard.
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
+
+      - name: Save Windows bun dependency cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ github.workspace }}\.bun-install-cache
+          key: bun-ci-windows-v2-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # The API suites and the desktop-bundle build below resolve some
         # workspace packages (e.g. `@shogo-ai/sdk`) through their `dist/`.
+        if: steps.workspace-windows-cache.outputs.cache-hit != 'true'
         run: bun run build:packages
+
+      - name: Save Windows prepared build artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.workspace-windows-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Path-boundary, merged-root and release-version tests
         shell: bash
@@ -364,15 +755,17 @@ jobs:
 
   ci:
     name: Lint, Typecheck, Test
-    needs: [typecheck, test, test-windows]
+    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check upstream job results
         run: |
+          echo "windows-changes: ${{ needs.windows-changes.result }}"
           echo "typecheck: ${{ needs.typecheck.result }}"
+          echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
           echo "test: ${{ needs.test.result }}"
           echo "test-windows: ${{ needs.test-windows.result }}"
-          if [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.test-windows.result }}" != "success" ]; then
+          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
             exit 1
           fi

@@ -21,7 +21,18 @@ import { resolve } from "node:path";
 const mobileDir = resolve(import.meta.dir, "../apps/mobile");
 const result = spawnSync(
   "bun",
-  ["x", "tsc", "--noEmit", "--ignoreDeprecations", "5.0", "--pretty", "false"],
+  [
+    "x",
+    "tsc",
+    "--noEmit",
+    "--incremental",
+    "--tsBuildInfoFile",
+    ".tsbuildinfo",
+    "--ignoreDeprecations",
+    "5.0",
+    "--pretty",
+    "false",
+  ],
   {
     cwd: mobileDir,
     encoding: "utf8",
