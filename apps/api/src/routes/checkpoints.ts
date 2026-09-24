@@ -128,9 +128,15 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       const auth = c.get('auth');
       const userId = auth?.userId;
 
+      // Same hydration requirement as rollback (see comment there): without
+      // this, a manual checkpoint could get committed on top of a missing
+      // or stale local repo on a pod that never hydrated it, silently
+      // diverging from the durable history in object storage.
+      const workspacePath = await withHydratedRepo(projectId);
+
       const checkpoint = await checkpointService.createCheckpoint({
         projectId,
-        workspacePath: getWorkspacePath(projectId),
+        workspacePath,
         message: body.message,
         name: body.name,
         description: body.description,
@@ -250,9 +256,21 @@ export function checkpointRoutes(config: CheckpointRoutesConfig) {
       const auth = c.get('auth');
       const userId = auth?.userId;
 
+      // CRITICAL: this API pod is stateless — the durable git repo lives in
+      // object storage and is hydrated on demand (see withHydratedRepo).
+      // Every OTHER git-reading route below (diff, git-status, commit
+      // detail) already goes through withHydratedRepo; this one used to
+      // call getWorkspacePath() directly instead, so a rollback landing on
+      // a pod that hadn't already hydrated this project's repo would run
+      // `git read-tree -u --reset <sha>` against a missing/stale local
+      // `.git` and fail with "fatal: failed to unpack tree object <sha>" —
+      // indistinguishable to the user from real data loss, even though the
+      // checkpoint's commit was durably stored all along.
+      const workspacePath = await withHydratedRepo(projectId);
+
       const result = await checkpointService.rollback({
         projectId,
-        workspacePath: getWorkspacePath(projectId),
+        workspacePath,
         checkpointId,
         includeDatabase: body.includeDatabase,
         createdBy: userId,
