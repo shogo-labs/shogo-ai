@@ -1339,7 +1339,9 @@ export default observer(function ProjectLayout() {
         const ownIds = (store.workspaceCollection.all ?? []).map(
           (w: any) => w.id
         );
-        const wsId = resolveActiveWorkspaceId(ownIds);
+        const wsId = resolveActiveWorkspaceId(ownIds, undefined, {
+          listLoaded: true,
+        });
         const projectFilter = workspaceProjectFilter(wsId);
         if (projectFilter) {
           store.projectCollection
