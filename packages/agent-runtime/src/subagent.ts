@@ -661,9 +661,11 @@ export async function fetchSubagentOverrideFromApi(
   }
 
   try {
-    const headers = (await import('./internal-api')).getInternalHeaders()
+    const { getInternalHeaders, projectScopedId } = await import('./internal-api')
+    const headers = getInternalHeaders()
     const params = new URLSearchParams({ workspaceId, agentType })
-    if (projectId) params.set('projectId', projectId)
+    const scopedProjectId = projectScopedId(projectId)
+    if (scopedProjectId) params.set('projectId', scopedProjectId)
     if (bucketKey) params.set('bucketKey', bucketKey)
     const res = await fetch(`${apiUrl}/api/internal/subagent-overrides/resolve?${params}`, {
       method: 'GET',

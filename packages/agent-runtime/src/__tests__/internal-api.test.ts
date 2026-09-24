@@ -6,8 +6,11 @@ import {
   deriveApiUrl,
   derivePublicApiUrl,
   getInternalHeaders,
+  postCheckpointRecord,
   postCostMetric,
+  projectScopedId,
   type AgentCostMetricPayload,
+  type CheckpointRecordPayload,
 } from '../internal-api'
 
 const ENV_KEYS = [
@@ -195,6 +198,57 @@ describe('postCostMetric', () => {
       expect((warnSpy.mock.calls[0][1] as string)).toBe('net down')
     } finally {
       warnSpy.mockRestore()
+      fetchSpy.mockRestore()
+    }
+  })
+})
+
+describe('projectScopedId', () => {
+  it('passes real project ids through', () => {
+    expect(projectScopedId('3f6ee317-8fd0-43d3-8620-3acf1e33c8a4')).toBe('3f6ee317-8fd0-43d3-8620-3acf1e33c8a4')
+  })
+
+  it('drops workspace runtime keys, the pool placeholder, and empty values', () => {
+    expect(projectScopedId('ws:491687f4-ebda-4fda-af89-12bcb226b59b')).toBeUndefined()
+    expect(projectScopedId('ws:proj:3f6ee317-8fd0-43d3-8620-3acf1e33c8a4')).toBeUndefined()
+    expect(projectScopedId('__POOL__')).toBeUndefined()
+    expect(projectScopedId('')).toBeUndefined()
+    expect(projectScopedId(null)).toBeUndefined()
+    expect(projectScopedId(undefined)).toBeUndefined()
+  })
+})
+
+describe('postCheckpointRecord', () => {
+  beforeEach(clearEnv)
+  afterEach(restoreEnv)
+
+  const payload: CheckpointRecordPayload = {
+    commitSha: 'abc123',
+    commitMessage: 'Auto-save',
+    branch: 'main',
+    filesChanged: 1,
+    additions: 2,
+    deletions: 0,
+    isAutomatic: true,
+  }
+
+  it('posts the checkpoint for a real project', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    try {
+      expect(await postCheckpointRecord('proj-1', payload)).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(String(fetchSpy.mock.calls[0][0])).toEndWith('/api/internal/projects/proj-1/checkpoints/record')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('skips the request for a projectless workspace runtime key', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    try {
+      expect(await postCheckpointRecord('ws:491687f4-ebda-4fda-af89-12bcb226b59b', payload)).toBe(false)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
       fetchSpy.mockRestore()
     }
   })

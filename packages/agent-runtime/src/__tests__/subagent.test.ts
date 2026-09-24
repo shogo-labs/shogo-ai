@@ -288,6 +288,18 @@ describe('fetchSubagentOverrideFromApi', () => {
     expect(r.experiment?.experimentId).toBe('e1')
   })
 
+  it('sends a real projectId but omits a workspace runtime key', async () => {
+    const urls: string[] = []
+    fetchImpl = async (input: any) => {
+      urls.push(String(input))
+      return new Response(JSON.stringify({ override: null, experiment: null }), { status: 200 })
+    }
+    await fetchSubagentOverrideFromApi('explore', 'w1', 'p1', 'b1')
+    await fetchSubagentOverrideFromApi('explore', 'w1', 'ws:w1', 'b2')
+    expect(new URL(urls[0]).searchParams.get('projectId')).toBe('p1')
+    expect(new URL(urls[1]).searchParams.has('projectId')).toBe(false)
+  })
+
   it('returns null when the API responds non-2xx', async () => {
     fetchImpl = async () => new Response('boom', { status: 500 })
     const r = await fetchSubagentOverrideFromApi('explore', 'w1', null)

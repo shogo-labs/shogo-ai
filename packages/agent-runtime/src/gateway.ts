@@ -86,7 +86,7 @@ import {
   workspaceProjectsManifest,
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
-import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCostMetric, projectScopedId } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -1043,13 +1043,12 @@ export class AgentGateway {
     // sub-agent runs, only main-chat. We also send the multi-signal fields so
     // the recommendation gate can compute real success rates.
     this.agentManager.onCostMetric((data) => {
-      const projectId = this.projectId
       const workspaceId = process.env.WORKSPACE_ID || null
       if (!workspaceId) return // local-only test runs without a workspace
       const pipelineRunId = this.currentPipelineRunId()
       void postCostMetric({
         workspaceId,
-        projectId: projectId || undefined,
+        projectId: projectScopedId(this.projectId),
         ...(pipelineRunId ? { metadata: { pipelineRunId } } : {}),
         agentRunId: data.agentRunId,
         agentType: data.agentType,
