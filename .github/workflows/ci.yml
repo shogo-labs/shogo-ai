@@ -672,13 +672,9 @@ jobs:
         with:
           bun-version: '1.3.11'
 
-      - name: Restore node_modules
-        id: windows-node-modules-cache
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: node_modules
-          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-
+      # No node_modules cache on Windows: installing over a restored tree fails
+      # with EPERM inside node_modules/.bun during postinstall's prisma generate.
+      # The Bun download cache below keeps the full install reasonably fast.
       - name: Restore prepared build artifacts
         id: workspace-windows-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -705,19 +701,11 @@ jobs:
         # Keep lifecycle scripts enabled: Bun 1.3.11 hit an ENOENT while
         # linking expo@54.0.33 on the Windows workspace when this job used
         # --ignore-scripts. The path gate above is the safe optimization for
-        # PRs that cannot affect this platform-specific guard. Runs even on a
-        # node_modules cache hit — see the `typecheck` job.
+        # PRs that cannot affect this platform-specific guard.
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
-
-      - name: Save node_modules
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.windows-node-modules-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: node_modules
-          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Save Windows bun dependency cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
