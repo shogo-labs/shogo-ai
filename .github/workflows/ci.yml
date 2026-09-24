@@ -121,14 +121,13 @@ jobs:
         # repos and this 403s intermittently. Guarded by
         # `check:ci-bun-install-token`; see that script for the full
         # writeup and the other workflows with the same fix.
-        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        #
+        # Runs even on a node_modules cache hit: the cache holds only the root
+        # node_modules, while Bun links each workspace package's own
+        # `node_modules/.bin` (tsup, tsc, prisma, ...). Skipping install on a
+        # hit leaves those missing and `build:packages` fails with exit 127.
+        # With the root tree and Bun cache warm this is a fast relink.
         run: bun install --frozen-lockfile
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Regenerate workspace files from cached dependencies
-        if: steps.node-modules-cache.outputs.cache-hit == 'true'
-        run: bun scripts/postinstall.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -325,14 +324,8 @@ jobs:
           restore-keys: bun-ci-
 
       - name: Install dependencies
-        if: steps.mobile-node-modules-cache.outputs.cache-hit != 'true'
+        # Runs even on a node_modules cache hit — see the `typecheck` job.
         run: bun install --frozen-lockfile
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Regenerate workspace files from cached dependencies
-        if: steps.mobile-node-modules-cache.outputs.cache-hit == 'true'
-        run: bun scripts/postinstall.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -400,14 +393,8 @@ jobs:
           restore-keys: bun-ci-
 
       - name: Install dependencies
-        if: steps.known-node-modules-cache.outputs.cache-hit != 'true'
+        # Runs even on a node_modules cache hit — see the `typecheck` job.
         run: bun install --frozen-lockfile
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Regenerate workspace files from cached dependencies
-        if: steps.known-node-modules-cache.outputs.cache-hit == 'true'
-        run: bun scripts/postinstall.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -503,15 +490,8 @@ jobs:
       - name: Install dependencies
         # See the "Install dependencies" comment in the `typecheck` job —
         # identical rationale, duplicated here because each job gets its own
-        # fresh runner filesystem.
-        if: steps.test-node-modules-cache.outputs.cache-hit != 'true'
+        # fresh runner filesystem. Runs even on a node_modules cache hit.
         run: bun install --frozen-lockfile
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Regenerate workspace files from cached dependencies
-        if: steps.test-node-modules-cache.outputs.cache-hit == 'true'
-        run: bun scripts/postinstall.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -692,13 +672,9 @@ jobs:
         with:
           bun-version: '1.3.11'
 
-      - name: Restore node_modules
-        id: windows-node-modules-cache
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: node_modules
-          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-
+      # No node_modules cache on Windows: installing over a restored tree fails
+      # with EPERM inside node_modules/.bun during postinstall's prisma generate.
+      # The Bun download cache below keeps the full install reasonably fast.
       - name: Restore prepared build artifacts
         id: workspace-windows-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -726,25 +702,10 @@ jobs:
         # linking expo@54.0.33 on the Windows workspace when this job used
         # --ignore-scripts. The path gate above is the safe optimization for
         # PRs that cannot affect this platform-specific guard.
-        if: steps.windows-node-modules-cache.outputs.cache-hit != 'true'
         run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
-
-      - name: Regenerate workspace files from cached dependencies
-        if: steps.windows-node-modules-cache.outputs.cache-hit == 'true'
-        run: bun scripts/postinstall.ts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}\.bun-install-cache
-
-      - name: Save node_modules
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.windows-node-modules-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: node_modules
-          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Save Windows bun dependency cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
