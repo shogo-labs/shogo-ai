@@ -1486,19 +1486,9 @@ function compareSemver(a: string, b: string): number {
  *   "@shogo-ai/sdk": "^0.4.0"
  *   "generate":     "bunx shogo generate"
  *
- * That combination is permanently broken on every macOS install:
- *   1. `bunx shogo` resolves to the only published 0.4.x — `0.4.0` —
- *      because the registry jumps 0.4.0 → 1.0.0 with no patch
- *      in between (0.4.1 was tagged internally but never published).
- *   2. The published 0.4.0 CLI does `execSync(\`bun ${absScriptPath}\`)`
- *      which `/bin/sh` tokenizes on whitespace, truncating workspace
- *      paths under `~/Library/Application Support/Shogo/...` and
- *      crashing with `Module not found "/Users/<u>/Library/Application"`.
- *
- * Once an install is on the broken pin, no amount of `bun install`
- * rescues it — the only working npm version that satisfies `^0.4.0`
- * really is 0.4.0. The only fix is to rewrite the pin to a non-broken
- * line.
+ * Older SDK releases used shell commands that were not safe for workspace
+ * paths containing spaces. Rewrite legacy workspaces to the current SDK and
+ * path-based generate script before dependency installation.
  *
  * Behaviour:
  *
