@@ -511,18 +511,29 @@ export const HomeScreen = observer(function HomeScreen({
   const createHomeDraftSession = useCallback(
     async (projectId: string, workspaceId: string): Promise<HomeDraft> => {
       if (isWorkspaceRuntimeEnabled()) {
+        // The project page's canvas is served by the project's own runtime, so
+        // the handed-off chat must be pinned to the project or its edits land
+        // on a different VM than the preview.
         if (originWorkspaceSessionId) {
-          await api.attachProject(http, workspaceId, originWorkspaceSessionId, projectId, 'readwrite')
-          return {
+          const { pinned } = await api.attachProjectAsAnchor(
+            http,
+            workspaceId,
+            originWorkspaceSessionId,
             projectId,
-            chatSessionId: originWorkspaceSessionId,
-            chatScope: 'workspace',
+          )
+          if (pinned) {
+            return {
+              projectId,
+              chatSessionId: originWorkspaceSessionId,
+              chatScope: 'workspace',
+            }
           }
         }
         const session = await api.createWorkspaceSession(http, workspaceId, {
           inferredName: 'Untitled',
           attachProjectIds: [projectId],
           attachMode: 'readwrite',
+          anchorProjectId: projectId,
         })
         return { projectId, chatSessionId: session.id, chatScope: 'workspace' }
       }

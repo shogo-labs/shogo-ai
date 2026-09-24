@@ -1406,6 +1406,8 @@ export const api = {
       inferredName?: string
       attachProjectIds?: string[]
       attachMode?: 'readwrite' | 'readonly'
+      /** Pin the session to this project so chat runs on the runtime serving its preview. */
+      anchorProjectId?: string
     } = {},
   ): Promise<{ id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> }> {
     const res = await http.post<{ session: { id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> } }>(
@@ -1546,6 +1548,25 @@ export const api = {
     )
     if (!res.data?.attached) throw new Error('attachProject: no attachment returned')
     return res.data.attached
+  },
+
+  /**
+   * Attach a project read-write and ask the server to pin the session to it.
+   * Resolves `pinned: false` when pinning would move other work off its
+   * runtime (primary chat, already pinned elsewhere, or other attachments).
+   */
+  async attachProjectAsAnchor(
+    http: HttpClient,
+    workspaceId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<{ pinned: boolean }> {
+    const res = await http.post<{ attached?: unknown; pinned?: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/projects`,
+      { projectId, attachMode: 'readwrite', pinAsAnchor: true },
+    )
+    if (!res.data?.attached) throw new Error('attachProjectAsAnchor: no attachment returned')
+    return { pinned: res.data.pinned === true }
   },
 
   /** List the projects mounted in a workspace chat, including their write mode. */
