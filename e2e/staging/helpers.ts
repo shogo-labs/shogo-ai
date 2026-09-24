@@ -31,10 +31,10 @@ export const STRIPE_CARDS = {
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Signs up a new account at /sign-in, then walks through the cloud chat-style
- * onboarding flow:
+ * Signs up a new account at /sign-in, then walks through the cloud onboarding
+ * flow into the Team workspace:
  *
- *   welcome (auto-advance) → features → complete → home
+ *   destination (Team workspace) → team setup → agent picker (skip) → home
  *
  * Leaves the browser on the home screen with "What are we building" visible.
  */
@@ -61,29 +61,26 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
     timeout: 30_000,
   })
 
-  // ── Onboarding (chat-style) ────────────────────────────────────────────────
-  // The cloud flow is rendered by ChatOnboarding with widgets. The welcome
-  // step auto-advances; the rest expose Pressable CTAs that are not real
-  // <button>s, so we match by exact visible text. Each step is wrapped in a
-  // try because future test users may bypass onboarding entirely.
-
-  // Step 1 – Features widget: "Continue" (exact, not "Continue with Google")
+  // ── Onboarding (destination-first, CloudOnboarding) ───────────────────────
+  // Cloud onboarding asks where to start: Personal space or Team workspace.
+  // Projects live in the Team workspace, so pick it, keep the prefilled team
+  // name, and open the workspace without installing an agent. The CTAs are
+  // Pressables rather than <button>s, so they are matched by visible text.
+  const teamDestination = page.getByRole("radio", { name: "My Team workspace" })
   try {
-    await page
-      .getByText("Continue", { exact: true })
-      .first()
-      .waitFor({ timeout: 15_000 })
-    await page.getByText("Continue", { exact: true }).first().click()
+    await teamDestination.waitFor({ timeout: 20_000 })
   } catch {
-    // Already past features step
+    // Account is already onboarded.
   }
+  if (await teamDestination.isVisible()) {
+    await teamDestination.click()
+    await page.getByText("Continue", { exact: true }).click()
 
-  // Step 2 – Complete widget: "Enter Shogo"
-  try {
-    await page.getByText("Enter Shogo", { exact: true }).waitFor({ timeout: 15_000 })
-    await page.getByText("Enter Shogo", { exact: true }).click()
-  } catch {
-    // Already past complete step
+    await page.getByText("Set up your team workspace").waitFor({ timeout: 20_000 })
+    await page.getByText("Continue", { exact: true }).click()
+
+    await page.getByText("Start with an agent").waitFor({ timeout: 20_000 })
+    await page.getByText(/^Open /).last().click()
   }
 
   // ── Home screen ────────────────────────────────────────────────────────────
