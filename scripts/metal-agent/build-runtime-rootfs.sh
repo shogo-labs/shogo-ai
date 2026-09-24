@@ -138,6 +138,14 @@ fi
 rm -f /etc/resolv.conf
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
 
+# docker export leaves /etc/hosts empty (Docker bind-mounts it at run time), so
+# "localhost" falls through to the public resolvers above and never reaches the
+# IPv4 listeners here: every in-guest http://localhost:<port> call (the API
+# sidecar's /health among them) is refused. Keep localhost on 127.0.0.1 only;
+# the sidecars bind IPv4.
+rm -f /etc/hosts
+printf '127.0.0.1\tlocalhost\n::1\tip6-localhost ip6-loopback\n' > /etc/hosts
+
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export HOME=/app
 export NODE_ENV=production
