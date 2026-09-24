@@ -1960,6 +1960,14 @@ export class PreviewManager {
       if (kind === 'restart') this.lifecyclePending = true
       return this.lifecycleInFlight
     }
+    // `_runLifecycleOnce` returns as soon as background setup is kicked off,
+    // so the in-flight gate above only covers that first instant. Clients
+    // poll `/preview/start` until `running`; without this a later start
+    // would run a duplicate install/prisma/build/API pipeline alongside the
+    // first one.
+    if (kind === 'start' && this.started && this._phase !== 'failed') {
+      return { mode: 'already-started', port: this.runtimePort, timings: {} }
+    }
     this.lifecycleInFlight = this._runLifecycleOnce(kind).finally(() => {
       const pending = this.lifecyclePending
       this.lifecyclePending = false
@@ -2155,6 +2163,43 @@ export class PreviewManager {
       // looking like it's mid-build. `start()` owns the real phase machine.
       if (!this.started) this._phase = 'idle'
     }
+  }
+
+  /**
+   * Pool pre-warm: build the seeded template into `outDir` with the given
+   * `--base`, without touching `dist/` or any serving state. A workspace
+   * runtime adopts this as its anchor's `dist/` so a new project's preview is
+   * serveable the moment it is assigned. Resolves false on any failure.
+   */
+  async buildPoolDist(outDir: string, base: string): Promise<boolean> {
+    if (this.started) return false
+    const cwd = this.resolveBundlerCwd()
+    const binDir = join(cwd, 'node_modules', '.bin')
+    const isWindows = process.platform === 'win32'
+    const viteBin = (isWindows ? [join(binDir, 'vite.CMD'), join(binDir, 'vite.cmd')] : [join(binDir, 'vite')]).find(
+      (p) => existsSync(p),
+    )
+    if (!viteBin || this.resolveDevServer() !== 'vite') return false
+    const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
+    const exitCode = await new Promise<number | null>((resolveBuild) => {
+      try {
+        const proc = spawn(
+          isWindows ? `"${invocation.cmd}"` : invocation.cmd,
+          [...invocation.argsPrefix, 'build', '--outDir', outDir, '--emptyOutDir', '--base', base],
+          {
+            cwd,
+            stdio: 'ignore',
+            shell: isWindows,
+            env: { ...process.env, NODE_ENV: 'development', VITE_RUNTIME_PORT: String(this.runtimePort), CI: '1' },
+          },
+        )
+        proc.on('error', () => resolveBuild(null))
+        proc.on('exit', (code) => resolveBuild(code))
+      } catch {
+        resolveBuild(null)
+      }
+    })
+    return exitCode === 0 && existsSync(join(outDir, 'index.html'))
   }
 
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {

@@ -246,6 +246,28 @@ export function workspaceAvailableProjectsManifest(
 }
 
 /**
+ * `WORKSPACE.md` lines naming the project the user opened, so the agent
+ * edits `<anchor>/src/...` rather than a same-named path at the root. Empty
+ * without an anchor.
+ */
+export function renderCurrentProjectSection(
+  anchorProjectId: string | undefined,
+  projects: ReadonlyArray<{ id: string; name: string }>,
+): string[] {
+  const anchor = anchorProjectId?.trim()
+  if (!anchor) return []
+  const name = projects.find((p) => p.id === anchor)?.name
+  return [
+    '## Current project',
+    '',
+    `The user has \`${anchor}/\`${name && name !== anchor ? ` (**${name}**)` : ''} open, and its canvas previews that folder.`,
+    `When they mean "the app" or "this project", work in \`${anchor}/\`: a file like \`src/App.tsx\` is`,
+    `\`${anchor}/src/App.tsx\`. The workspace root is not a project, so always include the project folder in paths.`,
+    '',
+  ]
+}
+
+/**
  * Render the human-readable `WORKSPACE.md` that sits at the merged-tree
  * root so the agent immediately understands which subfolder is which
  * project. Kept as a pure function for snapshot-style unit testing.
@@ -254,6 +276,7 @@ export function renderWorkspaceManifestMarkdown(
   workspaceId: string,
   projects: WorkspaceProjectEntry[],
   mounts: readonly WorkspaceMount[] = [],
+  anchorProjectId?: string,
 ): string {
   const externalPathById = new Map(
     mounts.filter((m) => m.kind === 'external').map((m) => [m.projectId, m.path] as const),
@@ -266,9 +289,9 @@ export function renderWorkspaceManifestMarkdown(
     'Each top-level UUID-named folder below is a separate project you can',
     'read and edit. Treat them as sibling repos under one root.',
     '',
-    '## Attached projects',
-    '',
   ]
+  lines.push(...renderCurrentProjectSection(anchorProjectId, projects))
+  lines.push('## Attached projects', '')
   if (projects.length === 0) {
     lines.push('_No projects attached._')
   } else {

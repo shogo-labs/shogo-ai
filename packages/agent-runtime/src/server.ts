@@ -41,6 +41,16 @@ import {
   shouldSeedAnchorMember,
 } from './workspace-member-seed'
 import {
+  POOL_DIST_BASE_PLACEHOLDER,
+  adoptPoolPreseedIntoMember,
+  discardPoolPreseed,
+  discardPoolPreseedArtifacts,
+  listRootEntries,
+  poolDistDir,
+  removePoolTemplateDist,
+  writePoolPreseedManifest,
+} from './workspace-pool-adopt'
+import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
   createS3SyncForProject,
@@ -226,6 +236,10 @@ const WORKING_MODE: 'managed' | 'external' =
  */
 let IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
 let WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
+
+/** Settles once an unassigned pool VM finished pre-seeding (and wrote its manifest). */
+let poolPreseedDone: Promise<void> | null = null
+const POOL_PRESEED_WAIT_MS = 15_000
 
 /**
  * Server-backed published mode. When `SHOGO_PUBLISHED_MODE=true` this pod is
@@ -984,7 +998,10 @@ function writeWorkspaceManifest(workspaceDir: string): void {
     const projects = workspaceProjectsManifest()
     const mounts = parseWorkspaceMounts()
     const workspaceId = process.env.WORKSPACE_ID || ''
-    writeFileSync(join(workspaceDir, 'WORKSPACE.md'), renderWorkspaceManifestMarkdown(workspaceId, projects, mounts))
+    writeFileSync(
+      join(workspaceDir, 'WORKSPACE.md'),
+      renderWorkspaceManifestMarkdown(workspaceId, projects, mounts, process.env.WORKSPACE_ANCHOR_PROJECT_ID),
+    )
     const shogoDir = join(workspaceDir, '.shogo')
     mkdirSync(shogoDir, { recursive: true })
     writeFileSync(
@@ -2952,6 +2969,9 @@ function finishHydrate(entries: string[], destinationDir = WORKSPACE_DIR): void 
   // `/preview/start`.
   const anchorId = getAnchorProjectId()
   const isAnchorDir = anchorId != null && destinationDir === join(WORKSPACE_DIR, anchorId)
+  if (removePoolTemplateDist(destinationDir)) {
+    console.log(`[pool/hydrate] dropped pre-built template dist/ in ${destinationDir}`)
+  }
   if (destinationDir === WORKSPACE_DIR || isAnchorDir) scheduleHydrateRebuild()
 }
 
@@ -5945,8 +5965,18 @@ async function initializeEssentials(): Promise<void> {
   // A brand-new anchor project has no archive, so its member folder is empty
   // and the anchor preview would have nothing to build. Give it the starter a
   // single-project runtime would have seeded at boot.
+  //
+  // A warm pool VM already pre-seeded (and pre-built) that starter in the
+  // root; move it into the anchor instead of rebuilding it, and never leave
+  // it in the root, where the agent's relative paths would edit it.
   let seededAnchorDir: string | null = null
   if (IS_WORKSPACE_RUNTIME) {
+    const preseedSettled = poolPreseedDone
+      ? await Promise.race([
+          poolPreseedDone.then(() => true),
+          new Promise<boolean>((r) => setTimeout(() => r(false), POOL_PRESEED_WAIT_MS)),
+        ])
+      : true
     const anchorId = process.env.WORKSPACE_ANCHOR_PROJECT_ID
     if (
       anchorId &&
@@ -5957,17 +5987,39 @@ async function initializeEssentials(): Promise<void> {
         newProjectIds: workspaceNewProjectIds,
       })
     ) {
+      const anchorDir = join(WORKSPACE_DIR, anchorId)
+      const techStackId = resolveMemberTechStackId(anchorId)
       try {
-        const anchorDir = join(WORKSPACE_DIR, anchorId)
-        const { seeded, techStackId } = seedEmptyWorkspaceMember(anchorDir, resolveMemberTechStackId(anchorId))
-        if (seeded) {
+        const adoption = preseedSettled
+          ? adoptPoolPreseedIntoMember(WORKSPACE_DIR, anchorDir, {
+              basePath: buildWorkspacePreviewPath(anchorId),
+              techStackId,
+            })
+          : null
+        if (adoption?.adopted) {
           seededAnchorDir = anchorDir
-          logTiming(`Workspace runtime: seeded starter into empty anchor ${anchorId} (stack=${techStackId ?? 'default'})`)
+          logTiming(
+            `Workspace runtime: adopted pool pre-seed into anchor ${anchorId} (${adoption.moved.length} entries, dist=${adoption.distReady ? 'prebuilt' : 'none'})`,
+          )
+        } else {
+          const { seeded } = seedEmptyWorkspaceMember(anchorDir, techStackId)
+          if (seeded) {
+            seededAnchorDir = anchorDir
+            logTiming(`Workspace runtime: seeded starter into empty anchor ${anchorId} (stack=${techStackId ?? 'default'})`)
+          }
         }
       } catch (error: any) {
         console.error(`[agent-runtime] Seeding anchor ${anchorId} failed:`, error.message)
       }
     }
+    const discardRootPreseed = () => {
+      const removed = discardPoolPreseed(WORKSPACE_DIR)
+      if (removed.length) logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${removed.join(', ')})`)
+    }
+    if (preseedSettled) discardRootPreseed()
+    else poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+  } else if (poolPreseedDone) {
+    poolPreseedDone.then(() => discardPoolPreseedArtifacts(WORKSPACE_DIR)).catch(() => {})
   }
 
   // Instantiate GitWorkspaceSync in dual_shadow / git_only mode. The
@@ -6705,8 +6757,11 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
   logTiming('Pool mode: host pool, workspace prepared by the API at assign (pre-seed skipped)')
 } else if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
+  const rootEntriesBeforePreseed = listRootEntries(WORKSPACE_DIR)
   ensureWorkspaceFiles()
-  ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
+  const poolTechStackId = resolveWorkspaceTechStackId(WORKSPACE_DIR) || null
+  let poolDistBuilt = false
+  poolPreseedDone = ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
     workspaceStatus.depsInstalled = true
     logTiming('Pool mode: workspace deps pre-seeded')
 
@@ -6725,8 +6780,30 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
         console.error('[agent-runtime] Pool preview pre-warm failed:', err?.message ?? err)
       }
     }
+
+    // Only a workspace anchor consumes the pre-built dist (see
+    // workspace-pool-adopt.ts); skip it once a single-project assign landed.
+    if (!state.poolAssigned || IS_WORKSPACE_RUNTIME) {
+      poolDistBuilt = await getPreviewManager()
+        .buildPoolDist(poolDistDir(WORKSPACE_DIR), POOL_DIST_BASE_PLACEHOLDER)
+        .catch(() => false)
+      if (poolDistBuilt) logTiming('Pool mode: template dist pre-built')
+    }
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
+  }).finally(() => {
+    try {
+      writePoolPreseedManifest(WORKSPACE_DIR, {
+        entriesBefore: rootEntriesBeforePreseed,
+        techStackId: poolTechStackId,
+        distBuilt: poolDistBuilt,
+        exclude: IS_WORKSPACE_RUNTIME
+          ? [...WORKSPACE_RUNTIME_PROJECT_IDS, ...parseWorkspaceMounts().map((m) => m.mount)]
+          : [],
+      })
+    } catch (err: any) {
+      console.error('[agent-runtime] Pool pre-seed manifest failed:', err?.message ?? err)
+    }
   })
 
   // Pre-warm the skill-server's node_modules in parallel with the workspace

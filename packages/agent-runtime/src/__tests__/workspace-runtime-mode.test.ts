@@ -189,6 +189,13 @@ describe('renderWorkspaceManifestMarkdown', () => {
   it('handles the empty case', () => {
     expect(renderWorkspaceManifestMarkdown('ws-1', [])).toContain('_No projects attached._')
   })
+  it('names the open project folder so relative paths land in it', () => {
+    const md = renderWorkspaceManifestMarkdown('ws-1', [{ id: 'p1', name: 'alpha-api' }], [], 'p1')
+    expect(md).toContain('## Current project')
+    expect(md).toContain('`p1/` (**alpha-api**) open')
+    expect(md).toContain('`p1/src/App.tsx`')
+    expect(renderWorkspaceManifestMarkdown('ws-1', [{ id: 'p1', name: 'alpha-api' }])).not.toContain('## Current project')
+  })
 })
 
 describe('shouldSkipManagedSeeding', () => {
