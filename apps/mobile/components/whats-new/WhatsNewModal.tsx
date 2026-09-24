@@ -120,14 +120,6 @@ export function WhatsNewModal({
                   <Sparkles size={index % 2 === 0 ? 16 : 11} color="#fff7ed" />
                 </Motion.View>
               ))}
-              <Pressable
-                accessibilityLabel="Close What's New"
-                accessibilityRole="button"
-                onPress={onDismiss}
-                className="absolute right-4 top-4 rounded-full bg-black/10 p-2"
-              >
-                <X size={18} color="#fff" />
-              </Pressable>
               <View className="gap-1">
                 <Text className="text-xs font-semibold uppercase tracking-[2px] text-orange-100">
                   What's new
@@ -139,6 +131,15 @@ export function WhatsNewModal({
                   {release.intro}
                 </Text>
               </View>
+              {/* Rendered after the full-width text block so it stacks above it and stays clickable. */}
+              <Pressable
+                accessibilityLabel="Close What's New"
+                accessibilityRole="button"
+                onPress={onDismiss}
+                className="absolute right-4 top-4 rounded-full bg-black/10 p-2"
+              >
+                <X size={18} color="#fff" />
+              </Pressable>
             </LinearGradient>
           </View>
 

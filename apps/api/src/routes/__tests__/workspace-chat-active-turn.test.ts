@@ -33,6 +33,9 @@ const sessions = new Map<string, SessionRow>()
 const store = {
   attachedProjectIds: [] as string[],
   billingCalls: [] as Array<{ op: 'open' | 'close'; projectId: string }>,
+  upgradeResult: null as string | null,
+  upgradeCalls: [] as Array<[string, string]>,
+  syncCalls: [] as Array<[string, string | undefined]>,
 }
 
 function matches(row: SessionRow, where: Record<string, any>): boolean {
@@ -198,7 +201,18 @@ mock.module('../../services/workspace-session.service', () => ({
   getOrCreatePrimaryWorkspaceSession: async () => ({ id: 's-1' }),
   pinWorkspaceSessionToProject: async () => ({ pinned: false, changed: false }),
   unpinWorkspaceSession: async () => {},
+  upgradeProjectSessionToWorkspace: async (workspaceId: string, sessionId: string) => {
+    store.upgradeCalls.push([workspaceId, sessionId])
+    return store.upgradeResult
+  },
   WorkspaceSessionError: MockWorkspaceSessionError,
+}))
+
+mock.module('../../services/project-attachment.service', () => ({
+  attachProjectToProject: async () => ({}),
+  syncPinnedSessionAttachments: async (anchorProjectId: string, sessionId?: string) => {
+    store.syncCalls.push([anchorProjectId, sessionId])
+  },
 }))
 
 type FetchResponder = (url: string) => Response | Promise<Response>
@@ -218,6 +232,9 @@ beforeEach(() => {
   sessions.clear()
   store.attachedProjectIds = []
   store.billingCalls = []
+  store.upgradeResult = null
+  store.upgradeCalls = []
+  store.syncCalls = []
   fetchResponder = null
 })
 
@@ -294,6 +311,34 @@ describe('workspace chat active turn', () => {
       expect(store.billingCalls.filter((call) => call.op === 'close')).toHaveLength(variant.attached.length)
     })
   }
+
+  test('a legacy project session is upgraded and re-attached before chatting', async () => {
+    seedSession('s-legacy', { contextId: 'p-1' })
+    store.upgradeResult = 'p-1'
+    const runtime = controllableRuntimeStream()
+    fetchResponder = () => runtime.response
+
+    const res = await sendChat(buildApp(), 's-legacy')
+    expect(res.status).toBe(200)
+    expect(store.upgradeCalls).toEqual([['ws-1', 's-legacy']])
+    expect(store.syncCalls).toEqual([['p-1', 's-legacy']])
+
+    runtime.finish()
+    await res.text()
+  })
+
+  test('an already-workspace session is not re-synced', async () => {
+    seedSession('s-1')
+    const runtime = controllableRuntimeStream()
+    fetchResponder = () => runtime.response
+
+    const res = await sendChat(buildApp(), 's-1')
+    expect(res.status).toBe(200)
+    expect(store.syncCalls).toEqual([])
+
+    runtime.finish()
+    await res.text()
+  })
 
   test('a failed send does not clear another tab\'s live turn', async () => {
     const heartbeat = new Date()

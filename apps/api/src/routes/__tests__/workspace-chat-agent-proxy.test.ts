@@ -85,6 +85,7 @@ mock.module('../../services/workspace-session.service', () => ({
   getOrCreatePrimaryWorkspaceSession: async () => ({ id: 'sess-1' }),
   pinWorkspaceSessionToProject: async () => ({ pinned: false, changed: false }),
   unpinWorkspaceSession: async () => {},
+  upgradeProjectSessionToWorkspace: async () => null,
   WorkspaceSessionError: MockWorkspaceSessionError,
 }))
 

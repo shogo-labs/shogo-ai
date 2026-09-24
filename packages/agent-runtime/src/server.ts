@@ -18,6 +18,7 @@ import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
+import { getStreamFinishReason } from './stream-finish'
 import {
   existsSync,
   readFileSync,
@@ -2016,7 +2017,7 @@ app.post('/agent/chat', async (c) => {
           },
         } as any)
         terminalFrameWritten = true
-        writer.write({ type: 'finish', finishReason: usage?.wasAborted ? 'abort' : 'stop' })
+        writer.write({ type: 'finish', finishReason: getStreamFinishReason(!!usage?.wasAborted) })
         turnSucceeded = true
 
         // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
