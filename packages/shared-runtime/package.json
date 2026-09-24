@@ -5,6 +5,10 @@
   "description": "Shared runtime utilities for runtime and agent-runtime (S3 sync, postgres backup, preview tokens, health checks)",
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sse-keepalive": "./src/sse-keepalive.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun --no-env-file ../../scripts/run-tests-isolated.ts .",
