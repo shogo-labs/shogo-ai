@@ -15,6 +15,8 @@ interface State {
   upsertCalls: any[]
   deleteManyCount: number
   findManyAttached: any[]
+  // project.findUnique result: the workspace that owns the looked-up project
+  projectWorkspaceId: string | null
 }
 
 const s: State = {
@@ -27,6 +29,7 @@ const s: State = {
   upsertCalls: [],
   deleteManyCount: 0,
   findManyAttached: [],
+  projectWorkspaceId: null,
 }
 
 mock.module('../../lib/prisma', () => ({
@@ -83,6 +86,8 @@ mock.module('../../lib/prisma', () => ({
         const ids: string[] = args.where.id.in
         return ids.filter((id) => s.projectsInWorkspace.has(id)).map((id) => ({ id }))
       },
+      findUnique: async (_args: any) =>
+        s.projectWorkspaceId === null ? null : { workspaceId: s.projectWorkspaceId },
     },
   },
 }))
@@ -99,6 +104,40 @@ beforeEach(() => {
   s.upsertCalls = []
   s.deleteManyCount = 0
   s.findManyAttached = []
+  s.projectWorkspaceId = null
+})
+
+describe('upgradeProjectSessionToWorkspace', () => {
+  it('converts a legacy project session in place and returns its project', async () => {
+    s.sessionRow = { contextType: 'project', contextId: 'p1', workspaceId: null }
+    s.projectWorkspaceId = 'ws-1'
+
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'sess-1')).resolves.toBe('p1')
+    expect(s.sessionRow).toMatchObject({ contextType: 'workspace', contextId: 'p1', workspaceId: 'ws-1' })
+    await expect(svc.assertWorkspaceSessionInWorkspace('ws-1', 'sess-1')).resolves.toBeUndefined()
+  })
+
+  it('leaves a project session from another workspace alone', async () => {
+    s.sessionRow = { contextType: 'project', contextId: 'p1', workspaceId: null }
+    s.projectWorkspaceId = 'ws-other'
+
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'sess-1')).resolves.toBeNull()
+    expect(s.updateManyCalls).toHaveLength(0)
+    await expect(svc.assertWorkspaceSessionInWorkspace('ws-1', 'sess-1')).rejects.toMatchObject({
+      code: 'not_workspace_session',
+    })
+  })
+
+  it('is a no-op for sessions that are already workspace-scoped', async () => {
+    s.sessionRow = { contextType: 'workspace', contextId: 'p1', workspaceId: 'ws-1' }
+
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'sess-1')).resolves.toBeNull()
+    expect(s.updateManyCalls).toHaveLength(0)
+  })
+
+  it('returns null for an unknown session', async () => {
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'missing')).resolves.toBeNull()
+  })
 })
 
 describe('createWorkspaceSession', () => {

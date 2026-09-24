@@ -2775,13 +2775,27 @@ export default observer(function ProjectLayout() {
           recentLogs,
         });
 
-        const newSession = await actions.createChatSession({
-          inferredName: `Debug: ${phase} error`,
-          contextType: "project",
-          contextId: projectId,
-        });
-        if (!newSession?.id) return;
-        const newId = newSession.id;
+        let newId: string | null = null;
+        if (workspaceRuntimeEnabled) {
+          const result = await api.createProjectWorkspaceSession(http, projectId, {
+            inferredName: `Debug: ${phase} error`,
+          });
+          newId = result.session?.id ?? null;
+          if (!newId && result.error) {
+            console.error(
+              "[ProjectLayout] Failed to create workspace debug chat:",
+              result.error,
+            );
+          }
+        } else {
+          const newSession = await actions.createChatSession({
+            inferredName: `Debug: ${phase} error`,
+            contextType: "project",
+            contextId: projectId,
+          });
+          newId = newSession?.id ?? null;
+        }
+        if (!newId) return;
 
         setDebugInitMessages((prev) => ({ ...prev, [newId]: prompt }));
         setOpenChatTabIds((prev) =>
@@ -2801,7 +2815,7 @@ export default observer(function ProjectLayout() {
         console.error("[ProjectLayout] Failed to open debug chat:", err);
       }
     },
-    [projectId, actions, isWide]
+    [actions, http, isWide, projectId, workspaceRuntimeEnabled]
   );
 
   const handleCanvasError = useCallback(

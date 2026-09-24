@@ -98,6 +98,7 @@ mock.module('../../services/workspace-session.service', () => ({
     store.unpinCalls.push([sessionId, projectId])
     store.contextId = null
   },
+  upgradeProjectSessionToWorkspace: async () => null,
   WorkspaceSessionError: MockWorkspaceSessionError,
 }))
 

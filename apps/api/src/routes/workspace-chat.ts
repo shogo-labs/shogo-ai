@@ -37,6 +37,7 @@ import {
   listWorkspaceSessions,
   pinWorkspaceSessionToProject,
   unpinWorkspaceSession,
+  upgradeProjectSessionToWorkspace,
   WorkspaceSessionError,
   type AttachMode,
 } from '../services/workspace-session.service'
@@ -157,6 +158,8 @@ async function loadRuntimeArgs(workspaceId: string, sessionId: string): Promise<
   attachedProjectIds: string[]
   extra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] }
 }> {
+  const upgradedAnchorId = await upgradeProjectSessionToWorkspace(workspaceId, sessionId)
+  if (upgradedAnchorId) await syncPinnedSessionAttachments(upgradedAnchorId, sessionId)
   await assertWorkspaceSessionInWorkspace(workspaceId, sessionId)
   const attached = await getAttachedProjects(sessionId)
   const attachedProjectIds = attached.map((a) => a.projectId)

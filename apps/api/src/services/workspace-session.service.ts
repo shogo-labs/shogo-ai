@@ -118,6 +118,38 @@ export async function pinWorkspaceSessionToProject(
   return { pinned: res.count > 0, changed: res.count > 0 }
 }
 
+/**
+ * Convert a legacy project-scoped chat (`contextType='project'`,
+ * `contextId=<project>`) into a workspace session pinned to that project, in
+ * place, so the chat keeps its id and message history. Clients restore these
+ * sessions from saved tabs and send them to the workspace chat routes once the
+ * workspace runtime is on. Only converts when the project belongs to
+ * `workspaceId`. Returns the anchor project id when this call converted the
+ * session, otherwise null.
+ */
+export async function upgradeProjectSessionToWorkspace(
+  workspaceId: string,
+  sessionId: string,
+): Promise<string | null> {
+  const session = (await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    select: { contextType: true, contextId: true } as any,
+  })) as { contextType?: string; contextId?: string | null } | null
+  if (!session || session.contextType !== 'project' || !session.contextId) return null
+
+  const project = (await prisma.project.findUnique({
+    where: { id: session.contextId },
+    select: { workspaceId: true },
+  })) as { workspaceId?: string | null } | null
+  if (!project || project.workspaceId !== workspaceId) return null
+
+  const res = (await prisma.chatSession.updateMany({
+    where: { id: sessionId, contextType: 'project', contextId: session.contextId } as any,
+    data: { contextType: 'workspace', workspaceId } as any,
+  })) as { count: number }
+  return res.count > 0 ? session.contextId : null
+}
+
 /** Undo `pinWorkspaceSessionToProject` (used to roll back a failed attach). */
 export async function unpinWorkspaceSession(sessionId: string, projectId: string): Promise<void> {
   await prisma.chatSession.updateMany({
