@@ -1948,7 +1948,7 @@ app.get('/api/published/:subdomain/wake', async (c) => {
   try {
     const project = await prisma.project.findUnique({
       where: { publishedSubdomain: subdomain },
-      select: { id: true },
+      select: { id: true, publishedAlwaysOn: true },
     })
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
@@ -1970,7 +1970,9 @@ app.get('/api/published/:subdomain/wake', async (c) => {
       const { getPublishSubstrate } = await import('./lib/substrate/router')
       const substrate = await getPublishSubstrate(project.id)
       if (substrate.kind === 'metal') {
-        const { ready } = await substrate.wakePublished(project.id, subdomain)
+        const { ready } = await substrate.wakePublished(project.id, subdomain, {
+          alwaysOn: project.publishedAlwaysOn,
+        })
         return c.json({ ready }, 200, WAKE_RESPONSE_HEADERS)
       }
     }

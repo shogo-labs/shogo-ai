@@ -124,12 +124,16 @@ export class MetalSubstrate implements ProjectSubstrate {
     await kv.clearServerBackedFlag(subdomain).catch(() => {})
   }
 
-  async wakePublished(projectId: string, subdomain: string, _opts?: WakeOpts): Promise<{ ready: boolean; url?: string }> {
+  async wakePublished(projectId: string, subdomain: string, opts?: WakeOpts): Promise<{ ready: boolean; url?: string }> {
     // getMetalPublishedUrl resumes-from-snapshot on a hit, else claims + boots —
     // i.e. it IS the wake. Contract: never throw (callers poll on ready:false).
+    // IMPORTANT: always re-pass `alwaysOn` here, same as `publish()` does. The
+    // controller re-derives the host reaper's idle-suspend exemption from this
+    // flag on every assign/resume, so omitting it on a wake can silently clear
+    // "always on" for a paid perk after a suspend/resume cycle.
     try {
       const placement = await this.backend
-        .getMetalPublishedUrl(projectId, subdomain)
+        .getMetalPublishedUrl(projectId, subdomain, { alwaysOn: opts?.alwaysOn })
         .catch(() => null)
       if (placement?.url) return { ready: true, url: placement.url }
       return { ready: false }

@@ -80,6 +80,36 @@ const AWS_REGION = process.env.S3_REGION || process.env.AWS_REGION || "us-east-1
 // of a typical app; anything longer is almost certainly a stuck pod.
 const PUBLISH_BUILD_TIMEOUT_MS = Number(process.env.PUBLISH_BUILD_TIMEOUT_MS) || 60_000
 const PUBLISH_DOWNLOAD_TIMEOUT_MS = Number(process.env.PUBLISH_DOWNLOAD_TIMEOUT_MS) || 60_000
+// The S3 upload and substrate "configure" step (createPublishedService /
+// getMetalPublishedUrl, etc.) previously had NO timeout at all, unlike build
+// and download above — a stalled OCI/S3 call or a wedged Knative/metal
+// control-plane call could hang the publish HTTP request indefinitely, which
+// surfaces to the user as a Publish button/subdomain spinner stuck in an
+// infinite loading loop with no error. `withTimeout` below races the step
+// against a timer so we always return a structured error to Studio.
+const PUBLISH_UPLOAD_TIMEOUT_MS = Number(process.env.PUBLISH_UPLOAD_TIMEOUT_MS) || 60_000
+const PUBLISH_CONFIGURE_TIMEOUT_MS = Number(process.env.PUBLISH_CONFIGURE_TIMEOUT_MS) || 60_000
+
+/**
+ * Race `promise` against a timer so a hung outbound call (S3, substrate
+ * control-plane, etc.) can never hang the publish request forever. Rejects
+ * with a `TimeoutError`-named error on timeout (checked the same way as the
+ * build/download timeouts above); the underlying operation is NOT cancelled,
+ * it just stops blocking the HTTP response.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err = new Error(`${label} timed out after ${ms / 1000}s`)
+      err.name = 'TimeoutError'
+      reject(err)
+    }, ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (err) => { clearTimeout(timer); reject(err) },
+    )
+  })
+}
 
 // In-flight lock TTL on the project's Knative Service annotation. The
 // warm-pool GC honors this annotation and skips deletion while a publish
@@ -1231,23 +1261,31 @@ export async function publishProject(
         // Step 3: Upload to S3
         await setPublishStatus(projectId, 'uploading')
         try {
-          await uploadToS3(subdomain, files)
+          await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
           await purgePublishedCache(subdomain)
         } catch (err: any) {
           console.error("[Publish] Failed to upload to S3:", err)
-          await setPublishStatus(projectId, 'failed', 'upload_failed')
-          return { ok: false, status: 500, code: "upload_failed", message: err.message || "Failed to upload to S3" }
+          const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+          const code = isTimeout ? 'upload_timeout' : 'upload_failed'
+          await setPublishStatus(projectId, 'failed', code)
+          return { ok: false, status: 500, code, message: err.message || "Failed to upload to S3" }
         }
 
         // Step 4+5: Provision the published service (server-backed pod OR
         // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
         await setPublishStatus(projectId, 'configuring')
         try {
-          await configurePublishedService(projectId, subdomain, { alwaysOn })
+          await withTimeout(
+            configurePublishedService(projectId, subdomain, { alwaysOn }),
+            PUBLISH_CONFIGURE_TIMEOUT_MS,
+            'Publish configure',
+          )
         } catch (err: any) {
           console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
-          await setPublishStatus(projectId, 'failed', 'configure_failed')
-          return { ok: false, status: 500, code: "configure_failed", message: err.message || "Failed to configure published service" }
+          const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+          const code = isTimeout ? 'configure_timeout' : 'configure_failed'
+          await setPublishStatus(projectId, 'failed', code)
+          return { ok: false, status: 500, code, message: err.message || "Failed to configure published service" }
         }
       } finally {
         // Always release the lock, even on a thrown error path. The
@@ -1664,8 +1702,15 @@ export function publishRoutes() {
           }
 
           await setPublishStatus(projectId, 'uploading')
-          await uploadToS3(subdomain, files)
-          await purgePublishedCache(subdomain)
+          try {
+            await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
+            await purgePublishedCache(subdomain)
+          } catch (err: any) {
+            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+            const code = isTimeout ? 'upload_timeout' : 'upload_failed'
+            await setPublishStatus(projectId, 'failed', code)
+            return c.json({ error: { code, message: err.message || 'Failed to upload to S3' } }, 500)
+          }
 
           // Re-provision the published service. configurePublishedService
           // re-creates the right service type (which bumps the Knative
@@ -1675,7 +1720,11 @@ export function publishRoutes() {
           // republish never clobbers accumulated end-user writes.
           await setPublishStatus(projectId, 'configuring')
           try {
-            await configurePublishedService(projectId, subdomain, { alwaysOn })
+            await withTimeout(
+              configurePublishedService(projectId, subdomain, { alwaysOn }),
+              PUBLISH_CONFIGURE_TIMEOUT_MS,
+              'Publish configure',
+            )
           } catch (err: any) {
             console.warn("[Publish] Failed to reconfigure published service:", err.message)
           }

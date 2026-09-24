@@ -902,16 +902,36 @@ export const api = {
     return res.data
   },
 
+  // A subdomain availability check should be near-instant (a single DB
+  // uniqueness lookup). Bound it with a client-side timeout so a hung
+  // request (e.g. during a backend hiccup) can't leave the availability
+  // spinner — and therefore the Publish button — stuck forever with no
+  // error. See PublishDropdown's `checking` state, which gates `canPublish`.
   async checkSubdomain(http: HttpClient, subdomain: string) {
-    const res = await http.get<{ available: boolean; reason?: string }>(
-      `/api/subdomains/${encodeURIComponent(subdomain)}/check`,
-    )
-    return res.data
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
+    try {
+      const res = await http.request<{ available: boolean; reason?: string }>(
+        `/api/subdomains/${encodeURIComponent(subdomain)}/check`,
+        { method: 'GET', signal: controller.signal },
+      )
+      return res.data
+    } finally {
+      clearTimeout(timer)
+    }
   },
 
   // `password` is only sent (and required) when accessLevel === 'password' and
   // the site doesn't already have a password salted by this subdomain. The
   // server hashes it; the raw value is never persisted.
+  //
+  // Publishing can take a while (build + upload + provisioning), but every
+  // step on the server now has its own timeout (60s each, see publish.ts) —
+  // so bounding the whole request at a generous 5 minutes here is purely a
+  // backstop against a request that never got a response at all (dropped
+  // connection, proxy hiccup), not against normal publish latency. Without
+  // this, a hung connection leaves the Publish button spinner running
+  // indefinitely with no way to retry.
   async publishProject(
     http: HttpClient,
     projectId: string,
@@ -919,11 +939,17 @@ export const api = {
     accessLevel: string,
     password?: string,
   ) {
-    const res = await http.post<{ subdomain: string; publishedAt: number; accessLevel?: string; hasPassword?: boolean }>(
-      `/api/projects/${projectId}/publish`,
-      { subdomain, accessLevel, ...(password ? { password } : {}) },
-    )
-    return res.data
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5 * 60_000)
+    try {
+      const res = await http.request<{ subdomain: string; publishedAt: number; accessLevel?: string; hasPassword?: boolean }>(
+        `/api/projects/${projectId}/publish`,
+        { method: 'POST', body: { subdomain, accessLevel, ...(password ? { password } : {}) }, signal: controller.signal },
+      )
+      return res.data
+    } finally {
+      clearTimeout(timer)
+    }
   },
 
   async unpublishProject(http: HttpClient, projectId: string) {

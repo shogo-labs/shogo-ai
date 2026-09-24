@@ -510,8 +510,22 @@ export function affiliateRoutes(): Hono {
     if (!affiliate) return c.json({ ok: false, error: { code: 'not_enrolled' } }, 404)
 
     try {
-      const { createAffiliateOnboardingLink } = await import('../services/stripe-connect.service')
-      const onboardUrl = await (createAffiliateOnboardingLink as any)(affiliate.id)
+      const { createAffiliateOnboardingLink, isSupportedConnectCountry, SUPPORTED_CONNECT_COUNTRIES } =
+        await import('../services/stripe-connect.service')
+      const body = await c.req.json().catch(() => ({} as { country?: string }))
+      const country = typeof body?.country === 'string' ? body.country.toUpperCase() : undefined
+      if (country && !isSupportedConnectCountry(country)) {
+        return c.json({
+          ok: false,
+          error: {
+            code: 'unsupported_country',
+            message: `Payouts aren't supported for that country yet. Supported: ${SUPPORTED_CONNECT_COUNTRIES.join(', ')}`,
+          },
+        }, 400)
+      }
+      // country is only used if the Connect account doesn't exist yet — see
+      // the immutable-country note on resetConnectAccountForCountryChange.
+      const onboardUrl = await (createAffiliateOnboardingLink as any)(affiliate.id, country)
       return c.json({ ok: true, onboardUrl, payoutStatus: affiliate.payoutStatus })
     } catch (err: any) {
       // The helper may not exist yet on stacks that haven't taken the
