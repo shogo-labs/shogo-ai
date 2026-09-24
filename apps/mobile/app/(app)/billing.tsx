@@ -115,10 +115,12 @@ export default observer(function BillingPage() {
 
   useEffect(() => {
     const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
-    if (!workspaceParam || ownWorkspaceIds.length === 0) return
-    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, workspaceParam)
+    if (!workspaceParam || ownWorkspaceIds.length === 0 || workspaces?.isLoading) return
+    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, workspaceParam, {
+      listLoaded: true,
+    })
     if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace)
-  }, [workspaceParam, workspaces?.all])
+  }, [workspaceParam, workspaces?.all, workspaces?.isLoading])
 
   const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()

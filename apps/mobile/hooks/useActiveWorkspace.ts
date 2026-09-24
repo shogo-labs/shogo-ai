@@ -23,11 +23,23 @@ export function useActiveWorkspace() {
   )
   const all = workspaces?.all ?? []
   const ownIds = all.map((w: any) => w.id)
-  const resolvedId = resolveActiveWorkspaceId(ownIds, persistedId)
+  const resolvedId = resolveActiveWorkspaceId(ownIds, persistedId, {
+    // The collection starts empty and may be refreshed while this hook is
+    // rendering. A partial list must never overwrite the selected workspace
+    // with the first item (which is usually Personal).
+    listLoaded: all.length > 0 && !workspaces?.isLoading,
+    // This hook runs during render. Explicit post-load callers handle
+    // persistence of a genuinely stale id.
+    persistFallback: false,
+  })
 
   if (resolvedId) {
     const match = all.find((w: any) => w.id === resolvedId)
     if (match) return match
+    // While a refresh is still in flight, `all` may contain only a partial
+    // response. Do not render the first item as the active workspace; the
+    // workspace experience treats an unloaded kind as the safer team shell.
+    if (workspaces?.isLoading) return null
   }
 
   return all.length > 0 ? all[0] : null
