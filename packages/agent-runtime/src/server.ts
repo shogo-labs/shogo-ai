@@ -3327,7 +3327,7 @@ app.post('/pool/export-data', async (c) => {
 // scripts call `/preview/rebuild`; without this they hit the SPA catch-all
 // and 404. Keep it a thin alias so existing callers just work.
 app.post('/preview/rebuild', async (c) => {
-  const pm = getPreviewManager()
+  const pm = getRootPreviewManager()
   const result = await pm.restart()
   return c.json(result)
 })
@@ -4871,7 +4871,9 @@ const API_PROXY_STARTUP_PHASES: ReadonlySet<string> = new Set([
 ])
 
 app.all('/api/*', async (c) => {
-  const pm = getPreviewManager()
+  // Must match `/preview/status` and the root static serve: in workspace mode
+  // the anchor's manager owns the sidecar; the root-rooted one never starts.
+  const pm = getRootPreviewManager()
 
   // Short grace window for the spawn → bind gap. Without it, the SPA's
   // first `/api/*` fetch on a fresh project lands during cold-start (or
