@@ -57,7 +57,26 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   })
 }
 
-async function consumeResponse(response: Response, signal: AbortSignal): Promise<void> {
+type TurnOutcome = { loopPattern: string | null }
+
+/** Reads the runtime's `data-usage` frame, which reports a loop-detector abort. */
+function readUsageFrame(line: string, outcome: TurnOutcome): void {
+  if (!line.startsWith('data:')) return
+  const payload = line.slice(5).trim()
+  if (!payload.includes('"data-usage"')) return
+  try {
+    const frame = JSON.parse(payload)
+    if (frame?.type === 'data-usage' && frame.data?.loopDetected === true) {
+      outcome.loopPattern = typeof frame.data.loopPattern === 'string'
+        ? frame.data.loopPattern
+        : 'repeated tool calls without progress'
+    }
+  } catch {
+    // Ignore frames that are not JSON.
+  }
+}
+
+async function consumeResponse(response: Response, signal: AbortSignal): Promise<TurnOutcome> {
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     let message = body || `Scheduled agent request failed with HTTP ${response.status}`
@@ -70,19 +89,29 @@ async function consumeResponse(response: Response, signal: AbortSignal): Promise
     const forbidden = response.status === 401 || response.status === 403
     throw new ScheduleRunError(message, forbidden ? 'forbidden' : 'failed', response.status)
   }
-  if (!response.body) return
+  const outcome: TurnOutcome = { loopPattern: null }
+  if (!response.body) return outcome
   const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffered = ''
   const cancel = () => void reader.cancel(signal.reason).catch(() => {})
   signal.addEventListener('abort', cancel, { once: true })
   try {
     while (true) {
       const next = await untilAborted(reader.read(), signal)
       if (next.done) break
+      buffered += decoder.decode(next.value, { stream: true })
+      const lines = buffered.split('\n')
+      buffered = lines.pop() ?? ''
+      for (const line of lines) readUsageFrame(line, outcome)
     }
+    buffered += decoder.decode()
+    if (buffered) readUsageFrame(buffered, outcome)
   } finally {
     signal.removeEventListener('abort', cancel)
     reader.releaseLock()
   }
+  return outcome
 }
 
 /**
@@ -280,7 +309,13 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
         }),
       }),
     )), controller.signal)
-    await consumeResponse(response, controller.signal)
+    const turn = await consumeResponse(response, controller.signal)
+    if (turn.loopPattern) {
+      throw new ScheduleRunError(
+        `The run was stopped early by the loop detector and may be incomplete: ${turn.loopPattern}`,
+        'failed',
+      )
+    }
 
     const summary = await latestAssistantSummary(sessionId, startedAt)
     outcome = {
