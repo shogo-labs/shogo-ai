@@ -38,6 +38,7 @@ import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
+import { parseProjectSettings } from '../project-settings'
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
@@ -78,7 +79,9 @@ export interface BuildWorkspaceEnvOpts {
   _loadProjectWorkspaceIds?: (projectIds: string[]) => Promise<Map<string, string>>
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
-  _loadProjects?: (projectIds: string[]) => Promise<Array<{ id: string; name: string | null }>>
+  _loadProjects?: (
+    projectIds: string[],
+  ) => Promise<Array<{ id: string; name: string | null; settings?: unknown }>>
   _loadAvailableProjects?: (
     workspaceId: string,
   ) => Promise<Array<{ id: string; name: string | null; description?: string | null }>>
@@ -133,6 +136,11 @@ export async function buildWorkspaceEnv(
   if (opts.readonlyProjectIds && opts.readonlyProjectIds.length > 0) {
     env.WORKSPACE_READONLY_PROJECT_IDS = opts.readonlyProjectIds.join(',')
   }
+  // Metal guests hold no S3 credentials: the host hydrates each member folder
+  // after assign and exports it on evict. Mirrors buildProjectEnv({ forMetal }).
+  if (opts.forMetal) {
+    env.SHOGO_DURABILITY_HOST_MEDIATED = '1'
+  }
 
   // Workspace identity carries the base agent persona; per-project
   // AGENTS.md/MEMORY.md layering happens runtime-side (Phase 2b).
@@ -181,14 +189,26 @@ export async function buildWorkspaceEnv(
         const { prisma } = await import('../prisma')
         return (await prisma.project.findMany({
           where: { id: { in: ids } },
-          select: { id: true, name: true },
-        })) as Array<{ id: string; name: string | null }>
+          select: { id: true, name: true, settings: true },
+        })) as Array<{ id: string; name: string | null; settings?: unknown }>
       })
     const rows = attachedProjectIds.length ? await loadProjects(attachedProjectIds) : []
     const nameById = new Map(rows.map((r) => [r.id, r.name]))
     // Preserve attach order; fall back to the id when a name is missing.
     const manifest = attachedProjectIds.map((id) => ({ id, name: nameById.get(id) || id }))
     env.WORKSPACE_PROJECTS = JSON.stringify(manifest)
+
+    // Per-member tech stack, so the runtime can seed a brand-new member with
+    // the right starter. Not TECH_STACK_ID: that would seed one stack into the
+    // merged root, which holds sibling project folders rather than one app.
+    const techStacks: Record<string, string> = {}
+    for (const row of rows) {
+      const stackId = parseProjectSettings(row.settings)?.techStackId
+      if (typeof stackId === 'string' && stackId) techStacks[row.id] = stackId
+    }
+    if (Object.keys(techStacks).length > 0) {
+      env.WORKSPACE_TECH_STACKS = JSON.stringify(techStacks)
+    }
 
     const loadAvailable =
       opts._loadAvailableProjects ??

@@ -70,6 +70,38 @@ describe('buildWorkspaceEnv', () => {
     expect(JSON.parse(env.WORKSPACE_PROJECTS)).toEqual([{ id: 'p3', name: 'p3' }])
   })
 
+  it('ships each member tech stack as WORKSPACE_TECH_STACKS, never a root TECH_STACK_ID', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2', 'p3'], {
+      ...seams,
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({
+          id,
+          name: id,
+          // Settings arrive as JSON, sometimes double-encoded as a string.
+          settings:
+            id === 'p1'
+              ? { techStackId: 'expo-app' }
+              : id === 'p2'
+                ? JSON.stringify({ techStackId: 'react-app' })
+                : null,
+        })),
+    } as any)
+    expect(JSON.parse(env.WORKSPACE_TECH_STACKS)).toEqual({ p1: 'expo-app', p2: 'react-app' })
+    expect(env.TECH_STACK_ID).toBeUndefined()
+  })
+
+  it('omits WORKSPACE_TECH_STACKS when no member has a tech stack', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], seams as any)
+    expect(env.WORKSPACE_TECH_STACKS).toBeUndefined()
+  })
+
+  it('forMetal marks durability host-mediated (guests hold no S3 creds)', async () => {
+    const metal = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true } as any)
+    expect(metal.SHOGO_DURABILITY_HOST_MEDIATED).toBe('1')
+    const k8s = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+    expect(k8s.SHOGO_DURABILITY_HOST_MEDIATED).toBeUndefined()
+  })
+
   it('handles a workspace with no attached projects', async () => {
     const env = await buildWorkspaceEnv('ws-1', [], seams as any)
     expect(env.WORKSPACE_PROJECT_IDS).toBe('')

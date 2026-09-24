@@ -2912,10 +2912,14 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         return c.json(metalBody(false), 202)
       }
       try {
-        const { getMetalProjectUrl } = await import('./lib/metal-warm-pool-controller')
-        // Resolves once the microVM is resumed/booted and the guest agent is
-        // reachable; throws (NoMetalHostError / assign failure) while starting.
-        await getMetalProjectUrl(projectId)
+        // Resolves once the project's anchored workspace runtime
+        // (`ws:proj:<projectId>`) is resumed/booted and reachable; throws while
+        // starting. Must be the same resolver the preview wake/open/render and
+        // agent-proxy routes use: a bare per-project assign here would boot a
+        // second VM for the project that races the anchored one for the same
+        // durable source archive.
+        const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+        await resolveProjectPodUrl(projectId, { logTag: 'sandbox/url' })
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
         // Per-user open cap: record this open and suspend the user's
         // least-recently-opened project(s) beyond METAL_MAX_OPEN_PROJECTS_PER_USER

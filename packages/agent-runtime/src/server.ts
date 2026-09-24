@@ -36,6 +36,11 @@ import {
 } from 'fs'
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
 import {
+  resolveMemberTechStackId,
+  seedEmptyWorkspaceMember,
+  shouldSeedAnchorMember,
+} from './workspace-member-seed'
+import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
   createS3SyncForProject,
@@ -5862,7 +5867,12 @@ async function initializeEssentials(): Promise<void> {
     console.log(`[agent-runtime] cloudSyncMode=${cloudSyncMode} (wantS3Layer2=${wantS3Layer2}, wantGit=${wantGitSync})`)
   }
 
-  if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+  let workspaceNewProjectIds: string[] = []
+  if (IS_WORKSPACE_RUNTIME && isHostMediatedDurability()) {
+    // Metal guests hold no object-store credentials; the host hydrates each
+    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict.
+    logTiming('Workspace S3 hydration skipped: host-mediated durability')
+  } else if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     // Workspace runtime: each attached project is stored under its own S3
     // prefix and lives in its own `<WORKSPACE_DIR>/<id>/` subfolder. A single
     // workspace-rooted `initializeS3Sync` (prefix = PROJECT_ID) would download
@@ -5873,7 +5883,7 @@ async function initializeEssentials(): Promise<void> {
     try {
       const interval = parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10)
       const watchEnabled = process.env.S3_WATCH_ENABLED !== 'false'
-      const { hydrated, skipped, failed, syncs } = await hydrateWorkspaceMembers(
+      const { hydrated, skipped, failed, newProjects, syncs } = await hydrateWorkspaceMembers(
         WORKSPACE_DIR,
         WORKSPACE_RUNTIME_PROJECT_IDS,
         {
@@ -5885,6 +5895,7 @@ async function initializeEssentials(): Promise<void> {
             }),
         },
       )
+      workspaceNewProjectIds = newProjects
       workspaceMemberSyncs = syncs as Map<string, import('@shogo/shared-runtime').S3Sync>
       for (const sync of workspaceMemberSyncs.values()) {
         sync.startPeriodicSync()
@@ -5928,6 +5939,34 @@ async function initializeEssentials(): Promise<void> {
       }
     } catch (error: any) {
       console.error('[agent-runtime] S3 sync init failed:', error.message)
+    }
+  }
+
+  // A brand-new anchor project has no archive, so its member folder is empty
+  // and the anchor preview would have nothing to build. Give it the starter a
+  // single-project runtime would have seeded at boot.
+  let seededAnchorDir: string | null = null
+  if (IS_WORKSPACE_RUNTIME) {
+    const anchorId = process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    if (
+      anchorId &&
+      shouldSeedAnchorMember({
+        anchorProjectId: anchorId,
+        memberProjectIds: WORKSPACE_RUNTIME_PROJECT_IDS,
+        hostMediatedDurability: isHostMediatedDurability(),
+        newProjectIds: workspaceNewProjectIds,
+      })
+    ) {
+      try {
+        const anchorDir = join(WORKSPACE_DIR, anchorId)
+        const { seeded, techStackId } = seedEmptyWorkspaceMember(anchorDir, resolveMemberTechStackId(anchorId))
+        if (seeded) {
+          seededAnchorDir = anchorDir
+          logTiming(`Workspace runtime: seeded starter into empty anchor ${anchorId} (stack=${techStackId ?? 'default'})`)
+        }
+      } catch (error: any) {
+        console.error(`[agent-runtime] Seeding anchor ${anchorId} failed:`, error.message)
+      }
     }
   }
 
@@ -6205,8 +6244,16 @@ async function initializeEssentials(): Promise<void> {
     }
     if (wpm && wpm.phase === 'idle') {
       logTiming(`Workspace runtime: auto-starting preview for anchor ${anchorId}`)
+      // A freshly seeded anchor takes the template's prebuilt node_modules
+      // (a local copy) rather than a network `bun install` inside start().
+      const anchorDepsDir = seededAnchorDir
       setTimeout(() => {
-        wpm.start().catch((err: any) =>
+        const depsReady = anchorDepsDir
+          ? ensureWorkspaceDeps(anchorDepsDir).catch((err: any) =>
+              console.error(`[agent-runtime] Anchor deps install failed for ${anchorId}:`, err.message),
+            )
+          : Promise.resolve()
+        depsReady.then(() => wpm.start()).catch((err: any) =>
           console.error(
             `[agent-runtime] Auto-start workspace preview failed for ${anchorId}:`,
             err.message,
