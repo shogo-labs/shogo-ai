@@ -475,7 +475,7 @@ export function WorkspaceConversationSidebar() {
             "rounded-xl px-3 py-2",
             routeIsActive(pathname, "/(app)")
               ? "bg-primary/10"
-              : "active:bg-muted"
+              : "hover:bg-muted active:bg-muted"
           )}
         >
           <Text className="text-sm font-medium leading-5 text-foreground">
@@ -497,7 +497,7 @@ export function WorkspaceConversationSidebar() {
                   accessibilityLabel="Start a new Shogo side chat"
                   disabled={creatingSideChat}
                   onPress={() => void startSideChat()}
-                  className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted disabled:opacity-50"
+                  className="h-11 w-11 items-center justify-center rounded-lg hover:bg-muted active:bg-muted disabled:opacity-50"
                 >
                   {creatingSideChat ? (
                     <ActivityIndicator size="small" />
@@ -547,7 +547,7 @@ export function WorkspaceConversationSidebar() {
                       : "Show all side chats"
                   }
                   onPress={() => setShowAllSideChats((showAll) => !showAll)}
-                  className="mt-0.5 self-start rounded-md px-2 py-1 active:bg-muted"
+                  className="mt-0.5 self-start rounded-md px-2 py-1 hover:bg-muted active:bg-muted"
                 >
                   <Text className="text-xs font-medium text-primary">
                     {showAllSideChats ? "Show less" : "Show more"}
@@ -585,7 +585,7 @@ export function WorkspaceConversationSidebar() {
                       : {},
                   } as any)
                 }
-                className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted"
+                className="h-11 w-11 items-center justify-center rounded-lg hover:bg-muted active:bg-muted"
               >
                 <Plus size={17} className="text-foreground" />
               </Pressable>
@@ -649,13 +649,13 @@ export function WorkspaceConversationSidebar() {
                         event.stopPropagation?.();
                         startProjectChat(project.id);
                       }}
-                      className="mr-1 flex h-9 w-9 items-center justify-center rounded-lg opacity-0 pointer-events-none active:bg-muted group-hover:opacity-100 group-hover:pointer-events-auto"
+                      className="mr-1 flex h-9 w-9 items-center justify-center rounded-lg opacity-0 pointer-events-none hover:bg-background/60 active:bg-muted group-hover:opacity-100 group-hover:pointer-events-auto"
                     >
                       <Plus size={16} className="text-muted-foreground" />
                     </Pressable>
                   </Pressable>
                   {expanded ? (
-                    <View className="ml-5 pl-2">
+                    <View>
                       {chats?.loading ? (
                         <View className="items-start px-2 py-2">
                           <ActivityIndicator size="small" />
@@ -664,7 +664,7 @@ export function WorkspaceConversationSidebar() {
                         <ScrollView
                           nestedScrollEnabled
                           showsVerticalScrollIndicator={visibleChats.length > 5}
-                          style={{ maxHeight: 154 }}
+                          style={{ maxHeight: 140 }}
                           scrollEventThrottle={16}
                           onScroll={({ nativeEvent }) => {
                             const reachedEnd =
@@ -687,9 +687,9 @@ export function WorkspaceConversationSidebar() {
                             <ChatTreeItem
                               key={chat.id}
                               session={chat}
+                              variant="workspacePane"
                               textClassName="text-sm leading-5"
                               inactiveTextClassName="text-foreground"
-                              rowClassName="px-2 py-2"
                               onSelect={() =>
                                 router.push({
                                   pathname: "/(app)/project-chat/[id]",

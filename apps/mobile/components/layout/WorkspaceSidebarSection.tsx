@@ -64,7 +64,7 @@ export function WorkspaceSidebarSection({
           accessibilityState={{ expanded }}
           onPress={() => onExpandedChange(!expanded)}
           className={cn(
-            "min-h-11 flex-1 flex-row items-center rounded-lg px-2 active:bg-muted",
+            "min-h-11 flex-1 flex-row items-center rounded-lg px-2 hover:bg-muted active:bg-muted",
             headerClassName
           )}
         >
