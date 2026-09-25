@@ -35,7 +35,12 @@ import { projectChatLabel } from "../../../lib/project-chat-sessions";
 import { formatRelativeTime } from "../../chat/turns/turnShaping";
 
 function sessionActivityLabel(session: any): string | null {
-  const value = session.lastMessageAt ?? session.updatedAt ?? session.createdAt;
+  const value =
+    session.activity ??
+    session.lastMessageAt ??
+    session.updatedAt ??
+    session.createdAt ??
+    null;
   if (!value) return null;
 
   const timestamp =
@@ -91,6 +96,7 @@ export function ChatTreeItem({
   textClassName,
   inactiveTextClassName,
   rowClassName,
+  variant,
 }: {
   session: any;
   active?: boolean;
@@ -110,6 +116,8 @@ export function ChatTreeItem({
   inactiveTextClassName?: string;
   /** Override row density for a distinct sidebar presentation. */
   rowClassName?: string;
+  /** Compact desktop workspace-pane presentation with aligned status metadata. */
+  variant?: "workspacePane";
 }) {
   // Viewport-based, not Platform-gated: narrow mobile web gets the same
   // comfortable row/text/icon density as the native app, not the compact
@@ -117,6 +125,7 @@ export function ChatTreeItem({
   const comfortable = usePhoneLayout();
   const density = densityFor(comfortable);
   const label = projectChatLabel(session);
+  const workspacePane = variant === "workspacePane";
   const activityLabel = sessionActivityLabel(session);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -266,20 +275,45 @@ export function ChatTreeItem({
         accessibilityLabel={`Chat: ${label}`}
         aria-current={active ? "page" : undefined}
         className={cn(
-          "group flex-row items-center rounded-md",
-          comfortable
-            ? `${density.rowMin} gap-2 px-2 py-2${
-                mobileProjectDetail ? " pl-12" : ""
-              }`
-            : "gap-1 px-1 py-1.5",
+          "group flex-row items-center",
+          workspacePane
+            ? "rounded-lg gap-2 px-2.5 py-1"
+            : cn(
+                "rounded-md",
+                comfortable
+                  ? `${density.rowMin} gap-2 px-2 py-2${
+                      mobileProjectDetail ? " pl-12" : ""
+                    }`
+                  : "gap-1 px-1 py-1.5"
+              ),
           rowClassName,
-          active ? "bg-primary/10" : "active:bg-accent/50"
+          active ? "bg-primary/10" : "hover:bg-accent/50 active:bg-accent/50"
         )}
         {...(Platform.OS === "web"
           ? ({ onContextMenu: handleContextMenu } as any)
           : {})}
       >
-        {isStreaming ? (
+        {workspacePane ? (
+          <View className="h-4 w-4 shrink-0 items-center justify-center">
+            {isStreaming ? (
+              <Loader2
+                size={13}
+                className="text-primary animate-spin"
+                accessibilityLabel="Chat running"
+              />
+            ) : (
+              <View
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  isCompleted ? "bg-primary" : "bg-muted-foreground/70"
+                )}
+                accessibilityLabel={
+                  isCompleted ? "Chat has new activity" : undefined
+                }
+              />
+            )}
+          </View>
+        ) : isStreaming ? (
           <Loader2
             size={comfortable ? density.icon.sm + 1 : 11}
             className="text-primary animate-spin shrink-0"
@@ -313,7 +347,30 @@ export function ChatTreeItem({
           Gated on web (hover-only), not on comfortable density — a touch-only
           narrow web viewport still gets no functional hover affordance here
           either way, same as before this density fix. */}
-        {Platform.OS === "web" && (
+        {Platform.OS === "web" && workspacePane && (
+          <View className="ml-auto flex flex-row items-center gap-0.5 shrink-0">
+            {activityLabel ? (
+              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:hidden">
+                {activityLabel}
+              </Text>
+            ) : null}
+            <Pressable
+              onPress={(e) => {
+                stop(e);
+                const event = e.nativeEvent as any;
+                setMenu({
+                  x: event.clientX ?? event.pageX ?? 0,
+                  y: event.clientY ?? event.pageY ?? 0,
+                });
+              }}
+              className="hidden p-0.5 group-hover:flex"
+              accessibilityLabel={`Manage ${label}`}
+            >
+              <MoreHorizontal size={14} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+        )}
+        {Platform.OS === "web" && !workspacePane && (
           <View className="flex flex-row items-center gap-0.5 shrink-0 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto">
             {activityLabel ? (
               <Text className="mr-1 text-[11px] text-muted-foreground">
