@@ -212,6 +212,7 @@ export function Workbench({
   isExternalProject = true,
   folderPath,
   primarySideBarPosition = "left",
+  requestedFile = null,
 }: {
   agentService: WorkspaceService;
   agentLabel?: string;
@@ -244,6 +245,8 @@ export function Workbench({
   /** Absolute path to the project's primary folder (for external/open-folder projects). */
   folderPath?: string | null;
   primarySideBarPosition?: PrimarySideBarPosition;
+  /** Open this workspace-relative file once the agent root is loaded. */
+  requestedFile?: { path: string; nonce: number } | null;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -866,6 +869,24 @@ export function Workbench({
     [roots, openFileInGroup, activeGroupIdx],
   );
 
+  const appliedRequestedFileNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!requestedFile) return;
+    if (appliedRequestedFileNonce.current === requestedFile.nonce) return;
+    const rootId = roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+    if (!rootId) return;
+    appliedRequestedFileNonce.current = requestedFile.nonce;
+    openWorkspaceFile(requestedFile.path);
+  }, [requestedFile, roots, openWorkspaceFile]);
+
+  const handleSetMdMode = useCallback((fileId: string, mode: "preview" | "edit") => {
+    setGroups((prev) =>
+      prev.map((g) => ({
+        ...g,
+        files: g.files.map((f) => (f.id === fileId ? { ...f, mdMode: mode } : f)),
+      })),
+    );
+  }, []);
 
   // BUG-001 fix: route the change by the explicit `fileId` carried out of
   // CodeEditor (which derived it from the live Monaco model URI), NOT by
@@ -2092,6 +2113,7 @@ export function Workbench({
                       onUninstallExtension={(id) => void extensionsSummary.uninstall(id)}
                       onRunExtensionCommand={runExtensionCommand}
                       onUseExtensionEntryPoint={useExtensionEntryPoint}
+                      onSetMdMode={handleSetMdMode}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
                         if (monaco && monacoNsRef.current !== monaco) {

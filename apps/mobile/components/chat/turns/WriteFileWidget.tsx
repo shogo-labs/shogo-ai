@@ -165,7 +165,14 @@ export const WriteFileWidget = memo(function WriteFileWidget({
 
         <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
           <Text className="font-medium text-muted-foreground">Wrote</Text>
-          <Text className="font-mono text-foreground"> {basename}</Text>
+          <Text
+            className="font-mono text-foreground"
+            onPress={() => {
+              if (path !== "unknown") chatContext?.openFile?.(path)
+            }}
+          >
+            {" "}{basename}
+          </Text>
         </Text>
 
         <Text className="font-mono text-[9px] text-muted-foreground/70 mr-1">

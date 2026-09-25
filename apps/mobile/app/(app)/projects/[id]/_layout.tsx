@@ -352,6 +352,8 @@ export default observer(function ProjectLayout() {
      * project, so the apply effect re-fires even though `tab` is unchanged.
      */
     tabNonce?: string;
+    /** Workspace-relative file to open in the IDE (or Files, on native). */
+    file?: string;
     /**
      * When '1', create a fresh chat on arrival (sidebar project "+" pressed
      * for a project that isn't open yet). Consumed once per `newChatNonce`.
@@ -1933,7 +1935,7 @@ export default observer(function ProjectLayout() {
     }
     const token = `${projectId}:${requested}:${params.tabNonce ?? ""}:${
       params.openCanvas ?? ""
-    }`;
+    }:${params.file ?? ""}`;
     if (appliedTabIntentRef.current === token) return;
     if (requested === "canvas" && params.openCanvas === "1") {
       userRequestedCanvasRef.current = true;
@@ -1968,11 +1970,18 @@ export default observer(function ProjectLayout() {
       setActiveTab("chat");
       return;
     }
+    if (typeof params.file === "string" && params.file.length > 0) {
+      openIdeFileNonceRef.current += 1;
+      setRequestedIdeFile({
+        path: params.file,
+        nonce: openIdeFileNonceRef.current,
+      });
+    }
     setPreviewTab(requested);
     if (phoneLayout) {
       setActiveTab(requested === "chat-fullscreen" ? "chat" : "canvas");
     }
-  }, [projectId, params.tab, params.tabNonce, phoneLayout, nativePhone, isWide]);
+  }, [projectId, params.tab, params.tabNonce, params.file, phoneLayout, nativePhone, isWide]);
 
   useEffect(() => {
     if (!projectId || !project) return;
@@ -2394,6 +2403,40 @@ export default observer(function ProjectLayout() {
   const handleBuildPlanConsumed = useCallback((nonce: number) => {
     setBuildPlanRequest((curr) => (curr && curr.nonce === nonce ? null : curr));
   }, []);
+
+  const [requestedIdeFile, setRequestedIdeFile] = useState<{
+    path: string;
+    nonce: number;
+  } | null>(null);
+  const openIdeFileNonceRef = useRef(0);
+
+  const handleOpenFile = useCallback(
+    (targetProjectId: string, relPath: string) => {
+      if (targetProjectId === projectId) {
+        openIdeFileNonceRef.current += 1;
+        setRequestedIdeFile({
+          path: relPath,
+          nonce: openIdeFileNonceRef.current,
+        });
+        setPreviewTab(Platform.OS === "web" ? "ide" : "files");
+        if (!isWide) setActiveTab("canvas");
+        return;
+      }
+      router.push({
+        pathname: "/(app)/projects/[id]",
+        params: {
+          id: targetProjectId,
+          tab: Platform.OS === "web" ? "ide" : "files",
+          file: relPath,
+          tabNonce: String(Date.now()),
+          ...(chatSessionId
+            ? { chatSessionId, chatScope: "workspace" }
+            : {}),
+        },
+      } as any);
+    },
+    [chatSessionId, isWide, projectId, router],
+  );
 
   const handleOpenPlan = useCallback(
     (filepath?: string | null) => {
@@ -3446,6 +3489,7 @@ export default observer(function ProjectLayout() {
                   isActive ? handleBuildPlanConsumed : undefined
                 }
                 onOpenPlan={handleOpenPlan}
+                onOpenFile={handleOpenFile}
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
                 onResolveSessionModel={handleResolveSessionModel}
@@ -4257,6 +4301,7 @@ export default observer(function ProjectLayout() {
                         isExternalProject={isExternalProject}
                         folderPath={primaryFolderPath ?? undefined}
                         primarySideBarPosition={idePrimarySideBarPosition}
+                        requestedFile={requestedIdeFile}
                       />
                     </PanelErrorBoundary>
                     <PanelErrorBoundary panelName="Files">
@@ -4264,6 +4309,7 @@ export default observer(function ProjectLayout() {
                         visible={effectiveTab === "files"}
                         projectId={projectId!}
                         agentUrl={agentUrl}
+                        requestedFile={requestedIdeFile}
                       />
                     </PanelErrorBoundary>
                     <PanelErrorBoundary panelName="Plans">

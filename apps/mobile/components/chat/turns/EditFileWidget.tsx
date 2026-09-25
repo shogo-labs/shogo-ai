@@ -15,6 +15,7 @@ import { FileEdit, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } f
 import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageLabel } from "./file-lang-map"
 import { computeLineDiff } from "./diff-utils"
+import { useChatContextSafe } from "../ChatContext"
 
 export interface EditFileWidgetProps {
   tool: ToolCallData
@@ -76,6 +77,7 @@ export const EditFileWidget = memo(function EditFileWidget({
     else setInternalExpanded(!internalExpanded)
   }
 
+  const chatContext = useChatContextSafe()
   const { path, oldString, newString } = useMemo(() => extractEditData(tool), [tool.args])
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
@@ -130,7 +132,14 @@ export const EditFileWidget = memo(function EditFileWidget({
 
         <Text className="flex-1 text-[11px] text-muted-foreground" numberOfLines={1}>
           <Text className="font-medium text-muted-foreground">Edited</Text>
-          <Text className="font-mono text-foreground"> {basename}</Text>
+          <Text
+            className="font-mono text-foreground"
+            onPress={() => {
+              if (path !== "unknown") chatContext?.openFile?.(path)
+            }}
+          >
+            {" "}{basename}
+          </Text>
         </Text>
 
         {(added > 0 || removed > 0) && (
