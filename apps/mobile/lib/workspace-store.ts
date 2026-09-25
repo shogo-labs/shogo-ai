@@ -4,8 +4,12 @@ import { Platform } from 'react-native'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo:active-workspace-id'
+const KIND_STORAGE_KEY = 'shogo:active-workspace-kind'
+
+export type CachedWorkspaceKind = 'personal' | 'team'
 
 let nativeActiveWorkspaceId: string | null = null
+let nativeActiveWorkspaceKind: { id: string; kind: CachedWorkspaceKind } | null = null
 const listeners = new Set<() => void>()
 
 export function subscribeActiveWorkspaceId(listener: () => void): () => void {
@@ -55,9 +59,84 @@ export function setActiveWorkspaceId(id: string): void {
  * against the same stale-id class of bug.
  */
 export function clearActiveWorkspaceId(): void {
-  if (getActiveWorkspaceId() == null) return
+  const hadId = getActiveWorkspaceId() != null
+  const hadKind = readCachedWorkspaceKind() != null
+  if (!hadId && !hadKind) return
   persistActiveWorkspaceId(null)
+  persistCachedWorkspaceKind(null)
   queueMicrotask(emitActiveWorkspaceId)
+}
+
+function readCachedWorkspaceKind(): { id: string; kind: CachedWorkspaceKind } | null {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    return nativeActiveWorkspaceKind
+  }
+  const raw = safeGetItem(KIND_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; kind?: unknown }
+    if (
+      typeof parsed.id === 'string' &&
+      (parsed.kind === 'personal' || parsed.kind === 'team')
+    ) {
+      return { id: parsed.id, kind: parsed.kind }
+    }
+  } catch {
+    // Ignore a corrupt cache and treat the kind as unknown.
+  }
+  return null
+}
+
+function persistCachedWorkspaceKind(
+  record: { id: string; kind: CachedWorkspaceKind } | null,
+): void {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    nativeActiveWorkspaceKind = record
+    return
+  }
+  if (record == null) safeRemoveItem(KIND_STORAGE_KEY)
+  else safeSetItem(KIND_STORAGE_KEY, JSON.stringify(record))
+}
+
+/**
+ * Last known `kind` for `workspaceId`, or null when this id has never been
+ * resolved on this device. Read synchronously so the first paint can use it.
+ * On web that is localStorage; on native it is the in-memory value kept next
+ * to the active workspace id.
+ */
+export function getCachedWorkspaceKind(
+  workspaceId: string | null | undefined,
+): CachedWorkspaceKind | null {
+  if (!workspaceId) return null
+  const cached = readCachedWorkspaceKind()
+  return cached?.id === workspaceId ? cached.kind : null
+}
+
+/**
+ * Remember `kind` for `workspaceId` without notifying subscribers.
+ * Safe to call while rendering: the value is only needed on the next load.
+ */
+export function rememberWorkspaceKind(
+  workspaceId: string,
+  kind: CachedWorkspaceKind,
+): void {
+  const cached = readCachedWorkspaceKind()
+  if (cached?.id === workspaceId && cached.kind === kind) return
+  persistCachedWorkspaceKind({ id: workspaceId, kind })
+}
+
+export interface ActiveWorkspaceResolutionOptions {
+  /**
+   * Whether `ownWorkspaceIds` came from a completed, authoritative load.
+   * Resolution during an initial or in-flight load must not replace the
+   * persisted workspace with the first item in a partial list.
+   */
+  listLoaded?: boolean
+  /**
+   * React render paths should not persist a fallback. Callers that have
+   * explicitly awaited a complete workspace load may opt into that cleanup.
+   */
+  persistFallback?: boolean
 }
 
 /**
@@ -72,22 +151,37 @@ export function clearActiveWorkspaceId(): void {
  * server, and the UI silently shows "no projects" with no recovery.
  *
  * When `ownWorkspaceIds` is non-empty and `candidateId` isn't in it, this
- * self-heals by returning (and persisting) the first of the user's own
- * workspaces instead.
+ * returns the first of the user's own workspaces. Persistence is only done
+ * for an authoritative load, and render callers can disable it entirely.
  */
 export function resolveActiveWorkspaceId(
   ownWorkspaceIds: readonly string[],
   candidateId?: string | null,
+  options: ActiveWorkspaceResolutionOptions = {},
 ): string | null {
   const id = candidateId ?? getActiveWorkspaceId()
   if (id && (ownWorkspaceIds.length === 0 || ownWorkspaceIds.includes(id))) {
     return id
   }
+
+  // A workspace collection can be empty or temporarily partial while its
+  // initial request is in flight. Never turn that transient state into a
+  // persisted switch to `ownWorkspaceIds[0]` (normally Personal).
+  if (options.listLoaded === false) {
+    return id ?? null
+  }
+
   const fallback = ownWorkspaceIds[0] ?? null
   // This helper is called while React is rendering `useActiveWorkspace`.
   // Persist the self-healing fallback without emitting a subscription update;
   // notifying here schedules another render from inside render and can loop
   // indefinitely when the browser has no active workspace cached yet.
-  if (fallback && fallback !== id) persistActiveWorkspaceId(fallback)
+  if (
+    options.persistFallback !== false &&
+    fallback &&
+    fallback !== id
+  ) {
+    persistActiveWorkspaceId(fallback)
+  }
   return fallback
 }

@@ -20,9 +20,32 @@ import {
   decideStallRecovery,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
+  shouldAutoRecoverStalledTurn,
 } from "../stall-recovery"
 
 describe("decideStallRecovery", () => {
+  test("does not replay a turn that already failed with React update-depth", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({
+        stalledTurnId: "turn-185",
+        recoveredTurnId: null,
+        renderDepthErrorTurnId: "turn-185",
+        userInitiatedStop: false,
+      }),
+    ).toBe(false)
+  })
+
+  test("still auto-recovers an ordinary transport stall once", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({
+        stalledTurnId: "turn-network",
+        recoveredTurnId: null,
+        renderDepthErrorTurnId: null,
+        userInitiatedStop: false,
+      }),
+    ).toBe(true)
+  })
+
   test("active turn -> reconnect (agent still running, transport drop)", () => {
     // Regardless of which attempt we're on, an active server turn always
     // reconnects — that's the whole point of auto-recovery.

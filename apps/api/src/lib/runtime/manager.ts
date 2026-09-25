@@ -462,6 +462,9 @@ export class RuntimeManager implements IRuntimeManager {
   private cleanupStaleProcesses(): void {
     if (cleanupRanAtModuleScope) return
     cleanupRanAtModuleScope = true
+    // Tests that compose the app must not SIGKILL runtimes owned by a dev
+    // API or an installed Shogo app sharing this port range.
+    if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
     const rangesToClean = [
       { start: PORT_RANGE_START, end: PORT_RANGE_END },

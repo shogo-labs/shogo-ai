@@ -16,6 +16,9 @@
  *      confirmation when the picked path is inside a `.git` repo.
  *   3. Returning the resulting Project to the caller via `onSuccess`,
  *      or navigating to the new project page when no callback is given.
+ *      When the API placed the project in the team workspace instead of
+ *      the (personal) one it was opened from, the app switches to that
+ *      workspace and opens the project there.
  *
  * Why a hook (and not a component): two surfaces need this flow — the
  * home composer's "Source" menu and the projects-list "+ New" menu —
@@ -27,6 +30,7 @@ import { Platform, Alert } from 'react-native'
 import { useRouter } from 'expo-router'
 import { useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { openInWorkspace } from '../../lib/switch-workspace'
 
 interface DesktopBridge {
   pickFolders?: (opts?: { multi?: boolean; defaultPath?: string }) => Promise<
@@ -149,7 +153,7 @@ export function useOpenLocalFolder({
         })) as any
       }
 
-      const project = res?.project as { id?: string; name?: string } | undefined
+      const project = res?.project as { id?: string; name?: string; workspaceId?: string } | undefined
       if (project?.id) {
         // G2: register the absolute picked path with the desktop git
         // service so it can resolve this projectId later without an API
@@ -168,8 +172,16 @@ export function useOpenLocalFolder({
         } catch (err) {
           console.warn('[useOpenLocalFolder] git.setProjectRoot failed', err)
         }
-        if (onSuccess) onSuccess({ id: project.id, name: project.name ?? 'Untitled' })
-        else router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: project.id } })
+        if (res?.redirectedFromWorkspaceId && project.workspaceId) {
+          // Folder projects live in the team workspace (personal workspaces
+          // have no shell for the agent), so the caller's same-workspace
+          // follow-up doesn't apply.
+          openInWorkspace(router, project.workspaceId, `/(app)/projects/${project.id}`, workspaceId)
+        } else if (onSuccess) {
+          onSuccess({ id: project.id, name: project.name ?? 'Untitled' })
+        } else {
+          router.push({ pathname: '/(app)/projects/[id]' as any, params: { id: project.id } })
+        }
       } else if (res?.error || res?.message) {
         Alert.alert('Could not open folder', String(res.message ?? res.error))
       }

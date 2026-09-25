@@ -4051,10 +4051,6 @@ export function WorkspaceAccountActions({
     });
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
 
-  useEffect(() => {
-    void workspaces.loadAll().catch(() => undefined);
-  }, [workspaces]);
-
   const switchWorkspace = useCallback(
     (workspaceId: string) => {
       if (workspaceId === currentWorkspace?.id) return;
@@ -4393,10 +4389,11 @@ export default observer(function SettingsPage({
     if (!requestedWorkspace || ownWorkspaceIds.length === 0) return;
     const resolvedWorkspace = resolveActiveWorkspaceId(
       ownWorkspaceIds,
-      requestedWorkspace
+      requestedWorkspace,
+      { listLoaded: true },
     );
     if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
-  }, [params.workspace, workspaces?.all]);
+  }, [params.workspace, workspaces?.all, workspaces?.isLoading]);
 
   useEffect(() => {
     const isLocal = localMode || !features.billing;

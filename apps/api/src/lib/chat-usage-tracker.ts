@@ -24,6 +24,7 @@
  */
 
 import { closeSession, setQualitySignals, type BillingSessionQualitySignals, type BillingSessionFallbackUsage } from './proxy-billing-session'
+import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 
 const PER_CHUNK_IDLE_TIMEOUT_MS = parseInt(
   process.env.CHAT_STREAM_IDLE_TIMEOUT_MS || '3600000',
@@ -219,10 +220,6 @@ export function teeChatStreamForBilling(
   let clientEnqueueErrors = 0
   const clientStream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const keepaliveChunk = new TextEncoder().encode(': proxy-keep-alive\n\n')
-      const proxyKeepalive = setInterval(() => {
-        try { controller.enqueue(keepaliveChunk) } catch { clearInterval(proxyKeepalive) }
-      }, 15_000)
       ;(async () => {
         try {
           let chunkCount = 0
@@ -244,7 +241,6 @@ export function teeChatStreamForBilling(
           console.log(`[ChatUsageTracker:Stream] Background reader error: ${err.message}`)
           try { controller.error(err) } catch { /* client gone */ }
         } finally {
-          clearInterval(proxyKeepalive)
           trackingDone = true
           trackingNotify?.()
           trackingNotify = null
@@ -258,5 +254,5 @@ export function teeChatStreamForBilling(
     console.error(`[ChatUsageTracker] Tracking error for project ${projectId}:`, err),
   )
 
-  return clientStream
+  return wrapSseStreamWithKeepalive(clientStream)
 }

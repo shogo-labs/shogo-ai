@@ -96,6 +96,7 @@ import {
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
 import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
+import { WorkspaceChromeSkeletonRows } from "../WorkspaceChromeSkeleton";
 import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
 import {
   effectiveSidebarProjectFilter,
@@ -202,7 +203,9 @@ export const AppSidebar = observer(function AppSidebar({
       .loadAll()
       .then(() => {
         const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
-        const wsId = resolveActiveWorkspaceId(ownIds);
+        const wsId = resolveActiveWorkspaceId(ownIds, undefined, {
+          listLoaded: true,
+        });
         const filter = workspaceProjectFilter(wsId);
         if (filter) {
           projects
@@ -308,7 +311,9 @@ export const AppSidebar = observer(function AppSidebar({
         // workspace this session isn't a member of would otherwise get
         // persisted as "active" and 403/400 every request from then on.
         const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
-        const resolvedWs = resolveActiveWorkspaceId(ownIds, targetWs);
+        const resolvedWs = resolveActiveWorkspaceId(ownIds, targetWs, {
+          listLoaded: true,
+        });
         if (!resolvedWs) return;
         setSelectedWorkspaceId(resolvedWs);
         setActiveWorkspaceId(resolvedWs);
@@ -350,7 +355,11 @@ export const AppSidebar = observer(function AppSidebar({
     // workspaces have actually loaded, fall back to the first one rather
     // than leaving `currentWorkspace` permanently undefined — otherwise
     // every workspace-scoped fetch below keeps targeting the invalid id.
-    if (!currentWorkspace && ownWorkspaces.length > 0) {
+    if (
+      !currentWorkspace &&
+      ownWorkspaces.length > 0 &&
+      !workspaces?.isLoading
+    ) {
       currentWorkspace = ownWorkspaces[0];
     }
   } catch {
@@ -601,9 +610,12 @@ export const AppSidebar = observer(function AppSidebar({
   // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
   // just be `allWorkspaces.length === 0` (a user's original signup
   // workspace may have been mis-backfilled to `kind: 'team'`).
-  const hasPersonalWorkspace = allWorkspaces.some(
-    (w: any) => w.kind === "personal",
-  );
+  // An empty list is "not loaded yet", not "no personal workspace". Omit
+  // the flag so the create-personal CTA stays hidden until we know.
+  const hasPersonalWorkspace =
+    allWorkspaces.length === 0
+      ? undefined
+      : allWorkspaces.some((w: any) => w.kind === "personal");
 
   // Whether the user already has a `kind: 'team'` workspace. `false` means
   // "Create new workspace" is still free — every account gets one free
@@ -957,6 +969,10 @@ export const AppSidebar = observer(function AppSidebar({
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
+        {!experience.resolved ? (
+          <WorkspaceChromeSkeletonRows count={6} testID="sidebar-chrome-skeleton" />
+        ) : (
+        <>
         {/* Primary nav mirrors the mobile bottom bar. */}
         <View className="px-2">
           {experience.primaryNav.map((id) => {
@@ -1300,6 +1316,8 @@ export const AppSidebar = observer(function AppSidebar({
               </>
             ))}
         </View>
+        )}
+        </>
         )}
       </ScrollView>
 
