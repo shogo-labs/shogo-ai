@@ -31,6 +31,13 @@ FROM node:25-slim
 
 WORKDIR /app
 
+# Make source-bearing COPY layers depend on the deployed commit. Without this
+# explicit dependency, the registry cache can reuse an older workspace layer
+# behind a new WORKSPACE_DEPS tag, producing an apparently new API image that
+# still lacks newly added source files.
+ARG BUILD_HASH
+RUN printf '%s\n' "$BUILD_HASH" > /tmp/shogo-build-hash
+
 # Keep the system binary directories explicit because the API invokes git
 # through child_process during repository connections and sync operations.
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
