@@ -65,6 +65,24 @@ export interface CreateRepoOptions {
   auto_init?: boolean;
 }
 
+export interface CreatePullRequestOptions {
+  installationId: number;
+  repoOwner: string;
+  repoName: string;
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  draft?: boolean;
+}
+
+export interface CreatedPullRequest {
+  number: number;
+  url: string;
+  html_url: string;
+  node_id?: string;
+}
+
 export interface ConnectRepoOptions {
   projectId: string;
   workspacePath: string;
@@ -277,6 +295,51 @@ export async function createRepository(
   }
 
   return response.json();
+}
+
+/**
+ * Create a pull request as the GitHub App installation.
+ *
+ * GitHub attributes resources created with an installation token to the
+ * App's bot account (for example, `shogo-ai[bot]`), which is the same
+ * attribution users see for Cursor cloud-agent PRs.
+ */
+export async function createPullRequest(
+  options: CreatePullRequestOptions,
+): Promise<CreatedPullRequest> {
+  const token = await getInstallationToken(options.installationId);
+  const response = await fetch(
+    `${GITHUB_API_URL}/repos/${encodeURIComponent(options.repoOwner)}/${encodeURIComponent(options.repoName)}/pulls`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: options.title,
+        head: options.head,
+        base: options.base,
+        body: options.body,
+        draft: options.draft ?? false,
+      }),
+    },
+  );
+
+  const body = await response.json().catch(() => null) as Partial<CreatedPullRequest> & { message?: string };
+  if (!response.ok) {
+    throw new Error(`Failed to create pull request: ${body?.message || JSON.stringify(body)}`);
+  }
+  if (
+    typeof body.number !== 'number' ||
+    typeof body.html_url !== 'string' ||
+    typeof body.url !== 'string'
+  ) {
+    throw new Error('GitHub pull request response did not contain a number or URL');
+  }
+  return body as CreatedPullRequest;
 }
 
 // =============================================================================
@@ -637,7 +700,8 @@ export async function handlePushWebhook(
  * Marker embedded in a PR body so later webhook events on that PR (reviews,
  * review comments, issue comments) can recover the pipeline `runId` that
  * opened it. Whichever agent opens the PR should append
- * `runIdMarker(runId)` to the body (e.g. via `gh pr create --body`).
+ * `runIdMarker(runId)` to the body (the agent's `github_create_pr` tool does
+ * this automatically).
  */
 const RUN_ID_MARKER_RE = /<!--\s*shogo:runId=([a-zA-Z0-9_-]+)\s*-->/;
 

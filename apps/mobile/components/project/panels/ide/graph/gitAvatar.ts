@@ -41,8 +41,8 @@ export function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-const AI_EMAILS = new Set(["ai@shogo.dev"]);
-const AI_NAMES = new Set(["shogo ai", "shogo"]);
+const AI_EMAILS = new Set(["ai@shogo.dev", "agent@shogo.ai", "agent-runtime@shogo.ai"]);
+const AI_NAMES = new Set(["shogo ai", "shogo", "shogo agent"]);
 
 export function isAiAuthor(name: string, email: string): boolean {
   return (

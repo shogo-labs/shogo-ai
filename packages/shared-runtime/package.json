@@ -7,6 +7,7 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./agent-attribution": "./src/agent-attribution.ts",
     "./sse-keepalive": "./src/sse-keepalive.ts"
   },
   "scripts": {

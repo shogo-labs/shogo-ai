@@ -46,6 +46,12 @@
  * here, not imported, to keep the licensing surface clean.
  */
 
+import {
+  getShogoAgentEmail,
+  getShogoAgentName,
+  withShogoCommitTrailer,
+} from './agent-attribution'
+
 import { spawn } from 'child_process'
 
 // ---------------------------------------------------------------------------
@@ -248,8 +254,8 @@ export class GitWorkspaceSync {
       onRecovered: config.onRecovered ?? (() => { }),
       logger: config.logger ?? console,
       spawnGit: config.spawnGit ?? defaultSpawnGit,
-      authorEmail: config.authorEmail ?? 'agent-runtime@shogo.ai',
-      authorName: config.authorName ?? 'Shogo Agent',
+      authorEmail: config.authorEmail ?? getShogoAgentEmail(),
+      authorName: config.authorName ?? getShogoAgentName(),
       afterCommit: config.afterCommit ?? null,
       beforeStage: config.beforeStage ?? null,
       stageExcludes: config.stageExcludes ?? [],
@@ -429,7 +435,7 @@ export class GitWorkspaceSync {
         const message = `auto: ${new Date().toISOString()}`
         await this.runGit(
           spawnGit,
-          ['commit', '-m', message, '--no-verify'],
+          withShogoCommitTrailer(['commit', '-m', message, '--no-verify'], commitEnv),
           workspaceDir,
           commitEnv,
         )

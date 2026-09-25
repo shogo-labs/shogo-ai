@@ -20,6 +20,11 @@ import { existsSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, rea
 import { readFile, writeFile } from 'fs/promises';
 import { join, basename } from 'path';
 import { promisify } from 'util';
+import {
+  getShogoAgentEmail,
+  getShogoAgentName,
+  withShogoCommitTrailer,
+} from '@shogo/shared-runtime/agent-attribution';
 
 const execAsync = promisify(exec);
 
@@ -561,15 +566,21 @@ export async function initRepo(
     mkdirSync(shogoDir, { recursive: true });
   }
 
-  // Configure git user for the repo (use Shogo AI as default)
-  execFileSync('git', ['config', 'user.name', 'Shogo AI'], { cwd: workspacePath, stdio: 'pipe' });
-  execFileSync('git', ['config', 'user.email', 'ai@shogo.dev'], { cwd: workspacePath, stdio: 'pipe' });
+  // Configure git user for the repo (use the linked Shogo Agent identity)
+  const agentName = getShogoAgentName();
+  const agentEmail = getShogoAgentEmail();
+  execFileSync('git', ['config', 'user.name', agentName], { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', agentEmail], { cwd: workspacePath, stdio: 'pipe' });
 
   // Initial commit
   execFileSync('git', ['add', '-A'], { cwd: workspacePath, stdio: 'pipe' });
 
   try {
-    execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync(
+      'git',
+      withShogoCommitTrailer(['commit', '-m', 'Initial commit']),
+      { cwd: workspacePath, stdio: 'pipe' },
+    );
   } catch (err: any) {
     // No files to commit is OK. With stdio:'pipe' the message goes to
     // err.stdout (and err.output[1]) rather than err.message, so we have
@@ -704,6 +715,8 @@ export async function commit(
   // warnings on every auto-checkpoint.
   ensureCheckpointSafeGitConfig(workspacePath);
   ensureGitignoreIgnoresDeps(workspacePath);
+  execFileSync('git', ['config', 'user.name', getShogoAgentName()], { cwd: workspacePath, stdio: 'pipe' });
+  execFileSync('git', ['config', 'user.email', getShogoAgentEmail()], { cwd: workspacePath, stdio: 'pipe' });
 
   // Recover from a stale `.git/index.lock` left behind by a crashed
   // earlier git command. Without this, a single failed `git add -A`
@@ -740,7 +753,7 @@ export async function commit(
   }
 
   // Build commit args (uses execFileSync to avoid shell injection)
-  const commitArgs = ['commit', '-m', message];
+  const commitArgs = withShogoCommitTrailer(['commit', '-m', message]);
   if (author && email) {
     commitArgs.push('--author', `${author} <${email}>`);
   }

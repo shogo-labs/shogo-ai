@@ -31,6 +31,11 @@
 import { spawn } from 'child_process'
 import { dirname, join } from 'path'
 import { mkdirSync } from 'fs'
+import {
+  getShogoAgentEmail,
+  getShogoAgentName,
+  withShogoCommitTrailer,
+} from './agent-attribution'
 
 /** Hard timeout for any single `git` invocation (ms). */
 const GIT_TIMEOUT_MS = 60_000
@@ -103,7 +108,7 @@ export interface WorktreeManagerConfig {
 
 const defaultSpawnGit: SpawnGitFn = (args, cwd, env) => {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
+    const child = spawn('git', withShogoCommitTrailer(args, env), {
       cwd,
       env: { ...process.env, ...(env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -145,8 +150,8 @@ export class WorktreeManager {
   constructor(config: WorktreeManagerConfig) {
     this.mainRepoDir = config.mainRepoDir
     this.worktreeRoot = config.worktreeRoot ?? join(dirname(config.mainRepoDir), WORKTREE_DIR_NAME)
-    this.authorName = config.authorName ?? 'Shogo Agent'
-    this.authorEmail = config.authorEmail ?? 'agent-runtime@shogo.ai'
+    this.authorName = config.authorName ?? getShogoAgentName()
+    this.authorEmail = config.authorEmail ?? getShogoAgentEmail()
     this.logger = config.logger ?? console
     this.spawnGit = config.spawnGit ?? defaultSpawnGit
   }
@@ -382,11 +387,22 @@ export class WorktreeManager {
       return { outcome: 'noop', conflictedFiles: [] }
     }
 
+    const beforeMerge = await this.git(['rev-parse', 'HEAD'], info.path)
     const merge = await this.git(
       ['merge', '--no-edit', defaultBranch],
       info.path,
     )
     if (merge.exitCode === 0) {
+      const head = await this.git(['rev-list', '--parents', '-n', '1', 'HEAD'], info.path)
+      if (
+        beforeMerge.stdout.trim() !== head.stdout.trim().split(/\s+/)[0] &&
+        head.stdout.trim().split(/\s+/).length > 2
+      ) {
+        await this.gitOk(
+          withShogoCommitTrailer(['commit', '--amend', '--no-edit', '--no-verify']),
+          info.path,
+        )
+      }
       return { outcome: 'clean', conflictedFiles: [] }
     }
 
@@ -494,7 +510,10 @@ export class WorktreeManager {
     const mergeHead = await this.git(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'], path)
     if (mergeHead.exitCode === 0) {
       await this.gitOk(['add', '-A'], path)
-      await this.gitOk(['commit', '--no-edit', '--no-verify'], path)
+      await this.gitOk(
+        withShogoCommitTrailer(['commit', '--no-edit', '--no-verify']),
+        path,
+      )
     }
     const sha = await this.fastForwardMain(chatSessionId)
     return { outcome: 'clean', conflictedFiles: [], mergedSha: sha }

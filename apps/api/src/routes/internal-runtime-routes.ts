@@ -49,9 +49,11 @@ import {
   type InternalIdentity,
 } from './internal-runtime-auth'
 import { projectTrustRoutes } from './internal-project-trust'
+import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 
 type ProjectLifecycleService = typeof import('../services/project-lifecycle.service')
 type AgentCallService = typeof import('../services/agent-call.service')
+type GitHubService = typeof import('../services/github.service')
 
 export interface RuntimeInternalRoutesOptions {
   authenticate: InternalAuthenticate
@@ -68,6 +70,8 @@ export interface RuntimeInternalRoutesOptions {
   loadProjectLifecycle?: () => Promise<ProjectLifecycleService>
   /** Backs `project_call`. */
   loadAgentCall?: () => Promise<AgentCallService>
+  /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
+  loadGitHub?: () => Promise<GitHubService>
 }
 
 export function numberOr(value: unknown, fallback: number): number {
@@ -112,7 +116,14 @@ async function loadProjectForCheckpoints(projectId: string) {
 
 
 export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono {
-  const { authenticate, saveAgentAvatar, metalWorkspaceMember, loadProjectLifecycle, loadAgentCall } = opts
+  const {
+    authenticate,
+    saveAgentAvatar,
+    metalWorkspaceMember,
+    loadProjectLifecycle,
+    loadAgentCall,
+    loadGitHub,
+  } = opts
   const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
     createInternalAuthorizers(authenticate)
   const app = new Hono()
@@ -687,6 +698,85 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err: any) {
       console.error(`[Internal] Failed to record checkpoint for ${projectId}:`, err.message)
       return c.json({ error: 'Failed to record checkpoint' }, 500)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/pull-request
+   *   body: { title, head, base?, body?, draft?, runId? }
+   *
+   * Creates a PR with the Shogo GitHub App installation token. GitHub then
+   * attributes the PR to the App's bot account instead of the user's token.
+   * The project connection is used as the authoritative repository target.
+   */
+  app.post('/projects/:projectId/github/pull-request', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const title = typeof body?.title === 'string' ? body.title.trim() : ''
+    const head = typeof body?.head === 'string' ? body.head.trim() : ''
+    const base = typeof body?.base === 'string' ? body.base.trim() : ''
+    const prBody = typeof body?.body === 'string' ? body.body : ''
+    const runId = typeof body?.runId === 'string' ? body.runId.trim() : ''
+    if (!title || !head) {
+      return c.json({ error: 'title and head are required' }, 400)
+    }
+    if (runId && !/^[a-zA-Z0-9_-]+$/.test(runId)) {
+      return c.json({ error: 'runId contains invalid characters' }, 400)
+    }
+
+    try {
+      if (!loadGitHub) {
+        return c.json(
+          {
+            error: {
+              code: 'github_app_not_installed',
+              message: 'GitHub App PR creation is not available on this runtime.',
+            },
+          },
+          409,
+        )
+      }
+      const github = await loadGitHub()
+      const connection = await github.getConnection(projectId)
+      const installationId = connection?.installationId
+      if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
+        return c.json(
+          {
+            error: {
+              code: 'github_app_not_installed',
+              message: 'This project has no GitHub App connection for bot-authored PRs.',
+            },
+          },
+          409,
+        )
+      }
+
+      const markedBody = runId && !github.extractRunId(prBody)
+        ? `${withShogoPrFooter(prBody)}\n\n${github.runIdMarker(runId)}`
+        : withShogoPrFooter(prBody)
+      const result = await github.createPullRequest({
+        installationId,
+        repoOwner: connection.repoOwner,
+        repoName: connection.repoName,
+        head,
+        base: base || connection.defaultBranch || 'main',
+        title,
+        body: markedBody,
+        draft: body?.draft === true,
+      })
+      return c.json({
+        ok: true,
+        number: result.number,
+        url: result.html_url,
+        htmlUrl: result.html_url,
+        author: `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
+      })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: 'Failed to create pull request' }, 502)
     }
   })
 

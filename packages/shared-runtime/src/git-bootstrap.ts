@@ -30,6 +30,11 @@
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import {
+  getShogoAgentEmail,
+  getShogoAgentName,
+  withShogoCommitTrailer,
+} from './agent-attribution'
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>
 
@@ -43,7 +48,7 @@ interface SpawnResult {
 
 function spawnGit(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
+    const child = spawn('git', withShogoCommitTrailer(args, env), {
       cwd,
       env: { ...process.env, ...(env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -118,8 +123,8 @@ export async function ensureWorkspaceRepo(
     runtimeAuthSecret,
     projectId,
     branch = 'main',
-    authorName = 'Shogo Agent',
-    authorEmail = 'agent-runtime@shogo.ai',
+    authorName = getShogoAgentName(),
+    authorEmail = getShogoAgentEmail(),
     logger = console,
   } = cfg
 

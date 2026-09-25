@@ -493,7 +493,7 @@ projects:
         4. **Done Gate.** `project_call({ project: "Issue Pipeline — Done Gate", message: "<diff summary + test results + all three reviewers' findings + which findings you addressed and how>", runId, wait: true })`. Its reply is either `{ done: true }` or `{ done: false, required: [...] }`.
         5. **Loop or ship.**
            - `done: false` → address `required`, re-run step 2 (and re-review anything that changed materially), call Done Gate again. Cap at **5 iterations**; if still not done, stop and report the stall (see below) rather than looping forever.
-           - `done: true` → open (or update) the PR: commit, push, `gh pr create`/`gh pr edit`, with the run's `runId` embedded in the PR body: `<!-- shogo:runId=<runId> -->`. Include the plan summary, what changed, and a one-line note per addressed finding.
+           - `done: true` → open (or update) the PR: commit, push, then use `github_create_pr` (or `gh pr edit` for an existing PR), with the run's `runId` embedded in the PR body: `<!-- shogo:runId=<runId> -->`. `github_create_pr` adds the Shogo footer and uses the Shogo GitHub App author when the project is connected. Include the plan summary, what changed, and a one-line note per addressed finding.
         6. **Report.** `project_call({ project: "Issue Pipeline — Intake", message: "PR ready: <url>", runId, wait: false })` so intake posts it back to the task source.
 
         ## Reacting to human PR comments
