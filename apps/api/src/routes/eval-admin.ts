@@ -46,6 +46,33 @@ const VALID_MODELS = new Set([
   ...Object.keys(MODEL_ALIASES),
 ])
 
+/**
+ * Default model for the `reliability-regression` track — the combined
+ * release-gate suite (every WS1-WS9 reproduction + coding/tool-discipline)
+ * that maps 1:1 to prod-baseline.sql metrics. Hoshi (`mimo-v2.5`) drives
+ * ~80% of production traffic, yet this track had never been run against it
+ * before — every trigger defaulted to a model most prod failures don't come
+ * from. Every other track keeps its existing default (still `sonnet` here).
+ */
+const RELEASE_GATE_TRACK = 'reliability-regression'
+const RELEASE_GATE_DEFAULT_MODEL = 'mimo-v2.5'
+
+/**
+ * DB-model existence check used as a fallback when `model` isn't one of the
+ * static catalog ids/aliases in `VALID_MODELS` (e.g. an admin-managed custom
+ * model like Hoshi/MiMo). Matches on the row's primary `id` *or* its
+ * `apiModel` — the previous `id`-only lookup meant a caller could never
+ * validate by the human-recognizable string (`mimo-v2.5`), only by the
+ * opaque DB row id, so `RELEASE_GATE_DEFAULT_MODEL` above would have 400'd.
+ */
+async function isEnabledDbModel(model: string): Promise<boolean> {
+  const dbModel = await (prisma as any).modelDefinition?.findFirst?.({
+    where: { OR: [{ id: model }, { apiModel: model }] },
+    select: { enabled: true },
+  })
+  return dbModel?.enabled === true
+}
+
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
 function isProcessAlive(pid: number): boolean {
@@ -746,7 +773,7 @@ export function evalAdminRoutes(): Hono {
     }
 
     const track = body.track ?? 'agentic'
-    const model = body.model ?? 'sonnet'
+    const model = body.model ?? (track === RELEASE_GATE_TRACK ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
     const local = body.local ?? false
     const vm = body.vm ?? false
@@ -755,11 +782,7 @@ export function evalAdminRoutes(): Hono {
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    const dbModel = await (prisma as any).modelDefinition?.findUnique?.({
-      where: { id: model },
-      select: { enabled: true },
-    })
-    if (!VALID_MODELS.has(model) && dbModel?.enabled !== true) {
+    if (!VALID_MODELS.has(model) && !(await isEnabledDbModel(model))) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 
@@ -983,17 +1006,13 @@ export function evalInternalRoutes(): Hono {
       commitSha?: string | null
     }
     const track = body.track ?? 'agentic'
-    const model = body.model ?? 'sonnet'
+    const model = body.model ?? (track === RELEASE_GATE_TRACK ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
 
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    const dbModel = await (prisma as any).modelDefinition?.findUnique?.({
-      where: { id: model },
-      select: { enabled: true },
-    })
-    if (!VALID_MODELS.has(model) && dbModel?.enabled !== true) {
+    if (!VALID_MODELS.has(model) && !(await isEnabledDbModel(model))) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 

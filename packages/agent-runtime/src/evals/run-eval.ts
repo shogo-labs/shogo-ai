@@ -136,7 +136,13 @@ import { DockerStatsCollector, formatMillicores } from './docker-stats-collector
 const args = process.argv.slice(2)
 
 const trackArg = getArg(args, 'track', 'all')!
-const modelArg = getArg(args, 'model', 'haiku')!
+// `reliability-regression` is the combined release-gate track (every
+// WS1-WS9 reproduction + the coding/tool-discipline suites it maps 1:1 to
+// prod-baseline.sql for) — see its definition below. Hoshi (`mimo-v2.5`) is
+// ~80% of production traffic, yet this track (and coding-discipline /
+// tool-discipline specifically) had never been run against it; every other
+// track keeps the cheap `haiku` smoke-test default for ad-hoc runs.
+const modelArg = getArg(args, 'model', trackArg === 'reliability-regression' ? 'mimo-v2.5' : 'haiku')!
 const workersArg = parseInt(getArg(args, 'workers', '1')!)
 const timeoutMsArg = parseInt(getArg(args, 'timeout-ms', '1200000')!)
 const filterArg = getArg(args, 'filter')

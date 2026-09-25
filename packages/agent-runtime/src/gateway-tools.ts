@@ -2036,6 +2036,87 @@ function createServerSyncTool(ctx: ToolContext): AgentTool {
 // Edit File Tool (search_replace)
 // ---------------------------------------------------------------------------
 
+/**
+ * Character-bigram multiset for `bigramDiceSimilarity` below. A `Map` (not a
+ * `Set`) so repeated bigrams (e.g. "aa" inside "aaaa") count toward the
+ * Sørensen-Dice intersection instead of collapsing to one.
+ */
+function bigramCounts(s: string): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (let i = 0; i < s.length - 1; i++) {
+    const bg = s.slice(i, i + 2)
+    counts.set(bg, (counts.get(bg) ?? 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * Sørensen-Dice coefficient over character bigrams: 1.0 for identical
+ * strings, 0.0 for strings sharing no adjacent-character pairs. Deliberately
+ * O(len(a) + len(b)) — no edit-distance DP — so scoring every line-window in
+ * a large file stays cheap. Robust to small typos/insertions/deletions
+ * (a single changed character only costs ~2 bigrams), which is exactly the
+ * "old_string is almost right" shape production `edit_file` failures take.
+ */
+export function bigramDiceSimilarity(a: string, b: string): number {
+  if (a === b) return 1
+  if (a.length < 2 || b.length < 2) return 0
+  const countsA = bigramCounts(a)
+  const countsB = bigramCounts(b)
+  let intersection = 0
+  for (const [bg, countA] of countsA) {
+    const countB = countsB.get(bg)
+    if (countB) intersection += Math.min(countA, countB)
+  }
+  return (2 * intersection) / (a.length - 1 + (b.length - 1))
+}
+
+/** Floor below which a "closest match" isn't worth showing — pure noise. */
+const CLOSEST_MATCH_MIN_SIMILARITY = 0.35
+
+/**
+ * Last-resort diagnostic (never auto-applied) for when `old_string` matched
+ * nothing at all, even after quote/whitespace normalization: slide a
+ * same-line-count window across `content` and return whichever window is
+ * most bigram-similar to `needle`, provided it clears
+ * `CLOSEST_MATCH_MIN_SIMILARITY`. This replaces the old exact-substring
+ * "does this line literally contain old_string's first line" search, which
+ * produced "No similar content found" for the extremely common case of the
+ * model's `old_string` being *almost* right (a stale variable name, a typo,
+ * slightly different punctuation) — exactly the shape of the ~5,289/7d
+ * "old_string not found" production failures this hint exists to help the
+ * model self-correct from on its next attempt.
+ */
+export function findClosestMatch(
+  content: string,
+  needle: string,
+): { text: string; similarity: number; startLine: number; endLine: number } | null {
+  const needleLines = needle.split('\n')
+  const n = needleLines.length
+  const contentLines = content.split('\n')
+  if (n === 0 || contentLines.length < n) return null
+  const normNeedle = needleLines.map(l => l.trim()).join('\n')
+
+  let bestScore = -1
+  let bestStart = -1
+  for (let i = 0; i <= contentLines.length - n; i++) {
+    const windowText = contentLines.slice(i, i + n).map(l => l.trim()).join('\n')
+    const score = bigramDiceSimilarity(windowText, normNeedle)
+    if (score > bestScore) {
+      bestScore = score
+      bestStart = i
+    }
+  }
+
+  if (bestStart === -1 || bestScore < CLOSEST_MATCH_MIN_SIMILARITY) return null
+  return {
+    text: contentLines.slice(bestStart, bestStart + n).join('\n'),
+    similarity: bestScore,
+    startLine: bestStart + 1,
+    endLine: bestStart + n,
+  }
+}
+
 function fuzzyFindInContent(content: string, needle: string): { index: number; match: string } | null {
   // 1. Try exact match first
   const exactIdx = content.indexOf(needle)
@@ -2263,7 +2344,13 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      // No match — provide helpful context
+      // No match — provide helpful context. Try an exact-substring "nearby
+      // lines" search first (cheap, and still the clearest hint when the
+      // model's old_string is a real line that just isn't unique-enough
+      // context), then fall back to `findClosestMatch`'s bigram-similarity
+      // scan, which also catches the far more common case of old_string
+      // being *almost* right (typo, stale value, slightly different
+      // punctuation) — the exact-substring search finds nothing there.
       const lines = content.split('\n')
       const needleFirst = old_string.split('\n')[0]?.trim()
       const nearbyLines: string[] = []
@@ -2278,12 +2365,19 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      return textResult({
-        error: `old_string not found in ${filePath}`,
-        hint: nearbyLines.length > 0
-          ? `Similar content found near:\n${nearbyLines.join('\n---\n')}`
-          : 'No similar content found. Try reading the file first to get the exact text.',
-      })
+      let hint: string
+      if (nearbyLines.length > 0) {
+        hint = `Similar content found near:\n${nearbyLines.join('\n---\n')}`
+      } else {
+        const closest = findClosestMatch(content, normalizedOldString)
+        hint = closest
+          ? `No exact substring match, but the closest content (${Math.round(closest.similarity * 100)}% similar) ` +
+            `is at lines ${closest.startLine}-${closest.endLine}:\n${closest.text}\n` +
+            'Re-read the file and copy old_string exactly from there.'
+          : 'No similar content found. Try reading the file first to get the exact text.'
+      }
+
+      return textResult({ error: `old_string not found in ${filePath}`, hint })
     },
   }
 }
