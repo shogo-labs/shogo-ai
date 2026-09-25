@@ -16,6 +16,8 @@
 #   releases.shogo.ai
 #     - GET /cli/<channel>/shogo-<target>.<ext>(.sha256)?
 #         -> 302 to the latest matching v* GitHub Release asset
+#     - GET /desktop/<channel>/<platform-arch>/<version>[/RELEASES]
+#         -> Electron updater manifest for stable/beta desktop releases
 #     Worker source lives in scripts/releases-worker.js.tftpl.
 #
 # DNS: both subdomains are proxied A records pointing at a documentation

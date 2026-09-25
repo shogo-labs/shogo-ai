@@ -1,0 +1,99 @@
+name: Deploy Edge Global Releases Worker
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - terraform/modules/install-shogo-ai/**
+      - terraform/environments/edge-global/main.tf
+      - terraform/environments/edge-global/variables.tf
+      - .github/workflows/deploy-edge-global-releases-worker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-global-releases-worker
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: '1.5.7'
+  TF_IN_AUTOMATION: 'true'
+  AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+
+jobs:
+  deploy:
+    name: Apply releases Worker
+    runs-on: ubuntu-latest
+    environment: edge-global
+    defaults:
+      run:
+        working-directory: terraform/environments/edge-global
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Test releases Worker
+        working-directory: ${{ github.workspace }}
+        run: bun test terraform/modules/install-shogo-ai/scripts/releases-worker.test.ts
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        env:
+          OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+        run: |
+          terraform init \
+            -backend-config="endpoint=${OCI_S3_ENDPOINT}" \
+            -lockfile=readonly
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
+        run: |
+          terraform plan \
+            -no-color \
+            -target=module.install_shogo_ai \
+            -out=edge-global-releases.tfplan
+
+      - name: Terraform apply
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
+        run: terraform apply -no-color -auto-approve edge-global-releases.tfplan
+
+      - name: Smoke-test desktop beta feed
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error --retry 10 --retry-delay 5 \
+            https://releases.shogo.ai/desktop/beta/darwin-arm64/0.0.1)"
+          echo "$response" | jq -e '
+            type == "object" and
+            (.name | type == "string") and
+            (.url | startswith("https://github.com/"))
+          '
+
+          curl --fail --silent --show-error --retry 10 --retry-delay 5 \
+            https://releases.shogo.ai/desktop/beta/win32-x64/0.0.1/RELEASES \
+            | grep -q 'https://github.com/'

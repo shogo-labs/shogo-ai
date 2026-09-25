@@ -7,10 +7,11 @@
 #
 #   install.shogo.ai     -> serves packages/shogo-worker/install.{sh,ps1}
 #   releases.shogo.ai    -> resolves /cli/<channel>/shogo-<target>.<ext>(.sha256)?
+#                           and /desktop/<channel>/<platform-arch>/<version>
 #                           to the matching v* GitHub Release asset
 #
 # Kept separate from production-global so the install/releases Workers
-# can be applied via the standard terraform.yml CI flow (S3 backend)
+# can be applied via the edge-global releases workflow (S3 backend)
 # without needing to first migrate production-global's existing local
 # state (which already owns studio.shogo.ai / docs.shogo.ai / the tunnel
 # A records) into OCI Object Storage.
