@@ -18,7 +18,7 @@ export function isContextOverflowError(err: any): boolean {
   if (!err) return false
   const status = err.status ?? err.statusCode ?? err.code
   if (status === 413) return true
-  const msg = String(err.message || err).toLowerCase()
+  const msg = String(err.message || err).slice(0, 512).toLowerCase()
   return (
     // Patterns that include the word "context" (existing)
     (msg.includes('context') && (msg.includes('overflow') || msg.includes('too long') || msg.includes('exceed')))
