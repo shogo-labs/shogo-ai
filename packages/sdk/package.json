@@ -181,6 +181,12 @@
       "import": "./dist/macos-junk.js",
       "require": "./dist/macos-junk.cjs"
     },
+    "./vite-watch": {
+      "types": "./dist/vite-watch.d.ts",
+      "development": "./src/vite-watch.ts",
+      "import": "./dist/vite-watch.js",
+      "require": "./dist/vite-watch.cjs"
+    },
     "./file-types": {
       "types": "./dist/file-types.d.ts",
       "development": "./src/file-types.ts",
