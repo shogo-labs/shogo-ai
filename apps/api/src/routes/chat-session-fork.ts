@@ -137,7 +137,9 @@ export function createChatSessionForkRoutes(): Hono {
             sessionId: newSession.id,
             role: m.role,
             content: m.content,
-            imageData: m.imageData,
+            // Attachments are referenced from `parts` after externalization.
+            // Never duplicate the legacy first-file base64 column.
+            imageData: null,
             parts: m.parts,
             agent: m.agent,
             model: m.model,

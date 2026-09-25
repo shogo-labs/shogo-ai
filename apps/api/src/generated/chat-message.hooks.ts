@@ -7,6 +7,8 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import { externalizeMessageAttachments } from "../lib/chat-attachments"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -267,7 +269,48 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    return { ok: true }
+    const externalized = await externalizeMessageAttachments(
+      sessionId,
+      input.parts,
+      input.imageData,
+    )
+    if (!externalized.changed) return { ok: true }
+    return {
+      ok: true,
+      data: {
+        ...input,
+        parts: externalized.parts,
+        imageData: externalized.imageData,
+      },
+    }
+  },
+
+  beforeUpdate: async (id, input, ctx) => {
+    const existing = await ctx.prisma.chatMessage.findUnique({
+      where: { id },
+      select: { sessionId: true },
+    })
+    if (!existing) {
+      return {
+        ok: false,
+        error: { code: "not_found", message: "Message not found" },
+      }
+    }
+
+    const externalized = await externalizeMessageAttachments(
+      input.sessionId || existing.sessionId,
+      input.parts,
+      input.imageData,
+    )
+    if (!externalized.changed) return { ok: true }
+    return {
+      ok: true,
+      data: {
+        ...input,
+        parts: externalized.parts,
+        imageData: externalized.imageData,
+      },
+    }
   },
 
   /**

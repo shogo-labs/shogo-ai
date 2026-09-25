@@ -4912,7 +4912,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           sessionId: currentSessionId,
           role: "user",
           content: trimmedContent,
-          imageData: fileArray.length > 0 ? fileArray[0].dataUrl : undefined,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
         })
         .catch((err) =>

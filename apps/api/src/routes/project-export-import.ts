@@ -29,6 +29,11 @@ import {
 import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 import { inferTechStackId, isKnownTechStackId } from '../lib/infer-tech-stack'
+import {
+  externalizeMessageAttachments,
+  externalizeToolOutput,
+  exportChatParts,
+} from '../lib/chat-attachments'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || resolve(PROJECT_ROOT, 'workspaces')
@@ -780,16 +785,35 @@ export async function runImport(
         })
 
         if (sessionBundle.messages.length > 0) {
-          await prisma.chatMessage.createMany({
-            data: sessionBundle.messages.map((m) => ({
+          const messages = await Promise.all(sessionBundle.messages.map(async (m) => {
+            const externalized = await externalizeMessageAttachments(
+              chatSession.id,
+              m.parts ?? null,
+              null,
+            )
+            let importedParts = externalized.parts ?? null
+            if (typeof importedParts === 'string') {
+              try {
+                const parsedParts = JSON.parse(importedParts)
+                importedParts = JSON.stringify(
+                  await externalizeToolOutput(chatSession.id, parsedParts),
+                )
+              } catch {
+                // Keep malformed/legacy parts unchanged; the existing import
+                // path treats them as opaque message metadata.
+              }
+            }
+            return {
               sessionId: chatSession.id,
               role: m.role as any,
               content: m.content,
-              parts: m.parts ?? null,
+              parts: importedParts,
+              imageData: externalized.imageData ?? null,
               createdAt: new Date(m.createdAt),
               agent: 'technical',
-            })),
-          })
+            }
+          }))
+          await prisma.chatMessage.createMany({ data: messages })
         }
         chatsImported++
       } catch (err: any) {
@@ -1312,12 +1336,12 @@ export function projectExportImportRoutes() {
           updatedAt: session.updatedAt.toISOString(),
           lastActiveAt: session.lastActiveAt.toISOString(),
         },
-        messages: session.messages.map((m) => ({
+        messages: await Promise.all(session.messages.map(async (m) => ({
           role: m.role,
           content: m.content,
-          parts: m.parts,
+          parts: await exportChatParts(m.parts),
           createdAt: m.createdAt.toISOString(),
-        })),
+        }))),
       }
       zipContents[`chat-history/${session.id}.json`] = strToU8(
         JSON.stringify(sessionData, null, 2),
