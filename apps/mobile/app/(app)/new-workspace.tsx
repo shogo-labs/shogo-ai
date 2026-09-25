@@ -8,7 +8,7 @@
  * checkout, creates the workspace + Stripe subscription.
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import {
   View,
   Text,
@@ -30,7 +30,9 @@ import {
   Crown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp } from '../../contexts/domain'
+import { useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { usePooledWorkspaceCreation } from '../../hooks/usePooledWorkspaceCreation'
 import { api } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
 import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
@@ -44,6 +46,7 @@ import {
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
 import { FeatureList } from '../../components/billing/FeatureList'
+import { CreateWorkspaceModal } from '../../components/layout/sidebar/CreateWorkspaceModal'
 import {
   Card,
   CardContent,
@@ -56,13 +59,27 @@ export default function NewWorkspacePage() {
   const insets = useSafeAreaInsets()
   const { user } = useAuth()
   const http = useDomainHttp()
+  const workspaces = useWorkspaceCollection()
+  const currentWorkspace = useActiveWorkspace()
 
   const [workspaceName, setWorkspaceName] = useState('')
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
   const [proSeats, setProSeats] = useState(1)
   const [businessSeats, setBusinessSeats] = useState(1)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
+  const [pooledCreateOpen, setPooledCreateOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const goHome = useCallback(() => router.replace('/(app)'), [router])
+  const { parent: pooledWorkspaceParent, createPooledWorkspace } = usePooledWorkspaceCreation({
+    workspaces: workspaces?.all ?? [],
+    currentWorkspaceId: currentWorkspace?.id,
+    enabled: true,
+    onCreated: goHome,
+  })
+
+  useEffect(() => {
+    void workspaces.loadAll().catch(() => undefined)
+  }, [workspaces])
 
   const proPricing = PLAN_PRICING.pro
   const businessPricing = PLAN_PRICING.business
@@ -238,6 +255,29 @@ export default function NewWorkspacePage() {
               </Text>
             </View>
           </View>
+
+          {pooledWorkspaceParent && (
+            <Card className="mb-6 rounded-2xl border-primary/40 bg-primary/5">
+              <CardContent className="gap-3 p-5">
+                <Text className="text-base font-semibold text-foreground">
+                  Your plan includes unlimited workspaces
+                </Text>
+                <Text className="text-sm leading-5 text-muted-foreground">
+                  Create a workspace under {pooledWorkspaceParent.name || 'your plan'} at no extra cost. It shares usage, billing, and seats with the parent workspace.
+                </Text>
+                <Pressable
+                  onPress={() => setPooledCreateOpen(true)}
+                  className="min-h-11 items-center justify-center rounded-xl bg-primary px-4 active:bg-primary/80"
+                  accessibilityRole="button"
+                  accessibilityLabel="Create included workspace"
+                >
+                  <Text className="text-sm font-semibold text-primary-foreground">
+                    Create included workspace
+                  </Text>
+                </Pressable>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Workspace Name */}
           <Card className="mb-6 rounded-2xl border-border/80 bg-card">
@@ -500,6 +540,12 @@ export default function NewWorkspacePage() {
           <Text className="mt-5 text-center text-xs leading-5 text-muted-foreground">
             Payments are handled through Stripe. You can review plan details before completing checkout.
           </Text>
+          <CreateWorkspaceModal
+            visible={pooledCreateOpen}
+            onClose={() => setPooledCreateOpen(false)}
+            onSubmit={createPooledWorkspace}
+            parentName={pooledWorkspaceParent?.name}
+          />
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

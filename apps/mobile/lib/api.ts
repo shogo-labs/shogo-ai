@@ -441,7 +441,7 @@ export const api = {
   },
 
   async getWorkspacePlans(http: HttpClient, workspaceIds: string[]) {
-    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null; source?: 'subscription' | 'grant' | 'free' }> }>(
+    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null; source?: 'subscription' | 'grant' | 'free'; canManageChildren?: boolean }> }>(
       `/api/billing/workspace-plan?workspaceIds=${workspaceIds.join(',')}`
     )
     return res.data?.plans ?? {}
@@ -466,11 +466,30 @@ export const api = {
     http: HttpClient,
     params: { name: string; description?: string; parentWorkspaceId: string; ownerId: string },
   ) {
-    const res = await http.post<{ ok?: boolean; data?: { id: string; name: string; slug: string } }>(
-      '/api/workspaces',
-      params,
-    )
-    if (!res.data?.ok || !res.data.data) throw new Error('createChildWorkspace: workspace not created')
+    type CreateChildWorkspaceResponse = {
+      ok?: boolean
+      data?: { id: string; name: string; slug: string }
+      error?: { code?: string; message?: string }
+    }
+    let res: { data?: CreateChildWorkspaceResponse }
+    try {
+      res = await http.post<CreateChildWorkspaceResponse>('/api/workspaces', params)
+    } catch (cause: any) {
+      const apiError = cause?.details?.error
+      if (apiError?.code) {
+        const error = new Error(apiError.message ?? cause.message) as Error & { code?: string }
+        error.code = apiError.code
+        throw error
+      }
+      throw cause
+    }
+    if (!res.data?.ok || !res.data.data) {
+      const error = new Error(
+        res.data?.error?.message ?? 'createChildWorkspace: workspace not created',
+      ) as Error & { code?: string }
+      error.code = res.data?.error?.code
+      throw error
+    }
     return res.data.data
   },
 
