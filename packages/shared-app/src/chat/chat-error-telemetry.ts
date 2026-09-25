@@ -31,7 +31,7 @@
 /** Tag key that marks an event as a deliberate Shogo capture (never noise). */
 export const SHOGO_TELEMETRY_TAG = 'shogo_telemetry'
 
-export type ChatErrorClass = 'user-abort' | 'expected' | 'connection' | 'parse' | 'other'
+export type ChatErrorClass = 'user-abort' | 'expected' | 'connection' | 'parse' | 'render' | 'other'
 
 /**
  * Classes that are NORMAL control flow / expected business conditions, not
@@ -108,6 +108,24 @@ const PARSE_MESSAGE_PREFIX_PATTERNS = [
   /^Unterminated string in JSON/i,
 ]
 
+const REACT_UPDATE_DEPTH_PATTERNS = [
+  /maximum update depth exceeded/i,
+  /minified react error #185/i,
+  /react\.dev\/errors\/185/i,
+]
+
+/**
+ * React reports update-depth failures through the stream's `onError` callback
+ * after the AI SDK has already ended its request. Treating that error like a
+ * transport drop starts the automatic stall-recovery path again, replaying the
+ * same large turn into the same overloaded tree.
+ */
+export function isReactUpdateDepthError(err: unknown): boolean {
+  const message = chatErrorMessage(err)
+  const name = chatErrorName(err)
+  return REACT_UPDATE_DEPTH_PATTERNS.some((pattern) => pattern.test(message) || pattern.test(name))
+}
+
 function isParseError(name: string, message: string): boolean {
   if (PARSE_NAME_PATTERNS.some((p) => p.test(name))) return true
   // Only inspect the message PREFIX — an `AI_JSONParseError` appends the raw
@@ -153,6 +171,7 @@ export function classifyChatError(err: unknown, userInitiatedStop = false): Chat
   // Parse failures next — their message embeds the raw payload, so testing
   // the connection patterns against it produces false `connection` labels.
   if (isParseError(name, message)) return 'parse'
+  if (isReactUpdateDepthError(err)) return 'render'
   if (CONNECTION_PATTERNS.some((p) => p.test(message))) return 'connection'
   return 'other'
 }

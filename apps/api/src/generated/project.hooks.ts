@@ -7,7 +7,7 @@
  * This file is safe to edit - it will not be overwritten.
  */
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 import { getModelTier } from '@shogo/model-catalog'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { getRuntimeManager } from '../lib/runtime/manager'
@@ -528,11 +528,13 @@ export const projectHooks: ProjectHooks = {
     // runtime infra behind — the Knative ksvc + DomainMapping, and any metal
     // snapshot on NVMe/S3 — until an admin/GC sweep. Destroy both substrates so
     // nothing leaks (covers the drain window where a project has both).
-    try {
-      const { destroyProjectRuntime } = await import('../lib/substrate')
-      await destroyProjectRuntime(id)
-    } catch (err: any) {
-      console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      try {
+        const { destroyProjectRuntime } = await import('../lib/substrate')
+        await destroyProjectRuntime(id)
+      } catch (err: any) {
+        console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
+      }
     }
   },
 }

@@ -105,6 +105,37 @@ describe('resolveActiveWorkspaceId', () => {
   test('returns null when the list is empty and nothing is persisted', () => {
     expect(resolveActiveWorkspaceId([])).toBeNull()
   })
+
+  test('does not replace the selected workspace while the list is loading', () => {
+    setActiveWorkspaceId('ws-team')
+    expect(
+      resolveActiveWorkspaceId(['ws-personal'], undefined, {
+        listLoaded: false,
+      }),
+    ).toBe('ws-team')
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+  })
+
+  test('does not persist a render fallback', () => {
+    setActiveWorkspaceId('ws-team')
+    expect(
+      resolveActiveWorkspaceId(['ws-personal'], undefined, {
+        listLoaded: true,
+        persistFallback: false,
+      }),
+    ).toBe('ws-personal')
+    expect(getActiveWorkspaceId()).toBe('ws-team')
+  })
+
+  test('persists a fallback after an authoritative load when requested', () => {
+    setActiveWorkspaceId('ws-team')
+    expect(
+      resolveActiveWorkspaceId(['ws-personal'], undefined, {
+        listLoaded: true,
+      }),
+    ).toBe('ws-personal')
+    expect(getActiveWorkspaceId()).toBe('ws-personal')
+  })
 })
 
 describe('cached workspace kind', () => {

@@ -26,6 +26,13 @@ mock.module('../../lib/project-runtime-token', () => ({
   },
 }))
 
+mock.module('../../lib/resolve-pod-url', () => ({
+  resolveProjectPodUrl: async (projectId: string) => {
+    store.relayCalledWith = { ...(store.relayCalledWith ?? {}), hostProjectId: projectId }
+    return { url: 'http://127.0.0.1:37658', ready: true }
+  },
+}))
+
 mock.module('../../lib/tunnel-relay', () => ({
   relayAgentProxyViaTunnel: async (opts: any) => {
     store.relayCalledWith = { ...(store.relayCalledWith ?? {}), tunnelOpts: opts }
@@ -181,5 +188,31 @@ describe('callProjectAgent — tunnel branch', () => {
     expect(tunnelOpts.method).toBe('POST')
     expect(tunnelOpts.headers['x-runtime-token']).toBe('mock-runtime-token')
     expect(JSON.parse(tunnelOpts.body).runId).toBe('run-1')
+  })
+})
+
+describe('callProjectAgent — desktop (local mode)', () => {
+  const previous = process.env.SHOGO_LOCAL_MODE
+  beforeEach(() => { process.env.SHOGO_LOCAL_MODE = 'true' })
+  afterEach(() => {
+    if (previous === undefined) delete process.env.SHOGO_LOCAL_MODE
+    else process.env.SHOGO_LOCAL_MODE = previous
+  })
+
+  it('calls the target on the host runtime without the cloud tunnel resolver', async () => {
+    let capturedUrl = ''
+    globalThis.fetch = (async (url: any) => {
+      capturedUrl = String(url)
+      return new Response(JSON.stringify({ status: 'completed', reply: 'from host' }), { status: 200 })
+    }) as any
+
+    const out = await svc.callProjectAgent(FAKE_CTX, 'proj-2', 'ws-1', { message: 'hi' })
+
+    expect(out.status).toBe(200)
+    expect(out.body.reply).toBe('from host')
+    expect(capturedUrl).toBe('http://127.0.0.1:37658/agent/pipeline/call')
+    expect(store.relayCalledWith.hostProjectId).toBe('proj-2')
+    expect(store.relayCalledWith.resolveProjectId).toBeUndefined()
+    expect(store.tokenCalledWith.projectId).toBe('proj-2')
   })
 })

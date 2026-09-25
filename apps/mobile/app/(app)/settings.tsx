@@ -4369,10 +4369,11 @@ export default observer(function SettingsPage({
     if (!requestedWorkspace || ownWorkspaceIds.length === 0) return;
     const resolvedWorkspace = resolveActiveWorkspaceId(
       ownWorkspaceIds,
-      requestedWorkspace
+      requestedWorkspace,
+      { listLoaded: true },
     );
     if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace);
-  }, [params.workspace, workspaces?.all]);
+  }, [params.workspace, workspaces?.all, workspaces?.isLoading]);
 
   useEffect(() => {
     const isLocal = localMode || !features.billing;

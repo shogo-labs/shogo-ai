@@ -202,7 +202,9 @@ export const AppSidebar = observer(function AppSidebar({
       .loadAll()
       .then(() => {
         const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
-        const wsId = resolveActiveWorkspaceId(ownIds);
+        const wsId = resolveActiveWorkspaceId(ownIds, undefined, {
+          listLoaded: true,
+        });
         const filter = workspaceProjectFilter(wsId);
         if (filter) {
           projects
@@ -308,7 +310,9 @@ export const AppSidebar = observer(function AppSidebar({
         // workspace this session isn't a member of would otherwise get
         // persisted as "active" and 403/400 every request from then on.
         const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
-        const resolvedWs = resolveActiveWorkspaceId(ownIds, targetWs);
+        const resolvedWs = resolveActiveWorkspaceId(ownIds, targetWs, {
+          listLoaded: true,
+        });
         if (!resolvedWs) return;
         setSelectedWorkspaceId(resolvedWs);
         setActiveWorkspaceId(resolvedWs);
@@ -350,7 +354,11 @@ export const AppSidebar = observer(function AppSidebar({
     // workspaces have actually loaded, fall back to the first one rather
     // than leaving `currentWorkspace` permanently undefined — otherwise
     // every workspace-scoped fetch below keeps targeting the invalid id.
-    if (!currentWorkspace && ownWorkspaces.length > 0) {
+    if (
+      !currentWorkspace &&
+      ownWorkspaces.length > 0 &&
+      !workspaces?.isLoading
+    ) {
       currentWorkspace = ownWorkspaces[0];
     }
   } catch {

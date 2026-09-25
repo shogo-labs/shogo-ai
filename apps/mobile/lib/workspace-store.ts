@@ -125,6 +125,20 @@ export function rememberWorkspaceKind(
   persistCachedWorkspaceKind({ id: workspaceId, kind })
 }
 
+export interface ActiveWorkspaceResolutionOptions {
+  /**
+   * Whether `ownWorkspaceIds` came from a completed, authoritative load.
+   * Resolution during an initial or in-flight load must not replace the
+   * persisted workspace with the first item in a partial list.
+   */
+  listLoaded?: boolean
+  /**
+   * React render paths should not persist a fallback. Callers that have
+   * explicitly awaited a complete workspace load may opt into that cleanup.
+   */
+  persistFallback?: boolean
+}
+
 /**
  * Resolve the workspace id to use, validating the persisted/candidate id
  * against the caller's *own* loaded workspace list before trusting it.
@@ -137,22 +151,37 @@ export function rememberWorkspaceKind(
  * server, and the UI silently shows "no projects" with no recovery.
  *
  * When `ownWorkspaceIds` is non-empty and `candidateId` isn't in it, this
- * self-heals by returning (and persisting) the first of the user's own
- * workspaces instead.
+ * returns the first of the user's own workspaces. Persistence is only done
+ * for an authoritative load, and render callers can disable it entirely.
  */
 export function resolveActiveWorkspaceId(
   ownWorkspaceIds: readonly string[],
   candidateId?: string | null,
+  options: ActiveWorkspaceResolutionOptions = {},
 ): string | null {
   const id = candidateId ?? getActiveWorkspaceId()
   if (id && (ownWorkspaceIds.length === 0 || ownWorkspaceIds.includes(id))) {
     return id
   }
+
+  // A workspace collection can be empty or temporarily partial while its
+  // initial request is in flight. Never turn that transient state into a
+  // persisted switch to `ownWorkspaceIds[0]` (normally Personal).
+  if (options.listLoaded === false) {
+    return id ?? null
+  }
+
   const fallback = ownWorkspaceIds[0] ?? null
   // This helper is called while React is rendering `useActiveWorkspace`.
   // Persist the self-healing fallback without emitting a subscription update;
   // notifying here schedules another render from inside render and can loop
   // indefinitely when the browser has no active workspace cached yet.
-  if (fallback && fallback !== id) persistActiveWorkspaceId(fallback)
+  if (
+    options.persistFallback !== false &&
+    fallback &&
+    fallback !== id
+  ) {
+    persistActiveWorkspaceId(fallback)
+  }
   return fallback
 }
