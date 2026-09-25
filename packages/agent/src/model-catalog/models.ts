@@ -28,7 +28,7 @@ export type ModelGeneration = 'current' | 'legacy'
 export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
-  | 'gpt-6-astra' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
+  | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
   | 'claude-opus-5-5'
 export type AgentMode = 'basic' | 'advanced'
 
@@ -337,6 +337,39 @@ export const MODEL_CATALOG = {
     // Not yet run through the subagent-smoke eval — unrated until verified
     // (see `ModelCapabilities` doc comment above).
   },
+  // GPT-6 Sol/Luna (announced 2026-09-22) take over the `sol`/`luna` slots
+  // from their GPT-5.6 namesakes at half the price — see MODEL_DOLLAR_COSTS
+  // and the GPT-5.6 Sol/Luna entries below, which flip to `legacy`/stay
+  // `legacy` in this same change.
+  'gpt-6-sol': {
+    id: 'gpt-6-sol',
+    provider: 'openai',
+    apiModel: 'gpt-6-sol',
+    displayName: 'GPT-6 Sol',
+    shortDisplayName: 'Sol',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'current',
+    billingModel: 'gpt-6-sol',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  'gpt-6-luna': {
+    id: 'gpt-6-luna',
+    provider: 'openai',
+    apiModel: 'gpt-6-luna',
+    displayName: 'GPT-6 Luna',
+    shortDisplayName: 'Luna',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'current',
+    billingModel: 'gpt-6-luna',
+    maxOutputTokens: 128_000,
+    // Not yet run through the subagent-smoke eval — unrated until verified
+    // (see `ModelCapabilities` doc comment above).
+  },
+  // GPT-5.6 Terra has no GPT-6 successor yet — stays current.
   'gpt-5.6-terra': {
     id: 'gpt-5.6-terra',
     provider: 'openai',
@@ -347,20 +380,6 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'current',
     billingModel: 'gpt-5.6-terra',
-    maxOutputTokens: 128_000,
-    // Not yet run through the subagent-smoke eval — unrated until verified
-    // (see `ModelCapabilities` doc comment above).
-  },
-  'gpt-5.6-luna': {
-    id: 'gpt-5.6-luna',
-    provider: 'openai',
-    apiModel: 'gpt-5.6-luna',
-    displayName: 'GPT-5.6 Luna',
-    shortDisplayName: 'Luna',
-    tier: 'economy',
-    family: 'gpt',
-    generation: 'current',
-    billingModel: 'gpt-5.6-luna',
     maxOutputTokens: 128_000,
     // Not yet run through the subagent-smoke eval — unrated until verified
     // (see `ModelCapabilities` doc comment above).
@@ -416,6 +435,20 @@ export const MODEL_CATALOG = {
     family: 'gpt',
     generation: 'legacy',
     billingModel: 'gpt-5.6-sol',
+    maxOutputTokens: 128_000,
+  },
+  // Superseded by GPT-6 Luna (2026-09-22, 50% cheaper) — see the current-gen
+  // 'gpt-6-luna' entry above.
+  'gpt-5.6-luna': {
+    id: 'gpt-5.6-luna',
+    provider: 'openai',
+    apiModel: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
+    shortDisplayName: 'Luna',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'legacy',
+    billingModel: 'gpt-5.6-luna',
     maxOutputTokens: 128_000,
   },
   'gpt-5.5': {

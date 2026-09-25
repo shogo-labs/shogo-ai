@@ -30,15 +30,18 @@
  *     static catalog when the DB has zero rows — see
  *     `resolveVisibleCatalogModels` in
  *     apps/api/src/services/visible-models.service.ts).
- *   - GPT-5.6 Terra (`gpt-5.6-terra`) / GPT-5.6 Luna (`gpt-5.6-luna`) —
- *     native OpenAI, `current` in the static catalog, same never-DB-seeded
- *     situation as Astra above. Terra is `standard` tier, Luna `economy`,
- *     128k output; per-token pricing matches the post-2026-07-30-price-cut
- *     rates in `MODEL_DOLLAR_COSTS['gpt-5.6-terra' | 'gpt-5.6-luna']`
- *     (Terra 20% off, Luna 80% off their original launch prices).
- *     GPT-5.6 Sol (`gpt-5.6-sol`) is deliberately NOT seeded here — it's
- *     `legacy` in the static catalog by design, so seeding it wouldn't
- *     surface it in the default picker anyway, and it's not meant to ship.
+ *   - GPT-6 Sol (`gpt-6-sol`) / GPT-6 Luna (`gpt-6-luna`) — native OpenAI,
+ *     announced 2026-09-22, 50% cheaper than their GPT-5.6 namesakes'
+ *     promotional pricing (see `MODEL_DOLLAR_COSTS['gpt-6-sol' | 'gpt-6-luna']`).
+ *     Take over the `sol`/`luna` aliases from GPT-5.6 Sol/Luna, which flip
+ *     to explicit `legacy` rows in the same run (mirrors the Opus 4.8 → 5 →
+ *     5.5 handoff pattern above) so they stay admin-manageable/routable
+ *     without claiming the aliases or showing in the default picker.
+ *   - GPT-5.6 Terra (`gpt-5.6-terra`) — native OpenAI, `current` in the
+ *     static catalog, same never-DB-seeded situation as Astra above.
+ *     `standard` tier, 128k output, pricing from
+ *     `MODEL_DOLLAR_COSTS['gpt-5.6-terra']` (post-2026-07-30 price cut,
+ *     20% off launch price). Has no GPT-6 successor yet, so it stays current.
  *   - Sonnet 4.6 (`claude-sonnet-4-6`) — explicit `legacy` row, mirroring
  *     the Opus 4.8 row below, so it's visible/manageable in the DB-backed
  *     admin model list rather than only existing implicitly via the
@@ -350,21 +353,115 @@ async function seedGptTerra(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-5.6 Terra (apiModel=gpt-5.6-terra)')
 }
 
-async function seedGptLuna(): Promise<void> {
+async function seedGptSol6(): Promise<void> {
   const common = {
-    displayName: 'GPT-5.6 Luna',
+    displayName: 'GPT-6 Sol',
+    shortDisplayName: 'Sol',
+    tier: 'premium',
+    family: 'gpt',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    // Takes over the shared `sol` alias from GPT-5.6 Sol (see seedGptSol56
+    // below) — same last-write-wins handoff as the Opus releases above.
+    aliases: ['gpt-6-sol', 'sol'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // OpenAI-published rates, 50% off GPT-5.6 Sol's promotional pricing
+    // (announced 2026-09-22 — see MODEL_DOLLAR_COSTS['gpt-6-sol']).
+    inputPerMillion: 2.0,
+    cachedInputPerMillion: 0.2,
+    cacheWritePerMillion: 2.5,
+    outputPerMillion: 10.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-6-sol' },
+    { providerId: null, sortOrder: 5, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted GPT-6 Sol (apiModel=gpt-6-sol)')
+}
+
+async function seedGptLuna6(): Promise<void> {
+  const common = {
+    displayName: 'GPT-6 Luna',
     shortDisplayName: 'Luna',
     tier: 'economy',
     family: 'gpt',
     generation: 'current',
     maxOutputTokens: 128_000,
     enabled: true,
-    aliases: ['gpt-5.6-luna', 'luna'],
+    // Takes over the shared `luna` alias from GPT-5.6 Luna (see
+    // seedGptLuna56 below) — same last-write-wins handoff as above.
+    aliases: ['gpt-6-luna', 'luna'],
     // Not yet run through the subagent-smoke eval — leave capabilities unset
     // (unrated) until verified, per the ModelCapabilities doc comment.
     capabilities: null,
-    // OpenAI-published rates as of the 2026-07-30 price cut (80% off input/
-    // output — see MODEL_DOLLAR_COSTS['gpt-5.6-luna']).
+    // OpenAI-published rates, 50% off GPT-5.6 Luna's promotional pricing
+    // (announced 2026-09-22 — see MODEL_DOLLAR_COSTS['gpt-6-luna']).
+    inputPerMillion: 0.1,
+    cachedInputPerMillion: 0.01,
+    cacheWritePerMillion: 0.125,
+    outputPerMillion: 0.5,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-6-luna' },
+    { providerId: null, sortOrder: 6, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted GPT-6 Luna (apiModel=gpt-6-luna)')
+}
+
+async function seedGptSol56(): Promise<void> {
+  const common = {
+    displayName: 'GPT-5.6 Sol',
+    shortDisplayName: 'Sol',
+    tier: 'premium',
+    family: 'gpt',
+    // Superseded by GPT-6 Sol as the current-gen pick (2026-09-22) — kept
+    // addressable by its own id but no longer claims the shared `sol` alias
+    // (see seedGptSol6 above).
+    generation: 'legacy',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['gpt-5.6-sol'],
+    capabilities: null,
+    // OpenAI-published list price (see MODEL_DOLLAR_COSTS['gpt-5.6-sol']).
+    inputPerMillion: 5.0,
+    cachedInputPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+    outputPerMillion: 30.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-5.6-sol' },
+    { providerId: null, sortOrder: 5, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted GPT-5.6 Sol (apiModel=gpt-5.6-sol, legacy)')
+}
+
+async function seedGptLuna56(): Promise<void> {
+  const common = {
+    displayName: 'GPT-5.6 Luna',
+    shortDisplayName: 'Luna',
+    tier: 'economy',
+    family: 'gpt',
+    // Superseded by GPT-6 Luna as the current-gen pick (2026-09-22) — kept
+    // addressable by its own id but no longer claims the shared `luna`
+    // alias (see seedGptLuna6 above).
+    generation: 'legacy',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['gpt-5.6-luna'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // OpenAI-published rates as of the 2026-07-30 price cut (80% off launch
+    // price — see MODEL_DOLLAR_COSTS['gpt-5.6-luna']).
     inputPerMillion: 0.2,
     cachedInputPerMillion: 0.02,
     cacheWritePerMillion: 0.25,
@@ -376,7 +473,7 @@ async function seedGptLuna(): Promise<void> {
     { providerId: null, sortOrder: 5, ...common },
     omit(common, ['enabled']),
   )
-  console.log('[seed-db-models] Upserted GPT-5.6 Luna (apiModel=gpt-5.6-luna)')
+  console.log('[seed-db-models] Upserted GPT-5.6 Luna (apiModel=gpt-5.6-luna, legacy)')
 }
 
 async function seedMimo(): Promise<void> {
@@ -549,8 +646,11 @@ async function main(): Promise<void> {
   await seedDeepSeek()
   await seedGptLive1()
   await seedGptAstra()
+  await seedGptSol6()
+  await seedGptLuna6()
+  await seedGptSol56()
+  await seedGptLuna56()
   await seedGptTerra()
-  await seedGptLuna()
   console.log('[seed-db-models] Done.')
 }
 

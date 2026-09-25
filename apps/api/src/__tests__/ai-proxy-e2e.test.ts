@@ -118,12 +118,15 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     expect(modelIds).toContain('claude-fable-5-1')
     expect(modelIds).toContain('claude-haiku-4-5-20251001')
     expect(modelIds).toContain('gpt-6-astra')
+    expect(modelIds).toContain('gpt-6-sol')
+    expect(modelIds).toContain('gpt-6-luna')
     expect(modelIds).toContain('gpt-5.6-terra')
-    expect(modelIds).toContain('gpt-5.6-luna')
 
     // Legacy catalog entries are routable but no longer listed by default.
     expect(modelIds).not.toContain('claude-3-haiku-20240307')
     expect(modelIds).not.toContain('gpt-4o')
+    expect(modelIds).not.toContain('gpt-5.6-luna')
+    expect(modelIds).not.toContain('gpt-5.6-sol')
     expect(modelIds).not.toContain('gpt-4o-mini')
     expect(modelIds).not.toContain('gpt-5.5')
     expect(modelIds).not.toContain('gpt-5.4-mini')
