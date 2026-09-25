@@ -86,7 +86,14 @@ export function createLocalApp(): LocalAppBundle {
   // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and
   // members, ...). Without them "Trust folder" never reaches the agent and
   // folder-linked repos stay read-only.
-  app.route('/api/internal', runtimeInternalRoutes({ authenticate: authenticateRuntimeToken }))
+  app.route(
+    '/api/internal',
+    runtimeInternalRoutes({
+      authenticate: authenticateRuntimeToken,
+      loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
+      loadAgentCall: () => import('../services/agent-call.service'),
+    }),
+  )
   app.route('/api/local', localLogsRoutes())
   app.route('/api', localAuthRoutes())
   app.route('/api', localUserRoutes())
