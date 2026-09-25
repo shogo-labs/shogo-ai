@@ -545,6 +545,7 @@ export async function pullFromGitHub(
     // Pull with rebase
     const result = await gitService.pull(workspacePath, {
       remote: 'origin',
+      branch: connection.defaultBranch,
       rebase: true,
     });
 

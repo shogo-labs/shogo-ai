@@ -607,7 +607,7 @@ describe('pullFromGitHub', () => {
     const res = await svc.pullFromGitHub('proj_pl', '/ws')
     expect(res).toEqual({ success: true, pushed: false, pulled: true, commits: 0 })
     expect(gitCalls.fetch).toEqual(['/ws'])
-    expect(gitCalls.pull[0]!.opts).toEqual({ remote: 'origin', rebase: true })
+    expect(gitCalls.pull[0]!.opts).toEqual({ remote: 'origin', branch: 'main', rebase: true })
     expect(connections.get('proj_pl')!.lastPullAt).not.toBeNull()
   })
 
