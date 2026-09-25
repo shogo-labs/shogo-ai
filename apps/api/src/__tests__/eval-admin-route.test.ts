@@ -156,6 +156,19 @@ const prismaMock = {
       return { count: before - results.length }
     },
   },
+  // A single admin-managed DB model — Hoshi's backing model (MiMo v2.5).
+  // `id` is an opaque row id (a real DB row's primary key is a UUID, never
+  // a human-typed string) while `apiModel` is the human-recognizable
+  // string (`mimo-v2.5`) callers actually pass as `model` — exercises the
+  // `isEnabledDbModel()` OR-lookup in eval-admin.ts (id *or* apiModel).
+  modelDefinition: {
+    findFirst: async ({ where }: any) => {
+      const row = { id: 'model-def-mimo-uuid', apiModel: 'mimo-v2.5', enabled: true }
+      const matchesId = where?.OR?.some((cond: any) => cond.id === row.id)
+      const matchesApiModel = where?.OR?.some((cond: any) => cond.apiModel === row.apiModel)
+      return matchesId || matchesApiModel ? { enabled: row.enabled } : null
+    },
+  },
 }
 
 mock.module('../lib/prisma', () => ({ prisma: prismaMock }))
@@ -348,6 +361,30 @@ describe('POST /runs/trigger', () => {
   test('400 invalid model', async () => {
     const res = await trigger({ track: 'agentic', model: 'NOPE' })
     expect(res.status).toBe(400)
+  })
+
+  test('accepts a DB-defined model referenced by its apiModel (not just the row id)', async () => {
+    // `mimo-v2.5` matches `modelDefinition.apiModel`, not `id` — the old
+    // `findUnique({ where: { id: model } })` lookup rejected this.
+    const res = await trigger({ track: 'agentic', model: 'mimo-v2.5' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).data.model).toBe('mimo-v2.5')
+  })
+
+  test('defaults to Hoshi (mimo-v2.5) for the reliability-regression release-gate track when model is omitted', async () => {
+    const res = await trigger({ track: 'reliability-regression' })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.model).toBe('mimo-v2.5')
+    const args = spawnSpy.mock.calls[0][1]
+    expect(args).toContain('--model')
+    expect(args[args.indexOf('--model') + 1]).toBe('mimo-v2.5')
+  })
+
+  test('other tracks keep the existing sonnet default when model is omitted', async () => {
+    const res = await trigger({ track: 'agentic' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).data.model).toBe('sonnet')
   })
 
   test('spawns local process when not in K8s', async () => {
@@ -568,6 +605,20 @@ describe('evalInternalRoutes()', () => {
   test('POST /runs/register 400 invalid model', async () => {
     const res = await authedReq('/runs/register', { track: 'agentic', model: 'NOPE' })
     expect(res.status).toBe(400)
+  })
+
+  test('POST /runs/register accepts a DB-defined model referenced by its apiModel', async () => {
+    const res = await authedReq('/runs/register', { track: 'agentic', model: 'mimo-v2.5' })
+    expect(res.status).toBe(200)
+    const stored = runs.get((await res.json()).data.id)
+    expect(stored.model).toBe('mimo-v2.5')
+  })
+
+  test('POST /runs/register defaults to Hoshi (mimo-v2.5) for the reliability-regression track when model is omitted', async () => {
+    const res = await authedReq('/runs/register', { track: 'reliability-regression' })
+    expect(res.status).toBe(200)
+    const stored = runs.get((await res.json()).data.id)
+    expect(stored.model).toBe('mimo-v2.5')
   })
 
   test('POST /runs/register creates a running EvalRun with the reported commitSha and returns its id', async () => {

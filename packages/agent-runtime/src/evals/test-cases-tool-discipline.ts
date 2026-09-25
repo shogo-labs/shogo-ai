@@ -98,9 +98,31 @@ function readBeforeEachEdit(r: EvalResult): boolean {
   return true
 }
 
-/** True if no edit_file call errored (covers "not read yet" + "old_string not found"). */
-function noEditErrors(r: EvalResult): boolean {
-  return !editFileCalls(r).some(t => t.error === true)
+/**
+ * Cause bucket for a single failed `edit_file` call, classified from its
+ * error output. Lumping every edit_file failure into one "errored" bit hid
+ * which specific production failure signature was actually recurring — see
+ * the module doc: stale/hallucinated
+ * `old_string` content (5,289/7d), ambiguous non-unique matches, and
+ * read-before-edit violations (1,050/7d) are three different product
+ * problems with three different fixes, so they're scored as separate
+ * criteria below instead of one combined pass/fail.
+ */
+export type EditFailureCause = 'stale_old_string' | 'duplicate_match' | 'read_before_edit' | 'other'
+
+/** Returns `null` for a call that didn't error at all. */
+export function classifyEditFailureCause(t: ToolCallRecord): EditFailureCause | null {
+  if (t.error !== true) return null
+  const out = JSON.stringify(t.output ?? '').toLowerCase()
+  if (out.includes('has not been read') || out.includes('modified since last read')) return 'read_before_edit'
+  if (/old_string found \d+ times/.test(out)) return 'duplicate_match'
+  if (out.includes('old_string not found')) return 'stale_old_string'
+  return 'other'
+}
+
+/** True if no edit_file call in the run failed with the given cause. */
+function noEditFailuresOfCause(r: EvalResult, cause: EditFailureCause): boolean {
+  return !editFileCalls(r).some(t => classifyEditFailureCause(t) === cause)
 }
 
 /** True if the agent edited a file whose path includes `substring`. */
@@ -413,11 +435,25 @@ const EDIT_DISCIPLINE_EVALS: AgentEval[] = [
         validate: (r) => readBeforeEachEdit(r),
       },
       {
-        id: 'no-edit-errors',
-        description: 'No edit_file call errored (no "not read yet" / "old_string not found")',
-        points: 4,
+        id: 'made-an-edit',
+        description: 'Agent called edit_file at least once',
+        points: 1,
         phase: 'execution',
-        validate: (r) => noEditErrors(r) && editFileCalls(r).length > 0,
+        validate: (r) => editFileCalls(r).length > 0,
+      },
+      {
+        id: 'no-stale-old-string-error',
+        description: 'No edit_file call failed with "old_string not found" (hallucinated/stale content)',
+        points: 2,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'stale_old_string'),
+      },
+      {
+        id: 'no-duplicate-match-error',
+        description: 'No edit_file call failed because old_string matched more than once',
+        points: 1,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'duplicate_match'),
       },
       {
         id: 'edited-correct-file',
@@ -453,11 +489,25 @@ const EDIT_DISCIPLINE_EVALS: AgentEval[] = [
         validate: (r) => readBeforeEachEdit(r),
       },
       {
-        id: 'edit-succeeded',
-        description: 'edit_file was called and did not error (old_string matched real content)',
-        points: 6,
+        id: 'edited-numbers-file',
+        description: 'Agent used edit_file on numbers.ts',
+        points: 2,
         phase: 'execution',
-        validate: (r) => editedPath(r, 'numbers.ts') && noEditErrors(r),
+        validate: (r) => editedPath(r, 'numbers.ts'),
+      },
+      {
+        id: 'no-stale-old-string-error',
+        description: 'No edit_file call failed with "old_string not found" (old_string matched real content)',
+        points: 3,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'stale_old_string'),
+      },
+      {
+        id: 'no-duplicate-match-error',
+        description: 'No edit_file call failed because old_string matched more than once',
+        points: 1,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'duplicate_match'),
       },
       {
         id: 'used-edit-not-write',
@@ -494,11 +544,25 @@ const EDIT_DISCIPLINE_EVALS: AgentEval[] = [
         validate: (r) => readBeforeEachEdit(r),
       },
       {
-        id: 'no-edit-errors',
-        description: 'No edit_file call errored across either file',
-        points: 4,
+        id: 'made-two-edits',
+        description: 'Agent made at least two edit_file calls (one per file)',
+        points: 1,
         phase: 'execution',
-        validate: (r) => noEditErrors(r) && editFileCalls(r).length >= 2,
+        validate: (r) => editFileCalls(r).length >= 2,
+      },
+      {
+        id: 'no-stale-old-string-error',
+        description: 'No edit_file call across either file failed with "old_string not found"',
+        points: 2,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'stale_old_string'),
+      },
+      {
+        id: 'no-duplicate-match-error',
+        description: 'No edit_file call failed because old_string matched more than once',
+        points: 1,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'duplicate_match'),
       },
       {
         id: 'edited-both-files',
@@ -525,13 +589,7 @@ const EDIT_DISCIPLINE_EVALS: AgentEval[] = [
 
 /** True if no edit_file output contains the read-before-edit rejection. */
 function noReadBeforeEditError(r: EvalResult): boolean {
-  return !editFileCalls(r).some(t => {
-    if (t.error === true) {
-      const out = JSON.stringify(t.output ?? '').toLowerCase()
-      return out.includes('has not been read')
-    }
-    return false
-  })
+  return noEditFailuresOfCause(r, 'read_before_edit')
 }
 
 const EDIT_AUTOREAD_EVALS: AgentEval[] = [
@@ -571,11 +629,18 @@ const EDIT_AUTOREAD_EVALS: AgentEval[] = [
         validate: (r) => noReadBeforeEditError(r),
       },
       {
-        id: 'no-edit-errors',
-        description: 'No edit_file call errored',
-        points: 3,
+        id: 'no-stale-old-string-error',
+        description: 'No edit_file call failed with "old_string not found"',
+        points: 2,
         phase: 'execution',
-        validate: (r) => noEditErrors(r) && editFileCalls(r).length > 0,
+        validate: (r) => noEditFailuresOfCause(r, 'stale_old_string'),
+      },
+      {
+        id: 'no-duplicate-match-error',
+        description: 'No edit_file call failed because old_string matched more than once',
+        points: 1,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'duplicate_match'),
       },
     ],
     antiPatterns: [
@@ -611,11 +676,18 @@ const EDIT_AUTOREAD_EVALS: AgentEval[] = [
         validate: (r) => noReadBeforeEditError(r),
       },
       {
-        id: 'no-edit-errors',
-        description: 'No edit_file call errored',
-        points: 4,
+        id: 'no-stale-old-string-error',
+        description: 'No edit_file call failed with "old_string not found"',
+        points: 3,
         phase: 'execution',
-        validate: (r) => noEditErrors(r) && editFileCalls(r).length > 0,
+        validate: (r) => noEditFailuresOfCause(r, 'stale_old_string'),
+      },
+      {
+        id: 'no-duplicate-match-error',
+        description: 'No edit_file call failed because old_string matched more than once',
+        points: 1,
+        phase: 'execution',
+        validate: (r) => noEditFailuresOfCause(r, 'duplicate_match'),
       },
     ],
     antiPatterns: [

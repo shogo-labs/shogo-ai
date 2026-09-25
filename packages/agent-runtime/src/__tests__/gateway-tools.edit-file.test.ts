@@ -7,7 +7,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
-import { createTools, type ToolContext } from '../gateway-tools'
+import { createTools, type ToolContext, bigramDiceSimilarity, findClosestMatch } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
 import { FileStateCache } from '../file-state-cache'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
@@ -120,6 +120,37 @@ describe('createEditFileTool', () => {
     expect(typeof r.details.hint).toBe('string')
   })
 
+  test('old_string not found falls back to the bigram-similarity "closest match" hint when no line contains the literal substring', async () => {
+    // Neither line literally contains "totalPriceCentss" (typo'd trailing
+    // s), so the old exact-substring nearby-lines search finds nothing —
+    // this exercises the findClosestMatch() fallback specifically.
+    writeFileSync(
+      join(TEST_DIR, 'closest.ts'),
+      'export function computeTotal(items) {\n  return items.reduce((s, i) => s + i.totalPriceCents, 0)\n}\n',
+    )
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    await seedRead(ctx, 'closest.ts')
+    const r = await run(ctx, 'edit_file', {
+      path: 'closest.ts',
+      old_string: '  return items.reduce((s, i) => s + i.totalPriceCentss, 0)',
+      new_string: '  return 0',
+    })
+    expect(r.details.error).toContain('not found')
+    expect(r.details.hint).toContain('closest content')
+    expect(r.details.hint).toContain('% similar')
+    expect(r.details.hint).toContain('totalPriceCents')
+  })
+
+  test('old_string not found reports "No similar content found" when nothing is even remotely close', async () => {
+    writeFileSync(join(TEST_DIR, 'unrelated.txt'), 'zzz qqq xxx\n')
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    await seedRead(ctx, 'unrelated.txt')
+    const r = await run(ctx, 'edit_file', {
+      path: 'unrelated.txt', old_string: 'completely different content here', new_string: 'whatever',
+    })
+    expect(r.details.hint).toBe('No similar content found. Try reading the file first to get the exact text.')
+  })
+
   test('edit without prior read_file auto-seeds the read record and applies', async () => {
     // Read-before-edit is no longer a hard error: edit_file seeds the cache
     // from disk and proceeds, because the exact-string match is itself the
@@ -218,5 +249,62 @@ describe('createEditFileTool', () => {
     } else {
       expect(r.details.error).toBeDefined()
     }
+  })
+})
+
+describe('bigramDiceSimilarity + findClosestMatch (edit_file "closest match" hint)', () => {
+  test('identical strings score 1', () => {
+    expect(bigramDiceSimilarity('hello world', 'hello world')).toBe(1)
+  })
+
+  test('completely disjoint strings score 0', () => {
+    expect(bigramDiceSimilarity('aaaa', 'zzzz')).toBe(0)
+  })
+
+  test('a single-character typo scores high but not 1', () => {
+    const score = bigramDiceSimilarity('const totalPriceCents = 0', 'const totalPriceCentss = 0')
+    expect(score).toBeGreaterThan(0.9)
+    expect(score).toBeLessThan(1)
+  })
+
+  test('distinct strings shorter than 2 chars never match (no bigrams to compare)', () => {
+    expect(bigramDiceSimilarity('a', 'b')).toBe(0)
+    expect(bigramDiceSimilarity('', 'ab')).toBe(0)
+  })
+
+  test('identical single-character strings still score 1 (short-circuits before the bigram check)', () => {
+    expect(bigramDiceSimilarity('a', 'a')).toBe(1)
+  })
+
+  test('findClosestMatch picks the most similar same-line-count window', () => {
+    const content = [
+      'function unrelated() {}',
+      'const totalPriceCents = computeTotal(items)',
+      'function alsoUnrelated() {}',
+    ].join('\n')
+    const closest = findClosestMatch(content, 'const totalPriceCentss = computeTotal(items)')
+    expect(closest).not.toBeNull()
+    expect(closest!.text).toBe('const totalPriceCents = computeTotal(items)')
+    expect(closest!.startLine).toBe(2)
+    expect(closest!.endLine).toBe(2)
+    expect(closest!.similarity).toBeGreaterThan(0.9)
+  })
+
+  test('findClosestMatch matches a multi-line window', () => {
+    const content = 'if (a) {\n  doThing(a, b)\n}\n'
+    const needle = 'if (a) {\n  doThingg(a, b)\n}'
+    const closest = findClosestMatch(content, needle)
+    expect(closest).not.toBeNull()
+    expect(closest!.startLine).toBe(1)
+    expect(closest!.endLine).toBe(3)
+  })
+
+  test('findClosestMatch returns null below the similarity floor', () => {
+    const content = 'export const FOO = 1\nexport const BAR = 2\n'
+    expect(findClosestMatch(content, 'totally unrelated text with nothing in common')).toBeNull()
+  })
+
+  test('findClosestMatch returns null when content has fewer lines than needle', () => {
+    expect(findClosestMatch('one line', 'line one\nline two\nline three')).toBeNull()
   })
 })
