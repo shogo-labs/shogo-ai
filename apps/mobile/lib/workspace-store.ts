@@ -4,8 +4,12 @@ import { Platform } from 'react-native'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 const STORAGE_KEY = 'shogo:active-workspace-id'
+const KIND_STORAGE_KEY = 'shogo:active-workspace-kind'
+
+export type CachedWorkspaceKind = 'personal' | 'team'
 
 let nativeActiveWorkspaceId: string | null = null
+let nativeActiveWorkspaceKind: { id: string; kind: CachedWorkspaceKind } | null = null
 const listeners = new Set<() => void>()
 
 export function subscribeActiveWorkspaceId(listener: () => void): () => void {
@@ -55,9 +59,70 @@ export function setActiveWorkspaceId(id: string): void {
  * against the same stale-id class of bug.
  */
 export function clearActiveWorkspaceId(): void {
-  if (getActiveWorkspaceId() == null) return
+  const hadId = getActiveWorkspaceId() != null
+  const hadKind = readCachedWorkspaceKind() != null
+  if (!hadId && !hadKind) return
   persistActiveWorkspaceId(null)
+  persistCachedWorkspaceKind(null)
   queueMicrotask(emitActiveWorkspaceId)
+}
+
+function readCachedWorkspaceKind(): { id: string; kind: CachedWorkspaceKind } | null {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    return nativeActiveWorkspaceKind
+  }
+  const raw = safeGetItem(KIND_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; kind?: unknown }
+    if (
+      typeof parsed.id === 'string' &&
+      (parsed.kind === 'personal' || parsed.kind === 'team')
+    ) {
+      return { id: parsed.id, kind: parsed.kind }
+    }
+  } catch {
+    // Ignore a corrupt cache and treat the kind as unknown.
+  }
+  return null
+}
+
+function persistCachedWorkspaceKind(
+  record: { id: string; kind: CachedWorkspaceKind } | null,
+): void {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+    nativeActiveWorkspaceKind = record
+    return
+  }
+  if (record == null) safeRemoveItem(KIND_STORAGE_KEY)
+  else safeSetItem(KIND_STORAGE_KEY, JSON.stringify(record))
+}
+
+/**
+ * Last known `kind` for `workspaceId`, or null when this id has never been
+ * resolved on this device. Read synchronously so the first paint can use it.
+ * On web that is localStorage; on native it is the in-memory value kept next
+ * to the active workspace id.
+ */
+export function getCachedWorkspaceKind(
+  workspaceId: string | null | undefined,
+): CachedWorkspaceKind | null {
+  if (!workspaceId) return null
+  const cached = readCachedWorkspaceKind()
+  return cached?.id === workspaceId ? cached.kind : null
+}
+
+/**
+ * Remember `kind` for `workspaceId` without notifying subscribers.
+ * Safe to call while rendering: the value is only needed on the next load.
+ */
+export function rememberWorkspaceKind(
+  workspaceId: string,
+  kind: CachedWorkspaceKind,
+): void {
+  const cached = readCachedWorkspaceKind()
+  if (cached?.id === workspaceId && cached.kind === kind) return
+  persistCachedWorkspaceKind({ id: workspaceId, kind })
 }
 
 /**

@@ -446,7 +446,21 @@ export function MobileBottomNav() {
               borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
             }}
           />
-          {items.map(({ id, label, Icon, onPress }) => {
+          {!experience.resolved && !projectMode
+            ? Array.from({ length: 4 }, (_, index) => (
+                <View
+                  key={index}
+                  className="flex-1 items-center justify-center"
+                  style={{
+                    height:
+                      NATIVE_PHONE_COMPOSER_PILL_HEIGHT -
+                      NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2,
+                  }}
+                >
+                  <View className="h-6 w-6 rounded-full bg-muted" />
+                </View>
+              ))
+            : items.map(({ id, label, Icon, onPress }) => {
             const selected = active === id;
             return (
               <Pressable

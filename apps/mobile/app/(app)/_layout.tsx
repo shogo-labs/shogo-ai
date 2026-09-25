@@ -37,8 +37,7 @@ import {
 import { API_URL } from "../../lib/api";
 import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
-import { DomainProvider } from "../../contexts/domain";
-import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
+import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -66,13 +65,9 @@ function AppLayoutInner() {
   csMark("app:layout:render");
   const { isAuthenticated, isLoading, user, refreshSession } = useAuth();
   const { localMode } = usePlatformConfig();
-  // The compact workspace agent chrome is mobile-only. Wide web keeps the
-  // established AppSidebar while the personal workspace can still render its
-  // agent chat content with desktop presentation. `useWorkspaceExperience()`
-  // defaults to `'team'` until the active workspace has loaded, so narrow
-  // surfaces avoid flashing the new mobile chrome before their workspace is
-  // known.
-  const experience = useWorkspaceExperience();
+  // Workspaces load once here. Screens read the collection instead of
+  // calling loadAll on every visit, which was re-rendering conditional chrome.
+  const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
   const isIdeEmbed = useMemo(() => {
@@ -210,6 +205,13 @@ function AppLayoutInner() {
   useEffect(() => {
     if (!isLoading) csMark("app:layout:auth-resolved", { isAuthenticated });
   }, [isLoading, isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !workspaces) return;
+    workspaces.loadAll().catch((error: unknown) => {
+      console.error("[AppLayout] Failed to load workspaces:", error);
+    });
+  }, [isAuthenticated, workspaces]);
 
   useEffect(() => {
     if (!isAuthenticated || !user) return;
