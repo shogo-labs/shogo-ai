@@ -47,4 +47,12 @@ describe('bare-root routes resolve the anchor-aware PreviewManager', () => {
     const body = source.slice(start, source.indexOf('\n}', start))
     expect(body).toContain('getAnchorProjectId()')
   })
+
+  test('gateway build-complete wiring uses the anchor-aware manager', () => {
+    const start = source.indexOf('async function startGateway(')
+    const end = source.indexOf('\nfunction', start + 1)
+    const body = source.slice(start, end < 0 ? undefined : end)
+    expect(body).toContain('agentGateway.attachApiServer(getRootPreviewManager())')
+    expect(body).not.toContain('agentGateway.attachApiServer(getPreviewManager())')
+  })
 })
