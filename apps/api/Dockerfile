@@ -31,6 +31,10 @@ FROM node:25-slim
 
 WORKDIR /app
 
+# Keep the system binary directories explicit because the API invokes git
+# through child_process during repository connections and sync operations.
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 # Runtime deps for the entrypoint and healthcheck:
 #   curl  -> healthcheck
 #   bash  -> shell scripts
@@ -45,6 +49,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl bash git unzip ca-certificates netcat-openbsd && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
+    command -v git && git --version && \
     rm -rf /root/.bun /var/lib/apt/lists/*
 
 RUN groupadd -g 1001 appgroup && useradd -u 1001 -g appgroup -m -s /bin/bash appuser
