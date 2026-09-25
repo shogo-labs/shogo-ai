@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, it } from 'bun:test'
+import { join } from 'path'
 import {
   isWorkspaceRuntimeMode,
   workspaceKind,
@@ -331,7 +332,7 @@ describe('defaultShellCwd', () => {
 
   it('starts a merged-root shell in the anchor project mount', () => {
     const env = anchorEnv([{ mount: 'anchor', path: '/ws/anchor', projectId: 'anchor', kind: 'managed' }])
-    expect(defaultShellCwd(root, env, everything)).toBe(`${root}/anchor`)
+    expect(defaultShellCwd(root, env, everything)).toBe(join(root, 'anchor'))
   })
 
   it('uses the anchor mount, not an extra folder linked to the anchor', () => {
@@ -339,7 +340,7 @@ describe('defaultShellCwd', () => {
       { mount: 'repo', path: '/home/me/repo', projectId: 'anchor', kind: 'folder' },
       { mount: 'anchor', path: '/home/me/app', projectId: 'anchor', kind: 'external' },
     ])
-    expect(defaultShellCwd(root, env, everything)).toBe(`${root}/anchor`)
+    expect(defaultShellCwd(root, env, everything)).toBe(join(root, 'anchor'))
   })
 
   it('falls back to the workspace root when the anchor mount is missing on disk', () => {
