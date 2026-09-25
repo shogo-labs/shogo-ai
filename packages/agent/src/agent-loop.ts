@@ -42,6 +42,7 @@ import {
   type InferenceRetryInfo,
 } from './inference-retry'
 import { waitForConnectivity, type ConnectivityWaitInfo } from './connectivity'
+import { isContextOverflowError } from './context-overflow-error'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
@@ -861,16 +862,4 @@ function parseProviderError(raw: string): string {
     } catch {}
   }
   return raw
-}
-
-function isContextOverflowError(err: any): boolean {
-  if (!err) return false
-  const status = err.status ?? err.statusCode ?? err.code
-  if (status === 413) return true
-  const msg = String(err.message || err).toLowerCase()
-  return (
-    msg.includes('context') && (msg.includes('overflow') || msg.includes('too long') || msg.includes('exceed'))
-  ) || msg.includes('prompt is too long')
-    || msg.includes('maximum context length')
-    || msg.includes('request too large')
 }
