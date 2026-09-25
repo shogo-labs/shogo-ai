@@ -637,6 +637,10 @@ describe('verifyWebhookSignature', () => {
     const bad = 'sha256=' + 'f'.repeat(64)
     expect(svc.verifyWebhookSignature(payload, bad)).toBe(false)
   })
+
+  it('returns false for a malformed signature without throwing', () => {
+    expect(svc.verifyWebhookSignature('{"a":1}', 'sha256=short')).toBe(false)
+  })
 })
 
 describe('handleInstallationWebhook', () => {

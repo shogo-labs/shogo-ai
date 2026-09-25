@@ -59,7 +59,12 @@ function publicPrefixGate() {
 
 function githubWebhookStub(): Hono {
   const r = new Hono()
-  r.post('/github/webhook', (c) => c.json({ ok: true }))
+  r.post('/github/webhook', (c) => {
+    if (!c.req.header('x-hub-signature-256')) {
+      return c.json({ error: 'Invalid signature' }, 401)
+    }
+    return c.json({ ok: true })
+  })
   r.get('/github/status', (c) => c.json({ ok: true, configured: true }))
   return r
 }
@@ -78,12 +83,28 @@ describe('/api/github/webhook bypasses session/API-key auth (signature-verified 
     const res = await app.fetch(
       new Request('http://x/api/github/webhook', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-github-event': 'ping' },
+        headers: {
+          'content-type': 'application/json',
+          'x-github-event': 'ping',
+          'x-hub-signature-256': 'sha256=valid',
+        },
         body: '{}',
       }),
     )
     expect(res.status).not.toBe(401)
     expect(res.status).toBe(200)
+  })
+
+  test('POST /api/github/webhook rejects a missing signature', async () => {
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/github/webhook', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'ping' },
+        body: '{}',
+      }),
+    )
+    expect(res.status).toBe(401)
   })
 
   test('a sibling /api/github/* route (e.g. status) is still session/API-key-gated', async () => {
