@@ -14,6 +14,8 @@ const chatSessions = new Map<string, any>()
 let projectSeq = 1
 let folderSeq = 1
 let workspaceFindFirstResult: any = { id: 'workspace-1' }
+// When seeded, `workspace.findFirst` filters these by id / kind / membership.
+const workspaceRows = new Map<string, { id: string; kind: 'personal' | 'team'; ownerId: string; memberIds: string[] }>()
 let transactionShouldThrow = false
 
 function makeTx() {
@@ -63,6 +65,13 @@ function makeTx() {
       updateMany: mock(async ({ where, data }: any) => {
         let count = 0
         for (const session of chatSessions.values()) {
+          if (typeof where?.contextId === 'string') {
+            if (session.contextId !== where.contextId) continue
+            if (where.contextType && session.contextType !== where.contextType) continue
+            Object.assign(session, data)
+            count++
+            continue
+          }
           if (!where?.contextId?.in?.includes(session.contextId)) continue
           session.contextId = data.contextId
           count++
@@ -79,7 +88,16 @@ const prisma = {
     return fn(makeTx())
   }),
   workspace: {
-    findFirst: mock(async () => workspaceFindFirstResult),
+    findFirst: mock(async ({ where }: any = {}) => {
+      if (workspaceRows.size === 0) return workspaceFindFirstResult
+      const some = where?.members?.some
+      return [...workspaceRows.values()].find((row) =>
+        (!where?.id || row.id === where.id) &&
+        (!where?.kind || row.kind === where.kind) &&
+        (!some?.userId || row.memberIds.includes(some.userId)) &&
+        (!some?.role || (some.role === 'owner' && row.ownerId === some.userId)),
+      ) ?? null
+    }),
   },
   project: {
     findUnique: mock(async ({ where }: any) => {
@@ -138,6 +156,7 @@ beforeEach(async () => {
   projectSeq = 1
   folderSeq = 1
   workspaceFindFirstResult = { id: 'workspace-1' }
+  workspaceRows.clear()
   transactionShouldThrow = false
   // Sandbox safety: route handlers call os.homedir() to validate paths
   // are under $HOME. The container's $HOME is /app which is read-only,
@@ -660,5 +679,85 @@ describe('localProjectsRoutes folder management', () => {
       body: JSON.stringify({ trusted: 'yes' }),
     })).status).toBe(400)
     expect((await appWithoutAuth().request('http://api.test/recent')).status).toBe(401)
+  })
+})
+
+describe('folder projects never land in a personal workspace', () => {
+  beforeEach(() => {
+    workspaceRows.set('ws-personal', { id: 'ws-personal', kind: 'personal', ownerId: 'user-1', memberIds: ['user-1'] })
+    workspaceRows.set('ws-team', { id: 'ws-team', kind: 'team', ownerId: 'user-1', memberIds: ['user-1'] })
+    workspaceRows.set('ws-shared', { id: 'ws-shared', kind: 'team', ownerId: 'user-2', memberIds: ['user-1', 'user-2'] })
+  })
+
+  function open(body: Record<string, unknown>) {
+    return appWithAuth().request('http://api.test/from-folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paths: [rootDir], acceptedGitRoot: false, ...body }),
+    })
+  }
+
+  test('a folder opened from the personal workspace is created in the owned team workspace', async () => {
+    const res = await open({ workspaceId: 'ws-personal' })
+    expect(res.status).toBe(201)
+    const body = await json(res)
+    expect(body.project.workspaceId).toBe('ws-team')
+    expect(body.redirectedFromWorkspaceId).toBe('ws-personal')
+  })
+
+  test('without a requested workspace the team workspace is the default', async () => {
+    const body = await json(await open({}))
+    expect(body.project.workspaceId).toBe('ws-team')
+    expect(body.redirectedFromWorkspaceId).toBeUndefined()
+  })
+
+  test('an explicitly requested team workspace is honored', async () => {
+    const body = await json(await open({ workspaceId: 'ws-shared' }))
+    expect(body.project.workspaceId).toBe('ws-shared')
+    expect(body.redirectedFromWorkspaceId).toBeUndefined()
+  })
+
+  test('no team workspace keeps the no-workspace error', async () => {
+    workspaceRows.delete('ws-team')
+    workspaceRows.delete('ws-shared')
+    const res = await open({ workspaceId: 'ws-personal' })
+    expect(res.status).toBe(400)
+    expect((await json(res)).error).toBe('no_workspace_for_user')
+  })
+
+  test('reopening a folder project stuck in the personal workspace moves it and its workspace chats', async () => {
+    projects.set('project-old', {
+      id: 'project-old',
+      workspaceId: 'ws-personal',
+      workingMode: 'external',
+      settings: JSON.stringify({ workingMode: 'external' }),
+    })
+    folders.set('folder-old', { id: 'folder-old', projectId: 'project-old', path: rootDir, isPrimary: true, lastOpenedAt: null })
+    chatSessions.set('chat-ws', { id: 'chat-ws', contextType: 'workspace', contextId: 'project-old', workspaceId: 'ws-personal' })
+    chatSessions.set('chat-other', { id: 'chat-other', contextType: 'workspace', contextId: 'someone-else', workspaceId: 'ws-personal' })
+
+    const res = await open({ workspaceId: 'ws-personal' })
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.rebound).toBe(true)
+    expect(body.project.id).toBe('project-old')
+    expect(body.project.workspaceId).toBe('ws-team')
+    expect(body.redirectedFromWorkspaceId).toBe('ws-personal')
+    expect(chatSessions.get('chat-ws').workspaceId).toBe('ws-team')
+    expect(chatSessions.get('chat-other').workspaceId).toBe('ws-personal')
+  })
+
+  test('reopening a folder project already in a team workspace leaves it there', async () => {
+    projects.set('project-team', {
+      id: 'project-team',
+      workspaceId: 'ws-shared',
+      workingMode: 'external',
+      settings: JSON.stringify({ workingMode: 'external' }),
+    })
+    folders.set('folder-team', { id: 'folder-team', projectId: 'project-team', path: rootDir, isPrimary: true, lastOpenedAt: null })
+
+    const body = await json(await open({ workspaceId: 'ws-personal' }))
+    expect(body.project.workspaceId).toBe('ws-shared')
+    expect(body.redirectedFromWorkspaceId).toBeUndefined()
   })
 })

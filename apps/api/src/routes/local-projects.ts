@@ -705,6 +705,17 @@ export function localProjectsRoutes(): Hono {
       // Drop any auto-seeded tech stack so the agent doesn't try to
       // overlay a template into the user's real working tree.
       delete (mergedSettings as any).techStackId
+      // Folders opened before personal workspaces redirected here are stuck
+      // on the shell-less personal profile; move them (and their workspace
+      // chats) to the team workspace.
+      const currentWorkspace = await prisma.workspace.findFirst({
+        where: { id: existingProject.workspaceId },
+        select: { kind: true },
+      })
+      const moveTo = currentWorkspace?.kind === 'personal'
+        ? (await resolveFolderProjectWorkspace(userId, existingProject.workspaceId))?.workspaceId ?? null
+        : null
+      const movedToWorkspaceId = moveTo && moveTo !== existingProject.workspaceId ? moveTo : null
       await prisma.$transaction(async (tx) => {
         if (folderIdentity && folderIdentity.projectId === existingProject.id) {
           await tx.projectFolder.update({
@@ -729,8 +740,17 @@ export function localProjectsRoutes(): Hono {
         }
         await tx.project.update({
           where: { id: existingProject.id },
-          data: { settings: jsonField(mergedSettings) },
+          data: {
+            settings: jsonField(mergedSettings),
+            ...(movedToWorkspaceId && { workspaceId: movedToWorkspaceId }),
+          },
         })
+        if (movedToWorkspaceId && (tx as any).chatSession?.updateMany) {
+          await (tx as any).chatSession.updateMany({
+            where: { contextType: 'workspace', contextId: existingProject.id },
+            data: { workspaceId: movedToWorkspaceId },
+          })
+        }
       })
       const reloaded = await prisma.project.findUnique({
         where: { id: existingProject.id },
@@ -739,32 +759,28 @@ export function localProjectsRoutes(): Hono {
       if (!readProjectJson(finalPrimary) || readProjectJson(finalPrimary)?.projectId !== existingProject.id) {
         writeProjectJson(finalPrimary, existingProject.id)
       }
-      prewarmRuntimeBackground(existingProject.id, 'rebind')
-      return c.json({ project: reloaded, rebound: true })
+      if (movedToWorkspaceId) {
+        // WORKSPACE_ID is baked into the running runtime's env.
+        restartAnchorRuntimeBackground(existingProject.id, 'moved-to-team-workspace')
+      } else {
+        prewarmRuntimeBackground(existingProject.id, 'rebind')
+      }
+      return c.json({
+        project: reloaded,
+        rebound: true,
+        ...(movedToWorkspaceId && { redirectedFromWorkspaceId: existingProject.workspaceId }),
+      })
     }
 
-    // Workspace resolution: caller-supplied (multi-workspace UI) or the
-    // current user's personal workspace when one exists. A local user may
-    // legitimately have only a team workspace, so do not silently treat the
-    // first membership as personal.
-    let workspaceId = body.workspaceId
-    if (!workspaceId) {
-      const personal = await prisma.workspace.findFirst({
-        where: {
-          kind: 'personal',
-          members: { some: { userId } },
-        },
-        orderBy: { createdAt: 'asc' },
-      })
-      const fallback = personal ?? await prisma.workspace.findFirst({
-        where: { members: { some: { userId } } },
-        orderBy: { createdAt: 'asc' },
-      })
-      if (!fallback) {
-        return c.json({ error: 'no_workspace_for_user' }, 400)
-      }
-      workspaceId = fallback.id
+    // Folder-linked projects are code projects: the agent needs a shell. A
+    // personal workspace runs the personal capability profile (no shell or
+    // builder tools), so a folder picked there lands in the user's team
+    // workspace; `redirectedFromWorkspaceId` tells the UI to switch.
+    const target = await resolveFolderProjectWorkspace(userId, body.workspaceId)
+    if (!target) {
+      return c.json({ error: 'no_workspace_for_user' }, 400)
     }
+    const workspaceId = target.workspaceId
 
     const name = (body.name && body.name.trim()) || folderDisplayName(finalPrimary)
     const orphanProjectIds = folderIdentity && !existingProject
@@ -780,7 +796,7 @@ export function localProjectsRoutes(): Hono {
         const created = await tx.project.create({
           data: {
             name,
-            workspaceId: workspaceId!,
+            workspaceId,
             createdBy: userId,
             workingMode: 'external',
             runtimeEnabled: false,
@@ -868,7 +884,14 @@ export function localProjectsRoutes(): Hono {
       include: { projectFolders: true },
     })
     prewarmRuntimeBackground(project.id, 'new-project')
-    return c.json({ project: reloaded, rebound: false }, 201)
+    return c.json(
+      {
+        project: reloaded,
+        rebound: false,
+        ...(target.redirectedFromWorkspaceId && { redirectedFromWorkspaceId: target.redirectedFromWorkspaceId }),
+      },
+      201,
+    )
   })
 
   /**
@@ -1269,6 +1292,39 @@ function mapAttachmentError(c: any, err: unknown): Response {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/**
+ * Workspace a folder-linked project belongs in: the requested one unless it
+ * is a personal workspace, otherwise the user's team workspace (preferring
+ * one they own). Null when the user has no team workspace at all.
+ */
+async function resolveFolderProjectWorkspace(
+  userId: string,
+  requestedWorkspaceId: string | undefined,
+): Promise<{ workspaceId: string; redirectedFromWorkspaceId?: string } | null> {
+  if (requestedWorkspaceId) {
+    const requested = await prisma.workspace.findFirst({
+      where: { id: requestedWorkspaceId },
+      select: { id: true, kind: true },
+    })
+    if (requested && requested.kind !== 'personal') return { workspaceId: requested.id }
+  }
+  const team =
+    (await prisma.workspace.findFirst({
+      where: { kind: 'team', members: { some: { userId, role: 'owner' } } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    })) ??
+    (await prisma.workspace.findFirst({
+      where: { kind: 'team', members: { some: { userId } } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    }))
+  if (!team) return null
+  return requestedWorkspaceId && requestedWorkspaceId !== team.id
+    ? { workspaceId: team.id, redirectedFromWorkspaceId: requestedWorkspaceId }
+    : { workspaceId: team.id }
+}
 
 function folderDisplayName(p: string): string {
   const base = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
