@@ -453,6 +453,10 @@ async function refreshRemoteToken(
   repoOwner: string,
   repoName: string
 ): Promise<void> {
+  // A stateless API pod may not have the project workspace directory yet.
+  // Initialize it before changing the remote so child_process does not fail
+  // with ENOENT when git receives a missing cwd.
+  await gitService.initRepo(workspacePath);
   const token = await getInstallationToken(installationId);
   const remoteUrl = `https://x-access-token:${token}@github.com/${repoOwner}/${repoName}.git`;
   await gitService.addRemote(workspacePath, 'origin', remoteUrl);

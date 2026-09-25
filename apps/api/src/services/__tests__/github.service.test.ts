@@ -606,6 +606,7 @@ describe('pullFromGitHub', () => {
     fetchHandler = async () => TOKEN_RESPONSE()
     const res = await svc.pullFromGitHub('proj_pl', '/ws')
     expect(res).toEqual({ success: true, pushed: false, pulled: true, commits: 0 })
+    expect(gitCalls.initRepo).toEqual(['/ws'])
     expect(gitCalls.fetch).toEqual(['/ws'])
     expect(gitCalls.pull[0]!.opts).toEqual({ remote: 'origin', branch: 'main', rebase: true })
     expect(connections.get('proj_pl')!.lastPullAt).not.toBeNull()
