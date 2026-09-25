@@ -24,7 +24,16 @@ SOURCE=""
 
 if [[ "$REF" == refs/tags/v[0-9]* ]]; then
   VERSION="${REF#refs/tags/v}"
-  SOURCE="unified tag"
+  if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)- ]]; then
+    # Apple requires CFBundleShortVersionString to be numeric X.Y.Z.
+    # Desktop beta tags carry a prerelease suffix, but TestFlight uses the
+    # base marketing version and the unique CI build number to distinguish
+    # each beta build.
+    VERSION="${BASH_REMATCH[1]}"
+    SOURCE="unified beta tag base version"
+  else
+    SOURCE="unified tag"
+  fi
 elif [[ "$REF" == refs/tags/android-v* ]]; then
   VERSION="${REF#refs/tags/android-v}"
   SOURCE="android-v tag"
