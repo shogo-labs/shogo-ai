@@ -7,6 +7,7 @@ import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
+import { resolveDesktopPath } from './login-shell-path'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -307,12 +308,11 @@ export async function startLocalServer(): Promise<void> {
     os.cpus().length,
   )
   const bunDir = path.dirname(bunPath)
-  const pathSep = isWindows ? ';' : ':'
-  const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+  const desktopPath = await resolveDesktopPath({ bunDir, inheritedPath: process.env.PATH })
   const { app } = require('electron') as typeof import('electron')
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
-    PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
+    PATH: desktopPath,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
     SHOGO_HOST_TIER: hostTier,
