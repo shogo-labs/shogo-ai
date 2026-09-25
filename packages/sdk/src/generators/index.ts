@@ -32,6 +32,7 @@ export {
 export {
   generateRoutes,
   generateRoutesIndex,
+  generateRoutesDocs,
   generateModelRoutes,
   generateModelHooks,
   type GeneratedRouteFile,

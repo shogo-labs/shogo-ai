@@ -19,6 +19,7 @@ import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { getStreamFinishReason } from './stream-finish'
+import { pipelineCallRegistry } from './pipeline-call-registry'
 import {
   existsSync,
   readFileSync,
@@ -3625,12 +3626,18 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 
   if (body.wait === false) {
-    agentGateway.processPipelineCall(opts).then(
-      (r: { reply: string; sessionId: string; runId?: string }) =>
-        console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
-      (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
+    const sessionId = opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline')
+    const call = pipelineCallRegistry.start(
+      () => agentGateway.processPipelineCall(opts),
+      { runId: opts.runId, sessionId },
     )
-    return c.json({ status: 'accepted', runId: opts.runId, sessionId: opts.sessionId ?? (opts.runId ? `run:${opts.runId}` : 'pipeline') }, 202)
+    return c.json({
+      status: 'accepted',
+      callId: call.callId,
+      runId: call.runId,
+      sessionId: call.sessionId,
+      startedAt: call.startedAt,
+    }, 202)
   }
 
   try {
@@ -3639,6 +3646,14 @@ app.post('/agent/pipeline/call', async (c) => {
   } catch (err: any) {
     return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
   }
+})
+
+app.get('/agent/pipeline/call/:callId', async (c) => {
+  const callId = c.req.param('callId')
+  const waitMs = Number(c.req.query('waitMs') ?? 0)
+  const result = await pipelineCallRegistry.get(callId, Number.isFinite(waitMs) ? waitMs : 0)
+  if (!result) return c.json({ error: { code: 'not_found', message: 'Pipeline call not found or expired' } }, 404)
+  return c.json(result)
 })
 
 app.post('/agent/hooks/agent', async (c) => {

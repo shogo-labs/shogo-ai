@@ -9,7 +9,10 @@
  * when the runtime happens to be running inside Kubernetes.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { isSandboxRequested } from '../sandbox-exec'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { isSandboxRequested, loadWorkspaceEnv } from '../sandbox-exec'
 
 describe('isSandboxRequested', () => {
   const saved = {
@@ -62,5 +65,20 @@ describe('isSandboxRequested', () => {
 
     delete process.env.KUBERNETES_SERVICE_HOST
     expect(isSandboxRequested()).toBe(false)
+  })
+
+  test('.env.local overlays .env for exec commands', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'shogo-env-'))
+    try {
+      writeFileSync(join(workspace, '.env'), 'SHARED=base\nONLY_BASE=1\n')
+      writeFileSync(join(workspace, '.env.local'), 'SHARED=local\nONLY_LOCAL=2\n')
+      expect(loadWorkspaceEnv(workspace)).toEqual({
+        SHARED: 'local',
+        ONLY_BASE: '1',
+        ONLY_LOCAL: '2',
+      })
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
   })
 })

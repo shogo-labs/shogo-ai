@@ -278,7 +278,8 @@ export function projectScopedDatabaseUrl(
 /**
  * Build the environment for an agent-spawned shell command. Starts from the
  * sanitized parent env (which already excludes every inherited DB URL),
- * overlays the workspace `.env`, then pins a single project-scoped
+ * overlays the workspace `.env` and optional `.env.local` (local values win),
+ * then pins a single project-scoped
  * `DATABASE_URL`. This is the only place an agent shell gets a database URL.
  */
 export function buildExecEnv(
@@ -304,27 +305,29 @@ export function buildExecEnv(
  * to CLI tools even though the redaction patterns would normally strip them.
  */
 export function loadWorkspaceEnv(workspaceDir: string): Record<string, string> {
-  const envPath = join(workspaceDir, '.env')
-  if (!existsSync(envPath)) return {}
-  try {
-    const content = readFileSync(envPath, 'utf-8')
-    const vars: Record<string, string> = {}
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx < 0) continue
-      const key = trimmed.slice(0, eqIdx).trim()
-      let val = trimmed.slice(eqIdx + 1).trim()
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1)
+  const vars: Record<string, string> = {}
+  for (const envName of ['.env', '.env.local']) {
+    const envPath = join(workspaceDir, envName)
+    if (!existsSync(envPath)) continue
+    try {
+      const content = readFileSync(envPath, 'utf-8')
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('#')) continue
+        const eqIdx = trimmed.indexOf('=')
+        if (eqIdx < 0) continue
+        const key = trimmed.slice(0, eqIdx).trim()
+        let val = trimmed.slice(eqIdx + 1).trim()
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1)
+        }
+        if (key) vars[key] = val
       }
-      if (key) vars[key] = val
+    } catch {
+      // A missing/unreadable optional env file should not prevent exec.
     }
-    return vars
-  } catch {
-    return {}
   }
+  return vars
 }
 
 // Probe `docker` once per process. The previous heuristic

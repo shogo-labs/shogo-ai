@@ -93,6 +93,18 @@ describe('createWriteFileTool', () => {
     expect(readFileSync(join(TEST_DIR, 'fresh.txt'), 'utf8')).toBe('only')
   })
 
+  test('warns when overwriting an env file drops existing keys', async () => {
+    writeFileSync(join(TEST_DIR, '.env.local'), 'KEEP_ME=1\nDROP_ME=2\n')
+    const ctx = makeCtx()
+    const r = await run(ctx, 'write_file', {
+      path: '.env.local',
+      content: 'KEEP_ME=updated\nNEW_KEY=3\n',
+    })
+    expect(r.details.ok).toBe(true)
+    expect(r.details.warning).toContain('DROP_ME')
+    expect(r.details.removedKeys).toEqual(['DROP_ME'])
+  })
+
   test('protected path (src/main.tsx) is rejected', async () => {
     // PROTECTED_WORKSPACE_FILES = ['src/main.tsx', 'src/ShogoErrorBoundary.tsx']
     mkdirSync(join(TEST_DIR, 'src'), { recursive: true })

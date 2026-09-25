@@ -65,6 +65,8 @@ export type ToolMockSpec =
   | {
       type: 'static'
       response: any | MultipartMockResponse
+      /** Optional deterministic responses consumed in order per tool call. */
+      sequence?: any[]
       description?: string
       paramKeys?: string[]
       hidden?: boolean
@@ -79,6 +81,8 @@ export type ToolMockSpec =
         delayMs?: number
       }>
       default?: any | MultipartMockResponse
+      /** Optional deterministic responses consumed before pattern matching. */
+      sequence?: any[]
       description?: string
       paramKeys?: string[]
       hidden?: boolean

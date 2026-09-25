@@ -10,9 +10,12 @@
 
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
+import { existsSync, readdirSync, statSync } from 'fs'
+import { join } from 'path'
 import {
   runSubagent,
   getBuiltinSubagentConfig,
+  loadCustomAgents,
   type SubagentConfig,
   type SubagentResult,
   type SubagentStreamCallbacks,
@@ -184,6 +187,7 @@ export class AgentManager {
   private maxConcurrentInstances: number
   private maxTotalSpawns: number
   private maxSystemPromptLength: number
+  private diskSignatures = new Map<string, string>()
 
   constructor(options?: {
     maxAgentTypes?: number
@@ -272,6 +276,51 @@ export class AgentManager {
 
   getConfig(name: string): SubagentConfig | null {
     return this.registry.get(name)?.config ?? null
+  }
+
+  /**
+   * Refresh custom agent definitions written after gateway startup.
+   *
+   * system_apply can materialize `.shogo/agents/*.md` while a runtime is
+   * already serving requests. Checking the inexpensive directory/file
+   * signature at the orchestration boundaries keeps those definitions usable
+   * without requiring a runtime restart.
+   */
+  syncFromDisk(workspaceDir: string): void {
+    const agentsDir = join(workspaceDir, '.shogo', 'agents')
+    if (!existsSync(agentsDir)) return
+
+    let signature: string
+    try {
+      signature = readdirSync(agentsDir)
+        .filter(name => name.endsWith('.md'))
+        .sort()
+        .map(name => {
+          const path = join(agentsDir, name)
+          const stat = statSync(path)
+          return `${name}:${stat.mtimeMs}:${stat.size}`
+        })
+        .join('|')
+    } catch {
+      return
+    }
+    if (this.diskSignatures.get(workspaceDir) === signature) return
+    this.diskSignatures.set(workspaceDir, signature)
+
+    for (const def of loadCustomAgents(workspaceDir)) {
+      const result = this.register({
+        name: def.name,
+        description: def.description,
+        systemPrompt: def.systemPrompt,
+        toolNames: def.tools,
+        disallowedTools: def.disallowedTools,
+        model: def.model,
+        maxTurns: def.maxTurns,
+      }, false)
+      if (!result.ok) {
+        console.warn(`[AgentManager] Failed to sync custom agent "${def.name}": ${result.error}`)
+      }
+    }
   }
 
   listTypes(ctx?: ToolContext, allTools?: AgentTool[]): AgentTypeInfo[] {

@@ -139,8 +139,8 @@ already discussed or read. The sub-agent sees everything you see.
   This is cheaper and faster.
 
 ### Lifecycle Management
-- Use \`agent_spawn\` with \`background: true\` for long-running tasks.
-- Use \`agent_result\` to wait for completion — it blocks up to 2 minutes by default and returns recent activity if still running.
+- Use \`agent_spawn\` with \`background: true\` whenever you need the sub-agent's response; then use \`agent_result\` with the returned \`instance_id\` to retrieve it. Synchronous spawn returns metadata only in some execution contexts.
+- Use \`agent_result\` to wait for completion — it blocks up to 2 minutes by default and returns recent activity if still running. A \`running\` response or client timeout is not a failure and does not cancel the sub-agent; call \`agent_result\` again with the same \`instance_id\`.
 - Use \`agent_status\` for quick non-blocking status checks. Cancel stuck agents with \`agent_cancel\`.
 - Use \`agent_list\` to see all registered types and their performance metrics.
 
@@ -152,6 +152,8 @@ produces poor results, use \`agent_create\` (same name) to update its system pro
 - Sub-agents cannot create other sub-agents (no infinite nesting).
 - Fork sub-agents cannot spawn further sub-agents.
 - Always use \`readonly: true\` when the agent only needs to read.
+- Never bypass a delegated agent and perform its work inline merely because a poll timed out. Only treat it as failed when \`agent_status\` or \`agent_result\` explicitly reports \`failed\` or \`cancelled\`.
+- When relaying a sub-agent's result, preserve the returned values and label any inference instead of inventing a tool transcript.
 - Prefer \`fast\` model_tier for search and exploration tasks.
 - Set \`persist: true\` for agents you want to keep across sessions.
 - Cancel agents that appear stuck (check with \`agent_status\`).

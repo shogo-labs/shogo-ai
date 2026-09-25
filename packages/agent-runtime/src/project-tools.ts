@@ -26,6 +26,7 @@ import { textResult } from './gateway-tools'
 import {
   attachProject as apiAttachProject,
   callProjectAgent as apiCallProjectAgent,
+  getProjectAgentCall as apiGetProjectAgentCall,
   configureProject as apiConfigureProject,
   createProject as apiCreateProject,
   detachProject as apiDetachProject,
@@ -358,7 +359,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
     description: [
       'Send a message to another project\'s agent and (by default) wait for its reply. This is how one module of a multi-project system invokes the next: intake calls analyst, planner calls implementer, and so on.',
       'Always pass the same `runId` for every hop of one piece of work; a new one is minted and returned when omitted. The callee runs in its own session `run:<runId>` and every cost metric it emits is stamped with that runId, so the run can be traced across projects.',
-      'Use `wait: false` for long jobs and let the callee report back via project_call to you, or poll its outputs.',
+      'Long calls are started asynchronously and tracked by a callId. A timeout or running status does not cancel the callee; use project_call_result with the same callId until it completes. Never bypass the callee and do its work inline because a poll timed out.',
     ].join(' '),
     parameters: Type.Object({
       project: Type.String({ description: 'Target project id, exact name, or manifest key.' }),
@@ -375,11 +376,12 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'project_call targets another project; use agent_spawn to delegate within this one.', code: 'self_call' })
       }
       const runId = p.runId?.trim() || newRunId()
+      const timeoutMs = Math.min(Math.max(p.timeoutMs ?? 5 * 60_000, 10_000), 20 * 60_000)
       const res = await apiCallProjectAgent(target.id, {
         message: p.message,
         runId,
-        wait: p.wait !== false,
-        timeoutMs: p.timeoutMs,
+        wait: false,
+        timeoutMs,
         callerProjectId: ctx.projectId,
       })
       if (!res.ok || !res.data) {
@@ -393,7 +395,19 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
             : undefined,
         })
       }
-      const reply = res.data.reply ?? null
+      let result = res.data
+      const startedAt = Date.now()
+      while (p.wait !== false && result.status === 'accepted' && result.callId && Date.now() - startedAt < timeoutMs) {
+        const remaining = timeoutMs - (Date.now() - startedAt)
+        const next = await apiGetProjectAgentCall(target.id, result.callId, Math.min(25_000, remaining))
+        if (!next.ok || !next.data) break
+        result = next.data
+        if (result.status !== 'running') break
+      }
+      const reply = result.reply ?? null
+      const outputStatus = p.wait !== false && result.status === 'accepted'
+        ? 'running'
+        : result.status
       const urls = reply
         ? [...reply.matchAll(/https?:\/\/[^\s<>"')\]]+/g)]
             .map((match) => match[0].replace(/[.,;!?]+$/, ''))
@@ -403,9 +417,13 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         ok: true,
         project: { id: target.id, name: target.name },
         runId,
-        status: res.data.status,
-        sessionId: res.data.sessionId,
+        status: outputStatus,
+        callId: result.callId,
+        sessionId: result.sessionId,
         reply,
+        ...(outputStatus === 'running'
+          ? { hint: 'The callee is still working. Call project_call_result with the same callId; a timeout does not cancel it.' }
+          : {}),
         ...(urls.length > 0
           ? {
               deliverables: urls.map((href) => ({
@@ -416,6 +434,33 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
               })),
             }
           : {}),
+      })
+    },
+  }
+}
+
+export function createProjectCallResultTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'project_call_result',
+    label: 'Get Project Call Result',
+    description: 'Retrieve an accepted project_call result by callId. A running result is not failure or cancellation; call again with the same callId.',
+    parameters: Type.Object({
+      project: Type.String({ description: 'Target project id, exact name, or manifest key.' }),
+      callId: Type.String({ description: 'The callId returned by project_call.' }),
+      timeout_ms: Type.Optional(Type.Number({ description: 'Milliseconds to wait for a state change, maximum 25000.', default: 25000 })),
+    }),
+    execute: async (_id, params) => {
+      const p = params as { project: string; callId: string; timeout_ms?: number }
+      const target = await resolveProjectRef(ctx, p.project)
+      if ('error' in target) return textResult(target)
+      const res = await apiGetProjectAgentCall(target.id, p.callId, p.timeout_ms ?? 25_000)
+      if (!res.ok || !res.data) {
+        return textResult({ error: res.error ?? 'Call result unavailable', code: res.code, status: res.status, callId: p.callId })
+      }
+      return textResult({
+        ok: true,
+        project: { id: target.id, name: target.name },
+        ...res.data,
       })
     },
   }
@@ -432,6 +477,7 @@ interface ApplyReport {
   plan: string[]
   applied: string[]
   skipped: string[]
+  warnings: string[]
   errors: string[]
   manual: string[]
   bindings: Record<string, string>
@@ -445,7 +491,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
     description: [
       'Reconcile a `shogo-system.yaml` manifest against the workspace: create missing projects, attach them as declared, set heartbeat/model, and write each project\'s prompt files (AGENTS.md, HEARTBEAT.md, .shogo/agents/*.md).',
       'Idempotent: a second run reports an empty diff. Bindings from manifest key to project id are recorded in .shogo/system.lock.json so renames do not create duplicates.',
-      'Run with `dryRun: true` first and show the plan to the user before applying. Channels and integrations are listed under `manual` because they need credentials.',
+      'Custom agents written by this tool are loaded on the target runtime\'s next agent_list or agent_spawn call; no separate agent_create call is required. Run with `dryRun: true` first and show the plan to the user before applying. Channels and integrations are listed under `manual` because they need credentials.',
     ].join(' '),
     parameters: Type.Object({
       manifestPath: Type.Optional(Type.String({ description: `Path relative to the project root (default "${DEFAULT_MANIFEST_PATH}").` })),
@@ -499,6 +545,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         plan: summarizeDiff(diff),
         applied: [],
         skipped: [],
+        warnings: [],
         errors: [],
         manual: diff.manual,
         bindings: {},
@@ -587,16 +634,39 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         else report.applied.push(`configure ${op.key}`)
       }
 
-      // 4. Files. Only projects reachable on disk; the rest are reported so
-      //    the agent can re-run system_apply after the runtime remounts.
+      // 4. Files. Newly-created sibling directories may take a moment to
+      // appear in a merged-root mount. Retry briefly, then create the local
+      // sibling directory when this runtime owns the merged-root parent.
       for (const spec of manifest.projects) {
         const id = idOf(spec.key)
         if (!id) continue
         const entries = Object.entries(spec.files)
         if (entries.length === 0) continue
-        const dir = resolveProjectDir(ctx, id)
+        for (const [rel, content] of entries) {
+          if (rel.startsWith('.shogo/agents/') && rel.endsWith('.md') && !/^---\s*[\r\n]/.test(content)) {
+            report.warnings.push(`files ${spec.key}/${rel}: missing agent frontmatter; filename fallback will be used on the next agent_list or agent_spawn`)
+          }
+        }
+        let dir = resolveProjectDir(ctx, id)
+        for (let attempt = 0; attempt < 5 && !dir; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+          dir = resolveProjectDir(ctx, id)
+        }
+        if (!dir && existsSync(dirname(ctx.workspaceDir))) {
+          try {
+            mkdirSync(join(dirname(ctx.workspaceDir), id), { recursive: true })
+            dir = resolveProjectDir(ctx, id)
+          } catch {
+            // Leave the actionable skip below intact.
+          }
+        }
         if (!dir) {
-          report.skipped.push(`files ${spec.key}: project not reachable on disk yet (${entries.length} file(s)); re-run system_apply after the runtime remounts`)
+          const tried = [
+            join(ctx.workspaceDir, id),
+            join(dirname(ctx.workspaceDir), id),
+            join(process.env.WORKSPACE_DIR || process.env.AGENT_DIR || '/app/workspace', id),
+          ]
+          report.skipped.push(`files ${spec.key}: project directory is not mounted in this runtime; tried ${tried.join(', ')}`)
           continue
         }
         for (const [rel, content] of entries) {
@@ -639,13 +709,14 @@ export const PROJECT_TOOL_NAMES = [
   'project_detach',
   'project_configure',
   'project_call',
+  'project_call_result',
   'system_apply',
 ] as const
 
 /** Read-only tools need no permission gate; the rest are `system` category. */
 export function createProjectTools(ctx: ToolContext): { readonly: AgentTool[]; mutating: AgentTool[] } {
   return {
-    readonly: [createProjectListTool(ctx)],
+    readonly: [createProjectListTool(ctx), createProjectCallResultTool(ctx)],
     mutating: [
       createProjectCreateTool(ctx),
       createProjectAttachTool(ctx),

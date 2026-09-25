@@ -127,8 +127,12 @@ export function compileInstallBody(
       const stat = s as Extract<ToolMockSpec, { type: 'static' }>
       const resp = stat.response
       const specDelay = typeof stat.delayMs === 'number' ? stat.delayMs : undefined
+      let sequenceIndex = 0
       fns[toolName] = async (params: Record<string, any>) => {
         await sleep(pickDelayMs(toolName, params, undefined, specDelay))
+        if (stat.sequence && sequenceIndex < stat.sequence.length) {
+          return stat.sequence[sequenceIndex++]
+        }
         return resp
       }
     } else if ((s as any).type === 'pattern') {
@@ -137,8 +141,13 @@ export function compileInstallBody(
       const defaultResp = pat.default ?? { ok: true }
       const specDelay = typeof pat.delayMs === 'number' ? pat.delayMs : undefined
       const defaultDelay = typeof pat.defaultDelayMs === 'number' ? pat.defaultDelayMs : undefined
+      let sequenceIndex = 0
       fns[toolName] = async (params: Record<string, any>) => {
         const paramsStr = JSON.stringify(params).toLowerCase()
+        if (pat.sequence && sequenceIndex < pat.sequence.length) {
+          await sleep(pickDelayMs(toolName, params, undefined, specDelay))
+          return pat.sequence[sequenceIndex++]
+        }
         for (const p of patterns) {
           const allMatch = Object.values(p.match).every(
             (substr: any) => paramsStr.includes(String(substr).toLowerCase())

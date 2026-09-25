@@ -182,6 +182,7 @@ describe('agent_spawn fork mode (type omitted)', () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       agentId: 'agent-no-writer',
+      responseText: 'fork response without a writer',
       effectiveModelId: undefined,
     }
     const ctx = makeCtx({
@@ -192,6 +193,7 @@ describe('agent_spawn fork mode (type omitted)', () => {
     const r = await exec(ctx, 'agent_spawn', { prompt: 'small task' })
     expect(r.mode).toBe('fork')
     expect(r.tokens.input).toBe(0)
+    expect(r.response).toBe('fork response without a writer')
   })
 
   test('fork with invalid model_tier (ignored) still works', async () => {
@@ -267,6 +269,7 @@ describe('agent_spawn normal mode (type specified)', () => {
         cacheReadTokens: 50,
         cacheWriteTokens: 25,
         agentId: 'sync-agent-id',
+        responseText: 'sync response without a writer',
         effectiveModelId: 'claude-sonnet-4-5',
       },
     })
@@ -279,6 +282,7 @@ describe('agent_spawn normal mode (type specified)', () => {
     expect(r.instance_id).toBe('sync-inst')
     expect(r.agent_id).toBe('sync-agent-id')
     expect(r.status).toBe('completed')
+    expect(r.response).toBe('sync response without a writer')
     expect(r.toolCalls).toBe(7)
     expect(r.tokens.input).toBe(500)
     const usage = w.events.find(e => e.type === 'data-usage')

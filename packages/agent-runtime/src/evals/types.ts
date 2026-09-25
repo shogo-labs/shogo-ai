@@ -44,6 +44,7 @@ export type EvalCategory =
   | 'nonprofit'
   | 'event-planner'
   | 'subagent-coordination'
+  | 'orchestration-resilience'
   | 'teammate-coordination'
   | 'plan'
   | 'workspace-attachments'

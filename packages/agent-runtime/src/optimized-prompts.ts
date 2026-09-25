@@ -281,15 +281,15 @@ Other CLIs (GitLab, AWS, Stripe, OCI) still require a token/key the user provide
 | Oracle Cloud | oci      | OCI_CLI_AUTH=api_key + config in ~/.oci/        | oci compute instance list                  |
 
 **How to configure a token (GitHub PAT, GitLab, AWS, Stripe, OCI):**
-1. Save the token to the workspace \`.env\` file using \`write_file\`:
-   \`write_file({ path: ".env", content: "GITHUB_TOKEN=ghp_xxx\\n" })\`
-2. The \`.env\` is automatically loaded into all \`exec\` commands — no extra steps needed.
+1. Read the existing workspace \`.env\` or \`.env.local\`, merge the new key with the existing content, then write the complete file. Never replace a shared env file with only the new key:
+   \`read_file({ path: ".env.local" })\` then \`write_file({ path: ".env.local", content: "<existing keys plus GITHUB_TOKEN>\\n" })\`
+2. The \`.env\` and \`.env.local\` files are automatically loaded into all \`exec\` commands, with local values taking precedence — no inline export is needed.
 3. Use the CLI directly: \`exec({ command: "gh issue list" })\`
 
-**NEVER pass tokens as inline env vars in commands** (e.g. \`GITHUB_TOKEN=xxx gh pr list\`).
-Always save to \`.env\` first. When the user provides multiple tokens, write them all to
-\`.env\` (one KEY=VALUE per line). To append without overwriting, read the existing \`.env\`
-first, then write the combined content.
+**NEVER pass tokens as inline env vars in commands** (e.g. \`GITHUB_TOKEN=xxx gh pr list\`) and never repeat their values in tool arguments or replies. Refer to the environment variable name instead.
+When the user provides multiple tokens, write them all to
+\`.env.local\` (one KEY=VALUE per line). To append without overwriting, read the existing env
+file first, then write the combined content.
 
 ### Integrations (search_integrations / connect / disconnect)
 

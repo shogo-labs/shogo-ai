@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'bun:test'
-import { generateModelRoutes, generateModelHooks, generateRoutes, generateRoutesIndex } from '../routes-generator'
+import { generateModelRoutes, generateModelHooks, generateRoutes, generateRoutesIndex, generateRoutesDocs } from '../routes-generator'
 import { generateAdminRoutes } from '../admin-routes-generator'
 import type { PrismaModel } from '../prisma-generator'
 
@@ -100,6 +100,12 @@ describe('Routes Generator', () => {
         const result = generateModelRoutes(mockProjectModel)
 
         expect(result!.code).toContain('const reservedParams = ["limit", "offset", "userId", "include", "orderBy"]')
+      })
+
+      it('should reject unknown list query parameters at runtime', () => {
+        const result = generateModelRoutes(mockProjectModel)
+        expect(result!.code).toContain('Unknown query parameter')
+        expect(result!.code).toContain('allowedQueryParams')
       })
 
       it('should build where clause from query params', () => {
@@ -515,6 +521,18 @@ describe('Routes Generator', () => {
         const code = generateRoutesIndex([mk('Dish')])
         expect(code).toContain('app.route("/dishes", createDishRoutes())')
       })
+    })
+  })
+
+  describe('generateRoutesDocs', () => {
+    it('documents exact paths and supported list parameters', () => {
+      const docs = generateRoutesDocs([mockProjectModel])
+      expect(docs).toContain('## Project')
+      expect(docs).toContain('Collection: `/api/projects`')
+      expect(docs).toContain('Item: `/api/projects/:id`')
+      expect(docs).toContain('`limit`')
+      expect(docs).toContain('`userId`')
+      expect(docs).toContain('`name`')
     })
   })
 

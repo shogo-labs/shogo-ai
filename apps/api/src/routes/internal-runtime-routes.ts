@@ -1271,5 +1271,32 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     })
     return c.json(outcome.body, outcome.status as any)
   })
+
+  /**
+   * GET /api/internal/projects/:projectId/agent-call/:callId
+   *
+   * Poll an asynchronously accepted cross-project agent call. `waitMs` is
+   * bounded by the service so callers can reconnect frequently without
+   * holding an edge request open for the entire agent turn.
+   */
+  app.get('/projects/:projectId/agent-call/:callId', async (c) => {
+    const projectId = c.req.param('projectId')
+    const callId = c.req.param('callId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+
+    const waitMsRaw = Number(c.req.query('waitMs') ?? 0)
+    const waitMs = Number.isFinite(waitMsRaw) ? waitMsRaw : 0
+    const agentCallSvc = await loadAgentCall?.()
+    if (!agentCallSvc) return unavailable(c, 'Cross-project agent calls')
+    const outcome = await agentCallSvc.getProjectAgentCall(
+      c,
+      projectId,
+      authz.workspaceId,
+      callId,
+      waitMs,
+    )
+    return c.json(outcome.body, outcome.status as any)
+  })
   return app
 }

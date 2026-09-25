@@ -25,6 +25,7 @@ const api = {
   getConfig: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   configure: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   call: { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } } as any,
+  callResult: { ok: true, status: 200, data: { status: 'completed', callId: 'call-1', reply: 'done', sessionId: 'run:abc' } } as any,
 }
 
 mock.module('../internal-api', () => ({
@@ -57,6 +58,10 @@ mock.module('../internal-api', () => ({
     calls.push({ fn: 'callProjectAgent', args: [targetId, req] })
     return api.call
   },
+  getProjectAgentCall: (targetId: string, callId: string, waitMs: number) => {
+    calls.push({ fn: 'getProjectAgentCall', args: [targetId, callId, waitMs] })
+    return api.callResult
+  },
 }))
 
 const {
@@ -66,6 +71,7 @@ const {
   createProjectDetachTool,
   createProjectConfigureTool,
   createProjectCallTool,
+  createProjectCallResultTool,
   createSystemApplyTool,
   resolveProjectDir,
 } = await import('../project-tools')
@@ -325,6 +331,23 @@ describe('project_call', () => {
     ])
   })
 
+  test('starts asynchronously and polls the accepted call when waiting', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = {
+      ok: true,
+      status: 202,
+      data: { status: 'accepted', callId: 'call-1', sessionId: 'run:abc' },
+    }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'wait for this' })
+    expect(out.status).toBe('completed')
+    expect(out.reply).toBe('done')
+    expect(calls.find(call => call.fn === 'callProjectAgent')?.args[1]).toMatchObject({ wait: false })
+    expect(calls.find(call => call.fn === 'getProjectAgentCall')?.args).toEqual(['proj-2', 'call-1', 25_000])
+  })
+
   test('adds a hint when the call times out', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
@@ -335,6 +358,21 @@ describe('project_call', () => {
     const out = await run(createProjectCallTool(ctx), { project: 'proj-2', message: 'hi' })
     expect(out.code).toBe('agent_call_timeout')
     expect(out.hint).toMatch(/wait=false/)
+  })
+
+  test('project_call_result retrieves an accepted call by callId', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    const out = await run(createProjectCallResultTool(baseCtx()), {
+      project: 'proj-2',
+      callId: 'call-1',
+      timeout_ms: 100,
+    })
+    expect(out.ok).toBe(true)
+    expect(out.status).toBe('completed')
+    expect(calls.find(call => call.fn === 'getProjectAgentCall')?.args).toEqual(['proj-2', 'call-1', 100])
   })
 })
 
@@ -402,13 +440,15 @@ describe('system_apply', () => {
     expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
   })
 
-  test('skips writing files for a project not yet reachable on disk, and reports it instead of erroring', async () => {
+  test('creates a missing merged-root sibling directory and writes its files', async () => {
     api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
     const ctx = baseCtx()
-    // Do not create the sibling dir for proj-intake — it "isn't mounted yet".
+    // Do not create the sibling dir for proj-intake — system_apply should
+    // materialize it in the merged-root parent.
     const out = await run(createSystemApplyTool(ctx), { manifest: MANIFEST_YAML })
     expect(out.ok).toBe(true)
-    expect(out.skipped.some((l: string) => l.includes('not reachable on disk'))).toBe(true)
+    expect(out.skipped).toHaveLength(0)
+    expect(existsSync(join(workspaceDir, '..', 'proj-intake'))).toBe(true)
   })
 
   test('collects per-op errors without throwing when create fails, and still reports ok:false', async () => {
