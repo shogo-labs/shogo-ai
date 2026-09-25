@@ -30,6 +30,14 @@
  *     static catalog when the DB has zero rows — see
  *     `resolveVisibleCatalogModels` in
  *     apps/api/src/services/visible-models.service.ts).
+ *   - GPT-5.6 Terra (`gpt-5.6-terra`) / GPT-5.6 Luna (`gpt-5.6-luna`) —
+ *     native OpenAI, `current` in the static catalog, same never-DB-seeded
+ *     situation as Astra above. Terra is `standard` tier, Luna `economy`,
+ *     128k output; per-token pricing matches
+ *     `MODEL_DOLLAR_COSTS['gpt-5.6-terra' | 'gpt-5.6-luna']`.
+ *     GPT-5.6 Sol (`gpt-5.6-sol`) is deliberately NOT seeded here — it's
+ *     `legacy` in the static catalog by design, so seeding it wouldn't
+ *     surface it in the default picker anyway, and it's not meant to ship.
  *   - Sonnet 4.6 (`claude-sonnet-4-6`) — explicit `legacy` row, mirroring
  *     the Opus 4.8 row below, so it's visible/manageable in the DB-backed
  *     admin model list rather than only existing implicitly via the
@@ -312,6 +320,62 @@ async function seedGptAstra(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-6 Astra (apiModel=gpt-6-astra)')
 }
 
+async function seedGptTerra(): Promise<void> {
+  const common = {
+    displayName: 'GPT-5.6 Terra',
+    shortDisplayName: 'Terra',
+    tier: 'standard',
+    family: 'gpt',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['gpt-5.6-terra', 'terra'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // OpenAI-published rates (see MODEL_DOLLAR_COSTS['gpt-5.6-terra']).
+    inputPerMillion: 2.5,
+    cachedInputPerMillion: 0.25,
+    cacheWritePerMillion: 3.125,
+    outputPerMillion: 15.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-5.6-terra' },
+    { providerId: null, sortOrder: 4, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted GPT-5.6 Terra (apiModel=gpt-5.6-terra)')
+}
+
+async function seedGptLuna(): Promise<void> {
+  const common = {
+    displayName: 'GPT-5.6 Luna',
+    shortDisplayName: 'Luna',
+    tier: 'economy',
+    family: 'gpt',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    aliases: ['gpt-5.6-luna', 'luna'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // OpenAI-published rates (see MODEL_DOLLAR_COSTS['gpt-5.6-luna']).
+    inputPerMillion: 1.0,
+    cachedInputPerMillion: 0.1,
+    cacheWritePerMillion: 1.25,
+    outputPerMillion: 6.0,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'openai', apiModel: 'gpt-5.6-luna' },
+    { providerId: null, sortOrder: 5, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted GPT-5.6 Luna (apiModel=gpt-5.6-luna)')
+}
+
 async function seedMimo(): Promise<void> {
   const apiKey = process.env.MIMO_API_KEY
   if (!apiKey) {
@@ -482,6 +546,8 @@ async function main(): Promise<void> {
   await seedDeepSeek()
   await seedGptLive1()
   await seedGptAstra()
+  await seedGptTerra()
+  await seedGptLuna()
   console.log('[seed-db-models] Done.')
 }
 
