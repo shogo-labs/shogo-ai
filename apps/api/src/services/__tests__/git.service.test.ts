@@ -83,6 +83,13 @@ describe('isGitRepo', () => {
 // ─── initRepo ────────────────────────────────────────────────────────────────
 
 describe('initRepo', () => {
+  it('creates a missing workspace directory before running git', async () => {
+    const missingWorkspace = join(tmpRoot, 'missing', 'nested', 'workspace')
+    const out = await svc.initRepo(missingWorkspace)
+    expect(out.created).toBe(true)
+    expect(existsSync(join(missingWorkspace, '.git'))).toBe(true)
+  })
+
   it('initializes a new repo, writes .gitignore, creates .shogo dir, makes initial commit', async () => {
     const out = await svc.initRepo(ws)
     expect(out.created).toBe(true)

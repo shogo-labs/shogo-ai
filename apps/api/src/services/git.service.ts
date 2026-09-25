@@ -534,6 +534,7 @@ export async function initRepo(
   options?: { defaultBranch?: string }
 ): Promise<{ created: boolean; branch: string }> {
   requireGit();
+  mkdirSync(workspacePath, { recursive: true });
   const defaultBranch = options?.defaultBranch || 'main';
 
   if (isGitRepo(workspacePath)) {
