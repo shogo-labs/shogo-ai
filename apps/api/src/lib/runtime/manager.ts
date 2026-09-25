@@ -34,6 +34,7 @@ import { cloneTree, defaultCloneMode, type CloneMode } from './clone-tree'
 import {
   WorkerRuntimeManager,
   type ProjectSpawnConfig,
+  type RuntimeGoneInfo,
 } from '@shogo-ai/worker/runtime-manager'
 import type {
   IRuntimeManager,
@@ -442,6 +443,11 @@ export class RuntimeManager implements IRuntimeManager {
       // LRU-evicts the least-recently-used non-streaming slot once this is
       // exceeded. Mirrors `this.config.maxRuntimes` (RUNTIME_MAX_COUNT).
       maxRuntimes: this.config.maxRuntimes,
+      // The worker idle/LRU-evicts and circuit-breaks on its own. Without
+      // this, `this.runtimes` kept a `running` entry pointing at the dead
+      // agent port and every proxy request hit ConnectionRefused until the
+      // app was restarted.
+      onRuntimeGone: (key, info) => this.handleAgentRuntimeGone(key, info),
     })
   }
 
@@ -1647,7 +1653,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     const existing = this.runtimes.get(key)
     if (existing && existing.status === 'running' && existing.agentPort) {
-      return this.toPublicRuntime(existing)
+      if (this.isAgentAlive(key, existing)) return this.toPublicRuntime(existing)
+      await this.dropStaleRuntime(key, 'stale-agent')
     }
 
     const inflight = this.startingPromises.get(key)
@@ -1738,6 +1745,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     )
 
     const existing = this.runtimes.get(key)
+    if (existing && existing.status === 'running' && existing.agentPort && !this.isAgentAlive(key, existing)) {
+      await this.dropStaleRuntime(key, 'stale-agent')
+    }
     if (existing && existing.status === 'running' && existing.agentPort) {
       // The merged root is built once at process start. A project (or linked
       // folder) attached AFTER the runtime came up would otherwise never get
@@ -3323,6 +3333,40 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         console.warn(`[RuntimeManager] LRU evict stop(${key}) failed: ${err?.message ?? err}`)
       }
     }
+  }
+
+  /**
+   * Whether the embedded worker still has a live agent-runtime on the port we
+   * cached. `starting`/`restarting` count as alive: the worker is bringing the
+   * same port back itself.
+   */
+  private isAgentAlive(key: string, runtime: InternalRuntime): boolean {
+    if (!this.agentManagedProjects.has(key)) return true
+    const st = this.agentManager.status(key)
+    if (!st || st.agentPort !== runtime.agentPort) return false
+    return st.status === 'running' || st.status === 'starting' || st.status === 'restarting'
+  }
+
+  private async dropStaleRuntime(key: string, reason: string): Promise<void> {
+    // The worker already tore the agent down (or parked it as `failed`);
+    // stopping it again would discard the circuit breaker's cooldown.
+    this.agentManagedProjects.delete(key)
+    await this.stop(key, reason)
+  }
+
+  private handleAgentRuntimeGone(key: string, info: RuntimeGoneInfo): void {
+    const runtime = this.runtimes.get(key)
+    if (!runtime || runtime.status === 'stopping' || runtime.status === 'stopped') return
+    if (!this.agentManagedProjects.has(key)) return
+    console.log(
+      `[RuntimeManager] agent-runtime for ${key} gone (reason=${info.reason}` +
+        (info.signal ? `, signal=${info.signal}` : '') +
+        (info.code != null ? `, code=${info.code}` : '') +
+        ') — dropping cached runtime',
+    )
+    void this.dropStaleRuntime(key, `worker-${info.reason}`).catch((err: any) =>
+      console.warn(`[RuntimeManager] dropStaleRuntime(${key}) failed: ${err?.message ?? err}`),
+    )
   }
 
   async stop(projectId: string, reason: string = 'external'): Promise<void> {
