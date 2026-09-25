@@ -205,6 +205,7 @@ import {
   type ChatContextValue,
   type ChatMessage,
 } from "./ChatContext";
+import { resolveChatFilePath } from "./file-links";
 import { useIdeBridge } from "./ideBridge";
 
 import { TurnList } from "./turns";
@@ -536,6 +537,11 @@ export interface ChatPanelProps {
   onBuildPlanConsumed?: (nonce: number) => void;
   /** Opens the saved plan artifact in the Plans panel. */
   onOpenPlan?: (filepath?: string | null) => void;
+  /**
+   * Opens a file in the project that owns it. When omitted, ChatPanel
+   * navigates to that project's IDE (or Files, on native) tab.
+   */
+  onOpenFile?: (projectId: string, relPath: string) => void;
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string;
   onModelChange?: (modelId: string) => void;
@@ -947,6 +953,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   buildPlanRequest,
   onBuildPlanConsumed,
   onOpenPlan,
+  onOpenFile,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
@@ -6456,6 +6463,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
     jumpToLatest();
   }, [jumpToLatest, questionPresentation]);
 
+  const openFile = useCallback(
+    (path: string) => {
+      const resolved = resolveChatFilePath(path, projectId ?? focusedProjectId ?? null);
+      if (!resolved?.projectId || !resolved.relPath) return;
+      if (onOpenFile) {
+        onOpenFile(resolved.projectId, resolved.relPath);
+        return;
+      }
+      router.push({
+        pathname: "/(app)/projects/[id]",
+        params: {
+          id: resolved.projectId,
+          tab: Platform.OS === "web" ? "ide" : "files",
+          file: resolved.relPath,
+          tabNonce: String(Date.now()),
+          ...(chatSessionId
+            ? { chatSessionId, chatScope }
+            : {}),
+        },
+      } as any);
+    },
+    [chatScope, chatSessionId, focusedProjectId, onOpenFile, projectId, router],
+  );
+
   const contextValue = useMemo<ChatContextValue>(
     () => ({
       currentSession: sessionSummary,
@@ -6473,6 +6504,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
+      openFile,
       generateSummary: handleGenerateSummary,
       selectedModel,
       isPro: hasAdvancedModelAccess,
@@ -6491,6 +6523,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
+      openFile,
       handleGenerateSummary,
       selectedModel,
       hasAdvancedModelAccess,

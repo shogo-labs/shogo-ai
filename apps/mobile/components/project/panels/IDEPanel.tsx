@@ -19,6 +19,8 @@ interface IDEPanelProps {
   isExternalProject?: boolean
   folderPath?: string | null
   primarySideBarPosition?: IdePrimarySideBarPosition
+  /** File to open once the Workbench's file tree is ready. `nonce` re-opens the same path. */
+  requestedFile?: { path: string; nonce: number } | null
 }
 
 /**
@@ -42,6 +44,7 @@ export function IDEPanel({
   isExternalProject,
   folderPath,
   primarySideBarPosition = 'left',
+  requestedFile = null,
 }: IDEPanelProps) {
   // SdkFs is always-on: it's the canonical backend for writes, search, and
   // SSE subscriptions even when the desktop IPC fast-path is available
@@ -132,6 +135,7 @@ export function IDEPanel({
           isExternalProject={isExternalProject}
           folderPath={folderPath}
           primarySideBarPosition={primarySideBarPosition}
+          requestedFile={requestedFile}
         />
       </div>
     </View>

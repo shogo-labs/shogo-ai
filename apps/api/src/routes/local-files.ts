@@ -116,6 +116,17 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
     return filePath.split('/').every((part) => !EXCLUDED_DIRS.has(part) || ALLOWED_DIRS.has(part))
   }
 
+  /**
+   * `c.req.path` is the full URL path, including the `/api` mount, so a
+   * prefix replace of `/projects/:id/files/` leaves a leading `/api`.
+   */
+  function fileSubPath(fullPath: string, projectId: string): string {
+    const marker = `/projects/${projectId}/files/`
+    const index = fullPath.indexOf(marker)
+    if (index < 0) return ''
+    return decodeURIComponent(fullPath.slice(index + marker.length))
+  }
+
   router.get('/projects/:projectId/files', async (c) => {
     try {
       const projectPath = await getProjectPath(c.req.param('projectId'))
@@ -150,7 +161,7 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   router.get('/projects/:projectId/files/*', async (c) => {
     try {
       const projectId = c.req.param('projectId')
-      const filePath = c.req.path.replace(`/projects/${projectId}/files/`, '')
+      const filePath = fileSubPath(c.req.path, projectId)
       if (!filePath || !validateFilePath(filePath)) {
         return c.json({ error: { code: 'invalid_path', message: 'Invalid file path' } }, 400)
       }
@@ -182,7 +193,7 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   router.put('/projects/:projectId/files/*', async (c) => {
     try {
       const projectId = c.req.param('projectId')
-      const filePath = c.req.path.replace(`/projects/${projectId}/files/`, '')
+      const filePath = fileSubPath(c.req.path, projectId)
       if (!filePath || !validateFilePath(filePath)) {
         return c.json({ error: { code: 'invalid_path', message: 'Invalid file path' } }, 400)
       }
@@ -223,7 +234,7 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   router.delete('/projects/:projectId/files/*', async (c) => {
     try {
       const projectId = c.req.param('projectId')
-      const filePath = c.req.path.replace(`/projects/${projectId}/files/`, '')
+      const filePath = fileSubPath(c.req.path, projectId)
       if (!filePath || !validateFilePath(filePath) || isSensitivePath(filePath)) {
         return c.json({ error: { code: 'invalid_path', message: 'Invalid file path' } }, 400)
       }
