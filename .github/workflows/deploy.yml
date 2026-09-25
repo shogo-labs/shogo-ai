@@ -78,7 +78,7 @@ jobs:
                 "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=20" |
               jq -r --arg sha "$SHA" '
                 [.workflow_runs[]
-                  | select(.head_sha == $sha and .event == "push")]
+                  | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))]
                 | sort_by(.run_number)
                 | last
                 | if . == null
