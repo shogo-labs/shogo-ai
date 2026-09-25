@@ -285,6 +285,8 @@ export function renderCurrentProjectSection(
     `The user has \`${anchor}/\`${name && name !== anchor ? ` (**${name}**)` : ''} open, and its canvas previews that folder.`,
     `When they mean "the app" or "this project", work in \`${anchor}/\`: a file like \`src/App.tsx\` is`,
     `\`${anchor}/src/App.tsx\`. The workspace root is not a project, so always include the project folder in paths.`,
+    `New work also goes inside \`${anchor}/\` (your shell starts there): clone repositories, scaffold, and download into it,`,
+    'never into the workspace root, or the files are missing from the project and its checkpoints.',
     '',
   ]
 }

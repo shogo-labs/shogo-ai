@@ -195,6 +195,9 @@ describe('renderWorkspaceManifestMarkdown', () => {
     expect(md).toContain('## Current project')
     expect(md).toContain('`p1/` (**alpha-api**) open')
     expect(md).toContain('`p1/src/App.tsx`')
+    // "clone this repo" is new work, not "this project"; it still belongs in the project folder.
+    expect(md).toContain('New work also goes inside `p1/`')
+    expect(md).toContain('clone repositories')
     expect(renderWorkspaceManifestMarkdown('ws-1', [{ id: 'p1', name: 'alpha-api' }])).not.toContain('## Current project')
   })
 })
