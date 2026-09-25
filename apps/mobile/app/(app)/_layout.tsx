@@ -37,8 +37,14 @@ import {
 import { API_URL } from "../../lib/api";
 import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
-import { DomainProvider } from "../../contexts/domain";
+import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
+import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
+import { getActiveWorkspaceId } from "../../lib/workspace-store";
+import {
+  homePathForWorkspaceKind,
+  subscribeWorkspaceSwitched,
+} from "../../lib/switch-workspace";
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -73,6 +79,8 @@ function AppLayoutInner() {
   // surfaces avoid flashing the new mobile chrome before their workspace is
   // known.
   const experience = useWorkspaceExperience();
+  const activeWorkspace = useActiveWorkspace();
+  const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
   const isIdeEmbed = useMemo(() => {
@@ -303,6 +311,24 @@ function AppLayoutInner() {
     if (useMobileWorkspaceShell) resetDrawer();
   }, [resetDrawer, useMobileWorkspaceShell]);
 
+  // After a workspace switch, leave the previous screen. Personal opens
+  // main chat; team opens the project builder. `openInWorkspace` navigates
+  // itself and does not emit this.
+  useEffect(() => {
+    return subscribeWorkspaceSwitched(() => {
+      const id = getActiveWorkspaceId();
+      const kind = (workspaces?.all ?? []).find(
+        (workspace: { id: string; kind?: string }) => workspace.id === id
+      )?.kind;
+      const href = homePathForWorkspaceKind(kind);
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.location.assign(href.replace(/\/\([^)]+\)/g, "") || "/");
+        return;
+      }
+      router.replace(href as any);
+    });
+  }, [router, workspaces]);
+
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
     const d = (window as any).shogoDesktop;
@@ -413,13 +439,15 @@ function AppLayoutInner() {
         ) : null
       }
       bottomNav={
-        !isWide && !isIdeEmbed && !isAIModelsPage ? <MobileBottomNav /> : null
+        !isWide && !isIdeEmbed && !isAIModelsPage ? (
+          <MobileBottomNav key={activeWorkspace?.id ?? "workspace-loading"} />
+        ) : null
       }
       drawer={drawer}
     >
       {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
       {useMobileWorkspaceShell ? (
-        <MobileWorkspaceShell>
+        <MobileWorkspaceShell key={activeWorkspace?.id ?? "workspace-loading"}>
           <Slot />
         </MobileWorkspaceShell>
       ) : (

@@ -187,8 +187,7 @@ export function PhaseEmptyState({
             onPress={() => onSuggestionClick?.(suggestion)}
             className={cn(
               "px-3 py-1.5 rounded-full",
-              "bg-gray-100/50 dark:bg-gray-800/50",
-              "border border-gray-200/50 dark:border-gray-700/50"
+              "bg-gray-100/50 dark:bg-gray-800/50"
             )}
           >
             <Text className="text-xs text-foreground">{suggestion}</Text>

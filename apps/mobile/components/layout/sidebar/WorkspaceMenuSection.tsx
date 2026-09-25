@@ -53,7 +53,7 @@ export interface WorkspaceMenuSectionProps {
  * structural `kind` instead — "Personal" vs "Team" — which is what
  * actually determines the sidebar/shell chrome (`useWorkspaceExperience`).
  */
-function workspaceKindBadge(ws: { kind?: string }): {
+export function workspaceKindBadge(ws: { kind?: string }): {
   highlighted: boolean;
   label: string;
 } {

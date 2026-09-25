@@ -202,6 +202,7 @@ mock.module("../../../lib/visible-models", () => ({
 mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
   ComposerModelPicker: () => null,
+  ModelPickerMenu: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
@@ -219,6 +220,9 @@ mock.module("@shogo-ai/sdk/agent", () => ({
 mock.module("../../../lib/agent-fetch", () => ({ agentFetch: fetch }))
 mock.module("../ChatContext", () => ({ useChatContextSafe: () => null }))
 mock.module("../EnvironmentPicker", () => ({ EnvironmentPicker: () => null }))
+mock.module("../../../hooks/useWorkspaceExperience", () => ({
+  useWorkspaceExperience: () => ({ kind: "team" }),
+}))
 
 const { ChatInput } = await import("../ChatInput")
 

@@ -34,7 +34,7 @@
  * reports height 0 so `ChatPanel` does not also pad the transcript.
  *
  * Horizontal padding matches `ChatInput`'s own outer padding (`px-3` web /
- * `px-2` native) so the dock's edges line up with the composer's visible
+ * `px-4` native, the phone gutter) so the dock's edges line up with the composer's visible
  * bordered box below it, rather than the wider positioning wrapper both
  * sit in.
  *
@@ -94,9 +94,9 @@ const styles = StyleSheet.create({
   scrollContent: { paddingTop: 2, paddingBottom: 2 },
 })
 
-// Matches ChatInput's own outer horizontal padding (`px-3` web / `px-2`
-// native) — see the file header comment.
-const HORIZONTAL_PADDING_CLASS = Platform.OS !== "web" ? "px-2" : "px-3"
+// Matches ChatInput's own outer horizontal padding (`px-3` web / `px-4`
+// native phone gutter) — see the file header comment.
+const HORIZONTAL_PADDING_CLASS = Platform.OS !== "web" ? "px-4" : "px-3"
 // `rounded-xl` matches ChatInput's own bordered box directly below, so the
 // dock reads as the same card language stacked on top of the composer.
 const ZONE_CARD_CLASS = "overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-md"

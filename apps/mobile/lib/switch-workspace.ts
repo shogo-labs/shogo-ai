@@ -20,6 +20,26 @@ export type WorkspaceProjectCollection = {
 
 let pending: ReturnType<typeof setTimeout> | null = null
 
+type WorkspaceSwitchedListener = () => void
+const workspaceSwitchedListeners = new Set<WorkspaceSwitchedListener>()
+
+/** Personal opens the companion chat. Team opens the project builder. */
+export function homePathForWorkspaceKind(
+  kind: string | null | undefined,
+): '/(app)' | '/(app)/new-project' {
+  return kind === 'personal' ? '/(app)' : '/(app)/new-project'
+}
+
+/** Shells subscribe so a workspace switch can reset route and chrome. */
+export function subscribeWorkspaceSwitched(
+  listener: WorkspaceSwitchedListener,
+): () => void {
+  workspaceSwitchedListeners.add(listener)
+  return () => {
+    workspaceSwitchedListeners.delete(listener)
+  }
+}
+
 export function scheduleWorkspaceSwitch(
   workspaceId: string,
   projects: WorkspaceProjectCollection,
@@ -48,9 +68,13 @@ function reloadProjects(workspaceId: string, projects: WorkspaceProjectCollectio
  * workspace). Reactively reconciling all of that mounted UI in place after a
  * switch is fragile, so on web/desktop force a clean reload instead — the
  * newly active workspace id is already persisted by the time this runs.
- * Native call sites may pass this too; it's a no-op off web.
+ * Listeners reset the route: personal lands on main chat, team on the
+ * project builder. On web that listener does a full navigation. Reload
+ * only if nothing is listening (the shell is not mounted).
  */
 export function reloadAfterWorkspaceSwitch(): void {
+  for (const listener of workspaceSwitchedListeners) listener()
+  if (workspaceSwitchedListeners.size > 0) return
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     window.location.reload()
   }

@@ -187,8 +187,13 @@ export const ProminentComposerField = forwardRef<
             fontSize: PROMINENT_COMPOSER_FONT_SIZE,
             lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
             paddingHorizontal: stacked ? 0 : 4,
-            paddingTop: stacked ? 0 : 1,
-            paddingBottom: stacked ? 0 : 1,
+            paddingTop: 0,
+            paddingBottom: 0,
+            // A one-line textarea is a couple of pixels taller than its box,
+            // and the browser default is overflow:auto. Hide that scrollbar
+            // until the field has expanded to its max height.
+            overflow: scrollEnabled ? "auto" : "hidden",
+            overflowY: scrollEnabled ? "auto" : "hidden",
             margin: 0,
             backgroundColor: "transparent",
             textAlignVertical: stacked

@@ -52,6 +52,7 @@ import {
   useProjectCollection,
 } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { api } from "../../lib/api";
 import {
@@ -82,6 +83,10 @@ import {
 } from "../ui/LiquidGlassBackdrop";
 import { MobileWorkspaceChromeProvider } from "./MobileWorkspaceChromeContext";
 import { ShogoLogoMark } from "../branding/ShogoLogoMark";
+import {
+  MobileWorkspaceSwitcherRow,
+  MobileWorkspaceSwitcherSheet,
+} from "./MobileWorkspaceSwitcher";
 
 interface MobileWorkspaceShellProps {
   children: ReactNode;
@@ -113,9 +118,11 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const http = useDomainHttp();
   const actions = useDomainActions();
   const workspace = useActiveWorkspace();
+  const isTeamWorkspace = useWorkspaceExperience().kind === "team";
   const projects = useProjectCollection();
   const prefersReducedMotion = useReducedMotion();
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [workspaceSheetOpen, setWorkspaceSheetOpen] = useState(false);
   const drawerProgress = useRef(new Animated.Value(0)).current;
   const [sessions, setSessions] = useState<
     Array<{
@@ -572,10 +579,8 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                   sessionsOpen ? closeSessions() : openSessions()
                 }
                 className={cn(
-                  "h-11 w-11 items-center justify-center overflow-hidden rounded-full border active:bg-muted",
-                  liquidGlass
-                    ? "border-white/25 bg-transparent"
-                    : "border-border/70 bg-card/95"
+                  "h-11 w-11 items-center justify-center overflow-hidden rounded-full active:bg-muted",
+                  liquidGlass ? "bg-transparent" : "bg-card/95"
                 )}
               >
                 <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
@@ -588,10 +593,8 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
             </View>
             <View
               className={cn(
-                "absolute right-3 z-20 h-11 w-11 items-center justify-center overflow-hidden rounded-full border",
-                liquidGlass
-                  ? "border-white/25 bg-transparent"
-                  : "border-border/70 bg-card/95"
+                "absolute right-3 z-20 h-11 w-11 items-center justify-center overflow-hidden rounded-full",
+                liquidGlass ? "bg-transparent" : "bg-card/95"
               )}
               style={{ top: insets.top + 10 }}
             >
@@ -646,6 +649,9 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                 className="h-full bg-card"
                 style={{ paddingTop: insets.top + 12 }}
               >
+                <MobileWorkspaceSwitcherRow
+                  onPress={() => setWorkspaceSheetOpen(true)}
+                />
                 <View className="mx-4 flex-row items-center gap-2">
                   <ShogoLogoMark className="h-6 w-6" />
                   <View
@@ -676,22 +682,38 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                       Loading chats…
                     </Text>
                   ) : null}
-                  {sessions
-                    .filter((session) => session.isPrimary)
-                    .map((session) => (
-                      <Pressable
-                        key={session.id}
-                        onPress={() => {
-                          closeSessions();
-                          router.replace("/(app)" as any);
-                        }}
-                        className="rounded-xl bg-primary/10 px-3 py-3 active:opacity-80"
-                      >
-                        <Text className="text-base font-semibold text-foreground">
-                          Main chat
-                        </Text>
-                      </Pressable>
-                    ))}
+                  {isTeamWorkspace ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="New project"
+                      onPress={() => {
+                        closeSessions();
+                        router.replace("/(app)/new-project" as any);
+                      }}
+                      className="rounded-xl bg-primary/10 px-3 py-3 active:opacity-80"
+                    >
+                      <Text className="text-base font-semibold text-foreground">
+                        New Project
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    sessions
+                      .filter((session) => session.isPrimary)
+                      .map((session) => (
+                        <Pressable
+                          key={session.id}
+                          onPress={() => {
+                            closeSessions();
+                            router.replace("/(app)" as any);
+                          }}
+                          className="rounded-xl bg-primary/10 px-3 py-3 active:opacity-80"
+                        >
+                          <Text className="text-base font-semibold text-foreground">
+                            Main chat
+                          </Text>
+                        </Pressable>
+                      ))
+                  )}
                   <View className="mt-4">
                     <WorkspaceSidebarSection
                       label="Side chats"
@@ -1217,6 +1239,11 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
           onDelete={() => {
             if (nativeProjectActions) deleteProject(nativeProjectActions);
           }}
+        />
+        <MobileWorkspaceSwitcherSheet
+          visible={workspaceSheetOpen}
+          onClose={() => setWorkspaceSheetOpen(false)}
+          onSwitched={closeSessions}
         />
         <RenameProjectModal
           visible={renamingProject !== null}

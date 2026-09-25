@@ -426,10 +426,8 @@ export function MobileBottomNav() {
         ) : null}
         <View
           className={cn(
-            "w-full flex-row items-center gap-1 overflow-hidden border px-1.5 shadow-sm",
-            liquidGlass
-              ? "border-white/25 bg-transparent"
-              : "border-border bg-card/95"
+            "w-full flex-row items-center gap-1 overflow-hidden px-1.5 shadow-sm",
+            liquidGlass ? "bg-transparent" : "bg-card/95"
           )}
           style={{
             height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
