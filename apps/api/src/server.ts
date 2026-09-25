@@ -6931,14 +6931,25 @@ app.get('/api/billing/workspace-plan', async (c) => {
       const ids = workspaceIds.split(',').filter(Boolean)
       // Filter to only workspaces the user is a member of
       const memberships = userId
-        ? await prisma.member.findMany({ where: { userId, workspaceId: { in: ids } }, select: { workspaceId: true } })
+        ? await prisma.member.findMany({
+            where: { userId, workspaceId: { in: ids } },
+            select: { workspaceId: true, role: true, isBillingAdmin: true },
+          })
         : []
       const allowedIds = new Set(memberships.map((m: any) => m.workspaceId))
+      // Mirrors the owner/admin/billing-admin check in
+      // `validateChildWorkspaceCreation` so the client can skip offering the
+      // pooled "create workspace" flow to plain members.
+      const manageableIds = new Set(
+        memberships
+          .filter((m: any) => m.role === 'owner' || m.role === 'admin' || m.isBillingAdmin)
+          .map((m: any) => m.workspaceId),
+      )
       // `planId` here is the *effective* plan: a paid Stripe subscription
       // wins, otherwise an active super-admin grant's `planId` confers the
       // tier. `source` lets the client distinguish so it doesn't try to send
       // a grant-only workspace through Stripe portal/checkout flows.
-      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free' }> = {}
+      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free'; canManageChildren: boolean }> = {}
       await Promise.all(ids.filter(id => allowedIds.has(id)).map(async (id) => {
         const [sub, effective] = await Promise.all([
           billingService.getSubscription(id),
@@ -6950,6 +6961,7 @@ app.get('/api/billing/workspace-plan', async (c) => {
           planId: sub?.planId ?? effective,
           status: sub?.status ?? (source === 'grant' ? 'active' : null),
           source,
+          canManageChildren: manageableIds.has(id),
         }
       }))
       return c.json({ ok: true, plans })

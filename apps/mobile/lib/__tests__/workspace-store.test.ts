@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   clearActiveWorkspaceId,
   getActiveWorkspaceId,
+  getCachedWorkspaceKind,
+  rememberWorkspaceKind,
   resolveActiveWorkspaceId,
   setActiveWorkspaceId,
   subscribeActiveWorkspaceId,
@@ -133,6 +135,26 @@ describe('resolveActiveWorkspaceId', () => {
       }),
     ).toBe('ws-personal')
     expect(getActiveWorkspaceId()).toBe('ws-personal')
+  })
+})
+
+describe('cached workspace kind', () => {
+  test('returns null until a kind is remembered for the active id', () => {
+    setActiveWorkspaceId('ws-1')
+    expect(getCachedWorkspaceKind('ws-1')).toBeNull()
+  })
+
+  test('round-trips a kind only for the workspace it was remembered with', () => {
+    rememberWorkspaceKind('ws-1', 'personal')
+    expect(getCachedWorkspaceKind('ws-1')).toBe('personal')
+    expect(getCachedWorkspaceKind('ws-2')).toBeNull()
+  })
+
+  test('clearActiveWorkspaceId drops the cached kind', () => {
+    setActiveWorkspaceId('ws-1')
+    rememberWorkspaceKind('ws-1', 'team')
+    clearActiveWorkspaceId()
+    expect(getCachedWorkspaceKind('ws-1')).toBeNull()
   })
 })
 

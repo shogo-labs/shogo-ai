@@ -45,7 +45,8 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { workspaceExperience } from '@shogo/shared-app'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
+import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
@@ -342,8 +343,6 @@ export const HomeScreen = observer(function HomeScreen({
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
 
-  const [workspaceError, setWorkspaceError] = useState(false)
-
   useEffect(() => {
     void loadInteractionModePreference().then((stored) => {
       if (stored) setInteractionMode(stored)
@@ -351,7 +350,7 @@ export const HomeScreen = observer(function HomeScreen({
   }, [])
 
   const currentWorkspace = useActiveWorkspace()
-  const currentExperience = workspaceExperience(currentWorkspace?.kind)
+  const currentExperience = useWorkspaceExperience()
   // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`, which
   // mounts its own checklist.
   const rendersAgentChat =
@@ -381,17 +380,12 @@ export const HomeScreen = observer(function HomeScreen({
     let cancelled = false
 
     async function loadData(attempt = 0) {
-      setWorkspaceError(false)
-      // Use the active workspace (which falls back to the first workspace
-      // once `workspaces.loadAll()` has resolved). Relying on
-      // `getActiveWorkspaceId()` alone breaks the first ever load because
-      // nothing has been persisted to storage yet — the effect re-runs
-      // when `currentWorkspace?.id` changes, so this also covers the
-      // post-load case.
+      // Workspaces load from the app layout. This effect re-runs when
+      // `currentWorkspace?.id` appears, so the first project load happens
+      // after that id is known.
       const projectFilter = workspaceProjectFilter(currentWorkspace?.id)
       const results = await Promise.allSettled([
         projectFilter ? projects.loadAll(projectFilter) : Promise.resolve(),
-        workspaces.loadAll(),
         user?.id ? membersColl.loadAll({ userId: user.id }) : Promise.resolve(),
       ])
 
@@ -407,12 +401,8 @@ export const HomeScreen = observer(function HomeScreen({
 
       if (results[0].status === 'rejected')
         console.error('[Home] Failed to load projects:', results[0].reason)
-      if (results[1].status === 'rejected') {
-        console.error('[Home] Failed to load workspaces:', results[1].reason)
-        setWorkspaceError(true)
-      }
-      if (results[2].status === 'rejected')
-        console.error('[Home] Failed to load memberships:', results[2].reason)
+      if (results[1].status === 'rejected')
+        console.error('[Home] Failed to load memberships:', results[1].reason)
     }
 
     loadData()
@@ -928,6 +918,14 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
+  if (!currentExperience.resolved) {
+    return (
+      <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
+        <WorkspaceChromeSkeletonRows count={4} />
+      </View>
+    )
+  }
+
   // Personal workspaces use the agent chat surface on every platform.
   // Shared workspaces use it on narrow surfaces while wide web retains the
   // established builder home.
@@ -937,7 +935,7 @@ export const HomeScreen = observer(function HomeScreen({
 
   const greeting = (
     <>
-      {!localMode && !hasPersonalWorkspace ? (
+      {!localMode && (workspaces?.all ?? []).length > 0 && !hasPersonalWorkspace ? (
         <View className={isNativePhone ? 'mb-5 w-full' : 'mb-5 w-full max-w-2xl'}>
           <CreatePersonalSpaceBanner
             userId={user?.id}

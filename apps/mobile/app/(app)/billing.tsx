@@ -108,12 +108,6 @@ export default observer(function BillingPage() {
   const actions = useDomainActions()
 
   useEffect(() => {
-    if (user?.id && workspaces) {
-      workspaces.loadAll({ userId: user.id }).catch((e) => console.error('[Billing] Failed to load workspaces:', e))
-    }
-  }, [user?.id, workspaces])
-
-  useEffect(() => {
     const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
     if (!workspaceParam || ownWorkspaceIds.length === 0 || workspaces?.isLoading) return
     const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, workspaceParam, {

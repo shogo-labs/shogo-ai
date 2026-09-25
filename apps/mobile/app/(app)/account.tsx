@@ -27,6 +27,7 @@ import {
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useHasAdminAccess } from "../../hooks/useHasAdminAccess"
 import { useWorkspacePlans } from "../../hooks/useWorkspacePlans"
+import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation"
 import { EVENTS, trackEvent } from "../../lib/analytics"
 import { api } from "../../lib/api"
 import { nativePhoneCanvas, NATIVE_ACCOUNT_SCROLL_EXTRA_PAD, NATIVE_ACCOUNT_TITLE_CLASS, NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout"
@@ -67,9 +68,12 @@ export default observer(function AccountPage() {
   // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
   // just be `allWorkspaces.length === 0` (a user's original signup
   // workspace may have been mis-backfilled to `kind: 'team'`).
-  const hasPersonalWorkspace = allWorkspaces.some(
-    (w: { kind?: string }) => w.kind === "personal",
-  )
+  // Empty means the collection has not loaded yet. Omit the flag so the
+  // create-personal CTA stays hidden until the list is known.
+  const hasPersonalWorkspace =
+    allWorkspaces.length === 0
+      ? undefined
+      : allWorkspaces.some((w: { kind?: string }) => w.kind === "personal")
   // See `AppSidebar.tsx`'s `hasTeamWorkspace` for the free-vs-paid gate this drives.
   const hasTeamWorkspace = allWorkspaces.some(
     (w: { kind?: string }) => w.kind === "team",
@@ -85,10 +89,11 @@ export default observer(function AccountPage() {
   const billingData = useBillingData(features.billing ? displayWorkspace?.id : undefined)
   const allPlans = useWorkspacePlans(workspaceIds, !!features.billing)
   const workspacePlan = displayWorkspace?.id ? (allPlans[displayWorkspace.id] ?? null) : null
-
-  useEffect(() => {
-    workspaces.loadAll().catch(() => undefined)
-  }, [workspaces])
+  const { parent: pooledWorkspaceParent, createPooledWorkspace } = usePooledWorkspaceCreation({
+    workspaces: allWorkspaces,
+    currentWorkspaceId: currentWorkspace?.id,
+    enabled: !!features.billing,
+  })
 
   useEffect(() => {
     if (pendingWorkspaceId && currentWorkspace?.id === pendingWorkspaceId) {
@@ -119,15 +124,19 @@ export default observer(function AccountPage() {
   )
 
   const handleCreateWorkspace = useCallback(() => {
-    if (hasTeamWorkspace) {
+    if (pooledWorkspaceParent) {
+      setCreateWorkspaceOpen(true)
+    } else if (hasTeamWorkspace) {
       router.push("/(app)/new-workspace" as never)
       return
+    } else {
+      setCreateWorkspaceOpen(true)
     }
-    setCreateWorkspaceOpen(true)
-  }, [hasTeamWorkspace, router])
+  }, [hasTeamWorkspace, pooledWorkspaceParent, router])
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
+      if (pooledWorkspaceParent) return createPooledWorkspace(name)
       if (!user?.id) return
       try {
         const created = await actions.createWorkspace(name, undefined, user.id)
@@ -142,7 +151,7 @@ export default observer(function AccountPage() {
         console.warn("Failed to create workspace:", err)
       }
     },
-    [actions, posthog, projects, user?.id, workspaces],
+    [actions, createPooledWorkspace, pooledWorkspaceParent, posthog, projects, user?.id, workspaces],
   )
 
   const handleCreatePersonalWorkspace = useCallback(async () => {
@@ -247,6 +256,7 @@ export default observer(function AccountPage() {
           visible={createWorkspaceOpen}
           onClose={() => setCreateWorkspaceOpen(false)}
           onSubmit={handleCreateWorkspaceSubmit}
+          parentName={pooledWorkspaceParent?.name}
         />
       </AccountSheetChromeProvider>
     </View>

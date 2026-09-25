@@ -96,6 +96,7 @@ import {
 } from "../../../lib/use-native-drawer-swipe";
 import { invitationEvents } from "../../../lib/invitation-events";
 import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
+import { WorkspaceChromeSkeletonRows } from "../WorkspaceChromeSkeleton";
 import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
 import {
   effectiveSidebarProjectFilter,
@@ -118,6 +119,7 @@ import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
+import { usePooledWorkspaceCreation } from "../../../hooks/usePooledWorkspaceCreation";
 
 // Cap the projects list; pinned + the open project always show, the rest
 // collapse behind a "More" toggle.
@@ -608,15 +610,19 @@ export const AppSidebar = observer(function AppSidebar({
   // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
   // just be `allWorkspaces.length === 0` (a user's original signup
   // workspace may have been mis-backfilled to `kind: 'team'`).
-  const hasPersonalWorkspace = allWorkspaces.some(
-    (w: any) => w.kind === "personal",
-  );
+  // An empty list is "not loaded yet", not "no personal workspace". Omit
+  // the flag so the create-personal CTA stays hidden until we know.
+  const hasPersonalWorkspace =
+    allWorkspaces.length === 0
+      ? undefined
+      : allWorkspaces.some((w: any) => w.kind === "personal");
 
   // Whether the user already has a `kind: 'team'` workspace. `false` means
   // "Create new workspace" is still free — every account gets one free
   // workspace of each kind (one `personal`, one `team`; see
   // `workspaceHooks.beforeCreate`). Once both exist, further workspaces
-  // require the paid checkout flow. This mirrors `hasPersonalWorkspace`
+  // require the paid checkout flow, unless the user can pool a child under a
+  // Business/Enterprise workspace (`usePooledWorkspaceCreation`). This mirrors `hasPersonalWorkspace`
   // above, so it's membership- rather than ownership-based; a user merely
   // invited into someone else's team workspace may be routed to checkout
   // even though the server would still grant them a free one.
@@ -631,6 +637,15 @@ export const AppSidebar = observer(function AppSidebar({
   const workspacePlan = currentWorkspace?.id
     ? (allPlans[currentWorkspace.id] ?? null)
     : null;
+  const {
+    parent: pooledWorkspaceParent,
+    createPooledWorkspace,
+  } = usePooledWorkspaceCreation({
+    workspaces: allWorkspaces,
+    currentWorkspaceId: currentWorkspace?.id,
+    enabled: !!features.billing,
+    onCreated: setSelectedWorkspaceId,
+  });
   const isPaidPlan =
     billingData.hasActiveSubscription ||
     (workspacePlan?.planId !== "free" && workspacePlan?.status === "active");
@@ -675,17 +690,27 @@ export const AppSidebar = observer(function AppSidebar({
   );
 
   const handleCreateWorkspace = useCallback(() => {
-    if (hasTeamWorkspace) {
+    if (pooledWorkspaceParent) {
+      setCreateWorkspaceOpen(true);
+      if (!isWide) closeNativeDrawer();
+    } else if (hasTeamWorkspace) {
       router.push("/(app)/new-workspace" as any);
       if (!isWide) closeNativeDrawer();
     } else {
       setCreateWorkspaceOpen(true);
       if (!isWide) closeNativeDrawer();
     }
-  }, [hasTeamWorkspace, closeNativeDrawer, router, isWide]);
+  }, [
+    closeNativeDrawer,
+    hasTeamWorkspace,
+    isWide,
+    pooledWorkspaceParent,
+    router,
+  ]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
+      if (pooledWorkspaceParent) return createPooledWorkspace(name);
       if (!user?.id) return;
       try {
         const newWorkspace = await actions.createWorkspace(
@@ -705,7 +730,15 @@ export const AppSidebar = observer(function AppSidebar({
         console.warn("Failed to create workspace:", e);
       }
     },
-    [actions, user?.id, workspaces, projects, posthog],
+    [
+      actions,
+      createPooledWorkspace,
+      pooledWorkspaceParent,
+      projects,
+      posthog,
+      user?.id,
+      workspaces,
+    ],
   );
 
   const handleCreatePersonalWorkspace = useCallback(async () => {
@@ -936,6 +969,10 @@ export const AppSidebar = observer(function AppSidebar({
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
+        {!experience.resolved ? (
+          <WorkspaceChromeSkeletonRows count={6} testID="sidebar-chrome-skeleton" />
+        ) : (
+        <>
         {/* Primary nav mirrors the mobile bottom bar. */}
         <View className="px-2">
           {experience.primaryNav.map((id) => {
@@ -1280,6 +1317,8 @@ export const AppSidebar = observer(function AppSidebar({
             ))}
         </View>
         )}
+        </>
+        )}
       </ScrollView>
 
       {/* ── Bottom Section ── */}
@@ -1416,6 +1455,7 @@ export const AppSidebar = observer(function AppSidebar({
         visible={createWorkspaceOpen}
         onClose={() => setCreateWorkspaceOpen(false)}
         onSubmit={handleCreateWorkspaceSubmit}
+        parentName={pooledWorkspaceParent?.name}
       />
       <CommandPalette
         visible={commandPaletteOpen}

@@ -74,6 +74,7 @@ import {
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
 import {
   resolveActiveWorkspaceId,
   setActiveWorkspaceId,
@@ -4042,11 +4043,13 @@ export function WorkspaceAccountActions({
   const hasTeamWorkspace = allWorkspaces.some(
     (w: { kind?: string }) => w.kind === "team"
   );
+  const { parent: pooledWorkspaceParent, createPooledWorkspace } =
+    usePooledWorkspaceCreation({
+      workspaces: allWorkspaces,
+      currentWorkspaceId: currentWorkspace?.id,
+      enabled: !!features.billing,
+    });
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
-
-  useEffect(() => {
-    void workspaces.loadAll().catch(() => undefined);
-  }, [workspaces]);
 
   const switchWorkspace = useCallback(
     (workspaceId: string) => {
@@ -4057,15 +4060,19 @@ export function WorkspaceAccountActions({
   );
 
   const createWorkspace = useCallback(() => {
-    if (hasTeamWorkspace) {
+    if (pooledWorkspaceParent) {
+      setCreateWorkspaceOpen(true);
+    } else if (hasTeamWorkspace) {
       router.push("/(app)/new-workspace" as any);
       return;
+    } else {
+      setCreateWorkspaceOpen(true);
     }
-    setCreateWorkspaceOpen(true);
-  }, [hasTeamWorkspace, router]);
+  }, [hasTeamWorkspace, pooledWorkspaceParent, router]);
 
   const handleCreateWorkspaceSubmit = useCallback(
     async (name: string) => {
+      if (pooledWorkspaceParent) return createPooledWorkspace(name);
       if (!user?.id) return;
       try {
         const created = await actions.createWorkspace(name, undefined, user.id);
@@ -4080,7 +4087,15 @@ export function WorkspaceAccountActions({
         console.warn("Failed to create workspace:", err);
       }
     },
-    [actions, posthog, projects, user?.id, workspaces]
+    [
+      actions,
+      createPooledWorkspace,
+      pooledWorkspaceParent,
+      posthog,
+      projects,
+      user?.id,
+      workspaces,
+    ]
   );
 
   const go = useCallback((href: string) => router.push(href as any), [router]);
@@ -4307,6 +4322,7 @@ export function WorkspaceAccountActions({
         visible={createWorkspaceOpen}
         onClose={() => setCreateWorkspaceOpen(false)}
         onSubmit={handleCreateWorkspaceSubmit}
+        parentName={pooledWorkspaceParent?.name}
       />
     </View>
   );

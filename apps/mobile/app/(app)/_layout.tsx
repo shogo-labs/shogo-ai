@@ -220,6 +220,13 @@ function AppLayoutInner() {
   }, [isLoading, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated || !workspaces) return;
+    workspaces.loadAll().catch((error: unknown) => {
+      console.error("[AppLayout] Failed to load workspaces:", error);
+    });
+  }, [isAuthenticated, workspaces]);
+
+  useEffect(() => {
     if (!isAuthenticated || !user) return;
     try {
       const pending = sessionStorage.getItem("oauth_pending");

@@ -36,6 +36,7 @@ import { WorkspaceConversationSidebar } from "./WorkspaceConversationSidebar";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { CANVAS_NAV_HIDDEN } from "@shogo/shared-app";
 import { cn } from "@shogo/shared-ui/primitives";
+import { WorkspaceChromeSkeletonRows } from "./WorkspaceChromeSkeleton";
 
 interface NavItem {
   label: string;
@@ -113,7 +114,9 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
           <ShogoLogoMark className="h-6 w-6" />
         </Pressable>
         <View className="items-center gap-2">
-          {primaryNav.map(({ href, label, icon: Icon, action }) => {
+          {!experience.resolved ? (
+            <WorkspaceChromeSkeletonRows count={4} testID="workspace-rail-skeleton" />
+          ) : primaryNav.map(({ href, label, icon: Icon, action }) => {
             const active =
               action === "search"
                 ? searchOpen

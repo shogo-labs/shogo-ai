@@ -38,6 +38,7 @@ import {
   subscribePrimaryWorkspaceSession,
 } from "../workspace/workspace-agent-session-bus";
 import { WorkspaceSidebarSection } from "./WorkspaceSidebarSection";
+import { WorkspaceChromeSkeletonRows } from "./WorkspaceChromeSkeleton";
 import { ChatTreeItem } from "./sidebar/ChatTreeItem";
 
 const PROJECT_CHAT_INITIAL_COUNT = PROJECT_CHAT_PAGE_SIZE;
@@ -466,6 +467,10 @@ export function WorkspaceConversationSidebar() {
         contentContainerClassName="px-3 py-2"
         showsVerticalScrollIndicator
       >
+        {!experience.resolved ? (
+          <WorkspaceChromeSkeletonRows count={6} testID="conversation-sidebar-skeleton" />
+        ) : (
+        <>
         <Pressable
           accessibilityRole="link"
           accessibilityLabel="Open Main Chat"
@@ -762,6 +767,8 @@ export function WorkspaceConversationSidebar() {
             ) : null}
           </WorkspaceSidebarSection>
         </View>
+        </>
+        )}
       </ScrollView>
     </View>
   );
