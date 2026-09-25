@@ -38,6 +38,9 @@ on:
   merge_group:
     branches: [main]
     types: [checks_requested]
+  # Allows the staging deploy workflow to verify a feature branch explicitly
+  # before deploying it to the shared staging environment.
+  workflow_dispatch:
   # Re-running a past run replays that run's workflow definition, so a fix to
   # the job itself (a timeout, a step) cannot be verified by re-running the
   # build that motivated it. Manual dispatch gives a fresh run against the
