@@ -866,6 +866,78 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Ensure iOS production TestFlight build
+        # A tag pushed with GITHUB_TOKEN does not trigger tag workflows. If
+        # the iOS workflow was not already started for this release commit,
+        # dispatch it explicitly; an existing successful or in-flight run is
+        # left alone.
+        if: needs.resolve-version.outputs.channel != 'beta' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          IOS_RUNS=$(gh run list \
+            --workflow ios.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --limit 20 \
+            --json status,conclusion)
+          if jq -e 'any(.[]; .status != "completed" or .conclusion == "success")' <<<"$IOS_RUNS" >/dev/null; then
+            echo "An iOS TestFlight run already exists for ${RELEASE_TAG}; leaving it unchanged."
+            exit 0
+          fi
+
+          echo "No active or successful iOS run exists for ${RELEASE_TAG}; dispatching production TestFlight build."
+          gh workflow run ios.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_TAG" \
+            --field mode=full \
+            --field environment=production \
+            --field submit=true
+
+      - name: Ensure matching beta release exists
+        # Beta versions advance to the next patch after the stable production
+        # tag. If that beta already exists, do not start another pair of
+        # desktop builds; otherwise dispatch both platform workflows. The
+        # macOS workflow will also dispatch the beta TestFlight build.
+        if: needs.resolve-version.outputs.channel != 'beta' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release ${RELEASE_TAG} is not a stable vX.Y.Z tag; skipping beta companion."
+            exit 0
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch=$((10#${BASH_REMATCH[3]} + 1))
+          beta_prefix="v${major}.${minor}.${patch}-beta."
+          beta_tag=$(gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 200 \
+            --json tagName,isPrerelease |
+            jq -r --arg prefix "$beta_prefix" \
+              '[.[] | select(.isPrerelease and (.tagName | startswith($prefix)))][0].tagName // empty')
+
+          if [ -n "$beta_tag" ]; then
+            echo "Matching beta release ${beta_tag} already exists."
+            exit 0
+          fi
+
+          echo "No beta release matching ${beta_prefix}* exists; dispatching macOS and Windows beta builds."
+          gh workflow run desktop-release-macos.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_TAG" \
+            --field channel=beta
+          gh workflow run desktop-release-windows.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_TAG" \
+            --field channel=beta
+
       - name: Trigger iOS beta TestFlight build
         # Beta tags are created with GITHUB_TOKEN, so their tag push does not
         # start tag-triggered workflows. Dispatch the iOS workflow explicitly
