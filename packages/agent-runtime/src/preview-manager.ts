@@ -152,6 +152,78 @@ import {
 
 const LOG_PREFIX = 'preview-manager'
 
+/** Expo's `experiments.baseUrl` is conventionally stored without a trailing slash. */
+export function normalizeExpoBasePath(basePath: string): string {
+  const normalized = basePath.trim().replace(/^\/+|\/+$/g, '')
+  return normalized ? `/${normalized}` : ''
+}
+
+/**
+ * Temporarily add the workspace preview prefix to an Expo app.json.
+ *
+ * Expo Router uses `experiments.baseUrl` when generating both the static
+ * document and the client-side linking config. Workspace previews already
+ * pass `basePath` to Vite, but Expo's exporter has no CLI base-path flag, so
+ * its config must carry the prefix during export.
+ *
+ * Dynamic app.config files are intentionally left alone: evaluating or
+ * wrapping arbitrary user config is unsafe. The export still receives
+ * EXPO_BASE_URL, which lets projects that opt into an env-driven config use
+ * the same path.
+ */
+export function patchExpoAppJsonForBasePath(
+  cwd: string,
+  basePath: string,
+): () => void {
+  const appJsonPath = join(cwd, 'app.json')
+  const dynamicConfig = ['app.config.js', 'app.config.cjs', 'app.config.mjs', 'app.config.ts']
+    .find((name) => existsSync(join(cwd, name)))
+  if (dynamicConfig) {
+    console.warn(
+      `[${LOG_PREFIX}] Expo workspace base path requires app.json; ` +
+        `leaving dynamic ${dynamicConfig} unchanged`,
+    )
+    return () => {}
+  }
+  if (!existsSync(appJsonPath)) return () => {}
+
+  const normalizedBasePath = normalizeExpoBasePath(basePath)
+  if (!normalizedBasePath) return () => {}
+
+  const original = readFileSync(appJsonPath, 'utf8')
+  try {
+    const parsed = JSON.parse(original) as Record<string, any>
+    const expo = parsed.expo && typeof parsed.expo === 'object' ? parsed.expo : {}
+    const experiments =
+      expo.experiments && typeof expo.experiments === 'object' ? expo.experiments : {}
+    const patched = {
+      ...parsed,
+      expo: {
+        ...expo,
+        experiments: {
+          ...experiments,
+          baseUrl: normalizedBasePath,
+        },
+      },
+    }
+    writeFileSync(appJsonPath, `${JSON.stringify(patched, null, 2)}\n`, 'utf8')
+  } catch (err: any) {
+    console.warn(`[${LOG_PREFIX}] Could not apply Expo base path: ${err?.message ?? err}`)
+    return () => {}
+  }
+
+  let restored = false
+  return () => {
+    if (restored) return
+    restored = true
+    try {
+      writeFileSync(appJsonPath, original, 'utf8')
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Could not restore Expo app.json: ${err?.message ?? err}`)
+    }
+  }
+}
+
 /**
  * Describes one `vite build --watch` process discovered by the stale-watcher
  * reaper. `pgid` is what we actually kill — the spawn in {@link PreviewManager.startBuildWatch}
@@ -479,7 +551,8 @@ export interface PreviewManagerConfig {
    * the bundle must be built with that base or every absolute asset URL
    * (`/assets/app.js`) would 404 against the runtime root instead of the
    * project's prefix. When set, it is passed to `vite build` as
-   * `--base <basePath>`. Must start and end with `/` (e.g. `/p/abc/`).
+   * `--base <basePath>` and to Expo Router through `experiments.baseUrl`.
+   * Must start and end with `/` (e.g. `/p/abc/`).
    */
   basePath?: string
   /**
@@ -3788,59 +3861,71 @@ export class PreviewManager {
     cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
 
     const t0 = Date.now()
+    const restoreExpoConfig = this.basePath
+      ? patchExpoAppJsonForBasePath(cwd, this.basePath)
+      : () => {}
     console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
-    const exitCode = await new Promise<number | null>((resolveExport) => {
-      let proc: ChildProcess
-      try {
-        proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
-          cwd,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // `.CMD` shims must go through cmd.exe on Windows.
-          shell: isWindows,
-          env: {
-            ...process.env,
-            NODE_ENV: 'development',
-            // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
-            CI: '1',
-          },
+    let exitCode: number | null
+    try {
+      exitCode = await new Promise<number | null>((resolveExport) => {
+        let proc: ChildProcess
+        try {
+          proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
+            cwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // `.CMD` shims must go through cmd.exe on Windows.
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              // Expo Router reads this when a project's dynamic config opts
+              // into an environment-driven base URL. app.json projects are
+              // patched above with the same normalized value.
+              ...(this.basePath ? { EXPO_BASE_URL: normalizeExpoBasePath(this.basePath) } : {}),
+              // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
+              CI: '1',
+            },
+          })
+        } catch (err: any) {
+          console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
+          resolveExport(null)
+          return
+        }
+        // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
+        // not bubble up — without this listener Node treats them as uncaught and
+        // tears down the entire agent runtime process.
+        proc.on('error', (err: Error) => {
+          console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
+          resolveExport(null)
         })
-      } catch (err: any) {
-        console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
-        resolveExport(null)
-        return
-      }
-      // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
-      // not bubble up — without this listener Node treats them as uncaught and
-      // tears down the entire agent runtime process.
-      proc.on('error', (err: Error) => {
-        console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
-        resolveExport(null)
+        proc.stdout?.on('data', (data: Buffer) => {
+          const text = data.toString()
+          for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (!line) continue
+            emitBuildLine(buildLogPath, '[expo-export-stdout]', line, 'stdout')
+            this.forwardLogLine(`[expo-export] ${line}`, 'stdout')
+          }
+        })
+        proc.stderr?.on('data', (data: Buffer) => {
+          const text = data.toString()
+          for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (!line) continue
+            emitBuildLine(buildLogPath, '[expo-export-stderr]', line, 'stderr')
+            this.forwardLogLine(`[expo-export] ${line}`, 'stderr')
+          }
+        })
+        proc.on('exit', (code) => {
+          if (code !== 0) {
+            console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
+          }
+          resolveExport(code)
+        })
       })
-      proc.stdout?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        for (const raw of text.split('\n')) {
-          const line = raw.trim()
-          if (!line) continue
-          emitBuildLine(buildLogPath, '[expo-export-stdout]', line, 'stdout')
-          this.forwardLogLine(`[expo-export] ${line}`, 'stdout')
-        }
-      })
-      proc.stderr?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        for (const raw of text.split('\n')) {
-          const line = raw.trim()
-          if (!line) continue
-          emitBuildLine(buildLogPath, '[expo-export-stderr]', line, 'stderr')
-          this.forwardLogLine(`[expo-export] ${line}`, 'stderr')
-        }
-      })
-      proc.on('exit', (code) => {
-        if (code !== 0) {
-          console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
-        }
-        resolveExport(code)
-      })
-    })
+    } finally {
+      restoreExpoConfig()
+    }
 
     if (exitCode === 0) {
       // `expo export` can exit 0 even when Metro's bundle silently failed —

@@ -13,7 +13,7 @@
 //   • L1234-1243 runShogoGenerate close-not-0 + error event (~7 uncov)
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -131,6 +131,40 @@ describe('PreviewManager.runExpoExportWeb', () => {
     proc.emit('exit', 0)
     await p
     expect(timings.expoExport).toBeGreaterThanOrEqual(0)
+  })
+
+  test('workspace base path configures Expo Router and restores app.json after export', async () => {
+    const { root, projectDir } = makeWorkspace({ withExpoBin: true })
+    const appJsonPath = join(projectDir, 'app.json')
+    const originalAppJson = JSON.stringify({
+      expo: {
+        name: 'fixture',
+        experiments: { typedRoutes: true },
+      },
+    }, null, 2) + '\n'
+    writeFileSync(appJsonPath, originalAppJson)
+
+    const pm = new PreviewManager({
+      workspaceDir: root,
+      runtimePort: 0,
+      basePath: '/p/project-123/',
+    })
+    const timings: Record<string, number> = {}
+    const p = (pm as any).runExpoExportWeb(timings, projectDir)
+    await new Promise((r) => setTimeout(r, 5))
+
+    const proc = pendingProcs[pendingProcs.length - 1]
+    expect(proc).toBeDefined()
+    const duringExport = JSON.parse(readFileSync(appJsonPath, 'utf8'))
+    expect(duringExport.expo.experiments).toEqual({
+      typedRoutes: true,
+      baseUrl: '/p/project-123',
+    })
+    expect(spawnCalls[0]?.opts.env.EXPO_BASE_URL).toBe('/p/project-123')
+
+    proc.emit('exit', 1)
+    await p
+    expect(readFileSync(appJsonPath, 'utf8')).toBe(originalAppJson)
   })
 
   test('exit 0 but missing index.html refuses to swap (cleanup path)', async () => {
