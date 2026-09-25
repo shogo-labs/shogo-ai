@@ -46,13 +46,15 @@ export function wrapSseStreamWithKeepalive(
     }
   }
 
-  const enqueue = (bytes: Uint8Array) => {
-    if (bytes.byteLength === 0 || closed || !controller) return
+  const enqueue = (bytes: Uint8Array): boolean => {
+    if (bytes.byteLength === 0 || closed || !controller) return false
     try {
       controller.enqueue(bytes)
+      return true
     } catch {
       closed = true
       cleanup()
+      return false
     }
   }
 
@@ -67,30 +69,32 @@ export function wrapSseStreamWithKeepalive(
     }
   }
 
-  const forwardChunk = (chunk: Uint8Array) => {
+  const forwardChunk = (chunk: Uint8Array): boolean => {
     const combined = concatBytes(pending, chunk)
     const completeEnd = findDelimiterEnd(combined)
     if (completeEnd === -1) {
       pending = combined
-      return
+      return false
     }
 
     const complete = combined.slice(0, completeEnd)
     pending = combined.slice(completeEnd)
+    let emitted = false
 
     if (keepalivePending) {
       const firstFrameEnd = findDelimiterEnd(complete)
       if (firstFrameEnd !== -1) {
-        enqueue(complete.slice(0, firstFrameEnd))
-        enqueue(DEFAULT_KEEPALIVE)
-        enqueue(complete.slice(firstFrameEnd))
+        emitted = enqueue(complete.slice(0, firstFrameEnd)) || emitted
+        emitted = enqueue(DEFAULT_KEEPALIVE) || emitted
+        emitted = enqueue(complete.slice(firstFrameEnd)) || emitted
       } else {
-        enqueue(complete)
+        emitted = enqueue(complete) || emitted
       }
       keepalivePending = false
     } else {
-      enqueue(complete)
+      emitted = enqueue(complete) || emitted
     }
+    return emitted
   }
 
   return new ReadableStream<Uint8Array>({
@@ -101,19 +105,24 @@ export function wrapSseStreamWithKeepalive(
     async pull() {
       if (closed) return
       try {
-        const { done, value } = await reader.read()
-        if (done) {
-          // Preserve an upstream incomplete frame. This wrapper is only
-          // responsible for keepalive placement; durable-resume decides how
-          // to handle an incomplete frame after a transport interruption.
-          if (pending.byteLength > 0) enqueue(pending)
-          pending = new Uint8Array(0)
-          closed = true
-          cleanup()
-          controller?.close()
-          return
+        // A chunk can end mid-frame. Keep pulling until we either have bytes
+        // to deliver or the upstream terminates; returning from pull with no
+        // enqueue leaves the consumer's pending read waiting forever.
+        while (!closed) {
+          const { done, value } = await reader.read()
+          if (done) {
+            // Preserve an upstream incomplete frame. This wrapper is only
+            // responsible for keepalive placement; durable-resume decides how
+            // to handle an incomplete frame after a transport interruption.
+            if (pending.byteLength > 0) enqueue(pending)
+            pending = new Uint8Array(0)
+            closed = true
+            cleanup()
+            controller?.close()
+            return
+          }
+          if (value && forwardChunk(value)) return
         }
-        if (value) forwardChunk(value)
       } catch (error) {
         closed = true
         cleanup()
