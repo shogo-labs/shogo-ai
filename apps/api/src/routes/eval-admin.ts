@@ -19,7 +19,7 @@ import { spawn, execSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { MODEL_CATALOG, MODEL_ALIASES } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'
-import { resolveModelLabelSync } from '../services/model-registry.service'
+import { resolveModelLabelSync, getMergedModelEntrySync } from '../services/model-registry.service'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 
@@ -45,6 +45,34 @@ const VALID_MODELS = new Set([
   ...Object.keys(MODEL_CATALOG),
   ...Object.keys(MODEL_ALIASES),
 ])
+
+/**
+ * Default model for the `reliability-regression` track — the combined
+ * release-gate suite (every WS1-WS9 reproduction + coding/tool-discipline)
+ * that maps 1:1 to prod-baseline.sql metrics. Hoshi is Shogo's default
+ * assistant model and drives the large majority of production traffic, yet
+ * this track had never been run against it before — every trigger defaulted
+ * to a model most prod failures don't come from. Pinned to the current
+ * Hoshi generation (`hoshi-2-0`) via its public alias, not a fixed backing
+ * model, so this stays correct across future Hoshi upgrades. Every other
+ * track keeps its existing default (still `sonnet` here).
+ */
+const RELEASE_GATE_TRACK = 'reliability-regression'
+const RELEASE_GATE_DEFAULT_MODEL = 'hoshi-2-0'
+
+/**
+ * DB-model existence check used as a fallback when `model` isn't one of the
+ * static catalog ids/aliases in `VALID_MODELS` (e.g. an admin-managed custom
+ * model like Hoshi). Delegates to the model registry's alias-aware resolver
+ * so this matches by row id, `apiModel`, *or* any DB-stored alias (e.g.
+ * `hoshi-2-0`) — a raw `findFirst` on `id`/`apiModel` alone would 400 on
+ * `RELEASE_GATE_DEFAULT_MODEL` above, since a public alias only lives in the
+ * `aliases` column. Only enabled models are ever loaded into the registry
+ * snapshot, so a hit here already implies `enabled === true`.
+ */
+function isEnabledDbModel(model: string): boolean {
+  return !!getMergedModelEntrySync(model)
+}
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -746,7 +774,7 @@ export function evalAdminRoutes(): Hono {
     }
 
     const track = body.track ?? 'agentic'
-    const model = body.model ?? 'sonnet'
+    const model = body.model ?? (track === RELEASE_GATE_TRACK ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
     const local = body.local ?? false
     const vm = body.vm ?? false
@@ -755,11 +783,7 @@ export function evalAdminRoutes(): Hono {
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    const dbModel = await (prisma as any).modelDefinition?.findUnique?.({
-      where: { id: model },
-      select: { enabled: true },
-    })
-    if (!VALID_MODELS.has(model) && dbModel?.enabled !== true) {
+    if (!VALID_MODELS.has(model) && !isEnabledDbModel(model)) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 
@@ -983,17 +1007,13 @@ export function evalInternalRoutes(): Hono {
       commitSha?: string | null
     }
     const track = body.track ?? 'agentic'
-    const model = body.model ?? 'sonnet'
+    const model = body.model ?? (track === RELEASE_GATE_TRACK ? RELEASE_GATE_DEFAULT_MODEL : 'sonnet')
     const workers = Math.min(Math.max(body.workers ?? 1, 1), 8)
 
     if (!VALID_TRACKS.includes(track)) {
       return c.json({ ok: false, error: `Invalid track: ${track}` }, 400)
     }
-    const dbModel = await (prisma as any).modelDefinition?.findUnique?.({
-      where: { id: model },
-      select: { enabled: true },
-    })
-    if (!VALID_MODELS.has(model) && dbModel?.enabled !== true) {
+    if (!VALID_MODELS.has(model) && !isEnabledDbModel(model)) {
       return c.json({ ok: false, error: `Invalid model: ${model}` }, 400)
     }
 
