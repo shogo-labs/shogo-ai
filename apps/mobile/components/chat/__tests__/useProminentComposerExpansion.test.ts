@@ -44,6 +44,16 @@ describe("shouldStackProminentComposer", () => {
     ).toBe(false)
   })
 
+  test("expands when the field is already taller than one line", () => {
+    expect(
+      shouldStackProminentComposer({
+        ...base,
+        textWidth: 40,
+        contentHeight: 48,
+      }),
+    ).toBe(true)
+  })
+
   test("expands on an explicit newline even if the first line is short", () => {
     expect(
       shouldStackProminentComposer({

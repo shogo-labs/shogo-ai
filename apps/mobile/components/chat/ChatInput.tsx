@@ -36,9 +36,11 @@ import {
 import { cn } from "@shogo/shared-ui/primitives";
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
+import { CHAT_TRANSCRIPT_MAX_WIDTH } from "../../lib/native-composer-keyboard";
 import {
   Popover,
   PopoverBackdrop,
@@ -46,11 +48,12 @@ import {
 } from "@/components/ui/popover";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { AttachSourceSheet } from "./AttachSourceSheet";
 import { ContextTracker } from "./ContextTracker";
 import type { ContextBreakdownData } from "./ContextBreakdownPanel";
 import { resolveShortName, resolveTier } from "../../lib/visible-models";
-import { ComposerModelPicker } from "./ModelPickerMenu";
+import { ComposerModelPicker, ModelPickerMenu } from "./ModelPickerMenu";
 import { WebTooltip } from "./WebTooltip";
 import { DockChip } from "./dock/DockChip";
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel";
@@ -72,6 +75,7 @@ import {
   FileText,
   FolderGit2,
   Bot,
+  Cpu,
   ClipboardList,
   MessageCircleQuestion,
   Check,
@@ -564,10 +568,16 @@ function ChatInputImpl({
   const liquidGlass = useProminentComposer && supportsLiquidGlass();
   const sendChrome = composerSendChrome(isNative || useProminentComposer);
   const mobileChatText = usesMobileWorkspaceChrome || useProminentComposer;
+  const isPersonalWorkspace = useWorkspaceExperience().kind === "personal";
+  // Personal workspaces never pick a model, including mobile project chats.
+  // Phone chrome moves the picker into the + menu instead of an inline pill.
   const showModelPicker =
-    composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId);
+    !isPersonalWorkspace &&
+    (composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId));
   const showInlineMobileModelPicker =
-    showModelPicker && (useProminentComposer || usesMobileWorkspaceChrome);
+    showModelPicker &&
+    !useProminentComposer &&
+    !usesMobileWorkspaceChrome;
   const composerFontSize = mobileChatText ? 16 : 13;
   const composerLineHeight = mobileChatText ? 24 : 19;
   const inputMinHeight = sizes.inputMinHeight;
@@ -1530,14 +1540,23 @@ function ChatInputImpl({
         flush
           ? "pb-3"
           : useProminentComposer
-          ? "px-3 pb-2 pt-0"
+          ? "w-full self-center pb-2 pt-0"
+          : presentation === "agent"
+          ? "w-full self-center px-6 pb-4 pt-0"
           : isNative
           ? "px-2 pb-4 pt-0"
-          : "p-3 pt-0",
-        presentation === "agent" &&
-          !flush &&
-          "w-full self-center px-6 pb-4 pt-0"
+          : "p-3 pt-0"
       )}
+      style={
+        useProminentComposer && !flush
+          ? {
+              width: "100%",
+              maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+              alignSelf: "center",
+              paddingHorizontal: NATIVE_PHONE_GUTTER,
+            }
+          : undefined
+      }
     >
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1920,10 +1939,9 @@ function ChatInputImpl({
                   borderRadius: isNative
                     ? PROMINENT_COMPOSER_NATIVE_RADIUS
                     : PROMINENT_COMPOSER_RADIUS,
-                  borderWidth: 1,
-                  borderColor: liquidGlass
-                    ? "rgba(255,255,255,0.25)"
-                    : chatgptComposer.border,
+                  minHeight: isNative
+                    ? NATIVE_PHONE_COMPOSER_PILL_HEIGHT
+                    : undefined,
                   backgroundColor: liquidGlass
                     ? "transparent"
                     : chatgptComposer.fill,
@@ -2304,7 +2322,7 @@ function ChatInputImpl({
             style={
               useProminentComposer
                 ? {
-                    zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                    zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX,
                     ...(isNative
                       ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT }
                       : {}),
@@ -2352,6 +2370,25 @@ function ChatInputImpl({
                     onAttach={handlePlusAttach}
                     attachDisabled={pendingFiles.length >= MAX_FILES}
                   >
+                    {showModelPicker ? (
+                      <ComposerPlusSection
+                        id="model"
+                        label="Model"
+                        value={compactNativeModelLabel(currentModelId)}
+                        Icon={Cpu}
+                      >
+                        <ModelPickerMenu
+                          currentModelId={currentModelId}
+                          effectiveIsPro={effectiveIsPro}
+                          presentation="sheet"
+                          onSelect={(modelId) => {
+                            handleModelChange(modelId);
+                            closePlusMenu();
+                          }}
+                          onDismiss={closePlusMenu}
+                        />
+                      </ComposerPlusSection>
+                    ) : null}
                     {composer.showInteractionModes ? (
                       <ComposerPlusSection
                         id="mode"
@@ -3116,10 +3153,7 @@ function ChatInputImpl({
                 );
               }}
               onSubmitEditing={handleSubmitEditing}
-              scrollEnabled={
-                prominentExpansion.stacked &&
-                inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT
-              }
+              scrollEnabled={inputHeight >= inputMaxHeight}
               onContentSizeChange={(e) => {
                 const currentText =
                   pendingTextChangeRef.current?.text ?? inputValueRef.current;

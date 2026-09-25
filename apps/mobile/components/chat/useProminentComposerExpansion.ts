@@ -84,11 +84,14 @@ export function shouldStackProminentComposer({
     const threshold = currentlyStacked
       ? slotWidth - PROMINENT_COMPOSER_WRAP_SLOP
       : slotWidth
-    return textWidth > threshold
+    if (textWidth > threshold) return true
   }
 
-  if (currentlyStacked) return true
-  return contentHeight > lineHeight + PROMINENT_COMPOSER_WRAP_SLOP
+  // The hidden width measurer can miss a wrap. A taller field means the
+  // line already broke, so stack instead of letting it cover the buttons.
+  if (contentHeight > lineHeight + PROMINENT_COMPOSER_WRAP_SLOP) return true
+  if (currentlyStacked && !measuredSlot) return true
+  return false
 }
 
 export function nextProminentComposerHeight(

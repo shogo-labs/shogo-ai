@@ -73,7 +73,6 @@ import {
   PROMINENT_COMPOSER_PADDING_TOP,
   PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
-  PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
   nextProminentComposerHeight,
 } from "./useProminentComposerExpansion";
 import { EnvironmentPicker } from "./EnvironmentPicker";
@@ -738,7 +737,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             style={
               useProminentComposer
                 ? {
-                    zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                    zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX,
                     ...(Platform.OS !== "web"
                       ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT }
                       : {}),
@@ -1278,10 +1277,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   handleSubmit();
                 }
               }}
-              scrollEnabled={
-                prominentExpansion.stacked &&
-                inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT
-              }
+              scrollEnabled={inputHeight >= inputMaxHeight}
               onContentSizeChange={(e) => {
                 const h = e.nativeEvent.contentSize.height;
                 prominentExpansion.reportContentHeight(h);
