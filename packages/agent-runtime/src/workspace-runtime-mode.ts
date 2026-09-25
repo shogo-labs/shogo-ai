@@ -28,6 +28,9 @@
  * without importing the side-effectful `server.ts` boot path.
  */
 
+import { existsSync } from 'fs'
+import { join } from 'path'
+
 export type WorkingMode = 'managed' | 'external'
 
 /** True when the runtime was booted as a multi-project workspace runtime. */
@@ -78,6 +81,25 @@ export function parseWorkspaceMounts(env: NodeJS.ProcessEnv = process.env): Work
   } catch {
     return []
   }
+}
+
+/**
+ * Directory the agent's shell starts in. A merged-root runtime's
+ * WORKSPACE_DIR is Shogo scaffolding holding one link per mount, so a shell
+ * started there put `git clone` and scaffolding output outside the project
+ * (missing from the project's files view and checkpoints). Start in the
+ * anchor project's mount when it is present.
+ */
+export function defaultShellCwd(
+  workspaceDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  const anchor = isWorkspaceRuntimeMode(env) ? env.WORKSPACE_ANCHOR_PROJECT_ID : undefined
+  if (!anchor) return workspaceDir
+  const mount = parseWorkspaceMounts(env).find((m) => m.projectId === anchor && m.kind !== 'folder')
+  const dir = join(workspaceDir, mount?.mount ?? anchor)
+  return exists(dir) ? dir : workspaceDir
 }
 
 /** Mounts whose content belongs to the user rather than to Shogo. */
@@ -263,6 +285,8 @@ export function renderCurrentProjectSection(
     `The user has \`${anchor}/\`${name && name !== anchor ? ` (**${name}**)` : ''} open, and its canvas previews that folder.`,
     `When they mean "the app" or "this project", work in \`${anchor}/\`: a file like \`src/App.tsx\` is`,
     `\`${anchor}/src/App.tsx\`. The workspace root is not a project, so always include the project folder in paths.`,
+    `New work also goes inside \`${anchor}/\` (your shell starts there): clone repositories, scaffold, and download into it,`,
+    'never into the workspace root, or the files are missing from the project and its checkpoints.',
     '',
   ]
 }

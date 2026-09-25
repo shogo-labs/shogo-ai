@@ -96,7 +96,7 @@ import {
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
-import { workspaceKind } from './workspace-runtime-mode'
+import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
@@ -2226,8 +2226,9 @@ export class AgentGateway {
       autoTierOverride: this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
-        getCwd: () => this.shellCwd.get(sessionId!) || sessionWorkspaceDir,
+        getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
+        initialCwd: this.initialShellCwd(sessionWorkspaceDir),
       } : undefined,
       commandRegistry,
       guideRegistry: this.currentGuideRegistry,
@@ -3668,9 +3669,33 @@ export class AgentGateway {
     return lines
   }
 
+  /**
+   * Where a session's shell starts: the anchor project's mount in a
+   * merged-root runtime. A per-chat worktree keeps its own root.
+   */
+  private initialShellCwd(sessionWorkspaceDir: string): string {
+    return sessionWorkspaceDir === this.workspaceDir ? defaultShellCwd(this.workspaceDir) : sessionWorkspaceDir
+  }
+
+  /**
+   * File tools resolve relative paths from the workspace root while exec runs
+   * in the session's shell cwd; say so whenever the two differ.
+   */
+  private workingDirectoryLines(currentCwd: string): string[] {
+    if (currentCwd === this.workspaceDir) {
+      return [`- Working directory: \`${currentCwd}\``, '', 'All file paths are relative to the working directory.']
+    }
+    return [
+      `- Shell working directory: \`${currentCwd}\``,
+      `- Workspace root: \`${this.workspaceDir}\``,
+      '',
+      'File tool paths (read_file, write_file, edit_file, ...) are relative to the workspace root; shell commands run in the shell working directory.',
+    ]
+  }
+
   private buildSWEPrompt(sessionId?: string): string {
     const parts: string[] = []
-    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
     const now = new Date()
     parts.push([
@@ -3678,9 +3703,8 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${currentCwd}\``,
-      '',
-      'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+      ...this.workingDirectoryLines(currentCwd),
+      'Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the directories above.',
       ...this.buildShellNavLines(),
     ].join('\n'))
 
@@ -3721,7 +3745,7 @@ export class AgentGateway {
    */
   private buildGeneralPrompt(sessionId?: string): string {
     const parts: string[] = []
-    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
     const now = new Date()
     parts.push([
@@ -3729,9 +3753,8 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${currentCwd}\``,
-      '',
-      'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+      ...this.workingDirectoryLines(currentCwd),
+      'Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the directories above.',
       ...this.buildShellNavLines(),
     ].join('\n'))
 
@@ -4070,15 +4093,13 @@ export class AgentGateway {
 
     // 9. Current date/time context (changes every turn)
     const now = new Date()
-    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
     pushDynamic('current-context', [
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${currentCwd}\``,
-      '',
-      'All file paths are relative to the working directory.',
+      ...this.workingDirectoryLines(currentCwd),
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
       ...this.buildShellNavLines(),
     ].join('\n'))

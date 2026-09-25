@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, it } from 'bun:test'
+import { join } from 'path'
 import {
   isWorkspaceRuntimeMode,
   workspaceKind,
@@ -21,6 +22,7 @@ import {
   workspaceExternalProjectIds,
   shouldAutoStartAnchorPreview,
   userOwnedTrustGroups,
+  defaultShellCwd,
   type WorkspaceMount,
 } from '../workspace-runtime-mode'
 
@@ -194,6 +196,9 @@ describe('renderWorkspaceManifestMarkdown', () => {
     expect(md).toContain('## Current project')
     expect(md).toContain('`p1/` (**alpha-api**) open')
     expect(md).toContain('`p1/src/App.tsx`')
+    // "clone this repo" is new work, not "this project"; it still belongs in the project folder.
+    expect(md).toContain('New work also goes inside `p1/`')
+    expect(md).toContain('clone repositories')
     expect(renderWorkspaceManifestMarkdown('ws-1', [{ id: 'p1', name: 'alpha-api' }])).not.toContain('## Current project')
   })
 })
@@ -313,5 +318,38 @@ describe('parseWorkspacePreviewUrls', () => {
     expect(parseWorkspacePreviewUrls({ WORKSPACE_PREVIEW_URLS: '{}' } as any)).toEqual({})
     expect(parseWorkspacePreviewUrls({ WORKSPACE_RUNTIME: 'true', WORKSPACE_PREVIEW_URLS: '{bad' } as any)).toEqual({})
     expect(parseWorkspacePreviewUrls({ WORKSPACE_RUNTIME: 'true' } as any)).toEqual({})
+  })
+})
+
+describe('defaultShellCwd', () => {
+  const root = '/ws/.workspace-roots/proj-anchor'
+  const anchorEnv = (mounts: WorkspaceMount[]) => ({
+    WORKSPACE_RUNTIME: 'true',
+    WORKSPACE_ANCHOR_PROJECT_ID: 'anchor',
+    WORKSPACE_MOUNTS: JSON.stringify(mounts),
+  })
+  const everything = () => true
+
+  it('starts a merged-root shell in the anchor project mount', () => {
+    const env = anchorEnv([{ mount: 'anchor', path: '/ws/anchor', projectId: 'anchor', kind: 'managed' }])
+    expect(defaultShellCwd(root, env, everything)).toBe(join(root, 'anchor'))
+  })
+
+  it('uses the anchor mount, not an extra folder linked to the anchor', () => {
+    const env = anchorEnv([
+      { mount: 'repo', path: '/home/me/repo', projectId: 'anchor', kind: 'folder' },
+      { mount: 'anchor', path: '/home/me/app', projectId: 'anchor', kind: 'external' },
+    ])
+    expect(defaultShellCwd(root, env, everything)).toBe(join(root, 'anchor'))
+  })
+
+  it('falls back to the workspace root when the anchor mount is missing on disk', () => {
+    const env = anchorEnv([{ mount: 'anchor', path: '/ws/anchor', projectId: 'anchor', kind: 'managed' }])
+    expect(defaultShellCwd(root, env, () => false)).toBe(root)
+  })
+
+  it('leaves single-project runtimes and anchorless workspace runtimes alone', () => {
+    expect(defaultShellCwd('/ws/p1', {}, everything)).toBe('/ws/p1')
+    expect(defaultShellCwd(root, { WORKSPACE_RUNTIME: 'true' }, everything)).toBe(root)
   })
 })

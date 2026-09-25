@@ -189,7 +189,7 @@ export interface ToolContext {
    *  the `data-plan-summary` stream event. Persistent per-user preference. */
   dualPlan?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
-  shellState?: { getCwd: () => string; setCwd: (cwd: string) => void }
+  shellState?: { getCwd: () => string; setCwd: (cwd: string) => void; initialCwd?: string }
   /** Tracks backgrounded shell commands that soft-timed-out so exec_wait can retrieve them */
   commandRegistry?: import('./command-registry').CommandRegistry
   /** On-demand guide registry populated by buildGuideRegistry() */
@@ -751,7 +751,9 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // dir, producing confusing errors like `cd: can't cd to game`.
       let cwdReset = false
       if (!existsSync(currentCwd)) {
-        currentCwd = ctx.workspaceDir
+        currentCwd = ctx.shellState?.initialCwd && existsSync(ctx.shellState.initialCwd)
+          ? ctx.shellState.initialCwd
+          : ctx.workspaceDir
         cwdReset = true
         ctx.shellState?.setCwd(currentCwd)
       }

@@ -70,31 +70,40 @@ export async function callProjectAgent(
   })
 
   try {
-    const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
-    const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })
-    if (!resolution.ok) return { status: resolution.status, body: resolution.body }
-
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
 
-    if (resolution.kind === 'tunnel') {
-      const { relayAgentProxyViaTunnel } = await import('../lib/tunnel-relay')
-      const res = await relayAgentProxyViaTunnel({
-        c,
-        instanceId: resolution.instanceId,
-        workspaceId: resolution.workspaceId,
-        projectId,
-        agentPath: '/agent/pipeline/call',
-        cleanPath: '/agent/pipeline/call',
-        method: 'POST',
-        body: forwardBody,
-        headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
-      })
-      const json = await res.json().catch(() => ({}))
-      return { status: res.status, body: json }
+    let runtimeUrl: string
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      // Desktop: every project runs on the host RuntimeManager. The tunnel /
+      // Redis resolver below is cloud-only and stays out of the local bundle.
+      const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+      runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'AgentCall' })).url
+    } else {
+      const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
+      const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCall' })
+      if (!resolution.ok) return { status: resolution.status, body: resolution.body }
+
+      if (resolution.kind === 'tunnel') {
+        const { relayAgentProxyViaTunnel } = await import('../lib/tunnel-relay')
+        const res = await relayAgentProxyViaTunnel({
+          c,
+          instanceId: resolution.instanceId,
+          workspaceId: resolution.workspaceId,
+          projectId,
+          agentPath: '/agent/pipeline/call',
+          cleanPath: '/agent/pipeline/call',
+          method: 'POST',
+          body: forwardBody,
+          headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
+        })
+        const json = await res.json().catch(() => ({}))
+        return { status: res.status, body: json }
+      }
+      runtimeUrl = resolution.url
     }
 
-    const res = await fetch(`${resolution.url}/agent/pipeline/call`, {
+    const res = await fetch(`${runtimeUrl}/agent/pipeline/call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
       body: forwardBody,

@@ -784,6 +784,25 @@ describe('gateway-tools', () => {
       expect(result.cwd).toBeDefined()
     })
 
+    test('a deleted cwd resets to the session start directory, not the merged root', async () => {
+      const projectDir = join(TEST_DIR, 'project-mount')
+      mkdirSync(join(TEST_DIR, 'scratch'), { recursive: true })
+      mkdirSync(projectDir, { recursive: true })
+      const cwdMap = new Map<string, string>()
+      const ctx = createCtx({
+        sessionId: 's',
+        shellState: {
+          getCwd: () => cwdMap.get('s') || realpathSync(projectDir),
+          setCwd: (cwd: string) => cwdMap.set('s', cwd),
+          initialCwd: realpathSync(projectDir),
+        },
+      })
+      await execStateful(ctx, `cd "${join(REAL_TEST_DIR, 'scratch')}"`)
+      rmSync(join(TEST_DIR, 'scratch'), { recursive: true })
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(realpathSync(projectDir))
+    })
+
     test('rapid sequential calls have no temp file collision', async () => {
       const ctx = createStatefulCtx()
       for (let i = 0; i < 10; i++) {

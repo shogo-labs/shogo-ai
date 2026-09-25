@@ -47,6 +47,13 @@ describe('billing-runtime (local mode)', () => {
     expect(await billing.ensureSystemWorkspace()).toBeUndefined()
     expect(await billing.getSubscription('local-workspace')).toBeNull()
     expect(await billing.getUsageWallet('local-workspace')).toBeNull()
+    expect(await billing.hasPaidSubscription('local-workspace')).toBe(true)
+  })
+
+  test('any tech stack may run regardless of instance size (project_create / project_configure)', async () => {
+    for (const stack of ['react-app', 'expo-app', null]) {
+      expect((await billing.canRunTechStackOnInstanceSize('local-workspace', stack)).allowed).toBe(true)
+    }
   })
 
   test('usage windows are uncapped snapshots, not null', async () => {

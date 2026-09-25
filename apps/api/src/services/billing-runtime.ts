@@ -14,6 +14,7 @@
  */
 import type * as CloudBillingModule from './billing.service'
 import type { UsageWindowKind, UsageWindowSnapshot } from './billing.service'
+import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { usageLimitErrorPayload as localUsageLimitErrorPayload } from './usage-limits'
 import { recordLocalUsage } from './billing-local'
 
@@ -32,7 +33,11 @@ type BillingSeam = Pick<
   | 'getUsageWindows'
   | 'syncFromStripe'
   | 'hasBalance'
+  | 'hasPaidSubscription'
+  | 'canRunTechStackOnInstanceSize'
 >
+
+type InstanceSizeName = Awaited<ReturnType<CloudBilling['canRunTechStackOnInstanceSize']>>['currentSize']
 
 let cloudBilling: CloudBilling | null = null
 if (process.env.SHOGO_LOCAL_MODE !== 'true') {
@@ -63,6 +68,14 @@ export const localBilling: BillingSeam = {
   getSubscription: async () => null,
   getUsageWallet: async () => null,
   getUsageWindows: async () => ({ fiveHour: uncappedWindow('five_hour'), weekly: uncappedWindow('weekly') }),
+  hasPaidSubscription: async () => true,
+  // Desktop runs every stack on the host; callers only read `currentSize` to
+  // explain a refusal, which never happens here.
+  canRunTechStackOnInstanceSize: async (_workspaceId, techStackId) => ({
+    allowed: true,
+    currentSize: 'micro' as InstanceSizeName,
+    requiredSize: getMinimumInstanceSize(techStackId) as InstanceSizeName | null,
+  }),
   allocateMonthlyIncluded: unavailableLocally('allocateMonthlyIncluded'),
   syncFromStripe: unavailableLocally('syncFromStripe'),
 }
@@ -87,3 +100,7 @@ export const getUsageWallet: BillingSeam['getUsageWallet'] = (...args) => billin
 export const getUsageWindows: BillingSeam['getUsageWindows'] = (...args) => billing().getUsageWindows(...args)
 export const syncFromStripe: BillingSeam['syncFromStripe'] = (...args) => billing().syncFromStripe(...args)
 export const hasBalance: BillingSeam['hasBalance'] = (...args) => billing().hasBalance(...args)
+export const hasPaidSubscription: BillingSeam['hasPaidSubscription'] = (...args) =>
+  billing().hasPaidSubscription(...args)
+export const canRunTechStackOnInstanceSize: BillingSeam['canRunTechStackOnInstanceSize'] = (...args) =>
+  billing().canRunTechStackOnInstanceSize(...args)
