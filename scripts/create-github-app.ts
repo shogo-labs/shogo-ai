@@ -350,7 +350,8 @@ async function main(): Promise<void> {
       administration: 'write',
     },
     default_events: [
-      'installation',
+      // Installation lifecycle deliveries are automatic and cannot be
+      // selected in a GitHub App manifest.
       'push',
       'issues',
       'issue_comment',
