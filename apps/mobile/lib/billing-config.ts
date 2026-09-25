@@ -301,6 +301,7 @@ export const BUSINESS_FEATURES = [
   'Personal & restricted projects',
   'Opt out of data training',
   'Per-member spending limits',
+  'Unlimited workspaces for better organization',
   'Priority support',
 ]
 
