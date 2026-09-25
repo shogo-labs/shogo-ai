@@ -97,9 +97,14 @@ const styles = StyleSheet.create({
 // Matches ChatInput's own outer horizontal padding (`px-3` web / `px-4`
 // native phone gutter) — see the file header comment.
 const HORIZONTAL_PADDING_CLASS = Platform.OS !== "web" ? "px-4" : "px-3"
-// `rounded-xl` matches ChatInput's own bordered box directly below, so the
-// dock reads as the same card language stacked on top of the composer.
-const ZONE_CARD_CLASS = "overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-md"
+// `rounded-xl` matches ChatInput's own bordered box directly below, so each
+// dock zone reads as the same card language stacked on top of the composer.
+// Status panels remain subtly translucent, while blocking panels must fully
+// obscure the transcript because they park the agent turn and require action.
+const STATUS_ZONE_CARD_CLASS =
+  "overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-md"
+const BLOCKING_ZONE_CARD_CLASS =
+  "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-md"
 
 export interface ChatDockProps {
   /** Available height above the composer, used to cap the status zone at ~45%. */
@@ -192,7 +197,7 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
     )
   })
   const statusZone = statusPanels.length > 0 && (
-    <View style={styles.relative} className={ZONE_CARD_CLASS}>
+    <View style={styles.relative} className={STATUS_ZONE_CARD_CLASS}>
       {native ? (
         <CappedContentScroll maxHeight={maxStatusHeight}>
           {statusList}
@@ -217,7 +222,7 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
     <>
       {statusZone}
       {blockingPanels.length > 0 && (
-        <View className={ZONE_CARD_CLASS}>{blockingContent}</View>
+        <View className={BLOCKING_ZONE_CARD_CLASS}>{blockingContent}</View>
       )}
     </>
   )
