@@ -385,17 +385,10 @@ export class RuntimeManager implements IRuntimeManager {
       // a prebuilt agent-runtime binary on disk.
       //
       // The agent-runtime imports several `@shogo-ai/sdk` subpaths
-      // (`microcompact`, `pi-adapter`, `prefix-fingerprint`,
-      // `model-router`, `hooks`, `voice`, `tool-orchestration`) whose
-      // `exports` map in `packages/sdk/package.json` routes Bun's
-      // default `import` condition to `dist/*.js`. We therefore
-      // require `packages/sdk/dist/` to be built before the API spawns
-      // its first agent — `scripts/dev-all.ts` builds it up front and
-      // `bun run build:packages` is the manual equivalent. The other
-      // workspace packages the agent-runtime pulls in
-      // (`@shogo/shared-runtime`, `@shogo/model-catalog`) declare
-      // `"main": "src/index.ts"` with no `exports` map and resolve to
-      // source unconditionally, so no build is needed for those.
+      // whose `exports` map routes Bun's default `import` condition to
+      // `dist/*.js`. The source spawn passes `--conditions=development`
+      // so those subpaths resolve to TypeScript, matching the API
+      // process. A compiled `agent-runtime` binary is spawned directly.
       spawnCommand: (entry: string) => ({
         command: entry.endsWith('.exe') ||
           basename(entry) === 'agent-runtime'
@@ -404,7 +397,11 @@ export class RuntimeManager implements IRuntimeManager {
         args: entry.endsWith('.exe') ||
           basename(entry) === 'agent-runtime'
           ? []
-          : ['run', entry],
+          // Source entry resolves `@shogo-ai/*` through the `development`
+          // export condition (TypeScript), same as the API process. Without
+          // it Bun's default `import` condition demands every package's
+          // `dist/` and the runtime exits before /health.
+          : ['--conditions=development', 'run', entry],
       }),
       // Bypass the worker's binary-resolution chain (which expects a
       // compiled `agent-runtime` under ~/.shogo/runtime/) and point at

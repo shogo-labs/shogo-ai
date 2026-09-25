@@ -6,11 +6,14 @@ import type { MarkedStyles } from "react-native-marked";
 import { useColorScheme } from "nativewind";
 import {
   ScrollView,
+  Text,
   useWindowDimensions,
   View,
   type ColorValue,
+  type TextStyle,
   type ViewStyle,
 } from "react-native";
+import { linkifyFilePaths, pathFromFileHref } from "./file-links";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 
@@ -28,6 +31,8 @@ export interface MarkdownTextProps {
   className?: string;
   isStreaming?: boolean;
   variant?: MarkdownVariant;
+  /** Opens a workspace file when the text mentions its path. */
+  onFilePress?: (path: string) => void;
 }
 
 const baseStyles: MarkedStyles = {
@@ -132,8 +137,37 @@ const MARKED_TABLE_COLUMN_WIDTH_RATIO = 1.3 / 3;
  * right side of a wide table inaccessible.
  */
 class NativePhoneMarkdownRenderer extends Renderer {
-  constructor(private readonly tableWidth: number) {
+  constructor(
+    private readonly tableWidth: number,
+    private readonly onFilePress?: (path: string) => void,
+  ) {
     super();
+  }
+
+  override link(
+    children: string | ReactNode[],
+    href: string,
+    styles?: TextStyle,
+    title?: string,
+  ): ReactNode {
+    const path = pathFromFileHref(href);
+    if (path && this.onFilePress) {
+      const open = this.onFilePress;
+      return (
+        <Text
+          selectable
+          accessibilityRole="link"
+          accessibilityLabel={title || path}
+          testID="chat-file-link"
+          key={this.getKey()}
+          onPress={() => open(path)}
+          style={styles}
+        >
+          {children}
+        </Text>
+      );
+    }
+    return super.link(children, href, styles, title);
   }
 
   override table(
@@ -212,6 +246,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.variant !== next.variant) return false;
   if (prev.className !== next.className) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.onFilePress !== next.onFilePress) return false;
   const a = prev.children || "";
   const b = next.children || "";
   return a.length === b.length && a === b;
@@ -220,6 +255,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
 export const MarkdownText = memo(function MarkdownText({
   children,
   variant = "default",
+  onFilePress,
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
@@ -241,10 +277,13 @@ export const MarkdownText = memo(function MarkdownText({
     ? phoneChatStyles
     : baseStyles;
 
-  const value = useMemo(() => children || "", [children]);
+  const value = useMemo(
+    () => (onFilePress ? linkifyFilePaths(children || "") : children || ""),
+    [children, onFilePress],
+  );
   const renderer = useMemo(
-    () => new NativePhoneMarkdownRenderer(width),
-    [width]
+    () => new NativePhoneMarkdownRenderer(width, onFilePress),
+    [width, onFilePress],
   );
 
   return (

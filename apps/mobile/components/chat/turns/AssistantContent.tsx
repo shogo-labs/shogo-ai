@@ -554,6 +554,7 @@ export const AssistantContent = memo(
                     : "text-foreground text-xs prose-sm"
                 }
                 isStreaming={isStreaming}
+                onFilePress={chatContext?.openFile}
               >
                 {part.text}
               </MarkdownText>

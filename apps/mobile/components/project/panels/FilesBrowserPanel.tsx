@@ -44,6 +44,7 @@ import {
   usePhoneLayout,
 } from '../../../lib/native-phone-layout';
 import { densityFor } from "../../../lib/phone-density"
+import { MarkdownText } from "../../chat/MarkdownText"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,6 +54,8 @@ interface FilesBrowserPanelProps {
   projectId: string
   agentUrl: string | null
   visible: boolean
+  /** Open this file when the panel is visible. `nonce` re-opens the same path. */
+  requestedFile?: { path: string; nonce: number } | null
 }
 
 const WORKSPACE_FILES = [
@@ -272,7 +275,7 @@ function mountWebFileInput(input: HTMLInputElement): () => void {
 
 const NARROW_BREAKPOINT = 600
 
-export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowserPanelProps) {
+export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile = null }: FilesBrowserPanelProps) {
   const { width, height, isPhone: isNativePhone } = useNativePhoneWindow()
   const isNarrow = width < NARROW_BREAKPOINT
   // Viewport-based, not Platform-gated: narrow mobile web gets the same
@@ -292,6 +295,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [isWorkspaceFile, setIsWorkspaceFile] = useState(false)
   const [content, setContent] = useState('')
+  const [mdMode, setMdMode] = useState<'preview' | 'edit'>('preview')
   const [savedContent, setSavedContent] = useState('')
   const [isLoadingTree, setIsLoadingTree] = useState(false)
   const [isLoadingFile, setIsLoadingFile] = useState(false)
@@ -399,6 +403,19 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
   useEffect(() => {
     if (visible) loadTree()
   }, [visible, loadTree])
+
+  const appliedRequestedNonce = useRef<number | null>(null)
+  useEffect(() => {
+    if (!visible || !requestedFile || !client) return
+    if (appliedRequestedNonce.current === requestedFile.nonce) return
+    appliedRequestedNonce.current = requestedFile.nonce
+    setMdMode('preview')
+    void loadFile(requestedFile.path)
+  }, [visible, requestedFile, client, loadFile])
+
+  useEffect(() => {
+    setMdMode('preview')
+  }, [selectedPath])
 
   useEffect(() => {
     if (!visible || !client) return
@@ -1022,6 +1039,25 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               )}
               {hasChanges && <Text className="text-xs text-amber-500">unsaved</Text>}
 
+              {selectedPath && /\.mdx?$/i.test(selectedPath) && (
+                <View className="ml-2 flex-row items-center gap-1">
+                  <Pressable
+                    testID="ide-md-mode-preview"
+                    onPress={() => setMdMode('preview')}
+                    className={cn('rounded-md px-2 py-1', mdMode === 'preview' ? 'bg-muted' : '')}
+                  >
+                    <Text className="text-xs text-foreground">Preview</Text>
+                  </Pressable>
+                  <Pressable
+                    testID="ide-md-mode-edit"
+                    onPress={() => setMdMode('edit')}
+                    className={cn('rounded-md px-2 py-1', mdMode === 'edit' ? 'bg-muted' : '')}
+                  >
+                    <Text className="text-xs text-foreground">Edit</Text>
+                  </Pressable>
+                </View>
+              )}
+
               <View className="ml-auto flex-row items-center gap-1">
                 {!isWorkspaceFile && (
                   <>
@@ -1076,6 +1112,10 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible }: FilesBrowser
               <View className="flex-1 items-center justify-center">
                 <ActivityIndicator size="small" />
               </View>
+            ) : selectedPath && /\.mdx?$/i.test(selectedPath) && mdMode === 'preview' ? (
+              <ScrollView className="flex-1 p-4" testID="ide-md-preview">
+                <MarkdownText>{content}</MarkdownText>
+              </ScrollView>
             ) : (
               <TextInput
                 value={content}
