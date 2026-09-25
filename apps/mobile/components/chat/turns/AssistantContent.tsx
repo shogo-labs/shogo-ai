@@ -40,6 +40,7 @@ import {
   extractOrderedParts,
 } from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
+import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { MarkdownText } from "../MarkdownText"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { GenerateImageWidget } from "./GenerateImageWidget"
@@ -797,7 +798,7 @@ export const AssistantContent = memo(
           return (
             <ImageThumbnail
               key={part.id}
-              url={part.url}
+              url={resolveChatAttachmentUrl(part.url)}
               mediaType={part.mediaType}
               index={index}
             />
@@ -808,7 +809,7 @@ export const AssistantContent = memo(
           return (
             <FileThumbnail
               key={part.id}
-              url={part.url}
+              url={resolveChatAttachmentUrl(part.url)}
               mediaType={part.mediaType}
               index={index}
             />

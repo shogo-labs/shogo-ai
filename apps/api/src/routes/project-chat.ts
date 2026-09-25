@@ -33,6 +33,10 @@ import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { sendPushToUser } from "../lib/push-notifications"
 import {
+  externalizeToolOutput,
+  inlineChatBodyAttachments,
+} from "../lib/chat-attachments"
+import {
   clearActiveTurn,
   markTurnEnded,
   markTurnStarted,
@@ -207,6 +211,7 @@ export async function trackUsageFromStream(
   let orderedParts: any[] = []
   // Index into orderedParts by toolCallId so we can back-fill output later
   let toolPartIndex = new Map<string, any>()
+  let pendingToolOutputWrites: Promise<void>[] = []
   let currentTextPart: { type: 'text'; text: string } | null = null
   let currentReasoningPart: { type: 'reasoning'; text: string; durationMs?: number } | null = null
   let reasoningStartedAt: number | null = null
@@ -275,6 +280,11 @@ export async function trackUsageFromStream(
     const run = (async () => {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (!session) return
+      if (pendingToolOutputWrites.length > 0) {
+        const writes = pendingToolOutputWrites
+        pendingToolOutputWrites = []
+        await Promise.all(writes)
+      }
       const parts = buildPersistedParts()
       const data = {
         role: 'assistant' as const,
@@ -512,7 +522,17 @@ export async function trackUsageFromStream(
       }
       const part = toolPartIndex.get(toolCallId)
       if (part) {
-        part.output = data.output ?? { success: true }
+        const output = data.output ?? { success: true }
+        part.output = output
+        if (chatSessionId) {
+          const write = externalizeToolOutput(chatSessionId, output)
+            .then((externalized) => {
+              part.output = externalized
+              if (record) record.result = externalized
+            })
+            .catch(() => undefined)
+          pendingToolOutputWrites.push(write)
+        }
         part.state = 'output-available'
       }
       persistenceDirty = true
@@ -1091,6 +1111,25 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let body = await c.req.text()
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
+
+      // Persisted chat messages use capability URLs for attachments. The
+      // runtime still expects bytes/data URLs for the current model turn, so
+      // hydrate only the explicit files and latest user message before proxying.
+      if (parsedBody && typeof parsedBody === 'object') {
+        try {
+          const hydratedBody = await inlineChatBodyAttachments(parsedBody)
+          if (hydratedBody !== parsedBody) {
+            parsedBody = hydratedBody
+            body = JSON.stringify(parsedBody)
+          }
+        } catch (error: any) {
+          console.error('[ProjectChat] Failed to load chat attachment:', error?.message || error)
+          return c.json(
+            { error: { code: 'attachment_unavailable', message: 'A chat attachment could not be loaded' } },
+            502,
+          )
+        }
+      }
 
       const balanceCheck = await billingService.checkUsageBalance(project.workspaceId)
       if (!balanceCheck.ok) {
