@@ -10,6 +10,12 @@
 
 set -e
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "[entrypoint] ERROR: git is required for workspace repository operations but is not available on PATH."
+  exit 1
+fi
+echo "[entrypoint] Git: $(git --version)"
+
 if [ -n "$WORKSPACES_DIR" ]; then
   mkdir -p "$WORKSPACES_DIR"
   echo "Workspaces directory: $WORKSPACES_DIR"
