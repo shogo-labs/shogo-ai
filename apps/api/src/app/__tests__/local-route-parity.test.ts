@@ -36,11 +36,14 @@ const REQUIRED_LOCAL_ROUTES = [
   'PATCH /api/workspaces/:workspaceId/schedules/:scheduleId',
   'DELETE /api/workspaces/:workspaceId/schedules/:scheduleId',
   'GET /api/types-proxy',
+  // Called by the local agent-runtime; "Trust folder" is dead without it.
+  'GET /api/internal/projects/:projectId/trust',
 ] as const
 
 describe('local API route parity', () => {
   test('desktop-required routes are mounted in the local composer', async () => {
     process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP = '1'
     mock.module('@shogo-ai/sdk/cli/pkg', () => ({
       pkg: { version: '0.0.0', name: '@shogo-ai/sdk' },
       PlatformPackageManager: class {},

@@ -14,26 +14,9 @@
 
 import type { Context } from 'hono'
 import { validatePodToken } from '../lib/k8s-auth'
+import { authenticateRuntimeToken, logAuthReject, type InternalIdentity } from './internal-runtime-auth'
 
-/** Exported so callers outside this module can log in the same format when they reject a request using an `InternalIdentity` this module resolved. */
-export function logAuthReject(reason: string, projectId?: string): void {
-  console.warn(`[InternalAuth] rejected: ${reason}${projectId ? ` projectId=${projectId}` : ''}`)
-}
-
-/**
- * Who authenticated an internal request.
- *
- * `sa` is cluster-scoped (a real K8s ServiceAccount, only obtainable inside
- * the cluster). `project` and `workspace` are HMAC bearer capabilities that a
- * runtime holds in env, so an agent can read its own token — which means they
- * must never be treated as cluster-scoped. Routes that take a `workspaceId`
- * from the request body have to cross-check it against the token's scope; see
- * `authorizeWorkspaceScope`.
- */
-export type InternalIdentity =
-  | { kind: 'sa' }
-  | { kind: 'project'; projectId: string }
-  | { kind: 'workspace'; workspaceId: string }
+export { logAuthReject, type InternalIdentity }
 
 /**
  * Authenticate a request: K8s SA bearer first, then HMAC-signed runtime token.
@@ -47,70 +30,21 @@ export type InternalIdentity =
  *
  * If a Bearer header is present but TokenReview fails, fall through to the
  * runtime token instead of dead-ending — a Knative pod whose SA token is
- * stale still carries a valid `x-runtime-token`.
- *
- * Two runtime topologies present different `x-runtime-token` types:
- *   - Legacy single-project runtime → PROJECT token (`rt_v1_<projectId>_…`),
- *     verified by `verifyRuntimeToken`.
- *   - Universal workspace (merged-root) runtime → WORKSPACE token
- *     (`wrt_v1_<workspaceId>_…`), verified by `verifyWorkspaceRuntimeToken`.
- *     For project-scoped routes we additionally confirm the project belongs
- *     to the token's workspace so a workspace token can't act on a project
- *     in another workspace.
+ * stale still carries a valid `x-runtime-token`. See `authenticateRuntimeToken`
+ * for the project vs. workspace token rules.
  */
 export async function authenticate(c: Context, projectId?: string): Promise<InternalIdentity | null> {
   const authHeader = c.req.header('Authorization')
-  if (authHeader?.startsWith('Bearer ')) {
-    const identity = await validatePodToken(authHeader.slice(7))
+  const hadBearer = authHeader?.startsWith('Bearer ') ?? false
+  if (hadBearer) {
+    const identity = await validatePodToken(authHeader!.slice(7))
     if (identity) return { kind: 'sa' }
     console.warn(
       `[InternalAuth] SA token rejected; falling through to runtime token` +
         `${projectId ? ` projectId=${projectId}` : ''}`,
     )
   }
-
-  const runtimeToken = c.req.header('x-runtime-token')
-  if (!runtimeToken) {
-    logAuthReject(
-      authHeader?.startsWith('Bearer ')
-        ? 'invalid_sa_token_and_no_runtime_token'
-        : 'missing_credentials',
-      projectId,
-    )
-    return null
-  }
-
-  const { verifyRuntimeToken } = await import('../lib/runtime-token')
-  const verified = verifyRuntimeToken(runtimeToken, projectId)
-  if (verified.ok) {
-    if (!projectId || verified.projectId === projectId) {
-      return { kind: 'project', projectId: verified.projectId }
-    }
-    logAuthReject(`runtime_token_project_mismatch tokenProject=${verified.projectId}`, projectId)
-    return null
-  }
-
-  // Workspace (merged-root) runtimes authenticate with a workspace token
-  // instead of a project token. Accept it, enforcing project membership
-  // for project-scoped routes.
-  const { verifyWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
-  const wsVerified = verifyWorkspaceRuntimeToken(runtimeToken)
-  if (wsVerified.ok) {
-    if (!projectId) return { kind: 'workspace', workspaceId: wsVerified.workspaceId }
-    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
-    const workspaceId = await resolveProjectWorkspaceId(projectId)
-    if (workspaceId === wsVerified.workspaceId) {
-      return { kind: 'workspace', workspaceId: wsVerified.workspaceId }
-    }
-    logAuthReject(
-      `workspace_token_mismatch tokenWorkspace=${wsVerified.workspaceId} projectWorkspace=${workspaceId ?? 'none'}`,
-      projectId,
-    )
-    return null
-  }
-
-  logAuthReject(`runtime_token_invalid reason=${verified.reason}`, projectId)
-  return null
+  return authenticateRuntimeToken(c, projectId, hadBearer)
 }
 
 /** Boolean form for project-scoped routes, where the path param is the scope. */
