@@ -399,12 +399,12 @@ describe('POST /projects/:id/github/sync', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('POST /github/webhook', () => {
-  function webhook(event: string, payload: any, signature?: string) {
+  function webhook(event: string, payload: any, signature: string | null = 'sha256=valid') {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-github-event': event,
     }
-    if (signature !== undefined) headers['x-hub-signature-256'] = signature
+    if (signature !== null) headers['x-hub-signature-256'] = signature
     return router.request('/github/webhook', {
       method: 'POST',
       headers,
@@ -418,9 +418,9 @@ describe('POST /github/webhook', () => {
     expect(res.status).toBe(401)
   })
 
-  test('200 when signature is omitted (verification skipped)', async () => {
-    const res = await webhook('ping', { zen: 'be patient' })
-    expect(res.status).toBe(200)
+  test('401 when signature is missing', async () => {
+    const res = await webhook('ping', { zen: 'be patient' }, null)
+    expect(res.status).toBe(401)
     expect(githubSvc.verifyWebhookSignature).not.toHaveBeenCalled()
   })
 

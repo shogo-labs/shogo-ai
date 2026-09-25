@@ -61,12 +61,6 @@ These should ideally be set as **organization-level secrets** to avoid duplicati
 | `SECRETS_ENCRYPTION_KEY` | AES-256-GCM master key (base64, 32 bytes) for encrypting model-provider API keys at rest. **Must be identical across all regions sharing the primary DB** (production-us/eu) so encrypted rows decrypt everywhere; staging uses its own. Generate with `openssl rand -base64 32`. |
 | `STRIPE_SECRET_KEY` | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
-| `GH_APP_ID` | GitHub App ID |
-| `GH_APP_CLIENT_ID` | GitHub App OAuth client ID |
-| `GH_APP_CLIENT_SECRET` | GitHub App OAuth client secret |
-| `GH_APP_PRIVATE_KEY` | GitHub App private key |
-| `GH_APP_WEBHOOK_SECRET` | GitHub App webhook secret |
-| `GH_APP_SLUG` | GitHub App slug |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `SERPER_API_KEY` | Serper web search API key |
@@ -77,6 +71,46 @@ These should ideally be set as **organization-level secrets** to avoid duplicati
 | `SIGNOZ_INGESTION_KEY` | SigNoz OTEL ingestion key |
 | `LOAD_TEST_SECRET` | Rate limit bypass key for load testing |
 | `VITE_GTM_ID` | Google Tag Manager ID (production only) |
+
+### GitHub App Secrets (per environment)
+
+The GitHub App credentials are environment-specific. Use one app for both
+production regions, and a separate app for staging.
+
+| Secret | `staging` | `production-us` | `production-eu` |
+|---|---|---|---|
+| `GH_APP_ID` | Staging app | Production app | Production app |
+| `GH_APP_CLIENT_ID` | Staging app | Production app | Production app |
+| `GH_APP_CLIENT_SECRET` | Staging app | Production app | Production app |
+| `GH_APP_PRIVATE_KEY` | Staging app | Production app | Production app |
+| `GH_APP_WEBHOOK_SECRET` | Staging app | Production app | Production app |
+| `GH_APP_SLUG` | Staging app slug | Production app slug | Production app slug |
+
+## Creating the GitHub Apps
+
+Run the manifest-flow helper from the repository root after authenticating the
+GitHub CLI with access to `shogo-labs/shogo-ai`:
+
+```bash
+bun scripts/create-github-app.ts --env staging
+bun scripts/create-github-app.ts --env production
+```
+
+The helper opens GitHub's organization app-registration page, waits for the
+registration callback on localhost, converts the manifest, and stores the
+returned credentials in the appropriate GitHub Actions environment secrets.
+Production writes the same credentials to both `production-us` and
+`production-eu`. It also saves a mode-600 private-key backup under
+`~/.shogo/github-apps/`.
+
+The production app uses `https://studio.shogo.ai`; the staging app uses
+`https://studio.staging.shogo.ai`. Both apps deliver signed webhooks to
+`/api/github/webhook`. Install the resulting app on each GitHub account or
+organization whose repositories Shogo should access.
+
+Local development continues to use `shogo-dev-ai`, owned by `lacvapps`, with
+localhost URLs. Keep those credentials in `.env.local`; do not copy them into
+the staging or production GitHub environments.
 
 ## Quick Setup
 

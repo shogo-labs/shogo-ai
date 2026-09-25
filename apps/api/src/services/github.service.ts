@@ -555,8 +555,14 @@ export function verifyWebhookSignature(
   const crypto = require('crypto');
   const hmac = crypto.createHmac('sha256', secret);
   const digest = 'sha256=' + hmac.update(payload).digest('hex');
+  const providedSignature = Buffer.from(signature);
+  const expectedSignature = Buffer.from(digest);
 
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
+  if (providedSignature.length !== expectedSignature.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(providedSignature, expectedSignature);
 }
 
 /**
