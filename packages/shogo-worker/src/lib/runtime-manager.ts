@@ -49,6 +49,7 @@ import {
 } from './resource-limits.ts';
 import type { ResolveRejection, RuntimeResolver } from './tunnel.ts';
 import { CloudFileTransport } from '@shogo-ai/sdk/cloud-file-transport';
+import { killViteWatchFromPidfile } from '@shogo-ai/sdk/vite-watch';
 import { CloudSyncWatcher } from './cloud-sync-watcher.ts';
 import { cloneProject, gitIsAvailable, isGitRepo } from './git-cloner.ts';
 
@@ -459,10 +460,9 @@ interface InternalRuntime {
    * PID of the most recent spawn, retained after `proc` is nulled in
    * {@link WorkerRuntimeManager.handleExit}. On posix, the runtime is
    * spawned as a process group leader (`detached: true`), so this is
-   * also the PGID — `process.kill(-pid, ...)` cascades to vite, the
-   * preview-manager's inner API server, tsserver and pyright that the
-   * runtime spawned, which otherwise survive a SIGKILL of the parent
-   * (jetsam OOM) and accumulate as orphans until app restart.
+   * also the PGID — `process.kill(-pid, ...)` cascades to the runtime's
+   * descendants such as its API server, tsserver and pyright. Vite's
+   * intentionally separate process group is reaped through its pidfile.
    */
   pid: number | null;
   startedAt: number;
@@ -656,6 +656,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     this.opts = opts;
     this.log = opts.logger ?? console;
     this.spawnCommand = opts.spawnCommand ?? defaultSpawnCommand;
+    this.sweepOrphanedViteWatches();
   }
 
   /**
@@ -1176,12 +1177,14 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       // children (vite, preview-manager's API server, LSPs) start their
       // own graceful shutdown in parallel with the parent.
       this.killProcessGroup(r, signal);
+      this.killViteWatch(r);
       try { r.proc.kill(signal); } catch { /* already gone */ }
       await this.waitForExit(r.proc, 5000);
       // Belt-and-suspenders: if the grace window elapsed without a
       // clean exit, `waitForExit` already SIGKILL'd the parent — chase
       // the rest of the group too in case any child ignored SIGTERM.
       this.killProcessGroup(r, 'SIGKILL');
+      this.killViteWatch(r);
     }
     r.pid = null;
     this.releasePort(r.agentPort);
@@ -1467,6 +1470,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       // don't leave a half-booted preview-manager + vite running on
       // the allocated ports.
       this.killProcessGroup(slot, 'SIGTERM');
+      this.killViteWatch(slot);
       try { proc.kill('SIGTERM'); } catch { /* already gone */ }
       this.releasePort(slot.agentPort);
       slot.agentPort = 0;
@@ -1553,9 +1557,13 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     slot.lastError = `memory ceiling exceeded (${rssMB}MB > ${ceilingMB}MB)`;
     if (slot.limitWatchdog) { slot.limitWatchdog.stop(); slot.limitWatchdog = null; }
     this.killProcessGroup(slot, 'SIGTERM');
+    this.killViteWatch(slot);
     try { slot.proc?.kill('SIGTERM'); } catch { /* already gone */ }
     // Escalate to SIGKILL if the group ignores SIGTERM within the grace window.
-    const killTimer = setTimeout(() => this.killProcessGroup(slot, 'SIGKILL'), 5000);
+    const killTimer = setTimeout(() => {
+      this.killProcessGroup(slot, 'SIGKILL');
+      this.killViteWatch(slot);
+    }, 5000);
     try { killTimer.unref?.(); } catch { /* unref is best-effort */ }
   }
 
@@ -1694,6 +1702,51 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     return env;
   }
 
+  private killViteWatch(slot: InternalRuntime): void {
+    const workspaceDir = slot.spawnConfig.projectDir;
+    if (!workspaceDir) return;
+    try {
+      killViteWatchFromPidfile(workspaceDir, { logger: this.log });
+    } catch (err: any) {
+      this.log.warn(
+        `[WorkerRuntimeManager] Vite watch cleanup for ${slot.projectId} failed: ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  /**
+   * Clean pidfiles left by a previous worker process before this manager
+   * starts accepting projects. The command-line verification in
+   * killViteWatchFromPidfile prevents a reused PID from being signalled.
+   */
+  private sweepOrphanedViteWatches(): void {
+    const projectsDir = this.opts.autoPull?.projectsDir;
+    if (!projectsDir) return;
+
+    let entries: Array<{ name: string; isDirectory: () => boolean }>;
+    try {
+      entries = readdirSync(projectsDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || this.runtimes.has(entry.name)) continue;
+      const workspaceDir = join(projectsDir, entry.name);
+      try {
+        const reaped = killViteWatchFromPidfile(workspaceDir, { logger: this.log });
+        if (reaped) {
+          this.log.log(
+            `[WorkerRuntimeManager] Reaped orphaned Vite watch for ${entry.name} (pid=${reaped.pid})`,
+          );
+        }
+      } catch (err: any) {
+        this.log.warn(
+          `[WorkerRuntimeManager] Vite watch startup sweep failed for ${entry.name}: ${err?.message ?? err}`,
+        );
+      }
+    }
+  }
+
   private resolveCwd(slot: InternalRuntime): string {
     const cfg = slot.spawnConfig;
     if (cfg.projectDir && existsSync(cfg.projectDir)) return cfg.projectDir;
@@ -1715,6 +1768,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // The process (and its group) is gone — stop sampling its RSS. A fresh
     // watchdog is armed by the next doStart() if the runtime restarts.
     if (slot.limitWatchdog) { slot.limitWatchdog.stop(); slot.limitWatchdog = null; }
+    // PreviewManager.stop() normally removes this, but a runtime killed by
+    // jetsam or SIGKILL cannot run its JS teardown. Reap the detached Vite
+    // group from the durable pidfile before deciding whether to restart.
+    this.killViteWatch(slot);
 
     if (slot.status === 'stopping' || this.stopped) {
       // We initiated the stop; the orphan reap was already done by
@@ -1747,6 +1804,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     //      respawns the full child tree and leaks more RSS. The
     //      circuit breaker below stops that loop.
     this.killProcessGroup(slot, 'SIGKILL');
+    this.killViteWatch(slot);
     slot.pid = null;
 
     const now = Date.now();

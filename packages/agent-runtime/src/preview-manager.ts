@@ -19,10 +19,15 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'
-import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
+import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
+import {
+  killViteWatchFromPidfile,
+  removeViteWatchPidfile,
+  writeViteWatchPidfile,
+} from '@shogo-ai/sdk/vite-watch'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
@@ -268,9 +273,10 @@ export interface StaleViteWatcherInfo {
  * enter this workspace, so any pre-existing match by definition belongs
  * to a previous incarnation. We match on:
  *
- *   - argv contains `<workspaceDir>/node_modules/vite/bin/vite.js` —
- *     ties the orphan to THIS workspace's vite install, not some
- *     unrelated project the user is also running.
+ *   - argv contains this workspace's Vite entrypoint or `.bin/vite` shim —
+ *     both are emitted depending on whether system node is available.
+ *     We check both the supplied path and its realpath because workspace
+ *     roots can be exposed through `.workspace-roots` symlinks.
  *   - argv contains `build --watch` — the canonical watch-mode argv
  *     emitted by {@link PreviewManager.startBuildWatch}.
  *
@@ -312,11 +318,25 @@ export function reapStaleViteWatchers(
   const selfPid = opts.selfPid ?? process.pid
   const isWindows = platform === 'win32'
 
-  // The argv substring we use to claim a process as "ours". Tying it to
-  // the workspace's vite binary (rather than just "any bun running
-  // vite.js build --watch") is what keeps the reaper from mis-attributing
-  // an unrelated vite-watch in some other workspace.
-  const viteBinFragment = join(workspaceDir, 'node_modules', 'vite', 'bin', 'vite.js')
+  // Tying the command to this workspace's Vite install (rather than just
+  // "any bun running vite.js build --watch") keeps the reaper from
+  // mis-attributing an unrelated vite-watch in another workspace. The
+  // `.bin/vite` form is used when system node is available; the direct
+  // `vite/bin/vite.js` form is used by the bundled-bun fallback.
+  const roots = [workspaceDir]
+  try {
+    const realWorkspaceDir = realpathSync(workspaceDir)
+    if (!roots.includes(realWorkspaceDir)) roots.push(realWorkspaceDir)
+  } catch {
+    // The workspace may have disappeared during teardown; retain the
+    // original path so a process-table match can still be attempted.
+  }
+  const viteBinFragments = roots.flatMap((root) => [
+    join(root, 'node_modules', 'vite', 'bin', 'vite.js'),
+    join(root, 'node_modules', '.bin', 'vite'),
+    join(root, 'node_modules', '.bin', 'vite.cmd'),
+    join(root, 'node_modules', '.bin', 'vite.CMD'),
+  ])
 
   let raw = ''
   try {
@@ -341,8 +361,8 @@ export function reapStaleViteWatchers(
   }
 
   const matches = isWindows
-    ? parseWindowsCimJson(raw, viteBinFragment, selfPid)
-    : parsePosixPs(raw, viteBinFragment, selfPid)
+    ? parseWindowsCimJson(raw, viteBinFragments, selfPid)
+    : parsePosixPs(raw, viteBinFragments, selfPid)
 
   if (matches.length === 0) return []
 
@@ -401,7 +421,7 @@ export function reapStaleViteWatchers(
  */
 function parsePosixPs(
   output: string,
-  viteBinFragment: string,
+  viteBinFragments: string[],
   selfPid: number,
 ): StaleViteWatcherInfo[] {
   const out: StaleViteWatcherInfo[] = []
@@ -415,7 +435,7 @@ function parsePosixPs(
     if (!Number.isFinite(pid) || !Number.isFinite(pgid)) continue
     if (pid === selfPid) continue
     const command = parts.slice(2).join(' ')
-    if (!command.includes(viteBinFragment)) continue
+    if (!viteBinFragments.some((fragment) => command.includes(fragment))) continue
     if (!command.includes('build --watch')) continue
     out.push({ pid, pgid, command })
   }
@@ -434,7 +454,7 @@ function parsePosixPs(
  */
 function parseWindowsCimJson(
   output: string,
-  viteBinFragment: string,
+  viteBinFragments: string[],
   selfPid: number,
 ): StaleViteWatcherInfo[] {
   let parsed: unknown
@@ -450,7 +470,7 @@ function parseWindowsCimJson(
   // slashes (or vice versa). Normalize both sides to forward-slash so
   // a workspace under `C:\Users\...` matches a CommandLine spelled
   // `C:/Users/...` and the reverse.
-  const needle = viteBinFragment.replace(/\\/g, '/')
+  const needles = viteBinFragments.map((fragment) => fragment.replace(/\\/g, '/'))
   for (const row of arr as Array<Record<string, unknown>>) {
     if (!row || typeof row !== 'object') continue
     const pidRaw = row.ProcessId
@@ -458,7 +478,7 @@ function parseWindowsCimJson(
     if (typeof pidRaw !== 'number' || typeof cmdRaw !== 'string') continue
     if (pidRaw === selfPid) continue
     const command = cmdRaw.replace(/\\/g, '/')
-    if (!command.includes(needle)) continue
+    if (!needles.some((needle) => command.includes(needle))) continue
     if (!command.includes('build --watch')) continue
     out.push({ pid: pidRaw, pgid: pidRaw, command: cmdRaw })
   }
@@ -2683,14 +2703,18 @@ export class PreviewManager {
    * `!proc.pid` branch is what records the `'build:SIGTERM'` assertion.
    */
   private killBuildWatchProcessGroup(proc: ChildProcess): void {
+    const pid = proc.pid
     if (process.platform === 'win32' || !proc.pid) {
       try { proc.kill('SIGTERM') } catch { /* already gone */ }
+      if (pid) removeViteWatchPidfile(this.workspaceDir, pid)
       return
     }
     try {
       process.kill(-proc.pid, 'SIGTERM')
     } catch {
       try { proc.kill('SIGTERM') } catch { /* already gone */ }
+    } finally {
+      removeViteWatchPidfile(this.workspaceDir, pid)
     }
   }
 
@@ -3028,6 +3052,10 @@ export class PreviewManager {
     // been observed accumulating 15+ orphans totalling 27GB before
     // anyone noticed. See {@link reapStaleViteWatchers} for the full
     // detection and kill logic.
+    // The pidfile is the precise cleanup path for the immediately previous
+    // incarnation. The process-table reaper remains as a fallback for older
+    // runtimes that predate pidfiles and for multiple accumulated orphans.
+    killViteWatchFromPidfile(this.workspaceDir)
     reapStaleViteWatchers(cwd)
 
     // Same node-missing fallback as runViteOneShotBuild — see
@@ -3078,6 +3106,18 @@ export class PreviewManager {
     }
 
     this.buildWatchProcess = viteProcess
+    if (viteProcess.pid) {
+      try {
+        writeViteWatchPidfile(this.workspaceDir, {
+          pid: viteProcess.pid,
+          pgid: useProcessGroup ? viteProcess.pid : viteProcess.pid,
+          startedAt: Date.now(),
+          bundlerCwd: cwd,
+        })
+      } catch (err: any) {
+        console.warn(`[${LOG_PREFIX}] Could not write Vite watch pidfile: ${err?.message ?? err}`)
+      }
+    }
 
     // Drop the internal handle from the agent-runtime's event-loop
     // ref-count. The HTTP server keeps the loop alive in steady state
@@ -3098,6 +3138,7 @@ export class PreviewManager {
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
       }
+      if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
 
     viteProcess.stdout?.on('data', (data: Buffer) => {
@@ -3134,6 +3175,7 @@ export class PreviewManager {
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
       }
+      if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
 
     await new Promise((resolve) => setTimeout(resolve, 3000))

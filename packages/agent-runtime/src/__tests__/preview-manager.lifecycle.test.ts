@@ -5,7 +5,7 @@
 // resolveDevServer + schema-watcher + customRoutes-watcher + console-log
 // reset paths. Stays away from start() — that's Phase 3b.
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync, realpathSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { PreviewManager, reapStaleViteWatchers } from '../preview-manager'
@@ -738,6 +738,26 @@ describe('reapStaleViteWatchers', () => {
     })
     expect(out.map((m) => m.pid).sort()).toEqual([300, 400])
     expect(killed.sort()).toEqual([[300, 'SIGTERM'], [400, 'SIGTERM']])
+  })
+
+  it('matches the node .bin/vite launch form through a workspace symlink realpath', () => {
+    const target = join(dir, 'real-workspace')
+    const symlink = join(dir, 'workspace-link')
+    mkdirSync(join(target, 'node_modules', '.bin'), { recursive: true })
+    symlinkSync(target, symlink, 'dir')
+    const killed: Array<[number, NodeJS.Signals]> = []
+
+    const out = reapStaleViteWatchers(symlink, {
+      listProcesses: () =>
+        `321 321 /usr/local/bin/node ${realpathSync(target)}/node_modules/.bin/vite build --watch --emptyOutDir false`,
+      killGroup: (pgid, sig) => killed.push([pgid, sig]),
+      platform: 'darwin',
+      selfPid: 1,
+      logger: { log: () => {}, warn: () => {} },
+    })
+
+    expect(out.map((m) => m.pid)).toEqual([321])
+    expect(killed).toEqual([[321, 'SIGTERM']])
   })
 
   it('kills the PGID column (not the PID) so rollup workers in the group are reaped too', () => {
