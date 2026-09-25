@@ -114,6 +114,23 @@ describe('workspaceHooks.beforeCreate — child workspaces', () => {
     expect(res?.ok).toBe(true)
   })
 
+  it('allows unlimited children for an Enterprise-plan parent', async () => {
+    effectivePlan = 'enterprise'
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u2', role: 'owner' }],
+      children: Array.from({ length: 100 }, (_, index) => ({ id: `child-${index}` })),
+    }
+    usersById['u2'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Team 101' },
+      makeCtx({ userId: 'u2', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok).toBe(true)
+  })
+
   it('rejects when the parent plan is below Business', async () => {
     effectivePlan = 'pro'
     workspacesById['parent'] = {
