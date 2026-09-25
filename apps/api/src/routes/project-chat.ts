@@ -21,6 +21,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
+import { wrapSseStreamWithKeepalive } from "@shogo/shared-runtime/sse-keepalive"
 import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
@@ -1574,14 +1575,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           let clientEnqueueErrors = 0
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
-              const keepaliveChunk = new TextEncoder().encode(': proxy-keep-alive\n\n')
-              const proxyKeepalive = setInterval(() => {
-                try {
-                  controller.enqueue(keepaliveChunk)
-                } catch {
-                  clearInterval(proxyKeepalive)
-                }
-              }, 15_000)
               ;(async () => {
                 try {
                   let chunkCount = 0
@@ -1604,7 +1597,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
-                  clearInterval(proxyKeepalive)
                   trackingDone = true
                   trackingNotify?.()
                   trackingNotify = null
@@ -1675,7 +1667,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             trackEvent(billingUserId, 'chat_message_sent', { project_id: projectId }).catch(() => {})
           }
 
-          return new Response(clientStream, {
+          return new Response(wrapSseStreamWithKeepalive(clientStream), {
             status: response.status,
             headers: responseHeaders,
           })

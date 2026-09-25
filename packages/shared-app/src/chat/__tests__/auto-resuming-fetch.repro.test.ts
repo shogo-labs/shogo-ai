@@ -192,4 +192,44 @@ describe('mid-stream HTTP/2 reset is auto-resumed (regression: was fatal)', () =
     // silently truncating.
     expect(caught).not.toBeNull()
   })
+
+  test('an initial "Load failed" retries the POST before surfacing a connection error', async () => {
+    let postAttempts = 0
+    const baseFetch: any = async (_url: string, init?: any) => {
+      if ((init?.method ?? 'GET') !== 'POST') {
+        throw new Error('unexpected resume request')
+      }
+      postAttempts++
+      if (postAttempts === 1) {
+        // This is the iOS/WebKit failure captured by Sentry JAVASCRIPT-REACT-46:
+        // the connection dies before fetch receives a Response, so there are
+        // no durable-turn headers for auto-resume to use yet.
+        throw new TypeError('Load failed')
+      }
+      return makePostResponse(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              sseFrame({
+                type: 'data-turn-complete',
+                data: { turnId: TURN_ID, status: 'completed' },
+              }),
+            )
+            controller.close()
+          },
+        }),
+      )
+    }
+
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      initialRequestAttempts: 2,
+      initialBackoffMs: 0,
+      maxBackoffMs: 0,
+    })
+
+    const response = await fetcher(POST_URL, { method: 'POST' })
+    expect(postAttempts).toBe(2)
+    expect(await new Response(response.body).text()).toContain('data-turn-complete')
+  })
 })

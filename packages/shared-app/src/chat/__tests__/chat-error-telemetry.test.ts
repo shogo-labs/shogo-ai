@@ -15,6 +15,7 @@ import {
   classifyChatError,
   shouldReportChatError,
   buildChatStreamErrorReport,
+  isReactUpdateDepthError,
   SHOGO_TELEMETRY_TAG,
 } from '../chat-error-telemetry'
 
@@ -82,6 +83,12 @@ describe('classifyChatError', () => {
     expect(classifyChatError({ name: 'AI_JSONParseError', message: embeddedPayload })).toBe('parse')
     // Even without the SDK error name, the message prefix is enough.
     expect(classifyChatError(new Error(embeddedPayload))).toBe('parse')
+  })
+
+  test('React update-depth failures → "render"', () => {
+    expect(isReactUpdateDepthError(new Error('Maximum update depth exceeded.'))).toBe(true)
+    expect(classifyChatError(new Error('Minified React error #185; visit https://react.dev/errors/185'))).toBe('render')
+    expect(classifyChatError(new Error('render failed'))).toBe('other')
   })
 })
 

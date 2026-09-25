@@ -38,6 +38,8 @@ export {
   type EnsureWorkspaceRepoResult,
 } from './git-bootstrap'
 
+export { wrapSseStreamWithKeepalive } from './sse-keepalive'
+
 export {
   WorktreeManager,
   WORKTREE_BRANCH_PREFIX,

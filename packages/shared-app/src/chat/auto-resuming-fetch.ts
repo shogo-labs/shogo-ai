@@ -29,6 +29,13 @@
 
 export interface AutoResumingFetchOptions {
   /**
+   * Total attempts for the initial chat POST when fetch fails before a
+   * Response exists. A request with a client turn id is idempotent server-side,
+   * so one bounded retry covers transient browser/network failures such as
+   * iOS Safari's "Load failed". Default 2 (one retry).
+   */
+  initialRequestAttempts?: number
+  /**
    * Maximum number of automatic resume attempts after a premature EOF.
    * Each attempt uses exponential backoff capped at `maxBackoffMs`.
    * Default 8.
@@ -63,6 +70,7 @@ export interface AutoResumingFetchOptions {
 }
 
 const DEFAULT_OPTIONS: Required<Omit<AutoResumingFetchOptions, 'buildResumeUrl' | 'logger' | 'onChunk'>> = {
+  initialRequestAttempts: 2,
   maxResumeAttempts: 8,
   initialBackoffMs: 500,
   maxBackoffMs: 5_000,
@@ -244,7 +252,39 @@ export function createAutoResumingFetch(
       return baseFetch(input as any, init)
     }
 
-    const initialResponse = await baseFetch(input as any, init)
+    let initialResponse: Response | undefined
+    let initialRequestError: unknown = null
+    const initialAttempts = Math.max(1, opts.initialRequestAttempts)
+    for (let attempt = 1; attempt <= initialAttempts; attempt++) {
+      try {
+        initialResponse = await baseFetch(input as any, init)
+        initialRequestError = null
+        break
+      } catch (error) {
+        initialRequestError = error
+        const aborted =
+          init?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+        if (aborted || attempt === initialAttempts) throw error
+
+        const backoff = Math.min(
+          opts.initialBackoffMs * Math.pow(2, attempt - 1),
+          opts.maxBackoffMs,
+        )
+        if (opts.logger) {
+          opts.logger.warn(
+            `[AutoResume] initial chat request failed (${error instanceof Error ? error.message : String(error)}); retrying in ${backoff}ms (attempt ${attempt + 1}/${initialAttempts})`,
+          )
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, backoff))
+      }
+    }
+    // The loop either assigns a response or throws the final request error.
+    // Keep this guard for TypeScript's definite-assignment analysis and for
+    // unusual fetch implementations that resolve without a Response.
+    if (initialRequestError || !initialResponse) {
+      throw initialRequestError ?? new TypeError('Initial chat request failed')
+    }
     if (!initialResponse.ok || !initialResponse.body) return initialResponse
 
     const turnId = initialResponse.headers.get(TURN_HEADER.TURN_ID)

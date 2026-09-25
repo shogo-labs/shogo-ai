@@ -92,6 +92,7 @@ import {
   applyGitSafeDirectoryEnv,
   checkGitUsable,
   type CloudSyncMode,
+  wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
@@ -1250,46 +1251,6 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 
 const streamBufferStore = new StreamBufferStore()
 
-// =============================================================================
-// Stream Keep-Alive Utility
-// =============================================================================
-
-function wrapStreamWithKeepalive(
-  stream: ReadableStream<Uint8Array>,
-  intervalMs: number = 15_000
-): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  const keepAliveMsg = encoder.encode(': keep-alive\n\n')
-  let timer: ReturnType<typeof setInterval> | null = null
-  let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null
-  let closed = false
-  const reader = stream.getReader()
-
-  function cleanup() {
-    if (timer) { clearInterval(timer); timer = null }
-  }
-
-  return new ReadableStream({
-    start(c) {
-      ctrl = c
-      timer = setInterval(() => {
-        if (closed || !ctrl) { cleanup(); return }
-        try { ctrl.enqueue(keepAliveMsg) } catch { closed = true; cleanup() }
-      }, intervalMs)
-    },
-    async pull(c) {
-      try {
-        const { done, value } = await reader.read()
-        if (done) { closed = true; cleanup(); c.close(); return }
-        c.enqueue(value)
-      } catch (err) {
-        closed = true; cleanup(); c.error(err)
-      }
-    },
-    cancel() { closed = true; cleanup(); reader.cancel() },
-  })
-}
-
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
 
@@ -2137,7 +2098,7 @@ app.post('/agent/chat', async (c) => {
     // If this client disconnects, only the replay subscriber is removed;
     // the background reader + agent keep running.
     const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
-    const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+    const wrappedStream = wrapSseStreamWithKeepalive(replayStream, 15_000)
     const responseHeaders = new Headers(response.headers)
     responseHeaders.set('X-Turn-Id', turnId)
     responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
@@ -2184,7 +2145,7 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
     return new Response(null, { status: 204 })
   }
 
-  const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+  const wrappedStream = wrapSseStreamWithKeepalive(replayStream, 15_000)
   return new Response(wrappedStream, {
     headers: {
       'Content-Type': 'text/x-ai-sdk-ui-stream',

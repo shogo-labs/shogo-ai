@@ -40,6 +40,30 @@ export interface StallRecoveryInput {
   maxAttempts: number
 }
 
+export interface StallRecoveryGateInput {
+  stalledTurnId: string | null
+  recoveredTurnId: string | null
+  renderDepthErrorTurnId: string | null
+  userInitiatedStop: boolean
+}
+
+/**
+ * Decide whether a stream ending without `data-turn-complete` should launch
+ * automatic recovery. A React update-depth error is not a transport stall:
+ * replaying the same buffered turn immediately feeds the overloaded render
+ * tree again and creates the repeated Sentry #185 cluster.
+ */
+export function shouldAutoRecoverStalledTurn({
+  stalledTurnId,
+  recoveredTurnId,
+  renderDepthErrorTurnId,
+  userInitiatedStop,
+}: StallRecoveryGateInput): boolean {
+  if (!stalledTurnId || userInitiatedStop) return false
+  if (renderDepthErrorTurnId === stalledTurnId) return false
+  return recoveredTurnId !== stalledTurnId
+}
+
 /**
  * Decide what auto-recovery should do after one `/turn` probe. Pure + total.
  *
