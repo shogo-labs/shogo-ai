@@ -33,8 +33,9 @@
  *   - GPT-5.6 Terra (`gpt-5.6-terra`) / GPT-5.6 Luna (`gpt-5.6-luna`) —
  *     native OpenAI, `current` in the static catalog, same never-DB-seeded
  *     situation as Astra above. Terra is `standard` tier, Luna `economy`,
- *     128k output; per-token pricing matches
- *     `MODEL_DOLLAR_COSTS['gpt-5.6-terra' | 'gpt-5.6-luna']`.
+ *     128k output; per-token pricing matches the post-2026-07-30-price-cut
+ *     rates in `MODEL_DOLLAR_COSTS['gpt-5.6-terra' | 'gpt-5.6-luna']`
+ *     (Terra 20% off, Luna 80% off their original launch prices).
  *     GPT-5.6 Sol (`gpt-5.6-sol`) is deliberately NOT seeded here — it's
  *     `legacy` in the static catalog by design, so seeding it wouldn't
  *     surface it in the default picker anyway, and it's not meant to ship.
@@ -333,11 +334,12 @@ async function seedGptTerra(): Promise<void> {
     // Not yet run through the subagent-smoke eval — leave capabilities unset
     // (unrated) until verified, per the ModelCapabilities doc comment.
     capabilities: null,
-    // OpenAI-published rates (see MODEL_DOLLAR_COSTS['gpt-5.6-terra']).
-    inputPerMillion: 2.5,
-    cachedInputPerMillion: 0.25,
-    cacheWritePerMillion: 3.125,
-    outputPerMillion: 15.0,
+    // OpenAI-published rates as of the 2026-07-30 price cut (20% off input/
+    // output — see MODEL_DOLLAR_COSTS['gpt-5.6-terra']).
+    inputPerMillion: 2.0,
+    cachedInputPerMillion: 0.2,
+    cacheWritePerMillion: 2.5,
+    outputPerMillion: 12.0,
     updatedBy: SEED_USER,
   }
   await upsertModel(
@@ -361,11 +363,12 @@ async function seedGptLuna(): Promise<void> {
     // Not yet run through the subagent-smoke eval — leave capabilities unset
     // (unrated) until verified, per the ModelCapabilities doc comment.
     capabilities: null,
-    // OpenAI-published rates (see MODEL_DOLLAR_COSTS['gpt-5.6-luna']).
-    inputPerMillion: 1.0,
-    cachedInputPerMillion: 0.1,
-    cacheWritePerMillion: 1.25,
-    outputPerMillion: 6.0,
+    // OpenAI-published rates as of the 2026-07-30 price cut (80% off input/
+    // output — see MODEL_DOLLAR_COSTS['gpt-5.6-luna']).
+    inputPerMillion: 0.2,
+    cachedInputPerMillion: 0.02,
+    cacheWritePerMillion: 0.25,
+    outputPerMillion: 1.2,
     updatedBy: SEED_USER,
   }
   await upsertModel(
