@@ -48,7 +48,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { type WorkspaceSummary, PlatformApi } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp } from '../../contexts/domain'
+import { DomainProvider, useDomainHttp } from '../../contexts/domain'
 
 interface CliLinkParams {
   state?: string
@@ -85,7 +85,7 @@ interface CliPendingState {
   preselectedWorkspaceId?: string
 }
 
-export default function CliLinkBridge() {
+function CliLinkBridge() {
   const router = useRouter()
   const params = useLocalSearchParams<CliLinkParams>()
   const { isLoading: isAuthLoading, isAuthenticated } = useAuth()
@@ -400,5 +400,16 @@ export default function CliLinkBridge() {
         )}
       </View>
     </View>
+  )
+}
+
+// Don't add an `app/auth/_layout.tsx`: a nested navigator here makes Expo
+// Router reset direct loads of any `/auth/*` URL to its first route with no
+// query params, which drops the `state` nonce.
+export default function CliLinkBridgeRoute() {
+  return (
+    <DomainProvider>
+      <CliLinkBridge />
+    </DomainProvider>
   )
 }
