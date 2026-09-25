@@ -28,6 +28,9 @@
  * without importing the side-effectful `server.ts` boot path.
  */
 
+import { existsSync } from 'fs'
+import { join } from 'path'
+
 export type WorkingMode = 'managed' | 'external'
 
 /** True when the runtime was booted as a multi-project workspace runtime. */
@@ -78,6 +81,25 @@ export function parseWorkspaceMounts(env: NodeJS.ProcessEnv = process.env): Work
   } catch {
     return []
   }
+}
+
+/**
+ * Directory the agent's shell starts in. A merged-root runtime's
+ * WORKSPACE_DIR is Shogo scaffolding holding one link per mount, so a shell
+ * started there put `git clone` and scaffolding output outside the project
+ * (missing from the project's files view and checkpoints). Start in the
+ * anchor project's mount when it is present.
+ */
+export function defaultShellCwd(
+  workspaceDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  const anchor = isWorkspaceRuntimeMode(env) ? env.WORKSPACE_ANCHOR_PROJECT_ID : undefined
+  if (!anchor) return workspaceDir
+  const mount = parseWorkspaceMounts(env).find((m) => m.projectId === anchor && m.kind !== 'folder')
+  const dir = join(workspaceDir, mount?.mount ?? anchor)
+  return exists(dir) ? dir : workspaceDir
 }
 
 /** Mounts whose content belongs to the user rather than to Shogo. */
