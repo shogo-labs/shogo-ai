@@ -46,8 +46,8 @@ import { localPlatformRoutes } from '../routes/local-platform'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
-import { projectTrustRoutes } from '../routes/internal-project-trust'
-import { validateRuntimeTokenAuth } from '../routes/internal-runtime-auth'
+import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
+import { authenticateRuntimeToken } from '../routes/internal-runtime-auth'
 
 const VITE_PORT = Number(process.env.VITE_PORT || 8081)
 
@@ -83,9 +83,10 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
   app.route('/api/local/projects', localProjectsRoutes())
-  // The agent-runtime re-reads trust here after "Trust folder"; without it
-  // the runtime fails closed and folder-linked repos stay read-only.
-  app.route('/api/internal', projectTrustRoutes({ authorize: validateRuntimeTokenAuth }))
+  // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and
+  // members, ...). Without them "Trust folder" never reaches the agent and
+  // folder-linked repos stay read-only.
+  app.route('/api/internal', runtimeInternalRoutes({ authenticate: authenticateRuntimeToken }))
   app.route('/api/local', localLogsRoutes())
   app.route('/api', localAuthRoutes())
   app.route('/api', localUserRoutes())
