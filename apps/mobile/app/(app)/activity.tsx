@@ -18,6 +18,7 @@ import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
+import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import {
   ActivityCard,
   ActivityEmptyCard,
@@ -444,5 +445,12 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
 
 export default observer(function ActivityScreenRoute() {
   const experience = useWorkspaceExperience()
+  if (!experience.resolved) {
+    return (
+      <View className="flex-1 bg-background pt-4" testID="activity-chrome-skeleton">
+        <WorkspaceChromeSkeletonRows count={5} />
+      </View>
+    )
+  }
   return experience.homeScreen === 'companion' ? <PersonalActivityScreen /> : <TeamActivityScreen />
 })

@@ -67,9 +67,12 @@ export default observer(function AccountPage() {
   // `WorkspaceMenuSectionProps.hasPersonalWorkspace` for why this can't
   // just be `allWorkspaces.length === 0` (a user's original signup
   // workspace may have been mis-backfilled to `kind: 'team'`).
-  const hasPersonalWorkspace = allWorkspaces.some(
-    (w: { kind?: string }) => w.kind === "personal",
-  )
+  // Empty means the collection has not loaded yet. Omit the flag so the
+  // create-personal CTA stays hidden until the list is known.
+  const hasPersonalWorkspace =
+    allWorkspaces.length === 0
+      ? undefined
+      : allWorkspaces.some((w: { kind?: string }) => w.kind === "personal")
   // See `AppSidebar.tsx`'s `hasTeamWorkspace` for the free-vs-paid gate this drives.
   const hasTeamWorkspace = allWorkspaces.some(
     (w: { kind?: string }) => w.kind === "team",
@@ -85,10 +88,6 @@ export default observer(function AccountPage() {
   const billingData = useBillingData(features.billing ? displayWorkspace?.id : undefined)
   const allPlans = useWorkspacePlans(workspaceIds, !!features.billing)
   const workspacePlan = displayWorkspace?.id ? (allPlans[displayWorkspace.id] ?? null) : null
-
-  useEffect(() => {
-    workspaces.loadAll().catch(() => undefined)
-  }, [workspaces])
 
   useEffect(() => {
     if (pendingWorkspaceId && currentWorkspace?.id === pendingWorkspaceId) {

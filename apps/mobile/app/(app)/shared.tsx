@@ -122,7 +122,6 @@ export default observer(function SharedWithMePage() {
       setIsLoading(true)
       try {
         await Promise.all([
-          workspaces.loadAll({}),
           projects.loadAll(),
           membersColl.loadAll({ userId: user.id }),
           starredColl.loadAll({ userId: user.id }),

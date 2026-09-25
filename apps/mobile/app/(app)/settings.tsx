@@ -4044,10 +4044,6 @@ export function WorkspaceAccountActions({
   );
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
 
-  useEffect(() => {
-    void workspaces.loadAll().catch(() => undefined);
-  }, [workspaces]);
-
   const switchWorkspace = useCallback(
     (workspaceId: string) => {
       if (workspaceId === currentWorkspace?.id) return;

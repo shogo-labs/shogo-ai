@@ -134,7 +134,6 @@ export default observer(function SearchPage() {
       setLoading(true)
       try {
         await Promise.all([
-          workspaces.loadAll({}).catch(() => undefined),
           projects.loadAll().catch(() => undefined),
           starredColl.loadAll({ userId: user.id }).catch(() => undefined),
           localMode ? Promise.resolve() : membersColl.loadAll({ userId: user.id }).catch(() => undefined),
@@ -151,7 +150,7 @@ export default observer(function SearchPage() {
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated, localMode, membersColl, platform, projects, starredColl, user?.id, workspace?.id, workspaces])
+  }, [isAuthenticated, localMode, membersColl, platform, projects, starredColl, user?.id, workspace?.id])
 
   const allProjects = useMemo(() => {
     const list = (() => {
