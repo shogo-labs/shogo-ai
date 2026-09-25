@@ -414,6 +414,98 @@ describe('RuntimeManager merged-root refresh on warm reuse', () => {
   })
 })
 
+describe('RuntimeManager stale agent-runtime after worker teardown', () => {
+  const key = projectWorkspaceRuntimeKey('anchor-1')
+  const open = (rm: any) => rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  test('wires onRuntimeGone into the embedded worker', () => {
+    const rm = new RuntimeManager({}) as any
+    expect(typeof rm.agentManager.opts.onRuntimeGone).toBe('function')
+  })
+
+  test('respawns instead of reusing when the worker no longer has the runtime (idle-evicted)', async () => {
+    const { rm } = makeManager()
+    await open(rm)
+    rm.agentManager.status = mock(() => null)
+
+    await open(rm)
+
+    expect(rm.agentManager.ensureRunning.mock.calls.length).toBe(2)
+    expect(rm.agentManager.stop.mock.calls.length).toBe(0)
+    expect(rm.status(key)?.status).toBe('running')
+  })
+
+  test('respawns when the worker reports a different port than the cached one', async () => {
+    const { rm } = makeManager()
+    await open(rm)
+    rm.agentManager.status = mock(() => ({ status: 'running', agentPort: 39999 }))
+
+    await open(rm)
+
+    expect(rm.agentManager.ensureRunning.mock.calls.length).toBe(2)
+  })
+
+  test('does not stop a breaker-tripped worker slot when dropping the stale entry', async () => {
+    const { rm } = makeManager()
+    await open(rm)
+    rm.agentManager.status = mock(() => ({ status: 'failed', agentPort: 0 }))
+
+    await open(rm)
+
+    expect(rm.agentManager.stop.mock.calls.length).toBe(0)
+    expect(rm.agentManager.ensureRunning.mock.calls.length).toBe(2)
+  })
+
+  test('keeps reusing while the worker restarts the runtime on the same port', async () => {
+    const { rm } = makeManager()
+    await open(rm)
+    rm.agentManager.status = mock(() => ({ status: 'restarting', agentPort: 38100 }))
+
+    await open(rm)
+
+    expect(rm.agentManager.ensureRunning.mock.calls.length).toBe(1)
+  })
+
+  test('startWorkspace also respawns a stale runtime', async () => {
+    const { rm } = makeManager()
+    await rm.startWorkspace('ws-1', { attachedProjectIds: [] })
+    rm.agentManager.status = mock(() => null)
+
+    await rm.startWorkspace('ws-1', { attachedProjectIds: [] })
+
+    expect(rm.agentManager.ensureRunning.mock.calls.length).toBe(2)
+  })
+
+  test('onRuntimeGone drops the cached runtime so status() stops advertising the dead port', async () => {
+    const { rm } = makeManager()
+    await open(rm)
+
+    rm.handleAgentRuntimeGone(key, { reason: 'idle-evict' })
+    await flush()
+
+    expect(rm.status(key)).toBeNull()
+    expect(rm.agentManager.stop.mock.calls.length).toBe(0)
+  })
+
+  test('onRuntimeGone during an API-initiated stop is ignored (no re-entry)', async () => {
+    const { rm } = makeManager()
+    await open(rm)
+    rm.agentManager.stop = mock(async (k: string) => rm.handleAgentRuntimeGone(k, { reason: 'stop' }))
+
+    await rm.stop(key)
+    await flush()
+
+    expect(rm.agentManager.stop.mock.calls.length).toBe(1)
+    expect(rm.status(key)).toBeNull()
+  })
+
+  test('onRuntimeGone for an unknown key is a no-op', () => {
+    const { rm } = makeManager()
+    expect(() => rm.handleAgentRuntimeGone('ws:proj:nope', { reason: 'exited', code: 0 })).not.toThrow()
+  })
+})
+
 describe('upsertMountGitignore', () => {
   test('keeps user content, replaces the managed block, and removes it when empty', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rm-gitignore-'))

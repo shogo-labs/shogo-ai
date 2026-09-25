@@ -391,7 +391,25 @@ export interface WorkerRuntimeManagerOptions {
    * `shogo project pull` first.
    */
   autoPull?: AutoPullOptions;
+  /**
+   * Called when a runtime is no longer serving on its agent port and the
+   * manager will NOT bring it back on its own: an explicit or idle/LRU
+   * `stop()`, a clean exit, or a circuit-breaker trip into `'failed'`.
+   * Transient crash-restarts (same port) do not fire it. Hosts that cache
+   * the agent port (the desktop API's RuntimeManager) use this to drop
+   * their entry instead of proxying to a dead port. Errors thrown by the
+   * callback are swallowed.
+   */
+  onRuntimeGone?: (projectId: string, info: RuntimeGoneInfo) => void;
 }
+
+export interface RuntimeGoneInfo {
+  reason: RuntimeStopReason | 'exited' | 'failed';
+  code?: number | null;
+  signal?: NodeJS.Signals | null;
+}
+
+export type RuntimeStopReason = 'stop' | 'idle-evict' | 'lru-evict';
 
 export interface AutoPullOptions {
   /** Master switch. Defaults to false; the `worker start` command flips
@@ -853,7 +871,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         `[WorkerRuntimeManager] maxRuntimes=${cap} exceeded (${running.length} running) — ` +
           `LRU-evicting ${victim.projectId} (idle ${Math.round(idleMs / 1000)}s)`,
       );
-      void this.stop(victim.projectId).catch((err: any) => {
+      void this.stop(victim.projectId, 'SIGTERM', 'lru-evict').catch((err: any) => {
         this.log.warn(
           `[WorkerRuntimeManager] maxRuntimes eviction of ${victim.projectId} failed: ${err?.message ?? err}`,
         );
@@ -1141,7 +1159,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     this.armIdleTimer(r);
   }
 
-  async stop(projectId: string, signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
+  async stop(
+    projectId: string,
+    signal: NodeJS.Signals = 'SIGTERM',
+    reason: RuntimeStopReason = 'stop',
+  ): Promise<void> {
     const r = this.runtimes.get(projectId);
     if (!r) return;
     r.status = 'stopping';
@@ -1164,6 +1186,17 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     r.pid = null;
     this.releasePort(r.agentPort);
     this.runtimes.delete(projectId);
+    this.notifyGone(projectId, { reason });
+  }
+
+  private notifyGone(projectId: string, info: RuntimeGoneInfo): void {
+    const cb = this.opts.onRuntimeGone;
+    if (!cb) return;
+    try {
+      cb(projectId, info);
+    } catch (err: any) {
+      this.log.warn(`[WorkerRuntimeManager] onRuntimeGone(${projectId}) threw: ${err?.message ?? err}`);
+    }
   }
 
   /**
@@ -1701,6 +1734,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       slot.agentPort = 0;
       slot.apiServerPort = 0;
       this.runtimes.delete(slot.projectId);
+      this.notifyGone(slot.projectId, { reason: 'exited', code, signal });
       return;
     }
 
@@ -1752,6 +1786,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       if (slot.restartTimer) { clearTimeout(slot.restartTimer); slot.restartTimer = null; }
       if (slot.idleTimer) { clearTimeout(slot.idleTimer); slot.idleTimer = null; }
       this.log.error(`[WorkerRuntimeManager] ${slot.lastError}`);
+      this.notifyGone(slot.projectId, { reason: 'failed', code, signal });
       return;
     }
 
@@ -1801,7 +1836,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         return;
       }
       this.log.log(`[WorkerRuntimeManager] idle-evicting ${slot.projectId} after ${Math.round(since / 1000)}s`);
-      void this.stop(slot.projectId).catch((err) => {
+      void this.stop(slot.projectId, 'SIGTERM', 'idle-evict').catch((err) => {
         this.log.warn(`[WorkerRuntimeManager] idle stop failed: ${err?.message ?? err}`);
       });
     }, idleMs);
