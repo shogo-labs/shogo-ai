@@ -31,6 +31,11 @@ import { randomUUID } from 'crypto'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import {
+  getShogoAgentEmail,
+  getShogoAgentName,
+  withShogoCommitTrailer,
+} from './agent-attribution'
+import {
   S3Client,
   GetObjectCommand,
   PutObjectCommand,
@@ -126,8 +131,8 @@ export async function untrackDependencyDirs(
 ): Promise<string[]> {
   const logger = opts.logger ?? console
   if (!existsSync(join(workspaceDir, '.git'))) return []
-  const authorName = opts.authorName ?? 'Shogo Agent'
-  const authorEmail = opts.authorEmail ?? 'agent-runtime@shogo.ai'
+  const authorName = opts.authorName ?? getShogoAgentName()
+  const authorEmail = opts.authorEmail ?? getShogoAgentEmail()
   const env = {
     ...process.env,
     GIT_AUTHOR_NAME: authorName,
@@ -137,7 +142,7 @@ export async function untrackDependencyDirs(
   }
   const git = (args: string[]) =>
     new Promise<{ code: number; stdout: string }>((resolve, reject) => {
-      const child = spawn('git', args, { cwd: workspaceDir, env, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn('git', withShogoCommitTrailer(args, env), { cwd: workspaceDir, env, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
       child.stdout.on('data', (c) => { stdout += String(c) })
       child.on('error', reject)
@@ -193,8 +198,8 @@ export async function seedRepoIfAbsent(
   const logger = opts.logger ?? console
   if (existsSync(join(workspaceDir, '.git'))) return null
   const branch = opts.branch ?? 'main'
-  const authorName = opts.authorName ?? 'Shogo Agent'
-  const authorEmail = opts.authorEmail ?? 'agent-runtime@shogo.ai'
+  const authorName = opts.authorName ?? getShogoAgentName()
+  const authorEmail = opts.authorEmail ?? getShogoAgentEmail()
   if (!existsSync(workspaceDir)) mkdirSync(workspaceDir, { recursive: true })
 
   const env = {
@@ -205,7 +210,7 @@ export async function seedRepoIfAbsent(
   }
   const runEnv = (args: string[]) =>
     new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-      const child = spawn('git', args, { cwd: workspaceDir, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn('git', withShogoCommitTrailer(args, env), { cwd: workspaceDir, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
       let stderr = ''
       child.stdout.on('data', (c) => { stdout += String(c) })
@@ -362,8 +367,8 @@ export async function createTagLocal(
   const tagRe = /^[0-9a-zA-Z][0-9a-zA-Z._/-]{0,199}$/
   if (!tagRe.test(name)) throw new Error(`Invalid tag name: ${name}`)
   if (!tagRe.test(ref)) throw new Error(`Invalid tag ref: ${ref}`)
-  const authorName = opts.authorName ?? 'Shogo Agent'
-  const authorEmail = opts.authorEmail ?? 'agent-runtime@shogo.ai'
+  const authorName = opts.authorName ?? getShogoAgentName()
+  const authorEmail = opts.authorEmail ?? getShogoAgentEmail()
   const env = {
     GIT_AUTHOR_NAME: authorName,
     GIT_AUTHOR_EMAIL: authorEmail,

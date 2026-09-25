@@ -28,6 +28,7 @@ app.route(
       getMetalWarmPoolController().workspaceMember(workspaceId, op, projectId, realPath),
     loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
     loadAgentCall: () => import('../services/agent-call.service'),
+    loadGitHub: () => import('../services/github.service'),
   }),
 )
 

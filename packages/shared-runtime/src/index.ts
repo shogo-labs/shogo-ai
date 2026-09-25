@@ -11,6 +11,18 @@ export {
 } from './s3-sync'
 
 export {
+  DEFAULT_SHOGO_AGENT_EMAIL,
+  DEFAULT_SHOGO_AGENT_NAME,
+  SHOGO_PR_FOOTER_MARKER,
+  getShogoAgentEmail,
+  getShogoAgentName,
+  shogoCoAuthorTrailer,
+  shogoPrFooter,
+  withShogoCommitTrailer,
+  withShogoPrFooter,
+} from './agent-attribution'
+
+export {
   PublishedDataSync,
   createPublishedDataSyncFromEnv,
   type PublishedDataSyncConfig,

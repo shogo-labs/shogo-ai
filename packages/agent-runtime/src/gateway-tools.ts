@@ -77,6 +77,7 @@ import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
+import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 
 /**
  * Tool-layer wrapper for `assertAllowedPath` that returns a uniform
@@ -96,6 +97,32 @@ function assertAllowedPath(targetPath: string, mode: 'read' | 'write' | 'exec', 
     return result
   }
 }
+
+function loadWorkspaceEnvForAttribution(workspaceDir: string): Record<string, string> {
+  const envPath = join(workspaceDir, '.env')
+  if (!existsSync(envPath)) return {}
+  try {
+    const vars: Record<string, string> = {}
+    for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const equals = trimmed.indexOf('=')
+      if (equals < 0) continue
+      const key = trimmed.slice(0, equals).trim()
+      let value = trimmed.slice(equals + 1).trim()
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1)
+      }
+      if (key) vars[key] = value
+    }
+    return vars
+  } catch {
+    return {}
+  }
+}
 import {
   deriveApiUrl, derivePublicApiUrl, getInternalHeaders,
   listCheckpoints as apiListCheckpoints,
@@ -103,6 +130,7 @@ import {
   rollbackCheckpoint as apiRollbackCheckpoint,
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
+  createGitHubPullRequest as apiCreateGitHubPullRequest,
   postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
@@ -111,6 +139,7 @@ import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runti
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
 import { FileStateCache } from './file-state-cache'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES } from './image-size-guard'
+import { injectCommitTrailer } from './git-attribution'
 import type { TeamManager } from './team-manager'
 import type { TeammateLoopHandle } from './teammate-loop'
 
@@ -672,6 +701,10 @@ function createExecTool(ctx: ToolContext): AgentTool {
     }),
     execute: async (_toolCallId, params) => {
       const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as { command: string; timeout?: number }
+      const attributedCommand = injectCommitTrailer(
+        command,
+        { ...process.env, ...loadWorkspaceEnvForAttribution(ctx.workspaceDir) },
+      )
 
       // Workspace Trust gate. Restricted-mode projects (newly opened
       // external folders the user hasn't trusted) refuse all shell
@@ -680,7 +713,13 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const execTrust = assertAllowedPath(ctx.workspaceDir, 'exec', ctx.workspaceDir)
       if (!execTrust.ok) return textResult({ error: execTrust.message })
 
-      if (isBlockedCommand(command)) {
+      if (/\bgh\s+pr\s+create\b/.test(command)) {
+        return textResult({
+          error: 'Use the github_create_pr tool to create pull requests so Shogo can add attribution.',
+        })
+      }
+
+      if (isBlockedCommand(attributedCommand)) {
         return textResult({ error: `Blocked command: ${command}` })
       }
 
@@ -689,7 +728,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // gateway process (same environment), SIGTERMs it, and takes the whole
       // session/VM down mid-task. Only commands that would actually signal the
       // gateway are refused — specific dev-server/port kills still work.
-      const gatewayGuard = commandTargetsGateway(command)
+      const gatewayGuard = commandTargetsGateway(attributedCommand)
       if (gatewayGuard.blocked) {
         return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
       }
@@ -699,7 +738,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // so it spawns a visible ∞ terminal tab (matching Cursor UX).
       // Only matches EXPLICIT dev server commands — not build/test/lint.
       if (ctx.terminalExec) {
-        const lc = command.toLowerCase().trim()
+        const lc = attributedCommand.toLowerCase().trim()
         const DEV_SERVER_PATTERNS = [
           /^npm\s+run\s+(dev|start|serve|preview)(?:\s|$)/,
           /^npx\s+(vite|expo|next|nuxt|astro|remix|webpack-dev-server|turbopack|metro)(?:\s|$)/,
@@ -733,7 +772,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         if (isDevServer) {
           try {
             const result = await ctx.terminalExec({
-              command,
+              command: attributedCommand,
               timeoutMs: undefined,
               mode: 'background',
             })
@@ -761,7 +800,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const cwdFileHost = join(ctx.workspaceDir, cwdMarker)
 
       const isSandboxed = shouldSandbox({
-        command,
+        command: attributedCommand,
         workspaceDir: ctx.workspaceDir,
         sandboxConfig: ctx.sandbox,
         sessionId: ctx.sessionId,
@@ -776,7 +815,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const wrappedCommand = [
         `trap '/bin/pwd > "${cwdFileCmd}" 2>/dev/null' EXIT`,
         `cd "${cdTarget}" 2>/dev/null || true`,
-        command,
+        attributedCommand,
       ].join('\n')
 
       // Spawn the command via the async primitive so we can race it against
@@ -796,7 +835,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // completes within the soft timeout (defensive against races where the
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
-      const entry = registry.register(command, handle)
+      const entry = registry.register(attributedCommand, handle)
 
       const softTimeoutMs = Math.max(0, timeout)
       const SOFT_TIMEOUT = Symbol('soft-timeout')
@@ -815,6 +854,159 @@ function createExecTool(ctx: ToolContext): AgentTool {
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
+    },
+  }
+}
+
+function currentGitHubRepository(workspaceDir: string): { owner: string; repo: string } | null {
+  try {
+    const remote = execSync('git remote get-url origin', {
+      cwd: workspaceDir,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    }).trim()
+    const match = remote.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/i)
+    return match ? { owner: match[1]!, repo: match[2]! } : null
+  } catch {
+    return null
+  }
+}
+
+function githubRunIdMarker(runId: string): string {
+  return `<!-- shogo:runId=${runId} -->`
+}
+
+function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'github_create_pr',
+    label: 'Create GitHub Pull Request',
+    description:
+      'Create a GitHub pull request after the current branch has been pushed. It is attributed to the Shogo GitHub App when the project is connected. ' +
+      'The PR body always includes a Made with Shogo footer and an optional issue-pipeline runId marker. ' +
+      'If the App is not installed, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
+    parameters: Type.Object({
+      title: Type.String({ description: 'Pull request title' }),
+      head: Type.Optional(Type.String({ description: 'Source branch; defaults to the current branch' })),
+      base: Type.Optional(Type.String({ description: 'Target branch; defaults to main' })),
+      body: Type.Optional(Type.String({ description: 'Pull request description' })),
+      draft: Type.Optional(Type.Boolean({ description: 'Create as a draft pull request' })),
+      runId: Type.Optional(Type.String({ description: 'Issue-pipeline run id to embed in the body' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const input = params as {
+        title: string
+        head?: string
+        base?: string
+        body?: string
+        draft?: boolean
+        runId?: string
+      }
+      const title = input.title?.trim()
+      const repository = currentGitHubRepository(ctx.workspaceDir)
+      let head = input.head?.trim()
+      if (!head) {
+        try {
+          head = execSync('git branch --show-current', {
+            cwd: ctx.workspaceDir,
+            encoding: 'utf8',
+            stdio: 'pipe',
+          }).trim()
+        } catch {
+          head = ''
+        }
+      }
+      if (!title || !head) {
+        return textResult({ error: 'A title and a non-detached source branch are required.' })
+      }
+      if (input.runId && !/^[a-zA-Z0-9_-]+$/.test(input.runId)) {
+        return textResult({ error: 'runId contains invalid characters.' })
+      }
+
+      const body = withShogoPrFooter(input.body ?? '')
+      const markedBody = input.runId && !body.includes('<!-- shogo:runId=')
+        ? `${body}\n\n${githubRunIdMarker(input.runId)}`
+        : body
+      const options = {
+        title,
+        head,
+        base: input.base?.trim() || 'main',
+        body: markedBody,
+        draft: input.draft === true,
+        ...(input.runId ? { runId: input.runId } : {}),
+      }
+      const githubPayload = {
+        title: options.title,
+        head: options.head,
+        base: options.base,
+        body: options.body,
+        draft: options.draft,
+      }
+
+      const botResult = await apiCreateGitHubPullRequest(ctx.projectId, options)
+      if (botResult.ok && botResult.data) {
+        return textResult({
+          ok: true,
+          mode: 'github-app',
+          author: botResult.data.author,
+          number: botResult.data.number,
+          url: botResult.data.url,
+        })
+      }
+      if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
+        return textResult({
+          error: botResult.error || 'Shogo GitHub App could not create the pull request.',
+          status: botResult.status,
+        })
+      }
+
+      if (!repository) {
+        return textResult({
+          error: 'No GitHub App connection exists and the origin remote is not a GitHub repository.',
+        })
+      }
+      const token = loadWorkspaceEnvForAttribution(ctx.workspaceDir).GITHUB_TOKEN || process.env.GITHUB_TOKEN
+      if (!token) {
+        return textResult({
+          error: 'No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to create a user-authored PR.',
+        })
+      }
+
+      try {
+        const response = await fetch(
+          `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/pulls`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(githubPayload),
+          },
+        )
+        const result = await response.json().catch(() => null) as {
+          number?: number
+          html_url?: string
+          user?: { login?: string }
+          message?: string
+        } | null
+        if (!response.ok || typeof result?.number !== 'number' || typeof result.html_url !== 'string') {
+          return textResult({
+            error: result?.message || `GitHub returned HTTP ${response.status}`,
+            status: response.status,
+          })
+        }
+        return textResult({
+          ok: true,
+          mode: 'user-token',
+          author: result.user?.login,
+          number: result.number,
+          url: result.html_url,
+        })
+      } catch (error: any) {
+        return textResult({ error: error?.message ?? String(error) })
+      }
     },
   }
 }
@@ -4515,7 +4707,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create`, `gh run list`). If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({ description: 'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres", "filesystem" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url.' }),
@@ -5654,6 +5846,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createExecTool(ctx), 'shell'),
     g(createExecWaitTool(ctx), 'shell'),
     g(createExecListTool(ctx), 'shell'),
+    g(createGitHubPullRequestTool(ctx), 'network'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -6189,6 +6382,7 @@ export const ALL_TOOL_NAMES = [
   'heartbeat_configure', 'heartbeat_status', 'terminal_exec', 'terminal_read',
   'read_lints', 'server_sync',
   'search_integrations', 'connect', 'disconnect',
+  'github_create_pr',
   'transcribe_audio',
   'quick_action',
 ] as const

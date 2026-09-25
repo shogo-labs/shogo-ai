@@ -407,6 +407,50 @@ describe('createRepository', () => {
   })
 })
 
+describe('createPullRequest', () => {
+  it('creates a pull request with the installation token', async () => {
+    let call = 0
+    let url = ''
+    let body: any
+    fetchHandler = async (requestUrl: string, init: any) => {
+      call++
+      if (call === 1) return TOKEN_RESPONSE('pr-token')
+      url = requestUrl
+      body = JSON.parse(init.body)
+      return new Response(JSON.stringify({
+        number: 42,
+        url: 'https://api.github.com/repos/acme/app/pulls/42',
+        html_url: 'https://github.com/acme/app/pull/42',
+      }), { status: 201 })
+    }
+
+    const result = await svc.createPullRequest({
+      installationId: 9999,
+      repoOwner: 'acme',
+      repoName: 'app',
+      head: 'feature',
+      base: 'main',
+      title: 'Ship it',
+      body: 'Summary',
+      draft: true,
+    })
+
+    expect(url).toBe('https://api.github.com/repos/acme/app/pulls')
+    expect(body).toEqual({
+      title: 'Ship it',
+      head: 'feature',
+      base: 'main',
+      body: 'Summary',
+      draft: true,
+    })
+    expect(result).toEqual({
+      number: 42,
+      url: 'https://api.github.com/repos/acme/app/pulls/42',
+      html_url: 'https://github.com/acme/app/pull/42',
+    })
+  })
+})
+
 // ─── connectRepository / disconnectRepository / getConnection ───────────────
 
 describe('connectRepository', () => {

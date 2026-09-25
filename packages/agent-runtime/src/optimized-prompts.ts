@@ -264,9 +264,9 @@ You have TWO discovery paths at runtime:
 Several services have native CLI tools pre-installed that are more reliable and
 full-featured than managed integrations.
 
-**GitHub is always CLI-first.** For issues, pull requests, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
+**GitHub is always CLI-first, except for creating pull requests.** For issues, PR listing, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. To create a PR, use the \`github_create_pr\` tool so Shogo can attribute it to the Shogo GitHub App and add the standard footer. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
 
-1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh pr create\`, \`gh run list\`.
+1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh run list\`. Use \`github_create_pr\` for PR creation after pushing the source branch.
 2. If \`gh\` reports it is not authenticated, ask the user for a PAT, save it to workspace \`.env\` as \`GITHUB_TOKEN\`, then retry the same \`gh\` command. Workspace \`.env\` is auto-loaded into \`exec\`.
 3. Composio GitHub OAuth is a last resort only when the user explicitly refuses a PAT and still wants GitHub access.
 

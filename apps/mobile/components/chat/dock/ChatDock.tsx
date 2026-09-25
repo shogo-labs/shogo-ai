@@ -102,7 +102,7 @@ const HORIZONTAL_PADDING_CLASS = Platform.OS !== "web" ? "px-4" : "px-3"
 // Status panels remain subtly translucent, while blocking panels must fully
 // obscure the transcript because they park the agent turn and require action.
 const STATUS_ZONE_CARD_CLASS =
-  "overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-md"
+  "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-md"
 const BLOCKING_ZONE_CARD_CLASS =
   "overflow-hidden rounded-xl border border-border/60 bg-popover shadow-md"
 

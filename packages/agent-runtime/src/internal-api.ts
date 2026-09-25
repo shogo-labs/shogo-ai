@@ -326,6 +326,36 @@ export async function rollbackCheckpoint(
   )
 }
 
+export interface GitHubPullRequestOptions {
+  title: string
+  head: string
+  base?: string
+  body?: string
+  draft?: boolean
+  runId?: string
+}
+
+export interface GitHubPullRequestResult {
+  number: number
+  url: string
+  htmlUrl?: string
+  author?: string
+}
+
+export async function createGitHubPullRequest(
+  projectId: string,
+  opts: GitHubPullRequestOptions,
+): Promise<CheckpointCallResult<GitHubPullRequestResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/pull-request`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => j as GitHubPullRequestResult,
+    },
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Publish wrappers — let the agent's `publish` tool deploy to {subdomain}.shogo.one
 //
