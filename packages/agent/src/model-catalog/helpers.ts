@@ -258,6 +258,12 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-5.6-terra': { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20, outputPerMillion: 12.00 },
   'gpt-5.6-sol':   { inputPerMillion: 5.00,  cacheWritePerMillion: 6.25,  cachedInputPerMillion: 0.50, outputPerMillion: 30.00 },
   'gpt-6-astra':   { inputPerMillion: 10.00, cacheWritePerMillion: 12.50, cachedInputPerMillion: 1.00, outputPerMillion: 50.00 },
+  // GPT-6 Sol/Luna (announced 2026-09-22, openai.com/index/introducing-gpt-6-sol-and-luna)
+  // are 50% cheaper than their GPT-5.6 predecessors' promotional pricing:
+  // Sol $4→$2 in / $20→$10 out, Luna $0.20→$0.10 in / $1.20→$0.50 out.
+  // Matches developers.openai.com/api/docs/pricing exactly.
+  'gpt-6-sol':     { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20, outputPerMillion: 10.00 },
+  'gpt-6-luna':    { inputPerMillion: 0.10,  cacheWritePerMillion: 0.125, cachedInputPerMillion: 0.01, outputPerMillion: 0.50 },
   'gpt-live-1':    { inputPerMillion: 0, cacheWritePerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
 }
 
