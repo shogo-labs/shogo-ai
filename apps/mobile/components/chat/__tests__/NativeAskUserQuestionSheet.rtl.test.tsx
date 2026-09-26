@@ -8,6 +8,11 @@ import { createNativePhoneReactNativeMock, createNativePhoneSheetMock } from "..
 
 mock.module("react-native", () => createNativePhoneReactNativeMock())
 
+mock.module(resolve(import.meta.dir, "../../../lib/auth-client"), () => ({
+  authClient: { getCookie: () => null },
+  autoSignInLocally: async () => {},
+}))
+
 mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
 }))

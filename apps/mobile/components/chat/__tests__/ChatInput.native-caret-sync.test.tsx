@@ -37,6 +37,7 @@
  */
 // @ts-ignore Bun resolves this module at test runtime; app tsconfig does not include Bun ambient types.
 import { afterEach, describe, expect, mock, test } from "bun:test"
+import { resolve } from "node:path"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
 import { createReactNativeMock, reactNativeMockBase } from "../../../test/react-native-mock"
@@ -150,6 +151,11 @@ mock.module("react-native", () =>
     View: Host,
   }),
 )
+
+mock.module(resolve(import.meta.dir, "../../../lib/auth-client"), () => ({
+  authClient: { getCookie: () => null },
+  autoSignInLocally: async () => {},
+}))
 
 // Icons come from the shared stub that `test/testing-library.ts` preloads.
 // A per-file `mock.module('lucide-react-native', …)` would narrow the module
