@@ -530,6 +530,20 @@ export default observer(function ProjectLayout() {
     }
   }, [store?.workspaceCollection?.all, project?.workspaceId]);
 
+  // Capability profile of the workspace owning this project — personal
+  // workspaces connect channels through Shogo rather than byo credentials,
+  // so panels gate their developer surfaces on it.
+  const workspaceKind: "personal" | "team" = useMemo(() => {
+    try {
+      const ws = store?.workspaceCollection?.all?.find(
+        (w: any) => w.id === project?.workspaceId
+      );
+      return ws?.kind === "personal" ? "personal" : "team";
+    } catch {
+      return "team";
+    }
+  }, [store?.workspaceCollection?.all, project?.workspaceId]);
+
   const planLabel = billingData.subscription
     ? getPlanDisplayName(billingData.subscription.planId)
     : "Free";
@@ -4450,6 +4464,7 @@ export default observer(function ProjectLayout() {
                                       projectId={projectId!}
                                       workspaceId={project?.workspaceId}
                                       agentUrl={agentUrl}
+                                      capabilityProfile={workspaceKind}
                                       hasAdvancedModelAccess={
                                         features.billing
                                           ? billingData.hasAdvancedModelAccess

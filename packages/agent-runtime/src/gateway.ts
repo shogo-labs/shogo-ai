@@ -3895,7 +3895,14 @@ export class AgentGateway {
     // Shogo-platform surfaces — gated so code-only agents can drop messaging,
     // integration, and heartbeat guidance from the cached prefix.
     const integrationsGuideOn = this.config.integrationsEnabled !== false
-    const channelsGuideOn = this.config.channelsEnabled !== false
+    // Channel connection is a managed Shogo surface for personal workspaces
+    // (their `channel_connect`/`channel_disconnect`/`channel_list` tools are
+    // stripped in `capability-profiles.ts`). Gate the guide line here too so
+    // the prompt never advertises a tool the profile removed — this flag is
+    // the single lever for BOTH the Action-Tools `channel_connect` invitation
+    // below AND the Capabilities Index `channels` line.
+    const channelsGuideOn =
+      this.config.channelsEnabled !== false && this.config.capabilityProfile !== 'personal'
     const mediaGuideOn = this.config.imageGenEnabled !== false
     const devopsGuideOn = this.config.heartbeatEnabled !== false
 

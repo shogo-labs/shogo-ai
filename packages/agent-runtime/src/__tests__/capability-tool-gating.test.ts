@@ -137,6 +137,10 @@ describe('filterDisabledCapabilityTools', () => {
       'team_create',
       'task_create',
       'list_projects',
+      // byo channel lifecycle is gone for personal (issue #1045)
+      'channel_connect',
+      'channel_disconnect',
+      'channel_list',
     ]) {
       expect(n.has(tool)).toBe(false)
     }
@@ -155,6 +159,9 @@ describe('filterDisabledCapabilityTools', () => {
       'goal_log',
       'goal_list',
       'set_status',
+      // `send_message` shares the `messaging` group but must NOT be stripped
+      // with the channel tools — personal workspaces keep messaging.
+      'send_message',
     ]) {
       expect(n.has(tool)).toBe(true)
     }

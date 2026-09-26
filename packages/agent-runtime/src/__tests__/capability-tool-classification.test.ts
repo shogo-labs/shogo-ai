@@ -68,6 +68,10 @@ describe('capability tool classification', () => {
       'project_list', 'project_create', 'project_call', 'project_configure',
       'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list', 'set_status',
       'ask_user', 'read_file', 'write_file', 'edit_file', 'web', 'memory_read',
+      // `send_message` shares the `messaging` group with the channel tools and
+      // must survive the personal boundary — only the byo channel lifecycle is
+      // removed (issue #1045).
+      'send_message',
     ]) {
       expect(disabled.has(kept)).toBe(false)
     }
@@ -80,6 +84,10 @@ describe('capability tool classification', () => {
       'project_attach', 'project_detach', 'list_projects', 'mount_project',
       'agent_spawn', 'team_create', 'task_create',
       'impact_radius', 'detect_changes', 'review_context', 'read_lints', 'server_sync',
+      // Personal workspaces reach channels via Shogo-managed connections, so
+      // the byo channel lifecycle tools are removed by name (issue #1045)
+      // while `send_message` (same group) stays enabled.
+      'channel_connect', 'channel_disconnect', 'channel_list',
     ]) {
       expect(disabled.has(removed)).toBe(true)
     }
