@@ -151,6 +151,55 @@ describe('pool host-mediated repo persist', () => {
     })
   })
 
+  describe('workspace runtime assign', () => {
+    function assignWorkspace(repoRef: object | null) {
+      const seen: string[] = []
+      const guest = Bun.serve({
+        port: 0,
+        fetch: (req) => {
+          seen.push(new URL(req.url).pathname)
+          return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+        },
+      })
+      const cfg = { ...config, work: dir, snapDir: join(dir, 'snap'), runDir: join(dir, 'run'), poolSize: 0 } as typeof config
+      mkdirSync(cfg.snapDir, { recursive: true })
+      mkdirSync(cfg.runDir, { recursive: true })
+      const mgr = {
+        startVM: async () => ({ ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}`, rootfs: '/tmp/fake', vmClass: 'standard' }),
+        stopVM: async () => {},
+        isRunning: () => true,
+        procCount: () => 0,
+      } as unknown as FirecrackerVMManager
+      const pool = new TestPool(mgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
+      ;(pool as any).sourceRef = async () => null
+      ;(pool as any).repoRef = async () => repoRef
+      const run = pool
+        .assign('ws:proj:p1', { RUNTIME_AUTH_SECRET: 'tok', WORKSPACE_PROJECT_IDS: 'p1' })
+        .finally(() => guest.stop(true))
+      return { pool, seen, run }
+    }
+
+    test('hydrates the durable merged-root .git so later exports descend from it', async () => {
+      const { pool, seen, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
+      const a = await run
+      expect(seen).toContain('/pool/repo-hydrated')
+      expect(a.repoParentEtag).toBe('"ws-r1"')
+
+      await pool.saveRepoToStore(a)
+      expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'descends', etag: '"ws-r1"' })
+    })
+
+    test('stays create-only when no durable repo exists yet', async () => {
+      const { pool, seen, run } = assignWorkspace(null)
+      const a = await run
+      expect(seen).not.toContain('/pool/repo-hydrated')
+      expect(a.repoParentEtag).toBeUndefined()
+
+      await pool.saveRepoToStore(a)
+      expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })
+    })
+  })
+
   test('pollActivity exports when repoHeadSha changes', async () => {
     const pool = makePool(dir)
     const a = pool.add('p1', { repoHeadSha: 'aaa' })

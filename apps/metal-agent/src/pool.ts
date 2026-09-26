@@ -1182,10 +1182,13 @@ export class MetalWarmPool {
     // creds), so the host hydrates it here — after source, before the guest
     // starts serving chat. A failed overlay must not later overwrite the
     // durable archive with the template seed `.git`.
+    //
+    // Workspace runtimes too: their merged root is one repo that commits every
+    // member's files each turn and is exported under the runtime key. Skipping
+    // the hydrate leaves the replacement VM create-only against an archive
+    // that already exists, so every later export is refused as a conflict.
     try {
-      const r = projectId.startsWith('ws:')
-        ? { hydrated: false as const }
-        : await this.hydrateRepo(projectId, vm.handle, env)
+      const r = await this.hydrateRepo(projectId, vm.handle, env)
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         this.writeLive(a)

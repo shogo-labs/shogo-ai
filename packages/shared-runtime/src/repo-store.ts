@@ -73,7 +73,7 @@ function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.Pro
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'] })
     let stderr = ''
-    child.stderr.on('data', (c) => { stderr += String(c) })
+    child.stderr?.on('data', (c) => { stderr += String(c) })
     child.on('error', reject)
     child.on('close', (code) =>
       code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 500)}`)),
@@ -144,7 +144,7 @@ export async function untrackDependencyDirs(
     new Promise<{ code: number; stdout: string }>((resolve, reject) => {
       const child = spawn('git', withShogoCommitTrailer(args, env), { cwd: workspaceDir, env, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
-      child.stdout.on('data', (c) => { stdout += String(c) })
+      child.stdout?.on('data', (c) => { stdout += String(c) })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code: code ?? -1, stdout }))
     })
@@ -213,8 +213,8 @@ export async function seedRepoIfAbsent(
       const child = spawn('git', withShogoCommitTrailer(args, env), { cwd: workspaceDir, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
       let stderr = ''
-      child.stdout.on('data', (c) => { stdout += String(c) })
-      child.stderr.on('data', (c) => { stderr += String(c) })
+      child.stdout?.on('data', (c) => { stdout += String(c) })
+      child.stderr?.on('data', (c) => { stderr += String(c) })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
     })
@@ -311,8 +311,8 @@ export async function adoptHydratedRepo(
       const child = spawn('git', args, { cwd: workspaceDir, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
       let stderr = ''
-      child.stdout.on('data', (c) => { stdout += String(c) })
-      child.stderr.on('data', (c) => { stderr += String(c) })
+      child.stdout?.on('data', (c) => { stdout += String(c) })
+      child.stderr?.on('data', (c) => { stderr += String(c) })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
     })
@@ -345,7 +345,7 @@ export async function getHeadSha(workspaceDir: string): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn('git', ['rev-parse', 'HEAD'], { cwd: workspaceDir, stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
-    child.stdout.on('data', (c) => { out += String(c) })
+    child.stdout?.on('data', (c) => { out += String(c) })
     child.on('error', () => resolve(null))
     child.on('close', (code) => resolve(code === 0 ? out.trim() || null : null))
   })
