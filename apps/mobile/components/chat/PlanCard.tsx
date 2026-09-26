@@ -57,6 +57,8 @@ interface PlanCardProps {
    *  doesn't nest a card inside `DockPanel`'s own zone-level card — see
    *  `ChatDock`'s file header comment. Internal section dividers are kept. */
   embedded?: boolean
+  /** Dock preview mode: show only the plan summary and build actions. */
+  compact?: boolean
   /** Chat's current model — the Build picker starts here. */
   selectedModel?: string
   /** When false, non-economy models in the Build picker stay locked. */
@@ -77,6 +79,7 @@ function planCardPropsEqual(prev: PlanCardProps, next: PlanCardProps) {
   if (prev.onViewFull !== next.onViewFull) return false
   if (prev.onGenerateSummary !== next.onGenerateSummary) return false
   if (prev.embedded !== next.embedded) return false
+  if (prev.compact !== next.compact) return false
   if (prev.selectedModel !== next.selectedModel) return false
   if (prev.isPro !== next.isPro) return false
   const a = prev.plan
@@ -110,6 +113,7 @@ function PlanCardImpl({
   isConfirmed,
   onGenerateSummary,
   embedded = false,
+  compact = false,
   selectedModel,
   isPro = true,
 }: PlanCardProps) {
@@ -166,8 +170,10 @@ function PlanCardImpl({
         <ClipboardList className="h-4 w-4 text-primary" size={16} />
         <View className="flex-1">
           <Text className="font-semibold text-sm text-foreground">{plan.name}</Text>
-          <Text className="text-xs text-muted-foreground mt-0.5">{plan.overview}</Text>
-          {plan.filepath ? (
+          <Text className="text-xs text-muted-foreground mt-0.5" numberOfLines={compact ? 3 : undefined}>
+            {plan.overview}
+          </Text>
+          {!compact && plan.filepath ? (
             <Text className="text-[10px] text-muted-foreground/70 mt-1" numberOfLines={1}>
               Saved as {plan.filepath}
             </Text>
@@ -176,7 +182,7 @@ function PlanCardImpl({
       </View>
 
       {/* Tab strip — only visible when a summary exists or is in flight */}
-      {summaryAvailable && (
+      {!compact && summaryAvailable && (
         <View className="flex-row items-center border-b border-border/40">
           <Pressable
             onPress={() => setActiveTab("technical")}
@@ -215,33 +221,35 @@ function PlanCardImpl({
       )}
 
       {/* Plan body */}
-      <ScrollView
-        className="px-4 py-3"
-        style={{ maxHeight: PLAN_BODY_MAX_HEIGHT }}
-        nestedScrollEnabled
-        bounces={false}
-        alwaysBounceVertical={false}
-      >
-        {isSummaryTab ? (
-          summaryStatus === "pending" ? (
-            <View className="flex-row items-center gap-2 py-3">
-              <ActivityIndicator size="small" />
-              <Text className="text-xs text-muted-foreground">Generating summary...</Text>
-            </View>
-          ) : summaryStatus === "error" ? (
-            <Text className="text-xs text-destructive">
-              Failed to generate summary. The technical plan above is unaffected.
-            </Text>
+      {!compact && (
+        <ScrollView
+          className="px-4 py-3"
+          style={{ maxHeight: PLAN_BODY_MAX_HEIGHT }}
+          nestedScrollEnabled
+          bounces={false}
+          alwaysBounceVertical={false}
+        >
+          {isSummaryTab ? (
+            summaryStatus === "pending" ? (
+              <View className="flex-row items-center gap-2 py-3">
+                <ActivityIndicator size="small" />
+                <Text className="text-xs text-muted-foreground">Generating summary...</Text>
+              </View>
+            ) : summaryStatus === "error" ? (
+              <Text className="text-xs text-destructive">
+                Failed to generate summary. The technical plan above is unaffected.
+              </Text>
+            ) : (
+              <MarkdownText>{summaryDisplayed}</MarkdownText>
+            )
           ) : (
-            <MarkdownText>{summaryDisplayed}</MarkdownText>
-          )
-        ) : (
-          <MarkdownText>{technicalDisplayedPlan}</MarkdownText>
-        )}
-      </ScrollView>
+            <MarkdownText>{technicalDisplayedPlan}</MarkdownText>
+          )}
+        </ScrollView>
+      )}
 
       {/* Todos */}
-      {plan.todos.length > 0 && (
+      {!compact && plan.todos.length > 0 && (
         <View className="border-t border-border/50">
           <Pressable
             onPress={() => setTasksExpanded((prev) => !prev)}
@@ -279,7 +287,7 @@ function PlanCardImpl({
               onBuild={handleBuildPress}
               onViewPlan={handleViewFull ?? undefined}
             />
-            {handleGenerate && !summaryAvailable && !!plan.filepath ? (
+            {!compact && handleGenerate && !summaryAvailable && !!plan.filepath ? (
               <Pressable
                 onPress={handleGenerate}
                 disabled={generating}
@@ -300,7 +308,7 @@ function PlanCardImpl({
         </View>
       )}
 
-      {generateError && !summaryAvailable && (
+      {!compact && generateError && !summaryAvailable && (
         <Text className="px-4 pb-2 text-xs text-destructive">{generateError}</Text>
       )}
 
