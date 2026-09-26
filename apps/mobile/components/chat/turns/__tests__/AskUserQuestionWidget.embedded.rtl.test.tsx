@@ -29,7 +29,12 @@ mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
 }))
 
+mock.module("../../../../lib/agent-image-source", () => ({
+  useAgentImageSource: (uri: string | null) => (uri ? { uri } : null),
+}))
+
 const { AskUserQuestionWidget } = await import("../AskUserQuestionWidget")
+const { ChatContextProvider } = await import("../../ChatContext")
 const toolTypes = await import("../../tools/types")
 
 const OPTIONS = [
@@ -126,6 +131,66 @@ describe("AskUserQuestionWidget embedded in the chat dock", () => {
 
     expect(screen.getByText("Where are you looking to go?")).toBeTruthy()
     expect(container.querySelector('[data-rn-shim="ask-user-question-options"]')).toBeNull()
+  })
+
+  test("uses a two-column image grid with titles below each option", async () => {
+    const { container } = render(
+      <ChatContextProvider
+        value={{
+          currentSession: null,
+          messages: [],
+          sendMessage: () => {},
+          isLoading: false,
+          error: null,
+          agentUrl: "https://agent.example.test",
+        }}
+      >
+        <AskUserQuestionWidget
+          tool={pendingTool({
+            args: {
+              questions: [
+                {
+                  header: "Avatar",
+                  question: "Which mermaid should be my avatar?",
+                  options: [
+                    {
+                      label: "Ethereal painterly",
+                      description: "Luminous teal-haired mermaid",
+                      imagePath: "images/mermaid-a.png",
+                    },
+                    {
+                      label: "Anime",
+                      description: "Coral-pink hair and aqua eyes",
+                      imagePath: "images/mermaid-b.png",
+                    },
+                  ],
+                },
+              ],
+            },
+          })}
+          onSubmitResponse={() => {}}
+          embedded
+        />
+      </ChatContextProvider>,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const grid = container.querySelector(
+      '[data-rn-shim="ask-user-image-options"]',
+    )
+    expect(grid).toBeTruthy()
+    expect(grid?.className).toContain("flex-row")
+    expect(grid?.className).toContain("flex-wrap")
+    expect(screen.getByText("Ethereal painterly")).toBeTruthy()
+    expect(screen.getByText("Anime")).toBeTruthy()
+    expect(
+      container.querySelector(
+        'img[accessibilitylabel="Preview for option: Ethereal painterly"]',
+      ),
+    ).toBeTruthy()
   })
 
   test("embedded loading does not nest a second Questions title", async () => {

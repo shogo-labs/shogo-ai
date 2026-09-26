@@ -154,6 +154,7 @@ function OptionRow({
   label,
   description,
   imageUrl,
+  imageGrid = false,
   isSelected,
   isMultiSelect,
   onSelect,
@@ -164,6 +165,8 @@ function OptionRow({
   description: string
   /** Resolved thumbnail URL (already built from chatContext.agentUrl + imagePath), if any. */
   imageUrl?: string | null
+  /** Render visual options as cards with the title below the image. */
+  imageGrid?: boolean
   isSelected: boolean
   isMultiSelect: boolean
   onSelect: () => void
@@ -177,17 +180,21 @@ function OptionRow({
       onPress={onSelect}
       disabled={disabled}
       className={cn(
-        "w-full p-2.5 rounded-md border",
+        imageGrid
+          ? "w-[48%] rounded-md border p-2.5"
+          : "w-full rounded-md border p-2.5",
         isSelected
           ? "border-primary/40 bg-primary/10"
           : "border-border/50 bg-background/40",
       )}
     >
-      <View className="flex-row items-start gap-2.5">
+      <View className={imageGrid ? "gap-0.5" : "flex-row items-start gap-2.5"}>
         {/* Letter badge — doubles as the selection indicator. */}
         <View
           className={cn(
-            "w-6 h-6 items-center justify-center border",
+            imageGrid
+              ? "absolute left-1.5 top-1.5 z-10 h-6 w-6 items-center justify-center rounded-full border"
+              : "h-6 w-6 items-center justify-center border",
             isMultiSelect ? "rounded-sm" : "rounded-full",
             isSelected
               ? "border-primary bg-primary"
@@ -204,30 +211,66 @@ function OptionRow({
           </Text>
         </View>
 
-        {imageUrl && imageSource && !imageFailed ? (
-          <Image
-            source={imageSource ?? undefined}
-            className="w-12 h-12 rounded-md border border-border/50"
-            resizeMode="cover"
-            accessibilityLabel={`Preview for option: ${label}`}
-            onError={() => setImageFailed(true)}
-          />
-        ) : null}
+        {imageGrid ? (
+          <>
+            <View className="aspect-square w-full overflow-hidden rounded-md border border-border/50 bg-muted/40">
+              {imageUrl && imageSource && !imageFailed ? (
+                <Image
+                  source={imageSource}
+                  className="h-full w-full"
+                  resizeMode="cover"
+                  accessibilityLabel={`Preview for option: ${label}`}
+                  onError={() => setImageFailed(true)}
+                />
+              ) : null}
+            </View>
+            <View className="gap-0.5 pt-1">
+              <Text
+                className="font-medium text-xs leading-[15px] text-foreground"
+                numberOfLines={2}
+              >
+                {label}
+              </Text>
+              {description && description !== label ? (
+                <Text
+                  className="text-[10px] leading-[14px] text-foreground/75"
+                  numberOfLines={3}
+                >
+                  {description}
+                </Text>
+              ) : null}
+            </View>
+          </>
+        ) : (
+          <>
+            {imageUrl && imageSource && !imageFailed ? (
+              <Image
+                source={imageSource}
+                className="h-12 w-12 rounded-md border border-border/50"
+                resizeMode="cover"
+                accessibilityLabel={`Preview for option: ${label}`}
+                onError={() => setImageFailed(true)}
+              />
+            ) : null}
 
-        <View className="flex-1">
-          {label !== description && label.length <= 32 ? (
-            <Text className="font-medium text-xs text-foreground">{label}</Text>
-          ) : null}
-          {description ? (
-            <Text className="text-[11px] leading-[15px] text-foreground/90">
-              {description}
-            </Text>
-          ) : (
-            <Text className="text-[11px] leading-[15px] text-foreground/90">
-              {label}
-            </Text>
-          )}
-        </View>
+            <View className="flex-1">
+              {label !== description && label.length <= 32 ? (
+                <Text className="font-medium text-xs text-foreground">
+                  {label}
+                </Text>
+              ) : null}
+              {description ? (
+                <Text className="text-[11px] leading-[15px] text-foreground/90">
+                  {description}
+                </Text>
+              ) : (
+                <Text className="text-[11px] leading-[15px] text-foreground/90">
+                  {label}
+                </Text>
+              )}
+            </View>
+          </>
+        )}
       </View>
     </Pressable>
   )
@@ -589,6 +632,9 @@ export function AskUserQuestionWidget({
     return true
   })()
   const nextDisabled = !currentAnswered
+  const hasImageOptions = (currentQuestion.options ?? []).some(
+    (option) => Boolean(option.imagePath),
+  )
 
   const pagination = showPagination ? (
     <QuestionPagination
@@ -603,30 +649,36 @@ export function AskUserQuestionWidget({
 
   const optionList = (
     <View className="gap-1.5">
-      {(currentQuestion.options ?? []).map((option, optionIndex) => {
-        const currentSelections = selections.get(activeTab) || []
-        const isSelected = currentSelections.includes(option.label)
+      <View
+        testID={hasImageOptions ? "ask-user-image-options" : undefined}
+        className={hasImageOptions ? "flex-row flex-wrap gap-2" : "gap-1.5"}
+      >
+        {(currentQuestion.options ?? []).map((option, optionIndex) => {
+          const currentSelections = selections.get(activeTab) || []
+          const isSelected = currentSelections.includes(option.label)
 
-        return (
-          <OptionRow
-            key={option.label}
-            letter={letterForIndex(optionIndex)}
-            label={option.label}
-            description={option.description}
-            imageUrl={resolveOptionImageUrl(option.imagePath)}
-            isSelected={isSelected}
-            isMultiSelect={currentQuestion.multiSelect ?? false}
-            onSelect={() =>
-              handleSelect(
-                activeTab,
-                option.label,
-                currentQuestion.multiSelect ?? false,
-              )
-            }
-            disabled={effectivelyAnswered}
-          />
-        )
-      })}
+          return (
+            <OptionRow
+              key={option.label}
+              letter={letterForIndex(optionIndex)}
+              label={option.label}
+              description={option.description}
+              imageUrl={resolveOptionImageUrl(option.imagePath)}
+              imageGrid={hasImageOptions}
+              isSelected={isSelected}
+              isMultiSelect={currentQuestion.multiSelect ?? false}
+              onSelect={() =>
+                handleSelect(
+                  activeTab,
+                  option.label,
+                  currentQuestion.multiSelect ?? false,
+                )
+              }
+              disabled={effectivelyAnswered}
+            />
+          )
+        })}
+      </View>
 
       <View>
         <OptionRow
@@ -662,7 +714,10 @@ export function AskUserQuestionWidget({
     </View>
   )
 
-  const optionRowCount = (currentQuestion.options?.length ?? 0) + 1
+  const optionCount = currentQuestion.options?.length ?? 0
+  const optionRowCount = hasImageOptions
+    ? Math.ceil(optionCount / 2) + 1
+    : optionCount + 1
   const optionsNeedScroll =
     !isSheet &&
     bodyMaxHeight != null &&
