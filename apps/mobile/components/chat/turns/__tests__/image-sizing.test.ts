@@ -6,6 +6,7 @@ import {
   clampAspectRatio,
   DEFAULT_IMAGE_ASPECT,
   getChatImageWidth,
+  parseImageSize,
 } from "../image-sizing"
 
 describe("clampAspectRatio", () => {
@@ -25,6 +26,18 @@ describe("clampAspectRatio", () => {
 
   test("preserves a normal aspect ratio", () => {
     expect(clampAspectRatio(1600, 900)).toBeCloseTo(16 / 9)
+  })
+})
+
+describe("parseImageSize", () => {
+  test("parses common generation size strings", () => {
+    expect(parseImageSize("1024x1024")).toBe(1)
+    expect(parseImageSize("1792×1024")).toBeCloseTo(1.75)
+  })
+
+  test("falls back for invalid sizes", () => {
+    expect(parseImageSize()).toBe(DEFAULT_IMAGE_ASPECT)
+    expect(parseImageSize("square")).toBe(DEFAULT_IMAGE_ASPECT)
   })
 })
 
