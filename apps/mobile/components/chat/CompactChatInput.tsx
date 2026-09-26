@@ -43,9 +43,9 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { resolveShortName, resolveTier } from "../../lib/visible-models";
-import { ComposerModelPicker } from "./ModelPickerMenu";
+import { ComposerModelPicker, ModelPickerMenu } from "./ModelPickerMenu";
 import { WebTooltip } from "./WebTooltip";
-import { Plus, X, Mic, Square, Languages, Cloud } from "lucide-react-native";
+import { Plus, X, Mic, Square, Languages, Cloud, Cpu } from "lucide-react-native";
 import {
   executeNativeAttachAction,
   type NativeAttachAction,
@@ -786,6 +786,23 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   >
                     {plusMenuExtras}
                     <ComposerPlusSection
+                      id="model"
+                      label="Model"
+                      value={compactNativeModelLabel(currentModelId)}
+                      Icon={Cpu}
+                    >
+                      <ModelPickerMenu
+                        currentModelId={currentModelId}
+                        effectiveIsPro={effectiveIsPro}
+                        presentation="sheet"
+                        onSelect={(modelId) => {
+                          handleModelChange(modelId);
+                          closePlusMenu();
+                        }}
+                        onDismiss={closePlusMenu}
+                      />
+                    </ComposerPlusSection>
+                    <ComposerPlusSection
                       id="mode"
                       label="Mode"
                       value={currentInteractionConfig.label}
@@ -962,44 +979,38 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </>
               )}
 
-              {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-              <ComposerModelPicker
-                {...composerModelPickerProps({
-                  currentModelId,
-                  effectiveIsPro,
-                  disabled,
-                  nativeSheet: isPhoneChrome,
-                  triggerClassName: cn(
-                    useProminentComposer
-                      ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
-                      : useCurrentNativeSizing
-                      ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
-                      : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                    isPhoneChrome && !useProminentComposer && "min-w-0"
-                  ),
-                  triggerStyle: isPhoneChrome
-                    ? { maxWidth: modelTriggerMaxWidth }
-                    : undefined,
-                  labelClassName: useProminentComposer
-                    ? "text-[12px] text-foreground"
-                    : useCurrentNativeSizing
-                    ? "text-[13px] text-foreground"
-                    : "text-xs text-muted-foreground",
-                  chevronSize: useCurrentNativeSizing ? 10 : 8,
-                  chevronColor: useProminentComposer
-                    ? chatgptComposer.icon
-                    : undefined,
-                  chevronStrokeWidth: useProminentComposer
-                    ? NATIVE_PHONE_ICON_STROKE
-                    : undefined,
-                  hitSlop: useCurrentNativeSizing ? 6 : undefined,
-                  label: isPhoneChrome
-                    ? compactNativeModelLabel(currentModelId)
-                    : resolveShortName(currentModelId),
-                  menuWidth: nativeModelMenuWidth,
-                  onSelect: handleModelChange,
-                })}
-              />
+              {/* On native phones the + menu owns model, mode, and environment
+                  settings. Retain the inline picker for the regular/web
+                  compact composer. */}
+              {!useProminentComposer ? (
+                <ComposerModelPicker
+                  {...composerModelPickerProps({
+                    currentModelId,
+                    effectiveIsPro,
+                    disabled,
+                    nativeSheet: isPhoneChrome,
+                    triggerClassName: cn(
+                      useCurrentNativeSizing
+                        ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
+                        : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                      isPhoneChrome && "min-w-0"
+                    ),
+                    triggerStyle: isPhoneChrome
+                      ? { maxWidth: modelTriggerMaxWidth }
+                      : undefined,
+                    labelClassName: useCurrentNativeSizing
+                      ? "text-[13px] text-foreground"
+                      : "text-xs text-muted-foreground",
+                    chevronSize: useCurrentNativeSizing ? 10 : 8,
+                    hitSlop: useCurrentNativeSizing ? 6 : undefined,
+                    label: isPhoneChrome
+                      ? compactNativeModelLabel(currentModelId)
+                      : resolveShortName(currentModelId),
+                    menuWidth: nativeModelMenuWidth,
+                    onSelect: handleModelChange,
+                  })}
+                />
+              ) : null}
             </View>
 
             {useProminentComposer ? (

@@ -2846,6 +2846,7 @@ function ChatInputImpl({
               {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
               {showModelPicker &&
               presentation !== "agent" &&
+              !useProminentComposer &&
               !showInlineMobileModelPicker ? (
                 <ComposerModelPicker
                   {...composerModelPickerProps({
