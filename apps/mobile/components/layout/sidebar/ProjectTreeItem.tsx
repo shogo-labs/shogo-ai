@@ -141,6 +141,8 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const comfortable = usePhoneLayout();
   const nativeLongPress = isNativePlatform();
   const density = densityFor(comfortable);
+  const workspacePane =
+    Platform.OS === "web" && !comfortable && !mobileProjectDetail;
   const pathname = usePathname();
   const params = useLocalSearchParams<{ chatSessionId?: string }>();
   const http = useDomainHttp();
@@ -581,6 +583,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         }
         onMeasureHeight={handleChatRowHeight}
         mobileProjectDetail={mobileProjectDetail}
+        variant={workspacePane ? "workspacePane" : undefined}
       />
     );
     const chatRows = createSidebarChatRows(
@@ -590,7 +593,15 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     );
 
     return (
-      <View className={mobileProjectDetail ? "flex-1" : "ml-6 mt-0.5"}>
+      <View
+        className={
+          mobileProjectDetail
+            ? "flex-1"
+            : workspacePane
+              ? "mt-0.5"
+              : "ml-6 mt-0.5"
+        }
+      >
         {sessions.length === 0 ? (
           <View className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}>
             <Text
@@ -758,7 +769,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           className={cn(
             "group flex-row items-center rounded-md pr-1",
             comfortable ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
-            isActive ? "bg-accent" : "active:bg-accent/50",
+            isActive
+              ? "bg-accent"
+              : "hover:bg-accent/50 active:bg-accent/50",
           )}
         >
           <Pressable
