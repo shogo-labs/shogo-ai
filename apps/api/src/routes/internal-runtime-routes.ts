@@ -162,6 +162,99 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * POST /api/internal/reminders/notify
+   *   body: { workspaceId, projectId?, userId, title, body, actionUrl?,
+   *           dedupeKey?, metadata?, type?, pushType?, channelId? }
+   *
+   * Boundary capability behind the runtime `notify_user` tool: write one
+   * in-app notification row for the user, then (when the row was newly
+   * created) send an OS push to their registered devices. This is the "reach
+   * the user" half of the reminder path — the agent detects a due reminder in
+   * MEMORY.md and calls the tool; there is no server-side reminder row or
+   * scheduler here (see issue #1046).
+   *
+   * `type` is an existing `NotificationType` member (the enum is deliberately
+   * NOT migrated — reminder-specific context rides in `metadata`), and
+   * `dedupeKey` makes the row best-effort idempotent via
+   * `createNotification`. `pushType`/`channelId` are the parameterized push
+   * `data.type` / Android channel; both default to `chat-complete` so the
+   * payload shape is unchanged unless a caller opts in.
+   *
+   * Auth: workspace/project runtime token or K8s SA token, scoped to the
+   * workspace in the body (same pattern as `/agent-cost-metrics`).
+   */
+  app.post('/reminders/notify', async (c) => {
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
+    const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
+    if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const userId = typeof body.userId === 'string' ? body.userId : ''
+    const title = typeof body.title === 'string' ? body.title.trim() : ''
+    const message = typeof body.body === 'string' ? body.body : ''
+    if (!userId || !title || !message) {
+      return c.json({ error: 'userId, title, and body are required' }, 400)
+    }
+
+    // Reuse an EXISTING NotificationType member — the enum is intentionally not
+    // migrated for reminders, so the reminder-specific bits live in `metadata`.
+    const type = typeof body.type === 'string' && body.type ? body.type : 'workspace_updated'
+    const pushType = typeof body.pushType === 'string' && body.pushType ? body.pushType : 'chat-complete'
+    const channelId = typeof body.channelId === 'string' && body.channelId ? body.channelId : 'chat-complete'
+    const actionUrl = typeof body.actionUrl === 'string' && body.actionUrl ? body.actionUrl : undefined
+    const dedupeKey = typeof body.dedupeKey === 'string' && body.dedupeKey ? body.dedupeKey : undefined
+    const metadata =
+      body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+        && JSON.stringify(body.metadata).length <= 4_096
+        ? (body.metadata as Record<string, unknown>)
+        : undefined
+
+    try {
+      const { createNotification } = await import('../services/notification.service')
+      const row = await createNotification({
+        userId,
+        // `type` is validated by the DB enum; a bad value simply fails the
+        // best-effort insert and no push is sent (see below).
+        type: type as any,
+        title,
+        message,
+        ...(actionUrl ? { actionUrl } : {}),
+        ...(dedupeKey ? { dedupeKey } : {}),
+        ...(metadata ? { metadata } : {}),
+      })
+
+      // Only push when a new inbox row was created, so a deduped retry (or a
+      // failed insert) does not deliver the same reminder twice. Exactly-once
+      // is best-effort — `dedupeKey` has no unique index.
+      if (row) {
+        const { sendPushToUser } = await import('../lib/push-notifications')
+        await sendPushToUser(userId, {
+          title,
+          body: message,
+          type: pushType,
+          channelId,
+          data: {
+            ...(metadata ?? {}),
+            ...(dedupeKey ? { dedupeKey } : {}),
+            ...(actionUrl ? { actionUrl } : {}),
+          },
+        })
+      }
+
+      return c.json({ ok: true, created: Boolean(row), id: row?.id ?? null })
+    } catch (err: any) {
+      console.error(`[Internal] Failed to notify user ${userId}:`, err?.message ?? err)
+      return c.json({ error: 'Failed to notify user' }, 500)
+    }
+  })
+
+  /**
    * PUT /api/internal/heartbeat/config/:projectId
    *
    * Update heartbeat scheduling config for an agent. Manages nextHeartbeatAt

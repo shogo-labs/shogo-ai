@@ -207,4 +207,28 @@ describe('sendPushToUser', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled()
   })
+
+  it('uses a caller-supplied payload type and Android channel id when provided (#1046)', async () => {
+    mobileFindManyImpl = async () => [{ pushToken: 'ExponentPushToken[user-a]' }]
+
+    await sendPushToUser('user-1', {
+      title: 'Reminder',
+      body: 'Review the launch checklist',
+      type: 'reminder-due',
+      channelId: 'reminder-due',
+      data: { reminderId: 'rem-1' },
+    })
+
+    const body = JSON.parse(lastFetchArgs[1].body)
+    expect(body).toEqual([
+      {
+        to: 'ExponentPushToken[user-a]',
+        title: 'Reminder',
+        body: 'Review the launch checklist',
+        data: { reminderId: 'rem-1', type: 'reminder-due' },
+        priority: 'high',
+        channelId: 'reminder-due',
+      },
+    ])
+  })
 })
