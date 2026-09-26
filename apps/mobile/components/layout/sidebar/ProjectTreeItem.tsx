@@ -404,6 +404,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       );
       try {
         await actions.updateChatSession(sessionId, { isPinned: next });
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to toggle pin:", e);
         refreshChats();
@@ -419,6 +420,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       );
       try {
         await actions.updateChatSession(sessionId, { isArchived: next });
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to toggle archive:", e);
         refreshChats();
@@ -434,6 +436,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       );
       try {
         await actions.updateChatSession(sessionId, { name });
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to rename chat:", e);
         refreshChats();
@@ -449,6 +452,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
       try {
         await actions.deleteChatSession(sessionId);
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to delete chat:", e);
         refreshChats();

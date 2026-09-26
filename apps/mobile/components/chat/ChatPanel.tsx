@@ -125,6 +125,7 @@ import {
   AI_PROVIDERS,
 } from "../../lib/ai-consent"
 import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
+import { autoNameSession } from "./auto-name-session"
 
 import {
   isPhoneLayout,
@@ -1135,6 +1136,60 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     hasTriggeredNamingRef.current = false
   }, [chatSessionId])
+
+  const maybeAutoNameSession = useCallback(
+    (sessionId: string, userText: string) => {
+      if (!userText.trim() || hasTriggeredNamingRef.current) return
+
+      const session = studioChat.chatSessionCollection.get(sessionId)
+      const sessionName =
+        (session as any)?.inferredName || (session as any)?.name
+      if (sessionName && sessionName !== "Untitled") return
+
+      hasTriggeredNamingRef.current = true
+      const http = createHttpClient()
+      void autoNameSession({
+        sessionId,
+        userText,
+        workspaceId,
+        projectId,
+        getSession: (id) => studioChat.chatSessionCollection.get(id),
+        getProjectName: (id) =>
+          projectCollection.all.find((p: any) => p.id === id)?.name,
+        generateName: (text, currentWorkspaceId, currentProjectId) =>
+          api.generateProjectName(
+            http,
+            text,
+            currentWorkspaceId,
+            currentProjectId,
+          ),
+        updateProject: (id, changes) => actions.updateProject(id, changes),
+        updateSession: (id, changes) =>
+          actions.updateChatSession(id, changes),
+        emitRefresh: ({
+          projectId: currentProjectId,
+          workspaceId: currentWorkspaceId,
+          sessionId: currentSessionId,
+        }) =>
+          chatSessionEvents.emit({
+            ...(currentProjectId ? { projectId: currentProjectId } : {}),
+            ...(currentWorkspaceId ? { workspaceId: currentWorkspaceId } : {}),
+            activeSessionId: currentSessionId,
+            refresh: true,
+          }),
+      })
+        .catch((err) => {
+          console.warn("[ChatPanel] AI session naming failed:", err)
+        })
+    },
+    [
+      actions,
+      projectCollection,
+      projectId,
+      studioChat,
+      workspaceId,
+    ],
+  )
 
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
@@ -2928,62 +2983,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       fetchQuickActions()
 
-      // Auto-name "Untitled" sessions after the first assistant response
+      // Fallback for messages that bypass sendMessageInternal. Normal user
+      // sends start naming immediately when the first message is submitted.
       if (currentSessionId && !hasTriggeredNamingRef.current) {
-        const session = studioChat.chatSessionCollection.get(currentSessionId)
-        const sessionName =
-          (session as any)?.inferredName || (session as any)?.name
-        if (!sessionName || sessionName === "Untitled") {
-          const firstUserMsg = messages.find((m: any) => m.role === "user")
-          const userText = firstUserMsg?.parts
-            ?.filter((p: any) => p.type === "text")
-            .map((p: any) => p.text)
-            .join(" ")
-            ?.trim()
-          if (userText) {
-            hasTriggeredNamingRef.current = true
-            const http = createHttpClient()
-            api
-              .generateProjectName(http, userText, workspaceId, projectId)
-              .then(({ name, description, source }) => {
-                if (source !== "ai" || !name) return
-                // Guard: the session may have been deleted (or never persisted
-                // server-side) between sending the naming RPC and its
-                // resolution — e.g. the user switched chat tabs and removed
-                // the original session. Calling `updateChatSession` on a
-                // missing id throws "Item not found" inside the MST flow,
-                // which becomes an UnhandledPromiseRejection (the inner
-                // Promise was previously NOT returned from the .then, so the
-                // outer .catch couldn't see it). Check first AND return the
-                // inner Promise so any future error path is funneled through
-                // the outer .catch.
-                if (!studioChat.chatSessionCollection.get(currentSessionId)) {
-                  return
-                }
-                // Only rename the *project* when it hasn't been named yet —
-                // i.e. this session is the one naming a brand-new project
-                // (e.g. the voice-creation flow, which doesn't call
-                // generateProjectName itself). Additional "New Chat" / debug
-                // threads created later in an already-named project must
-                // only rename themselves; otherwise every extra chat sent in
-                // a project would clobber the project's title.
-                const project = projectId
-                  ? projectCollection.all.find((p: any) => p.id === projectId)
-                  : null
-                if (project && project.name === "New Project") {
-                  actions.updateProject(projectId, {
-                    name,
-                    ...(description ? { description } : {}),
-                  })
-                }
-                return actions.updateChatSession(currentSessionId, {
-                  inferredName: name,
-                })
-              })
-              .catch((err) => {
-                console.warn("[ChatPanel] AI session naming failed:", err)
-              })
-          }
+        const firstUserMsg = messages.find((m: any) => m.role === "user")
+        const userText = firstUserMsg?.parts
+          ?.filter((p: any) => p.type === "text")
+          .map((p: any) => p.text)
+          .join(" ")
+          ?.trim()
+        if (userText) {
+          maybeAutoNameSession(currentSessionId, userText)
         }
       }
     },
@@ -4903,6 +4913,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
           console.warn("[ChatPanel] Failed to persist user message:", err),
         )
 
+      // Start AI naming alongside the agent turn instead of waiting for the
+      // assistant response to finish. The onFinish fallback above covers
+      // messages that bypass this path.
+      maybeAutoNameSession(currentSessionId, trimmedContent)
+
       // Optimistically bump the chat session's lastActiveAt so the
       // history sidebar re-buckets this chat into "Today" immediately
       // instead of waiting for a session-list refetch. The server-side
@@ -5051,6 +5066,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       ideBridge.context,
       isPhoneViewport,
       windowWidth,
+      maybeAutoNameSession,
     ],
   )
 
