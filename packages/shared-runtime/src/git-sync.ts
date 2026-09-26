@@ -177,10 +177,10 @@ const defaultSpawnGit: SpawnGitFn = (args, cwd, env) => {
     })
     const stdoutChunks: string[] = []
     const stderrChunks: string[] = []
-    child.stdout.setEncoding('utf-8')
-    child.stderr.setEncoding('utf-8')
-    child.stdout.on('data', (c: string) => stdoutChunks.push(c))
-    child.stderr.on('data', (c: string) => stderrChunks.push(c))
+    child.stdout?.setEncoding('utf-8')
+    child.stderr?.setEncoding('utf-8')
+    child.stdout?.on('data', (c: string) => stdoutChunks.push(c))
+    child.stderr?.on('data', (c: string) => stderrChunks.push(c))
 
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL') } catch { /* ignore */ }

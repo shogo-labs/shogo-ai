@@ -115,10 +115,10 @@ const defaultSpawnGit: SpawnGitFn = (args, cwd, env) => {
     })
     const out: string[] = []
     const err: string[] = []
-    child.stdout.setEncoding('utf-8')
-    child.stderr.setEncoding('utf-8')
-    child.stdout.on('data', (c: string) => out.push(c))
-    child.stderr.on('data', (c: string) => err.push(c))
+    child.stdout?.setEncoding('utf-8')
+    child.stderr?.setEncoding('utf-8')
+    child.stdout?.on('data', (c: string) => out.push(c))
+    child.stderr?.on('data', (c: string) => err.push(c))
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL') } catch { /* ignore */ }
       reject(new Error(`git ${args[0]} timed out after ${GIT_TIMEOUT_MS}ms`))
