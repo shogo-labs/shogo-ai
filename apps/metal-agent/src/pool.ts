@@ -254,6 +254,17 @@ export interface AssignedVm {
    * from some other VM.
    */
   stateSince?: number
+  /**
+   * The assign-time repo hydrate is still running. The guest's `.git` is the
+   * template seed until it lands, so it must not be exported yet.
+   */
+  repoHydratePending?: boolean
+  /**
+   * This VM hydrated `.git` against the durable archive at assign. With no
+   * parent etag that means no archive existed then, so a later conflict is
+   * another VM's write and never grounds for promotion.
+   */
+  repoLinked?: boolean
   /** Last `repoHeadSha` the guest reported; export when it changes. */
   repoHeadSha?: string
   /** First consecutive `/pool/activity` failure (undefined while polls succeed). */
@@ -746,6 +757,7 @@ export class MetalWarmPool {
         repoParentEtag: e.repoParentEtag,
         repoUntrustedReason: e.repoUntrustedReason,
         stateSince: e.stateSince ?? e.assignedAt,
+        repoLinked: e.repoLinked,
         lastHealthOk: healthy,
       })
       adoptedIds.add(e.vmId)
@@ -802,6 +814,7 @@ export class MetalWarmPool {
       repoParentEtag: a.repoParentEtag,
       repoUntrustedReason: a.repoUntrustedReason,
       stateSince: a.stateSince,
+      repoLinked: a.repoLinked,
       v: 1,
     })
   }
@@ -1100,6 +1113,7 @@ export class MetalWarmPool {
       handle: vm.handle,
       assignedAt: now,
       stateSince: now,
+      repoHydratePending: true,
       lastTouchedAt: now,
       lastRealActivityAt: now,
       runtimeToken: env.RUNTIME_AUTH_SECRET,
@@ -1200,10 +1214,8 @@ export class MetalWarmPool {
     // that already exists, so every later export is refused as a conflict.
     try {
       const r = await this.hydrateRepo(projectId, vm.handle, env)
-      if (r.hydrated) {
-        a.repoParentEtag = r.parentEtag
-        this.writeLive(a)
-      }
+      if (r.hydrated) a.repoParentEtag = r.parentEtag
+      a.repoLinked = true
     } catch (err: any) {
       const reason = `repo hydrate failed at assign (${err?.message ?? err})`
       this.distrustRepo(a, reason)
@@ -1212,6 +1224,10 @@ export class MetalWarmPool {
           `.git. This VM is marked UNTRUSTED for repo.git.tar.gz and will NOT overwrite it:`,
         err?.message ?? err,
       )
+    } finally {
+      a.repoHydratePending = false
+      a.repoHeadSha = undefined
+      this.writeLive(a)
     }
 
     // Server-backed published VM: overlay the live site's writable state
@@ -1684,6 +1700,7 @@ export class MetalWarmPool {
   }
 
   private async saveRepoInner(a: AssignedVm): Promise<boolean> {
+    if (a.repoHydratePending) return false
     const lineage = this.repoLineageOf(a)
     if (lineage.kind === 'untrusted') {
       metrics.inc(M.repoRefused)
@@ -1714,7 +1731,7 @@ export class MetalWarmPool {
         )
         return 'written'
       case 'conflict':
-        if (!a.repoParentEtag && (await this.promoteUnlinkedRepo(a, bytes))) return 'written'
+        if (!a.repoParentEtag && !a.repoLinked && (await this.promoteUnlinkedRepo(a, bytes))) return 'written'
         metrics.inc(M.repoConflict)
         console.error(
           `[pool] REFUSED to overwrite repo.git.tar.gz for ${a.projectId} — lineage ` +

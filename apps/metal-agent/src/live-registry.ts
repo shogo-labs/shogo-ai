@@ -90,6 +90,8 @@ export interface LiveVmEntry {
   repoUntrustedReason?: string
   /** See AssignedVm.stateSince. */
   stateSince?: number
+  /** See AssignedVm.repoLinked. */
+  repoLinked?: boolean
   v: 1
 }
 
