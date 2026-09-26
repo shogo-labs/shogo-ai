@@ -792,10 +792,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         exp: now + expiresInDays * 24 * 60 * 60,
         now,
       })
+      const configuredOrigin = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+      const origin = (configuredOrigin || new URL(c.req.url).origin).replace(/\/+$/, '')
 
       return c.json({
         ok: true,
-        url: `${new URL(c.req.url).origin}/f/${encodeURIComponent(token)}`,
+        url: `${origin}/f/${encodeURIComponent(token)}`,
         expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
         path,
       })
