@@ -12,6 +12,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, spyOn } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
+import type { ToolContext } from '../gateway-tools'
 
 const TEST_DIR = '/tmp/test-notify-user-tool'
 
@@ -57,7 +58,7 @@ afterEach(() => {
 })
 
 // Imported lazily so the env above is set before module init reads are safe.
-const { createTools, type ToolContext } = await import('../gateway-tools')
+const { createTools } = await import('../gateway-tools')
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {
   return {
@@ -94,12 +95,13 @@ describe('notify_user tool', () => {
 
   test('POSTs to /api/internal/reminders/notify through workspaceMetaFetch', async () => {
     const tool = findNotifyUser(ctx())
-    const result: any = await tool.execute('call-1', {
+    // `execute` returns an AgentToolResult; the tool's payload is under `details`.
+    const { details: result } = (await tool.execute('call-1', {
       title: 'Reminder',
       body: 'Take the pills',
       actionUrl: '/activity',
       dedupeKey: 'rem-1:2026-09-26T09:00:00Z',
-    })
+    })) as any
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     const [url, init] = lastFetchArgs
@@ -128,7 +130,10 @@ describe('notify_user tool', () => {
     )
 
     const tool = findNotifyUser(ctx())
-    const result: any = await tool.execute('call-2', { title: 'Reminder', body: 'quiet' })
+    const { details: result } = (await tool.execute('call-2', {
+      title: 'Reminder',
+      body: 'quiet',
+    })) as any
 
     expect(result.skipped).toBe('quiet_hours')
     expect(fetchSpy).not.toHaveBeenCalled()
