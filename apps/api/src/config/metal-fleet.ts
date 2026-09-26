@@ -96,8 +96,8 @@ export const METAL_FLEET: MetalFleetConfig = {
         cooldownSec: 900,
       },
     },
-    // Production target: 2 regions (US=Dallas, EU=Frankfurt), 2 monthly hosts
-    // each. Provider identity (serverId/publicIp) for each host is recorded in
+    // Production target: 2 monthly US hosts in Dallas and 3 monthly EU hosts in
+    // Frankfurt. Provider identity (serverId/publicIp) for each host is recorded in
     // the DB (super-admin fleet panel); a host shows as drift "missing" until it
     // registers a heartbeat.
     production: {
@@ -106,6 +106,7 @@ export const METAL_FLEET: MetalFleetConfig = {
         { hostId: 'latitude-dal-2', region: 'us', site: 'DAL', billing: 'monthly', role: 'primary' },
         { hostId: 'latitude-fra-1', region: 'eu', site: 'FRA', billing: 'monthly', role: 'primary' },
         { hostId: 'latitude-fra-2', region: 'eu', site: 'FRA', billing: 'monthly', role: 'primary' },
+        { hostId: 'latitude-fra-3', region: 'eu', site: 'FRA', billing: 'monthly', role: 'primary' },
       ],
       burst: {
         enabled: true,

@@ -232,7 +232,7 @@ ssh root@<host> 'iptables -L SHOGO-CTRL -n -v --line-numbers'
 ### Production rollout (staging is already enforcing + filtered)
 
 Staging (`72.46.85.83`) runs `enforce` with the filter on. Production is still
-open: as of this writing all four hosts predate the auth code, and the
+open: all five production hosts are included in the auth rollout, and the
 production API sends no `Authorization` header at all, because `agentHeaders()`
 used to read only `METAL_REGISTER_TOKEN` and the pods set only
 `SHOGO_INTERNAL_SECRET`. Enforcing before the callers are fixed would 401 one
@@ -258,7 +258,7 @@ hundred percent of control traffic, so the order below is not optional.
    step 2's code fix has not landed yet.
 
    ```bash
-   for h in 152.236.12.71 67.213.118.79 103.219.171.29 109.94.96.189; do
+   for h in 152.236.12.71 67.213.118.79 103.219.171.29 109.94.96.189 160.202.131.99; do
      echo "== $h"; ssh root@$h 'curl -s localhost:9900/metrics | grep control_unauthenticated'
    done
    ```
