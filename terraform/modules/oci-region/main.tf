@@ -207,6 +207,19 @@ module "knative" {
   domain             = var.domain
   publish_domain     = var.publish_domain
   enable_pvc_support = true
+
+  cluster_id = module.oke.cluster_id
+  region     = var.region
+}
+
+# =============================================================================
+# Metrics Server (all tiers)
+# =============================================================================
+# Backs the resource-metrics API that every HPA in the cluster (Kourier
+# gateway, Knative activator/webhook) scales on.
+
+module "metrics_server" {
+  source = "../metrics-server"
 }
 
 # =============================================================================

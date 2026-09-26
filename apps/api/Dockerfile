@@ -55,7 +55,7 @@ ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl bash git unzip ca-certificates netcat-openbsd && \
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.9" && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.2" && \
     command -v git && git --version && \
     rm -rf /root/.bun /var/lib/apt/lists/*
 
