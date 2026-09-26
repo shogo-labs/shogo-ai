@@ -92,9 +92,24 @@ export async function sendPushToInstance(
   }
 }
 
+// Default push payload `type` + Android channel id. Existing callers (task
+// completion, project-chat turn completion) rely on this value, so it must
+// stay the default; callers that need a distinct push (e.g. a due reminder)
+// pass `type`/`channelId` explicitly.
+const DEFAULT_USER_PUSH_TYPE = 'chat-complete'
+
 export async function sendPushToUser(
   userId: string,
-  payload: { title: string; body: string; data?: Record<string, unknown>; priority?: 'high' | 'default' },
+  payload: {
+    title: string
+    body: string
+    data?: Record<string, unknown>
+    priority?: 'high' | 'default'
+    /** Value written to `data.type` on the push payload. Defaults to `chat-complete`. */
+    type?: string
+    /** Android notification channel id. Defaults to `chat-complete`. */
+    channelId?: string
+  },
 ): Promise<void> {
   try {
     const subs = await prisma.mobilePushSubscription.findMany({
@@ -103,14 +118,17 @@ export async function sendPushToUser(
     })
     if (subs.length === 0) return
 
+    const pushType = payload.type || DEFAULT_USER_PUSH_TYPE
+    const channelId = payload.channelId || DEFAULT_USER_PUSH_TYPE
+
     await sendExpoMessages(
       subs.map((sub) => ({
         to: sub.pushToken,
         title: payload.title,
         body: payload.body,
-        data: { ...(payload.data ?? {}), type: 'chat-complete' },
+        data: { ...(payload.data ?? {}), type: pushType },
         priority: payload.priority ?? 'high',
-        channelId: 'chat-complete',
+        channelId,
       })),
       subs.map((sub) => sub.pushToken),
     )
