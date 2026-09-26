@@ -101,6 +101,7 @@ import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
+import { mainAgentBrowserAvailable, browserIsDelegated } from './browser-capability'
 import { AgentManager } from './agent-manager'
 import { loadCustomAgents } from './subagent'
 import { CommandRegistry } from './command-registry'
@@ -415,6 +416,15 @@ export interface GatewayConfig {
   webEnabled?: boolean
   /** Whether browser automation tool is enabled (default: true) */
   browserEnabled?: boolean
+  /**
+   * Whether the personal-companion browser is explicitly enabled (default:
+   * false). Personal workspaces have no orchestration, so `browser` is normally
+   * stripped from the main agent; setting this true re-admits it so it can be
+   * called directly. Rolled out gradually — see `browser-capability.ts`. Flipping
+   * it on ships an UNGUARDED browser (no domain policy / budget / confirmation /
+   * activity log yet).
+   */
+  personalBrowserEnabled?: boolean
   /** Playwright browser extension token for CDP connect mode */
   browserExtensionToken?: string
   /** Whether shell/exec tool is enabled (default: true) */
@@ -3724,7 +3734,7 @@ export class AgentGateway {
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     parts.push(OUTPUT_CONTRACT_GUIDE)
-    if (this.config.browserEnabled !== false) {
+    if (mainAgentBrowserAvailable(this.config)) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(SUBAGENT_GUIDE)
@@ -3765,7 +3775,7 @@ export class AgentGateway {
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
-    if (this.config.browserEnabled !== false) {
+    if (mainAgentBrowserAvailable(this.config)) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
     parts.push(SELF_EVOLUTION_GUIDE)
@@ -3908,6 +3918,13 @@ export class AgentGateway {
       // generate_image/transcribe_audio are kept directly callable (see the
       // SUBAGENT_ONLY_TOOLS carve-out above) rather than delegated.
       mediaDelegated: this.config.capabilityProfile !== 'personal',
+      // Browser is delegated on team workspaces (agent_spawn); on personal it is
+      // present — and then called directly — only when personalBrowserEnabled is
+      // on. `mainAgentBrowserAvailable`/`browserIsDelegated` are the same
+      // predicates the tool filter and inline guide use, so the index can't
+      // point at an agent_spawn the workspace can't make (fixes #1044).
+      browser: mainAgentBrowserAvailable(this.config),
+      browserDelegated: browserIsDelegated(this.config),
       devops: devopsGuideOn,
     }))
 

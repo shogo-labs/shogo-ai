@@ -184,9 +184,20 @@ describe('filterSubagentOnlyTools', () => {
     const n = new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
     expect(n.has('generate_image')).toBe(true)
     expect(n.has('transcribe_audio')).toBe(true)
-    // browser/server_sync stay delegated-only; personal workspaces just don't
-    // have a subagent to delegate to, which is unrelated to this bug.
+    // browser stays delegated-only while `personalBrowserEnabled` is unset
+    // (default off — issue #1044); server_sync stays delegated-only always.
     expect(n.has('browser')).toBe(false)
+    expect(n.has('server_sync')).toBe(false)
+  })
+
+  test('personal profile + personalBrowserEnabled keeps browser directly callable (issue #1044)', () => {
+    const config = makeConfig({ capabilityProfile: 'personal', personalBrowserEnabled: true })
+    const tools = createTools({ ...makeCtx(config), workspaceId: 'workspace-1' })
+    const n = new Set(filterSubagentOnlyTools(tools, config).map(t => t.name))
+    // With the flag on the browser tool is kept on the personal main agent so
+    // the tool list matches the guide/index (see browser-advertisement-contract).
+    expect(n.has('browser')).toBe(true)
+    // server_sync is still delegated-only regardless of the browser flag.
     expect(n.has('server_sync')).toBe(false)
   })
 })
