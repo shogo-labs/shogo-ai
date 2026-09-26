@@ -507,8 +507,13 @@ export function loadCustomAgents(workspaceDir: string): CustomAgentDef[] {
         const raw = readFileSync(filePath, 'utf-8')
         const parsed = parseAgentFrontmatter(raw)
         if (!parsed.name || !parsed.description) {
-          console.warn(`[Subagent] Skipping ${entry}: missing name or description`)
-          continue
+          const fallbackName = entry.replace(/\.md$/i, '')
+          const body = raw.match(/^---[\s\S]*?---\s*([\s\S]*)$/)?.[1] ?? raw
+          const firstHeading = body.match(/^\s*#\s+(.+)$/m)?.[1]?.trim()
+          const firstContent = body.split(/\r?\n/).map(line => line.trim()).find(Boolean)
+          parsed.name ||= fallbackName
+          parsed.description ||= firstHeading || firstContent || `Custom agent ${fallbackName}`
+          console.warn(`[Subagent] ${entry}: missing frontmatter; using "${parsed.name}" and fallback description`)
         }
         agents.push(parsed)
       } catch (err: any) {

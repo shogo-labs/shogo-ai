@@ -131,7 +131,7 @@ describe('AgentGateway auto-registers .shogo/agents/*.md (post-attachPersistence
     expect(gw.agentManager.getConfig('analyst')).toBeNull()
   })
 
-  test('a malformed agent file (missing name/description) is skipped, not fatal', async () => {
+  test('a malformed agent file gets a filename fallback, not a silent skip', async () => {
     const ws = makeWs('malformed')
     mkdirSync(join(ws, '.shogo', 'agents'), { recursive: true })
     writeFileSync(join(ws, '.shogo', 'agents', 'broken.md'), '---\nmodel: claude-haiku-4-5\n---\n\nNo name or description.\n')
@@ -141,7 +141,8 @@ describe('AgentGateway auto-registers .shogo/agents/*.md (post-attachPersistence
     )
 
     const gw = await startedGateway(ws)
-    expect(gw.agentManager.getConfig('broken')).toBeNull()
+    expect(gw.agentManager.getConfig('broken')).not.toBeNull()
+    expect(gw.agentManager.getConfig('broken')?.description).toContain('No name or description')
     expect(gw.agentManager.getConfig('ok')).not.toBeNull()
   })
 

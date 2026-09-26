@@ -12,7 +12,7 @@
 
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
-import { join, resolve, extname, dirname, relative, sep } from 'path'
+import { join, resolve, extname, dirname, relative, sep, basename } from 'path'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
@@ -1609,6 +1609,12 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       // ending (which itself honors .gitattributes via readFileWithMetadata),
       // otherwise honor .gitattributes for the new path, otherwise LF.
       const fileExists = existsSync(resolved)
+      const isEnvFile = /^\.env(?:\..*)?$/.test(basename(resolved))
+      const previousEnvKeys = fileExists && isEnvFile
+        ? new Set(readFileSync(resolved, 'utf-8').split(/\r?\n/)
+          .map(line => line.trim().split('=', 1)[0])
+          .filter(key => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)))
+        : new Set<string>()
       const target: LineEndingType = fileExists
         ? readFileWithMetadata(resolved).targetLineEndings
         : (resolveLineEndingPolicy(resolved) ?? 'LF')
@@ -1639,6 +1645,16 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       }
 
       const base: Record<string, unknown> = { ok: true, path: filePath, bytes: content.length }
+      if (isEnvFile && fileExists && !append) {
+        const nextEnvKeys = new Set(payload.split(/\r?\n/)
+          .map(line => line.trim().split('=', 1)[0])
+          .filter(key => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)))
+        const removedKeys = [...previousEnvKeys].filter(key => !nextEnvKeys.has(key))
+        if (removedKeys.length > 0) {
+          base.warning = `Overwriting ${filePath} removed existing environment keys: ${removedKeys.join(', ')}. Read-merge-write to preserve unrelated settings.`
+          base.removedKeys = removedKeys
+        }
+      }
       appendImpactHint(ctx, filePath, base)
       // Canvas-API contract hint: surfaced eagerly on every write so the
       // agent doesn't have to wait for an eval / runtime check to learn
@@ -4961,7 +4977,7 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
 function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'agent_spawn',
-    description: 'Launch an instance of a registered or built-in agent type. Returns an instance_id. Use background: true for async execution, then check with agent_status/agent_result. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+    description: 'Launch an instance of a registered or built-in agent type. Use background: true and then agent_result to retrieve the actual response. A timeout or status running is not failure or cancellation; poll the same instance_id again. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
       type: Type.Optional(Type.String({
@@ -5042,18 +5058,23 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const accumulated = spawn?.getAccumulatedOutput()
         return textResult({
           mode: 'fork',
+          instance_id: null,
           agent_id: result.agentId,
+          status: 'completed',
           toolCalls: result.toolCalls,
           iterations: result.iterations,
           tokens: { input: result.inputTokens, output: result.outputTokens },
+          response: result.responseText || '(Subagent completed but returned no output.)',
           parts: accumulated?.parts,
           model: accumulated?.model || subModel,
+          hint: 'Fork results are returned inline and cannot be polled with agent_result.',
         })
       }
 
       // --- Normal mode: type is specified ---
       const am = ctx.agentManager
       if (!am) return textResult({ error: 'AgentManager not available' })
+      am.syncFromDisk?.(ctx.workspaceDir)
 
       const history = resume ? am.getInstanceMessages(resume) ?? undefined : undefined
 
@@ -5111,6 +5132,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         instance_id: instanceId,
         agent_id: result.agentId,
         status: inst.status,
+        response: result.responseText || '(Subagent completed but returned no output.)',
         toolCalls: result.toolCalls,
         iterations: result.iterations,
         tokens: { input: result.inputTokens, output: result.outputTokens },
@@ -5295,7 +5317,7 @@ function createAgentCancelTool(ctx: ToolContext): AgentTool {
 function createAgentResultTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_result',
-    description: 'Wait for and retrieve the result of an agent instance. Blocks until the agent completes by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
+    description: 'Wait for and retrieve the result of an agent instance. A timeout or status running only means the caller stopped waiting; it does not cancel the agent. Call again with the same instance_id. Blocks until the agent completes by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
     label: 'Agent Result',
     parameters: Type.Object({
       instance_id: Type.String({ description: 'Instance ID to retrieve result for' }),
@@ -5384,6 +5406,7 @@ function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]
     execute: async () => {
       const am = ctx.agentManager
       if (!am) return textResult({ error: 'AgentManager not available' })
+      am.syncFromDisk?.(ctx.workspaceDir)
 
       const types = am.listTypes(ctx, allToolsGetter())
       const instances = am.listInstances()

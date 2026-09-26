@@ -216,3 +216,33 @@ describe('callProjectAgent — desktop (local mode)', () => {
     expect(store.tokenCalledWith.projectId).toBe('proj-2')
   })
 })
+
+describe('getProjectAgentCall', () => {
+  it('reads a completed call from the resolved runtime', async () => {
+    let capturedUrl = ''
+    globalThis.fetch = (async (url: any) => {
+      capturedUrl = String(url)
+      return new Response(JSON.stringify({
+        callId: 'call-1',
+        status: 'completed',
+        sessionId: 'run:1',
+        reply: 'done',
+      }), { status: 200 })
+    }) as any
+
+    const out = await svc.getProjectAgentCall(FAKE_CTX, 'proj-1', 'ws-1', 'call-1', 5000)
+    expect(out.status).toBe(200)
+    expect(out.body.reply).toBe('done')
+    expect(capturedUrl).toBe('http://pod.internal:8080/agent/pipeline/call/call-1?waitMs=5000')
+  })
+
+  it('forwards status polling through an instance tunnel', async () => {
+    store.resolution = { ok: true, kind: 'tunnel', instanceId: 'inst-1', workspaceId: 'ws-1', projectId: 'proj-1' }
+    store.relayResponse = new Response(JSON.stringify({ callId: 'call-1', status: 'running', sessionId: 'run:1' }), { status: 200 })
+    const out = await svc.getProjectAgentCall(FAKE_CTX, 'proj-1', 'ws-1', 'call-1', 1000)
+    expect(out.status).toBe(200)
+    expect(out.body.status).toBe('running')
+    expect(store.relayCalledWith.tunnelOpts.method).toBe('GET')
+    expect(store.relayCalledWith.tunnelOpts.agentPath).toContain('waitMs=1000')
+  })
+})

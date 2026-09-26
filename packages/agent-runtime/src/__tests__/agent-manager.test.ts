@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 // --- Module mocks (must be set up BEFORE importing the module under test) ----
 
@@ -21,10 +24,12 @@ let builtinConfigImpl: (name: string) => any = (name) =>
   ['explore', 'general-purpose', 'browser_qa'].includes(name)
     ? { name, description: `${name} desc`, systemPrompt: 'sys', toolNames: ['read_file'], model: 'sonnet' }
     : null
+let loadCustomAgentsImpl: (workspaceDir: string) => any[] = () => []
 
 mock.module('../subagent', () => ({
   runSubagent: (...args: any[]) => runSubagentImpl(...args),
   getBuiltinSubagentConfig: (name: string) => builtinConfigImpl(name),
+  loadCustomAgents: (workspaceDir: string) => loadCustomAgentsImpl(workspaceDir),
 }))
 
 mock.module('../screencast-broadcaster', () => ({
@@ -51,6 +56,7 @@ beforeEach(() => {
     inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0,
     newMessages: [], agentId: 'a-x', effectiveModelId: 'sonnet',
   })
+  loadCustomAgentsImpl = () => []
 })
 
 describe('AgentManager — register / unregister', () => {
@@ -190,6 +196,27 @@ describe('AgentManager — listTypes', () => {
     const explore = list.find(t => t.name === 'explore')!
     expect(explore.description).toContain('explore')
     expect(explore.builtin).toBe(true)
+  })
+})
+
+describe('AgentManager — disk synchronization', () => {
+  it('loads a custom agent written after gateway startup', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'shogo-agent-sync-'))
+    mkdirSync(join(workspace, '.shogo', 'agents'), { recursive: true })
+    writeFileSync(join(workspace, '.shogo', 'agents', 'coder.md'), '# Coder\n')
+    loadCustomAgentsImpl = () => [{
+      name: 'coder',
+      description: 'Coder',
+      systemPrompt: 'You write code.',
+    }]
+    try {
+      const manager = new AgentManager()
+      expect(manager.getConfig('coder')).toBeNull()
+      manager.syncFromDisk(workspace)
+      expect(manager.getConfig('coder')?.description).toBe('Coder')
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
   })
 })
 

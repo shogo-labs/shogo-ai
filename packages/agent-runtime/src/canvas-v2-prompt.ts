@@ -226,10 +226,11 @@ model Lead {
 }
 \`\`\`
 
-That's it — **everything else is automatic**: the runtime watches \`prisma/schema.prisma\`, runs \`bun x shogo generate\` (which regenerates routes, types, hooks, and \`src/lib/db.ts\`), runs \`prisma db push\`, and restarts the server. The API server listens on \`http://localhost:${API_PORT}\` and serves a \`/health\` endpoint plus full CRUD at \`/api/{model-name-plural}\`. If routes are missing after a schema change, call \`server_sync\` to force a regenerate + restart.
+That's it — **everything else is automatic**: the runtime watches \`prisma/schema.prisma\`, runs \`bun x shogo generate\` (which regenerates routes, types, hooks, and \`src/lib/db.ts\`), runs \`prisma db push\`, and restarts the server. The API server listens on \`http://localhost:${API_PORT}\` and serves a \`/health\` endpoint plus full CRUD at the exact paths documented in \`src/generated/ROUTES.md\`. Read that file before writing frontend fetches; do not guess pluralization or list query parameters. If routes are missing after a schema change, call \`server_sync\` to force a regenerate + restart.
 
 **Generated files — do NOT hand-edit:**
 - \`src/generated/routes/\` — per-model CRUD route handlers
+- \`src/generated/ROUTES.md\` — exact CRUD paths and supported list query parameters
 - \`src/generated/api-client.tsx\` — typed React fetch hooks
 - \`src/lib/db.ts\` — Prisma client singleton
 

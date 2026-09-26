@@ -138,7 +138,7 @@ You are a careful reviewer.`,
     expect(out[0].systemPrompt).toContain('careful reviewer')
   })
 
-  it('skips files missing name or description', () => {
+  it('uses the filename and body as fallbacks when description is missing', () => {
     mkdirSync(join(dir, '.shogo/agents'), { recursive: true })
     writeFileSync(
       join(dir, '.shogo/agents/incomplete.md'),
@@ -147,19 +147,26 @@ You are a careful reviewer.`,
     const warn = console.warn
     console.warn = () => {}
     try {
-      expect(loadCustomAgents(dir)).toEqual([])
+      const out = loadCustomAgents(dir)
+      expect(out).toHaveLength(1)
+      expect(out[0].name).toBe('only-name')
+      expect(out[0].description).toBe('body')
     } finally {
       console.warn = warn
     }
   })
 
-  it('records files without frontmatter as raw systemPrompt (still skipped due to missing name)', () => {
+  it('uses the filename and raw body when frontmatter is absent', () => {
     mkdirSync(join(dir, '.shogo/agents'), { recursive: true })
     writeFileSync(join(dir, '.shogo/agents/raw.md'), 'just a body, no frontmatter')
     const warn = console.warn
     console.warn = () => {}
     try {
-      expect(loadCustomAgents(dir)).toEqual([])
+      const out = loadCustomAgents(dir)
+      expect(out).toHaveLength(1)
+      expect(out[0].name).toBe('raw')
+      expect(out[0].description).toBe('just a body, no frontmatter')
+      expect(out[0].systemPrompt).toBe('just a body, no frontmatter')
     } finally {
       console.warn = warn
     }

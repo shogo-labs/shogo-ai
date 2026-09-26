@@ -659,4 +659,29 @@ describe('POST /projects/:projectId/agent-call', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test('GET polls an accepted call and forwards the call handle', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.resolution = { ok: true, kind: 'cloud', url: 'http://pod.internal:8080' }
+    const originalFetch = globalThis.fetch
+    let capturedUrl = ''
+    globalThis.fetch = (async (url: any) => {
+      capturedUrl = String(url)
+      return new Response(JSON.stringify({
+        callId: 'call-1',
+        status: 'running',
+        sessionId: 'run:run-3',
+      }), { status: 200 })
+    }) as any
+    try {
+      const res = await app.request('/projects/proj-2/agent-call/call-1?waitMs=1000', {
+        headers: SA,
+      })
+      expect(res.status).toBe(200)
+      expect((await res.json()).status).toBe('running')
+      expect(capturedUrl).toBe('http://pod.internal:8080/agent/pipeline/call/call-1?waitMs=1000')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })

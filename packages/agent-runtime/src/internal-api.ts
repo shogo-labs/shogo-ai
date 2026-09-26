@@ -927,10 +927,14 @@ export interface AgentCallRequest {
 }
 
 export interface AgentCallResult {
-  status: 'completed' | 'accepted'
+  status: 'completed' | 'accepted' | 'running' | 'failed'
+  callId?: string
   reply?: string
+  error?: string
   runId?: string
   sessionId?: string
+  startedAt?: number
+  completedAt?: number
 }
 
 export async function callProjectAgent(
@@ -945,6 +949,21 @@ export async function callProjectAgent(
     // The API adds its own 5s grace on top of the runtime's wait budget.
     timeoutMs: req.wait === false ? 20_000 : timeoutMs + 10_000,
   })
+}
+
+export async function getProjectAgentCall(
+  targetProjectId: string,
+  callId: string,
+  waitMs = 0,
+): Promise<CheckpointCallResult<AgentCallResult>> {
+  return lifecycleFetch(
+    `/api/internal/projects/${encodeURIComponent(targetProjectId)}/agent-call/${encodeURIComponent(callId)}?waitMs=${Math.min(Math.max(waitMs, 0), 25_000)}`,
+    {
+      method: 'GET',
+      parse: (j) => j as AgentCallResult,
+      timeoutMs: Math.min(Math.max(waitMs, 0), 25_000) + 5_000,
+    },
+  )
 }
 
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {

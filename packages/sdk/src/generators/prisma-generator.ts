@@ -12,7 +12,7 @@
  */
 
 import { generateTypes, generateTypesPerModel, generateTypesIndex } from './types-generator'
-import { generateRoutes, generateRoutesIndex } from './routes-generator'
+import { generateRoutes, generateRoutesIndex, generateRoutesDocs } from './routes-generator'
 import { generateStores, generateStoresIndex } from './stores-generator'
 import { generateMSTModels } from './mst-model-generator'
 import { generateMSTCollections } from './mst-collection-generator'
@@ -271,6 +271,10 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           files.push({
             path: indexFile,
             content: generateRoutesIndex(models),
+          })
+          files.push({
+            path: `${dir}/ROUTES.md`,
+            content: generateRoutesDocs(models, { basePath: '/api' }),
           })
         }
       }

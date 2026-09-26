@@ -42,6 +42,17 @@ export interface AgentCallOutcome {
   body: any
 }
 
+export interface AgentCallStatus {
+  callId: string
+  status: 'running' | 'completed' | 'failed'
+  reply?: string
+  error?: string
+  runId?: string
+  sessionId: string
+  startedAt: number
+  completedAt?: number
+}
+
 /**
  * `wait=true` blocks for the reply (bounded by `timeoutMs`, default 5 min,
  * max 20 min); otherwise the runtime acks with 202 and the turn runs in the
@@ -121,6 +132,70 @@ export async function callProjectAgent(
           message: timedOut
             ? `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`
             : (err?.message ?? 'Failed to reach the target runtime'),
+        },
+      },
+    }
+  }
+}
+
+/**
+ * Read a previously accepted pipeline call. This deliberately resolves the
+ * runtime again instead of storing a pod URL in the API process: projects can
+ * move between warm pods and instance tunnels while a long agent turn runs.
+ */
+export async function getProjectAgentCall(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  callId: string,
+  waitMs = 0,
+): Promise<AgentCallOutcome> {
+  const boundedWaitMs = Math.min(Math.max(waitMs, 0), 25_000)
+  try {
+    const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+    const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
+    const cleanPath = `/agent/pipeline/call/${encodeURIComponent(callId)}`
+    const agentPath = `${cleanPath}?waitMs=${boundedWaitMs}`
+
+    let runtimeUrl: string
+    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+      const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+      runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'AgentCallStatus' })).url
+    } else {
+      const { resolveAgentProxyPodUrl } = await import('../lib/agent-proxy-resolver')
+      const resolution = await resolveAgentProxyPodUrl(projectId, { logTag: 'AgentCallStatus' })
+      if (!resolution.ok) return { status: resolution.status, body: resolution.body }
+      if (resolution.kind === 'tunnel') {
+        const { relayAgentProxyViaTunnel } = await import('../lib/tunnel-relay')
+        const res = await relayAgentProxyViaTunnel({
+          c,
+          instanceId: resolution.instanceId,
+          workspaceId: resolution.workspaceId,
+          projectId,
+          agentPath,
+          cleanPath,
+          method: 'GET',
+          headers: { 'x-runtime-token': runtimeToken },
+        })
+        return { status: res.status, body: await res.json().catch(() => ({})) }
+      }
+      runtimeUrl = resolution.url
+    }
+
+    const res = await fetch(`${runtimeUrl}${agentPath}`, {
+      method: 'GET',
+      headers: { 'x-runtime-token': runtimeToken },
+      signal: AbortSignal.timeout(30_000),
+    })
+    return { status: res.status, body: await res.json().catch(() => ({})) }
+  } catch (err: any) {
+    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+    return {
+      status: timedOut ? 504 : 502,
+      body: {
+        error: {
+          code: timedOut ? 'agent_call_status_timeout' : 'agent_call_status_failed',
+          message: err?.message ?? 'Failed to reach the target runtime',
         },
       },
     }
