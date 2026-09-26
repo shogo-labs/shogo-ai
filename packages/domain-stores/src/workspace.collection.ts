@@ -159,11 +159,11 @@ export const WorkspaceCollection = types
             }
 
             // A filtered request is not authoritative for the whole
-            // collection. In particular, the project route reloads
-            // workspaces with `{ userId }` while the sidebar is also loading
-            // the complete list. Pruning from that response can make the
-            // active team disappear and cause the workspace resolver to
-            // persist Personal as its fallback.
+            // collection. In particular, a caller can reload the same
+            // collection with a user/workspace filter while another
+            // caller is loading the complete list. Pruning from that
+            // response can make the active team disappear and cause the
+            // workspace resolver to persist Personal as its fallback.
             const hasFilter = Object.entries(filter ?? {}).some(
               ([, value]) => value !== undefined && value !== null && value !== "",
             )
@@ -434,7 +434,7 @@ export const WorkspaceCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["parent","children","projects","members","billingAccounts","invitations","inviteLinks","folders","subscriptions","instanceSubscription","usageWallets","usageEvents","liveSessionMeters","storageUsage","starredProjects","agentTasks","apiKeys","instances","meetings","voiceProjectConfigs","projectAgents","agentCostMetrics","budgetAlerts","modelExperiments","subagentModelOverrides","agentEvalResults","agentEvalSets","slackInstallation","grants","chatSessions","plans","modelVisibility","agentProfile","goals"]
+const relationFields = ["parent","children","projects","members","billingAccounts","invitations","inviteLinks","folders","subscriptions","instanceSubscription","usageWallets","usageEvents","liveSessionMeters","storageUsage","starredProjects","agentTasks","agentSchedules","apiKeys","instances","meetings","voiceProjectConfigs","projectAgents","agentCostMetrics","budgetAlerts","modelExperiments","subagentModelOverrides","agentEvalResults","agentEvalSets","slackInstallation","grants","chatSessions","plans","modelVisibility","agentProfile","goals"]
 
 /**
  * Transform API response for MST compatibility:

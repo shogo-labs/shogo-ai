@@ -71,6 +71,7 @@ import {
   getPinnedProjectIds,
   setPinnedProjectIds,
 } from "../../lib/project-prefs-store";
+import { projectSidebarEvents } from "../../lib/project-sidebar-events";
 import { RenameProjectModal } from "../project/topbar/dropdown/RenameProjectModal";
 import {
   NATIVE_PHONE_HEADER_ICON_SIZE,
@@ -196,7 +197,12 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
     pathname.match(/\/(?:projects|project-chat)\/([^/?]+)/)?.[1] ?? null;
   const projectPane =
     routeParams.navTab ?? routeParams.surface ?? routeParams.tab;
+  // Full project detail routes render their own native header. Standalone
+  // project-chat routes do not, so they continue to use this shared menu/bell
+  // chrome.
+  const isProjectDetailRoute = /\/projects\//.test(pathname);
   const showChatChrome =
+    !isProjectDetailRoute &&
     !pathname.includes("/project-surface/") &&
     !["canvas", "external-preview", "app-preview", "files", "plans"].includes(
       projectPane ?? ""
@@ -227,8 +233,46 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
       useNativeDriver: true,
     }).start(() => setSessionsOpen(false));
   };
+  const openWorkspaceSheetAfterDrawerDismissRef = useRef(false);
+
+  const openWorkspaceSwitcher = () => {
+    // Android/web can present the workspace sheet over the open drawer. Keep
+    // that established interaction intact; only iOS needs to dismiss the
+    // existing React Native Modal before presenting the next one. Wait for
+    // the modal's native dismissal event rather than guessing with a timer.
+    if (Platform.OS !== "ios") {
+      setWorkspaceSheetOpen(true);
+      return;
+    }
+
+    if (!sessionsOpenRef.current) {
+      setWorkspaceSheetOpen(true);
+      return;
+    }
+
+    openWorkspaceSheetAfterDrawerDismissRef.current = true;
+    closeSessions();
+  };
+
+  useEffect(
+    () => () => {
+      openWorkspaceSheetAfterDrawerDismissRef.current = false;
+    },
+    []
+  );
   openSessionsRef.current = openSessions;
   closeSessionsRef.current = closeSessions;
+
+  // Project detail uses NativePhoneHeader, whose menu button emits this
+  // existing event. The legacy app drawer intentionally ignores it while this
+  // shell owns the screen, so this shell must claim it and open its drawer.
+  useEffect(
+    () =>
+      projectSidebarEvents.subscribeOpenProject(() => {
+        openSessionsRef.current();
+      }),
+    []
+  );
 
   // The mobile workspace chrome owns its drawer. Claim only clear,
   // horizontal right-swipes so vertical transcript scrolling remains native.
@@ -609,6 +653,11 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
           transparent
           animationType="none"
           onRequestClose={closeSessions}
+          onDismiss={() => {
+            if (!openWorkspaceSheetAfterDrawerDismissRef.current) return;
+            openWorkspaceSheetAfterDrawerDismissRef.current = false;
+            setWorkspaceSheetOpen(true);
+          }}
         >
           <View className="flex-1">
             <Animated.View
@@ -651,7 +700,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                 style={{ paddingTop: insets.top + 12 }}
               >
                 <MobileWorkspaceSwitcherRow
-                  onPress={() => setWorkspaceSheetOpen(true)}
+                  onPress={openWorkspaceSwitcher}
                 />
                 <View className="mx-4 flex-row items-center gap-2">
                   <Pressable

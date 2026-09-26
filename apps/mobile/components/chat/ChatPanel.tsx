@@ -6959,7 +6959,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
             confirmedPlan={confirmedPlan}
             onBuild={pendingPlan ? handleConfirmPlan : null}
             onOpenPlan={onOpenPlan}
-            onGenerateSummary={handleGenerateSummary}
             selectedModel={selectedModel}
             isPro={hasAdvancedModelAccess}
           />

@@ -22,6 +22,10 @@ function isHomePathname(pathname: string): boolean {
   )
 }
 
+function isFloatingWorkspaceChatPath(pathname: string): boolean {
+  return isHomePathname(pathname) || pathname.includes('/side-chats/')
+}
+
 function getTitleFromPathname(pathname: string): string {
   if (isHomePathname(pathname)) {
     return 'Home'
@@ -53,7 +57,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
   const insets = useSafeAreaInsets()
   const icon = useNativePhoneIconChrome()
   const isWide = Platform.OS === 'web' && width >= WEB_WIDE_MIN_WIDTH
-  const isHome = isHomePathname(pathname)
+  const useFloatingChrome = isFloatingWorkspaceChatPath(pathname)
   const title = getTitleFromPathname(pathname)
 
   if (isWide) return null
@@ -61,7 +65,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
       <View
         pointerEvents="box-none"
         style={
-        isHome
+        useFloatingChrome
             ? {
                 position: 'absolute',
                 top: 0,
@@ -93,7 +97,7 @@ export function AppHeader({ onMenuPress, menuOpen = false }: AppHeaderProps) {
         >
           <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
         </Pressable>
-        {isHome ? (
+        {useFloatingChrome ? (
           <View className="flex-1" pointerEvents="none" />
         ) : (
           <Text className={`flex-1 text-center ${PHONE_DENSITY.text.title} font-semibold text-foreground`} numberOfLines={1}>
