@@ -47,6 +47,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "@shogo/shared-ui/primitives";
 import {
+  useChatSessionCollection,
   useDomainActions,
   useDomainHttp,
   useProjectCollection,
@@ -72,6 +73,7 @@ import {
   setPinnedProjectIds,
 } from "../../lib/project-prefs-store";
 import { projectSidebarEvents } from "../../lib/project-sidebar-events";
+import { chatSessionEvents } from "../../lib/chat-session-events";
 import { RenameProjectModal } from "../project/topbar/dropdown/RenameProjectModal";
 import {
   NATIVE_PHONE_HEADER_ICON_SIZE,
@@ -118,6 +120,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const liquidGlass = supportsLiquidGlass();
   const http = useDomainHttp();
   const actions = useDomainActions();
+  const chatSessions = useChatSessionCollection();
   const workspace = useActiveWorkspace();
   const workspaceExperience = useWorkspaceExperience();
   const isTeamWorkspace = workspaceExperience.kind === "team";
@@ -321,25 +324,22 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
     setSessionsOpen(false);
   }, [drawerProgress, showChatChrome]);
 
+  const refreshWorkspaceSessions = useCallback(async () => {
+    if (!workspace?.id) return;
+    setLoadingSessions(true);
+    try {
+      setSessions(await api.listWorkspaceSessions(http, workspace.id));
+    } catch {
+      setSessions([]);
+    } finally {
+      setLoadingSessions(false);
+    }
+  }, [http, workspace?.id]);
+
   useEffect(() => {
     if (!sessionsOpen || !workspace?.id) return;
-    let cancelled = false;
-    setLoadingSessions(true);
-    void api
-      .listWorkspaceSessions(http, workspace.id)
-      .then((next) => {
-        if (!cancelled) setSessions(next);
-      })
-      .catch(() => {
-        if (!cancelled) setSessions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingSessions(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [http, sessionsOpen, workspace?.id]);
+    void refreshWorkspaceSessions();
+  }, [refreshWorkspaceSessions, sessionsOpen, workspace?.id]);
 
   useEffect(() => {
     setExpandedProjectIds(new Set());
@@ -400,6 +400,28 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
     [http]
   );
 
+  useEffect(() => {
+    return chatSessionEvents.subscribe(
+      ({ projectId, workspaceId, refresh }) => {
+        if (!refresh) return;
+        if (workspaceId && workspaceId === workspace?.id) {
+          void refreshWorkspaceSessions();
+        }
+        if (!projectId) return;
+        if (!projectChats[projectId] && !expandedProjectIds.has(projectId)) {
+          return;
+        }
+        void loadProjectChats(projectId);
+      },
+    );
+  }, [
+    expandedProjectIds,
+    loadProjectChats,
+    projectChats,
+    refreshWorkspaceSessions,
+    workspace?.id,
+  ]);
+
   const toggleProjectChats = useCallback(
     (projectId: string) => {
       const expanded = expandedProjectIds.has(projectId);
@@ -449,10 +471,17 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
       )
     );
     try {
-      await http.patch(
-        `/api/chat-sessions/${encodeURIComponent(sessionId)}`,
-        changes
-      );
+      if (!chatSessions.get(sessionId)) {
+        await chatSessions.loadById(sessionId);
+      }
+      await actions.updateChatSession(sessionId, changes);
+      if (workspace?.id) {
+        chatSessionEvents.emit({
+          workspaceId: workspace.id,
+          activeSessionId: sessionId,
+          refresh: true,
+        });
+      }
     } catch {
       setSessions(previous);
     }
@@ -489,10 +518,11 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
         : current;
     });
     try {
-      await http.patch(
-        `/api/chat-sessions/${encodeURIComponent(sessionId)}`,
-        changes
-      );
+      if (!chatSessions.get(sessionId)) {
+        await chatSessions.loadById(sessionId);
+      }
+      await actions.updateChatSession(sessionId, changes);
+      chatSessionEvents.emit({ projectId, refresh: true });
     } catch {
       setProjectChats((current) => {
         const state = current[projectId];

@@ -97,6 +97,28 @@ describe('proxyToPeer', () => {
     expect(calls[0].init.headers.get('x-shogo-home-region-proxy')).toBe('1')
   })
 
+  test('strips content-encoding when the runtime has already decompressed the peer response', async () => {
+    const { fn } = abortAwareFetch(
+      5,
+      () =>
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: {
+            'content-encoding': 'gzip',
+            'content-type': 'application/json',
+          },
+        }),
+    )
+    global.fetch = fn as any
+
+    const c = makeCtx({ path: '/api/admin/metal/fleet' })
+    const res: Response = await proxyToPeer(c, 'eu-frankfurt-1')
+
+    expect(res.headers.get('content-encoding')).toBeNull()
+    expect(res.headers.get('content-type')).toBe('application/json')
+    expect(await res.text()).toBe('{"ok":true}')
+  })
+
   test('a GET that hangs past the connect-timeout is retried once and succeeds', async () => {
     let n = 0
     const fn = (url: string, init: any) => {

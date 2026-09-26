@@ -111,6 +111,10 @@ import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
 } from "./resume-stream-single-flight"
+import {
+  dropUnfinishedAssistantTail,
+  withResumeReplayReset,
+} from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -125,6 +129,7 @@ import {
   AI_PROVIDERS,
 } from "../../lib/ai-consent"
 import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
+import { autoNameSession } from "./auto-name-session"
 
 import {
   isPhoneLayout,
@@ -1136,6 +1141,60 @@ const ChatPanelContent = observer(function ChatPanelContent({
     hasTriggeredNamingRef.current = false
   }, [chatSessionId])
 
+  const maybeAutoNameSession = useCallback(
+    (sessionId: string, userText: string) => {
+      if (!userText.trim() || hasTriggeredNamingRef.current) return
+
+      const session = studioChat.chatSessionCollection.get(sessionId)
+      const sessionName =
+        (session as any)?.inferredName || (session as any)?.name
+      if (sessionName && sessionName !== "Untitled") return
+
+      hasTriggeredNamingRef.current = true
+      const http = createHttpClient()
+      void autoNameSession({
+        sessionId,
+        userText,
+        workspaceId,
+        projectId,
+        getSession: (id) => studioChat.chatSessionCollection.get(id),
+        getProjectName: (id) =>
+          projectCollection.all.find((p: any) => p.id === id)?.name,
+        generateName: (text, currentWorkspaceId, currentProjectId) =>
+          api.generateProjectName(
+            http,
+            text,
+            currentWorkspaceId,
+            currentProjectId,
+          ),
+        updateProject: (id, changes) => actions.updateProject(id, changes),
+        updateSession: (id, changes) =>
+          actions.updateChatSession(id, changes),
+        emitRefresh: ({
+          projectId: currentProjectId,
+          workspaceId: currentWorkspaceId,
+          sessionId: currentSessionId,
+        }) =>
+          chatSessionEvents.emit({
+            ...(currentProjectId ? { projectId: currentProjectId } : {}),
+            ...(currentWorkspaceId ? { workspaceId: currentWorkspaceId } : {}),
+            activeSessionId: currentSessionId,
+            refresh: true,
+          }),
+      })
+        .catch((err) => {
+          console.warn("[ChatPanel] AI session naming failed:", err)
+        })
+    },
+    [
+      actions,
+      projectCollection,
+      projectId,
+      studioChat,
+      workspaceId,
+    ],
+  )
+
   // Auto-scroll refs
   const scrollViewRef = useRef<ScrollView>(null)
   const isUserAtBottomRef = useRef(true)
@@ -1808,6 +1867,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const bumpChatProgress = useCallback(() => {
     lastChatProgressAtRef.current = Date.now()
   }, [])
+  // Last `data-*` frame from the runtime, transient or not. Transient
+  // heartbeats (`data-turn-seq`, `data-tool-progress`) don't touch
+  // `messages`, so the idle timeout reads this instead. Unlike
+  // `lastChatProgressAtRef` it ignores the API's keep-alive comments.
+  const lastRuntimeDataAtRef = useRef<number>(Date.now())
 
   // Turn idempotency id for the send currently in flight (or about to be).
   // Set in `sendMessageInternal` right before calling `sendMessage()`; the
@@ -1858,9 +1922,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onChunk: bumpChatProgress,
     getClientTurnId,
   })
+  // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
+  const beforeResumeReplayRef = useRef<() => void>(() => {})
   const chatTransport = useMemo(
     () =>
-      transportConfig ? new DefaultChatTransport(transportConfig) : undefined,
+      transportConfig
+        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () =>
+            beforeResumeReplayRef.current(),
+          )
+        : undefined,
     [transportConfig],
   )
 
@@ -1945,33 +2015,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // still trip on a long pre-Anthropic warm-up even after we see
       // bytes. Cheap, safe, and orthogonal to message rendering.
       bumpChatProgress()
+      lastRuntimeDataAtRef.current = Date.now()
 
-      // The runtime re-issued a model call that dropped mid-generation. Drop
-      // the failed step's partial text/reasoning from the in-progress assistant
-      // message so the regenerated output replaces it instead of rendering
-      // twice. Completed tool calls (and any text committed before them) are
-      // preserved — a failed inference step never executed tools.
-      if (dataPart.type === "data-inference-retry") {
-        setMessages((prev) => {
-          if (prev.length === 0) return prev
-          const lastIdx = prev.length - 1
-          const last = prev[lastIdx]
-          if (last.role !== "assistant" || !Array.isArray(last.parts))
-            return prev
-          const parts = [...last.parts]
-          while (parts.length > 0) {
-            const p = parts[parts.length - 1] as any
-            if (p?.type === "text" || p?.type === "reasoning") {
-              parts.pop()
-              continue
-            }
-            break
-          }
-          if (parts.length === last.parts.length) return prev
-          return prev.map((m, i) => (i === lastIdx ? { ...m, parts } : m))
-        })
-        return
-      }
+      // `data-inference-retry` (a dropped model call the runtime re-issued)
+      // stays in `message.parts`; `extractOrderedParts` hides the failed
+      // attempt's text/reasoning at render time.
 
       // The runtime's fast inference-retry budget was exhausted on a still-
       // retryable failure and it couldn't reach the model's upstream health
@@ -2928,66 +2976,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       fetchQuickActions()
 
-      // Auto-name "Untitled" sessions after the first assistant response
+      // Fallback for messages that bypass sendMessageInternal. Normal user
+      // sends start naming immediately when the first message is submitted.
       if (currentSessionId && !hasTriggeredNamingRef.current) {
-        const session = studioChat.chatSessionCollection.get(currentSessionId)
-        const sessionName =
-          (session as any)?.inferredName || (session as any)?.name
-        if (!sessionName || sessionName === "Untitled") {
-          const firstUserMsg = messages.find((m: any) => m.role === "user")
-          const userText = firstUserMsg?.parts
-            ?.filter((p: any) => p.type === "text")
-            .map((p: any) => p.text)
-            .join(" ")
-            ?.trim()
-          if (userText) {
-            hasTriggeredNamingRef.current = true
-            const http = createHttpClient()
-            api
-              .generateProjectName(http, userText, workspaceId, projectId)
-              .then(({ name, description, source }) => {
-                if (source !== "ai" || !name) return
-                // Guard: the session may have been deleted (or never persisted
-                // server-side) between sending the naming RPC and its
-                // resolution — e.g. the user switched chat tabs and removed
-                // the original session. Calling `updateChatSession` on a
-                // missing id throws "Item not found" inside the MST flow,
-                // which becomes an UnhandledPromiseRejection (the inner
-                // Promise was previously NOT returned from the .then, so the
-                // outer .catch couldn't see it). Check first AND return the
-                // inner Promise so any future error path is funneled through
-                // the outer .catch.
-                if (!studioChat.chatSessionCollection.get(currentSessionId)) {
-                  return
-                }
-                // Only rename the *project* when it hasn't been named yet —
-                // i.e. this session is the one naming a brand-new project
-                // (e.g. the voice-creation flow, which doesn't call
-                // generateProjectName itself). Additional "New Chat" / debug
-                // threads created later in an already-named project must
-                // only rename themselves; otherwise every extra chat sent in
-                // a project would clobber the project's title.
-                const project = projectId
-                  ? projectCollection.all.find((p: any) => p.id === projectId)
-                  : null
-                if (project && project.name === "New Project") {
-                  actions.updateProject(projectId, {
-                    name,
-                    ...(description ? { description } : {}),
-                  })
-                }
-                return actions.updateChatSession(currentSessionId, {
-                  inferredName: name,
-                })
-              })
-              .catch((err) => {
-                console.warn("[ChatPanel] AI session naming failed:", err)
-              })
-          }
+        const firstUserMsg = messages.find((m: any) => m.role === "user")
+        const userText = firstUserMsg?.parts
+          ?.filter((p: any) => p.type === "text")
+          .map((p: any) => p.text)
+          .join(" ")
+          ?.trim()
+        if (userText) {
+          maybeAutoNameSession(currentSessionId, userText)
         }
       }
     },
   })
+  beforeResumeReplayRef.current = () =>
+    setMessages((prev) => dropUnfinishedAssistantTail(prev))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -3773,6 +3778,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // reset on each effect run anyway. With long histories that stringify cost
   // O(history bytes × tokens) of main-thread freeze per stream chunk, which
   // is exactly the sort of cost that doesn't show up in the React Profiler.
+  // Transient heartbeats don't swap `messages`, so when the timer fires it
+  // re-arms for the remainder of the window if a runtime data frame arrived
+  // since (`lastRuntimeDataAtRef`).
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const IDLE_TIMEOUT_MS = 1_800_000
 
@@ -3784,10 +3792,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     if (!isStreaming) return
 
-    idleTimeoutRef.current = setTimeout(() => {
-      console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
-      handleStop()
-    }, IDLE_TIMEOUT_MS)
+    const armedAt = Date.now()
+    const arm = (delayMs: number) => {
+      idleTimeoutRef.current = setTimeout(() => {
+        const idleMs =
+          Date.now() - Math.max(armedAt, lastRuntimeDataAtRef.current)
+        if (idleMs < IDLE_TIMEOUT_MS) {
+          arm(IDLE_TIMEOUT_MS - idleMs)
+          return
+        }
+        console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
+        handleStop()
+      }, delayMs)
+    }
+    arm(IDLE_TIMEOUT_MS)
 
     return () => {
       if (idleTimeoutRef.current) {
@@ -4903,6 +4921,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
           console.warn("[ChatPanel] Failed to persist user message:", err),
         )
 
+      // Start AI naming alongside the agent turn instead of waiting for the
+      // assistant response to finish. The onFinish fallback above covers
+      // messages that bypass this path.
+      maybeAutoNameSession(currentSessionId, trimmedContent)
+
       // Optimistically bump the chat session's lastActiveAt so the
       // history sidebar re-buckets this chat into "Today" immediately
       // instead of waiting for a session-list refetch. The server-side
@@ -5051,6 +5074,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       ideBridge.context,
       isPhoneViewport,
       windowWidth,
+      maybeAutoNameSession,
     ],
   )
 

@@ -44,6 +44,7 @@ import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
 import { localSystemRoutes } from '../routes/local-system'
 import { localPlatformRoutes } from '../routes/local-platform'
+import { localSharedFileRoutes } from '../routes/local-shared-files'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
@@ -83,6 +84,7 @@ export function createLocalApp(): LocalAppBundle {
 
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
+  app.route('/', localSharedFileRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
   // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and
   // members, ...). Without them "Trust folder" never reaches the agent and

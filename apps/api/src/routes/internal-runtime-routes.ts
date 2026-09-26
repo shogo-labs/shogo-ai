@@ -49,6 +49,7 @@ import {
   type InternalIdentity,
 } from './internal-runtime-auth'
 import { projectTrustRoutes } from './internal-project-trust'
+import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 
 type ProjectLifecycleService = typeof import('../services/project-lifecycle.service')
@@ -158,6 +159,99 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err: any) {
       console.error(`[Internal] Failed to update heartbeat completion for ${projectId}:`, err.message)
       return c.json({ error: 'Failed to update heartbeat completion' }, 500)
+    }
+  })
+
+  /**
+   * POST /api/internal/reminders/notify
+   *   body: { workspaceId, projectId?, userId, title, body, actionUrl?,
+   *           dedupeKey?, metadata?, type?, pushType?, channelId? }
+   *
+   * Boundary capability behind the runtime `notify_user` tool: write one
+   * in-app notification row for the user, then (when the row was newly
+   * created) send an OS push to their registered devices. This is the "reach
+   * the user" half of the reminder path — the agent detects a due reminder in
+   * MEMORY.md and calls the tool; there is no server-side reminder row or
+   * scheduler here (see issue #1046).
+   *
+   * `type` is an existing `NotificationType` member (the enum is deliberately
+   * NOT migrated — reminder-specific context rides in `metadata`), and
+   * `dedupeKey` makes the row best-effort idempotent via
+   * `createNotification`. `pushType`/`channelId` are the parameterized push
+   * `data.type` / Android channel; both default to `chat-complete` so the
+   * payload shape is unchanged unless a caller opts in.
+   *
+   * Auth: workspace/project runtime token or K8s SA token, scoped to the
+   * workspace in the body (same pattern as `/agent-cost-metrics`).
+   */
+  app.post('/reminders/notify', async (c) => {
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
+    const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
+    if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const userId = typeof body.userId === 'string' ? body.userId : ''
+    const title = typeof body.title === 'string' ? body.title.trim() : ''
+    const message = typeof body.body === 'string' ? body.body : ''
+    if (!userId || !title || !message) {
+      return c.json({ error: 'userId, title, and body are required' }, 400)
+    }
+
+    // Reuse an EXISTING NotificationType member — the enum is intentionally not
+    // migrated for reminders, so the reminder-specific bits live in `metadata`.
+    const type = typeof body.type === 'string' && body.type ? body.type : 'workspace_updated'
+    const pushType = typeof body.pushType === 'string' && body.pushType ? body.pushType : 'chat-complete'
+    const channelId = typeof body.channelId === 'string' && body.channelId ? body.channelId : 'chat-complete'
+    const actionUrl = typeof body.actionUrl === 'string' && body.actionUrl ? body.actionUrl : undefined
+    const dedupeKey = typeof body.dedupeKey === 'string' && body.dedupeKey ? body.dedupeKey : undefined
+    const metadata =
+      body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+        && JSON.stringify(body.metadata).length <= 4_096
+        ? (body.metadata as Record<string, unknown>)
+        : undefined
+
+    try {
+      const { createNotification } = await import('../services/notification.service')
+      const row = await createNotification({
+        userId,
+        // `type` is validated by the DB enum; a bad value simply fails the
+        // best-effort insert and no push is sent (see below).
+        type: type as any,
+        title,
+        message,
+        ...(actionUrl ? { actionUrl } : {}),
+        ...(dedupeKey ? { dedupeKey } : {}),
+        ...(metadata ? { metadata } : {}),
+      })
+
+      // Only push when a new inbox row was created, so a deduped retry (or a
+      // failed insert) does not deliver the same reminder twice. Exactly-once
+      // is best-effort — `dedupeKey` has no unique index.
+      if (row) {
+        const { sendPushToUser } = await import('../lib/push-notifications')
+        await sendPushToUser(userId, {
+          title,
+          body: message,
+          type: pushType,
+          channelId,
+          data: {
+            ...(metadata ?? {}),
+            ...(dedupeKey ? { dedupeKey } : {}),
+            ...(actionUrl ? { actionUrl } : {}),
+          },
+        })
+      }
+
+      return c.json({ ok: true, created: Boolean(row), id: row?.id ?? null })
+    } catch (err: any) {
+      console.error(`[Internal] Failed to notify user ${userId}:`, err?.message ?? err)
+      return c.json({ error: 'Failed to notify user' }, 500)
     }
   })
 
@@ -646,6 +740,72 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   // GET /projects/:projectId/trust — see ./internal-project-trust.ts
   app.route('/', projectTrustRoutes({ authorize: validateAuth }))
+
+  /**
+   * POST /api/internal/projects/:projectId/shared-files
+   *
+   * Desktop equivalent of the cloud shared-file capability route. The
+   * capability is verified by the local download route, so the returned URL
+   * does not depend on the runtime port or expose the workspace path.
+   */
+  app.post('/projects/:projectId/shared-files', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const body = await c.req.json().catch(() => null) as {
+      path?: unknown
+      expiresInDays?: unknown
+    } | null
+    const path = typeof body?.path === 'string' ? body.path : ''
+    const segments = path.split('/')
+    if (
+      !path ||
+      path.length > 4096 ||
+      path.startsWith('/') ||
+      path.includes('\\') ||
+      segments.some((segment) => !segment || segment === '.' || segment === '..')
+    ) {
+      return c.json({ error: { code: 'invalid_path', message: 'path must be a relative workspace path' } }, 400)
+    }
+
+    const requestedDays =
+      typeof body?.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
+        ? Math.floor(body.expiresInDays)
+        : 7
+    const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+    const now = Math.floor(Date.now() / 1000)
+
+    try {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+
+      const token = signSharedFileToken({
+        projectId,
+        workspaceId: project.workspaceId,
+        path,
+        exp: now + expiresInDays * 24 * 60 * 60,
+        now,
+      })
+      const configuredOrigin = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+      const origin = (configuredOrigin || new URL(c.req.url).origin).replace(/\/+$/, '')
+
+      return c.json({
+        ok: true,
+        url: `${origin}/f/${encodeURIComponent(token)}`,
+        expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
+        path,
+      })
+    } catch (err: any) {
+      console.error(`[Internal] local shared file token for ${projectId} failed:`, err?.message || err)
+      return c.json({ error: { code: 'shared_file_failed', message: 'Failed to create shared file link' } }, 500)
+    }
+  })
 
   /**
    * POST /api/internal/projects/:projectId/checkpoints/record

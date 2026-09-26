@@ -1906,7 +1906,8 @@ app.post('/agent/chat', async (c) => {
       // Periodic seq heartbeat. The client uses this to know how many
       // buffered chunks it has already received so it can resume with
       // `?fromSeq=N` on a premature disconnect without re-rendering text
-      // it has already seen.
+      // it has already seen. Transient: the AI SDK would otherwise append
+      // a message part every 250ms for the whole turn.
       const seqHeartbeat = setInterval(() => {
         const seq = bufWriter.lastSeq
         if (seq <= 0) return
@@ -1914,6 +1915,7 @@ app.post('/agent/chat', async (c) => {
           writer.write({
             type: 'data-turn-seq',
             data: { turnId, seq },
+            transient: true,
           } as any)
         } catch {
           clearInterval(seqHeartbeat)

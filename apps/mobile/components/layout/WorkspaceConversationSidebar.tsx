@@ -22,7 +22,12 @@ import {
 import { usePathname, useRouter } from "expo-router";
 import { Folder, Plus, Search } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
-import { useDomainHttp, useProjectCollection } from "../../contexts/domain";
+import {
+  useDomainActions,
+  useChatSessionCollection,
+  useDomainHttp,
+  useProjectCollection,
+} from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { api } from "../../lib/api";
@@ -37,6 +42,7 @@ import {
   getKnownPrimaryWorkspaceSession,
   subscribePrimaryWorkspaceSession,
 } from "../workspace/workspace-agent-session-bus";
+import { chatSessionEvents } from "../../lib/chat-session-events";
 import { WorkspaceSidebarSection } from "./WorkspaceSidebarSection";
 import { WorkspaceChromeSkeletonRows } from "./WorkspaceChromeSkeleton";
 import { ChatTreeItem } from "./sidebar/ChatTreeItem";
@@ -78,6 +84,8 @@ export function WorkspaceConversationSidebar() {
   const router = useRouter();
   const pathname = usePathname();
   const http = useDomainHttp();
+  const actions = useDomainActions();
+  const chatSessions = useChatSessionCollection();
   const workspace = useActiveWorkspace();
   const projects = useProjectCollection();
   const experience = useWorkspaceExperience();
@@ -279,6 +287,28 @@ export function WorkspaceConversationSidebar() {
     });
   }, [loadProjectChats, normalizedChatQuery, projectChats, workspaceProjects]);
 
+  useEffect(() => {
+    return chatSessionEvents.subscribe(
+      ({ projectId, workspaceId, refresh }) => {
+        if (!refresh) return;
+        if (workspaceId && workspaceId === workspace?.id) {
+          void loadWorkspaceSessions().catch(() => undefined);
+        }
+        if (!projectId) return;
+        if (!projectChats[projectId] && !expandedProjectIds.has(projectId)) {
+          return;
+        }
+        void loadProjectChats(projectId);
+      },
+    );
+  }, [
+    expandedProjectIds,
+    loadProjectChats,
+    loadWorkspaceSessions,
+    projectChats,
+    workspace?.id,
+  ]);
+
   const toggleProject = (projectId: string) => {
     const isExpanded = expandedProjectIds.has(projectId);
     setExpandedProjectIds((current) => {
@@ -317,15 +347,22 @@ export function WorkspaceConversationSidebar() {
         )
       );
       try {
-        await http.patch(
-          `/api/chat-sessions/${encodeURIComponent(sessionId)}`,
-          changes
-        );
+        if (!chatSessions.get(sessionId)) {
+          await chatSessions.loadById(sessionId);
+        }
+        await actions.updateChatSession(sessionId, changes);
+        if (workspace?.id) {
+          chatSessionEvents.emit({
+            workspaceId: workspace.id,
+            activeSessionId: sessionId,
+            refresh: true,
+          });
+        }
       } catch {
         setSessions(previous);
       }
     },
-    [http, sessions]
+    [actions, chatSessions, sessions, workspace?.id]
   );
 
   const updateProjectChat = useCallback(
@@ -349,10 +386,11 @@ export function WorkspaceConversationSidebar() {
         };
       });
       try {
-        await http.patch(
-          `/api/chat-sessions/${encodeURIComponent(sessionId)}`,
-          changes
-        );
+        if (!chatSessions.get(sessionId)) {
+          await chatSessions.loadById(sessionId);
+        }
+        await actions.updateChatSession(sessionId, changes);
+        chatSessionEvents.emit({ projectId, refresh: true });
       } catch {
         setProjectChats((current) => {
           const state = current[projectId];
@@ -362,7 +400,7 @@ export function WorkspaceConversationSidebar() {
         });
       }
     },
-    [http, projectChats]
+    [actions, chatSessions, projectChats]
   );
 
   const requestDelete = useCallback((onConfirm: () => void) => {
