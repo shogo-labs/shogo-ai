@@ -54,6 +54,8 @@ export interface PreviewUrlBlockOptions {
 
 const QA_GUIDANCE =
   'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.'
+const FILE_DELIVERY_GUIDANCE =
+  'For a generated file, use **share_file** and its returned download URL. In cloud/metal, use the returned `/f/` URL; in local desktop mode, the returned localhost URL is valid for the local user. Never turn a workspace file path into a preview URL.'
 
 /**
  * Build the "Running App Preview" block, or null when there's no URL to share.
@@ -82,6 +84,7 @@ export function buildPreviewUrlBlock(opts: PreviewUrlBlockOptions): string | nul
     lines.push(
       `The user's app is running and reachable at **${publicUrl}**.`,
       `Internal (from inside this runtime, for your own curl checks only): \`${internalUrl}\`.`,
+      FILE_DELIVERY_GUIDANCE,
       '',
       QA_GUIDANCE,
     )
@@ -92,24 +95,25 @@ export function buildPreviewUrlBlock(opts: PreviewUrlBlockOptions): string | nul
   // advertised its own localhost port as PUBLIC_PREVIEW_URL. It IS the user's
   // URL, so present it as the link.
   if (publicUrl.length > 0) {
-    lines.push(`The user's app is running and reachable at **${publicUrl}**.`, '', QA_GUIDANCE)
+    lines.push(`The user's app is running and reachable at **${publicUrl}**.`, FILE_DELIVERY_GUIDANCE, '', QA_GUIDANCE)
     return lines.join('\n')
   }
 
   // No public URL.
   if (isLocal) {
     // Local dev: localhost is the real URL the user opens.
-    lines.push(`The user's app is running and reachable at **${internalUrl}**.`, '', QA_GUIDANCE)
+    lines.push(`The user's app is running and reachable at **${internalUrl}**.`, FILE_DELIVERY_GUIDANCE, '', QA_GUIDANCE)
     return lines.join('\n')
   }
 
   // Cloud with no public URL (an env miss): NEVER present localhost as the
-  // link — the user cannot open it. Give only the labeled internal address and
-  // point at Publish for a shareable link.
+  // link — the user cannot open it. Give only the labeled internal address.
+  // A generated file must use share_file; Publish is only for web apps.
   lines.push(
     'The app is running inside this cloud runtime, but no public preview URL is currently available.',
     `Internal address (for your own curl checks only — the user CANNOT open this): \`${internalUrl}\`.`,
-    'Do NOT give the user a localhost / 127.0.0.1 / bare-port URL — it will not load for them. If they need a shareable link, use the **publish** tool.',
+    'Do NOT give the user a localhost / 127.0.0.1 / bare-port URL — it will not load for them. For a web app, use the **publish** tool.',
+    FILE_DELIVERY_GUIDANCE,
     '',
     QA_GUIDANCE,
   )

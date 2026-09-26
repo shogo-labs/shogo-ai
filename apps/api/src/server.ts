@@ -39,6 +39,7 @@ import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
+import { sharedFileRoutes } from './routes/shared-files'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { aiLiveRoutes } from './routes/ai-live'
@@ -2408,6 +2409,7 @@ app.all('/api/published/:subdomain/api/*', publishedApiHandler)
 // =============================================================================
 
 app.route('/api', chatAttachmentRoutes())
+app.route('/', sharedFileRoutes())
 
 app.post('/api/projects/:projectId/thumbnail', async (c) => {
   const router = thumbnailRoutes()

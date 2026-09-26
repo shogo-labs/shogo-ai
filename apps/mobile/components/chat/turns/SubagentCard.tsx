@@ -37,6 +37,7 @@ import { subagentStreamStore } from "../../../lib/subagent-stream-store";
 import { stopSubagent } from "../../../lib/subagent-stop";
 import { resolveShortName } from "../../../lib/visible-models";
 import { GenerateImageWidget } from "./GenerateImageWidget";
+import { FileDeliveryWidget } from "./FileDeliveryWidget";
 import { GeneratedImageGallery } from "./GeneratedImageGallery";
 
 export interface SubagentCardProps {
@@ -168,6 +169,26 @@ function extractGeneratedImageTools(
   });
 }
 
+function extractSharedFileTools(
+  parts: readonly any[] | undefined,
+): ToolCallData[] {
+  if (!parts) return [];
+  return parts.flatMap((part) => {
+    const tool = part?.type === "tool" ? part.tool : null;
+    if (!tool || tool.toolName !== "share_file") return [];
+    return [{
+      id: tool.id ?? part.id ?? "shared-file",
+      toolName: "share_file",
+      category: "other" as const,
+      state: tool.state ?? "streaming",
+      args: tool.args,
+      result: tool.result,
+      error: tool.error,
+      timestamp: 0,
+    }];
+  });
+}
+
 function getStatusText(
   tool: ToolCallData,
   elapsed: number,
@@ -249,6 +270,13 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
   const generatedImageTools = useMemo(
     () =>
       extractGeneratedImageTools(
+        streamData?.parts?.length ? streamData.parts : output.parts,
+      ),
+    [output.parts, streamData?.parts],
+  );
+  const sharedFileTools = useMemo(
+    () =>
+      extractSharedFileTools(
         streamData?.parts?.length ? streamData.parts : output.parts,
       ),
     [output.parts, streamData?.parts],
@@ -338,6 +366,9 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
           }))}
         />
       ) : null}
+      {sharedFileTools.map((fileTool) => (
+        <FileDeliveryWidget key={fileTool.id} tool={fileTool} />
+      ))}
     </View>
   );
 }

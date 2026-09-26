@@ -138,6 +138,7 @@ import {
   rollbackCheckpoint as apiRollbackCheckpoint,
   getPublishState as apiGetPublishState,
   publishProject as apiPublishProject,
+  createSharedFileLink as apiCreateSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
   postPlanMirror,
   type CheckpointCallResult,
@@ -2904,7 +2905,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
   return {
     name: 'publish',
     description: [
-      'Publish the project to a public, persistent URL at `{subdomain}.shogo.one`. Use this whenever the user wants to "host", "share", "deploy", "save permanently", "put this online", or get a link they can send to other people — this is the durable path; do NOT walk them through downloading/exporting/running it locally.',
+      'Publish the web app to a public, persistent URL at `{subdomain}.shogo.one`. Use this for hosting or permanently sharing the web app. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
       'First publish to a subdomain requires the Pro plan or higher. If the user may be on Free/Basic, tell them about this BEFORE starting deploy work so they are not surprised after you have already done the work — do not just attempt the tool call and hope. If the tool nonetheless returns `plan_not_allowed`, point the user to Settings > Billing to upgrade.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
@@ -3008,6 +3009,81 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         note: verified
           ? `The app is live at ${url}. Share this URL with the user. Static assets use cache-safe headers and the runtime self-heals stale bundles automatically — do not tell the user to hard-refresh or clear their cache.`
           : `Publish completed and the app is live at ${url}, but it did not respond to a verification fetch yet (a freshly published site can take a short while to propagate / cold-start). Share ${url} with the user and note it may take a moment to load. If they still see an old version after ~30s, distinguish preview from published URL and republish rather than asking them to hard-refresh or clear their cache — the runtime already self-heals stale bundles.`,
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Share File Tool — create a short-lived download link for a workspace file
+// ---------------------------------------------------------------------------
+
+function createShareFileTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'share_file',
+    description: [
+      'Create a short-lived download link for one file in the workspace.',
+      'Use this whenever the user asks to download, receive, get, or send a generated file such as a PDF, DOCX, ZIP, EXE, image, or other artifact.',
+      'This is for individual files, not web apps. Do not invent a localhost or preview URL, and do not use the publish tool for a file download.',
+      'After this succeeds, paste the returned URL verbatim and tell the user when it expires. Do not delete or overwrite the shared file before the user downloads it.',
+    ].join(' '),
+    label: 'Share file',
+    parameters: Type.Object({
+      path: Type.String({
+        description: 'Workspace-relative path of the file to share.',
+      }),
+      expires_in_days: Type.Optional(Type.Number({
+        description: 'How many days the link should work, from 1 to 7. Defaults to 7.',
+      })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const input = params as { path: string; expires_in_days?: number }
+      const path = input.path.trim().replace(/\\/g, '/').replace(/^\.\/+/, '')
+      if (!path || path.startsWith('/') || path.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+        return textResult({ error: 'path must be a relative workspace path without ".."' })
+      }
+
+      let resolved: string
+      try {
+        resolved = assertWithinWorkspace(ctx.workspaceDir, path)
+      } catch {
+        return textResult({ error: `Path is outside the workspace: ${path}` })
+      }
+      let fileSize: number
+      try {
+        const file = statSync(resolved)
+        if (!file.isFile()) {
+          return textResult({ error: `Not a regular file: ${path}` })
+        }
+        fileSize = file.size
+      } catch {
+        const hint = bogusPathPrefixHint(ctx.workspaceDir, path)
+        return textResult({
+          error: `File not found: ${path}`,
+          ...(hint ? { hint } : {}),
+        })
+      }
+
+      const result = await apiCreateSharedFileLink(ctx.projectId, {
+        path,
+        expiresInDays: input.expires_in_days,
+      })
+      if (!result.ok || !result.data) {
+        return textResult({
+          error: result.error ?? 'Failed to create a download link',
+          code: result.code,
+          status: result.status,
+        })
+      }
+
+      const filename = path.split('/').pop() || path
+      return textResult({
+        ok: true,
+        url: result.data.url,
+        filename,
+        size: fileSize,
+        expiresAt: result.data.expiresAt,
+        path,
       })
     },
   }
@@ -6869,6 +6945,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createAskUserTool(ctx),
     createCheckpointTool(ctx),
     createPublishTool(ctx),
+    createShareFileTool(ctx),
     createSendMessageTool(ctx),
     createChannelConnectTool(ctx),
     createChannelDisconnectTool(ctx),
@@ -7416,7 +7493,7 @@ export function createModeUnavailableTool(name: string, mode: RestrictedMode): A
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
   shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
-  files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints'],
+  files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints', 'share_file'],
   search: ['search', 'impact_radius'],
   code_analysis: ['impact_radius'],
   planning: ['todo_write'],
@@ -7463,6 +7540,7 @@ export const ALL_TOOL_NAMES = [
   'connect',
   'disconnect',
   'github_create_pr',
+  'share_file',
   'transcribe_audio',
   'quick_action',
 ] as const
