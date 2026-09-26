@@ -111,6 +111,10 @@ import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
 } from "./resume-stream-single-flight"
+import {
+  dropUnfinishedAssistantTail,
+  withResumeReplayReset,
+} from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
 import { API_URL, api, createHttpClient } from "../../lib/api"
 import { workspaceProjectFilter } from "../../lib/project-load"
@@ -1808,6 +1812,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const bumpChatProgress = useCallback(() => {
     lastChatProgressAtRef.current = Date.now()
   }, [])
+  // Last `data-*` frame from the runtime, transient or not. Transient
+  // heartbeats (`data-turn-seq`, `data-tool-progress`) don't touch
+  // `messages`, so the idle timeout reads this instead. Unlike
+  // `lastChatProgressAtRef` it ignores the API's keep-alive comments.
+  const lastRuntimeDataAtRef = useRef<number>(Date.now())
 
   // Turn idempotency id for the send currently in flight (or about to be).
   // Set in `sendMessageInternal` right before calling `sendMessage()`; the
@@ -1858,9 +1867,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onChunk: bumpChatProgress,
     getClientTurnId,
   })
+  // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
+  const beforeResumeReplayRef = useRef<() => void>(() => {})
   const chatTransport = useMemo(
     () =>
-      transportConfig ? new DefaultChatTransport(transportConfig) : undefined,
+      transportConfig
+        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () =>
+            beforeResumeReplayRef.current(),
+          )
+        : undefined,
     [transportConfig],
   )
 
@@ -1945,33 +1960,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // still trip on a long pre-Anthropic warm-up even after we see
       // bytes. Cheap, safe, and orthogonal to message rendering.
       bumpChatProgress()
+      lastRuntimeDataAtRef.current = Date.now()
 
-      // The runtime re-issued a model call that dropped mid-generation. Drop
-      // the failed step's partial text/reasoning from the in-progress assistant
-      // message so the regenerated output replaces it instead of rendering
-      // twice. Completed tool calls (and any text committed before them) are
-      // preserved — a failed inference step never executed tools.
-      if (dataPart.type === "data-inference-retry") {
-        setMessages((prev) => {
-          if (prev.length === 0) return prev
-          const lastIdx = prev.length - 1
-          const last = prev[lastIdx]
-          if (last.role !== "assistant" || !Array.isArray(last.parts))
-            return prev
-          const parts = [...last.parts]
-          while (parts.length > 0) {
-            const p = parts[parts.length - 1] as any
-            if (p?.type === "text" || p?.type === "reasoning") {
-              parts.pop()
-              continue
-            }
-            break
-          }
-          if (parts.length === last.parts.length) return prev
-          return prev.map((m, i) => (i === lastIdx ? { ...m, parts } : m))
-        })
-        return
-      }
+      // `data-inference-retry` (a dropped model call the runtime re-issued)
+      // stays in `message.parts`; `extractOrderedParts` hides the failed
+      // attempt's text/reasoning at render time.
 
       // The runtime's fast inference-retry budget was exhausted on a still-
       // retryable failure and it couldn't reach the model's upstream health
@@ -2988,6 +2981,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       }
     },
   })
+  beforeResumeReplayRef.current = () =>
+    setMessages((prev) => dropUnfinishedAssistantTail(prev))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -3773,6 +3768,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // reset on each effect run anyway. With long histories that stringify cost
   // O(history bytes × tokens) of main-thread freeze per stream chunk, which
   // is exactly the sort of cost that doesn't show up in the React Profiler.
+  // Transient heartbeats don't swap `messages`, so when the timer fires it
+  // re-arms for the remainder of the window if a runtime data frame arrived
+  // since (`lastRuntimeDataAtRef`).
   const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const IDLE_TIMEOUT_MS = 1_800_000
 
@@ -3784,10 +3782,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     if (!isStreaming) return
 
-    idleTimeoutRef.current = setTimeout(() => {
-      console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
-      handleStop()
-    }, IDLE_TIMEOUT_MS)
+    const armedAt = Date.now()
+    const arm = (delayMs: number) => {
+      idleTimeoutRef.current = setTimeout(() => {
+        const idleMs =
+          Date.now() - Math.max(armedAt, lastRuntimeDataAtRef.current)
+        if (idleMs < IDLE_TIMEOUT_MS) {
+          arm(IDLE_TIMEOUT_MS - idleMs)
+          return
+        }
+        console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
+        handleStop()
+      }, delayMs)
+    }
+    arm(IDLE_TIMEOUT_MS)
 
     return () => {
       if (idleTimeoutRef.current) {

@@ -2670,16 +2670,20 @@ export class AgentGateway {
     // Stream live process-list updates to the UI for the duration of this turn.
     // The registry persists across turns; this subscription is per-turn so it
     // is torn down when the stream closes.
+    //
+    // Status frames below (process list, context usage, connectivity wait,
+    // tool progress) are `transient`: the client consumes them in `onData`,
+    // and the AI SDK would otherwise append each one to `message.parts`.
     let unsubscribeProcesses: (() => void) | undefined
     if (uiWriter && sessionId) {
       const reg = this.getOrCreateCommandRegistry(sessionId)
       // Push the current list immediately so a reconnecting client re-syncs.
       try {
-        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() } } as any)
+        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() }, transient: true } as any)
       } catch { /* writer may already be closed */ }
       unsubscribeProcesses = reg.onChange((processes) => {
         try {
-          uiWriter.write({ type: 'data-process-update', data: { processes } } as any)
+          uiWriter.write({ type: 'data-process-update', data: { processes }, transient: true } as any)
         } catch { /* writer closed — onChange teardown happens in finally */ }
       })
     }
@@ -2701,6 +2705,7 @@ export class AgentGateway {
           uiWriter.write({
             type: 'data-context-usage',
             data: { inputTokens: runningContextEstimate, contextWindowTokens },
+            transient: true,
           } as any)
         }
       }
@@ -2711,6 +2716,7 @@ export class AgentGateway {
         uiWriter.write({
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
+          transient: true,
         } as any)
       }
 
@@ -3213,6 +3219,7 @@ export class AgentGateway {
                 elapsedMs: info.elapsedMs,
                 nextProbeInMs: info.nextProbeInMs,
               },
+              transient: true,
             } as any)
           }
           console.warn(
@@ -3230,6 +3237,7 @@ export class AgentGateway {
             uiWriter.write({
               type: 'data-connectivity-wait',
               data: { state: 'reconnected' },
+              transient: true,
             } as any)
           }
           console.warn(`${this.logPrefix} Connectivity restored — resuming turn for session ${sessionId}`)
@@ -3275,6 +3283,7 @@ export class AgentGateway {
                     elapsedMs: Date.now() - startedAt,
                     status: 'running',
                   },
+                  transient: true,
                 } as any)
               } catch {
                 clearInterval(timer)
@@ -3524,6 +3533,7 @@ export class AgentGateway {
         uiWriter.write({
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
+          transient: true,
         } as any)
       }
 
