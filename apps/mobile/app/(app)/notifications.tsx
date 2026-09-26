@@ -82,6 +82,8 @@ export default observer(function NotificationsScreen() {
   const notifications = useNotificationCollection()
   const actions = useDomainActions()
   const [refreshing, setRefreshing] = useState(false)
+  const [markingAllRead, setMarkingAllRead] = useState(false)
+  const [markAllError, setMarkAllError] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -125,15 +127,31 @@ export default observer(function NotificationsScreen() {
   )
 
   const markAllRead = useCallback(async () => {
+    if (markingAllRead) return
     const toMark = items.filter((n) => !n.readAt)
     if (toMark.length === 0) return
-    await Promise.all(
-      toMark.map((n) =>
-        actions.markNotificationRead(n.id).catch((e) => console.error('[Notifications] mark-all failed:', e)),
-      ),
-    )
-    notificationEvents.emit()
-  }, [items, actions])
+    setMarkingAllRead(true)
+    setMarkAllError(false)
+    try {
+      // `markNotificationRead` is optimistic in the domain store, so the
+      // unread badge and button disappear immediately. If any request fails,
+      // reload once to reconcile the failed row instead of silently claiming
+      // that the entire operation succeeded.
+      const results = await Promise.allSettled(
+        toMark.map((n) => actions.markNotificationRead(n.id)),
+      )
+      const failed = results.some((result) => result.status === 'rejected')
+      if (failed) {
+        setMarkAllError(true)
+        await notifications.loadAll().catch((e) =>
+          console.error('[Notifications] mark-all reconciliation failed:', e),
+        )
+      }
+      notificationEvents.emit()
+    } finally {
+      setMarkingAllRead(false)
+    }
+  }, [items, actions, markingAllRead, notifications])
 
   const isNative = Platform.OS !== 'web'
 
@@ -156,15 +174,26 @@ export default observer(function NotificationsScreen() {
           {unread.length > 0 && (
             <Pressable
               onPress={markAllRead}
+              disabled={markingAllRead}
               accessibilityLabel="Mark all as read"
-              className="flex-row items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 active:bg-muted"
+              className="min-h-11 flex-row items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 active:bg-muted disabled:opacity-50"
             >
-              <CheckCheck size={isNative ? 18 : 16} className="text-primary" />
+              {markingAllRead ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <CheckCheck size={isNative ? 18 : 16} className="text-primary" />
+              )}
               <Text className={cn('font-medium text-foreground', isNative ? 'text-sm' : 'text-xs')}>Mark all read</Text>
             </Pressable>
           )}
         </View>
       </View>
+
+      {markAllError ? (
+        <Text className="px-4 pt-2 text-xs text-destructive">
+          Some notifications could not be marked read. Pull to refresh and try again.
+        </Text>
+      ) : null}
 
       {notifications.isLoading && items.length === 0 ? (
         <View className="flex-1 items-center justify-center">

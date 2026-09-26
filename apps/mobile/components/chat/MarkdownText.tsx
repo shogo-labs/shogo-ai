@@ -13,7 +13,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { linkifyFilePaths, pathFromFileHref } from "./file-links";
+import { linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-links";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 
@@ -277,10 +277,10 @@ export const MarkdownText = memo(function MarkdownText({
     ? phoneChatStyles
     : baseStyles;
 
-  const value = useMemo(
-    () => (onFilePress ? linkifyFilePaths(children || "") : children || ""),
-    [children, onFilePress],
-  );
+  const value = useMemo(() => {
+    const fileLinked = onFilePress ? linkifyFilePaths(children || "") : children || "";
+    return linkifyBareUrls(fileLinked);
+  }, [children, onFilePress]);
   const renderer = useMemo(
     () => new NativePhoneMarkdownRenderer(width, onFilePress),
     [width, onFilePress],

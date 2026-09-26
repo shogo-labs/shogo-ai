@@ -12,10 +12,15 @@
  * exceeded" (error #185).
  */
 import { describe, expect, test } from "bun:test"
-import { createChatDockStore, type DockPanelDescriptor } from "../chat-dock-store"
+import {
+  createChatDockStore,
+  type DockPanelDescriptor,
+} from "../chat-dock-store"
 import { ClipboardList, Files } from "lucide-react-native"
 
-function baseDescriptor(overrides: Partial<DockPanelDescriptor> = {}): DockPanelDescriptor {
+function baseDescriptor(
+  overrides: Partial<DockPanelDescriptor> = {},
+): DockPanelDescriptor {
   return {
     id: "changes",
     kind: "status",
@@ -84,14 +89,38 @@ describe("createChatDockStore registerPanel", () => {
 
   test("switching kind between status and blocking does notify subscribers", () => {
     const store = createChatDockStore()
-    store.registerPanel(baseDescriptor({ id: "plan", icon: ClipboardList, kind: "status" }))
+    store.registerPanel(
+      baseDescriptor({ id: "plan", icon: ClipboardList, kind: "status" }),
+    )
 
     let calls = 0
     store.subscribe(() => calls++)
 
-    store.registerPanel(baseDescriptor({ id: "plan", icon: ClipboardList, kind: "blocking" }))
+    store.registerPanel(
+      baseDescriptor({ id: "plan", icon: ClipboardList, kind: "blocking" }),
+    )
 
     expect(calls).toBe(1)
+  })
+
+  test("allows an explicitly collapsible blocking panel to hide and restore its body", () => {
+    const store = createChatDockStore()
+    store.registerPanel(
+      baseDescriptor({
+        id: "question",
+        kind: "blocking",
+        collapsible: true,
+        defaultExpanded: true,
+      }),
+    )
+
+    expect(store.isExpanded("question")).toBe(true)
+
+    store.toggle("question")
+    expect(store.isExpanded("question")).toBe(false)
+
+    store.toggle("question")
+    expect(store.isExpanded("question")).toBe(true)
   })
 
   test("the latest render closure is still used even when notify is skipped", () => {

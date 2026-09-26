@@ -73,6 +73,7 @@
     "expo-linear-gradient": "~15.0.8",
     "expo-linking": "~8.0.0",
     "expo-localization": "~17.0.8",
+    "expo-media-library": "~18.2.0",
     "expo-network": "~8.0.8",
     "expo-notifications": "~0.32.16",
     "expo-router": "~6.0.0",

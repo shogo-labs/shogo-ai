@@ -12,10 +12,9 @@
  * browser viewport actually suspend its subscription while collapsed:
  * unmounting is the suspend.
  *
- * Blocking panels render without a chevron and are not collapsible — the
- * store already reports them as always-expanded and refuses to toggle
- * them, but `collapsible={false}` here is a second line of defense against
- * a stray tap collapsing something the agent turn is blocked on.
+ * Blocking panels are not collapsible by default — the store reports them
+ * as always-expanded unless a descriptor explicitly opts into a collapsible
+ * header (used by pending questions).
  *
  * Deliberately chromeless at the panel level (no rounded/border/bg/shadow
  * of its own) — `ChatDock` wraps each zone's stack of panels in ONE
@@ -30,13 +29,24 @@ import { View, Text, Pressable } from "react-native"
 import { Motion, AnimatePresence } from "@legendapp/motion"
 import { ChevronDown, X } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import type { DockPanelAccent, DockIconComponent } from "../../../lib/chat-dock-store"
+import type {
+  DockPanelAccent,
+  DockIconComponent,
+} from "../../../lib/chat-dock-store"
 
 const ANIM_DURATION = 220
-const ROTATE_TRANSITION = { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" } as const
+const ROTATE_TRANSITION = {
+  type: "timing",
+  duration: ANIM_DURATION,
+  easing: "easeInOut",
+} as const
 const ROTATE_OPEN = { rotateZ: "180deg" }
 const ROTATE_CLOSED = { rotateZ: "0deg" }
-const FADE_TRANSITION = { type: "timing", duration: ANIM_DURATION, easing: "easeInOut" } as const
+const FADE_TRANSITION = {
+  type: "timing",
+  duration: ANIM_DURATION,
+  easing: "easeInOut",
+} as const
 const FADE_INITIAL = { opacity: 0 }
 const FADE_ANIMATE = { opacity: 1 }
 const FADE_EXIT = { opacity: 0 }
@@ -76,10 +86,18 @@ export function DockPanel({
   children,
   isFirst = false,
 }: DockPanelProps) {
-  const rotateAnimate = useMemo(() => (expanded ? ROTATE_OPEN : ROTATE_CLOSED), [expanded])
+  const rotateAnimate = useMemo(
+    () => (expanded ? ROTATE_OPEN : ROTATE_CLOSED),
+    [expanded],
+  )
 
   return (
-    <View className={cn("w-full overflow-hidden", !isFirst && "border-t border-border/50")}>
+    <View
+      className={cn(
+        "w-full overflow-hidden",
+        !isFirst && "border-t border-border/50",
+      )}
+    >
       <Pressable
         onPress={collapsible ? onToggle : undefined}
         disabled={!collapsible}
@@ -87,9 +105,14 @@ export function DockPanel({
         role={collapsible ? "button" : undefined}
         accessibilityLabel={title}
       >
-        <View className={cn("h-1.5 w-1.5 rounded-full", ACCENT_DOT_CLASS[accent])} />
+        <View
+          className={cn("h-1.5 w-1.5 rounded-full", ACCENT_DOT_CLASS[accent])}
+        />
         <Icon size={13} className="text-muted-foreground" />
-        <Text className="flex-1 text-xs font-medium text-foreground" numberOfLines={1}>
+        <Text
+          className="flex-1 text-xs font-medium text-foreground"
+          numberOfLines={1}
+        >
           {title}
         </Text>
         {summary ? (
@@ -99,7 +122,11 @@ export function DockPanel({
         ) : null}
         {headerActions}
         {onDismiss && (
-          <Pressable onPress={onDismiss} hitSlop={6} accessibilityLabel={`Dismiss ${title}`}>
+          <Pressable
+            onPress={onDismiss}
+            hitSlop={6}
+            accessibilityLabel={`Dismiss ${title}`}
+          >
             <X size={12} className="text-muted-foreground/70" />
           </Pressable>
         )}

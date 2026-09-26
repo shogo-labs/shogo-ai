@@ -45,7 +45,26 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testIgnore: /mobile-personal-walkthrough\.test\.ts$/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "iphone-15-pro",
+      testMatch: /mobile-personal-walkthrough\.test\.ts$/,
+      use: {
+        ...devices["iPhone 15 Pro"],
+        hasTouch: true,
+        isMobile: true,
+      },
+    },
+    {
+      name: "pixel-7",
+      testMatch: /mobile-personal-walkthrough\.test\.ts$/,
+      use: {
+        ...devices["Pixel 7"],
+        hasTouch: true,
+        isMobile: true,
+      },
     },
   ],
 })

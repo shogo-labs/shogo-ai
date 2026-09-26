@@ -37,6 +37,7 @@
  */
 // @ts-ignore Bun resolves this module at test runtime; app tsconfig does not include Bun ambient types.
 import { afterEach, describe, expect, mock, test } from "bun:test"
+import { resolve } from "node:path"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
 import { createReactNativeMock, reactNativeMockBase } from "../../../test/react-native-mock"
@@ -151,6 +152,11 @@ mock.module("react-native", () =>
   }),
 )
 
+mock.module(resolve(import.meta.dir, "../../../lib/auth-client"), () => ({
+  authClient: { getCookie: () => null },
+  autoSignInLocally: async () => {},
+}))
+
 // Icons come from the shared stub that `test/testing-library.ts` preloads.
 // A per-file `mock.module('lucide-react-native', …)` would narrow the module
 // process-wide and strip every icon it omits for later test files.
@@ -242,7 +248,7 @@ function renderChatInput() {
 }
 
 describe("ChatInput — native caret regression guard", () => {
-  test("animates prominent height changes and fades the stable placeholder", () => {
+  test("animates prominent height changes and removes the placeholder while typing", () => {
     const input = renderChatInput()
     const contentSizeChangeBeforeTyping = latestContentSizeChange
 
@@ -260,7 +266,10 @@ describe("ChatInput — native caret regression guard", () => {
       ),
     ).toBe(true)
 
-    expect(screen.getByText("Ask Shogo...")).toBeTruthy()
+    // The placeholder must be removed from the tree as soon as text exists;
+    // fading an overlaid label leaves a visible ghost during native
+    // compositing.
+    expect(screen.queryByText("Ask Shogo...")).toBeNull()
     expect(
       animationConfigs.some(
         (config) =>

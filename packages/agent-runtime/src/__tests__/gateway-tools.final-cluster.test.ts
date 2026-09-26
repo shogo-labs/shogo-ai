@@ -23,21 +23,33 @@ let fetchCalls: Array<{ url: string; init?: RequestInit }> = []
 function installFetch(h: (url: string, init?: RequestInit) => Promise<Response> | Response) {
   fetchCalls = []
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : input?.url ?? String(input)
+    const url = typeof input === 'string' ? input : (input?.url ?? String(input))
     fetchCalls.push({ url, init })
     return await h(url, init)
   }) as typeof fetch
 }
-function restoreFetch() { globalThis.fetch = realFetch }
+function restoreFetch() {
+  globalThis.fetch = realFetch
+}
 
-function makeResponse(opts: { status?: number; body?: any; ok?: boolean; contentType?: string } = {}): Response {
+function makeResponse(
+  opts: {
+    status?: number
+    body?: any
+    ok?: boolean
+    contentType?: string
+  } = {},
+): Response {
   const { status = 200, contentType = 'application/json' } = opts
-  const bodyText = typeof opts.body === 'object' && opts.body !== null && !(opts.body instanceof Uint8Array)
-    ? JSON.stringify(opts.body)
-    : (opts.body ?? '')
+  const bodyText =
+    typeof opts.body === 'object' && opts.body !== null && !(opts.body instanceof Uint8Array)
+      ? JSON.stringify(opts.body)
+      : (opts.body ?? '')
   const ok = opts.ok ?? (status >= 200 && status < 300)
   return {
-    ok, status, statusText: 'OK',
+    ok,
+    status,
+    statusText: 'OK',
     headers: new Headers({ 'content-type': contentType }),
     text: async () => String(bodyText),
     json: async () => JSON.parse(String(bodyText || 'null')),
@@ -64,9 +76,11 @@ function ctxWith(over: Record<string, any> = {}): any {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800, heartbeatEnabled: false,
+      heartbeatInterval: 1800,
+      heartbeatEnabled: false,
       quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
-      channels: [], model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+      channels: [],
+      model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     },
     projectId: 'p',
     ...over,
@@ -103,7 +117,9 @@ describe('gateway-tools final-cluster sweep', () => {
   describe('transcribe_audio', () => {
     test('returns error when file does not exist', async () => {
       setEnv('OPENAI_API_KEY', 'sk-x')
-      const r = await call(ctxWith(), 'transcribe_audio', { path: 'missing.mp3' })
+      const r = await call(ctxWith(), 'transcribe_audio', {
+        path: 'missing.mp3',
+      })
       expect(r.error).toContain('not found')
     })
 
@@ -117,10 +133,23 @@ describe('gateway-tools final-cluster sweep', () => {
       writeFileSync(join(TEST_DIR, 'a.wav'), 'fake-wav')
       installFetch(async (url) => {
         expect(url).toContain('/v1/audio/transcriptions')
-        return makeResponse({ body: { text: 'hello world', language: 'en', duration: 2.5, segments: [{ start: 0, end: 1, text: 'hello' }] } })
+        return makeResponse({
+          body: {
+            text: 'hello world',
+            language: 'en',
+            duration: 2.5,
+            segments: [{ start: 0, end: 1, text: 'hello' }],
+          },
+        })
       })
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
-      const r = await call(ctx, 'transcribe_audio', { path: 'a.wav', language: 'en' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
+      const r = await call(ctx, 'transcribe_audio', {
+        path: 'a.wav',
+        language: 'en',
+      })
       expect(r.text).toBe('hello world')
       expect(r.duration_seconds).toBe(2.5)
       expect(r.segments[0].text).toBe('hello')
@@ -145,7 +174,9 @@ describe('gateway-tools final-cluster sweep', () => {
     test('surfaces fetch throw', async () => {
       setEnv('OPENAI_API_KEY', 'sk-x')
       writeFileSync(join(TEST_DIR, 'a.m4a'), 'x')
-      installFetch(async () => { throw new Error('network-down') })
+      installFetch(async () => {
+        throw new Error('network-down')
+      })
       const r = await call(ctxWith(), 'transcribe_audio', { path: 'a.m4a' })
       expect(r.error).toContain('Audio transcription failed')
       expect(r.error).toContain('network-down')
@@ -164,13 +195,54 @@ describe('gateway-tools final-cluster sweep', () => {
     test('succeeds with DALL-E and writes png file', async () => {
       installFetch(async (url) => {
         expect(url).toContain('/v1/images/generations')
-        return makeResponse({ body: { data: [{ b64_json: Buffer.from('PNGFAKE').toString('base64'), revised_prompt: 'rev' }] } })
+        return makeResponse({
+          body: {
+            data: [
+              {
+                b64_json: Buffer.from('PNGFAKE').toString('base64'),
+                revised_prompt: 'rev',
+              },
+            ],
+          },
+        })
       })
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
       const r = await call(ctx, 'generate_image', { prompt: 'sunset' })
       expect(r.path).toMatch(/^images\//)
       expect(r.bytes).toBeGreaterThan(0)
       expect(r.revised_prompt).toBe('rev')
+    })
+
+    test('generates multiple options and returns every workspace path', async () => {
+      installFetch(async (_url, init) => {
+        const body = JSON.parse(String(init?.body))
+        expect(body.n).toBe(3)
+        return makeResponse({
+          body: {
+            data: [1, 2, 3].map((index) => ({
+              b64_json: Buffer.from(`PNGFAKE-${index}`).toString('base64'),
+              revised_prompt: `rev-${index}`,
+            })),
+          },
+        })
+      })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
+      const r = await call(ctx, 'generate_image', {
+        prompt: 'sunset',
+        options: 3,
+      })
+      expect(r.paths).toHaveLength(3)
+      expect(r.path).toBe(r.paths[0])
+      expect(r.revised_prompts).toEqual(['rev-1', 'rev-2', 'rev-3'])
+      for (const path of r.paths) {
+        expect(existsSync(join(TEST_DIR, path))).toBe(true)
+      }
     })
 
     test('succeeds with reference_image edit path', async () => {
@@ -178,23 +250,42 @@ describe('gateway-tools final-cluster sweep', () => {
       writeFileSync(join(TEST_DIR, 'images/ref.png'), 'fake-png')
       installFetch(async (url) => {
         expect(url).toContain('/v1/images/edits')
-        return makeResponse({ body: { data: [{ b64_json: Buffer.from('EDITED').toString('base64') }] } })
+        return makeResponse({
+          body: {
+            data: [{ b64_json: Buffer.from('EDITED').toString('base64') }],
+          },
+        })
       })
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
-      const r = await call(ctx, 'generate_image', { prompt: 'add tree', reference_image: 'images/ref.png' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
+      const r = await call(ctx, 'generate_image', {
+        prompt: 'add tree',
+        reference_image: 'images/ref.png',
+      })
       expect(r.path).toMatch(/^images\//)
       expect(r.reference_image).toBe('images/ref.png')
     })
 
     test('reference_image not found returns error', async () => {
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
-      const r = await call(ctx, 'generate_image', { prompt: 'x', reference_image: 'images/missing.png' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
+      const r = await call(ctx, 'generate_image', {
+        prompt: 'x',
+        reference_image: 'images/missing.png',
+      })
       expect(r.error).toContain('Reference image not found')
     })
 
     test('surfaces non-ok generation response', async () => {
       installFetch(async () => makeResponse({ status: 400, ok: false, body: 'rejected' }))
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
       const r = await call(ctx, 'generate_image', { prompt: 'x' })
       expect(r.error).toContain('Image generation failed')
     })
@@ -203,8 +294,14 @@ describe('gateway-tools final-cluster sweep', () => {
       mkdirSync(join(TEST_DIR, 'images'), { recursive: true })
       writeFileSync(join(TEST_DIR, 'images/r.png'), 'x')
       installFetch(async () => makeResponse({ status: 500, ok: false, body: 'err' }))
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
-      const r = await call(ctx, 'generate_image', { prompt: 'x', reference_image: 'images/r.png' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
+      const r = await call(ctx, 'generate_image', {
+        prompt: 'x',
+        reference_image: 'images/r.png',
+      })
       // friendlyImageGenerationError maps 5xx to a generic "try again" message
       // instead of surfacing the raw upstream error body to the chat.
       expect(r.error).toContain('temporarily unavailable')
@@ -212,21 +309,32 @@ describe('gateway-tools final-cluster sweep', () => {
 
     test('responseData with error field is surfaced', async () => {
       installFetch(async () => makeResponse({ body: { error: { message: 'content-policy' } } }))
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
       const r = await call(ctx, 'generate_image', { prompt: 'x' })
       expect(r.error).toBe('content-policy')
     })
 
     test('missing b64_json returns "No image data" error', async () => {
       installFetch(async () => makeResponse({ body: { data: [{}] } }))
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
       const r = await call(ctx, 'generate_image', { prompt: 'x' })
       expect(r.error).toContain('No image data')
     })
 
     test('surfaces fetch throw', async () => {
-      installFetch(async () => { throw new Error('boom-net') })
-      const ctx = ctxWith({ aiProxyUrl: 'https://p.example/v1', aiProxyToken: 'pt' })
+      installFetch(async () => {
+        throw new Error('boom-net')
+      })
+      const ctx = ctxWith({
+        aiProxyUrl: 'https://p.example/v1',
+        aiProxyToken: 'pt',
+      })
       const r = await call(ctx, 'generate_image', { prompt: 'x' })
       expect(r.error).toContain('Image generation error')
       expect(r.error).toContain('boom-net')
@@ -244,7 +352,11 @@ describe('gateway-tools final-cluster sweep', () => {
 
     test('configure: writes config.json and reports back', async () => {
       const r = await call(ctxWith(), 'heartbeat_configure', {
-        enabled: true, interval: 120, quietHoursStart: '22:00', quietHoursEnd: '08:00', timezone: 'America/Los_Angeles',
+        enabled: true,
+        interval: 120,
+        quietHoursStart: '22:00',
+        quietHoursEnd: '08:00',
+        timezone: 'America/Los_Angeles',
       })
       expect(r.ok).toBe(true)
       expect(r.enabled).toBe(true)
@@ -256,14 +368,22 @@ describe('gateway-tools final-cluster sweep', () => {
 
     test('configure: invokes updateHeartbeatConfig hook when present', async () => {
       let captured: any = null
-      const ctx = ctxWith({ updateHeartbeatConfig: async (c: any) => { captured = c } })
+      const ctx = ctxWith({
+        updateHeartbeatConfig: async (c: any) => {
+          captured = c
+        },
+      })
       await call(ctx, 'heartbeat_configure', { enabled: true, interval: 60 })
       expect(captured.heartbeatEnabled).toBe(true)
       expect(captured.heartbeatInterval).toBe(60)
     })
 
     test('configure: surfaces hook throw', async () => {
-      const ctx = ctxWith({ updateHeartbeatConfig: async () => { throw new Error('sched-down') } })
+      const ctx = ctxWith({
+        updateHeartbeatConfig: async () => {
+          throw new Error('sched-down')
+        },
+      })
       const r = await call(ctx, 'heartbeat_configure', { enabled: true })
       expect(r.error).toContain('Failed to configure heartbeat')
     })
@@ -303,10 +423,13 @@ describe('gateway-tools final-cluster sweep', () => {
         name: 'My Big Plan',
         overview: 'overview text',
         plan: '## Step 1\nDo it',
-        todos: [{ id: 'a', content: 'first' }, { id: 'b', content: 'second' }],
+        todos: [
+          { id: 'a', content: 'first' },
+          { id: 'b', content: 'second' },
+        ],
       })
       expect(r.content[0].text).toContain('Plan "My Big Plan" created')
-      expect(events.some(e => e.type === 'data-plan')).toBe(true)
+      expect(events.some((e) => e.type === 'data-plan')).toBe(true)
       // Plan file written
       const plans = require('fs').readdirSync(join(TEST_DIR, '.shogo/plans'))
       expect(plans.length).toBe(1)
@@ -322,13 +445,18 @@ describe('gateway-tools final-cluster sweep', () => {
         uiWriter: { write: () => {} },
       })
       const r = await findTool(ctx, 'create_plan').execute('cid', {
-        name: 'Dual', overview: 'o', plan: 'p', todos: [],
+        name: 'Dual',
+        overview: 'o',
+        plan: 'p',
+        todos: [],
       })
       expect(r.content[0].text).toContain('created')
     })
 
     test('update_plan: invalid filepath errors', async () => {
-      const r = await findTool(ctxWith(), 'update_plan').execute('cid', { filepath: '../../etc/passwd' })
+      const r = await findTool(ctxWith(), 'update_plan').execute('cid', {
+        filepath: '../../etc/passwd',
+      })
       expect(r.content[0].text).toContain('Invalid plan filepath')
     })
 
@@ -343,20 +471,23 @@ describe('gateway-tools final-cluster sweep', () => {
     test('update_plan: rewrites name/overview/plan/todos', async () => {
       mkdirSync(join(TEST_DIR, '.shogo/plans'), { recursive: true })
       const fp = join(TEST_DIR, '.shogo/plans/test_xxx.plan.md')
-      writeFileSync(fp, [
-        '---',
-        'name: "Original"',
-        'overview: "old"',
-        'createdAt: "2026-01-01T00:00:00.000Z"',
-        'status: pending',
-        'todos:',
-        '  - id: x\n    content: "old"\n    status: pending',
-        '---',
-        '',
-        '# Original',
-        '',
-        'OLD BODY',
-      ].join('\n'))
+      writeFileSync(
+        fp,
+        [
+          '---',
+          'name: "Original"',
+          'overview: "old"',
+          'createdAt: "2026-01-01T00:00:00.000Z"',
+          'status: pending',
+          'todos:',
+          '  - id: x\n    content: "old"\n    status: pending',
+          '---',
+          '',
+          '# Original',
+          '',
+          'OLD BODY',
+        ].join('\n'),
+      )
       const r = await findTool(ctxWith(), 'update_plan').execute('cid', {
         filepath: '.shogo/plans/test_xxx.plan.md',
         name: 'Renamed',
@@ -374,11 +505,23 @@ describe('gateway-tools final-cluster sweep', () => {
     test('update_plan: partial update preserves omitted fields', async () => {
       mkdirSync(join(TEST_DIR, '.shogo/plans'), { recursive: true })
       const fp = join(TEST_DIR, '.shogo/plans/p2_xxx.plan.md')
-      writeFileSync(fp, [
-        '---', 'name: "A"', 'overview: "B"', 'createdAt: "2026-01-01T00:00:00.000Z"', 'status: pending',
-        'todos:', '  - id: 1\n    content: "x"\n    status: pending',
-        '---', '', '# A', '', 'body-here',
-      ].join('\n'))
+      writeFileSync(
+        fp,
+        [
+          '---',
+          'name: "A"',
+          'overview: "B"',
+          'createdAt: "2026-01-01T00:00:00.000Z"',
+          'status: pending',
+          'todos:',
+          '  - id: 1\n    content: "x"\n    status: pending',
+          '---',
+          '',
+          '# A',
+          '',
+          'body-here',
+        ].join('\n'),
+      )
       await findTool(ctxWith(), 'update_plan').execute('cid', {
         filepath: '.shogo/plans/p2_xxx.plan.md',
         overview: 'new',
@@ -404,12 +547,28 @@ describe('gateway-tools final-cluster sweep', () => {
       const ctx = ctxWith({ uiWriter: { write: (e: any) => events.push(e) } })
       mkdirSync(join(TEST_DIR, '.shogo/plans'), { recursive: true })
       const fp = join(TEST_DIR, '.shogo/plans/u_xxx.plan.md')
-      writeFileSync(fp, ['---','name: "X"','overview: "Y"','createdAt: "2026-01-01"','status: pending','todos:','  - id: 1\n    content: "x"\n    status: pending','---','','# X','','body'].join('\n'))
+      writeFileSync(
+        fp,
+        [
+          '---',
+          'name: "X"',
+          'overview: "Y"',
+          'createdAt: "2026-01-01"',
+          'status: pending',
+          'todos:',
+          '  - id: 1\n    content: "x"\n    status: pending',
+          '---',
+          '',
+          '# X',
+          '',
+          'body',
+        ].join('\n'),
+      )
       await findTool(ctx, 'update_plan').execute('cid', {
         filepath: '.shogo/plans/u_xxx.plan.md',
         name: 'Z',
       })
-      expect(events.some(e => e.type === 'data-plan-update')).toBe(true)
+      expect(events.some((e) => e.type === 'data-plan-update')).toBe(true)
     })
 
     test('update_plan: path traversal outside .shogo/plans errors', async () => {

@@ -8,8 +8,8 @@
  * Shared types for turn grouping components.
  */
 
-import type { UIMessage } from "@ai-sdk/react"
-import type { ToolCallData } from "../tools/types"
+import type { UIMessage } from "@ai-sdk/react";
+import type { ToolCallData } from "../tools/types";
 
 /**
  * Normalized message part for interleaved rendering.
@@ -17,10 +17,16 @@ import type { ToolCallData } from "../tools/types"
  */
 export type MessagePart =
   | { type: "text"; text: string; id: string }
-  | { type: "reasoning"; text: string; isStreaming: boolean; durationSeconds?: number; id: string }
+  | {
+      type: "reasoning";
+      text: string;
+      isStreaming: boolean;
+      durationSeconds?: number;
+      id: string;
+    }
   | { type: "tool"; tool: ToolCallData; id: string }
   | { type: "image"; url: string; mediaType: string; id: string }
-  | { type: "file"; url: string; mediaType: string; id: string }
+  | { type: "file"; url: string; mediaType: string; id: string };
 
 /**
  * A message part after consecutive-tool grouping.
@@ -39,22 +45,27 @@ export type MessagePart =
 export type GroupedMessagePart =
   | MessagePart
   | {
-      type: "tool-group"
-      toolName: string
-      tools: Array<{ tool: ToolCallData; id: string }>
-      id: string
+      type: "tool-group";
+      toolName: string;
+      tools: Array<{ tool: ToolCallData; id: string }>;
+      id: string;
     }
   | {
-      type: "work-group"
+      type: "work-group";
       /**
        * Ordered tool + reasoning parts for a run of consecutive
        * "work" tool calls (reads/searches/fetches/edits/writes/shell
        * commands). Reasoning is transparent — it rides along inside
        * the group instead of splitting the run.
        */
-      items: MessagePart[]
-      id: string
+      items: MessagePart[];
+      id: string;
     }
+  | {
+      type: "image-gallery";
+      tools: Array<{ tool: ToolCallData; id: string }>;
+      id: string;
+    };
 
 /**
  * A conversation turn groups a user message with its subsequent
@@ -62,19 +73,19 @@ export type GroupedMessagePart =
  */
 export interface ConversationTurn {
   /** Unique identifier for the turn */
-  id: string
+  id: string;
   /** The initiating user message */
-  userMessage: UIMessage | null
+  userMessage: UIMessage | null;
   /** The assistant's response message */
-  assistantMessage: UIMessage | null
+  assistantMessage: UIMessage | null;
   /** Tool calls associated with this turn (flat array for summary/counts) */
-  toolCalls: ToolCallData[]
+  toolCalls: ToolCallData[];
   /** Ordered parts for interleaved rendering (text, tools, images in sequence) */
-  assistantParts: MessagePart[]
+  assistantParts: MessagePart[];
   /** Timestamp of the turn start */
-  timestamp: number
+  timestamp: number;
   /** Whether the assistant is currently streaming */
-  isStreaming: boolean
+  isStreaming: boolean;
 }
 
 /**
@@ -82,7 +93,7 @@ export interface ConversationTurn {
  */
 export interface TurnBoundary {
   /** Index in the messages array where this turn starts */
-  startIndex: number
+  startIndex: number;
   /** Index in the messages array where this turn ends */
-  endIndex: number
+  endIndex: number;
 }

@@ -33,10 +33,10 @@
  * mounting any component.
  */
 
-import type { UIMessage } from "@ai-sdk/react"
-import type { MessagePart, GroupedMessagePart } from "./types"
-import { type ToolCallData } from "../tools/types"
-import { getToolSummary } from "../tools/summary"
+import type { UIMessage } from "@ai-sdk/react";
+import type { MessagePart, GroupedMessagePart } from "./types";
+import { type ToolCallData } from "../tools/types";
+import { getToolSummary } from "../tools/summary";
 
 // Verbs (from tools/summary.ts) that classify a tool call as a
 // read-only "exploration" action for the purposes of grouping. Note
@@ -52,9 +52,15 @@ const EXPLORATION_VERBS = new Set([
   "Search the web for",
   "Fetch",
   "pwd",
-])
+]);
 
-const EDITING_TOOL_NAMES = new Set(["write_file", "Write", "edit_file", "Edit", "StrReplace"])
+const EDITING_TOOL_NAMES = new Set([
+  "write_file",
+  "Write",
+  "edit_file",
+  "Edit",
+  "StrReplace",
+]);
 
 /**
  * Tools that never fold into a group (same-name or otherwise) — each
@@ -64,7 +70,7 @@ const EDITING_TOOL_NAMES = new Set(["write_file", "Write", "edit_file", "Edit", 
  * still gets the one-line summary treatment (`MIN_WORK_GROUP_SIZE` is
  * 1) rather than a bare inline card.
  */
-const HIDDEN_TOOLS = new Set(["notify_user_error"])
+const HIDDEN_TOOLS = new Set(["notify_user_error"]);
 
 const UNGROUPABLE_TOOLS = new Set([
   "ask_user",
@@ -74,7 +80,6 @@ const UNGROUPABLE_TOOLS = new Set([
   // Legacy: keep so historical install turns still render ungrouped
   "tool_install",
   "mcp_install",
-  "generate_image",
   "task",
   "Task",
   "agent_spawn",
@@ -82,18 +87,18 @@ const UNGROUPABLE_TOOLS = new Set([
   "browser",
   "create_plan",
   "update_plan",
-])
+]);
 
-const MIN_WORK_GROUP_SIZE = 1
-const MIN_GROUP_SIZE = 2
+const MIN_WORK_GROUP_SIZE = 1;
+const MIN_GROUP_SIZE = 2;
 
 function isExplorationTool(tool: ToolCallData): boolean {
-  const { verb } = getToolSummary(tool.toolName, tool.args)
-  return EXPLORATION_VERBS.has(verb)
+  const { verb } = getToolSummary(tool.toolName, tool.args);
+  return EXPLORATION_VERBS.has(verb);
 }
 
 function isEditingTool(tool: ToolCallData): boolean {
-  return EDITING_TOOL_NAMES.has(tool.toolName)
+  return EDITING_TOOL_NAMES.has(tool.toolName);
 }
 
 /**
@@ -104,13 +109,15 @@ function isEditingTool(tool: ToolCallData): boolean {
  * inspection.
  */
 function isShellRunCommand(tool: ToolCallData): boolean {
-  if (tool.toolName !== "exec" && tool.toolName !== "Bash") return false
-  const { verb } = getToolSummary(tool.toolName, tool.args)
-  return !EXPLORATION_VERBS.has(verb)
+  if (tool.toolName !== "exec" && tool.toolName !== "Bash") return false;
+  const { verb } = getToolSummary(tool.toolName, tool.args);
+  return !EXPLORATION_VERBS.has(verb);
 }
 
 function isWorkTool(tool: ToolCallData): boolean {
-  return isExplorationTool(tool) || isEditingTool(tool) || isShellRunCommand(tool)
+  return (
+    isExplorationTool(tool) || isEditingTool(tool) || isShellRunCommand(tool)
+  );
 }
 
 /**
@@ -125,24 +132,24 @@ function scanTransparentRun(
   start: number,
   accept: (tool: ToolCallData) => boolean,
 ): { endIdx: number; toolCount: number } {
-  let j = start + 1
-  let toolCount = 1
-  let lastToolIdx = start
+  let j = start + 1;
+  let toolCount = 1;
+  let lastToolIdx = start;
   while (j < parts.length) {
-    const next = parts[j]
+    const next = parts[j];
     if (next.type === "reasoning") {
-      j++
-      continue
+      j++;
+      continue;
     }
     if (next.type === "tool" && accept(next.tool)) {
-      toolCount++
-      lastToolIdx = j
-      j++
-      continue
+      toolCount++;
+      lastToolIdx = j;
+      j++;
+      continue;
     }
-    break
+    break;
   }
-  return { endIdx: lastToolIdx + 1, toolCount }
+  return { endIdx: lastToolIdx + 1, toolCount };
 }
 
 /**
@@ -153,81 +160,114 @@ function scanTransparentRun(
  * calls), and passes everything else through unchanged.
  */
 export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
-  const result: GroupedMessagePart[] = []
+  const result: GroupedMessagePart[] = [];
   const visibleParts = parts.filter(
     (part) => part.type !== "tool" || !HIDDEN_TOOLS.has(part.tool.toolName),
-  )
-  let i = 0
+  );
+  let i = 0;
 
   while (i < visibleParts.length) {
-    const part = visibleParts[i]
+    const part = visibleParts[i];
 
     if (part.type !== "tool") {
-      result.push(part)
-      i++
-      continue
+      result.push(part);
+      i++;
+      continue;
     }
 
     if (isWorkTool(part.tool)) {
-      const { endIdx, toolCount } = scanTransparentRun(visibleParts, i, isWorkTool)
+      const { endIdx, toolCount } = scanTransparentRun(
+        visibleParts,
+        i,
+        isWorkTool,
+      );
       if (toolCount >= MIN_WORK_GROUP_SIZE) {
-        const slice = visibleParts.slice(i, endIdx)
+        const slice = visibleParts.slice(i, endIdx);
         result.push({
           type: "work-group",
           items: slice,
           id: `work-${visibleParts[i].id}`,
-        })
-        i = endIdx
-        continue
+        });
+        i = endIdx;
+        continue;
       }
       // Unreachable while MIN_WORK_GROUP_SIZE is 1, but keep the
       // fallthrough so raising the threshold later degrades safely.
     }
 
-    if (UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
-      result.push(part)
-      i++
-      continue
+    if (part.tool.toolName === "generate_image") {
+      const { endIdx, toolCount } = scanTransparentRun(
+        visibleParts,
+        i,
+        (tool) => tool.toolName === "generate_image",
+      );
+      if (toolCount >= MIN_GROUP_SIZE) {
+        const tools = visibleParts
+          .slice(i, endIdx)
+          .filter(
+            (item): item is Extract<MessagePart, { type: "tool" }> =>
+              item.type === "tool",
+          )
+          .map((item) => ({ tool: item.tool, id: item.id }));
+        if (tools.length >= MIN_GROUP_SIZE) {
+          result.push({
+            type: "image-gallery",
+            tools,
+            id: `image-gallery-${visibleParts[i].id}`,
+          });
+          i = endIdx;
+          continue;
+        }
+      }
     }
 
-    const toolName = part.tool.toolName
-    let j = i + 1
+    if (UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
+      result.push(part);
+      i++;
+      continue;
+    }
+
+    const toolName = part.tool.toolName;
+    let j = i + 1;
     while (
       j < visibleParts.length &&
       visibleParts[j].type === "tool" &&
-      !UNGROUPABLE_TOOLS.has((visibleParts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName) &&
-      (visibleParts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName === toolName
+      !UNGROUPABLE_TOOLS.has(
+        (visibleParts[j] as { type: "tool"; tool: ToolCallData }).tool.toolName,
+      ) &&
+      (visibleParts[j] as { type: "tool"; tool: ToolCallData }).tool
+        .toolName === toolName
     ) {
-      j++
+      j++;
     }
 
-    const runLength = j - i
+    const runLength = j - i;
     if (runLength >= MIN_GROUP_SIZE) {
       const groupTools = visibleParts.slice(i, j).map((p) => ({
         tool: (p as { type: "tool"; tool: ToolCallData; id: string }).tool,
         id: p.id,
-      }))
+      }));
       result.push({
         type: "tool-group",
         toolName,
         tools: groupTools,
         id: `group-${visibleParts[i].id}`,
-      })
+      });
     } else {
-      result.push(part)
+      result.push(part);
     }
 
-    i = j
+    i = j;
   }
 
-  return result
+  return result;
 }
 
 export interface TurnPartition {
   /** Everything before the last `text` part — folds under "Worked for X". */
-  workLog: GroupedMessagePart[]
+  workLog: GroupedMessagePart[];
   /** The last `text` part and everything after it — always visible. */
-  finalSegment: GroupedMessagePart[]
+  finalSegment: GroupedMessagePart[];
 }
 
 /**
@@ -242,22 +282,22 @@ export interface TurnPartition {
  * and the work log is empty — there's nothing to fold away.
  */
 export function partitionTurn(grouped: GroupedMessagePart[]): TurnPartition {
-  let lastTextIdx = -1
+  let lastTextIdx = -1;
   for (let i = 0; i < grouped.length; i++) {
-    if (grouped[i].type === "text") lastTextIdx = i
+    if (grouped[i].type === "text") lastTextIdx = i;
   }
   if (lastTextIdx === -1) {
-    return { workLog: [], finalSegment: grouped }
+    return { workLog: [], finalSegment: grouped };
   }
   return {
     workLog: grouped.slice(0, lastTextIdx),
     finalSegment: grouped.slice(lastTextIdx),
-  }
+  };
 }
 
 export interface TurnTiming {
-  startedAt?: number
-  completedAt?: number
+  startedAt?: number;
+  completedAt?: number;
 }
 
 /**
@@ -271,33 +311,39 @@ export interface TurnTiming {
  * change shipped).
  */
 export function extractTurnTiming(message: UIMessage): TurnTiming {
-  const parts = (message as { parts?: unknown }).parts
-  let startedAt: number | undefined
-  let completedAt: number | undefined
+  const parts = (message as { parts?: unknown }).parts;
+  let startedAt: number | undefined;
+  let completedAt: number | undefined;
 
   if (Array.isArray(parts)) {
     for (const part of parts as Array<Record<string, unknown>>) {
-      const type = part?.type
-      const data = part?.data as Record<string, unknown> | undefined
-      if ((type === "data-turn-start" || type === "data-turn-timing") && typeof data?.startedAt === "number") {
-        startedAt = data.startedAt as number
+      const type = part?.type;
+      const data = part?.data as Record<string, unknown> | undefined;
+      if (
+        (type === "data-turn-start" || type === "data-turn-timing") &&
+        typeof data?.startedAt === "number"
+      ) {
+        startedAt = data.startedAt as number;
       }
-      if ((type === "data-turn-complete" || type === "data-turn-timing") && typeof data?.completedAt === "number") {
-        completedAt = data.completedAt as number
+      if (
+        (type === "data-turn-complete" || type === "data-turn-timing") &&
+        typeof data?.completedAt === "number"
+      ) {
+        completedAt = data.completedAt as number;
       }
     }
   }
 
   if (completedAt === undefined) {
-    const createdAt = (message as { createdAt?: unknown }).createdAt
+    const createdAt = (message as { createdAt?: unknown }).createdAt;
     if (createdAt instanceof Date) {
-      completedAt = createdAt.getTime()
+      completedAt = createdAt.getTime();
     } else if (typeof createdAt === "number") {
-      completedAt = createdAt
+      completedAt = createdAt;
     }
   }
 
-  return { startedAt, completedAt }
+  return { startedAt, completedAt };
 }
 
 /**
@@ -305,18 +351,18 @@ export function extractTurnTiming(message: UIMessage): TurnTiming {
  * "Worked for X" header.
  */
 export function formatWorkedDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000))
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
   if (totalSeconds < 60) {
-    return `${totalSeconds}s`
+    return `${totalSeconds}s`;
   }
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
   if (minutes < 60) {
-    return `${minutes}m ${String(seconds).padStart(2, "0")}s`
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
   }
-  const hours = Math.floor(minutes / 60)
-  const remMinutes = minutes % 60
-  return `${hours}h ${remMinutes}m`
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h ${remMinutes}m`;
 }
 
 /**
@@ -327,19 +373,22 @@ export function formatWorkedDuration(ms: number): string {
  * `TurnFooter.tsx`) to keep the label ticking without re-deriving the
  * whole turn tree.
  */
-export function formatRelativeTime(timestampMs: number, nowMs: number = Date.now()): string {
-  const seconds = Math.max(0, Math.floor((nowMs - timestampMs) / 1000))
-  if (seconds < 60) return "just now"
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  const months = Math.floor(days / 30)
-  if (months < 12) return `${months}mo ago`
-  const years = Math.floor(months / 12)
-  return `${years}y ago`
+export function formatRelativeTime(
+  timestampMs: number,
+  nowMs: number = Date.now(),
+): string {
+  const seconds = Math.max(0, Math.floor((nowMs - timestampMs) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  const years = Math.floor(months / 12);
+  return `${years}y ago`;
 }
 
 /**
@@ -350,11 +399,14 @@ export function formatRelativeTime(timestampMs: number, nowMs: number = Date.now
  * finished tool waiting for the next step, or a live reasoning burst
  * (which renders as this line instead of a live ThinkingWidget).
  */
-export function shouldShowPlanningStatus(parts: MessagePart[], isStreaming: boolean): boolean {
-  if (!isStreaming) return false
-  if (parts.length === 0) return true
-  const last = parts[parts.length - 1]
-  if (last.type === "tool" && last.tool.state === "streaming") return false
-  if (last.type === "text") return false
-  return true
+export function shouldShowPlanningStatus(
+  parts: MessagePart[],
+  isStreaming: boolean,
+): boolean {
+  if (!isStreaming) return false;
+  if (parts.length === 0) return true;
+  const last = parts[parts.length - 1];
+  if (last.type === "tool" && last.tool.state === "streaming") return false;
+  if (last.type === "text") return false;
+  return true;
 }

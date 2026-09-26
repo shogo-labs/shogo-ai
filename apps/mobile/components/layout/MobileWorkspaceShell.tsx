@@ -118,7 +118,8 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const http = useDomainHttp();
   const actions = useDomainActions();
   const workspace = useActiveWorkspace();
-  const isTeamWorkspace = useWorkspaceExperience().kind === "team";
+  const workspaceExperience = useWorkspaceExperience();
+  const isTeamWorkspace = workspaceExperience.kind === "team";
   const projects = useProjectCollection();
   const prefersReducedMotion = useReducedMotion();
   const [sessionsOpen, setSessionsOpen] = useState(false);
@@ -580,7 +581,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                 }
                 className={cn(
                   "h-11 w-11 items-center justify-center overflow-hidden rounded-full active:bg-muted",
-                  liquidGlass ? "bg-transparent" : "bg-card/95"
+                  liquidGlass ? "bg-transparent" : "bg-card/70"
                 )}
               >
                 <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
@@ -594,7 +595,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
             <View
               className={cn(
                 "absolute right-3 z-20 h-11 w-11 items-center justify-center overflow-hidden rounded-full",
-                liquidGlass ? "bg-transparent" : "bg-card/95"
+                liquidGlass ? "bg-transparent" : "bg-card/70"
               )}
               style={{ top: insets.top + 10 }}
             >
@@ -653,7 +654,17 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                   onPress={() => setWorkspaceSheetOpen(true)}
                 />
                 <View className="mx-4 flex-row items-center gap-2">
-                  <ShogoLogoMark className="h-6 w-6" />
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Shogo Home"
+                    onPress={() => {
+                      closeSessions();
+                      router.replace("/(app)" as any);
+                    }}
+                    className="h-11 w-11 items-center justify-center rounded-xl active:bg-muted"
+                  >
+                    <ShogoLogoMark className="h-6 w-6" />
+                  </Pressable>
                   <View
                     className="h-12 min-w-0 flex-1 flex-row items-center gap-2 rounded-2xl border border-border/70 bg-background px-3"
                   >
@@ -864,7 +875,8 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                     </WorkspaceSidebarSection>
                   </View>
 
-                  <View className="mt-3">
+                  {workspaceExperience.showProjectsTree ? (
+                    <View className="mt-3">
                     <WorkspaceSidebarSection
                       label="Projects"
                       expanded={projectsExpanded}
@@ -1199,7 +1211,8 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                         </Text>
                       ) : null}
                     </WorkspaceSidebarSection>
-                  </View>
+                    </View>
+                  ) : null}
                 </ScrollView>
               </View>
             </Animated.View>
