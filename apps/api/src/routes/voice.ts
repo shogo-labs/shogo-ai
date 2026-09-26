@@ -340,13 +340,18 @@ async function authorizeChatSession(
     where: { id: chatSessionId },
     select: {
       id: true,
+      workspaceId: true,
       project: { select: { id: true, workspaceId: true } },
     },
   })
   if (!session) {
     return { ok: false, status: 404, message: 'Chat session not found' }
   }
-  const workspaceId = session.project?.workspaceId
+  // Workspace chat sessions may be pinned to a project via `contextId` while
+  // retaining their explicit workspace relation. The project relation is not
+  // reliable for every local SQLite database created before that relation was
+  // added, so use the session workspace as the authorization fallback.
+  const workspaceId = session.project?.workspaceId ?? session.workspaceId
   if (!workspaceId) {
     return {
       ok: false,
@@ -606,9 +611,19 @@ export function voiceRoutes() {
 
     const session = await prisma.chatSession.findUnique({
       where: { id: chatSessionId },
-      select: { project: { select: { id: true, workspaceId: true } } },
+      select: {
+        contextId: true,
+        contextType: true,
+        project: { select: { id: true, workspaceId: true } },
+      },
     })
-    const project = session?.project
+    let project = session?.project
+    if (!project && session?.contextType === 'workspace' && session.contextId) {
+      project = await prisma.project.findUnique({
+        where: { id: session.contextId },
+        select: { id: true, workspaceId: true },
+      })
+    }
     if (!project) {
       return c.json({ error: 'Chat session is not accessible to this user' }, 403)
     }

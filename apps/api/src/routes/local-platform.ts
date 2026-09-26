@@ -5,6 +5,7 @@ import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { fetchCloudVisibleModels } from '../lib/federated-upstream'
 import { resolvePlatformVisibleModels } from '../services/visible-models.service'
+import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 
 /**
  * Platform metadata used by the desktop/local shell.
@@ -30,6 +31,15 @@ export function localPlatformRoutes(): Hono {
         publishing: false,
         marketplace: true,
         ezMode: true,
+        ezModeVoiceProvider:
+          Boolean(
+            getNativeProviderApiKeySync('openai') ||
+              (!!process.env.SHOGO_API_KEY &&
+                process.env.AI_MODE !== 'api-keys' &&
+                process.env.AI_MODE !== 'local-llm'),
+          )
+            ? 'gpt-live'
+            : 'elevenlabs',
         phoneChannel: false,
         personalShell: true,
       },
