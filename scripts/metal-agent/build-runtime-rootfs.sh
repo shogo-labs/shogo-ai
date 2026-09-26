@@ -117,6 +117,13 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
+
+# A kernel-exec'd init starts with RLIMIT_NOFILE 1024/4096, and the runtime is
+# PID 1 here: at 4096 fds every spawn fails with EMFILE (Bun hands back a child
+# with no stdio), the runtime throws, init exits and the kernel panics.
+# Containers get ~1M from containerd; match that.
+ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true
+
 mkdir -p /dev/pts
 if ! grep -Eq ' /dev/pts .* - devpts ' /proc/self/mountinfo 2>/dev/null; then
   mount -t devpts devpts /dev/pts -o newinstance,ptmxmode=0666,mode=0620,gid=5 2>/dev/null || true

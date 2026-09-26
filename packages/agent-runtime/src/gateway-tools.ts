@@ -3711,7 +3711,7 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
     })
 
     let stderr = ''
-    child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
 
     child.on('error', (err: Error) => reject(new Error(`Failed to start relay: ${err.message}`)))
     child.on('exit', (code: number | null) => {
@@ -3719,7 +3719,7 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
     })
 
     let buffer = ''
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       buffer += chunk.toString()
       const lines = buffer.split('\n')
       buffer = lines.pop()!

@@ -27,7 +27,7 @@ function git(args: string[], cwd: string): Promise<{ code: number; stdout: strin
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
-    child.stdout.on('data', (c) => { stdout += String(c) })
+    child.stdout?.on('data', (c) => { stdout += String(c) })
     child.on('error', reject)
     child.on('close', (code) => resolve({ code: code ?? -1, stdout }))
   })
