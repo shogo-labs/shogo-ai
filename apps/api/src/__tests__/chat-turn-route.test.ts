@@ -114,7 +114,12 @@ const mockPrisma = {
     }),
   },
 }
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => ({
+  prisma: mockPrisma,
+  // projectAgent.service imports voice.ts, whose transitive service graph
+  // also links the runtime Prisma namespace. Chat tests never call it.
+  Prisma: {},
+}))
 
 // `auth` (Better Auth) — returns whatever the test installed via
 // `currentSession`. Default: no session (so unauthenticated by default).
@@ -181,6 +186,9 @@ const streamTextMock = mock((args: { system: string; messages: unknown[] }) => {
 })
 mock.module('ai', () => ({
   streamText: streamTextMock,
+  // The chat app mounts the GPT-Live voice routes, which import generateText.
+  // This test only exercises chat streaming, so keep that route dependency inert.
+  generateText: async () => ({ text: '' }),
   convertToModelMessages: async (msgs: unknown[]) => msgs,
   tool: (def: unknown) => def,
   jsonSchema: (schema: unknown) => schema,
