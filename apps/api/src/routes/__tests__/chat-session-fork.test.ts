@@ -86,7 +86,7 @@ const mockPrisma = {
       return shapeSession(fixture)
     }),
     create: mock(async (args: any) => {
-      const id = freshId('new-session')
+      const id = args.data.id ?? freshId('new-session')
       createdSessions.push({ id, data: args.data })
       return { id, ...args.data }
     }),
@@ -122,7 +122,35 @@ const mockPrisma = {
 
 mock.module('../../lib/prisma', () => ({ prisma: mockPrisma }))
 
+const s3Sends: any[] = []
+let failCopy = false
+class FakeCommand {
+  constructor(public input: any) {}
+}
+class CopyObjectCommand extends FakeCommand {}
+class S3Client {
+  async send(command: any) {
+    s3Sends.push(command)
+    if (failCopy && command instanceof CopyObjectCommand) throw new Error('S3 unavailable')
+    return {}
+  }
+}
+mock.module('@aws-sdk/client-s3', () => ({
+  S3Client,
+  CopyObjectCommand,
+  PutObjectCommand: FakeCommand,
+  GetObjectCommand: FakeCommand,
+  DeleteObjectCommand: FakeCommand,
+  ListObjectsV2Command: FakeCommand,
+}))
+mock.module('../../lib/s3', () => ({
+  getArtifactBucket: () => 'test-bucket',
+  getArtifactS3Client: () => new S3Client(),
+  getArtifactPresignedReadUrl: async (key: string) => `https://signed.example/${key}`,
+}))
+
 const { createChatSessionForkRoutes } = await import('../chat-session-fork')
+const { attachmentKeyFromUrl, buildChatAttachmentUrl } = await import('../../lib/chat-attachments')
 
 type AuthContext = {
   isAuthenticated?: boolean
@@ -200,6 +228,8 @@ beforeEach(() => {
   createdMessages = []
   createdSessionProjects = []
   nextId = 1
+  s3Sends.length = 0
+  failCopy = false
   mockPrisma.chatSession.findUnique.mockClear()
   mockPrisma.chatSession.create.mockClear()
   mockPrisma.chatMessage.findUnique.mockClear()
@@ -352,6 +382,46 @@ describe('POST /api/chat-sessions/:id/fork — happy path', () => {
     for (const p of createdSessionProjects) {
       expect(p.sessionId).toBe(createdSessions[0]!.id)
     }
+  })
+
+  test('attachments are copied under the fork so deleting the source cannot break it', async () => {
+    seedProjectSession({ id: 's1', members: ['u1'] })
+    seedMessage({ id: 'msg-a', sessionId: 's1', content: 'see image', createdAtMs: 1000 })
+    const sourceKey = 'artifacts/chat-attachments/s1/abc.png'
+    messagesById.get('msg-a')!.parts = JSON.stringify([
+      { type: 'file', mediaType: 'image/png', url: buildChatAttachmentUrl(sourceKey), attachmentKey: sourceKey },
+    ])
+    const app = createApp({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-sessions/s1/fork', {
+      method: 'POST',
+      body: JSON.stringify({ messageId: 'msg-a' }),
+    })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { sessionId: string }
+    const forkKey = `artifacts/chat-attachments/${body.sessionId}/abc.png`
+    const part = JSON.parse(createdMessages[0]!.parts)[0]
+    expect(part.attachmentKey).toBe(forkKey)
+    expect(attachmentKeyFromUrl(part.url)).toBe(forkKey)
+    expect(s3Sends.map((command) => command.input)).toEqual([
+      { Bucket: 'test-bucket', CopySource: `test-bucket/${sourceKey}`, Key: forkKey },
+    ])
+  })
+
+  test('502 and no new session when attachment copy fails', async () => {
+    failCopy = true
+    seedProjectSession({ id: 's1', members: ['u1'] })
+    seedMessage({ id: 'msg-a', sessionId: 's1', content: 'see image', createdAtMs: 1000 })
+    const sourceKey = 'artifacts/chat-attachments/s1/abc.png'
+    messagesById.get('msg-a')!.parts = JSON.stringify([
+      { type: 'file', url: buildChatAttachmentUrl(sourceKey), attachmentKey: sourceKey },
+    ])
+    const app = createApp({ isAuthenticated: true, userId: 'u1' })
+    const res = await app.request('/api/chat-sessions/s1/fork', {
+      method: 'POST',
+      body: JSON.stringify({ messageId: 'msg-a' }),
+    })
+    expect(res.status).toBe(502)
+    expect(createdSessions).toHaveLength(0)
   })
 
   test('tunnel-authenticated callers skip the membership check', async () => {

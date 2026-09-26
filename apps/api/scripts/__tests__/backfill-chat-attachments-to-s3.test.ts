@@ -74,4 +74,51 @@ describe('chat attachment backfill', () => {
     expect(stats.bytes).toBe(2)
     expect(update).not.toHaveBeenCalled()
   })
+
+  test('migrates every row across pages even as migrated rows leave the filter', async () => {
+    const table = Array.from({ length: 60 }, (_, index) => ({
+      id: `message-${String(index).padStart(3, '0')}`,
+      sessionId: 'session-1',
+      parts: JSON.stringify([{ type: 'file', url: 'data:image/png;base64,aGk=' }]),
+      imageData: null as string | null,
+    }))
+    const pagedFindMany = mock(async (args: any) => {
+      // Mirrors Prisma: `cursor` is `id >= cursor` applied with the filter,
+      // then `skip` drops leading results.
+      const after = args.where.id?.gt
+      const from = args.cursor?.id
+      return table
+        .filter((row) => row.parts.includes('data:'))
+        .filter((row) => !after || row.id > after)
+        .filter((row) => !from || row.id >= from)
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(args.skip ?? 0)
+        .slice(0, args.take)
+    })
+    const pagedUpdate = mock(async ({ where, data }: any) => {
+      const row = table.find((candidate) => candidate.id === where.id)!
+      row.parts = data.parts
+      return row
+    })
+    const migrate = mock(async () => ({
+      parts: JSON.stringify([{ type: 'file', url: '/api/chat-attachments/artifacts/chat-attachments/session-1/hash.png' }]),
+      imageData: null,
+      changed: true,
+      uploaded: 1,
+      bytes: 2,
+      failed: 0,
+    }))
+
+    const stats = await runChatAttachmentBackfill({
+      dryRun: false,
+      quiet: true,
+      deps: {
+        prisma: { chatMessage: { findMany: pagedFindMany, update: pagedUpdate } } as any,
+        externalizeMessageAttachments: migrate as any,
+        externalizeToolOutput: externalizeToolOutput as any,
+      },
+    })
+    expect(stats.migrated).toBe(60)
+    expect(table.every((row) => !row.parts.includes('data:'))).toBe(true)
+  })
 })

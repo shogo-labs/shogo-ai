@@ -12,6 +12,7 @@ class FakeCommand {
   constructor(public input: any) {}
 }
 class PutObjectCommand extends FakeCommand {}
+class CopyObjectCommand extends FakeCommand {}
 class GetObjectCommand extends FakeCommand {}
 class DeleteObjectCommand extends FakeCommand {}
 class ListObjectsV2Command extends FakeCommand {}
@@ -27,6 +28,7 @@ class S3Client {
 mock.module('@aws-sdk/client-s3', () => ({
   S3Client,
   PutObjectCommand,
+  CopyObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
@@ -41,6 +43,8 @@ mock.module('../s3', () => ({
 const {
   attachmentKeyFromUrl,
   buildChatAttachmentKey,
+  buildChatAttachmentUrl,
+  copyChatPartsToSession,
   externalizeMessageAttachments,
   inlineChatBodyAttachments,
   loadAttachmentAsDataUrl,
@@ -116,6 +120,40 @@ describe('chat attachments', () => {
     })
     expect(body.files[0].url).toBe('data:application/pdf;base64,cGRm')
     expect(body.messages[0].parts[0].url).toBe('data:application/pdf;base64,cGRm')
+  })
+
+  it('copies referenced attachments into the target session prefix', async () => {
+    const key = 'artifacts/chat-attachments/source/abc.png'
+    const parts = JSON.stringify([
+      { type: 'file', mediaType: 'image/png', url: buildChatAttachmentUrl(key), attachmentKey: key },
+      { type: 'tool-browser', output: { type: 'image', url: buildChatAttachmentUrl(key), dataInFile: true } },
+      { type: 'text', text: 'hello' },
+    ])
+    const copies = new Map<string, Promise<string>>()
+    const copied = JSON.parse((await copyChatPartsToSession(parts, 'fork', copies))!)
+    await copyChatPartsToSession(parts, 'fork', copies)
+
+    const targetKey = 'artifacts/chat-attachments/fork/abc.png'
+    expect(copied[0].attachmentKey).toBe(targetKey)
+    expect(attachmentKeyFromUrl(copied[0].url)).toBe(targetKey)
+    expect(verifyAttachmentToken(targetKey, new URL(copied[0].url, 'http://x').searchParams.get('t'))).toBe(true)
+    expect(attachmentKeyFromUrl(copied[1].output.url)).toBe(targetKey)
+    expect(copied[2]).toEqual({ type: 'text', text: 'hello' })
+
+    const copyCommands = sends.filter((command) => command instanceof CopyObjectCommand)
+    expect(copyCommands).toHaveLength(1)
+    expect(copyCommands[0].input).toEqual({
+      Bucket: 'test-bucket',
+      CopySource: `test-bucket/${key}`,
+      Key: targetKey,
+    })
+  })
+
+  it('leaves parts without attachment references untouched', async () => {
+    const parts = JSON.stringify([{ type: 'text', text: 'hi' }])
+    await expect(copyChatPartsToSession(parts, 'fork')).resolves.toBe(parts)
+    await expect(copyChatPartsToSession(null, 'fork')).resolves.toBeNull()
+    expect(sends).toHaveLength(0)
   })
 
   it('redirects only with a valid capability token', async () => {

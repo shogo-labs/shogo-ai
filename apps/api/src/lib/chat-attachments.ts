@@ -11,6 +11,7 @@
 
 import { createHmac, createHash } from 'node:crypto'
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
@@ -389,6 +390,70 @@ export async function exportChatParts(partsInput: unknown): Promise<string | nul
   const parts = parseParts(partsInput)
   if (!parts) return partsInput as string | null | undefined
   return JSON.stringify(await exportChatValue(parts))
+}
+
+function rehomeAttachmentKey(key: string, sessionId: string): string {
+  return `${CHAT_ATTACHMENT_PREFIX}${sessionId}/${key.slice(CHAT_ATTACHMENT_PREFIX.length).split('/').slice(1).join('/')}`
+}
+
+async function copyChatValueToSession(
+  value: any,
+  sessionId: string,
+  copies: Map<string, Promise<string>>,
+): Promise<any> {
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((item) => copyChatValueToSession(item, sessionId, copies)))
+  }
+  if (!value || typeof value !== 'object') return value
+
+  const key = typeof value.url === 'string' ? attachmentKeyFromUrl(value.url) : null
+  if (key) {
+    let copied = copies.get(key)
+    if (!copied) {
+      const targetKey = rehomeAttachmentKey(key, sessionId)
+      copied = getArtifactS3Client()
+        .send(new CopyObjectCommand({
+          Bucket: getArtifactBucket(),
+          CopySource: `${getArtifactBucket()}/${key}`,
+          Key: targetKey,
+        }))
+        .then(() => targetKey)
+      copies.set(key, copied)
+    }
+    const targetKey = await copied
+    return {
+      ...value,
+      url: buildChatAttachmentUrl(targetKey),
+      ...(value.attachmentKey ? { attachmentKey: targetKey } : {}),
+    }
+  }
+
+  const entries = await Promise.all(
+    Object.entries(value).map(async ([name, child]) => [
+      name,
+      await copyChatValueToSession(child, sessionId, copies),
+    ] as const),
+  )
+  return Object.fromEntries(entries)
+}
+
+/**
+ * Copy every attachment referenced by `parts` under `sessionId`'s prefix and
+ * point the references at the copies. Sessions must own their objects because
+ * deleting a session deletes its whole prefix. Pass the same `copies` map for
+ * all messages in one operation so shared objects are copied once.
+ */
+export async function copyChatPartsToSession(
+  partsInput: unknown,
+  sessionId: string,
+  copies: Map<string, Promise<string>> = new Map(),
+): Promise<string | null | undefined> {
+  if (typeof partsInput !== 'string' || !partsInput.includes(CHAT_ATTACHMENT_URL_PREFIX)) {
+    return partsInput as string | null | undefined
+  }
+  const parts = parseParts(partsInput)
+  if (!parts) return partsInput
+  return JSON.stringify(await copyChatValueToSession(parts, sessionId, copies))
 }
 
 export async function deleteChatAttachmentPrefix(sessionId: string): Promise<void> {
