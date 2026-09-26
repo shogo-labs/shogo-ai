@@ -35,9 +35,9 @@ const BARE_PATH_RE = new RegExp(
   "g",
 )
 const BARE_URL_RE =
-  /(?<![A-Za-z0-9_@./:-])((?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s<]*)?)/g
+  /(?<![<A-Za-z0-9_@./:-])((?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s<>"'`*]*)?)/g
 const PUBLIC_TLD_RE =
-  /^(?:com|org|net|io|ai|co|dev|app|edu|gov|me|ly|xyz|info|biz|tech|cloud|ca|uk|us|de|fr|in|jp|au)$/i
+  /^(?:com|org|net|io|ai|co|dev|edu|gov|me|ly|xyz|info|biz|tech|cloud|ca|uk|us|de|fr|in|jp|au)$/i
 
 export function fileHref(path: string): string {
   return `${FILE_HREF_PREFIX}${encodeURIComponent(path)}`
@@ -120,6 +120,39 @@ export function linkifyFilePaths(markdown: string): string {
   return text
 }
 
+function hasUnmatchedOpening(value: string, opening: string, closing: string): boolean {
+  let depth = 0
+  for (const char of value) {
+    if (char === opening) depth += 1
+    if (char === closing) depth = Math.max(0, depth - 1)
+  }
+  return depth > 0
+}
+
+function splitTrailingUrlPunctuation(match: string): {
+  candidate: string
+  trailing: string
+} {
+  let candidate = match
+  let trailing = ""
+
+  while (candidate) {
+    const char = candidate[candidate.length - 1]
+    if (!/[.,!?;:)\]}*_~"'>]/.test(char)) break
+    if (
+      (char === ")" && hasUnmatchedOpening(candidate.slice(0, -1), "(", ")")) ||
+      (char === "]" && hasUnmatchedOpening(candidate.slice(0, -1), "[", "]")) ||
+      (char === "}" && hasUnmatchedOpening(candidate.slice(0, -1), "{", "}"))
+    ) {
+      break
+    }
+    candidate = candidate.slice(0, -1)
+    trailing = char + trailing
+  }
+
+  return { candidate, trailing }
+}
+
 /**
  * Make the domains people naturally type in chat clickable too. Markdown
  * already handles explicit links, but bare `example.com` text otherwise
@@ -135,8 +168,7 @@ export function linkifyBareUrls(markdown: string): string {
   text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
 
   text = text.replace(BARE_URL_RE, (match) => {
-    const trailing = match.match(/[.,!?;:)\]}]+$/)?.[0] ?? ""
-    const candidate = trailing ? match.slice(0, -trailing.length) : match
+    const { candidate, trailing } = splitTrailingUrlPunctuation(match)
     const host = candidate.split("/")[0]?.split(".").pop() ?? ""
     const firstSegment = candidate.split("/")[0] ?? ""
 

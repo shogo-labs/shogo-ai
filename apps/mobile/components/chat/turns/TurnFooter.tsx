@@ -143,6 +143,9 @@ export const TurnFooter = memo(function TurnFooter({
   const usesMobileChatPresentation =
     isPhoneLayout || usesMobileWorkspaceChrome;
   const actionIconSize = usesMobileChatPresentation ? 18 : ACTION_ICON_SIZE;
+  const actionTargetClass = usesMobileChatPresentation
+    ? "min-h-11 min-w-11"
+    : undefined;
   const [forking, setForking] = useState(false);
 
   const canAct = !!messageId && !!ctx && ctx.canActOnMessage(messageId);
@@ -191,7 +194,8 @@ export const TurnFooter = memo(function TurnFooter({
           onPress={() => handleThumb("up")}
           disabled={!canAct}
           className={cn(
-            "min-h-11 min-w-11 items-center justify-center rounded-lg p-1 hover:bg-muted/40",
+            actionTargetClass,
+            "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
             !canAct && "opacity-40"
           )}
           accessibilityLabel={
@@ -212,7 +216,8 @@ export const TurnFooter = memo(function TurnFooter({
           onPress={() => handleThumb("down")}
           disabled={!canAct}
           className={cn(
-            "min-h-11 min-w-11 items-center justify-center rounded-lg p-1 hover:bg-muted/40",
+            actionTargetClass,
+            "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
             !canAct && "opacity-40"
           )}
           accessibilityLabel={
@@ -235,7 +240,8 @@ export const TurnFooter = memo(function TurnFooter({
           onPress={handleFork}
           disabled={!canAct || forking}
           className={cn(
-            "min-h-11 min-w-11 items-center justify-center rounded-lg p-1 hover:bg-muted/40",
+            actionTargetClass,
+            "items-center justify-center rounded-lg p-1 hover:bg-muted/40",
             (!canAct || forking) && "opacity-40"
           )}
           accessibilityLabel="Fork conversation from here"

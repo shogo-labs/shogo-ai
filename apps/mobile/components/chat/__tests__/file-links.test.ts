@@ -73,6 +73,24 @@ describe("linkifyBareUrls", () => {
     expect(linked).not.toContain("[support@example.com]")
     expect(linked).not.toContain("[`example.com`]")
   })
+
+  test("keeps markdown emphasis and quotes outside the generated link", () => {
+    expect(linkifyBareUrls('**example.com/docs** and "example.com/docs"')).toBe(
+      '**[example.com/docs](https://example.com/docs)** and "[example.com/docs](https://example.com/docs)"',
+    )
+  })
+
+  test("preserves balanced path delimiters and strips surrounding punctuation", () => {
+    expect(linkifyBareUrls("Read example.com/wiki/Foo_(bar). (see example.com)")).toBe(
+      "Read [example.com/wiki/Foo_(bar)](https://example.com/wiki/Foo_(bar)). (see [example.com](https://example.com))",
+    )
+  })
+
+  test("does not link app bundle names or angle-bracket autolinks", () => {
+    expect(linkifyBareUrls("Open Shogo.app or <example.com>.")).toBe(
+      "Open Shogo.app or <example.com>.",
+    )
+  })
 })
 
 describe("resolveChatFilePath", () => {

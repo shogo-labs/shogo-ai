@@ -32,6 +32,8 @@ import { downloadImage, isShogoDesktop } from "../chatImageActions";
 import { usePhoneLayout } from "../../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url";
+import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing";
+import { useChatImageWidth } from "./use-chat-image-width";
 
 export interface MessageContentProps {
   message: UIMessage;
@@ -137,9 +139,8 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false);
   const [showModal, setShowModal] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState(4 / 3);
-  const { width: viewportWidth } = useWindowDimensions();
-  const thumbnailWidth = Math.min(144, Math.max(96, viewportWidth * 0.38));
+  const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT);
+  const thumbnailWidth = useChatImageWidth(96, 144);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -204,7 +205,7 @@ function ImageThumbnail({
             onLoad={(event) => {
               const source = event.nativeEvent?.source;
               if (source?.width && source?.height) {
-                setAspectRatio(source.width / source.height);
+                setAspectRatio(clampAspectRatio(source.width, source.height));
               }
             }}
             style={{ width: "100%", height: "100%" }}

@@ -81,8 +81,10 @@ export const MarkdownText = memo(
       : "chat-md"
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
-    const fileLinked = onFilePress ? linkifyFilePaths(source) : source
-    const body = linkifyBareUrls(fileLinked)
+    const body = useMemo(() => {
+      const fileLinked = onFilePress ? linkifyFilePaths(source) : source
+      return linkifyBareUrls(fileLinked)
+    }, [onFilePress, source])
     const components = useMemo(
       () =>
         onFilePress

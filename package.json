@@ -93,6 +93,7 @@
     "test:e2e:local": "npx playwright test --config e2e/local/playwright.config.ts",
     "test:e2e:local:ui": "npx playwright test --config e2e/local/playwright.config.ts --ui",
     "test:e2e:local:activity-goals": "npx playwright test --config e2e/local/playwright.config.ts e2e/local/activity-goals.test.ts",
+    "test:e2e:local:mobile-ux": "npx playwright test --config e2e/local/playwright.config.ts --project=iphone-15-pro --project=pixel-7 e2e/local/mobile-personal-walkthrough.test.ts",
     "test:e2e:staging": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:staging:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "cleanup:e2e-users": "bun scripts/cleanup-e2e-test-users.ts",

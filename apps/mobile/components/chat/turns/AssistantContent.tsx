@@ -15,7 +15,6 @@ import {
   Pressable,
   Linking,
   Platform,
-  useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
@@ -33,6 +32,8 @@ import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
 import { WorkGroup } from "./WorkGroup"
+import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
+import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import type { MessagePart, GroupedMessagePart } from "./types"
@@ -247,9 +248,8 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const [aspectRatio, setAspectRatio] = useState(4 / 3)
-  const { width: viewportWidth } = useWindowDimensions()
-  const imageWidth = Math.min(320, Math.max(220, viewportWidth - 80))
+  const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT)
+  const imageWidth = useChatImageWidth()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
 
   const handlePress = useCallback(() => {
@@ -303,7 +303,7 @@ function ImageThumbnail({
           onLoad={(event) => {
             const source = event.nativeEvent?.source
             if (source?.width && source?.height) {
-              setAspectRatio(source.width / source.height)
+                setAspectRatio(clampAspectRatio(source.width, source.height))
             }
           }}
           style={{ width: imageWidth, aspectRatio }}

@@ -14,7 +14,6 @@ import {
   Image,
   Pressable,
   ActivityIndicator,
-  useWindowDimensions,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Globe, ImageIcon } from "lucide-react-native"
@@ -23,6 +22,7 @@ import { useChatContextSafe } from "../ChatContext"
 import { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { ImagePreviewModal } from "../ImagePreviewModal"
+import { useChatImageWidth } from "./use-chat-image-width"
 
 interface BrowserScreenshotDetails {
   ok?: boolean
@@ -88,8 +88,7 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
   const [hasError, setHasError] = useState(false)
   const [isLoaded, setIsLoaded] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
-  const { width: viewportWidth } = useWindowDimensions()
-  const imageWidth = Math.min(320, Math.max(220, viewportWidth - 80))
+  const imageWidth = useChatImageWidth()
 
   const details = useMemo(() => parseScreenshotResult(tool.result), [tool.result])
 
