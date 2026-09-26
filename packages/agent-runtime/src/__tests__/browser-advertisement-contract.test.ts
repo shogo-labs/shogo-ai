@@ -158,16 +158,25 @@ describe('browser advertisement contract — all surfaces agree in all four stat
       const indexAdvertisesBrowser = index.includes('- **browser**')
       const subagentListsBrowser = subagentTypes(index).includes('browser')
 
-      // The contract: every surface reflects the exact same predicate value.
+      // The contract: every surface reflects the same predicate value. The
+      // registration surface additionally accounts for delegation — on team
+      // workspaces `browser` is deliberately NOT on the main agent (the model
+      // reaches it via `agent_spawn({ type: "browser" })`), so it is registered
+      // directly only when it is available AND not delegated.
+      const browserOnMainAgent = state.advertised && !state.delegated
       expect(available).toBe(state.advertised)
       expect(delegated).toBe(state.delegated)
-      expect(hasBrowser).toBe(state.advertised)
+      expect(hasBrowser).toBe(browserOnMainAgent)
       expect(indexAdvertisesBrowser).toBe(state.advertised)
       expect(subagentListsBrowser).toBe(state.advertised && state.delegated)
 
       // Cross-surface agreement (this is the bug class: any two disagreeing).
-      expect(indexAdvertisesBrowser).toBe(hasBrowser)
-      expect(subagentListsBrowser).toBe(hasBrowser && delegated)
+      expect(indexAdvertisesBrowser).toBe(available)
+      expect(hasBrowser).toBe(available && !delegated)
+      expect(subagentListsBrowser).toBe(available && delegated)
+      // A browser the model can actually reach is either registered directly or
+      // reachable by delegation — never neither, and never both.
+      expect(hasBrowser || delegated).toBe(available)
 
       // Wording must match delegation: a personal agent must never be pointed
       // at agent_spawn for the browser, and a team agent must not be told to
@@ -202,9 +211,12 @@ describe('browser advertisement contract — inlined guide matches registration'
       const gw = new AgentGateway(ws, 'p1')
       const prompt: string = (gw as any).buildSWEPrompt()
       const guideInlined = prompt.includes(BROWSER_TOOL_GUIDE)
+      // The inline guide follows the same gate as the other advertisement
+      // surfaces: inlined iff the capability is available (directly or via
+      // delegation) — never for a browser the workspace cannot reach at all.
       expect(guideInlined).toBe(state.advertised)
-      // And the guide agrees with the registered tool list.
-      expect(guideInlined).toBe(registeredToolNames(config).has('browser'))
+      const registered = registeredToolNames(config)
+      expect(guideInlined).toBe(registered.has('browser') || browserIsDelegated(config))
     })
   }
 })
