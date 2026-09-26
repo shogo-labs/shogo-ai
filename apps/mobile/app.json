@@ -44,6 +44,12 @@
           "cameraPermission": "Allow Shogo to use the camera so you can attach photos to messages."
         }
       ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Shogo to save generated images to your photo library."
+        }
+      ],
       "expo-document-picker",
       "expo-secure-store",
       "expo-web-browser",

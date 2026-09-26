@@ -21,20 +21,31 @@
  * Panels have a `kind`:
  *  - "status" (default): collapsible, auto-shows/hides with its content,
  *    subject to the expand cap below.
- *  - "blocking": pins above the composer, is always considered expanded,
- *    and forces the status zone down to a single expanded panel while
- *    present. Used for prompts that park the agent turn (permission
- *    approval, pending question, an active connectivity wait) — these
- *    must stay visible and reachable, never collapsed by this store.
+ *  - "blocking": pins above the composer and forces the status zone down to
+ *    a single expanded panel while present. These are expanded by default;
+ *    a blocking panel can opt into a collapsible header when it remains
+ *    reachable but its body should be temporarily out of the way.
  */
 
-import { createContext, useContext, type ComponentType, type ReactNode } from "react"
-import { getDockPanelExpandedPreference, setDockPanelExpandedPreference } from "./chat-dock-preferences"
+import {
+  createContext,
+  useContext,
+  type ComponentType,
+  type ReactNode,
+} from "react"
+import {
+  getDockPanelExpandedPreference,
+  setDockPanelExpandedPreference,
+} from "./chat-dock-preferences"
 
 export type DockPanelKind = "status" | "blocking"
 export type DockPanelAccent = "default" | "running" | "warning"
 
-export type DockIconComponent = ComponentType<{ size?: number; className?: string; color?: string }>
+export type DockIconComponent = ComponentType<{
+  size?: number
+  className?: string
+  color?: string
+}>
 
 export interface DockPanelDescriptor {
   id: string
@@ -55,6 +66,8 @@ export interface DockPanelDescriptor {
   headerActions?: ReactNode
   /** Renders a dismiss (X) affordance in the header when set. */
   onDismiss?: () => void
+  /** Allows a blocking panel to hide its body while remaining reachable. */
+  collapsible?: boolean
   /** `expanded` lets costly panels (e.g. a live browser screencast) suspend work while collapsed. */
   render: (ctx: { expanded: boolean; bodyMaxHeight?: number }) => ReactNode
 }
@@ -142,7 +155,10 @@ export function createChatDockStore(): ChatDockStore {
    * which trips React's "Maximum update depth exceeded" (error #185) and
    * takes down the whole chat panel. See `ChangesDockPanel`.
    */
-  function panelsObservablyEqual(a: DockPanelDescriptor, b: DockPanelDescriptor): boolean {
+  function panelsObservablyEqual(
+    a: DockPanelDescriptor,
+    b: DockPanelDescriptor,
+  ): boolean {
     return (
       (a.kind ?? "status") === (b.kind ?? "status") &&
       a.order === b.order &&
@@ -152,14 +168,19 @@ export function createChatDockStore(): ChatDockStore {
       a.accent === b.accent &&
       (a.autoShow !== false) === (b.autoShow !== false) &&
       !!a.defaultExpanded === !!b.defaultExpanded &&
-      !!a.onDismiss === !!b.onDismiss
+      !!a.onDismiss === !!b.onDismiss &&
+      !!a.collapsible === !!b.collapsible
     )
   }
 
   /** Evicts least-recently-expanded status panels until under the cap, protecting `keepId`. */
   function enforceExpandCap(keepId?: string): void {
-    const cap = hasBlockingPanels() ? MAX_EXPANDED_WITH_BLOCKING : MAX_EXPANDED_STATUS_PANELS
-    const expandedStatusIds = expandOrder.filter((id) => expanded.has(id) && !isBlockingKind(id))
+    const cap = hasBlockingPanels()
+      ? MAX_EXPANDED_WITH_BLOCKING
+      : MAX_EXPANDED_STATUS_PANELS
+    const expandedStatusIds = expandOrder.filter(
+      (id) => expanded.has(id) && !isBlockingKind(id),
+    )
     let i = 0
     while (expandedStatusIds.length - i > cap) {
       const evictId = expandedStatusIds[i]
@@ -170,10 +191,14 @@ export function createChatDockStore(): ChatDockStore {
     }
   }
 
-  function setExpandedInternal(id: string, next: boolean, persist: boolean): void {
+  function setExpandedInternal(
+    id: string,
+    next: boolean,
+    persist: boolean,
+  ): void {
     const panel = panels.get(id)
     if (!panel) return
-    if ((panel.kind ?? "status") === "blocking") return // always considered expanded; not user-controlled
+    if ((panel.kind ?? "status") === "blocking" && !panel.collapsible) return
     if (expanded.has(id) === next) return
     if (next) {
       expanded.add(id)
@@ -194,7 +219,9 @@ export function createChatDockStore(): ChatDockStore {
     },
     getPanels(kind) {
       const list = [...panels.values()].filter((p) => visible.has(p.id))
-      const filtered = kind ? list.filter((p) => (p.kind ?? "status") === kind) : list
+      const filtered = kind
+        ? list.filter((p) => (p.kind ?? "status") === kind)
+        : list
       return filtered.sort((a, b) => a.order - b.order)
     },
     registerPanel(descriptor) {
@@ -206,15 +233,18 @@ export function createChatDockStore(): ChatDockStore {
         if (autoShow) {
           visible.add(descriptor.id)
           const persisted = getDockPanelExpandedPreference(descriptor.id)
-          const shouldExpand = isBlocking
-            ? true
-            : persisted !== null
-              ? persisted
-              : !!descriptor.defaultExpanded
-          if (shouldExpand && !isBlocking) {
+          const shouldExpand =
+            isBlocking && !descriptor.collapsible
+              ? true
+              : persisted !== null
+                ? persisted
+                : !!descriptor.defaultExpanded
+          if (shouldExpand) {
             expanded.add(descriptor.id)
-            touchExpandOrder(descriptor.id)
-            enforceExpandCap(descriptor.id)
+            if (!isBlocking) {
+              touchExpandOrder(descriptor.id)
+              enforceExpandCap(descriptor.id)
+            }
           }
         }
         notify()
@@ -236,7 +266,8 @@ export function createChatDockStore(): ChatDockStore {
       return visible.has(id)
     },
     isExpanded(id) {
-      if (isBlockingKind(id)) return true
+      const panel = panels.get(id)
+      if (isBlockingKind(id) && !panel?.collapsible) return true
       return expanded.has(id)
     },
     setExpanded(id, next) {
@@ -246,7 +277,10 @@ export function createChatDockStore(): ChatDockStore {
     toggle(id) {
       if (!panels.has(id)) return
       if (!visible.has(id)) visible.add(id)
-      setExpandedInternal(id, !expanded.has(id), true)
+      const panel = panels.get(id)
+      const currentlyExpanded =
+        isBlockingKind(id) && !panel?.collapsible ? true : expanded.has(id)
+      setExpandedInternal(id, !currentlyExpanded, true)
       notify()
     },
     openPanel(id) {

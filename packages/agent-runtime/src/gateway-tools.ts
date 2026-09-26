@@ -55,23 +55,32 @@ import {
   type CustomAgentDef,
 } from './subagent'
 import { ACCESSIBILITY_SNAPSHOT_SCRIPT } from './browser-snapshot-script'
+import { getSharedBrowserPool, registerBrowserSessionCleanup, BrowserPoolTimeoutError, type BrowserLease } from './browser-pool'
 import {
-  getSharedBrowserPool,
-  registerBrowserSessionCleanup,
-  BrowserPoolTimeoutError,
-  type BrowserLease,
-} from './browser-pool'
-import {
-  findActualString, preserveQuoteStyle, stripTrailingWhitespace,
-  applyEditToFile, readFileWithMetadata, writeWithMetadata, getStructuredPatch,
-  resolveLineEndingPolicy, normalizeLineEndings,
+  findActualString,
+  preserveQuoteStyle,
+  stripTrailingWhitespace,
+  applyEditToFile,
+  readFileWithMetadata,
+  writeWithMetadata,
+  getStructuredPatch,
+  resolveLineEndingPolicy,
+  normalizeLineEndings,
   type LineEndingType,
 } from './edit-file-utils'
 import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
 import { HistoryIndex, type HistoryKind } from './history-index'
 import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
-import { initComposioSession, isComposioEnabled, isComposioInitialized, searchComposioToolkits, findComposioToolkit, registerToolkitProxyTools, checkComposioAuth } from './composio'
+import {
+  initComposioSession,
+  isComposioEnabled,
+  isComposioInitialized,
+  searchComposioToolkits,
+  findComposioToolkit,
+  registerToolkitProxyTools,
+  checkComposioAuth,
+} from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
@@ -110,10 +119,7 @@ function loadWorkspaceEnvForAttribution(workspaceDir: string): Record<string, st
       if (equals < 0) continue
       const key = trimmed.slice(0, equals).trim()
       let value = trimmed.slice(equals + 1).trim()
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1)
       }
       if (key) vars[key] = value
@@ -124,7 +130,9 @@ function loadWorkspaceEnvForAttribution(workspaceDir: string): Record<string, st
   }
 }
 import {
-  deriveApiUrl, derivePublicApiUrl, getInternalHeaders,
+  deriveApiUrl,
+  derivePublicApiUrl,
+  getInternalHeaders,
   listCheckpoints as apiListCheckpoints,
   getCheckpointDiff as apiGetCheckpointDiff,
   rollbackCheckpoint as apiRollbackCheckpoint,
@@ -219,7 +227,11 @@ export interface ToolContext {
    *  the `data-plan-summary` stream event. Persistent per-user preference. */
   dualPlan?: boolean
   /** Persistent shell cwd state — survives across exec calls within a session */
-  shellState?: { getCwd: () => string; setCwd: (cwd: string) => void; initialCwd?: string }
+  shellState?: {
+    getCwd: () => string
+    setCwd: (cwd: string) => void
+    initialCwd?: string
+  }
   /** Tracks backgrounded shell commands that soft-timed-out so exec_wait can retrieve them */
   commandRegistry?: import('./command-registry').CommandRegistry
   /** On-demand guide registry populated by buildGuideRegistry() */
@@ -234,12 +246,7 @@ export interface ToolContext {
    * When provided, the terminal_exec tool routes commands through
    * the user's terminal instead of the sandboxed exec.
    */
-  terminalExec?: (params: {
-    command: string
-    cwd?: string
-    timeoutMs?: number
-    mode?: 'foreground' | 'background'
-  }) => Promise<{
+  terminalExec?: (params: { command: string; cwd?: string; timeoutMs?: number; mode?: 'foreground' | 'background' }) => Promise<{
     exitCode: number | null
     output: string
     cwd: string | null
@@ -247,11 +254,7 @@ export interface ToolContext {
     timedOut: boolean
   }>
   /** Read recent output from the user's desktop IDE terminal. */
-  terminalRead?: (params: {
-    terminalId?: string
-    cwd?: string
-    maxChars?: number
-  }) => Promise<{
+  terminalRead?: (params: { terminalId?: string; cwd?: string; maxChars?: number }) => Promise<{
     source: string
     terminalId: string | null
     cwd: string | null
@@ -298,7 +301,7 @@ export interface ToolContext {
 // without a PermissionEngine (e.g. heartbeat tools in cloud mode).
 // The PermissionEngine's HARD_BLOCKED_COMMAND_PATTERNS is the authoritative
 // version and supersedes this when available.
-const BLOCKED_COMMANDS: string[] = [ 'sudo', 'rm -rf *' ]
+const BLOCKED_COMMANDS: string[] = ['sudo', 'rm -rf *']
 
 function isBlockedCommand(command: string): boolean {
   const lower = command.toLowerCase()
@@ -381,17 +384,18 @@ function markEditedIfLintable(ctx: ToolContext, filePath: string): void {
   ctx.fileStateCache.markEditedThisTurn(filePath)
 }
 
-function applyPermissionGate(
-  tool: AgentTool,
-  category: import('./types').PermissionCategory,
-  engine?: PermissionEngine,
-): AgentTool {
+function applyPermissionGate(tool: AgentTool, category: import('./types').PermissionCategory, engine?: PermissionEngine): AgentTool {
   return engine ? withPermissionGate(tool, category, engine) : tool
 }
 
 export function textResult(data: any): AgentToolResult<any> {
   return {
-    content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }],
+    content: [
+      {
+        type: 'text',
+        text: typeof data === 'string' ? data : JSON.stringify(data, null, 2),
+      },
+    ],
     details: data,
   }
 }
@@ -415,11 +419,7 @@ function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
   return resolveRuntimeIdentity().mode === 'workspace' && Boolean(resolveWorkspaceId(ctx))
 }
 
-async function workspaceMetaFetch(
-  ctx: ToolContext,
-  path: string,
-  init: RequestInit = {},
-): Promise<any> {
+async function workspaceMetaFetch(ctx: ToolContext, path: string, init: RequestInit = {}): Promise<any> {
   const apiUrl = deriveApiUrl()
   const workspaceId = resolveWorkspaceId(ctx)
   if (!apiUrl || !workspaceId) throw new Error('Workspace runtime API is not configured')
@@ -450,7 +450,10 @@ function createListProjectsTool(ctx: ToolContext): AgentTool {
       'Use this before mounting when the request names a project ambiguously or asks about project availability.',
     parameters: Type.Object({}),
     execute: async () => {
-      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      if (!workspaceMetaToolEnabled(ctx))
+        return textResult({
+          error: 'This tool is only available in a workspace runtime.',
+        })
       const workspaceId = resolveWorkspaceId(ctx)
       const qs = new URLSearchParams({
         ...(ctx.userId ? { userId: ctx.userId } : {}),
@@ -468,28 +471,32 @@ function createMountProjectTool(ctx: ToolContext): AgentTool {
     description:
       'Mount one available Shogo project into the workspace runtime. Mount read-only when you only need to inspect it; use readwrite when the user asks for edits or commands.',
     parameters: Type.Object({
-      projectId: Type.String({ description: 'The exact project id returned by list_projects.' }),
-      mode: Type.Optional(Type.Union([
-        Type.Literal('readwrite'),
-        Type.Literal('readonly'),
-      ])),
+      projectId: Type.String({
+        description: 'The exact project id returned by list_projects.',
+      }),
+      mode: Type.Optional(Type.Union([Type.Literal('readwrite'), Type.Literal('readonly')])),
     }),
     execute: async (_toolCallId, params: any) => {
-      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      if (!workspaceMetaToolEnabled(ctx))
+        return textResult({
+          error: 'This tool is only available in a workspace runtime.',
+        })
       const workspaceId = resolveWorkspaceId(ctx)
-      return textResult(await workspaceMetaFetch(
-        ctx,
-        `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            projectId: params.projectId,
-            attachMode: params.mode === 'readonly' ? 'readonly' : 'readwrite',
-            userId: ctx.userId,
-            sessionId: ctx.sessionId,
-          }),
-        },
-      ))
+      return textResult(
+        await workspaceMetaFetch(
+          ctx,
+          `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              projectId: params.projectId,
+              attachMode: params.mode === 'readonly' ? 'readonly' : 'readwrite',
+              userId: ctx.userId,
+              sessionId: ctx.sessionId,
+            }),
+          },
+        ),
+      )
     },
   }
 }
@@ -504,16 +511,24 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
       projectId: Type.String({ description: 'The exact mounted project id.' }),
     }),
     execute: async (_toolCallId, params: any) => {
-      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      if (!workspaceMetaToolEnabled(ctx))
+        return textResult({
+          error: 'This tool is only available in a workspace runtime.',
+        })
       const workspaceId = resolveWorkspaceId(ctx)
-      return textResult(await workspaceMetaFetch(
-        ctx,
-        `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members/${encodeURIComponent(params.projectId)}`,
-        {
-          method: 'DELETE',
-          body: JSON.stringify({ userId: ctx.userId, sessionId: ctx.sessionId }),
-        },
-      ))
+      return textResult(
+        await workspaceMetaFetch(
+          ctx,
+          `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members/${encodeURIComponent(params.projectId)}`,
+          {
+            method: 'DELETE',
+            body: JSON.stringify({
+              userId: ctx.userId,
+              sessionId: ctx.sessionId,
+            }),
+          },
+        ),
+      )
     },
   }
 }
@@ -537,25 +552,30 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
     name: 'preview_project',
     label: 'Preview Project',
     description:
-      'Build and serve a mounted project\'s app so it can be opened in a browser, and return the one URL that is ' +
+      "Build and serve a mounted project's app so it can be opened in a browser, and return the one URL that is " +
       'actually reachable. Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
-      'a localhost/port link yourself (e.g. from this runtime\'s own base URL or an env var); only the URL this ' +
+      "a localhost/port link yourself (e.g. from this runtime's own base URL or an env var); only the URL this " +
       'tool returns is guaranteed to work. If this tool errors, there is NO working localhost fallback — report ' +
       'the error to the user and offer to retry or publish; do not suggest any other link, including this ' +
-      'runtime\'s own base URL.',
+      "runtime's own base URL.",
     parameters: Type.Object({
-      projectId: Type.String({ description: 'The mounted project id to preview (must already be mounted via mount_project).' }),
+      projectId: Type.String({
+        description: 'The mounted project id to preview (must already be mounted via mount_project).',
+      }),
     }),
     execute: async (_toolCallId, params: any) => {
-      if (!workspaceMetaToolEnabled(ctx)) return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      if (!workspaceMetaToolEnabled(ctx))
+        return textResult({
+          error: 'This tool is only available in a workspace runtime.',
+        })
       const projectId = String(params?.projectId || '')
       if (!projectId) return textResult({ error: 'projectId is required' })
       const port = process.env.PORT || '8080'
       try {
-        const response = await fetch(
-          `http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`,
-          { method: 'POST', signal: AbortSignal.timeout(60_000) },
-        )
+        const response = await fetch(`http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(60_000),
+        })
         const result = await response.json().catch(() => ({}))
         if (!response.ok || result?.error) {
           return textResult({
@@ -565,7 +585,9 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
           })
         }
         let externalUrls: Record<string, string> = {}
-        try { externalUrls = JSON.parse(process.env.WORKSPACE_PREVIEW_URLS || '{}') } catch {}
+        try {
+          externalUrls = JSON.parse(process.env.WORKSPACE_PREVIEW_URLS || '{}')
+        } catch {}
         const url = externalUrls[projectId] || `http://localhost:${port}/p/${projectId}/`
         return textResult({ ...result, url })
       } catch (error: any) {
@@ -630,12 +652,12 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
   try {
     const rawCwd = readFileSync(meta.cwdFileHost, 'utf-8').trim()
     if (rawCwd) {
-      newCwd = meta.isSandboxed
-        ? containerToHost(rawCwd, ctx.workspaceDir)
-        : rawCwd
+      newCwd = meta.isSandboxed ? containerToHost(rawCwd, ctx.workspaceDir) : rawCwd
     }
     unlinkSync(meta.cwdFileHost)
-  } catch { /* trap may not have fired or already cleaned up */ }
+  } catch {
+    /* trap may not have fired or already cleaned up */
+  }
   ctx.shellState?.setCwd(newCwd)
   return newCwd
 }
@@ -643,12 +665,17 @@ function finalizeCwdAfterExec(ctx: ToolContext, meta: ExecRunMetadata): string {
 interface BuildExecResultOpts {
   ctx: ToolContext
   entry: CommandEntry
-  finalResult: { exitCode: number; stdout: string; stderr: string; killed: boolean }
+  finalResult: {
+    exitCode: number
+    stdout: string
+    stderr: string
+    killed: boolean
+  }
 }
 
 function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOpts): AgentToolResult<any> {
   const meta = execRunMetadata.get(entry.handle)
-  const newCwd = meta ? finalizeCwdAfterExec(ctx, meta) : (ctx.shellState?.getCwd() || ctx.workspaceDir)
+  const newCwd = meta ? finalizeCwdAfterExec(ctx, meta) : ctx.shellState?.getCwd() || ctx.workspaceDir
   const durationMs = Date.now() - entry.handle.startedAt
   // Mirror the legacy sandboxExec contract: trim outer whitespace so callers
   // get `"hello"` not `"hello\n"`.
@@ -669,11 +696,12 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
 
 function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): AgentToolResult<any> {
   const elapsedMs = Date.now() - entry.handle.startedAt
-  const killTarget = entry.handle.sandboxed && entry.handle.containerName
-    ? `docker kill ${entry.handle.containerName}`
-    : (process.platform === 'win32'
+  const killTarget =
+    entry.handle.sandboxed && entry.handle.containerName
+      ? `docker kill ${entry.handle.containerName}`
+      : process.platform === 'win32'
         ? `taskkill /F /PID ${entry.handle.pid}`
-        : `kill ${entry.handle.pid}`)
+        : `kill ${entry.handle.pid}`
   return textResult({
     status: 'running',
     run_id: entry.runId,
@@ -683,7 +711,8 @@ function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): Age
     elapsedMs,
     stdout: truncateExecOutput(entry.handle.stdout().trim()),
     stderr: truncateExecOutput(entry.handle.stderr().trim()),
-    hint: `Command still running after ${Math.round(softTimeoutMs / 1000)}s. ` +
+    hint:
+      `Command still running after ${Math.round(softTimeoutMs / 1000)}s. ` +
       `Call exec_wait('${entry.runId}') to wait more, or run \`exec("${killTarget}")\` to terminate and move on.`,
   })
 }
@@ -695,17 +724,23 @@ function createExecTool(ctx: ToolContext): AgentTool {
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
-      timeout: Type.Optional(Type.Number({
-        description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). ` +
-          'If exceeded, the command keeps running in the background and you receive a run_id to wait on or kill.',
-      })),
+      timeout: Type.Optional(
+        Type.Number({
+          description:
+            `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). ` +
+            'If exceeded, the command keeps running in the background and you receive a run_id to wait on or kill.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as { command: string; timeout?: number }
-      const attributedCommand = injectCommitTrailer(
-        command,
-        { ...process.env, ...loadWorkspaceEnvForAttribution(ctx.workspaceDir) },
-      )
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as {
+        command: string
+        timeout?: number
+      }
+      const attributedCommand = injectCommitTrailer(command, {
+        ...process.env,
+        ...loadWorkspaceEnvForAttribution(ctx.workspaceDir),
+      })
 
       // Workspace Trust gate. Restricted-mode projects (newly opened
       // external folders the user hasn't trusted) refuse all shell
@@ -731,7 +766,9 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // gateway are refused — specific dev-server/port kills still work.
       const gatewayGuard = commandTargetsGateway(attributedCommand)
       if (gatewayGuard.blocked) {
-        return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
+        return textResult({
+          error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime'),
+        })
       }
 
       // Desktop auto-redirect: when the user asks the agent to run a
@@ -791,9 +828,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // dir, producing confusing errors like `cd: can't cd to game`.
       let cwdReset = false
       if (!existsSync(currentCwd)) {
-        currentCwd = ctx.shellState?.initialCwd && existsSync(ctx.shellState.initialCwd)
-          ? ctx.shellState.initialCwd
-          : ctx.workspaceDir
+        currentCwd = ctx.shellState?.initialCwd && existsSync(ctx.shellState.initialCwd) ? ctx.shellState.initialCwd : ctx.workspaceDir
         cwdReset = true
         ctx.shellState?.setCwd(currentCwd)
       }
@@ -809,9 +844,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       })
 
       const cwdFileCmd = isSandboxed ? `/workspace/${cwdMarker}` : cwdFileHost
-      const cdTarget = isSandboxed
-        ? hostToContainer(currentCwd, ctx.workspaceDir)
-        : currentCwd
+      const cdTarget = isSandboxed ? hostToContainer(currentCwd, ctx.workspaceDir) : currentCwd
 
       const wrappedCommand = [
         `trap '/bin/pwd > "${cwdFileCmd}" 2>/dev/null' EXIT`,
@@ -833,7 +866,12 @@ function createExecTool(ctx: ToolContext): AgentTool {
         extraEnv: githubEnv,
       })
 
-      const meta: ExecRunMetadata = { cwdFileHost, isSandboxed, previousCwd: currentCwd, cwdReset }
+      const meta: ExecRunMetadata = {
+        cwdFileHost,
+        isSandboxed,
+        previousCwd: currentCwd,
+        cwdReset,
+      }
       execRunMetadata.set(handle, meta)
 
       // Always register so a follow-up exec_wait can find this run, even if it
@@ -891,11 +929,19 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       'If the App is not installed, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
     parameters: Type.Object({
       title: Type.String({ description: 'Pull request title' }),
-      head: Type.Optional(Type.String({ description: 'Source branch; defaults to the current branch' })),
+      head: Type.Optional(
+        Type.String({
+          description: 'Source branch; defaults to the current branch',
+        }),
+      ),
       base: Type.Optional(Type.String({ description: 'Target branch; defaults to main' })),
       body: Type.Optional(Type.String({ description: 'Pull request description' })),
       draft: Type.Optional(Type.Boolean({ description: 'Create as a draft pull request' })),
-      runId: Type.Optional(Type.String({ description: 'Issue-pipeline run id to embed in the body' })),
+      runId: Type.Optional(
+        Type.String({
+          description: 'Issue-pipeline run id to embed in the body',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const input = params as {
@@ -921,16 +967,16 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         }
       }
       if (!title || !head) {
-        return textResult({ error: 'A title and a non-detached source branch are required.' })
+        return textResult({
+          error: 'A title and a non-detached source branch are required.',
+        })
       }
       if (input.runId && !/^[a-zA-Z0-9_-]+$/.test(input.runId)) {
         return textResult({ error: 'runId contains invalid characters.' })
       }
 
       const body = withShogoPrFooter(input.body ?? '')
-      const markedBody = input.runId && !body.includes('<!-- shogo:runId=')
-        ? `${body}\n\n${githubRunIdMarker(input.runId)}`
-        : body
+      const markedBody = input.runId && !body.includes('<!-- shogo:runId=') ? `${body}\n\n${githubRunIdMarker(input.runId)}` : body
       const options = {
         title,
         head,
@@ -990,7 +1036,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
             body: JSON.stringify(githubPayload),
           },
         )
-        const result = await response.json().catch(() => null) as {
+        const result = (await response.json().catch(() => null)) as {
           number?: number
           html_url?: string
           user?: { login?: string }
@@ -1025,20 +1071,30 @@ function stripAnsiForPattern(value: string): string {
 function createExecWaitTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec_wait',
-    description:
-      `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive { status: "running", run_id, pid, ... } and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` returns { status: "pattern_matched", matched: <pattern>, ... } as soon as the regex matches recent combined output; this is distinct from a timeout.`,
+    description: `Wait for a backgrounded shell command (one that returned \`status: "running"\` from a previous exec call). Soft-bounded: returns whatever has happened by \`timeout_ms\` (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). If the command is still running after the wait, you receive { status: "running", run_id, pid, ... } and can call again. If the command finished (or was killed via exec("kill <pid>")), you receive the final stdout/stderr/exitCode. Optional \`pattern\` returns { status: "pattern_matched", matched: <pattern>, ... } as soon as the regex matches recent combined output; this is distinct from a timeout.`,
     label: 'Wait for Command',
     parameters: Type.Object({
-      run_id: Type.String({ description: 'The run_id returned by a previous exec or exec_wait call' }),
-      timeout_ms: Type.Optional(Type.Number({
-        description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). Set to 0 for an immediate non-blocking status check.`,
-      })),
-      pattern: Type.Optional(Type.String({
-        description: 'Optional regex (JavaScript syntax). Resolves as soon as the regex matches ANSI-stripped recent combined stdout/stderr.',
-      })),
+      run_id: Type.String({
+        description: 'The run_id returned by a previous exec or exec_wait call',
+      }),
+      timeout_ms: Type.Optional(
+        Type.Number({
+          description: `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). Set to 0 for an immediate non-blocking status check.`,
+        }),
+      ),
+      pattern: Type.Optional(
+        Type.String({
+          description:
+            'Optional regex (JavaScript syntax). Resolves as soon as the regex matches ANSI-stripped recent combined stdout/stderr.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { run_id, timeout_ms = DEFAULT_EXEC_SOFT_TIMEOUT_MS, pattern } = params as {
+      const {
+        run_id,
+        timeout_ms = DEFAULT_EXEC_SOFT_TIMEOUT_MS,
+        pattern,
+      } = params as {
         run_id: string
         timeout_ms?: number
         pattern?: string
@@ -1046,12 +1102,16 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
 
       const registry = ctx.commandRegistry
       if (!registry) {
-        return textResult({ error: 'CommandRegistry not available — exec_wait requires a sessionId.' })
+        return textResult({
+          error: 'CommandRegistry not available — exec_wait requires a sessionId.',
+        })
       }
 
       const entry = registry.get(run_id)
       if (!entry) {
-        return textResult({ error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).` })
+        return textResult({
+          error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).`,
+        })
       }
 
       // Stale entries were restored from a persisted snapshot after a runtime
@@ -1061,14 +1121,19 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
           status: 'stale',
           run_id,
           command: entry.command,
-          error: 'This process was started before the runtime restarted and can no longer be polled. ' +
+          error:
+            'This process was started before the runtime restarted and can no longer be polled. ' +
             'It may still be running detached; use exec("kill <pid>") if you need to stop it, or exec_list to review.',
         })
       }
 
       // If already done, return final result immediately.
       if (entry.finalResult) {
-        return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
+        return buildCompletedExecResult({
+          ctx,
+          entry,
+          finalResult: entry.finalResult,
+        })
       }
 
       let regex: RegExp | undefined
@@ -1076,7 +1141,9 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         try {
           regex = new RegExp(pattern, 'm')
         } catch (err: any) {
-          return textResult({ error: `Invalid pattern regex: ${err?.message || String(err)}` })
+          return textResult({
+            error: `Invalid pattern regex: ${err?.message || String(err)}`,
+          })
         }
       }
 
@@ -1105,12 +1172,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
               const stderr = stripAnsiForPattern(entry.handle.stderr())
               const recent = stripAnsiForPattern(entry.handle.recentOutput())
               const combined = `${stdout}\n${stderr}\n${recent}`
-              if (
-                regex!.test(stdout) ||
-                regex!.test(stderr) ||
-                regex!.test(recent) ||
-                regex!.test(combined)
-              ) {
+              if (regex!.test(stdout) || regex!.test(stderr) || regex!.test(recent) || regex!.test(combined)) {
                 resolve(PATTERN_HIT)
                 return
               }
@@ -1151,7 +1213,11 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         // resolving and us building the result, so we always prefer the
         // final result when available.
         if (entry.finalResult) {
-          return buildCompletedExecResult({ ctx, entry, finalResult: entry.finalResult })
+          return buildCompletedExecResult({
+            ctx,
+            entry,
+            finalResult: entry.finalResult,
+          })
         }
         return buildSoftTimeoutResult(entry, softTimeoutMs)
       }
@@ -1176,7 +1242,9 @@ function createExecListTool(ctx: ToolContext): AgentTool {
     execute: async () => {
       const registry = ctx.commandRegistry
       if (!registry) {
-        return textResult({ error: 'CommandRegistry not available — exec_list requires a sessionId.' })
+        return textResult({
+          error: 'CommandRegistry not available — exec_list requires a sessionId.',
+        })
       }
       return textResult({ processes: registry.listRunning() })
     },
@@ -1207,22 +1275,40 @@ const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string
   '.rar': { label: 'RAR archive', mediaType: 'application/vnd.rar' },
   '.pdf': { label: 'PDF document', mediaType: 'application/pdf' },
   '.doc': { label: 'Word document', mediaType: 'application/msword' },
-  '.docx': { label: 'Word document', mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+  '.docx': {
+    label: 'Word document',
+    mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  },
   '.xls': { label: 'Excel spreadsheet', mediaType: 'application/vnd.ms-excel' },
-  '.xlsx': { label: 'Excel spreadsheet', mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
-  '.ppt': { label: 'PowerPoint presentation', mediaType: 'application/vnd.ms-powerpoint' },
-  '.pptx': { label: 'PowerPoint presentation', mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+  '.xlsx': {
+    label: 'Excel spreadsheet',
+    mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  },
+  '.ppt': {
+    label: 'PowerPoint presentation',
+    mediaType: 'application/vnd.ms-powerpoint',
+  },
+  '.pptx': {
+    label: 'PowerPoint presentation',
+    mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  },
   '.sqlite': { label: 'SQLite database', mediaType: 'application/vnd.sqlite3' },
   '.db': { label: 'database file', mediaType: 'application/octet-stream' },
   '.mp3': { label: 'MP3 audio', mediaType: 'audio/mpeg' },
   '.wav': { label: 'WAV audio', mediaType: 'audio/wav' },
   '.mp4': { label: 'MP4 video', mediaType: 'video/mp4' },
   '.mov': { label: 'QuickTime video', mediaType: 'video/quicktime' },
-  '.exe': { label: 'Windows executable', mediaType: 'application/vnd.microsoft.portable-executable' },
+  '.exe': {
+    label: 'Windows executable',
+    mediaType: 'application/vnd.microsoft.portable-executable',
+  },
   '.bin': { label: 'binary file', mediaType: 'application/octet-stream' },
   '.so': { label: 'shared object', mediaType: 'application/octet-stream' },
   '.dylib': { label: 'dynamic library', mediaType: 'application/octet-stream' },
-  '.dll': { label: 'dynamic link library', mediaType: 'application/octet-stream' },
+  '.dll': {
+    label: 'dynamic link library',
+    mediaType: 'application/octet-stream',
+  },
   '.class': { label: 'Java class', mediaType: 'application/java-vm' },
   '.jar': { label: 'Java archive', mediaType: 'application/java-archive' },
   '.wasm': { label: 'WebAssembly module', mediaType: 'application/wasm' },
@@ -1233,10 +1319,7 @@ const BINARY_EXTENSION_LABELS: Record<string, { label: string; mediaType: string
  * in the first chunk, or known archive/binary magic bytes / extension).
  * Returns null for plain text — including UTF-8 with BOM and CRLF.
  */
-function detectBinaryContent(
-  buf: Buffer,
-  absolutePath: string,
-): { label: string; mediaType: string } | null {
+function detectBinaryContent(buf: Buffer, absolutePath: string): { label: string; mediaType: string } | null {
   const ext = extname(absolutePath).toLowerCase()
   const known = BINARY_EXTENSION_LABELS[ext]
   if (known) return known
@@ -1255,7 +1338,10 @@ function detectBinaryContent(
       return { label: 'PDF document', mediaType: 'application/pdf' }
     }
     if (buf[0] === 0x37 && buf[1] === 0x7a && buf[2] === 0xbc && buf[3] === 0xaf) {
-      return { label: '7-Zip archive', mediaType: 'application/x-7z-compressed' }
+      return {
+        label: '7-Zip archive',
+        mediaType: 'application/x-7z-compressed',
+      }
     }
     if (buf[0] === 0x52 && buf[1] === 0x61 && buf[2] === 0x72 && buf[3] === 0x21) {
       return { label: 'RAR archive', mediaType: 'application/vnd.rar' }
@@ -1275,7 +1361,8 @@ function detectBinaryContent(
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
-    description: 'Read a file from the agent workspace. Prefer this over `exec` with `cat`/`head`/`tail`. Supports partial reads via offset and limit to handle large files without consuming the full context window. `offset` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); `limit` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or use the `search` tool to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.',
+    description:
+      'Read a file from the agent workspace. Prefer this over `exec` with `cat`/`head`/`tail`. Supports partial reads via offset and limit to handle large files without consuming the full context window. `offset` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); `limit` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or use the `search` tool to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.',
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -1283,21 +1370,40 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       // ("380") or an object ({ start, end } / { offset, limit }) instead of
       // the canonical number|number[]. Accept those shapes here so the input
       // validator doesn't reject the call; execute() normalizes them below.
-      offset: Type.Optional(Type.Union([
-        Type.Number({ description: 'Line number to start reading from (1-based). Example: offset: 380' }),
-        Type.Array(Type.Number(), { description: 'Tuple [start, end] line range. Example: offset: [380, 420]' }),
-        Type.String({ description: 'Stringified start line (coerced to a number), e.g. "380"' }),
-        Type.Object({
-          start: Type.Optional(Type.Number()),
-          end: Type.Optional(Type.Number()),
-          offset: Type.Optional(Type.Number()),
-          limit: Type.Optional(Type.Number()),
-        }, { description: 'Object range form, e.g. { start, end } or { offset, limit }' }),
-      ])),
-      limit: Type.Optional(Type.Union([
-        Type.Number({ description: 'Number of lines to read. Example: limit: 40' }),
-        Type.String({ description: 'Stringified line count (coerced to a number), e.g. "40"' }),
-      ])),
+      offset: Type.Optional(
+        Type.Union([
+          Type.Number({
+            description: 'Line number to start reading from (1-based). Example: offset: 380',
+          }),
+          Type.Array(Type.Number(), {
+            description: 'Tuple [start, end] line range. Example: offset: [380, 420]',
+          }),
+          Type.String({
+            description: 'Stringified start line (coerced to a number), e.g. "380"',
+          }),
+          Type.Object(
+            {
+              start: Type.Optional(Type.Number()),
+              end: Type.Optional(Type.Number()),
+              offset: Type.Optional(Type.Number()),
+              limit: Type.Optional(Type.Number()),
+            },
+            {
+              description: 'Object range form, e.g. { start, end } or { offset, limit }',
+            },
+          ),
+        ]),
+      ),
+      limit: Type.Optional(
+        Type.Union([
+          Type.Number({
+            description: 'Number of lines to read. Example: limit: 40',
+          }),
+          Type.String({
+            description: 'Stringified line count (coerced to a number), e.g. "40"',
+          }),
+        ]),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const raw = params as {
@@ -1342,20 +1448,27 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
-        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
+        return textResult({
+          error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}`,
+        })
       }
       try {
         const stat = statSync(resolved)
         if (stat.isDirectory()) {
           const entries = readdirSync(resolved, { withFileTypes: true })
-            .filter(e => !e.name.startsWith('.') && e.name !== 'node_modules')
-            .map(e => {
+            .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+            .map((e) => {
               const absPath = join(resolved, e.name)
               const s = statSync(absPath)
               const relPath = absPath.slice(resolve(ctx.workspaceDir).length + 1)
               return e.isDirectory()
                 ? { name: e.name, path: relPath, type: 'directory' as const }
-                : { name: e.name, path: relPath, type: 'file' as const, size: s.size }
+                : {
+                    name: e.name,
+                    path: relPath,
+                    type: 'file' as const,
+                    size: s.size,
+                  }
             })
           return textResult({
             note: `"${filePath}" is a directory, not a file. Listing its contents instead.`,
@@ -1364,7 +1477,9 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
             count: entries.length,
           })
         }
-      } catch { /* proceed to read */ }
+      } catch {
+        /* proceed to read */
+      }
 
       const imageExt = extname(resolved).toLowerCase()
       const imageMime = IMAGE_READ_MIME[imageExt]
@@ -1373,7 +1488,8 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           const imgStat = statSync(resolved)
           if (imgStat.size > MAX_IMAGE_READ_BYTES) {
             return textResult({
-              error: `Image too large to read: ${filePath} (${imgStat.size} bytes, max ${MAX_IMAGE_READ_BYTES}). ` +
+              error:
+                `Image too large to read: ${filePath} (${imgStat.size} bytes, max ${MAX_IMAGE_READ_BYTES}). ` +
                 'Downscale the image before reading.',
             })
           }
@@ -1398,23 +1514,25 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           }
           const initialContent = [
             { type: 'image' as const, data: base64, mimeType: imageMime },
-            { type: 'text' as const, text: JSON.stringify({
-              path: filePath,
-              bytes: buf.length,
-              mimeType: imageMime,
-              ...(offset !== undefined || limit !== undefined
-                ? { note: 'offset/limit are ignored for image files.' }
-                : {}),
-            }) },
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                path: filePath,
+                bytes: buf.length,
+                mimeType: imageMime,
+                ...(offset !== undefined || limit !== undefined ? { note: 'offset/limit are ignored for image files.' } : {}),
+              }),
+            },
           ]
-          const safeContent = enforceImageSizeLimit(initialContent, { label: 'read_file', pathHint: filePath })
+          const safeContent = enforceImageSizeLimit(initialContent, {
+            label: 'read_file',
+            pathHint: filePath,
+          })
           const details = {
             path: filePath,
             bytes: buf.length,
             mimeType: imageMime,
-            ...(offset !== undefined || limit !== undefined
-              ? { note: 'offset/limit are ignored for image files.' }
-              : {}),
+            ...(offset !== undefined || limit !== undefined ? { note: 'offset/limit are ignored for image files.' } : {}),
           }
           return { content: safeContent, details }
         } catch (err: unknown) {
@@ -1451,10 +1569,16 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
         const endLine = limit !== undefined ? startLine + limit : lines.length
         const sliced = lines.slice(startLine, endLine)
         const numberedLines = sliced.map((line, i) => `${startLine + i + 1}|${line}`)
-        ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, {
-          offset: startLine + 1,
-          limit: Math.min(endLine, lines.length) - startLine,
-        }, undefined)
+        ctx.fileStateCache?.recordRead(
+          filePath,
+          mtime,
+          totalLineCount,
+          {
+            offset: startLine + 1,
+            limit: Math.min(endLine, lines.length) - startLine,
+          },
+          undefined,
+        )
         return textResult({
           content: numberedLines.join('\n'),
           totalLines: lines.length,
@@ -1464,7 +1588,10 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       }
 
       ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, undefined, fullContent)
-      const result: Record<string, any> = { content: fullContent, bytes: fullContent.length }
+      const result: Record<string, any> = {
+        content: fullContent,
+        bytes: fullContent.length,
+      }
       if (totalLineCount > 500) {
         result.totalLines = totalLineCount
         result.note = `Large file (${totalLineCount} lines). Use offset/limit to read specific sections (e.g. offset: 380, limit: 40), or the \`search\` tool to find the code you need. Reading the whole file wastes context.`
@@ -1485,12 +1612,15 @@ function appendImpactHint(ctx: ToolContext, filePath: string, result: Record<str
 
     const impact = graph.getImpactRadius([filePath], 1, 20)
     if (impact.impactedFiles.length > 0) {
-      result.impact_note = `This file is referenced by ${impact.impactedFiles.length} other file(s): ${
-        impact.impactedFiles.slice(0, 5).join(', ')
-      }${impact.impactedFiles.length > 5 ? ` and ${impact.impactedFiles.length - 5} more` : ''}. ` +
+      result.impact_note =
+        `This file is referenced by ${impact.impactedFiles.length} other file(s): ${impact.impactedFiles
+          .slice(0, 5)
+          .join(', ')}${impact.impactedFiles.length > 5 ? ` and ${impact.impactedFiles.length - 5} more` : ''}. ` +
         'Use impact_radius for full analysis.'
     }
-  } catch { /* best-effort — do not fail the write */ }
+  } catch {
+    /* best-effort — do not fail the write */
+  }
 }
 
 /**
@@ -1500,12 +1630,7 @@ function appendImpactHint(ctx: ToolContext, filePath: string, result: Record<str
  * file, and is hard-capped on time — if diagnostics aren't ready it omits the
  * field silently. This is feedback, NOT a gate (the agent is free to ignore it).
  */
-async function attachEditDiagnostics(
-  ctx: ToolContext,
-  filePath: string,
-  resolved: string,
-  base: Record<string, unknown>,
-): Promise<void> {
+async function attachEditDiagnostics(ctx: ToolContext, filePath: string, resolved: string, base: Record<string, unknown>): Promise<void> {
   try {
     if (!LINTABLE_EXTENSION_RE.test(filePath)) return
     if (filePath.endsWith('.d.ts') || filePath.endsWith('.pyi')) return
@@ -1518,25 +1643,28 @@ async function attachEditDiagnostics(
     // so this never adds more than ~1.2s of latency to an edit.
     const diagsMap = await Promise.race([
       (async () => {
-        await new Promise(r => setTimeout(r, 300))
+        await new Promise((r) => setTimeout(r, 300))
         return lsp.getDiagnosticsAsync(uri)
       })(),
-      new Promise<null>(r => setTimeout(() => r(null), 1200)),
+      new Promise<null>((r) => setTimeout(() => r(null), 1200)),
     ])
     if (!diagsMap) return
 
     let diags = diagsMap.get(uri)
     if (!diags) {
       for (const [u, d] of diagsMap) {
-        if (u === uri || u.endsWith(filePath)) { diags = d; break }
+        if (u === uri || u.endsWith(filePath)) {
+          diags = d
+          break
+        }
       }
     }
     diags = diags ?? []
 
     const errors = diags
-      .filter(d => (d.severity ?? 1) === 1)
-      .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
-      .map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
+      .filter((d) => (d.severity ?? 1) === 1)
+      .filter((d) => d.code !== TS_RETURN_OUTSIDE_FN)
+      .map((d) => `Line ${d.range.start.line + 1}: ${d.message}`)
 
     if (errors.length === 0) {
       base.lint = { ok: true }
@@ -1564,27 +1692,38 @@ function attachCanvasRuntimeErrors(base: Record<string, unknown>): void {
   try {
     const entries = getCanvasRuntimeErrors()
     if (entries.length === 0) return
-    base.runtimeErrors = entries.slice(-5).map(e => `[${e.phase}] ${e.error}`)
+    base.runtimeErrors = entries.slice(-5).map((e) => `[${e.phase}] ${e.error}`)
     base.runtimeErrorHint =
       'The live preview reported the runtime error(s) above. Fix the underlying cause (the data shape / contract, not just the throwing line) and re-verify. If the same class of error appears in multiple places, fix them all in one pass.'
     clearCanvasRuntimeErrors()
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
 }
 
 function createWriteFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'write_file',
-    description: 'Create a NEW file in the agent workspace. Creates parent directories as needed. ' +
+    description:
+      'Create a NEW file in the agent workspace. Creates parent directories as needed. ' +
       'WARNING: Do NOT use write_file to modify existing files — use edit_file instead. ' +
       'write_file overwrites the entire file which risks losing code. Only use for creating brand-new files.',
     label: 'Write File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
       content: Type.String({ description: 'Content to write' }),
-      append: Type.Optional(Type.Boolean({ description: 'Append instead of overwrite (default: false)' })),
+      append: Type.Optional(
+        Type.Boolean({
+          description: 'Append instead of overwrite (default: false)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { path: filePath, content, append } = params as {
+      const {
+        path: filePath,
+        content,
+        append,
+      } = params as {
         path: string
         content: string
         append?: boolean
@@ -1613,9 +1752,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ? readFileWithMetadata(resolved).targetLineEndings
         : (resolveLineEndingPolicy(resolved) ?? 'LF')
 
-      const payload = append
-        ? (fileExists ? readFileSync(resolved, 'utf-8') : '') + content
-        : content
+      const payload = append ? (fileExists ? readFileSync(resolved, 'utf-8') : '') + content : content
       writeWithMetadata(resolved, payload, 'utf-8', target)
       // Record post-write read-state (instead of invalidating) so a follow-up
       // edit_file on this path doesn't trip the read-before-edit guard. Weak
@@ -1632,21 +1769,21 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       ctx.canvasFileWatcher?.onFileChanged(filePath, resolved)
 
       if (ctx.lspManager && LINTABLE_EXTENSION_RE.test(filePath)) {
-        const finalContent = append
-          ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
-          : content
+        const finalContent = append ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content) : content
         ctx.lspManager.notifyFileChanged(resolved, finalContent)
       }
 
-      const base: Record<string, unknown> = { ok: true, path: filePath, bytes: content.length }
+      const base: Record<string, unknown> = {
+        ok: true,
+        path: filePath,
+        bytes: content.length,
+      }
       appendImpactHint(ctx, filePath, base)
       // Canvas-API contract hint: surfaced eagerly on every write so the
       // agent doesn't have to wait for an eval / runtime check to learn
       // that a fresh `fetch('/api/X')` references a non-existent route.
       // Use the final file content (post-append for append=true).
-      const finalContentForLint = append
-        ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content)
-        : content
+      const finalContentForLint = append ? (existsSync(resolved) ? readFileSync(resolved, 'utf-8') : content) : content
       appendCanvasApiContractHint(ctx, filePath, finalContentForLint, base)
       await attachEditDiagnostics(ctx, filePath, resolved, base)
       attachCanvasRuntimeErrors(base)
@@ -1689,7 +1826,7 @@ function findOrphanedFetchesInContent(content: string, activeRoutes: string[]): 
   // and uses its own iterator state, so it's safe to call against the
   // shared `CANVAS_API_FETCH_PATTERN` constant even across concurrent
   // tool calls.
-  const routeSet = new Set(activeRoutes.map(r => r.toLowerCase()))
+  const routeSet = new Set(activeRoutes.map((r) => r.toLowerCase()))
   const orphaned = new Set<string>()
   for (const m of content.matchAll(CANVAS_API_FETCH_PATTERN)) {
     if (!routeSet.has(m[1].toLowerCase())) {
@@ -1709,8 +1846,9 @@ function shouldLintCanvasApiContract(filePath: string): boolean {
   if (!/\.(tsx?|jsx?)$/.test(filePath)) return false
   const normalized = filePath.replace(/\\/g, '/')
   if (normalized.startsWith('src/generated/') || normalized.includes('/src/generated/')) return false
-  return normalized.startsWith('src/') || normalized.startsWith('canvas/') ||
-    normalized.includes('/src/') || normalized.includes('/canvas/')
+  return (
+    normalized.startsWith('src/') || normalized.startsWith('canvas/') || normalized.includes('/src/') || normalized.includes('/canvas/')
+  )
 }
 
 /**
@@ -1728,12 +1866,7 @@ function shouldLintCanvasApiContract(filePath: string): boolean {
  * (`maybeSchemaSync`) — that catches drift across the project, while
  * this catches the specific fetch the agent just wrote.
  */
-function appendCanvasApiContractHint(
-  ctx: ToolContext,
-  filePath: string,
-  content: string,
-  base: Record<string, unknown>,
-): void {
+function appendCanvasApiContractHint(ctx: ToolContext, filePath: string, content: string, base: Record<string, unknown>): void {
   if (!ctx.skillServerManager) return
   if (!shouldLintCanvasApiContract(filePath)) return
   // Cheap pre-check using includes() so we don't pay for the regex / route
@@ -1744,14 +1877,16 @@ function appendCanvasApiContractHint(
   let activeRoutes: string[] = []
   try {
     activeRoutes = ctx.skillServerManager.getActiveRoutes()
-  } catch { return }
+  } catch {
+    return
+  }
 
   const orphaned = findOrphanedFetchesInContent(content, activeRoutes)
   if (orphaned.length === 0) return
 
   base.canvasApiContract = {
     orphanedFetches: orphaned,
-    activeRoutes: activeRoutes.map(r => `/api/${r}`),
+    activeRoutes: activeRoutes.map((r) => `/api/${r}`),
     warning:
       `This file fetches ${orphaned.length} route(s) that don't exist on the server: ${orphaned.join(', ')}. ` +
       `Either add a matching Prisma model in prisma/schema.prisma (which gives you /api/{model-plural} CRUD ` +
@@ -1760,11 +1895,8 @@ function appendCanvasApiContractHint(
   }
 }
 
-function findOrphanedFetches(
-  workspaceDir: string,
-  activeRoutes: string[],
-): { route: string; file: string }[] {
-  const routeSet = new Set(activeRoutes.map(r => r.toLowerCase()))
+function findOrphanedFetches(workspaceDir: string, activeRoutes: string[]): { route: string; file: string }[] {
+  const routeSet = new Set(activeRoutes.map((r) => r.toLowerCase()))
   // Each call site needs its own RegExp instance because the global flag
   // makes the regex stateful (`lastIndex`) — sharing the constant across
   // concurrent scans would skip matches.
@@ -1782,9 +1914,7 @@ function findOrphanedFetches(
             const content = readFileSync(full, 'utf-8')
             for (const m of content.matchAll(fetchPattern)) {
               if (!routeSet.has(m[1].toLowerCase())) {
-                const relPath = full.startsWith(workspaceDir)
-                  ? full.slice(workspaceDir.length + 1)
-                  : full
+                const relPath = full.startsWith(workspaceDir) ? full.slice(workspaceDir.length + 1) : full
                 orphaned.push({ route: `/api/${m[1]}`, file: relPath })
               }
             }
@@ -1816,9 +1946,7 @@ async function maybeSchemaSync(
   // path is migrated into root paths on workspace boot — see
   // `migrations/skill-server-to-root.ts`.
   const isSchemaWrite =
-    filePath === 'prisma/schema.prisma' ||
-    resolved.endsWith('/prisma/schema.prisma') ||
-    resolved.endsWith('\\prisma\\schema.prisma')
+    filePath === 'prisma/schema.prisma' || resolved.endsWith('/prisma/schema.prisma') || resolved.endsWith('\\prisma\\schema.prisma')
   if (!isSchemaWrite) return null
 
   const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
@@ -1827,7 +1955,7 @@ async function maybeSchemaSync(
   try {
     const syncResult = await ctx.skillServerManager.sync()
     const routes = ctx.skillServerManager.getActiveRoutes()
-    const activeRoutePaths = routes.map(r => `/api/${r}`)
+    const activeRoutePaths = routes.map((r) => `/api/${r}`)
 
     const orphaned = findOrphanedFetches(ctx.workspaceDir, routes)
 
@@ -1842,10 +1970,10 @@ async function maybeSchemaSync(
     }
 
     if (orphaned.length > 0) {
-      const unique = [...new Map(orphaned.map(o => [`${o.route}::${o.file}`, o])).values()]
+      const unique = [...new Map(orphaned.map((o) => [`${o.route}::${o.file}`, o])).values()]
       ;(result.apiServer as Record<string, unknown>).orphanedFetches = unique
       ;(result.apiServer as Record<string, unknown>).warning =
-        `Your schema is missing models for ${new Set(unique.map(o => o.route)).size} route(s) that your UI code fetches. ` +
+        `Your schema is missing models for ${new Set(unique.map((o) => o.route)).size} route(s) that your UI code fetches. ` +
         `These fetch calls will fail at runtime. Either add the missing models to the schema or remove the fetch calls.`
     }
 
@@ -1945,9 +2073,7 @@ async function maybeCustomRoutesSync(
   } catch (err: any) {
     // A failure to even check drift shouldn't block the restart —
     // log and continue to the fast path.
-    console.warn(
-      `[gateway-tools] custom-routes drift check failed (continuing to fast restart): ${err?.message ?? err}`,
-    )
+    console.warn(`[gateway-tools] custom-routes drift check failed (continuing to fast restart): ${err?.message ?? err}`)
   }
 
   try {
@@ -1987,8 +2113,7 @@ function maybeValidateQuickActions(
   resolved: string,
   baseResult: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  const isQuickActions = filePath === '.shogo/quick-actions.json' ||
-    resolved.endsWith('.shogo/quick-actions.json')
+  const isQuickActions = filePath === '.shogo/quick-actions.json' || resolved.endsWith('.shogo/quick-actions.json')
   if (!isQuickActions) return null
 
   const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
@@ -2007,12 +2132,16 @@ function maybeValidateQuickActions(
 function createServerSyncTool(ctx: ToolContext): AgentTool {
   return {
     name: 'server_sync',
-    description: "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. Use this when routes are returning 404 after a schema change, or to verify the server is healthy. Returns the current phase and list of active API routes.",
+    description:
+      "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. Use this when routes are returning 404 after a schema change, or to verify the server is healthy. Returns the current phase and list of active API routes.",
     label: 'Server Sync',
     parameters: Type.Object({}),
     execute: async () => {
       if (!ctx.skillServerManager) {
-        return textResult({ ok: false, error: 'API server provider not attached' })
+        return textResult({
+          ok: false,
+          error: 'API server provider not attached',
+        })
       }
 
       try {
@@ -2022,7 +2151,7 @@ function createServerSyncTool(ctx: ToolContext): AgentTool {
         return textResult({
           ok: result.ok,
           phase: result.phase,
-          activeRoutes: routes.map(r => `/api/${r}`),
+          activeRoutes: routes.map((r) => `/api/${r}`),
           schemaModels: models,
           url: ctx.skillServerManager.url,
         })
@@ -2095,17 +2224,25 @@ const CLOSEST_MATCH_MIN_SIMILARITY = 0.35
 export function findClosestMatch(
   content: string,
   needle: string,
-): { text: string; similarity: number; startLine: number; endLine: number } | null {
+): {
+  text: string
+  similarity: number
+  startLine: number
+  endLine: number
+} | null {
   const needleLines = needle.split('\n')
   const n = needleLines.length
   const contentLines = content.split('\n')
   if (n === 0 || contentLines.length < n) return null
-  const normNeedle = needleLines.map(l => l.trim()).join('\n')
+  const normNeedle = needleLines.map((l) => l.trim()).join('\n')
 
   let bestScore = -1
   let bestStart = -1
   for (let i = 0; i <= contentLines.length - n; i++) {
-    const windowText = contentLines.slice(i, i + n).map(l => l.trim()).join('\n')
+    const windowText = contentLines
+      .slice(i, i + n)
+      .map((l) => l.trim())
+      .join('\n')
     const score = bigramDiceSimilarity(windowText, normNeedle)
     if (score > bestScore) {
       bestScore = score
@@ -2142,7 +2279,11 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
   // // istanbul ignore allowed on this branch).
 
   // 3. Try stripping trailing whitespace per line
-  const stripTrailing = (s: string) => s.split('\n').map(l => l.trimEnd()).join('\n')
+  const stripTrailing = (s: string) =>
+    s
+      .split('\n')
+      .map((l) => l.trimEnd())
+      .join('\n')
   const strippedNeedle = stripTrailing(needle)
   const strippedContent = stripTrailing(content)
   const stripIdx = strippedContent.indexOf(strippedNeedle)
@@ -2162,12 +2303,15 @@ function fuzzyFindInContent(content: string, needle: string): { index: number; m
   const collapsedContent = collapseWS(content)
   const wsIdx = collapsedContent.indexOf(collapsedNeedle)
   if (wsIdx !== -1) {
-    const needleLines = needle.split('\n').map(l => l.trim())
+    const needleLines = needle.split('\n').map((l) => l.trim())
     const contentLines = content.split('\n')
     for (let i = 0; i <= contentLines.length - needleLines.length; i++) {
       let matched = true
       for (let j = 0; j < needleLines.length; j++) {
-        if (contentLines[i + j].trim() !== needleLines[j]) { matched = false; break }
+        if (contentLines[i + j].trim() !== needleLines[j]) {
+          matched = false
+          break
+        }
       }
       if (matched) {
         const startPos = content.split('\n').slice(0, i).join('\n').length + (i > 0 ? 1 : 0)
@@ -2198,13 +2342,29 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
     label: 'Edit File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
-      old_string: Type.String({ description: 'Exact text to find in the file' }),
-      new_string: Type.String({ description: 'Replacement text (must differ from old_string)' }),
-      replace_all: Type.Optional(Type.Boolean({ description: 'Replace all occurrences (default: false)' })),
+      old_string: Type.String({
+        description: 'Exact text to find in the file',
+      }),
+      new_string: Type.String({
+        description: 'Replacement text (must differ from old_string)',
+      }),
+      replace_all: Type.Optional(
+        Type.Boolean({
+          description: 'Replace all occurrences (default: false)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { path: filePath, old_string, new_string, replace_all = false } = params as {
-        path: string; old_string: string; new_string: string; replace_all?: boolean
+      const {
+        path: filePath,
+        old_string,
+        new_string,
+        replace_all = false,
+      } = params as {
+        path: string
+        old_string: string
+        new_string: string
+        replace_all?: boolean
       }
       if (old_string === new_string) {
         return textResult({ error: 'old_string and new_string must differ' })
@@ -2222,7 +2382,9 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
 
       // Jupyter notebook redirect
       if (filePath.endsWith('.ipynb')) {
-        return textResult({ error: 'File is a Jupyter Notebook. Use the notebook_edit tool instead.' })
+        return textResult({
+          error: 'File is a Jupyter Notebook. Use the notebook_edit tool instead.',
+        })
       }
 
       // Create file on edit: if file doesn't exist and old_string is empty,
@@ -2241,12 +2403,18 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
             ctx.lspManager.notifyFileChanged(resolved, normalized)
             ctx.lspManager.notifyFileSaved?.(resolved)
           }
-          const createdBase: Record<string, unknown> = { ok: true, path: filePath, created: true }
+          const createdBase: Record<string, unknown> = {
+            ok: true,
+            path: filePath,
+            created: true,
+          }
           await attachEditDiagnostics(ctx, filePath, resolved, createdBase)
           return textResult(createdBase)
         }
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
-        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
+        return textResult({
+          error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}`,
+        })
       }
 
       // File size guard
@@ -2270,9 +2438,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         try {
           const seedMtime = statSync(resolved).mtimeMs
           const seedContent = readFileSync(resolved, 'utf-8')
-          ctx.fileStateCache.recordRead(
-            filePath, seedMtime, seedContent.split('\n').length, undefined, seedContent,
-          )
+          ctx.fileStateCache.recordRead(filePath, seedMtime, seedContent.split('\n').length, undefined, seedContent)
           readRecord = ctx.fileStateCache.getRecord(filePath)
         } catch {
           // Couldn't auto-read (race/permission) — fall back to the original
@@ -2325,7 +2491,8 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       }
       if (exactOccurrences > 1 && !replace_all) {
         return textResult({
-          error: `old_string found ${exactOccurrences} times in ${filePath}. ` +
+          error:
+            `old_string found ${exactOccurrences} times in ${filePath}. ` +
             'Provide more context to make it unique, or set replace_all: true.',
         })
       }
@@ -2414,7 +2581,12 @@ async function commitEdit(
   }
 
   const patch = getStructuredPatch(filePath, originalContent, updated)
-  const base: Record<string, any> = { ok: true, path: filePath, replacements, patch }
+  const base: Record<string, any> = {
+    ok: true,
+    path: filePath,
+    replacements,
+    patch,
+  }
   if (note) base.note = note
   appendImpactHint(ctx, filePath, base)
   // Mirror the write_file canvas-API contract hint so edits that
@@ -2427,7 +2599,6 @@ async function commitEdit(
   const schemaResult = await maybeSchemaSync(ctx, filePath, resolved, base)
   return textResult(schemaResult ?? base)
 }
-
 
 // ---------------------------------------------------------------------------
 // App Template Tools (template_list, template_copy) — DISABLED (app mode removed)
@@ -2526,15 +2697,15 @@ function createTodoWriteTool(ctx: ToolContext): AgentTool {
     description: 'Manage a session task checklist. Each call replaces the full todo list. Use to track progress on multi-step tasks.',
     label: 'Todo Write',
     parameters: Type.Object({
-      todos: Type.Array(Type.Object({
-        id: Type.String({ description: 'Unique task identifier' }),
-        content: Type.String({ description: 'Task description' }),
-        status: Type.Union([
-          Type.Literal('pending'),
-          Type.Literal('in_progress'),
-          Type.Literal('completed'),
-        ], { description: 'Task status' }),
-      })),
+      todos: Type.Array(
+        Type.Object({
+          id: Type.String({ description: 'Unique task identifier' }),
+          content: Type.String({ description: 'Task description' }),
+          status: Type.Union([Type.Literal('pending'), Type.Literal('in_progress'), Type.Literal('completed')], {
+            description: 'Task status',
+          }),
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const { todos } = params as {
@@ -2557,23 +2728,42 @@ function createAskUserTool(_ctx: ToolContext): AgentTool {
     description: [
       'Ask the user structured multiple-choice questions ONLY when you are blocked on a decision that genuinely requires their input: a true requirement ambiguity, an irreversible/destructive choice, or missing information you cannot obtain yourself (e.g. which of two products to build, a credential the user must provide).',
       'Do NOT use ask_user to ask permission to continue work that was already requested, to confirm an obvious next step, or as a progress checkpoint — just keep going and complete the task, then summarize. This tool ENDS your turn and forces the user to reply, so every unnecessary call stalls the task and makes the user type "continue".',
-      'The UI will render interactive option selectors. Do not call any other tools after this — wait for the user\'s response.',
+      "The UI will render interactive option selectors. Do not call any other tools after this — wait for the user's response.",
       'If you just generated one or more images with generate_image (e.g. avatar candidates) and are now asking the user to pick one, set each option\'s imagePath to that image\'s workspace path (the `path` field returned by generate_image, e.g. "images/generated-123.png") so the user can see a thumbnail of each choice instead of guessing from text alone.',
     ].join(' '),
     label: 'Ask User',
     parameters: Type.Object({
-      questions: Type.Array(Type.Object({
-        header: Type.String({ description: 'Short label/title for the question (e.g. "Deployment Region")' }),
-        question: Type.String({ description: 'The full question text to display to the user' }),
-        options: Type.Array(Type.Object({
-          label: Type.String({ description: 'Display text for this option' }),
-          description: Type.String({ description: 'Brief explanation of what this option means' }),
-          imagePath: Type.Optional(Type.String({
-            description: 'Workspace-relative path to an image to show as a thumbnail for this option (e.g. "images/generated-123.png", from a prior generate_image call). Use this when the choice is between visual candidates like avatars.',
-          })),
-        })),
-        multiSelect: Type.Optional(Type.Boolean({ description: 'Allow selecting multiple options (default: false)' })),
-      })),
+      questions: Type.Array(
+        Type.Object({
+          header: Type.String({
+            description: 'Short label/title for the question (e.g. "Deployment Region")',
+          }),
+          question: Type.String({
+            description: 'The full question text to display to the user',
+          }),
+          options: Type.Array(
+            Type.Object({
+              label: Type.String({
+                description: 'Display text for this option',
+              }),
+              description: Type.String({
+                description: 'Brief explanation of what this option means',
+              }),
+              imagePath: Type.Optional(
+                Type.String({
+                  description:
+                    'Workspace-relative path to an image to show as a thumbnail for this option (e.g. "images/generated-123.png", from a prior generate_image call). Use this when the choice is between visual candidates like avatars.',
+                }),
+              ),
+            }),
+          ),
+          multiSelect: Type.Optional(
+            Type.Boolean({
+              description: 'Allow selecting multiple options (default: false)',
+            }),
+          ),
+        }),
+      ),
     }),
     // execute returns a minimal acknowledgment. The gateway suppresses tool-output-available
     // for ask_user so the UI keeps the widget in interactive (input-available) state until
@@ -2595,7 +2785,10 @@ function checkpointError(res: CheckpointCallResult<unknown>): AgentToolResult<an
       hint: 'This is a folder-linked project — Shogo does not manage its git. Do NOT claim there is no history; tell the user to revert with their own git (e.g. `git reflog` / `git checkout`).',
     })
   }
-  return textResult({ error: res.error ?? 'Checkpoint operation failed', status: res.status })
+  return textResult({
+    error: res.error ?? 'Checkpoint operation failed',
+    status: res.status,
+  })
 }
 
 function createCheckpointTool(ctx: ToolContext): AgentTool {
@@ -2611,13 +2804,22 @@ function createCheckpointTool(ctx: ToolContext): AgentTool {
     ].join('\n'),
     label: 'Checkpoints',
     parameters: Type.Object({
-      action: Type.Union(
-        [Type.Literal('list'), Type.Literal('diff'), Type.Literal('rollback')],
-        { description: 'list | diff | rollback' },
+      action: Type.Union([Type.Literal('list'), Type.Literal('diff'), Type.Literal('rollback')], { description: 'list | diff | rollback' }),
+      checkpoint_id: Type.Optional(
+        Type.String({
+          description: 'Target checkpoint id (required for diff/rollback)',
+        }),
       ),
-      checkpoint_id: Type.Optional(Type.String({ description: 'Target checkpoint id (required for diff/rollback)' })),
-      to_checkpoint_id: Type.Optional(Type.String({ description: 'For diff: compare against this checkpoint instead of current state' })),
-      include_database: Type.Optional(Type.Boolean({ description: 'For rollback: also restore the database snapshot (default false)' })),
+      to_checkpoint_id: Type.Optional(
+        Type.String({
+          description: 'For diff: compare against this checkpoint instead of current state',
+        }),
+      ),
+      include_database: Type.Optional(
+        Type.Boolean({
+          description: 'For rollback: also restore the database snapshot (default false)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const { action, checkpoint_id, to_checkpoint_id, include_database } = params as {
@@ -2628,13 +2830,15 @@ function createCheckpointTool(ctx: ToolContext): AgentTool {
       }
       const projectId = ctx.projectId
       if (!projectId) {
-        return textResult({ error: 'No project context is available, so checkpoints cannot be accessed.' })
+        return textResult({
+          error: 'No project context is available, so checkpoints cannot be accessed.',
+        })
       }
 
       if (action === 'list') {
         const res = await apiListCheckpoints(projectId, 20)
         if (!res.ok) return checkpointError(res)
-        const checkpoints = (res.data ?? []).map(cp => ({
+        const checkpoints = (res.data ?? []).map((cp) => ({
           id: cp.id,
           message: cp.name || cp.message || '(no message)',
           createdAt: cp.createdAt,
@@ -2644,9 +2848,10 @@ function createCheckpointTool(ctx: ToolContext): AgentTool {
         return textResult({
           checkpoints,
           count: checkpoints.length,
-          hint: checkpoints.length === 0
-            ? 'No checkpoints recorded yet for this project.'
-            : 'To revert, call checkpoint with action="rollback" and the chosen checkpoint_id.',
+          hint:
+            checkpoints.length === 0
+              ? 'No checkpoints recorded yet for this project.'
+              : 'To revert, call checkpoint with action="rollback" and the chosen checkpoint_id.',
         })
       }
 
@@ -2714,13 +2919,14 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         }),
       ),
       access_level: Type.Optional(
-        Type.Union(
-          [Type.Literal('anyone'), Type.Literal('authenticated'), Type.Literal('private'), Type.Literal('password')],
-          { description: 'Who can view the site. Defaults to the existing setting (or "anyone" on first publish).' },
-        ),
+        Type.Union([Type.Literal('anyone'), Type.Literal('authenticated'), Type.Literal('private'), Type.Literal('password')], {
+          description: 'Who can view the site. Defaults to the existing setting (or "anyone" on first publish).',
+        }),
       ),
       password: Type.Optional(
-        Type.String({ description: 'Shared site password — only when access_level is "password".' }),
+        Type.String({
+          description: 'Shared site password — only when access_level is "password".',
+        }),
       ),
       site_title: Type.Optional(Type.String({ description: 'Optional site title (meta).' })),
       site_description: Type.Optional(Type.String({ description: 'Optional site description (meta).' })),
@@ -2735,7 +2941,9 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       }
       const projectId = ctx.projectId
       if (!projectId) {
-        return textResult({ error: 'No project context is available, so the app cannot be published.' })
+        return textResult({
+          error: 'No project context is available, so the app cannot be published.',
+        })
       }
 
       // Resolve first-publish vs republish from the current state.
@@ -2748,8 +2956,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       if (!targetSubdomain) {
         return textResult({
           needs_subdomain: true,
-          hint:
-            'This project has not been published yet. Publishing creates a PUBLIC site, so confirm the subdomain with the user first. Propose one (3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens) and, once they confirm, call publish again with `subdomain`.',
+          hint: 'This project has not been published yet. Publishing creates a PUBLIC site, so confirm the subdomain with the user first. Propose one (3-63 chars, lowercase letters/numbers/hyphens, no consecutive hyphens) and, once they confirm, call publish again with `subdomain`.',
         })
       }
 
@@ -2780,7 +2987,11 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             code: res.code,
           })
         }
-        return textResult({ error: res.error ?? 'Publish failed', code: res.code, status: res.status })
+        return textResult({
+          error: res.error ?? 'Publish failed',
+          code: res.code,
+          status: res.status,
+        })
       }
 
       const url = res.data?.url ?? `https://${targetSubdomain}.shogo.one`
@@ -2802,7 +3013,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
   }
 }
 
-const BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+const BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const WEB_FETCH_TIMEOUT_MS = 30_000
 
 function cleanPlainText(text: string): string {
@@ -2864,14 +3076,16 @@ function parseWikipediaUrl(url: string): { lang: string; title: string } | null 
 
 async function fetchWikipediaAsMarkdown(lang: string, title: string, maxChars: number): Promise<string> {
   const TurndownService = (await import('turndown')).default
-  const { gfm } = await import('turndown-plugin-gfm') as { gfm: (s: any) => void }
+  const { gfm } = (await import('turndown-plugin-gfm')) as {
+    gfm: (s: any) => void
+  }
 
   const apiTitle = encodeURIComponent(title.replace(/ /g, '_'))
   const apiUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/html/${apiTitle}`
 
   const resp = await fetch(apiUrl, {
     headers: {
-      'Accept': 'text/html; charset=utf-8; profile="https://www.mediawiki.org/wiki/Specs/HTML/2.8.0"',
+      Accept: 'text/html; charset=utf-8; profile="https://www.mediawiki.org/wiki/Specs/HTML/2.8.0"',
       'User-Agent': 'ShogoAgent/1.0 (https://shogo.dev; russell@shogo.dev)',
     },
     signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
@@ -2886,19 +3100,27 @@ async function fetchWikipediaAsMarkdown(lang: string, title: string, maxChars: n
   const { document } = parseHTML(html)
 
   const removeSelectors = [
-    'style', 'link[rel="stylesheet"]',
-    '.mw-ref', 'sup.reference',
-    '.navbox', '.sisternav', '.portal',
+    'style',
+    'link[rel="stylesheet"]',
+    '.mw-ref',
+    'sup.reference',
+    '.navbox',
+    '.sisternav',
+    '.portal',
     '.mw-editsection',
     '.mw-empty-elt',
     '.noprint',
     '.mw-authority-control',
-    '.ambox', '.tmbox', '.ombox', '.cmbox', '.fmbox',   // maintenance/warning boxes
-    '.hatnote',                                          // disambiguation notes
-    '.mw-indicators',                                    // page status indicators
-    '.catlinks',                                         // category links footer
-    'figure[typeof*="mw:File"]',                         // images (drop entirely for text focus)
-    'img',                                               // stray images
+    '.ambox',
+    '.tmbox',
+    '.ombox',
+    '.cmbox',
+    '.fmbox', // maintenance/warning boxes
+    '.hatnote', // disambiguation notes
+    '.mw-indicators', // page status indicators
+    '.catlinks', // category links footer
+    'figure[typeof*="mw:File"]', // images (drop entirely for text focus)
+    'img', // stray images
   ]
   for (const sel of removeSelectors) {
     document.querySelectorAll(sel).forEach((el: any) => el.remove())
@@ -2959,15 +3181,41 @@ interface SerperOrganicResult {
 
 interface SerperResponse {
   searchParameters?: Record<string, unknown>
-  knowledgeGraph?: { title?: string; description?: string; type?: string; website?: string; attributes?: Record<string, string> }
-  answerBox?: { answer?: string; snippet?: string; snippetHighlighted?: string[] }
+  knowledgeGraph?: {
+    title?: string
+    description?: string
+    type?: string
+    website?: string
+    attributes?: Record<string, string>
+  }
+  answerBox?: {
+    answer?: string
+    snippet?: string
+    snippetHighlighted?: string[]
+  }
   organic?: SerperOrganicResult[]
   peopleAlsoAsk?: Array<{ question: string; snippet?: string; link?: string }>
   relatedSearches?: Array<{ query: string }>
-  news?: Array<{ title?: string; link?: string; snippet?: string; date?: string; source?: string }>
-  places?: Array<{ title?: string; address?: string; rating?: number; ratingCount?: number }>
+  news?: Array<{
+    title?: string
+    link?: string
+    snippet?: string
+    date?: string
+    source?: string
+  }>
+  places?: Array<{
+    title?: string
+    address?: string
+    rating?: number
+    ratingCount?: number
+  }>
   images?: Array<{ title?: string; imageUrl?: string; link?: string }>
-  shopping?: Array<{ title?: string; price?: string; link?: string; source?: string }>
+  shopping?: Array<{
+    title?: string
+    price?: string
+    link?: string
+    source?: string
+  }>
   credits?: number
 }
 
@@ -3031,7 +3279,7 @@ function formatSerperResults(raw: SerperResponse, searchType: string): string {
   }
 
   if (raw.relatedSearches?.length) {
-    parts.push('**Related Searches:** ' + raw.relatedSearches.map(r => r.query).join(', '))
+    parts.push('**Related Searches:** ' + raw.relatedSearches.map((r) => r.query).join(', '))
   }
 
   return parts.join('\n\n') || 'No results found.'
@@ -3060,7 +3308,11 @@ export interface GoogleDriveUrlRoute {
  */
 export function detectGoogleDriveUrl(url: string): GoogleDriveUrlRoute | null {
   let u: URL
-  try { u = new URL(url) } catch { return null }
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
 
   const host = u.hostname.replace(/^www\./, '')
   if (host === 'drive.google.com') {
@@ -3078,11 +3330,7 @@ export function detectGoogleDriveUrl(url: string): GoogleDriveUrlRoute | null {
   if (host !== 'docs.google.com') return null
   const match = u.pathname.match(/^\/(document|spreadsheets|presentation)\/d\/([^/]+)/)
   if (!match) return null
-  const kind = match[1] === 'document'
-    ? 'document'
-    : match[1] === 'spreadsheets'
-      ? 'spreadsheet'
-      : 'presentation'
+  const kind = match[1] === 'document' ? 'document' : match[1] === 'spreadsheets' ? 'spreadsheet' : 'presentation'
   const format = kind === 'document' ? 'txt' : kind === 'spreadsheet' ? 'xlsx' : 'pptx'
   return {
     id: match[2],
@@ -3100,16 +3348,12 @@ function driveFilename(route: GoogleDriveUrlRoute, response: Response): string {
   return (fromHeader || fallback).replace(/[^a-zA-Z0-9._-]/g, '_')
 }
 
-async function fetchGoogleDriveFile(
-  url: string,
-  route: GoogleDriveUrlRoute,
-  workspaceDir: string,
-): Promise<AgentToolResult<any>> {
+async function fetchGoogleDriveFile(url: string, route: GoogleDriveUrlRoute, workspaceDir: string): Promise<AgentToolResult<any>> {
   try {
     const response = await fetch(route.downloadUrl, {
       headers: {
         'User-Agent': BROWSER_USER_AGENT,
-        'Accept': '*/*',
+        Accept: '*/*',
       },
       signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
       redirect: 'follow',
@@ -3162,7 +3406,11 @@ async function fetchGoogleDriveFile(
  */
 function detectGoogleUrl(url: string): GoogleUrlRoute | null {
   let u: URL
-  try { u = new URL(url) } catch { return null }
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
 
   const host = u.hostname.replace('www.', '')
   if (host !== 'google.com' && !host.endsWith('.google.com')) return null
@@ -3174,19 +3422,28 @@ function detectGoogleUrl(url: string): GoogleUrlRoute | null {
   if (dirMatch) {
     const origin = decodeURIComponent(dirMatch[1]).replace(/\+/g, ' ')
     const dest = decodeURIComponent(dirMatch[2]).replace(/\+/g, ' ')
-    return { query: `directions from ${origin} to ${dest}`, searchType: 'search' }
+    return {
+      query: `directions from ${origin} to ${dest}`,
+      searchType: 'search',
+    }
   }
 
   // Maps place: /maps/place/PLACE
   const placeMatch = path.match(/^\/maps\/place\/([^/@]+)/)
   if (placeMatch) {
-    return { query: decodeURIComponent(placeMatch[1]).replace(/\+/g, ' '), searchType: 'places' }
+    return {
+      query: decodeURIComponent(placeMatch[1]).replace(/\+/g, ' '),
+      searchType: 'places',
+    }
   }
 
   // Maps search: /maps/search/QUERY
   const mapSearchMatch = path.match(/^\/maps\/search\/([^/@]+)/)
   if (mapSearchMatch) {
-    return { query: decodeURIComponent(mapSearchMatch[1]).replace(/\+/g, ' '), searchType: 'places' }
+    return {
+      query: decodeURIComponent(mapSearchMatch[1]).replace(/\+/g, ' '),
+      searchType: 'places',
+    }
   }
 
   // Maps with ?q= parameter
@@ -3305,9 +3562,7 @@ async function serperSearch(
     })
   }
 
-  const endpoint = directKey
-    ? (SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search)
-    : `${proxyUrl}/serper/${searchType || 'search'}`
+  const endpoint = directKey ? SERPER_ENDPOINTS[searchType] || SERPER_ENDPOINTS.search : `${proxyUrl}/serper/${searchType || 'search'}`
 
   try {
     const response = await fetch(endpoint, {
@@ -3322,7 +3577,11 @@ async function serperSearch(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '')
-      return textResult({ error: `Serper API error: HTTP ${response.status}`, details: errorText, query })
+      return textResult({
+        error: `Serper API error: HTTP ${response.status}`,
+        details: errorText,
+        query,
+      })
     }
 
     const data = (await response.json()) as SerperResponse
@@ -3353,7 +3612,13 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
     try {
       const markdown = await fetchWikipediaAsMarkdown(wiki.lang, wiki.title, maxChars)
       if (markdown.length > 100) {
-        const result = textResult({ content: markdown, status: 200, bytes: markdown.length, url, type: 'wikipedia-markdown' })
+        const result = textResult({
+          content: markdown,
+          status: 200,
+          bytes: markdown.length,
+          url,
+          type: 'wikipedia-markdown',
+        })
         await webCachePut(cacheKey, result)
         return result
       }
@@ -3363,7 +3628,7 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
 
   const headers: Record<string, string> = {
     'User-Agent': BROWSER_USER_AGENT,
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,text/plain;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
   }
 
@@ -3379,7 +3644,7 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
 
       if (response.status === 403 || response.status === 429) {
         if (attempt < MAX_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, 1000))
+          await new Promise((r) => setTimeout(r, 1000))
           continue
         }
         return textResult({
@@ -3390,7 +3655,10 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
       }
 
       if (!response.ok) {
-        return textResult({ error: `HTTP ${response.status}: ${response.statusText}`, url })
+        return textResult({
+          error: `HTTP ${response.status}: ${response.statusText}`,
+          url,
+        })
       }
 
       const contentType = response.headers.get('content-type') || ''
@@ -3400,16 +3668,25 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
           const { extractText, getDocumentProxy } = await import('unpdf')
           const arrayBuf = await response.arrayBuffer()
           const pdf = await getDocumentProxy(new Uint8Array(arrayBuf))
-          const { text: pdfText } = await extractText(pdf, { mergePages: true })
+          const { text: pdfText } = await extractText(pdf, {
+            mergePages: true,
+          })
           const cleaned = cleanPlainText(pdfText)
-          const truncated = cleaned.length > maxChars
-            ? cleaned.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
-            : cleaned
-          const result = textResult({ content: truncated, status: response.status, bytes: truncated.length, url, type: 'pdf' })
+          const truncated = cleaned.length > maxChars ? cleaned.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]` : cleaned
+          const result = textResult({
+            content: truncated,
+            status: response.status,
+            bytes: truncated.length,
+            url,
+            type: 'pdf',
+          })
           await webCachePut(cacheKey, result)
           return result
         } catch (pdfErr: any) {
-          return textResult({ error: `Failed to extract text from PDF: ${pdfErr.message}`, url })
+          return textResult({
+            error: `Failed to extract text from PDF: ${pdfErr.message}`,
+            url,
+          })
         }
       }
 
@@ -3423,12 +3700,17 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
         text = text.substring(0, maxChars) + `\n\n[Truncated at ${maxChars} chars]`
       }
 
-      const result = textResult({ content: text, status: response.status, bytes: text.length, url })
+      const result = textResult({
+        content: text,
+        status: response.status,
+        bytes: text.length,
+        url,
+      })
       await webCachePut(cacheKey, result)
       return result
     } catch (err: any) {
       if (attempt < MAX_ATTEMPTS && (err.name === 'TimeoutError' || err.code === 'ECONNRESET')) {
-        await new Promise(r => setTimeout(r, 500))
+        await new Promise((r) => setTimeout(r, 500))
         continue
       }
       return textResult({ error: err.message, url })
@@ -3441,16 +3723,41 @@ async function rawFetch(url: string, maxChars: number): Promise<AgentToolResult<
 function createWebTool(ctx: ToolContext): AgentTool {
   return {
     name: 'web',
-    description: 'Unified web tool: fetch a URL or search the web via Google (Serper API). Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) are automatically routed through the search API for rich results. Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
+    description:
+      'Unified web tool: fetch a URL or search the web via Google (Serper API). Provide `url` to fetch a page, or `query` to search. Google property URLs (Maps, Flights, Shopping) are automatically routed through the search API for rich results. Search types: "search" (default), "news", "images", "places", "maps", "shopping".',
     label: 'Web',
     parameters: Type.Object({
-      url: Type.Optional(Type.String({ description: 'URL to fetch. Google URLs (Maps, Flights, Shopping) are auto-routed to search API.' })),
-      query: Type.Optional(Type.String({ description: 'Search query (e.g., "best restaurants in Bali", "directions from LAX to SFO")' })),
-      searchType: Type.Optional(Type.String({ description: 'Type of search: "search" (default), "news", "images", "places", "maps", "shopping"' })),
-      num: Type.Optional(Type.Number({ description: 'Number of search results (default: 10, max: 100)' })),
-      gl: Type.Optional(Type.String({ description: 'Country code for localized results (e.g., "us", "uk", "id")' })),
+      url: Type.Optional(
+        Type.String({
+          description: 'URL to fetch. Google URLs (Maps, Flights, Shopping) are auto-routed to search API.',
+        }),
+      ),
+      query: Type.Optional(
+        Type.String({
+          description: 'Search query (e.g., "best restaurants in Bali", "directions from LAX to SFO")',
+        }),
+      ),
+      searchType: Type.Optional(
+        Type.String({
+          description: 'Type of search: "search" (default), "news", "images", "places", "maps", "shopping"',
+        }),
+      ),
+      num: Type.Optional(
+        Type.Number({
+          description: 'Number of search results (default: 10, max: 100)',
+        }),
+      ),
+      gl: Type.Optional(
+        Type.String({
+          description: 'Country code for localized results (e.g., "us", "uk", "id")',
+        }),
+      ),
       hl: Type.Optional(Type.String({ description: 'Language code (e.g., "en", "id", "fr")' })),
-      maxChars: Type.Optional(Type.Number({ description: 'Maximum characters for URL fetch (default: 50000)' })),
+      maxChars: Type.Optional(
+        Type.Number({
+          description: 'Maximum characters for URL fetch (default: 50000)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
@@ -3462,12 +3769,19 @@ function createWebTool(ctx: ToolContext): AgentTool {
         hl = 'en',
         maxChars = 50000,
       } = params as {
-        url?: string; query?: string; searchType?: string
-        num?: number; gl?: string; hl?: string; maxChars?: number
+        url?: string
+        query?: string
+        searchType?: string
+        num?: number
+        gl?: string
+        hl?: string
+        maxChars?: number
       }
 
       if (!url && !query) {
-        return textResult({ error: 'Provide either `url` (to fetch a page) or `query` (to search the web).' })
+        return textResult({
+          error: 'Provide either `url` (to fetch a page) or `query` (to search the web).',
+        })
       }
 
       // If a URL is provided, check for Google property routing first
@@ -3478,7 +3792,11 @@ function createWebTool(ctx: ToolContext): AgentTool {
         }
         const googleRoute = detectGoogleUrl(url)
         if (googleRoute) {
-          return serperSearch(googleRoute.query, googleRoute.searchType, { num, gl, hl })
+          return serperSearch(googleRoute.query, googleRoute.searchType, {
+            num,
+            gl,
+            hl,
+          })
         }
 
         // Raw fetch for non-Google URLs
@@ -3493,7 +3811,11 @@ function createWebTool(ctx: ToolContext): AgentTool {
           (process.env.SERPER_API_KEY || (process.env.TOOLS_PROXY_URL && process.env.AI_PROXY_TOKEN))
         ) {
           const fallbackQuery = query || url
-          const fallback = await serperSearch(fallbackQuery, searchType, { num, gl, hl })
+          const fallback = await serperSearch(fallbackQuery, searchType, {
+            num,
+            gl,
+            hl,
+          })
           fallback.details._note = `Raw fetch returned minimal content (${details.content.trim().length} chars); fell back to search.`
           fallback.details._originalUrl = url
           return fallback
@@ -3514,19 +3836,21 @@ function createMemoryReadTool(ctx: ToolContext): AgentTool {
     description: 'Read agent memory. Use "MEMORY.md" for long-lived facts or a date like "2026-02-18" for daily logs.',
     label: 'Read Memory',
     parameters: Type.Object({
-      file: Type.String({ description: '"MEMORY.md" or a date string (YYYY-MM-DD)' }),
+      file: Type.String({
+        description: '"MEMORY.md" or a date string (YYYY-MM-DD)',
+      }),
     }),
     execute: async (_toolCallId, params) => {
       const { file } = params as { file: string }
-      const filePath =
-        file === 'MEMORY.md'
-          ? join(ctx.workspaceDir, 'MEMORY.md')
-          : join(ctx.workspaceDir, 'memory', `${file}.md`)
+      const filePath = file === 'MEMORY.md' ? join(ctx.workspaceDir, 'MEMORY.md') : join(ctx.workspaceDir, 'memory', `${file}.md`)
 
       if (!existsSync(filePath)) {
         return textResult({ content: '', exists: false })
       }
-      return textResult({ content: readFileSync(filePath, 'utf-8'), exists: true })
+      return textResult({
+        content: readFileSync(filePath, 'utf-8'),
+        exists: true,
+      })
     },
   }
 }
@@ -3567,7 +3891,10 @@ function createMemorySearchTool(ctx: ToolContext): AgentTool {
           totalMatches: results.length,
         })
       } catch (err: any) {
-        return textResult({ error: `Memory search failed: ${err.message}`, query })
+        return textResult({
+          error: `Memory search failed: ${err.message}`,
+          query,
+        })
       }
     },
   }
@@ -3583,7 +3910,9 @@ function createSearchHistoryTool(ctx: ToolContext): AgentTool {
       'Use workspace scope in a multi-project workspace.',
     label: 'Search Chat History',
     parameters: Type.Object({
-      query: Type.String({ description: 'Words or a natural-language phrase to search for' }),
+      query: Type.String({
+        description: 'Words or a natural-language phrase to search for',
+      }),
       kind: Type.Optional(Type.Union([Type.Literal('chat'), Type.Literal('plan'), Type.Literal('all')])),
       scope: Type.Optional(Type.Union([Type.Literal('project'), Type.Literal('workspace')])),
       limit: Type.Optional(Type.Number()),
@@ -3608,10 +3937,7 @@ function createSearchHistoryTool(ctx: ToolContext): AgentTool {
           })
           return textResult({
             scope,
-            ...(await workspaceMetaFetch(
-              ctx,
-              `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/search?${qs}`,
-            )),
+            ...(await workspaceMetaFetch(ctx, `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/search?${qs}`)),
           })
         } catch (error: any) {
           const results = local().search(params.query, {
@@ -3633,7 +3959,11 @@ function createSearchHistoryTool(ctx: ToolContext): AgentTool {
         limit: params.limit,
         excludeRefId: ctx.sessionId,
       })
-      return textResult({ scope: 'project', results, totalMatches: results.length })
+      return textResult({
+        scope: 'project',
+        results,
+        totalMatches: results.length,
+      })
     },
   }
 }
@@ -3675,19 +4005,29 @@ function createReadHistoryTool(ctx: ToolContext): AgentTool {
           })
           return textResult({
             scope,
-            ...(await workspaceMetaFetch(
-              ctx,
-              `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/read?${qs}`,
-            )),
+            ...(await workspaceMetaFetch(ctx, `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/history/read?${qs}`)),
           })
         } catch (error: any) {
-          return textResult({ error: error?.message || String(error), kind: params.kind, id: params.id })
+          return textResult({
+            error: error?.message || String(error),
+            kind: params.kind,
+            id: params.id,
+          })
         }
       }
-      const result = params.kind === 'chat'
-        ? local().readChat(params.id, { fromSeq: params.fromSeq, limit: params.limit })
-        : local().readPlan(params.id)
-      return textResult({ scope: 'project', kind: params.kind, id: params.id, result })
+      const result =
+        params.kind === 'chat'
+          ? local().readChat(params.id, {
+              fromSeq: params.fromSeq,
+              limit: params.limit,
+            })
+          : local().readPlan(params.id)
+      return textResult({
+        scope: 'project',
+        kind: params.kind,
+        id: params.id,
+        result,
+      })
     },
   }
 }
@@ -3711,7 +4051,9 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
     })
 
     let stderr = ''
-    child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+    child.stderr.on('data', (d: Buffer) => {
+      stderr += d.toString()
+    })
 
     child.on('error', (err: Error) => reject(new Error(`Failed to start relay: ${err.message}`)))
     child.on('exit', (code: number | null) => {
@@ -3731,9 +4073,12 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
             child.kill()
             reject(new Error(msg.message))
           } else if (msg.type === 'connected' && (child as any).__cdpEndpoint) {
-            resolve({ cdpEndpoint: (child as any).__cdpEndpoint, kill: () => child.kill() })
+            resolve({
+              cdpEndpoint: (child as any).__cdpEndpoint,
+              kill: () => child.kill(),
+            })
           } else if (msg.type === 'ready') {
-            (child as any).__cdpEndpoint = msg.cdpEndpoint
+            ;(child as any).__cdpEndpoint = msg.cdpEndpoint
           }
         } catch {}
       }
@@ -3741,7 +4086,9 @@ function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () =
 
     setTimeout(() => {
       child.kill()
-      reject(new Error('Relay connection timed out (90s). Make sure the Playwright MCP Bridge extension is installed and the token is correct.'))
+      reject(
+        new Error('Relay connection timed out (90s). Make sure the Playwright MCP Bridge extension is installed and the token is correct.'),
+      )
     }, 95000)
   })
 }
@@ -3784,21 +4131,36 @@ function captureBrowserCall(
       writeFileSync(join(dir, screenshotFile), entry.screenshotBuffer)
     }
     const stepFile = join(dir, `step-${idxPad}.json`)
-    writeFileSync(stepFile, JSON.stringify({
-      idx: entry.idx,
-      action: entry.action,
-      params: entry.params,
-      response: entry.response,
-      screenshotFile,
-      ts: Date.now(),
-    }, null, 2))
+    writeFileSync(
+      stepFile,
+      JSON.stringify(
+        {
+          idx: entry.idx,
+          action: entry.action,
+          params: entry.params,
+          response: entry.response,
+          screenshotFile,
+          ts: Date.now(),
+        },
+        null,
+        2,
+      ),
+    )
     // Maintain manifest.json so the loader doesn't have to scandir.
     const manifestPath = join(dir, 'manifest.json')
-    let manifest: { steps: Array<{ idx: number; action: string; file: string }> } = { steps: [] }
+    let manifest: {
+      steps: Array<{ idx: number; action: string; file: string }>
+    } = { steps: [] }
     if (existsSync(manifestPath)) {
-      try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {}
+      try {
+        manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+      } catch {}
     }
-    manifest.steps.push({ idx: entry.idx, action: entry.action, file: `step-${idxPad}.json` })
+    manifest.steps.push({
+      idx: entry.idx,
+      action: entry.action,
+      file: `step-${idxPad}.json`,
+    })
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
   } catch (err) {
     // Capture is best-effort; never break the tool call if capture I/O fails.
@@ -3818,7 +4180,8 @@ export async function disposeBrowserTool(tool: AgentTool | undefined): Promise<v
 
 // Errors meaning the page/context/browser is gone, as opposed to an ordinary
 // action failure where the page (and the user's state in it) is still usable.
-const DEAD_BROWSER_ERROR_RE = /target (page, context or browser )?(has been )?closed|browser has been closed|browser has disconnected|browser closed|context closed|page (has been )?closed|page crashed|target crashed|connection closed/i
+const DEAD_BROWSER_ERROR_RE =
+  /target (page, context or browser )?(has been )?closed|browser has been closed|browser has disconnected|browser closed|context closed|page (has been )?closed|page crashed|target crashed|connection closed/i
 
 export function isDeadBrowserError(message: string | undefined): boolean {
   return !!message && DEAD_BROWSER_ERROR_RE.test(message)
@@ -3843,9 +4206,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   let screenshotCount = 0
   let screenshotHousekeepingDone = false
 
-  scLog(
-    `[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`,
-  )
+  scLog(`[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`)
 
   async function ensureScreencast() {
     // Only broadcast when this tool is running inside a spawned subagent
@@ -3869,8 +4230,12 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     if (screencastStarted && screencastPageKey === page) return
     if (screencastStarted && screencastPageKey !== page) {
       scLog(`[screencast] ensureScreencast page changed; restarting instanceId=${instanceId}`)
-      try { if (cdpSession) await cdpSession.send('Page.stopScreencast') } catch {}
-      try { if (cdpSession) await cdpSession.detach() } catch {}
+      try {
+        if (cdpSession) await cdpSession.send('Page.stopScreencast')
+      } catch {}
+      try {
+        if (cdpSession) await cdpSession.detach()
+      } catch {}
       cdpSession = null
       screencastStarted = false
     }
@@ -3883,8 +4248,8 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         if (frameCount === 1 || frameCount % 60 === 0) {
           scLog(
             `[screencast] CDP frame#${frameCount} instanceId=${instanceId} ` +
-            `size=${e?.metadata?.deviceWidth ?? '?'}x${e?.metadata?.deviceHeight ?? '?'} ` +
-            `dataLen=${(e?.data as string | undefined)?.length ?? 0}`,
+              `size=${e?.metadata?.deviceWidth ?? '?'}x${e?.metadata?.deviceHeight ?? '?'} ` +
+              `dataLen=${(e?.data as string | undefined)?.length ?? 0}`,
           )
         }
         try {
@@ -3897,7 +4262,11 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         } catch (err: any) {
           scWarn(`[screencast] publish threw instanceId=${instanceId}: ${err?.message ?? err}`)
         }
-        try { await cdpSession.send('Page.screencastFrameAck', { sessionId: e.sessionId }) } catch {}
+        try {
+          await cdpSession.send('Page.screencastFrameAck', {
+            sessionId: e.sessionId,
+          })
+        } catch {}
       })
       await cdpSession.send('Page.startScreencast', {
         format: 'jpeg',
@@ -3911,10 +4280,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       scLog(`[screencast] Page.startScreencast OK instanceId=${instanceId}`)
     } catch (err: any) {
       // Screencast is best-effort — if CDP isn't available, the browser tool still works.
-      scWarn(
-        `[screencast] ensureScreencast failed instanceId=${instanceId}: ${err?.message ?? err}`,
-      )
-      try { if (cdpSession) await cdpSession.detach() } catch {}
+      scWarn(`[screencast] ensureScreencast failed instanceId=${instanceId}: ${err?.message ?? err}`)
+      try {
+        if (cdpSession) await cdpSession.detach()
+      } catch {}
       cdpSession = null
       screencastStarted = false
     }
@@ -3931,7 +4300,9 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     }
     // Parallel calls on one tool instance must not each acquire a context.
     if (!ensurePromise) {
-      ensurePromise = openBrowser().finally(() => { ensurePromise = null })
+      ensurePromise = openBrowser().finally(() => {
+        ensurePromise = null
+      })
     }
     return ensurePromise
   }
@@ -3948,11 +4319,13 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         } else {
           const relay = await spawnCDPRelay(extensionToken)
           killRelay = relay.kill
-          browser = await pw.chromium.connectOverCDP(relay.cdpEndpoint, { isLocal: true })
+          browser = await pw.chromium.connectOverCDP(relay.cdpEndpoint, {
+            isLocal: true,
+          })
         }
 
         const browserCtx = browser.contexts()[0]
-        page = browserCtx?.pages()[0] || await browser.newPage()
+        page = browserCtx?.pages()[0] || (await browser.newPage())
         isExtensionMode = true
       } else {
         const acquired = await getSharedBrowserPool().acquire()
@@ -3975,22 +4348,24 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       if (process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
         throw new Error(
           `Failed to connect to browser via extension: ${err.message}. ` +
-          'Make sure Chrome is running with the "Playwright MCP Bridge" extension installed, ' +
-          'and the extension token matches.',
+            'Make sure Chrome is running with the "Playwright MCP Bridge" extension installed, ' +
+            'and the extension token matches.',
         )
       }
       const execPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '(not set)'
       throw new Error(
         `Browser launch failed: ${err.message}. ` +
-        `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${execPath}. ` +
-        'If running locally, try: bun x playwright install chromium',
+          `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=${execPath}. ` +
+          'If running locally, try: bun x playwright install chromium',
       )
     }
   }
 
   function cleanupRelay() {
     if (killRelay) {
-      try { killRelay() } catch {}
+      try {
+        killRelay()
+      } catch {}
       killRelay = null
     }
   }
@@ -4019,8 +4394,12 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       unregisterSessionCleanup = null
     }
     if (screencastStarted && cdpSession) {
-      try { await cdpSession.send('Page.stopScreencast') } catch {}
-      try { await cdpSession.detach() } catch {}
+      try {
+        await cdpSession.send('Page.stopScreencast')
+      } catch {}
+      try {
+        await cdpSession.detach()
+      } catch {}
     }
     cdpSession = null
     screencastStarted = false
@@ -4040,9 +4419,13 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     browser = null
     isExtensionMode = false
     if (wasExtensionMode) {
-      try { if (currentBrowser) await currentBrowser.close() } catch {}
+      try {
+        if (currentBrowser) await currentBrowser.close()
+      } catch {}
     } else {
-      try { if (currentPage) await currentPage.close() } catch {}
+      try {
+        if (currentPage) await currentPage.close()
+      } catch {}
       if (currentLease) await currentLease.release()
     }
     cleanupRelay()
@@ -4072,31 +4455,62 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 
   const tool: AgentTool = {
     name: 'browser',
-    description: 'Control a browser. MUST snapshot before any interaction to get element refs. Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. Use read_guide("browser") for details.',
+    description:
+      'Control a browser. MUST snapshot before any interaction to get element refs. Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. Use read_guide("browser") for details.',
     label: 'Browser',
     parameters: Type.Object({
-      action: Type.Union([
-        Type.Literal('navigate'),
-        Type.Literal('snapshot'),
-        Type.Literal('click'),
-        Type.Literal('fill'),
-        Type.Literal('extract'),
-        Type.Literal('text'),
-        Type.Literal('screenshot'),
-        Type.Literal('evaluate'),
-        Type.Literal('select'),
-        Type.Literal('scroll'),
-        Type.Literal('wait_for'),
-        Type.Literal('close'),
-      ], { description: 'Browser action to perform' }),
-      url: Type.Optional(Type.String({ description: 'URL to navigate to (for navigate action)' })),
-      ref: Type.Optional(Type.Number({ description: 'Element ref number from snapshot (for click/fill/select — preferred over selector)' })),
-      selector: Type.Optional(Type.String({ description: 'CSS selector (fallback for click/fill/extract/select/scroll/wait_for)' })),
-      value: Type.Optional(Type.String({ description: 'Text to type (fill), JS to run (evaluate), option value (select), or scroll distance in px (scroll)' })),
-      waitMs: Type.Optional(Type.Number({ description: 'Wait time in ms after action (default: 1000)' })),
+      action: Type.Union(
+        [
+          Type.Literal('navigate'),
+          Type.Literal('snapshot'),
+          Type.Literal('click'),
+          Type.Literal('fill'),
+          Type.Literal('extract'),
+          Type.Literal('text'),
+          Type.Literal('screenshot'),
+          Type.Literal('evaluate'),
+          Type.Literal('select'),
+          Type.Literal('scroll'),
+          Type.Literal('wait_for'),
+          Type.Literal('close'),
+        ],
+        { description: 'Browser action to perform' },
+      ),
+      url: Type.Optional(
+        Type.String({
+          description: 'URL to navigate to (for navigate action)',
+        }),
+      ),
+      ref: Type.Optional(
+        Type.Number({
+          description: 'Element ref number from snapshot (for click/fill/select — preferred over selector)',
+        }),
+      ),
+      selector: Type.Optional(
+        Type.String({
+          description: 'CSS selector (fallback for click/fill/extract/select/scroll/wait_for)',
+        }),
+      ),
+      value: Type.Optional(
+        Type.String({
+          description: 'Text to type (fill), JS to run (evaluate), option value (select), or scroll distance in px (scroll)',
+        }),
+      ),
+      waitMs: Type.Optional(
+        Type.Number({
+          description: 'Wait time in ms after action (default: 1000)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { action, url, ref, selector, value, waitMs = 1000 } = params as {
+      const {
+        action,
+        url,
+        ref,
+        selector,
+        value,
+        waitMs = 1000,
+      } = params as {
         action: string
         url?: string
         ref?: number
@@ -4119,36 +4533,61 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           case 'navigate': {
             if (!url) return textResult({ error: 'url is required for navigate' })
             try {
-              await p.goto(url, { timeout: 30000, waitUntil: 'domcontentloaded' })
+              await p.goto(url, {
+                timeout: 30000,
+                waitUntil: 'domcontentloaded',
+              })
             } catch (navErr: any) {
               // Slow or JS-heavy pages can exceed the domcontentloaded budget
               // while still being perfectly usable. Only hard-fail when no
               // document loaded at all; otherwise continue with the page we got.
-              const landed = (() => { try { return p.url() } catch { return '' } })()
+              const landed = (() => {
+                try {
+                  return p.url()
+                } catch {
+                  return ''
+                }
+              })()
               if (!landed || landed === 'about:blank') throw navErr
               console.warn(`[browser] navigate soft-timeout for ${url}: ${navErr?.message} — continuing with loaded page ${landed}`)
             }
             // Give SPA/client-rendered content a moment to settle so the first
             // snapshot sees real, ref-able elements instead of an empty shell.
-            try { await p.waitForLoadState('networkidle', { timeout: 5000 }) } catch {}
+            try {
+              await p.waitForLoadState('networkidle', { timeout: 5000 })
+            } catch {}
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 5000))
             const title = await p.title()
             const pageUrl = p.url()
             return textResult({ ok: true, title, url: pageUrl })
           }
           case 'snapshot': {
-            const snapshot = await p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT) as { text: string; refCount: number }
-            return textResult({ snapshot: snapshot.text, url: p.url(), title: await p.title(), refCount: snapshot.refCount })
+            const snapshot = (await p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT)) as { text: string; refCount: number }
+            return textResult({
+              snapshot: snapshot.text,
+              url: p.url(),
+              title: await p.title(),
+              refCount: snapshot.refCount,
+            })
           }
           case 'click': {
             const locator = resolveLocator(p, ref, selector)
-            if (!locator) return textResult({ error: 'ref or selector is required for click' })
-            try { await locator.scrollIntoViewIfNeeded({ timeout: 3000 }) } catch {}
+            if (!locator)
+              return textResult({
+                error: 'ref or selector is required for click',
+              })
+            try {
+              await locator.scrollIntoViewIfNeeded({ timeout: 3000 })
+            } catch {}
             try {
               await locator.click({ timeout: 10000 })
             } catch (clickErr: any) {
               const found = await locator.count().catch(() => 0)
-              if (found === 0) return textResult({ error: staleTargetHint('click', ref, selector), action: 'click' })
+              if (found === 0)
+                return textResult({
+                  error: staleTargetHint('click', ref, selector),
+                  action: 'click',
+                })
               throw clickErr
             }
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 3000))
@@ -4156,14 +4595,23 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           }
           case 'fill': {
             const locator = resolveLocator(p, ref, selector)
-            if (!locator) return textResult({ error: 'ref or selector is required for fill' })
+            if (!locator)
+              return textResult({
+                error: 'ref or selector is required for fill',
+              })
             if (value === undefined) return textResult({ error: 'value is required for fill' })
-            try { await locator.scrollIntoViewIfNeeded({ timeout: 3000 }) } catch {}
+            try {
+              await locator.scrollIntoViewIfNeeded({ timeout: 3000 })
+            } catch {}
             try {
               await locator.fill(value, { timeout: 10000 })
             } catch (fillErr: any) {
               const found = await locator.count().catch(() => 0)
-              if (found === 0) return textResult({ error: staleTargetHint('fill', ref, selector), action: 'fill' })
+              if (found === 0)
+                return textResult({
+                  error: staleTargetHint('fill', ref, selector),
+                  action: 'fill',
+                })
               throw fillErr
             }
             return textResult({ ok: true, action: 'fill', ref, selector })
@@ -4171,17 +4619,27 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           case 'extract': {
             if (!selector) return textResult({ error: 'selector is required for extract' })
             const elements = await p.$$eval(selector, (els: Element[]) =>
-              els.map(el => ({ text: el.textContent?.trim(), html: el.outerHTML.substring(0, 500) }))
+              els.map((el) => ({
+                text: el.textContent?.trim(),
+                html: el.outerHTML.substring(0, 500),
+              })),
             )
-            return textResult({ elements: elements.slice(0, 50), count: elements.length, url: p.url() })
+            return textResult({
+              elements: elements.slice(0, 50),
+              count: elements.length,
+              url: p.url(),
+            })
           }
           case 'text': {
             const rawText = await p.evaluate(() => document.body.innerText)
             const cleaned = typeof rawText === 'string' ? cleanPlainText(rawText) : rawText
-            const truncated = typeof cleaned === 'string' && cleaned.length > 50000
-              ? cleaned.substring(0, 50000) + '\n[Truncated]'
-              : cleaned
-            return textResult({ content: truncated, url: p.url(), title: await p.title() })
+            const truncated =
+              typeof cleaned === 'string' && cleaned.length > 50000 ? cleaned.substring(0, 50000) + '\n[Truncated]' : cleaned
+            return textResult({
+              content: truncated,
+              url: p.url(),
+              title: await p.title(),
+            })
           }
           case 'screenshot': {
             // One-time housekeeping per tool instance: sweep any legacy loose
@@ -4190,20 +4648,30 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             // accumulate unbounded run folders.
             if (!screenshotHousekeepingDone) {
               screenshotHousekeepingDone = true
-              try { sweepLooseScreenshots(ctx.workspaceDir) } catch {}
-              try { trimOldScreenshotRuns(ctx.workspaceDir) } catch {}
+              try {
+                sweepLooseScreenshots(ctx.workspaceDir)
+              } catch {}
+              try {
+                trimOldScreenshotRuns(ctx.workspaceDir)
+              } catch {}
             }
             screenshotCount += 1
             const runDir = resolveScreenshotRunDir(ctx.workspaceDir, ctx.subagentInstanceId)
             const screenshotPath = nextScreenshotFilePath(runDir, screenshotCount)
-            const buffer = await p.screenshot({ path: screenshotPath, fullPage: false })
+            const buffer = await p.screenshot({
+              path: screenshotPath,
+              fullPage: false,
+            })
             // Expose the path as workspace-relative so canvas data + markdown
             // reports can reference it portably.
             const relPath = relative(ctx.workspaceDir, screenshotPath)
             const base64 = Buffer.from(buffer).toString('base64')
             const rawContent = [
               { type: 'image' as const, data: base64, mimeType: 'image/png' },
-              { type: 'text' as const, text: JSON.stringify({ ok: true, path: relPath, url: p.url() }) },
+              {
+                type: 'text' as const,
+                text: JSON.stringify({ ok: true, path: relPath, url: p.url() }),
+              },
             ]
             const safeContent = enforceImageSizeLimit(rawContent, {
               label: 'browser:screenshot',
@@ -4215,23 +4683,41 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             }
           }
           case 'evaluate': {
-            if (!value) return textResult({ error: 'value (JS code) is required for evaluate' })
+            if (!value)
+              return textResult({
+                error: 'value (JS code) is required for evaluate',
+              })
             const result = await p.evaluate(value)
             return textResult({ result, url: p.url() })
           }
           case 'select': {
             const locator = resolveLocator(p, ref, selector)
-            if (!locator) return textResult({ error: 'ref or selector is required for select' })
+            if (!locator)
+              return textResult({
+                error: 'ref or selector is required for select',
+              })
             if (value === undefined) return textResult({ error: 'value is required for select' })
-            try { await locator.scrollIntoViewIfNeeded({ timeout: 3000 }) } catch {}
+            try {
+              await locator.scrollIntoViewIfNeeded({ timeout: 3000 })
+            } catch {}
             try {
               await locator.selectOption(value, { timeout: 10000 })
             } catch (selectErr: any) {
               const found = await locator.count().catch(() => 0)
-              if (found === 0) return textResult({ error: staleTargetHint('select', ref, selector), action: 'select' })
+              if (found === 0)
+                return textResult({
+                  error: staleTargetHint('select', ref, selector),
+                  action: 'select',
+                })
               throw selectErr
             }
-            return textResult({ ok: true, action: 'select', ref, selector, value })
+            return textResult({
+              ok: true,
+              action: 'select',
+              ref,
+              selector,
+              value,
+            })
           }
           case 'scroll': {
             if (ref !== undefined || selector) {
@@ -4279,14 +4765,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       if (action === 'screenshot' && result && Array.isArray(result.content)) {
         const img = result.content.find((c: any) => c?.type === 'image' && typeof c?.data === 'string')
         if (img) {
-          try { screenshotBuffer = Buffer.from(img.data, 'base64') } catch {}
+          try {
+            screenshotBuffer = Buffer.from(img.data, 'base64')
+          } catch {}
           // Trim the inline base64 from what we serialize to JSON; replay
           // will rehydrate from screenshotFile so JSON stays small.
           responseToWrite = {
             ...result,
-            content: result.content.map((c: any) =>
-              c?.type === 'image' ? { type: 'image', mimeType: c.mimeType, dataInFile: true } : c,
-            ),
+            content: result.content.map((c: any) => (c?.type === 'image' ? { type: 'image', mimeType: c.mimeType, dataInFile: true } : c)),
           }
         }
       }
@@ -4307,16 +4793,21 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 function createSendMessageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'send_message',
-    description:
-      'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email).',
+    description: 'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email).',
     label: 'Send Message',
     parameters: Type.Object({
-      channel: Type.String({ description: 'Channel type (e.g. "telegram", "discord")' }),
+      channel: Type.String({
+        description: 'Channel type (e.g. "telegram", "discord")',
+      }),
       channelId: Type.String({ description: 'Target chat/channel ID' }),
       message: Type.String({ description: 'Message text to send' }),
     }),
     execute: async (_toolCallId, params) => {
-      const { channel: channelType, channelId, message } = params as {
+      const {
+        channel: channelType,
+        channelId,
+        message,
+      } = params as {
         channel: string
         channelId: string
         message: string
@@ -4348,13 +4839,17 @@ function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
     description: 'Disconnect a messaging channel and remove it from config.',
     label: 'Disconnect Channel',
     parameters: Type.Object({
-      type: Type.String({ description: 'Channel type to disconnect (e.g. "discord")' }),
+      type: Type.String({
+        description: 'Channel type to disconnect (e.g. "discord")',
+      }),
     }),
     execute: async (_toolCallId, params) => {
       const { type } = params as { type: string }
 
       if (!ctx.disconnectChannel) {
-        return textResult({ error: 'Channel disconnect not available in this context' })
+        return textResult({
+          error: 'Channel disconnect not available in this context',
+        })
       }
 
       try {
@@ -4366,12 +4861,20 @@ function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
             const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
             fileConfig.channels = (fileConfig.channels || []).filter((ch: any) => ch.type !== type)
             writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
-          } catch { /* config corrupted, skip */ }
+          } catch {
+            /* config corrupted, skip */
+          }
         }
 
-        return textResult({ ok: true, type, message: `${type} channel disconnected` })
+        return textResult({
+          ok: true,
+          type,
+          message: `${type} channel disconnected`,
+        })
       } catch (err: any) {
-        return textResult({ error: `Failed to disconnect ${type}: ${err.message}` })
+        return textResult({
+          error: `Failed to disconnect ${type}: ${err.message}`,
+        })
       }
     },
   }
@@ -4392,13 +4895,15 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
           const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
           channelConfigs = fileConfig.channels || []
           configured = channelConfigs.map((ch: any) => ch.type)
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       const statuses = []
       for (const [type, adapter] of ctx.channels) {
         const status = adapter.getStatus()
-        const chConf = channelConfigs.find(c => c.type === type)
+        const chConf = channelConfigs.find((c) => c.type === type)
         if (chConf?.model) {
           status.model = chConf.model
         }
@@ -4431,13 +4936,17 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
       'When results are empty: do NOT give up after one query. Retry with a different keyword first — try the integration\'s common name ("google calendar"), the underlying capability ("calendar", "events", "scheduling"), or a sibling provider ("gcal", "outlook"). Only conclude an integration does not exist after at least 2 different searches return empty.',
     label: 'Search Integrations',
     parameters: Type.Object({
-      query: Type.String({ description: 'Search query describing the capability you need (e.g. "google calendar", "postgres database", "seo audit", "github ops", "slack mentions")' }),
+      query: Type.String({
+        description:
+          'Search query describing the capability you need (e.g. "google calendar", "postgres database", "seo audit", "github ops", "slack mentions")',
+      }),
       limit: Type.Optional(Type.Number({ description: 'Max results to return (default: 5)' })),
-      source: Type.Optional(Type.Union([
-        Type.Literal('managed'),
-        Type.Literal('skill'),
-        Type.Literal('mcp'),
-      ], { description: 'Restrict to a single source (managed = Composio OAuth, skill = bundled skills, mcp = MCP protocol servers). Omit to search all three.' })),
+      source: Type.Optional(
+        Type.Union([Type.Literal('managed'), Type.Literal('skill'), Type.Literal('mcp')], {
+          description:
+            'Restrict to a single source (managed = Composio OAuth, skill = bundled skills, mcp = MCP protocol servers). Omit to search all three.',
+        }),
+      ),
     }),
     execute: async (_id: string, params: any) => {
       const query = params.query as string
@@ -4460,14 +4969,16 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
                 logo: tk.logo,
               })
             }
-          } catch { /* Composio API unavailable */ }
+          } catch {
+            /* Composio API unavailable */
+          }
         }
       }
 
       if (!source || source === 'skill') {
         try {
           const installed = loadAllSkills(ctx.workspaceDir)
-          const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
+          const bundled = loadBundledSkills(new Set(installed.map((s) => s.name)))
           const skillResults = searchSkills(query, installed, bundled, limit)
           for (const skill of skillResults) {
             results.push({
@@ -4482,13 +4993,15 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
               trigger: skill.trigger,
             })
           }
-        } catch { /* skill search failed, continue */ }
+        } catch {
+          /* skill search failed, continue */
+        }
       }
 
       if (!source || source === 'mcp') {
         const queryLower = query.toLowerCase()
-        const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2)
-        const scored: Array<{ entry: typeof MCP_CATALOG[0]; score: number }> = []
+        const queryWords = queryLower.split(/\s+/).filter((w) => w.length > 2)
+        const scored: Array<{ entry: (typeof MCP_CATALOG)[0]; score: number }> = []
         for (const entry of MCP_CATALOG) {
           const haystack = `${entry.id} ${entry.name} ${entry.description} ${entry.category} ${entry.providedTools.join(' ')}`.toLowerCase()
           const idName = `${entry.id} ${entry.name}`.toLowerCase()
@@ -4515,12 +5028,16 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
       }
 
       if (results.length === 0) {
-        return textResult({ query, results: [], message: 'No integrations found. Try a different search term.' })
+        return textResult({
+          query,
+          results: [],
+          message: 'No integrations found. Try a different search term.',
+        })
       }
 
-      const managedCount = results.filter(r => r.source === 'managed').length
-      const skillCount = results.filter(r => r.source === 'skill').length
-      const mcpCount = results.filter(r => r.source === 'mcp').length
+      const managedCount = results.filter((r) => r.source === 'managed').length
+      const skillCount = results.filter((r) => r.source === 'skill').length
+      const mcpCount = results.filter((r) => r.source === 'mcp').length
       const parts: string[] = []
       if (managedCount > 0) parts.push(`${managedCount} managed OAuth integration(s) (no credentials needed)`)
       if (skillCount > 0) parts.push(`${skillCount} skill(s)`)
@@ -4542,7 +5059,7 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
  */
 const SDK_USAGE_FOOTER = [
   '',
-  'To use these tools from the user\'s app, import from @shogo-ai/sdk/tools.',
+  "To use these tools from the user's app, import from @shogo-ai/sdk/tools.",
   '',
   'The SDK auto-parses tool result `data` (the runtime always JSON.stringifies',
   'tool responses; @shogo-ai/sdk/tools >=1.3 parses them back). Index `data`',
@@ -4552,40 +5069,40 @@ const SDK_USAGE_FOOTER = [
   '',
   'DASHBOARDS / list views / "my X" pages → ALWAYS server-side in custom-routes.ts:',
   '',
-  '  import { getServerToolsClient } from \'@shogo-ai/sdk/tools\'',
-  '  app.get(\'/jira/my-issues\', async (c) => {',
+  "  import { getServerToolsClient } from '@shogo-ai/sdk/tools'",
+  "  app.get('/jira/my-issues', async (c) => {",
   '    const tools = getServerToolsClient()',
-  '    const me = await tools.execute<{ accountId: string }>(\'JIRA_GET_CURRENT_USER\', {})',
+  "    const me = await tools.execute<{ accountId: string }>('JIRA_GET_CURRENT_USER', {})",
   '    if (!me.ok || !me.data?.accountId) {',
-  '      return c.json({ error: me.error ?? \'not authenticated\' }, 401)',
+  "      return c.json({ error: me.error ?? 'not authenticated' }, 401)",
   '    }',
-  '    const issues = await tools.execute<{ issues: unknown[] }>(\'JIRA_SEARCH_ISSUES\', {',
+  "    const issues = await tools.execute<{ issues: unknown[] }>('JIRA_SEARCH_ISSUES', {",
   '      jql: `assignee = "${me.data.accountId}"`,',
   '    })',
-  '    if (!issues.ok) return c.json({ error: issues.error ?? \'search failed\' }, 502)',
+  "    if (!issues.ok) return c.json({ error: issues.error ?? 'search failed' }, 502)",
   '    return c.json({ issues: issues.data?.issues ?? [] })',
   '  })',
   '',
-  '  // In the browser — surface the server\'s actual error to the UI:',
-  '  const res = await fetch(\'/api/jira/my-issues\')',
+  "  // In the browser — surface the server's actual error to the UI:",
+  "  const res = await fetch('/api/jira/my-issues')",
   '  const body = await res.json().catch(() => ({}))',
   '  if (!res.ok) setError(body.error ?? `HTTP ${res.status}`)',
   '  else setIssues(body.issues ?? [])',
   '',
   'AD-HOC interactive actions (button clicks, form submits) → useTools() in the component:',
   '',
-  '  import { useTools } from \'@shogo-ai/sdk/tools\'',
+  "  import { useTools } from '@shogo-ai/sdk/tools'",
   '  const { execute } = useTools()',
-  '  await execute(\'GMAIL_SEND_EMAIL\', { to, subject, body })',
+  "  await execute('GMAIL_SEND_EMAIL', { to, subject, body })",
   '',
   'NEVER read provider tokens from env (no *_API_TOKEN, *_API_KEY) for managed',
   'integrations — there are no provider env vars in the pod. NEVER call the',
-  'provider\'s REST API directly with fetch(). Always go through the SDK.',
-  'NEVER hardcode the agent operator\'s identity (your accountId, member id,',
-  'userId) into the user\'s app — derive it per request inside the route via',
+  "provider's REST API directly with fetch(). Always go through the SDK.",
+  "NEVER hardcode the agent operator's identity (your accountId, member id,",
+  "userId) into the user's app — derive it per request inside the route via",
   '<TOOLKIT>_GET_CURRENT_USER.',
-  'NEVER throw `new Error(\'Failed to load X\')` from a client fetch handler.',
-  'Parse the JSON body\'s `error` field and surface it to the UI — generic',
+  "NEVER throw `new Error('Failed to load X')` from a client fetch handler.",
+  "Parse the JSON body's `error` field and surface it to the UI — generic",
   'messages strand the user with no path to debug.',
   'AFTER writing a route, hit it: `curl -s -w "\\nHTTP %{http_code}\\n"',
   'http://localhost:$RUNTIME_PORT/api/<your-route>`. A green build proves the',
@@ -4626,11 +5143,7 @@ function renderAgentDirectUsageBlock(toolkitName: string, toolNames: string[]): 
   ].join('\n')
 }
 
-export function formatToolInstallMessage(
-  toolkitName: string,
-  toolNames: string[],
-  auth: { status: string; authUrl?: string },
-): string {
+export function formatToolInstallMessage(toolkitName: string, toolNames: string[], auth: { status: string; authUrl?: string }): string {
   const toolCount = toolNames.length
   const base = `"${toolkitName}" installed with ${toolCount} tool(s).`
   const directUsage = renderAgentDirectUsageBlock(toolkitName, toolNames)
@@ -4660,11 +5173,12 @@ async function connectViaComposio(
     const userId = ctx.userId || process.env.USER_ID || 'default'
     const workspaceId = resolveWorkspaceId(ctx) || 'default'
     const scopeEnv = process.env.COMPOSIO_USER_SCOPE
-    const scope: 'workspace' | 'project' =
-      scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
+    const scope: 'workspace' | 'project' = scopeEnv === 'workspace' || scopeEnv === 'project' ? scopeEnv : 'workspace'
     const initialized = await initComposioSession(userId, workspaceId, ctx.projectId, scope)
     if (!initialized) {
-      return textResult({ error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.` })
+      return textResult({
+        error: `Failed to connect "${composioToolkit.name}" via Composio. The integration may not be available.`,
+      })
     }
   }
   const proxy = await registerToolkitProxyTools(ctx.mcpClientManager, composioToolkit.slug)
@@ -4689,14 +5203,19 @@ async function connectViaComposio(
  */
 async function connectSkill(ctx: ToolContext, skillName: string): Promise<AgentToolResult<any>> {
   const installed = loadAllSkills(ctx.workspaceDir)
-  const bundled = loadBundledSkills(new Set(installed.map(s => s.name)))
-  const bundledSkill = bundled.find(s => s.name === skillName)
+  const bundled = loadBundledSkills(new Set(installed.map((s) => s.name)))
+  const bundledSkill = bundled.find((s) => s.name === skillName)
   if (!bundledSkill) {
     const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
     if (existsSync(destDir)) {
-      return textResult({ error: `Skill "${skillName}" is already installed`, path: `.shogo/skills/${skillName}/SKILL.md` })
+      return textResult({
+        error: `Skill "${skillName}" is already installed`,
+        path: `.shogo/skills/${skillName}/SKILL.md`,
+      })
     }
-    return textResult({ error: `Bundled skill "${skillName}" not found. Use search_integrations to find available skills.` })
+    return textResult({
+      error: `Bundled skill "${skillName}" not found. Use search_integrations to find available skills.`,
+    })
   }
   const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skillName)
   mkdirSync(destDir, { recursive: true })
@@ -4729,7 +5248,11 @@ async function connectSkill(ctx: ToolContext, skillName: string): Promise<AgentT
 async function connectViaMcp(
   ctx: ToolContext,
   name: string,
-  opts: { env?: Record<string, string>; url?: string; headers?: Record<string, string> },
+  opts: {
+    env?: Record<string, string>
+    url?: string
+    headers?: Record<string, string>
+  },
 ): Promise<AgentToolResult<any>> {
   if (!ctx.mcpClientManager) {
     return textResult({ error: 'MCP client manager not available' })
@@ -4738,33 +5261,48 @@ async function connectViaMcp(
 
   if (url) {
     if (ctx.mcpClientManager.isRunning(name)) {
-      const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
-      return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+      const info = ctx.mcpClientManager.getServerInfo().find((s) => s.name === name)
+      return textResult({
+        error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`,
+        tools: info?.toolNames,
+      })
     }
-    const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, { url, headers })
+    const tools = await ctx.mcpClientManager.hotAddRemoteServer(name, {
+      url,
+      headers,
+    })
     return textResult({
       ok: true,
       source: 'mcp',
       server: name,
       type: 'remote',
       toolCount: tools.length,
-      tools: tools.map(t => ({ name: t.name, description: t.description })),
+      tools: tools.map((t) => ({ name: t.name, description: t.description })),
       message: `Connected to remote MCP server "${name}" at ${url} with ${tools.length} tool(s).`,
     })
   }
 
   if (ctx.mcpClientManager.isRunning(name)) {
-    const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
-    return textResult({ error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`, tools: info?.toolNames })
+    const info = ctx.mcpClientManager.getServerInfo().find((s) => s.name === name)
+    return textResult({
+      error: `Server "${name}" is already running with ${info?.toolCount || 0} tools`,
+      tools: info?.toolNames,
+    })
   }
 
-  const catalogEntry = MCP_CATALOG.find(e => e.id === name)
+  const catalogEntry = MCP_CATALOG.find((e) => e.id === name)
   if (!isMcpServerAllowed(name) || !catalogEntry) {
-    const catalogIds = MCP_CATALOG.map(e => e.id).join(', ')
-    return textResult({ error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter.` })
+    const catalogIds = MCP_CATALOG.map((e) => e.id).join(', ')
+    return textResult({
+      error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter.`,
+    })
   }
 
-  let config: { command: string; args?: string[]; env?: Record<string, string> }
+  let config: {
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+  }
   if (isPreinstalledMcpId(name)) {
     config = {
       command: 'npx',
@@ -4772,11 +5310,7 @@ async function connectViaMcp(
       env,
     }
   } else {
-    config = await ctx.mcpClientManager.installPackageLocally(
-      catalogEntry.package,
-      catalogEntry.defaultArgs,
-      env,
-    )
+    config = await ctx.mcpClientManager.installPackageLocally(catalogEntry.package, catalogEntry.defaultArgs, env)
     if (env) config.env = { ...config.env, ...env }
   }
 
@@ -4786,7 +5320,7 @@ async function connectViaMcp(
     source: 'mcp',
     server: name,
     toolCount: tools.length,
-    tools: tools.map(t => ({ name: t.name, description: t.description })),
+    tools: tools.map((t) => ({ name: t.name, description: t.description })),
     message: `Installed MCP server "${name}" with ${tools.length} tool(s). They are now available for use.`,
   })
 }
@@ -4809,14 +5343,31 @@ function createConnectTool(ctx: ToolContext): AgentTool {
       'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
-      name: Type.String({ description: 'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres", "filesystem" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url.' }),
-      source: Type.Optional(Type.Union([
-        Type.Literal('managed'),
-        Type.Literal('mcp'),
-      ], { description: 'Force a specific backend. Omit for auto-routing (Composio first, then MCP).' })),
-      env: Type.Optional(Type.Any({ description: 'MCP-only: environment variables for the server process (API keys, connection strings).' })),
-      url: Type.Optional(Type.String({ description: 'MCP-only: remote MCP server URL (HTTP/StreamableHTTP). When provided, connects to the remote server instead of installing from the catalog.' })),
-      headers: Type.Optional(Type.Any({ description: 'MCP-only: HTTP headers for remote MCP server authentication.' })),
+      name: Type.String({
+        description:
+          'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres", "filesystem" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url.',
+      }),
+      source: Type.Optional(
+        Type.Union([Type.Literal('managed'), Type.Literal('mcp')], {
+          description: 'Force a specific backend. Omit for auto-routing (Composio first, then MCP).',
+        }),
+      ),
+      env: Type.Optional(
+        Type.Any({
+          description: 'MCP-only: environment variables for the server process (API keys, connection strings).',
+        }),
+      ),
+      url: Type.Optional(
+        Type.String({
+          description:
+            'MCP-only: remote MCP server URL (HTTP/StreamableHTTP). When provided, connects to the remote server instead of installing from the catalog.',
+        }),
+      ),
+      headers: Type.Optional(
+        Type.Any({
+          description: 'MCP-only: HTTP headers for remote MCP server authentication.',
+        }),
+      ),
     }),
     execute: async (_id: string, params: any) => {
       const { name, source, env, url, headers } = params as {
@@ -4850,16 +5401,22 @@ function createConnectTool(ctx: ToolContext): AgentTool {
             return await connectViaComposio(ctx, name, composioToolkit)
           }
           if (source === 'managed') {
-            return textResult({ error: `"${name}" is not a managed Composio integration. Use search_integrations to find available integrations, or omit \`source\` to fall through to MCP.` })
+            return textResult({
+              error: `"${name}" is not a managed Composio integration. Use search_integrations to find available integrations, or omit \`source\` to fall through to MCP.`,
+            })
           }
         } else if (source === 'managed') {
-          return textResult({ error: `Composio is not configured (set COMPOSIO_API_KEY). Cannot install "${name}" as a managed integration.` })
+          return textResult({
+            error: `Composio is not configured (set COMPOSIO_API_KEY). Cannot install "${name}" as a managed integration.`,
+          })
         }
 
         return await connectViaMcp(ctx, name, { env, url, headers })
       } catch (err: any) {
         console.error(`[connect] Unhandled error installing "${params?.name}":`, err)
-        return textResult({ error: `Failed to install "${params?.name}": ${err.message}` })
+        return textResult({
+          error: `Failed to install "${params?.name}": ${err.message}`,
+        })
       }
     },
   }
@@ -4874,10 +5431,13 @@ function createConnectTool(ctx: ToolContext): AgentTool {
 function createDisconnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'disconnect',
-    description: 'Stop and remove an installed integration (managed OAuth, MCP server, or skill binding). Its tools will no longer be available. Auto-detects which backend owns the name.',
+    description:
+      'Stop and remove an installed integration (managed OAuth, MCP server, or skill binding). Its tools will no longer be available. Auto-detects which backend owns the name.',
     label: 'Disconnect Integration',
     parameters: Type.Object({
-      name: Type.String({ description: 'Integration name to remove (use search_integrations to find names of currently installed entries)' }),
+      name: Type.String({
+        description: 'Integration name to remove (use search_integrations to find names of currently installed entries)',
+      }),
     }),
     execute: async (_id: string, params: any) => {
       const name = params.name as string
@@ -4888,19 +5448,28 @@ function createDisconnectTool(ctx: ToolContext): AgentTool {
 
       try {
         if (!ctx.mcpClientManager.isRunning(name)) {
-          return textResult({ error: `Integration "${name}" is not running`, installed: ctx.mcpClientManager.getServerNames() })
+          return textResult({
+            error: `Integration "${name}" is not running`,
+            installed: ctx.mcpClientManager.getServerNames(),
+          })
         }
 
-        const info = ctx.mcpClientManager.getServerInfo().find(s => s.name === name)
+        const info = ctx.mcpClientManager.getServerInfo().find((s) => s.name === name)
         if (info?.config.command === 'remote') {
           await ctx.mcpClientManager.hotRemoveRemoteServer(name)
         } else {
           await ctx.mcpClientManager.hotRemoveServer(name)
         }
-        return textResult({ ok: true, removed: name, message: `Removed integration "${name}" and all its tools.` })
+        return textResult({
+          ok: true,
+          removed: name,
+          message: `Removed integration "${name}" and all its tools.`,
+        })
       } catch (err: any) {
         console.error(`[disconnect] Unhandled error removing "${name}":`, err)
-        return textResult({ error: `Failed to remove "${name}": ${err.message}` })
+        return textResult({
+          error: `Failed to remove "${name}": ${err.message}`,
+        })
       }
     },
   }
@@ -4917,22 +5486,56 @@ import { isInForkChild, buildForkDirective } from './subagent-prompts'
 function createAgentCreateTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_create',
-    description: 'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. Use the same name to update an existing type. Set persist: true to save across sessions.',
+    description:
+      'Register a new sub-agent type at runtime. Define its system prompt, allowed tools, and model tier. Use the same name to update an existing type. Set persist: true to save across sessions.',
     label: 'Create Agent',
     parameters: Type.Object({
-      name: Type.String({ description: 'Unique agent type name (e.g. "test-writer", "pr-reviewer")' }),
-      description: Type.String({ description: 'Short description of what this agent does' }),
-      system_prompt: Type.String({ description: 'System prompt for the agent (max 4000 chars)' }),
-      tools: Type.Optional(Type.Array(Type.String(), { description: 'Tool names this agent can use. Omit for all tools.' })),
+      name: Type.String({
+        description: 'Unique agent type name (e.g. "test-writer", "pr-reviewer")',
+      }),
+      description: Type.String({
+        description: 'Short description of what this agent does',
+      }),
+      system_prompt: Type.String({
+        description: 'System prompt for the agent (max 4000 chars)',
+      }),
+      tools: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Tool names this agent can use. Omit for all tools.',
+        }),
+      ),
       model_tier: Type.Optional(Type.String({ description: 'Model tier: fast, default, or capable' })),
       max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
-      readonly: Type.Optional(Type.Boolean({ description: 'If true, only read-only tools are available' })),
-      persist: Type.Optional(Type.Boolean({ description: 'If true, save to .shogo/agents/ for future sessions' })),
+      readonly: Type.Optional(
+        Type.Boolean({
+          description: 'If true, only read-only tools are available',
+        }),
+      ),
+      persist: Type.Optional(
+        Type.Boolean({
+          description: 'If true, save to .shogo/agents/ for future sessions',
+        }),
+      ),
     }),
     execute: async (_id, params) => {
-      const { name, description, system_prompt, tools, model_tier, max_turns, readonly: ro, persist } = params as {
-        name: string; description: string; system_prompt: string;
-        tools?: string[]; model_tier?: string; max_turns?: number; readonly?: boolean; persist?: boolean
+      const {
+        name,
+        description,
+        system_prompt,
+        tools,
+        model_tier,
+        max_turns,
+        readonly: ro,
+        persist,
+      } = params as {
+        name: string
+        description: string
+        system_prompt: string
+        tools?: string[]
+        model_tier?: string
+        max_turns?: number
+        readonly?: boolean
+        persist?: boolean
       }
       const am = ctx.agentManager
       if (!am) return textResult({ error: 'AgentManager not available' })
@@ -4961,18 +5564,41 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
 function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'agent_spawn',
-    description: 'Launch an instance of a registered or built-in agent type. Returns an instance_id. Use background: true for async execution, then check with agent_status/agent_result. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+    description:
+      'Launch an instance of a registered or built-in agent type. Returns an instance_id. Use background: true for async execution, then check with agent_status/agent_result. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
-      type: Type.Optional(Type.String({
-        description: 'Agent type name (built-in or created with agent_create). Omit for fork mode (inherits full context).',
-      })),
+      type: Type.Optional(
+        Type.String({
+          description: 'Agent type name (built-in or created with agent_create). Omit for fork mode (inherits full context).',
+        }),
+      ),
       prompt: Type.String({ description: 'Task prompt for the agent' }),
-      model_tier: Type.Optional(Type.String({ description: 'Model tier: fast (cheap), default (parent), capable (best)' })),
-      max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10, fork: 200)' })),
-      readonly: Type.Optional(Type.Boolean({ description: 'If true, only read-only tools are available' })),
-      background: Type.Optional(Type.Boolean({ description: 'If true, run asynchronously (default: false — blocks until done)' })),
-      resume: Type.Optional(Type.String({ description: 'Instance ID to resume (sends follow-up to existing agent)' })),
+      model_tier: Type.Optional(
+        Type.String({
+          description: 'Model tier: fast (cheap), default (parent), capable (best)',
+        }),
+      ),
+      max_turns: Type.Optional(
+        Type.Number({
+          description: 'Max agentic turns (default: 10, fork: 200)',
+        }),
+      ),
+      readonly: Type.Optional(
+        Type.Boolean({
+          description: 'If true, only read-only tools are available',
+        }),
+      ),
+      background: Type.Optional(
+        Type.Boolean({
+          description: 'If true, run asynchronously (default: false — blocks until done)',
+        }),
+      ),
+      resume: Type.Optional(
+        Type.String({
+          description: 'Instance ID to resume (sends follow-up to existing agent)',
+        }),
+      ),
     }),
     execute: async (toolCallId, params) => {
       const {
@@ -4984,19 +5610,28 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         background,
         resume,
       } = params as {
-        type?: string; prompt: string; model_tier?: string; max_turns?: number;
-        readonly?: boolean; background?: boolean; resume?: string
+        type?: string
+        prompt: string
+        model_tier?: string
+        max_turns?: number
+        readonly?: boolean
+        background?: boolean
+        resume?: string
       }
 
       // --- Fork mode: type is omitted ---
       if (!type) {
         if (!ctx.renderedSystemPrompt || !ctx.sessionMessages) {
-          return textResult({ error: 'Fork mode requires parent context (renderedSystemPrompt + sessionMessages). Not available in this context.' })
+          return textResult({
+            error: 'Fork mode requires parent context (renderedSystemPrompt + sessionMessages). Not available in this context.',
+          })
         }
 
         // Recursive fork guard
         if (isInForkChild(ctx.sessionMessages)) {
-          return textResult({ error: 'Cannot fork from within a fork. Execute the task directly instead.' })
+          return textResult({
+            error: 'Cannot fork from within a fork. Execute the task directly instead.',
+          })
         }
 
         const forkConfig: SubagentConfig = {
@@ -5034,7 +5669,13 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
               toolCallCount: result.toolCalls,
               subagent: 'fork',
               model: subModel,
-              dollarCost: calculateDollarCost(subModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens),
+              dollarCost: calculateDollarCost(
+                subModel,
+                result.inputTokens,
+                result.outputTokens,
+                result.cacheReadTokens,
+                result.cacheWriteTokens,
+              ),
             },
           })
         }
@@ -5055,7 +5696,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const am = ctx.agentManager
       if (!am) return textResult({ error: 'AgentManager not available' })
 
-      const history = resume ? am.getInstanceMessages(resume) ?? undefined : undefined
+      const history = resume ? (am.getInstanceMessages(resume) ?? undefined) : undefined
 
       // Apply optional overrides before spawn
       if (model_tier || max_turns || readonlyMode) {
@@ -5080,7 +5721,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       spawn?.setInstanceId(instanceId)
 
       if (background) {
-        return textResult({ instance_id: instanceId, status: 'running', hint: 'Use agent_status or agent_result to check progress' })
+        return textResult({
+          instance_id: instanceId,
+          status: 'running',
+          hint: 'Use agent_status or agent_result to check progress',
+        })
       }
 
       // Synchronous: wait for completion
@@ -5101,7 +5746,13 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
             toolCallCount: result.toolCalls,
             subagent: type,
             model: subModel,
-            dollarCost: calculateDollarCost(subModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens),
+            dollarCost: calculateDollarCost(
+              subModel,
+              result.inputTokens,
+              result.outputTokens,
+              result.cacheReadTokens,
+              result.cacheWriteTokens,
+            ),
           },
         })
       }
@@ -5131,7 +5782,20 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
  * text/tool events. Each sub-agent is scoped to its own spawnToolCallId,
  * so multiple concurrent sub-agents work correctly.
  */
-export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callbacks: SubagentStreamCallbacks; getAccumulatedOutput: () => { agentId: string | null; parts: any[]; model: string | null }; setInstanceId: (id: string) => void } | undefined {
+export function buildSpawnCallbacks(
+  w: any,
+  spawnToolCallId: string,
+):
+  | {
+      callbacks: SubagentStreamCallbacks
+      getAccumulatedOutput: () => {
+        agentId: string | null
+        parts: any[]
+        model: string | null
+      }
+      setInstanceId: (id: string) => void
+    }
+  | undefined {
   if (!w) return undefined
 
   const parts: any[] = []
@@ -5146,14 +5810,20 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     const now = Date.now()
     if (!force && now - lastEmitTime < THROTTLE_MS) {
       if (!pendingEmit) {
-        pendingEmit = setTimeout(() => {
-          pendingEmit = null
-          emitPreliminary(true)
-        }, THROTTLE_MS - (now - lastEmitTime))
+        pendingEmit = setTimeout(
+          () => {
+            pendingEmit = null
+            emitPreliminary(true)
+          },
+          THROTTLE_MS - (now - lastEmitTime),
+        )
       }
       return
     }
-    if (pendingEmit) { clearTimeout(pendingEmit); pendingEmit = null }
+    if (pendingEmit) {
+      clearTimeout(pendingEmit)
+      pendingEmit = null
+    }
     lastEmitTime = now
     w.write({
       type: 'tool-output-available',
@@ -5174,17 +5844,32 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     },
     onEnd: (_name: string) => {
       // Flush any pending throttled emit so the last snapshot arrives
-      if (pendingEmit) { clearTimeout(pendingEmit); pendingEmit = null }
+      if (pendingEmit) {
+        clearTimeout(pendingEmit)
+        pendingEmit = null
+      }
       emitPreliminary(true)
     },
     onTextDelta: (delta: string) => {
       const last = parts[parts.length - 1]
-      if (last?.type === 'text') { last.text += delta }
-      else { parts.push({ type: 'text', text: delta, id: `sa-text-${parts.length}` }) }
+      if (last?.type === 'text') {
+        last.text += delta
+      } else {
+        parts.push({
+          type: 'text',
+          text: delta,
+          id: `sa-text-${parts.length}`,
+        })
+      }
       emitPreliminary()
     },
     onThinkingStart: () => {
-      parts.push({ type: 'reasoning', text: '', isStreaming: true, id: `sa-reason-${parts.length}` })
+      parts.push({
+        type: 'reasoning',
+        text: '',
+        isStreaming: true,
+        id: `sa-reason-${parts.length}`,
+      })
       emitPreliminary()
     },
     onThinkingDelta: (delta: string) => {
@@ -5197,7 +5882,17 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
       emitPreliminary(true)
     },
     onToolCallStart: (toolName: string, toolCallId: string) => {
-      parts.push({ type: 'tool', id: toolCallId, tool: { id: toolCallId, toolName, state: 'streaming', args: undefined, result: undefined } })
+      parts.push({
+        type: 'tool',
+        id: toolCallId,
+        tool: {
+          id: toolCallId,
+          toolName,
+          state: 'streaming',
+          args: undefined,
+          result: undefined,
+        },
+      })
       emitPreliminary()
     },
     onToolCallDelta: (_toolName: string, _delta: string, _toolCallId: string) => {
@@ -5207,7 +5902,17 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
       let p = parts.find((p: any) => p.type === 'tool' && p.id === toolCallId)
       if (!p) {
-        p = { type: 'tool', id: toolCallId, tool: { id: toolCallId, toolName, state: 'streaming', args, result: undefined } }
+        p = {
+          type: 'tool',
+          id: toolCallId,
+          tool: {
+            id: toolCallId,
+            toolName,
+            state: 'streaming',
+            args,
+            result: undefined,
+          },
+        }
         parts.push(p)
       } else {
         p.tool.args = args
@@ -5215,11 +5920,22 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
       emitPreliminary(true)
     },
     onAfterToolCall: async (_toolName: string, _args: any, result: any, isError: boolean, toolCallId: string) => {
-      const parsed = typeof result === 'string' ? (() => { try { return JSON.parse(result) } catch { return result } })() : result
+      const parsed =
+        typeof result === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(result)
+              } catch {
+                return result
+              }
+            })()
+          : result
       const p = parts.find((p: any) => p.type === 'tool' && p.id === toolCallId)
       if (p) {
         p.tool.result = isError
-          ? { error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) }
+          ? {
+              error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed),
+            }
           : (parsed ?? { success: true })
         p.tool.state = isError ? 'error' : 'success'
       }
@@ -5232,10 +5948,7 @@ export function buildSpawnCallbacks(w: any, spawnToolCallId: string): { callback
     getAccumulatedOutput: () => ({ agentId, parts: [...parts], model }),
     setInstanceId: (id: string) => {
       instanceId = id
-      scLog(
-        `[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` +
-        `instanceId=${id}`,
-      )
+      scLog(`[screencast] buildSpawnCallbacks.setInstanceId toolCallId=${spawnToolCallId} ` + `instanceId=${id}`)
       // Re-emit so subscribers learn the instance id ASAP (they need it to
       // open the live screencast stream for the running subagent).
       emitPreliminary(true)
@@ -5264,7 +5977,12 @@ function createAgentStatusTool(ctx: ToolContext): AgentTool {
           type: inst.type,
           status: inst.status,
           elapsed_ms: Date.now() - inst.startedAt,
-          ...(inst.result ? { toolCalls: inst.result.toolCalls, iterations: inst.result.iterations } : {}),
+          ...(inst.result
+            ? {
+                toolCalls: inst.result.toolCalls,
+                iterations: inst.result.iterations,
+              }
+            : {}),
         })
       }
 
@@ -5295,17 +6013,25 @@ function createAgentCancelTool(ctx: ToolContext): AgentTool {
 function createAgentResultTool(ctx: ToolContext): AgentTool {
   return {
     name: 'agent_result',
-    description: 'Wait for and retrieve the result of an agent instance. Blocks until the agent completes by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
+    description:
+      'Wait for and retrieve the result of an agent instance. Blocks until the agent completes by default (up to 2 min). Set timeout_ms to 0 for an immediate non-blocking check.',
     label: 'Agent Result',
     parameters: Type.Object({
-      instance_id: Type.String({ description: 'Instance ID to retrieve result for' }),
-      timeout_ms: Type.Optional(Type.Number({
-        description: 'Max milliseconds to wait for completion. Defaults to 120000 (2 min). Set to 0 for immediate (non-blocking) check.',
-        default: 120_000,
-      })),
+      instance_id: Type.String({
+        description: 'Instance ID to retrieve result for',
+      }),
+      timeout_ms: Type.Optional(
+        Type.Number({
+          description: 'Max milliseconds to wait for completion. Defaults to 120000 (2 min). Set to 0 for immediate (non-blocking) check.',
+          default: 120_000,
+        }),
+      ),
     }),
     execute: async (_id, params) => {
-      const { instance_id, timeout_ms = 120_000 } = params as { instance_id: string; timeout_ms?: number }
+      const { instance_id, timeout_ms = 120_000 } = params as {
+        instance_id: string
+        timeout_ms?: number
+      }
       const am = ctx.agentManager
       if (!am) return textResult({ error: 'AgentManager not available' })
 
@@ -5313,21 +6039,21 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
       if (!inst) return textResult({ error: `Unknown instance: ${instance_id}` })
 
       if (inst.status === 'running' && timeout_ms > 0) {
-        const timeout = new Promise<null>(r => setTimeout(() => r(null), timeout_ms))
-        const winner = await Promise.race([inst.promise.then(r => r), timeout])
+        const timeout = new Promise<null>((r) => setTimeout(() => r(null), timeout_ms))
+        const winner = await Promise.race([inst.promise.then((r) => r), timeout])
         if (!winner) {
           const elapsed = Date.now() - inst.startedAt
           return textResult({
             status: 'running',
             elapsed_ms: elapsed,
-            recent_activity: inst.recentActivity.slice(-5).map(a => `${a.tool}: ${a.summary}`),
+            recent_activity: inst.recentActivity.slice(-5).map((a) => `${a.tool}: ${a.summary}`),
             hint: `Agent still running after ${Math.round(elapsed / 1000)}s. Call again to keep waiting.`,
           })
         }
       } else if (inst.status === 'running') {
         return textResult({
           status: 'running',
-          recent_activity: inst.recentActivity.slice(-5).map(a => `${a.tool}: ${a.summary}`),
+          recent_activity: inst.recentActivity.slice(-5).map((a) => `${a.tool}: ${a.summary}`),
           hint: 'Agent is still running. Call again with timeout_ms > 0 to wait.',
         })
       }
@@ -5367,7 +6093,11 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
         // running" polling responses above; completed instances returned
         // nothing beyond the count, which made e.g. "did the subagent
         // write to reports/x.md" unanswerable from this tool's output.
-        tool_activity: (inst.recentActivity ?? []).map(a => ({ tool: a.tool, input: a.input, summary: a.summary })),
+        tool_activity: (inst.recentActivity ?? []).map((a) => ({
+          tool: a.tool,
+          input: a.input,
+          summary: a.summary,
+        })),
         iterations: r?.iterations ?? 0,
         tokens: r ? { input: r.inputTokens, output: r.outputTokens } : undefined,
       })
@@ -5390,7 +6120,11 @@ function createAgentListTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]
 
       ctx.uiWriter?.write({ type: 'data-agent-types', data: { types } })
 
-      return textResult({ types, active_instances: instances.filter(i => i.status === 'running').length, total_instances: instances.length })
+      return textResult({
+        types,
+        active_instances: instances.filter((i) => i.status === 'running').length,
+        total_instances: instances.length,
+      })
     },
   }
 }
@@ -5402,7 +6136,11 @@ function ensureTeamContext(ctx: ToolContext): { teamId: string; agentId: string;
   const teams = tm.listTeams(ctx.sessionId)
   if (teams.length === 0) return null
   const team = teams[0]!
-  ctx.teamContext = { teamId: team.id, agentId: team.leaderAgentId, isLeader: true }
+  ctx.teamContext = {
+    teamId: team.id,
+    agentId: team.leaderAgentId,
+    isLeader: true,
+  }
   if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
   return ctx.teamContext
 }
@@ -5410,14 +6148,20 @@ function ensureTeamContext(ctx: ToolContext): { teamId: string; agentId: string;
 function createTeamCreateTool(ctx: ToolContext): AgentTool {
   return {
     name: 'team_create',
-    description: 'Create a team of long-lived agent teammates for complex multi-step projects. Teammates persist across turns, communicate via messages, and claim tasks from a shared queue.',
+    description:
+      'Create a team of long-lived agent teammates for complex multi-step projects. Teammates persist across turns, communicate via messages, and claim tasks from a shared queue.',
     label: 'Create Team',
     parameters: Type.Object({
-      team_name: Type.String({ description: 'Slug name for the team (e.g. "frontend-refactor")' }),
-      description: Type.Optional(Type.String({ description: 'Brief description of the team\'s purpose' })),
+      team_name: Type.String({
+        description: 'Slug name for the team (e.g. "frontend-refactor")',
+      }),
+      description: Type.Optional(Type.String({ description: "Brief description of the team's purpose" })),
     }),
     execute: async (_id, params) => {
-      const { team_name, description } = params as { team_name: string; description?: string }
+      const { team_name, description } = params as {
+        team_name: string
+        description?: string
+      }
       const tm = ctx.teamManager
       if (!tm) return textResult({ error: 'Team coordination not available' })
       if (!ctx.sessionId) return textResult({ error: 'Session ID required for team creation' })
@@ -5426,14 +6170,25 @@ function createTeamCreateTool(ctx: ToolContext): AgentTool {
       if (existing) return textResult({ error: `Team "${team_name}" already exists` })
 
       const leaderAgentId = `team-lead@${team_name}`
-      const team = tm.createTeam(team_name, ctx.sessionId, leaderAgentId, { description })
+      const team = tm.createTeam(team_name, ctx.sessionId, leaderAgentId, {
+        description,
+      })
 
-      ctx.teamContext = { teamId: team_name, agentId: leaderAgentId, isLeader: true }
+      ctx.teamContext = {
+        teamId: team_name,
+        agentId: leaderAgentId,
+        isLeader: true,
+      }
       if (!ctx.teammateHandles) ctx.teammateHandles = new Map()
 
       ctx.uiWriter?.write({
         type: 'data-team-created',
-        data: { teamId: team.id, name: team.name, description, leaderId: leaderAgentId },
+        data: {
+          teamId: team.id,
+          name: team.name,
+          description,
+          leaderId: leaderAgentId,
+        },
       })
 
       return textResult({
@@ -5472,7 +6227,10 @@ function createTeamDeleteTool(ctx: ToolContext): AgentTool {
       tm.deleteTeam(team_id)
       if (ctx.teamContext?.teamId === team_id) ctx.teamContext = undefined
 
-      ctx.uiWriter?.write({ type: 'data-team-deleted', data: { teamId: team_id } })
+      ctx.uiWriter?.write({
+        type: 'data-team-deleted',
+        data: { teamId: team_id },
+      })
 
       return textResult({ ok: true, deleted: team_id })
     },
@@ -5482,18 +6240,31 @@ function createTeamDeleteTool(ctx: ToolContext): AgentTool {
 function createTaskCreateTool(ctx: ToolContext): AgentTool {
   return {
     name: 'task_create',
-    description: 'Create a task in the team\'s shared task queue. Teammates will automatically claim available tasks when idle.',
+    description: "Create a task in the team's shared task queue. Teammates will automatically claim available tasks when idle.",
     label: 'Create Task',
     parameters: Type.Object({
       subject: Type.String({ description: 'Brief title of the task' }),
-      description: Type.String({ description: 'Detailed description of what needs to be done' }),
-      blocked_by: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that must complete before this task can start' })),
+      description: Type.String({
+        description: 'Detailed description of what needs to be done',
+      }),
+      blocked_by: Type.Optional(
+        Type.Array(Type.Number(), {
+          description: 'Task IDs that must complete before this task can start',
+        }),
+      ),
     }),
     execute: async (_id, params) => {
-      const { subject, description, blocked_by } = params as { subject: string; description: string; blocked_by?: number[] }
+      const { subject, description, blocked_by } = params as {
+        subject: string
+        description: string
+        blocked_by?: number[]
+      }
       const tm = ctx.teamManager
       const tc = ensureTeamContext(ctx)
-      if (!tm || !tc) return textResult({ error: 'Not in a team context. Use team_create first.' })
+      if (!tm || !tc)
+        return textResult({
+          error: 'Not in a team context. Use team_create first.',
+        })
 
       const task = tm.createTask(tc.teamId, { subject, description })
 
@@ -5503,13 +6274,28 @@ function createTaskCreateTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      const finalTask = blocked_by?.length ? tm.getTask(task.id) ?? task : task
+      const finalTask = blocked_by?.length ? (tm.getTask(task.id) ?? task) : task
       ctx.uiWriter?.write({
         type: 'data-team-task',
-        data: { teamId: tc.teamId, task: { id: finalTask.id, subject: finalTask.subject, description: finalTask.description, status: finalTask.status, owner: finalTask.owner, blockedBy: finalTask.blockedBy } },
+        data: {
+          teamId: tc.teamId,
+          task: {
+            id: finalTask.id,
+            subject: finalTask.subject,
+            description: finalTask.description,
+            status: finalTask.status,
+            owner: finalTask.owner,
+            blockedBy: finalTask.blockedBy,
+          },
+        },
       })
 
-      return textResult({ ok: true, task_id: task.id, subject: task.subject, status: task.status })
+      return textResult({
+        ok: true,
+        task_id: task.id,
+        subject: task.subject,
+        status: task.status,
+      })
     },
   }
 }
@@ -5536,7 +6322,7 @@ function createTaskGetTool(ctx: ToolContext): AgentTool {
 function createTaskListTool(ctx: ToolContext): AgentTool {
   return {
     name: 'task_list',
-    description: 'List all tasks in the team\'s queue with their status, owner, and dependencies.',
+    description: "List all tasks in the team's queue with their status, owner, and dependencies.",
     label: 'List Tasks',
     parameters: Type.Object({}),
     execute: async (_id, _params) => {
@@ -5544,7 +6330,15 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
       const tc = ensureTeamContext(ctx)
       if (!tm || !tc) return textResult({ error: 'Not in a team context.' })
       const tasks = tm.listTasks(tc.teamId)
-      return textResult({ tasks: tasks.map(t => ({ id: t.id, subject: t.subject, status: t.status, owner: t.owner, blockedBy: t.blockedBy })) })
+      return textResult({
+        tasks: tasks.map((t) => ({
+          id: t.id,
+          subject: t.subject,
+          status: t.status,
+          owner: t.owner,
+          blockedBy: t.blockedBy,
+        })),
+      })
     },
   }
 }
@@ -5552,16 +6346,28 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
 function createTaskUpdateTool(ctx: ToolContext): AgentTool {
   return {
     name: 'task_update',
-    description: 'Update a task\'s status, description, owner, or dependencies. Use to mark tasks in_progress or completed.',
+    description: "Update a task's status, description, owner, or dependencies. Use to mark tasks in_progress or completed.",
     label: 'Update Task',
     parameters: Type.Object({
       task_id: Type.Number({ description: 'Task ID to update' }),
-      status: Type.Optional(Type.String({ description: 'New status: pending, in_progress, completed, deleted' })),
+      status: Type.Optional(
+        Type.String({
+          description: 'New status: pending, in_progress, completed, deleted',
+        }),
+      ),
       subject: Type.Optional(Type.String({ description: 'Updated subject' })),
       description: Type.Optional(Type.String({ description: 'Updated description' })),
       owner: Type.Optional(Type.String({ description: 'Agent ID to assign as owner' })),
-      add_blocks: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that this task blocks' })),
-      add_blocked_by: Type.Optional(Type.Array(Type.Number(), { description: 'Task IDs that block this task' })),
+      add_blocks: Type.Optional(
+        Type.Array(Type.Number(), {
+          description: 'Task IDs that this task blocks',
+        }),
+      ),
+      add_blocked_by: Type.Optional(
+        Type.Array(Type.Number(), {
+          description: 'Task IDs that block this task',
+        }),
+      ),
     }),
     execute: async (_id, params) => {
       const { task_id, ...updates } = params as any
@@ -5587,17 +6393,36 @@ function createTaskUpdateTool(ctx: ToolContext): AgentTool {
       if (updates.owner && tc) {
         tm.writeMessage(tc.teamId, updates.owner, tc.agentId, {
           type: 'task_assignment',
-          message: JSON.stringify({ taskId: task.id, subject: task.subject, description: task.description }),
+          message: JSON.stringify({
+            taskId: task.id,
+            subject: task.subject,
+            description: task.description,
+          }),
           summary: `Assigned: ${task.subject}`,
         })
       }
 
       ctx.uiWriter?.write({
         type: 'data-team-task',
-        data: { teamId: task.teamId, task: { id: task.id, subject: task.subject, description: task.description, status: task.status, owner: task.owner, blockedBy: task.blockedBy } },
+        data: {
+          teamId: task.teamId,
+          task: {
+            id: task.id,
+            subject: task.subject,
+            description: task.description,
+            status: task.status,
+            owner: task.owner,
+            blockedBy: task.blockedBy,
+          },
+        },
       })
 
-      return textResult({ ok: true, task_id: task.id, status: task.status, owner: task.owner })
+      return textResult({
+        ok: true,
+        task_id: task.id,
+        status: task.status,
+        owner: task.owner,
+      })
     },
   }
 }
@@ -5605,16 +6430,30 @@ function createTaskUpdateTool(ctx: ToolContext): AgentTool {
 function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'send_team_message',
-    description: 'Send a message to a teammate, the team lead, or broadcast to all team members. Use structured message types for shutdown negotiation.',
+    description:
+      'Send a message to a teammate, the team lead, or broadcast to all team members. Use structured message types for shutdown negotiation.',
     label: 'Send Team Message',
     parameters: Type.Object({
-      to: Type.String({ description: 'Recipient: teammate name, "team-lead", or "*" for broadcast' }),
-      message: Type.String({ description: 'Message text or JSON for structured messages' }),
+      to: Type.String({
+        description: 'Recipient: teammate name, "team-lead", or "*" for broadcast',
+      }),
+      message: Type.String({
+        description: 'Message text or JSON for structured messages',
+      }),
       summary: Type.Optional(Type.String({ description: 'Brief summary of the message' })),
-      message_type: Type.Optional(Type.String({ description: 'Message type: text, shutdown_request, shutdown_response (default: text)' })),
+      message_type: Type.Optional(
+        Type.String({
+          description: 'Message type: text, shutdown_request, shutdown_response (default: text)',
+        }),
+      ),
     }),
     execute: async (_id, params) => {
-      const { to, message, summary, message_type } = params as { to: string; message: string; summary?: string; message_type?: string }
+      const { to, message, summary, message_type } = params as {
+        to: string
+        message: string
+        summary?: string
+        message_type?: string
+      }
       const tm = ctx.teamManager
       const tc = ensureTeamContext(ctx)
       if (!tm || !tc) return textResult({ error: 'Not in a team context.' })
@@ -5636,7 +6475,14 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
 
       ctx.uiWriter?.write({
         type: 'data-team-message',
-        data: { teamId: tc.teamId, from: tc.agentId, to: toAgent, messageType: msgType, message, summary },
+        data: {
+          teamId: tc.teamId,
+          from: tc.agentId,
+          to: toAgent,
+          messageType: msgType,
+          message,
+          summary,
+        },
       })
 
       // Handle shutdown response (approved) — kill the teammate
@@ -5650,7 +6496,9 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
               ctx.teammateHandles.delete(tc.agentId)
             }
           }
-        } catch { /* not JSON, ignore */ }
+        } catch {
+          /* not JSON, ignore */
+        }
       }
 
       return textResult({ ok: true, sent_to: toAgent, type: msgType })
@@ -5665,15 +6513,23 @@ function createSendTeamMessageTool(ctx: ToolContext): AgentTool {
 function createQuickActionTool(ctx: ToolContext): AgentTool {
   return {
     name: 'quick_action',
-    description: 'Register a quick action — a one-click prompt shortcut shown in the user\'s chat UI. Use this when you notice a user sending a repeatable workflow prompt (commits, tests, deploys, etc.).',
+    description:
+      "Register a quick action — a one-click prompt shortcut shown in the user's chat UI. Use this when you notice a user sending a repeatable workflow prompt (commits, tests, deploys, etc.).",
     label: 'Register Quick Action',
     parameters: Type.Object({
-      label: Type.String({ description: 'Short display name (1-2 words, max 20 chars). Must be unique.' }),
-      prompt: Type.String({ description: 'The full message to send when clicked. Faithful to what the user would type.' }),
+      label: Type.String({
+        description: 'Short display name (1-2 words, max 20 chars). Must be unique.',
+      }),
+      prompt: Type.String({
+        description: 'The full message to send when clicked. Faithful to what the user would type.',
+      }),
     }),
     execute: async (_toolCallId, params) => {
       const { label, prompt } = params as { label: string; prompt: string }
-      const result = addQuickAction(ctx.workspaceDir, { label: label.trim(), prompt: prompt.trim() })
+      const result = addQuickAction(ctx.workspaceDir, {
+        label: label.trim(),
+        prompt: prompt.trim(),
+      })
       if (!result.ok) {
         return textResult({ ok: false, errors: result.errors })
       }
@@ -5692,7 +6548,9 @@ function createReadGuideTool(ctx: ToolContext): AgentTool {
     description: 'Read a capability guide by name. See the Capabilities Index in your system prompt for available guides.',
     label: 'Read Guide',
     parameters: Type.Object({
-      name: Type.String({ description: 'Guide name from the Capabilities Index' }),
+      name: Type.String({
+        description: 'Guide name from the Capabilities Index',
+      }),
     }),
     execute: async (_toolCallId, params) => {
       const { name: guideName } = params as { name: string }
@@ -5704,7 +6562,6 @@ function createReadGuideTool(ctx: ToolContext): AgentTool {
     },
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // Terminal Read Tool — reads saved terminal output from disk
@@ -5723,11 +6580,22 @@ If no terminal ID is specified, reads the most relevant active terminal for the
 current workspace, falling back to the most recent terminal.
 Returns the serialized terminal commands + output for the agent to analyze.`,
     parameters: Type.Object({
-      terminalId: Type.Optional(Type.String({ description: 'Terminal ID to read (default: most recent)' })),
-      cwd: Type.Optional(Type.String({ description: 'Workspace directory containing .shogo/terminals/' })),
+      terminalId: Type.Optional(
+        Type.String({
+          description: 'Terminal ID to read (default: most recent)',
+        }),
+      ),
+      cwd: Type.Optional(
+        Type.String({
+          description: 'Workspace directory containing .shogo/terminals/',
+        }),
+      ),
     }),
     execute: async (_toolCallId: string, params: unknown) => {
-      const { terminalId, cwd } = params as { terminalId?: string; cwd?: string }
+      const { terminalId, cwd } = params as {
+        terminalId?: string
+        cwd?: string
+      }
 
       let bridgeFallback: unknown = null
       if (ctx.terminalRead) {
@@ -5749,11 +6617,7 @@ Returns the serialized terminal commands + output for the agent to analyze.`,
         }
       }
 
-      const baseDir = cwd
-        ? `${cwd}/.shogo/terminals`
-        : ctx.workspaceDir
-          ? `${ctx.workspaceDir}/.shogo/terminals`
-          : '.shogo/terminals'
+      const baseDir = cwd ? `${cwd}/.shogo/terminals` : ctx.workspaceDir ? `${ctx.workspaceDir}/.shogo/terminals` : '.shogo/terminals'
 
       try {
         const { readdir, readFile, stat } = await import('node:fs/promises')
@@ -5793,7 +6657,9 @@ Returns the serialized terminal commands + output for the agent to analyze.`,
                 newestMtime = s.mtimeMs
                 newest = f
               }
-            } catch { /* skip */ }
+            } catch {
+              /* skip */
+            }
           }
           targetFile = newest
         }
@@ -5838,13 +6704,33 @@ Returns: { exitCode, output, cwd, durationMs, timedOut, mode, sessionId? }.
 If the desktop terminal is not available (web/mobile), falls back to the sandboxed exec.`,
     parameters: Type.Object({
       command: Type.Optional(Type.String({ description: 'The shell command to execute' })),
-      action: Type.Optional(Type.String({ description: '"run" (default), "interrupt" to send SIGINT', enum: ['run', 'interrupt'] })),
-      mode: Type.Optional(Type.String({ description: '"foreground" (default, auto-detected) or "background" to force agent terminal tab', enum: ['foreground', 'background'] })),
+      action: Type.Optional(
+        Type.String({
+          description: '"run" (default), "interrupt" to send SIGINT',
+          enum: ['run', 'interrupt'],
+        }),
+      ),
+      mode: Type.Optional(
+        Type.String({
+          description: '"foreground" (default, auto-detected) or "background" to force agent terminal tab',
+          enum: ['foreground', 'background'],
+        }),
+      ),
       cwd: Type.Optional(Type.String({ description: 'Working directory (defaults to current)' })),
-      timeoutMs: Type.Optional(Type.Number({ description: 'Max wait time in ms (default: 120000 for foreground, no limit for background)' })),
+      timeoutMs: Type.Optional(
+        Type.Number({
+          description: 'Max wait time in ms (default: 120000 for foreground, no limit for background)',
+        }),
+      ),
     }),
     execute: async (_toolCallId: string, params: unknown) => {
-      const { command, cwd, timeoutMs, action, mode } = params as { command?: string; cwd?: string; timeoutMs?: number; action?: string; mode?: string }
+      const { command, cwd, timeoutMs, action, mode } = params as {
+        command?: string
+        cwd?: string
+        timeoutMs?: number
+        action?: string
+        mode?: string
+      }
 
       if (!ctx.terminalExec) {
         return textResult({
@@ -5866,7 +6752,9 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
       }
 
       if (!command) {
-        return textResult({ error: 'command parameter is required for run action.' })
+        return textResult({
+          error: 'command parameter is required for run action.',
+        })
       }
 
       // terminal_exec runs in the user's REAL login shell with their full
@@ -5893,7 +6781,9 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
 
       const gatewayGuard = commandTargetsGateway(command)
       if (gatewayGuard.blocked) {
-        return textResult({ error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime') })
+        return textResult({
+          error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime'),
+        })
       }
 
       try {
@@ -5902,21 +6792,34 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
         if (!mode) {
           const lc = command.toLowerCase().trim()
           const longPatterns = [
-            /\bdev\b/, /\bstart\b/, /\bserve\b/, /\bwatch\b/,
-            /\bvite\b/, /\bexpo\b/, /\bmetro\b/, /\bwebpack\b/,
+            /\bdev\b/,
+            /\bstart\b/,
+            /\bserve\b/,
+            /\bwatch\b/,
+            /\bvite\b/,
+            /\bexpo\b/,
+            /\bmetro\b/,
+            /\bwebpack\b/,
             /\bnpm\s+run\s+(dev|start|serve|preview)\b/,
-            /\bbun\s+run\b/, /\byarn\s+(dev|start|serve)\b/,
+            /\bbun\s+run\b/,
+            /\byarn\s+(dev|start|serve)\b/,
             /\bdocker-compose\s+up\b/,
             /\bdocker\s+compose\s+up\b/,
             /\bdocker\s+run\b/,
             /\bpm2\s+(start|serve)\b/,
-            /\bnohup\b/, /\bforever\b/, /\bsupervisor\b/,
+            /\bnohup\b/,
+            /\bforever\b/,
+            /\bsupervisor\b/,
             /\bpython\s+-m\s+http\.server\b/,
-            /\buvicorn\b/, /\bgunicorn\b/,
+            /\buvicorn\b/,
+            /\bgunicorn\b/,
             /\s*&\s*$/,
           ]
           for (const p of longPatterns) {
-            if (p.test(lc)) { effectiveMode = 'background' as const; break }
+            if (p.test(lc)) {
+              effectiveMode = 'background' as const
+              break
+            }
           }
         }
         const result = await ctx.terminalExec({
@@ -6068,12 +6971,14 @@ function createWorktreeListTool(ctx: ToolContext): AgentTool {
     parameters: Type.Object({}),
     execute: async () => {
       if (!ctx.listWorktreeStatuses) {
-        return textResult({ error: 'Per-chat git worktrees are not enabled for this project.' })
+        return textResult({
+          error: 'Per-chat git worktrees are not enabled for this project.',
+        })
       }
       try {
         const all = await ctx.listWorktreeStatuses()
         const current = ctx.sessionId
-        const worktrees = all.map(w => ({
+        const worktrees = all.map((w) => ({
           chatSessionId: w.chatSessionId,
           branch: w.branch,
           isCurrentChat: w.chatSessionId === current,
@@ -6084,7 +6989,9 @@ function createWorktreeListTool(ctx: ToolContext): AgentTool {
         }))
         return textResult({ count: worktrees.length, worktrees })
       } catch (err: any) {
-        return textResult({ error: `Failed to list worktrees: ${err?.message ?? err}` })
+        return textResult({
+          error: `Failed to list worktrees: ${err?.message ?? err}`,
+        })
       }
     },
   }
@@ -6121,7 +7028,14 @@ export type LoadedSkillEntry = Skill
 
 function inferRuntime(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase()
-  const map: Record<string, string> = { py: 'python3', js: 'node', ts: 'bun', mjs: 'node', cjs: 'node', sh: 'bash' }
+  const map: Record<string, string> = {
+    py: 'python3',
+    js: 'node',
+    ts: 'bun',
+    mjs: 'node',
+    cjs: 'node',
+    sh: 'bash',
+  }
   return map[ext || ''] || 'bash'
 }
 
@@ -6135,14 +7049,9 @@ function inferRuntime(filename: string): string {
  * Composio proxy tools follow a `<TOOLKIT>_<ACTION>` uppercase naming
  * convention (JIRA_LIST_BOARDS, GMAIL_SEND_EMAIL, etc.).
  */
-function getIntegrationOverlapHint(
-  skillName: string,
-  allTools: AgentTool[],
-): string | null {
+function getIntegrationOverlapHint(skillName: string, allTools: AgentTool[]): string | null {
   const prefix = `${skillName.toUpperCase().replace(/[^A-Z0-9]/g, '')}_`
-  const matches = allTools
-    .map(t => t.name)
-    .filter(n => n.startsWith(prefix))
+  const matches = allTools.map((t) => t.name).filter((n) => n.startsWith(prefix))
   if (matches.length === 0) return null
   const sample = matches.slice(0, 3).join(', ')
   const more = matches.length > 3 ? `, ...` : ''
@@ -6152,20 +7061,59 @@ function getIntegrationOverlapHint(
 function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): AgentTool {
   return {
     name: 'skill',
-    description: 'Manage and invoke skills. Actions: invoke (default), search, install, run_script. See read_guide("skill-matching") for details.',
+    description:
+      'Manage and invoke skills. Actions: invoke (default), search, install, run_script. See read_guide("skill-matching") for details.',
     label: 'Skill',
     parameters: Type.Object({
-      action: Type.Optional(Type.String({ description: 'Action: "invoke" (default), "search", "install", or "run_script"' })),
-      skill: Type.Optional(Type.String({ description: 'Skill name (for invoke/run_script action)' })),
-      args: Type.Optional(Type.String({ description: 'Arguments to pass to the skill or script' })),
-      script: Type.Optional(Type.String({ description: 'Script filename to execute (for run_script action, e.g. "score.py")' })),
+      action: Type.Optional(
+        Type.String({
+          description: 'Action: "invoke" (default), "search", "install", or "run_script"',
+        }),
+      ),
+      skill: Type.Optional(
+        Type.String({
+          description: 'Skill name (for invoke/run_script action)',
+        }),
+      ),
+      args: Type.Optional(
+        Type.String({
+          description: 'Arguments to pass to the skill or script',
+        }),
+      ),
+      script: Type.Optional(
+        Type.String({
+          description: 'Script filename to execute (for run_script action, e.g. "score.py")',
+        }),
+      ),
       query: Type.Optional(Type.String({ description: 'Search query (for search action)' })),
-      source: Type.Optional(Type.String({ description: 'Source id (for install action, from search results)' })),
-      dir_name: Type.Optional(Type.String({ description: 'Directory name (for install action, from search results)' })),
+      source: Type.Optional(
+        Type.String({
+          description: 'Source id (for install action, from search results)',
+        }),
+      ),
+      dir_name: Type.Optional(
+        Type.String({
+          description: 'Directory name (for install action, from search results)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params, context) => {
-      const { action = 'invoke', skill: skillName, args, script, query, source, dir_name: dirName } = params as {
-        action?: string; skill?: string; args?: string; script?: string; query?: string; source?: string; dir_name?: string
+      const {
+        action = 'invoke',
+        skill: skillName,
+        args,
+        script,
+        query,
+        source,
+        dir_name: dirName,
+      } = params as {
+        action?: string
+        skill?: string
+        args?: string
+        script?: string
+        query?: string
+        source?: string
+        dir_name?: string
       }
 
       // --- Search: find skills in the registry ---
@@ -6173,7 +7121,10 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         const { loadSkillRegistryManifest } = require('./skills') as typeof import('./skills')
         const manifest = loadSkillRegistryManifest()
         if (manifest.length === 0) {
-          return textResult({ results: [], message: 'No external skills available in the registry.' })
+          return textResult({
+            results: [],
+            message: 'No external skills available in the registry.',
+          })
         }
 
         if (!query) {
@@ -6185,11 +7136,12 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         }
 
         const q = query.toLowerCase()
-        const matches = manifest.filter(s =>
-          s.name.toLowerCase().includes(q) ||
-          s.description.toLowerCase().includes(q) ||
-          s.source.toLowerCase().includes(q) ||
-          s.sourceDescription.toLowerCase().includes(q)
+        const matches = manifest.filter(
+          (s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q) ||
+            s.source.toLowerCase().includes(q) ||
+            s.sourceDescription.toLowerCase().includes(q),
         )
         return textResult({
           query,
@@ -6202,13 +7154,17 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
       // --- Install: install a registry skill into the workspace ---
       if (action === 'install') {
         if (!source || !dirName) {
-          return textResult({ error: 'source and dir_name are required (from search results).' })
+          return textResult({
+            error: 'source and dir_name are required (from search results).',
+          })
         }
 
         const { loadBundledClaudeCodeSkill } = require('./skills') as typeof import('./skills')
         const skill = loadBundledClaudeCodeSkill(source, dirName)
         if (!skill) {
-          return textResult({ error: `Skill "${dirName}" not found in source "${source}".` })
+          return textResult({
+            error: `Skill "${dirName}" not found in source "${source}".`,
+          })
         }
 
         const destDir = join(ctx.workspaceDir, '.shogo', 'skills', skill.name)
@@ -6236,7 +7192,9 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
       // --- Run Script: execute a script from a skill's scripts/ directory ---
       if (action === 'run_script') {
         if (!skillName || !script) {
-          return textResult({ error: 'skill and script parameters are required for run_script action.' })
+          return textResult({
+            error: 'skill and script parameters are required for run_script action.',
+          })
         }
 
         if (script.includes('..') || script.includes('/')) {
@@ -6244,11 +7202,13 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
         }
 
         const skills = getLoadedSkills()
-        const found = skills.find(s => s.name === skillName)
+        const found = skills.find((s) => s.name === skillName)
         if (!found) {
           const overlapHint = getIntegrationOverlapHint(skillName, allToolsGetter())
           const baseMsg = `Skill not found: ${skillName}`
-          return textResult({ error: overlapHint ? `${baseMsg}. ${overlapHint}` : baseMsg })
+          return textResult({
+            error: overlapHint ? `${baseMsg}. ${overlapHint}` : baseMsg,
+          })
         }
 
         const scriptPath = join(found.skillDir, 'scripts', script)
@@ -6288,20 +7248,24 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
             stderr: clip(result.stderr, 4000),
           })
         } catch (err: any) {
-          return textResult({ error: `Script execution failed: ${err.message}` })
+          return textResult({
+            error: `Script execution failed: ${err.message}`,
+          })
         }
       }
 
       // --- Invoke (default): run a skill by name ---
       if (!skillName) {
-        return textResult({ error: 'skill name is required for invoke action.' })
+        return textResult({
+          error: 'skill name is required for invoke action.',
+        })
       }
 
       const skills = getLoadedSkills()
-      const found = skills.find(s => s.name === skillName)
+      const found = skills.find((s) => s.name === skillName)
       if (!found) {
         const overlapHint = getIntegrationOverlapHint(skillName, allToolsGetter())
-        const baseError = `Skill not found: ${skillName}. Available: ${skills.map(s => s.name).join(', ')}`
+        const baseError = `Skill not found: ${skillName}. Available: ${skills.map((s) => s.name).join(', ')}`
         return textResult({
           error: overlapHint ? `${baseError}\n\n${overlapHint}` : baseError,
           hint: overlapHint
@@ -6325,7 +7289,9 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
           if (setupResult.exitCode === 0) {
             writeFileSync(join(found.skillDir, '.setup-done'), new Date().toISOString(), 'utf-8')
           }
-        } catch { /* setup is best-effort */ }
+        } catch {
+          /* setup is best-effort */
+        }
       }
 
       let content = found.content
@@ -6400,9 +7366,7 @@ function createSkillTool(ctx: ToolContext, allToolsGetter: () => AgentTool[]): A
  * them (the WS7 prod signature: `exec`/`edit_file`/`write_file` reported
  * "not found" in agent mode) and as the contract the WS7 eval asserts.
  */
-export function expectedCoreToolsForAgentMode(
-  config: import('./gateway').GatewayConfig,
-): string[] {
+export function expectedCoreToolsForAgentMode(config: import('./gateway').GatewayConfig): string[] {
   const core = ['read_file', 'write_file', 'edit_file']
   if (config.shellEnabled !== false) core.push('exec')
   return core
@@ -6419,12 +7383,8 @@ export type RestrictedMode = 'plan' | 'ask' | 'coordinator'
  * looping. Stubs are NOT advertised (kept out of the iterated/mapped tool list),
  * so they don't reintroduce the tool the mode intentionally hides.
  */
-export function createModeUnavailableTool(
-  name: string,
-  mode: RestrictedMode,
-): AgentTool {
-  const modeLabel =
-    mode === 'plan' ? 'Plan mode' : mode === 'ask' ? 'Ask mode' : 'Coordinator mode'
+export function createModeUnavailableTool(name: string, mode: RestrictedMode): AgentTool {
+  const modeLabel = mode === 'plan' ? 'Plan mode' : mode === 'ask' ? 'Ask mode' : 'Coordinator mode'
   const guidance =
     mode === 'plan'
       ? 'Plan mode is read-only — finish planning, then switch to Agent mode to edit files or run commands.'
@@ -6474,13 +7434,36 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
 }
 
 export const ALL_TOOL_NAMES = [
-  'exec', 'exec_wait', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
-  'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
-  'todo_write', 'ask_user', 'skill',
-  'memory_read', 'memory_search', 'send_message', 'channel_connect', 'channel_disconnect', 'channel_list',
-  'heartbeat_configure', 'heartbeat_status', 'terminal_exec', 'terminal_read',
-  'read_lints', 'server_sync',
-  'search_integrations', 'connect', 'disconnect',
+  'exec',
+  'exec_wait',
+  'read_file',
+  'write_file',
+  'edit_file',
+  'web',
+  'browser',
+  'delete_file',
+  'search',
+  'impact_radius',
+  'detect_changes',
+  'review_context',
+  'todo_write',
+  'ask_user',
+  'skill',
+  'memory_read',
+  'memory_search',
+  'send_message',
+  'channel_connect',
+  'channel_disconnect',
+  'channel_list',
+  'heartbeat_configure',
+  'heartbeat_status',
+  'terminal_exec',
+  'terminal_read',
+  'read_lints',
+  'server_sync',
+  'search_integrations',
+  'connect',
+  'disconnect',
   'github_create_pr',
   'transcribe_audio',
   'quick_action',
@@ -6519,10 +7502,7 @@ export function resolveToolNames(refs: string[]): string[] {
  * Capability flags default to enabled, so only an explicit `=== false`
  * disables a tool group.
  */
-export function filterDisabledCapabilityTools(
-  tools: AgentTool[],
-  config: import('./gateway').GatewayConfig,
-): AgentTool[] {
+export function filterDisabledCapabilityTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
   const disabled = new Set<string>()
   if (config.capabilityProfile === 'personal') {
     for (const name of disabledToolNamesForProfile('personal')) disabled.add(name)
@@ -6540,7 +7520,7 @@ export function filterDisabledCapabilityTools(
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools
-  return tools.filter(t => {
+  return tools.filter((t) => {
     if (disabled.has(t.name)) return false
     if (memoryOff && t.name.startsWith('memory_')) return false
     return true
@@ -6553,9 +7533,10 @@ export function filterDisabledCapabilityTools(
  * agent is expected to reach them via `agent_spawn({ type: "browser"|"media"|"devops", ... })`.
  */
 export const SUBAGENT_ONLY_TOOLS = new Set([
-  'browser',                                                                       // -> browser subagent
-  'generate_image', 'transcribe_audio',                                            // -> media subagent
-  'server_sync',                                                                   // -> devops subagent
+  'browser', // -> browser subagent
+  'generate_image',
+  'transcribe_audio', // -> media subagent
+  'server_sync', // -> devops subagent
 ])
 
 /**
@@ -6570,14 +7551,9 @@ export const SUBAGENT_ONLY_TOOLS = new Set([
  * `browser`/`server_sync` stay delegated-only on personal workspaces too;
  * only the media tools need this carve-out.
  */
-export function filterSubagentOnlyTools(
-  tools: AgentTool[],
-  config: import('./gateway').GatewayConfig,
-): AgentTool[] {
-  const exempt = config.capabilityProfile === 'personal'
-    ? new Set(['generate_image', 'transcribe_audio'])
-    : new Set<string>()
-  return tools.filter(t => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
+export function filterSubagentOnlyTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
+  const exempt = config.capabilityProfile === 'personal' ? new Set(['generate_image', 'transcribe_audio']) : new Set<string>()
+  return tools.filter((t) => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -6611,7 +7587,9 @@ function createDeleteFileTool(ctx: ToolContext): AgentTool {
       if (protectedRejection) return protectedRejection
       if (!existsSync(resolved)) {
         const hint = bogusPathPrefixHint(ctx.workspaceDir, filePath)
-        return textResult({ error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}` })
+        return textResult({
+          error: hint ? `File not found: ${filePath}\n${hint}` : `File not found: ${filePath}`,
+        })
       }
 
       unlinkSync(resolved)
@@ -6628,22 +7606,41 @@ const SEARCH_TIMEOUT_MS = 10_000
 function createSearchTool(ctx: ToolContext): AgentTool {
   return {
     name: 'search',
-    description: 'Semantic search across the workspace by meaning. Searches code and uploaded files. Returns ranked chunks with file paths and line numbers. Use source="code" for code only, source="files" for uploaded files only.',
+    description:
+      'Semantic search across the workspace by meaning. Searches code and uploaded files. Returns ranked chunks with file paths and line numbers. Use source="code" for code only, source="files" for uploaded files only.',
     label: 'Search',
     parameters: Type.Object({
       query: Type.String({ description: 'Natural language search query' }),
-      source: Type.Optional(Type.Union([
-        Type.Literal('all'),
-        Type.Literal('code'),
-        Type.Literal('files'),
-      ], { description: 'Which index to search: "all" (default), "code", or "files"' })),
+      source: Type.Optional(
+        Type.Union([Type.Literal('all'), Type.Literal('code'), Type.Literal('files')], {
+          description: 'Which index to search: "all" (default), "code", or "files"',
+        }),
+      ),
       limit: Type.Optional(Type.Number({ description: 'Max results (default: 10)' })),
-      path_filter: Type.Optional(Type.String({ description: 'Restrict to files matching this substring (e.g. "test", "src/rules", "files/")' })),
-      file_extensions: Type.Optional(Type.Array(Type.String(), { description: 'Restrict to these extensions (e.g. [".py", ".ts", ".csv"])' })),
+      path_filter: Type.Optional(
+        Type.String({
+          description: 'Restrict to files matching this substring (e.g. "test", "src/rules", "files/")',
+        }),
+      ),
+      file_extensions: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Restrict to these extensions (e.g. [".py", ".ts", ".csv"])',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { query, source, limit = 10, path_filter, file_extensions } = params as {
-        query: string; source?: 'all' | 'code' | 'files'; limit?: number; path_filter?: string; file_extensions?: string[]
+      const {
+        query,
+        source,
+        limit = 10,
+        path_filter,
+        file_extensions,
+      } = params as {
+        query: string
+        source?: 'all' | 'code' | 'files'
+        limit?: number
+        path_filter?: string
+        file_extensions?: string[]
       }
       const engine = getOrCreateIndex(ctx)
       const searchSource = source === 'all' || !source ? undefined : source
@@ -6653,9 +7650,13 @@ function createSearchTool(ctx: ToolContext): AgentTool {
       let results: Awaited<ReturnType<typeof engine.search>>
       try {
         results = await Promise.race([
-          engine.search(query, { source: searchSource, limit, pathFilter: path_filter, extensions: file_extensions }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('SEARCH_TIMEOUT')), SEARCH_TIMEOUT_MS)),
+          engine.search(query, {
+            source: searchSource,
+            limit,
+            pathFilter: path_filter,
+            extensions: file_extensions,
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SEARCH_TIMEOUT')), SEARCH_TIMEOUT_MS)),
         ])
       } catch (err) {
         if (err instanceof Error && err.message === 'SEARCH_TIMEOUT') {
@@ -6670,7 +7671,7 @@ function createSearchTool(ctx: ToolContext): AgentTool {
       return textResult({
         query,
         source: source ?? 'all',
-        results: results.map(r => ({
+        results: results.map((r) => ({
           path: r.path,
           chunk: r.chunk,
           score: Math.round(r.score * 1000) / 1000,
@@ -6709,18 +7710,26 @@ async function getOrCreateGraph(ctx: ToolContext): Promise<import('./workspace-g
 function createImpactRadiusTool(ctx: ToolContext): AgentTool {
   return {
     name: 'impact_radius',
-    description: 'Find all files and symbols affected by changes to given files. Shows blast radius: callers, dependents, importers, and related documents. Useful before making changes to understand what else might break or need updating.',
+    description:
+      'Find all files and symbols affected by changes to given files. Shows blast radius: callers, dependents, importers, and related documents. Useful before making changes to understand what else might break or need updating.',
     label: 'Impact Radius',
     parameters: Type.Object({
-      files: Type.Array(Type.String(), { description: 'File paths to check (relative to workspace root)' }),
+      files: Type.Array(Type.String(), {
+        description: 'File paths to check (relative to workspace root)',
+      }),
       max_depth: Type.Optional(Type.Number({ description: 'BFS traversal depth (default: 2)' })),
     }),
     execute: async (_toolCallId, params) => {
-      const { files, max_depth = 2 } = params as { files: string[]; max_depth?: number }
+      const { files, max_depth = 2 } = params as {
+        files: string[]
+        max_depth?: number
+      }
 
       const graph = await getOrCreateGraph(ctx)
       if (!graph) {
-        return textResult({ error: 'Knowledge graph not available. The workspace graph could not be initialized.' })
+        return textResult({
+          error: 'Knowledge graph not available. The workspace graph could not be initialized.',
+        })
       }
 
       const result = graph.getImpactRadius(files, max_depth)
@@ -6728,14 +7737,18 @@ function createImpactRadiusTool(ctx: ToolContext): AgentTool {
       return textResult({
         analyzed_files: files,
         depth: max_depth,
-        changed_nodes: result.changedNodes.map(n => ({
-          kind: n.kind, name: n.name, file: n.filePath,
+        changed_nodes: result.changedNodes.map((n) => ({
+          kind: n.kind,
+          name: n.name,
+          file: n.filePath,
         })),
         impacted_files: result.impactedFiles,
-        impacted_nodes: result.impactedNodes.slice(0, 50).map(n => ({
-          kind: n.kind, name: n.name, file: n.filePath,
+        impacted_nodes: result.impactedNodes.slice(0, 50).map((n) => ({
+          kind: n.kind,
+          name: n.name,
+          file: n.filePath,
         })),
-        edges: result.edges.slice(0, 100).map(e => ({
+        edges: result.edges.slice(0, 100).map((e) => ({
           kind: e.kind,
           from: e.sourceQualified.split('::').pop(),
           to: e.targetQualified.split('::').pop(),
@@ -6755,16 +7768,35 @@ function createImpactRadiusTool(ctx: ToolContext): AgentTool {
 function createDetectChangesTool(ctx: ToolContext): AgentTool {
   return {
     name: 'detect_changes',
-    description: 'Analyze git changes and map them to code graph nodes. Shows which functions/classes changed, their risk scores, affected execution flows, and test gaps. Use before code review to understand change impact.',
+    description:
+      'Analyze git changes and map them to code graph nodes. Shows which functions/classes changed, their risk scores, affected execution flows, and test gaps. Use before code review to understand change impact.',
     label: 'Detect Changes',
     parameters: Type.Object({
-      base: Type.Optional(Type.String({ description: 'Git ref to diff against (default: "HEAD~1")' })),
-      changed_files: Type.Optional(Type.Array(Type.String(), { description: 'Explicit file list (skips git diff if provided)' })),
-      include_source: Type.Optional(Type.Boolean({ description: 'Include source snippets for changed nodes (default: false)' })),
+      base: Type.Optional(
+        Type.String({
+          description: 'Git ref to diff against (default: "HEAD~1")',
+        }),
+      ),
+      changed_files: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Explicit file list (skips git diff if provided)',
+        }),
+      ),
+      include_source: Type.Optional(
+        Type.Boolean({
+          description: 'Include source snippets for changed nodes (default: false)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { base = 'HEAD~1', changed_files, include_source = false } = params as {
-        base?: string; changed_files?: string[]; include_source?: boolean
+      const {
+        base = 'HEAD~1',
+        changed_files,
+        include_source = false,
+      } = params as {
+        base?: string
+        changed_files?: string[]
+        include_source?: boolean
       }
 
       const graph = await getOrCreateGraph(ctx)
@@ -6781,21 +7813,33 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
         changedFilePaths = changed_files
       } else {
         try {
-          const out = execSync(`git diff --name-only ${base}`, { cwd, encoding: 'utf-8' }).trim()
+          const out = execSync(`git diff --name-only ${base}`, {
+            cwd,
+            encoding: 'utf-8',
+          }).trim()
           changedFilePaths = out ? out.split('\n').filter(Boolean) : []
         } catch {
-          return textResult({ error: `Failed to run git diff against ${base}. Is this a git repo?` })
+          return textResult({
+            error: `Failed to run git diff against ${base}. Is this a git repo?`,
+          })
         }
       }
 
       if (changedFilePaths.length === 0) {
-        return textResult({ summary: 'No changes detected', changed_files: [], risk_score: 0 })
+        return textResult({
+          summary: 'No changes detected',
+          changed_files: [],
+          risk_score: 0,
+        })
       }
 
       // Parse line ranges from unified diff
       let lineRanges: Map<string, Array<{ start: number; end: number }>> = new Map()
       try {
-        const diffOut = execSync(`git diff --unified=0 ${base}`, { cwd, encoding: 'utf-8' })
+        const diffOut = execSync(`git diff --unified=0 ${base}`, {
+          cwd,
+          encoding: 'utf-8',
+        })
         let currentFile = ''
         for (const line of diffOut.split('\n')) {
           if (line.startsWith('+++ b/')) {
@@ -6810,7 +7854,9 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
             }
           }
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        /* non-fatal */
+      }
 
       // Map line ranges to graph nodes
       const changedFunctions: any[] = []
@@ -6824,16 +7870,17 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
         for (const node of fileNodes) {
           if (node.kind === 'File') continue
 
-          const overlaps = ranges.length === 0 || ranges.some(r =>
-            node.lineStart != null && node.lineEnd != null &&
-            node.lineStart <= r.end && node.lineEnd >= r.start
-          )
+          const overlaps =
+            ranges.length === 0 ||
+            ranges.some((r) => node.lineStart != null && node.lineEnd != null && node.lineStart <= r.end && node.lineEnd >= r.start)
 
           if (overlaps) {
             const risk = computeRiskScore(graph, node)
             const testedBy = graph.getEdgesBySource(node.qualifiedName, 'TESTED_BY')
             const entry: any = {
-              kind: node.kind, name: node.name, file: node.filePath,
+              kind: node.kind,
+              name: node.name,
+              file: node.filePath,
               lines: node.lineStart && node.lineEnd ? `${node.lineStart}-${node.lineEnd}` : null,
               risk: Math.round(risk * 1000) / 1000,
               tested: testedBy.length > 0,
@@ -6847,7 +7894,9 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
                 const start = Math.max(0, node.lineStart - 1)
                 const end = Math.min(lines.length, node.lineEnd)
                 entry.source = lines.slice(start, end).join('\n').substring(0, 2000)
-              } catch { /* non-fatal */ }
+              } catch {
+                /* non-fatal */
+              }
             }
             changedFunctions.push(entry)
           }
@@ -6862,7 +7911,7 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
       const affectedFlows = getAffectedFlows(graph, changedFilePaths)
 
       // Test gaps: changed non-test nodes without TESTED_BY
-      const testGaps = changedFunctions.filter(f => !f.tested && f.kind !== 'Test')
+      const testGaps = changedFunctions.filter((f) => !f.tested && f.kind !== 'Test')
 
       return textResult({
         summary: `${changedFilePaths.length} files changed, ${changedFunctions.length} functions affected`,
@@ -6871,15 +7920,24 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
         changed_files: changedFilePaths,
         changed_functions: changedFunctions.slice(0, 100),
         affected_flows: affectedFlows.slice(0, 20).map((f: any) => ({
-          name: f.name, criticality: f.criticality, node_count: f.node_count,
+          name: f.name,
+          criticality: f.criticality,
+          node_count: f.node_count,
         })),
         test_gaps: testGaps.slice(0, 50).map((f: any) => ({
-          name: f.name, file: f.file, risk: f.risk,
+          name: f.name,
+          file: f.file,
+          risk: f.risk,
         })),
         review_priorities: changedFunctions
           .sort((a: any, b: any) => b.risk - a.risk)
           .slice(0, 10)
-          .map((f: any) => ({ name: f.name, file: f.file, risk: f.risk, tested: f.tested })),
+          .map((f: any) => ({
+            name: f.name,
+            file: f.file,
+            risk: f.risk,
+            tested: f.tested,
+          })),
       })
     },
   }
@@ -6892,22 +7950,41 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
 function createReviewContextTool(ctx: ToolContext): AgentTool {
   return {
     name: 'review_context',
-    description: 'Get a comprehensive, token-optimized review bundle for changed files. Includes structural subgraph, risk scores, affected flows, test gaps, truncated source hunks around affected nodes, and review guidance. Use this when reviewing a PR or set of changes.',
+    description:
+      'Get a comprehensive, token-optimized review bundle for changed files. Includes structural subgraph, risk scores, affected flows, test gaps, truncated source hunks around affected nodes, and review guidance. Use this when reviewing a PR or set of changes.',
     label: 'Review Context',
     parameters: Type.Object({
-      changed_files: Type.Optional(Type.Array(Type.String(), { description: 'Explicit file list (skips git diff if provided)' })),
-      base: Type.Optional(Type.String({ description: 'Git ref to diff against (default: "HEAD~1")' })),
+      changed_files: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Explicit file list (skips git diff if provided)',
+        }),
+      ),
+      base: Type.Optional(
+        Type.String({
+          description: 'Git ref to diff against (default: "HEAD~1")',
+        }),
+      ),
       max_depth: Type.Optional(Type.Number({ description: 'Impact radius BFS depth (default: 2)' })),
       include_source: Type.Optional(Type.Boolean({ description: 'Include source hunks (default: true)' })),
-      max_lines_per_file: Type.Optional(Type.Number({ description: 'Max source lines per file (default: 200)' })),
+      max_lines_per_file: Type.Optional(
+        Type.Number({
+          description: 'Max source lines per file (default: 200)',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
-        changed_files, base = 'HEAD~1', max_depth = 2,
-        include_source = true, max_lines_per_file = 200,
+        changed_files,
+        base = 'HEAD~1',
+        max_depth = 2,
+        include_source = true,
+        max_lines_per_file = 200,
       } = params as {
-        changed_files?: string[]; base?: string; max_depth?: number;
-        include_source?: boolean; max_lines_per_file?: number
+        changed_files?: string[]
+        base?: string
+        max_depth?: number
+        include_source?: boolean
+        max_lines_per_file?: number
       }
 
       const graph = await getOrCreateGraph(ctx)
@@ -6926,10 +8003,15 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
         filePaths = changed_files
       } else {
         try {
-          const out = execSync(`git diff --name-only ${base}`, { cwd, encoding: 'utf-8' }).trim()
+          const out = execSync(`git diff --name-only ${base}`, {
+            cwd,
+            encoding: 'utf-8',
+          }).trim()
           filePaths = out ? out.split('\n').filter(Boolean) : []
         } catch {
-          return textResult({ error: `Failed to run git diff against ${base}.` })
+          return textResult({
+            error: `Failed to run git diff against ${base}.`,
+          })
         }
       }
 
@@ -6954,7 +8036,9 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
         const risk = computeRiskScore(graph, node)
         const testedBy = graph.getEdgesBySource(node.qualifiedName, 'TESTED_BY')
         changedNodeDetails.push({
-          kind: node.kind, name: node.name, file: node.filePath,
+          kind: node.kind,
+          name: node.name,
+          file: node.filePath,
           lines: node.lineStart && node.lineEnd ? `${node.lineStart}-${node.lineEnd}` : null,
           risk: Math.round(risk * 1000) / 1000,
           tested: testedBy.length > 0,
@@ -6974,7 +8058,11 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
 
             if (fileNodes.length === 0) {
               const truncated = lines.slice(0, max_lines_per_file).join('\n')
-              sourceHunks.push({ file: fp, lines: `1-${Math.min(lines.length, max_lines_per_file)}`, content: truncated })
+              sourceHunks.push({
+                file: fp,
+                lines: `1-${Math.min(lines.length, max_lines_per_file)}`,
+                content: truncated,
+              })
               continue
             }
 
@@ -7003,23 +8091,29 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
             for (const r of merged) {
               if (totalLines >= max_lines_per_file) break
               const chunk = lines.slice(r.start - 1, r.end).join('\n')
-              sourceHunks.push({ file: fp, lines: `${r.start}-${r.end}`, content: chunk })
+              sourceHunks.push({
+                file: fp,
+                lines: `${r.start}-${r.end}`,
+                content: chunk,
+              })
               totalLines += r.end - r.start + 1
             }
-          } catch { /* non-fatal */ }
+          } catch {
+            /* non-fatal */
+          }
         }
       }
 
       // Step 5: Review guidance
       const guidance: string[] = []
-      const untestedFns = changedNodeDetails.filter(n => !n.tested && n.kind === 'Function')
+      const untestedFns = changedNodeDetails.filter((n) => !n.tested && n.kind === 'Function')
       if (untestedFns.length > 0) {
-        guidance.push(`${untestedFns.length} changed function(s) have no test coverage: ${untestedFns.map(n => n.name).join(', ')}`)
+        guidance.push(`${untestedFns.length} changed function(s) have no test coverage: ${untestedFns.map((n) => n.name).join(', ')}`)
       }
       if (impact.impactedFiles.length > 5) {
         guidance.push(`Wide blast radius: ${impact.impactedFiles.length} files impacted — consider incremental deployment`)
       }
-      const inheritanceEdges = impact.edges.filter(e => e.kind === 'INHERITS')
+      const inheritanceEdges = impact.edges.filter((e) => e.kind === 'INHERITS')
       if (inheritanceEdges.length > 0) {
         guidance.push(`Inheritance chain affected — verify subclass contract compatibility`)
       }
@@ -7036,21 +8130,31 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
         avg_risk: riskInfo.avgRisk,
         changed_nodes: changedNodeDetails.slice(0, 50),
         impacted_files: impact.impactedFiles.slice(0, 30),
-        impacted_nodes: impact.impactedNodes.slice(0, 30).map(n => ({
-          kind: n.kind, name: n.name, file: n.filePath,
+        impacted_nodes: impact.impactedNodes.slice(0, 30).map((n) => ({
+          kind: n.kind,
+          name: n.name,
+          file: n.filePath,
         })),
-        edges: impact.edges.slice(0, 60).map(e => ({
+        edges: impact.edges.slice(0, 60).map((e) => ({
           kind: e.kind,
           from: e.sourceQualified.split('::').pop(),
           to: e.targetQualified.split('::').pop(),
         })),
         source_hunks: sourceHunks.slice(0, 30),
         affected_flows: affectedFlows.slice(0, 15).map((f: any) => ({
-          name: f.name, criticality: f.criticality, node_count: f.node_count, file_count: f.file_count,
+          name: f.name,
+          criticality: f.criticality,
+          node_count: f.node_count,
+          file_count: f.file_count,
         })),
-        test_gaps: changedNodeDetails.filter(n => !n.tested && n.kind !== 'Test').slice(0, 30).map(n => ({
-          name: n.name, file: n.file, risk: n.risk,
-        })),
+        test_gaps: changedNodeDetails
+          .filter((n) => !n.tested && n.kind !== 'Test')
+          .slice(0, 30)
+          .map((n) => ({
+            name: n.name,
+            file: n.file,
+            risk: n.risk,
+          })),
         review_guidance: guidance,
         total_impacted: impact.totalImpacted,
         truncated: impact.truncated,
@@ -7107,7 +8211,7 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
       '1. Get IMAP and SMTP credentials from your email provider',
       '   - Gmail: use imap.gmail.com / smtp.gmail.com, enable "App Passwords" in Google Account settings',
       '   - Outlook: use outlook.office365.com for both IMAP and SMTP',
-      '   - Custom: check your provider\'s IMAP/SMTP settings',
+      "   - Custom: check your provider's IMAP/SMTP settings",
       '2. Connect: channel_connect({ type: "email", config: { imapHost: "imap.gmail.com", smtpHost: "smtp.gmail.com", username: "you@gmail.com", password: "YOUR_APP_PASSWORD" } })',
     ].join('\n'),
   },
@@ -7118,7 +8222,7 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
       '1. Go to https://developers.facebook.com and create or select an app',
       '2. Add the WhatsApp product to your app',
       '3. Under WhatsApp → API Setup → copy the Temporary Access Token and Phone Number ID',
-      '4. Choose a verify token (any string you make up) — you\'ll use it to verify the webhook',
+      "4. Choose a verify token (any string you make up) — you'll use it to verify the webhook",
       '5. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_TOKEN", phoneNumberId: "YOUR_PHONE_ID", verifyToken: "YOUR_VERIFY_TOKEN" } })',
       '6. After connecting, configure the webhook URL in Meta Developer Portal → WhatsApp → Configuration → Callback URL',
     ].join('\n'),
@@ -7168,7 +8272,8 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
 function createChannelConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'channel_connect',
-    description: 'Connect a messaging channel. Supported: telegram, discord, email, slack, whatsapp, webhook, teams, webchat. Saves config and hot-connects immediately.',
+    description:
+      'Connect a messaging channel. Supported: telegram, discord, email, slack, whatsapp, webhook, teams, webchat. Saves config and hot-connects immediately.',
     label: 'Connect Channel',
     parameters: Type.Object({
       type: Type.String({
@@ -7177,12 +8282,19 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       config: Type.Record(Type.String(), Type.String(), {
         description: 'Channel-specific config keys. The tool returns setup instructions if required keys are missing.',
       }),
-      model: Type.Optional(Type.String({
-        description: 'AI model ID for this channel (e.g. "claude-sonnet-4-6", "claude-haiku-4-5-20251001"). Economy-tier models work on all plans; standard/premium require Pro. Defaults to "claude-haiku-4-5-20251001".',
-      })),
+      model: Type.Optional(
+        Type.String({
+          description:
+            'AI model ID for this channel (e.g. "claude-sonnet-4-6", "claude-haiku-4-5-20251001"). Economy-tier models work on all plans; standard/premium require Pro. Defaults to "claude-haiku-4-5-20251001".',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { type, config: channelConfig, model } = params as {
+      const {
+        type,
+        config: channelConfig,
+        model,
+      } = params as {
         type: string
         config: Record<string, string>
         model?: string
@@ -7198,29 +8310,35 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         if (proxyUrl && proxyToken) {
           try {
             const accessRes = await fetch(`${proxyUrl.replace(/\/chat\/completions$/, '').replace(/\/v1$/, '/v1')}/access`, {
-              headers: { 'Authorization': `Bearer ${proxyToken}` },
+              headers: { Authorization: `Bearer ${proxyToken}` },
               signal: AbortSignal.timeout(5000),
             })
             if (accessRes.ok) {
-              const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
+              const access = (await accessRes.json()) as {
+                hasAdvancedModelAccess?: boolean
+              }
               if (!access.hasAdvancedModelAccess) {
                 return textResult({
                   error: `Model '${channelModel}' requires a Pro or higher subscription. Please use an economy-tier model or upgrade your plan.`,
                 })
               }
             }
-          } catch { /* If check fails, allow and let proxy enforce at runtime */ }
+          } catch {
+            /* If check fails, allow and let proxy enforce at runtime */
+          }
         }
       }
 
       const validTypes = ['telegram', 'discord', 'email', 'slack', 'whatsapp', 'webhook', 'teams', 'webchat']
       if (!validTypes.includes(type)) {
-        return textResult({ error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}` })
+        return textResult({
+          error: `Invalid channel type: ${type}. Must be one of: ${validTypes.join(', ')}`,
+        })
       }
 
       const channelGuide = CHANNEL_SETUP_GUIDES[type]
       if (channelGuide) {
-        const missingKeys = channelGuide.requiredKeys.filter(k => !channelConfig[k])
+        const missingKeys = channelGuide.requiredKeys.filter((k) => !channelConfig[k])
         if (missingKeys.length > 0) {
           return textResult({
             error: `Missing required config: ${missingKeys.join(', ')}`,
@@ -7244,7 +8362,11 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         }
         savedConfig.channels = savedConfig.channels || []
         const existing = savedConfig.channels.findIndex((c: any) => c.type === type)
-        const channelEntry = { type, config: channelConfig, model: channelModel }
+        const channelEntry = {
+          type,
+          config: channelConfig,
+          model: channelModel,
+        }
         if (existing >= 0) {
           savedConfig.channels[existing] = channelEntry
         } else {
@@ -7287,7 +8409,8 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
 
           return textResult({
             ok: true,
-            message: `${type} channel connected and live. ` +
+            message:
+              `${type} channel connected and live. ` +
               (type === 'webhook'
                 ? 'External services can now POST to /agent/channels/webhook/incoming'
                 : `The ${type} adapter is now receiving messages.`),
@@ -7317,14 +8440,24 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
 function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
   return {
     name: 'transcribe_audio',
-    description: 'Transcribe an audio file to text using OpenAI Whisper. Supports mp3, mp4, mpeg, mpga, m4a, wav, and webm formats. Provide a path to an audio file in the workspace.',
+    description:
+      'Transcribe an audio file to text using OpenAI Whisper. Supports mp3, mp4, mpeg, mpga, m4a, wav, and webm formats. Provide a path to an audio file in the workspace.',
     label: 'Transcribe Audio',
     parameters: Type.Object({
-      path: Type.String({ description: 'Path to the audio file in the workspace (e.g. "recording.mp3")' }),
-      language: Type.Optional(Type.String({ description: 'ISO-639-1 language code (e.g. "en", "es", "fr"). Auto-detected if omitted.' })),
+      path: Type.String({
+        description: 'Path to the audio file in the workspace (e.g. "recording.mp3")',
+      }),
+      language: Type.Optional(
+        Type.String({
+          description: 'ISO-639-1 language code (e.g. "en", "es", "fr"). Auto-detected if omitted.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { path: filePath, language } = params as { path: string; language?: string }
+      const { path: filePath, language } = params as {
+        path: string
+        language?: string
+      }
 
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
       if (!existsSync(resolved)) {
@@ -7342,16 +8475,23 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
       const apiBase = proxyUrl ? proxyUrl.replace(/\/v1$/, '') : 'https://api.openai.com'
       const apiKey = proxyToken || directKey
       if (!apiKey) {
-        return textResult({ error: 'Audio transcription not available: no OpenAI API key configured.' })
+        return textResult({
+          error: 'Audio transcription not available: no OpenAI API key configured.',
+        })
       }
 
       try {
         const audioBuffer = readFileSync(resolved)
         const ext = extname(resolved).toLowerCase()
         const mimeMap: Record<string, string> = {
-          '.mp3': 'audio/mpeg', '.mp4': 'audio/mp4', '.mpeg': 'audio/mpeg',
-          '.mpga': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav',
-          '.webm': 'audio/webm', '.ogg': 'audio/ogg',
+          '.mp3': 'audio/mpeg',
+          '.mp4': 'audio/mp4',
+          '.mpeg': 'audio/mpeg',
+          '.mpga': 'audio/mpeg',
+          '.m4a': 'audio/mp4',
+          '.wav': 'audio/wav',
+          '.webm': 'audio/webm',
+          '.ogg': 'audio/ogg',
         }
         const mimeType = mimeMap[ext] || 'audio/mpeg'
 
@@ -7363,18 +8503,22 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
 
         const response = await fetch(`${apiBase}/v1/audio/transcriptions`, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${apiKey}` },
+          headers: { Authorization: `Bearer ${apiKey}` },
           body: formData,
           signal: AbortSignal.timeout(120_000),
         })
 
         if (!response.ok) {
           const errBody = await response.text().catch(() => '')
-          return textResult({ error: `Whisper API error (${response.status}): ${errBody.slice(0, 500)}` })
+          return textResult({
+            error: `Whisper API error (${response.status}): ${errBody.slice(0, 500)}`,
+          })
         }
 
-        const result = await response.json() as {
-          text: string; language?: string; duration?: number;
+        const result = (await response.json()) as {
+          text: string
+          language?: string
+          duration?: number
           segments?: Array<{ start: number; end: number; text: string }>
         }
 
@@ -7382,10 +8526,16 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
           text: result.text,
           language: result.language,
           duration_seconds: result.duration,
-          segments: result.segments?.map(s => ({ start: s.start, end: s.end, text: s.text })),
+          segments: result.segments?.map((s) => ({
+            start: s.start,
+            end: s.end,
+            text: s.text,
+          })),
         })
       } catch (err: any) {
-        return textResult({ error: `Audio transcription failed: ${err.message}` })
+        return textResult({
+          error: `Audio transcription failed: ${err.message}`,
+        })
       }
     },
   }
@@ -7435,19 +8585,49 @@ function friendlyImageGenerationError(context: string, status: number, rawErrorT
 function createGenerateImageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'generate_image',
-    description: 'Generate an image from a text prompt using AI (GPT Image, Imagen, etc). The image is saved to the agent workspace. Optionally provide a reference_image path to edit/modify an existing workspace image instead of generating from scratch.',
+    description:
+      'Generate one to four image options from a text prompt using AI (GPT Image, Imagen, etc). The images are saved to the agent workspace. Optionally provide a reference_image path to edit/modify an existing workspace image instead of generating from scratch.',
     label: 'Generate Image',
     parameters: Type.Object({
-      prompt: Type.String({ description: 'Text description of the image to generate, or edit instruction when using reference_image' }),
-      filename: Type.Optional(Type.String({ description: 'Destination filename (default: auto-generated). Saved under images/ directory.' })),
-      size: Type.Optional(Type.String({ description: 'Image size: "1024x1024", "1024x1792", "1792x1024" (default: "1024x1024")' })),
+      prompt: Type.String({
+        description: 'Text description of the image to generate, or edit instruction when using reference_image',
+      }),
+      filename: Type.Optional(
+        Type.String({
+          description: 'Destination filename (default: auto-generated). Saved under images/ directory.',
+        }),
+      ),
+      size: Type.Optional(
+        Type.String({
+          description: 'Image size: "1024x1024", "1024x1792", "1792x1024" (default: "1024x1024")',
+        }),
+      ),
+      options: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 4,
+          description: 'Number of image options to generate (1-4, default: 1)',
+        }),
+      ),
       // OpenAI retired the DALL-E 2/3 models (2026-09) — "dall-e-3" now 400s
       // with "The model 'dall-e-3' does not exist." `gpt-image-2.5-flare`
       // is the current default, for both generation and reference_image
       // edits (edits used to require dall-e-2, which is also retired).
-      model: Type.Optional(Type.String({ description: 'Image model: "gpt-image-2.5-flare", "gpt-image-1", "imagen-4", etc. (default: "gpt-image-2.5-flare")' })),
-      quality: Type.Optional(Type.String({ description: 'Image quality: "standard" or "hd" (default: "standard")' })),
-      reference_image: Type.Optional(Type.String({ description: 'Path to a workspace image to use as reference for editing (e.g. "images/logo.png")' })),
+      model: Type.Optional(
+        Type.String({
+          description: 'Image model: "gpt-image-2.5-flare", "gpt-image-1", "imagen-4", etc. (default: "gpt-image-2.5-flare")',
+        }),
+      ),
+      quality: Type.Optional(
+        Type.String({
+          description: 'Image quality: "standard" or "hd" (default: "standard")',
+        }),
+      ),
+      reference_image: Type.Optional(
+        Type.String({
+          description: 'Path to a workspace image to use as reference for editing (e.g. "images/logo.png")',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
@@ -7457,6 +8637,7 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
         model = 'gpt-image-2.5-flare',
         quality = 'standard',
         reference_image,
+        options = 1,
       } = params as {
         prompt: string
         filename?: string
@@ -7464,12 +8645,21 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
         model?: string
         quality?: string
         reference_image?: string
+        options?: number
+      }
+
+      if (!Number.isInteger(options) || options < 1 || options > 4) {
+        return textResult({
+          error: 'The options parameter must be an integer between 1 and 4.',
+        })
       }
 
       const proxyUrl = ctx.aiProxyUrl || process.env.AI_PROXY_URL
       const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
       if (!proxyUrl || !proxyToken) {
-        return textResult({ error: 'Image generation is not available: AI proxy not configured.' })
+        return textResult({
+          error: 'Image generation is not available: AI proxy not configured.',
+        })
       }
 
       const imagesDir = join(ctx.workspaceDir, 'images')
@@ -7477,13 +8667,16 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 
       const outputFilename = filename || `generated-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`
       const safeFilename = outputFilename.replace(/[^a-zA-Z0-9._-]/g, '_')
-      const outputPath = join(imagesDir, safeFilename)
-
-      // Prevent path traversal
-      const resolvedOutput = resolve(outputPath)
       const resolvedImagesDir = resolve(imagesDir)
-      if (!resolvedOutput.startsWith(resolvedImagesDir)) {
-        return textResult({ error: 'Invalid filename: path traversal detected.' })
+      const extension = extname(safeFilename) || '.png'
+      const stem = safeFilename.slice(0, -extension.length) || 'generated-image'
+      const outputPathFor = (index: number) => {
+        const candidateFilename = options === 1 ? safeFilename : `${stem}-${index + 1}${extension}`
+        const candidatePath = join(imagesDir, candidateFilename)
+        if (!resolve(candidatePath).startsWith(resolvedImagesDir)) {
+          throw new Error('Invalid filename: path traversal detected.')
+        }
+        return { candidateFilename, candidatePath }
       }
 
       try {
@@ -7492,12 +8685,19 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
         if (reference_image) {
           const refPath = assertWithinWorkspace(ctx.workspaceDir, reference_image)
           if (!existsSync(refPath)) {
-            return textResult({ error: `Reference image not found: ${reference_image}` })
+            return textResult({
+              error: `Reference image not found: ${reference_image}`,
+            })
           }
 
           const imageBuffer = readFileSync(refPath)
           const refExt = extname(refPath).toLowerCase()
-          const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
+          const mimeMap: Record<string, string> = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+          }
           const mimeType = mimeMap[refExt] || 'image/png'
 
           const formData = new FormData()
@@ -7510,18 +8710,20 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
           // explicit model choice is respected for edits too.
           formData.append('model', model)
           formData.append('size', size)
-          formData.append('n', '1')
+          formData.append('n', String(options))
 
           const editUrl = proxyUrl.replace(/\/v1$/, '/v1/images/edits')
           const response = await fetch(editUrl, {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${proxyToken}` },
+            headers: { Authorization: `Bearer ${proxyToken}` },
             body: formData,
           })
 
           if (!response.ok) {
             const errText = await response.text()
-            return textResult({ error: friendlyImageGenerationError('Image edit', response.status, errText) })
+            return textResult({
+              error: friendlyImageGenerationError('Image edit', response.status, errText),
+            })
           }
 
           responseData = await response.json()
@@ -7531,45 +8733,59 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${proxyToken}`,
+              Authorization: `Bearer ${proxyToken}`,
             },
             body: JSON.stringify({
               prompt,
               model,
               size,
               quality,
-              n: 1,
+              n: options,
             }),
           })
 
           if (!response.ok) {
             const errText = await response.text()
-            return textResult({ error: friendlyImageGenerationError('Image generation', response.status, errText) })
+            return textResult({
+              error: friendlyImageGenerationError('Image generation', response.status, errText),
+            })
           }
 
           responseData = await response.json()
         }
 
         if (responseData.error) {
-          return textResult({ error: responseData.error.message || 'Image generation failed' })
+          return textResult({
+            error: responseData.error.message || 'Image generation failed',
+          })
         }
 
-        const imageData = responseData.data?.[0]
-        if (!imageData?.b64_json) {
+        const imageDataList = Array.isArray(responseData.data) ? responseData.data.slice(0, options) : []
+        if (imageDataList.length === 0 || imageDataList.some((item: any) => !item?.b64_json)) {
           return textResult({ error: 'No image data received from provider' })
         }
 
-        const imageBuffer = Buffer.from(imageData.b64_json, 'base64')
-        writeFileSync(outputPath, imageBuffer)
+        const paths: string[] = []
+        const revisedPrompts: string[] = []
+        let totalBytes = 0
+        for (const [index, imageData] of imageDataList.entries()) {
+          const imageBuffer = Buffer.from(imageData.b64_json, 'base64')
+          const { candidateFilename, candidatePath } = outputPathFor(index)
+          writeFileSync(candidatePath, imageBuffer)
+          paths.push(`images/${candidateFilename}`)
+          totalBytes += imageBuffer.length
+          revisedPrompts.push(imageData.revised_prompt || prompt)
+        }
 
-        const relativePath = `images/${safeFilename}`
         return textResult({
-          path: relativePath,
+          path: paths[0],
+          paths,
           size,
           model,
           quality,
-          bytes: imageBuffer.length,
-          revised_prompt: imageData.revised_prompt || prompt,
+          bytes: totalBytes,
+          revised_prompt: revisedPrompts[0],
+          revised_prompts: revisedPrompts,
           reference_image: reference_image || undefined,
         })
       } catch (err: any) {
@@ -7586,14 +8802,31 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_configure',
-    description: 'Configure the heartbeat system: enable/disable, set interval, and quiet hours. Changes are persisted to config.json and synced to the central scheduler database.',
+    description:
+      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. Changes are persisted to config.json and synced to the central scheduler database.',
     label: 'Configure Heartbeat',
     parameters: Type.Object({
       enabled: Type.Optional(Type.Boolean({ description: 'Enable or disable heartbeat' })),
-      interval: Type.Optional(Type.Number({ description: 'Heartbeat interval in seconds (minimum 60, default 1800)' })),
-      quietHoursStart: Type.Optional(Type.String({ description: 'Quiet hours start time (HH:MM, e.g. "23:00")' })),
-      quietHoursEnd: Type.Optional(Type.String({ description: 'Quiet hours end time (HH:MM, e.g. "07:00")' })),
-      timezone: Type.Optional(Type.String({ description: 'IANA timezone for quiet hours (e.g. "America/Los_Angeles")' })),
+      interval: Type.Optional(
+        Type.Number({
+          description: 'Heartbeat interval in seconds (minimum 60, default 1800)',
+        }),
+      ),
+      quietHoursStart: Type.Optional(
+        Type.String({
+          description: 'Quiet hours start time (HH:MM, e.g. "23:00")',
+        }),
+      ),
+      quietHoursEnd: Type.Optional(
+        Type.String({
+          description: 'Quiet hours end time (HH:MM, e.g. "07:00")',
+        }),
+      ),
+      timezone: Type.Optional(
+        Type.String({
+          description: 'IANA timezone for quiet hours (e.g. "America/Los_Angeles")',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const { enabled, interval, quietHoursStart, quietHoursEnd, timezone } = params as {
@@ -7645,7 +8878,9 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
           quietHours: config.quietHours ?? null,
         })
       } catch (err: any) {
-        return textResult({ error: `Failed to configure heartbeat: ${err.message}` })
+        return textResult({
+          error: `Failed to configure heartbeat: ${err.message}`,
+        })
       }
     },
   }
@@ -7666,13 +8901,13 @@ function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
       if (existsSync(configPath)) {
         try {
           config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        } catch { /* corrupt config */ }
+        } catch {
+          /* corrupt config */
+        }
       }
 
       const heartbeatPath = join(ctx.workspaceDir, 'HEARTBEAT.md')
-      const heartbeatContent = existsSync(heartbeatPath)
-        ? readFileSync(heartbeatPath, 'utf-8')
-        : ''
+      const heartbeatContent = existsSync(heartbeatPath) ? readFileSync(heartbeatPath, 'utf-8') : ''
 
       return textResult({
         enabled: config.heartbeatEnabled ?? false,
@@ -7793,29 +9028,45 @@ function runPlanSummary(ctx: ToolContext, job: PlanSummaryJob): void {
 function createCreatePlanTool(ctx: ToolContext): AgentTool {
   return {
     name: 'create_plan',
-    description: 'Create a structured plan for the user to review and confirm before execution. The plan is saved to .shogo/plans/ as a markdown file and presented to the user for approval.',
+    description:
+      'Create a structured plan for the user to review and confirm before execution. The plan is saved to .shogo/plans/ as a markdown file and presented to the user for approval.',
     label: 'Create Plan',
     parameters: Type.Object({
       name: Type.String({ description: 'Short 3-5 word name for the plan' }),
-      overview: Type.String({ description: '1-2 sentence summary of what the plan accomplishes' }),
-      plan: Type.String({ description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps.' }),
+      overview: Type.String({
+        description: '1-2 sentence summary of what the plan accomplishes',
+      }),
+      plan: Type.String({
+        description: 'Detailed plan in markdown format. Include specific file paths, code snippets, and implementation steps.',
+      }),
       todos: Type.Array(
         Type.Object({
-          id: Type.String({ description: 'Unique task identifier (kebab-case)' }),
+          id: Type.String({
+            description: 'Unique task identifier (kebab-case)',
+          }),
           content: Type.String({ description: 'Task description' }),
         }),
-        { description: 'Implementation tasks in execution order' }
+        { description: 'Implementation tasks in execution order' },
       ),
     }),
     execute: async (_id: string, rawParams: unknown) => {
-      const params = rawParams as { name: string; overview: string; plan: string; todos: Array<{ id: string; content: string }> }
-      const slug = params.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').substring(0, 50)
+      const params = rawParams as {
+        name: string
+        overview: string
+        plan: string
+        todos: Array<{ id: string; content: string }>
+      }
+      const slug = params.name
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+        .substring(0, 50)
       const hash = Math.random().toString(36).substring(2, 10)
       const filename = `${slug}_${hash}.plan.md`
 
-      const todosYaml = params.todos.map(t =>
-        `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: pending`
-      ).join('\n')
+      const todosYaml = params.todos
+        .map((t) => `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: pending`)
+        .join('\n')
 
       const content = [
         '---',
@@ -7883,20 +9134,31 @@ function createCreatePlanTool(ctx: ToolContext): AgentTool {
 function createUpdatePlanTool(ctx: ToolContext): AgentTool {
   return {
     name: 'update_plan',
-    description: 'Update an existing plan file in .shogo/plans/. Provide only the fields you want to change — omitted fields are preserved. Use this instead of create_plan when the user asks to modify, refine, or extend an existing plan.',
+    description:
+      'Update an existing plan file in .shogo/plans/. Provide only the fields you want to change — omitted fields are preserved. Use this instead of create_plan when the user asks to modify, refine, or extend an existing plan.',
     label: 'Update Plan',
     parameters: Type.Object({
-      filepath: Type.String({ description: 'Relative path to the plan file (e.g. .shogo/plans/my-plan_abc123.plan.md)' }),
+      filepath: Type.String({
+        description: 'Relative path to the plan file (e.g. .shogo/plans/my-plan_abc123.plan.md)',
+      }),
       name: Type.Optional(Type.String({ description: 'Updated short name for the plan' })),
       overview: Type.Optional(Type.String({ description: 'Updated 1-2 sentence summary' })),
-      plan: Type.Optional(Type.String({ description: 'Updated detailed plan in markdown format' })),
-      todos: Type.Optional(Type.Array(
-        Type.Object({
-          id: Type.String({ description: 'Unique task identifier (kebab-case)' }),
-          content: Type.String({ description: 'Task description' }),
+      plan: Type.Optional(
+        Type.String({
+          description: 'Updated detailed plan in markdown format',
         }),
-        { description: 'Full replacement todo list in execution order' }
-      )),
+      ),
+      todos: Type.Optional(
+        Type.Array(
+          Type.Object({
+            id: Type.String({
+              description: 'Unique task identifier (kebab-case)',
+            }),
+            content: Type.String({ description: 'Task description' }),
+          }),
+          { description: 'Full replacement todo list in execution order' },
+        ),
+      ),
     }),
     execute: async (_id: string, rawParams: unknown) => {
       const params = rawParams as {
@@ -7938,9 +9200,7 @@ function createUpdatePlanTool(ctx: ToolContext): AgentTool {
 
       let todosYaml: string
       if (params.todos) {
-        todosYaml = params.todos.map(t =>
-          `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: pending`
-        ).join('\n')
+        todosYaml = params.todos.map((t) => `  - id: ${t.id}\n    content: ${JSON.stringify(t.content)}\n    status: pending`).join('\n')
       } else {
         const todosMatch = fm.match(/todos:\n([\s\S]*)$/)
         todosYaml = todosMatch?.[1]?.trimEnd() ?? ''
@@ -8060,10 +9320,16 @@ export function classifyLintErrorCause(message: string, depsReady: boolean | und
 function createReadLintsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_lints',
-    description: 'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) and canvas runtime errors (compile/render failures from the live preview). Returns diagnostics from language servers plus any recent canvas runtime errors. Supports .ts, .tsx, .js, .jsx, and .py files. Use after writing or editing code files to catch mistakes. Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
+    description:
+      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) and canvas runtime errors (compile/render failures from the live preview). Returns diagnostics from language servers plus any recent canvas runtime errors. Supports .ts, .tsx, .js, .jsx, and .py files. Use after writing or editing code files to catch mistakes. Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
     label: 'Read Lints',
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: 'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.' })),
+      path: Type.Optional(
+        Type.String({
+          description:
+            'File to check (e.g. src/App.tsx or scripts/main.py). Rarely needed — omit to auto-lint the files you just edited this turn.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
       // The LSP starts asynchronously (deferred warmup + node_modules wait),
@@ -8075,19 +9341,29 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       const deadline = Date.now() + LSP_READY_TIMEOUT_MS
       let lsp = resolveLsp()
       while ((!lsp || !lsp.isRunning()) && Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 250))
+        await new Promise((r) => setTimeout(r, 250))
         lsp = resolveLsp()
       }
       if (!lsp || !lsp.isRunning()) {
         const runtimeErrors = getCanvasRuntimeErrors()
         if (runtimeErrors.length > 0) {
-          const errors = runtimeErrors.map(e => `[${e.phase}] ${e.error}`)
+          const errors = runtimeErrors.map((e) => `[${e.phase}] ${e.error}`)
           clearCanvasRuntimeErrors()
-          return textResult({ ok: false, error: 'Language server not available.', runtimeErrors: errors, causeBreakdown: { runtime: errors.length } })
+          return textResult({
+            ok: false,
+            error: 'Language server not available.',
+            runtimeErrors: errors,
+            causeBreakdown: { runtime: errors.length },
+          })
         }
         // The tool itself couldn't produce diagnostics — that's an
         // infra/environment condition, not evidence about the model's code.
-        return textResult({ ok: false, error: 'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.', causeBreakdown: { environment: 1 } })
+        return textResult({
+          ok: false,
+          error:
+            'Language server still starting after waiting; type-checking unavailable this turn. Verify with `exec` running `bunx tsc --noEmit` (or the project build) instead, then retry read_lints shortly.',
+          causeBreakdown: { environment: 1 },
+        })
       }
 
       const { path: filePath } = params as { path?: string }
@@ -8098,11 +9374,9 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       const autoScopedPaths = editedThisTurn.length > 0 ? editedThisTurn : null
 
       const workspacePrefix = `file://${ctx.workspaceDir}/`
-      const targetUri = filePath
-        ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}`
-        : undefined
+      const targetUri = filePath ? `file://${assertWithinWorkspace(ctx.workspaceDir, filePath)}` : undefined
 
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      await new Promise((resolve) => setTimeout(resolve, 1500))
 
       let allDiags: Map<string, import('@shogo/shared-runtime').LSPDiagnostic[]>
       if (autoScopedPaths) {
@@ -8139,7 +9413,10 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
       }
 
       const portFixesByFile: Array<{ path: string; fixes: PortFix[] }> = []
-      const portWarningsByFile: Array<{ path: string; warnings: PortWarning[] }> = []
+      const portWarningsByFile: Array<{
+        path: string
+        warnings: PortWarning[]
+      }> = []
       const portErrorsByFile = new Map<string, string[]>()
 
       for (const uri of urisToScan) {
@@ -8181,32 +9458,29 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         if (scan.errors.length > 0) {
           portErrorsByFile.set(
             relPath,
-            scan.errors.map(e => `Line ${e.line}: hardcoded runtime port — ${e.reason}`),
+            scan.errors.map((e) => `Line ${e.line}: hardcoded runtime port — ${e.reason}`),
           )
         }
       }
 
       // Collect canvas runtime errors (compile/render failures from the live preview)
       const runtimeErrorEntries = getCanvasRuntimeErrors()
-      const runtimeErrors = runtimeErrorEntries.length > 0
-        ? runtimeErrorEntries.map(e => `[${e.phase}] ${e.error}`)
-        : undefined
+      const runtimeErrors = runtimeErrorEntries.length > 0 ? runtimeErrorEntries.map((e) => `[${e.phase}] ${e.error}`) : undefined
       if (runtimeErrorEntries.length > 0) clearCanvasRuntimeErrors()
 
-      const scopeMeta = autoScopedPaths
-        ? { auto_scoped: true as const, scoped_to: autoScopedPaths }
-        : {}
+      const scopeMeta = autoScopedPaths ? { auto_scoped: true as const, scoped_to: autoScopedPaths } : {}
 
       const portMeta = {
         ...(portFixesByFile.length > 0 ? { port_fixes: portFixesByFile } : {}),
         ...(portWarningsByFile.length > 0 ? { port_warnings: portWarningsByFile } : {}),
       }
-      const fixesHint = portFixesByFile.length > 0
-        ? (() => {
-            const n = portFixesByFile.reduce((acc, f) => acc + f.fixes.length, 0)
-            return `Rewrote ${n} hardcoded runtime-port URL(s) to \`\${process.env.<VAR>}\` interpolations. Verify the change looks correct.`
-          })()
-        : null
+      const fixesHint =
+        portFixesByFile.length > 0
+          ? (() => {
+              const n = portFixesByFile.reduce((acc, f) => acc + f.fixes.length, 0)
+              return `Rewrote ${n} hardcoded runtime-port URL(s) to \`\${process.env.<VAR>}\` interpolations. Verify the change looks correct.`
+            })()
+          : null
 
       if (allDiags.size === 0 && portErrorsByFile.size === 0) {
         if (runtimeErrors) {
@@ -8234,7 +9508,12 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
 
       const TS_RETURN_OUTSIDE_FN = 1108
       let totalErrors = 0
-      const files: Array<{ path: string; ok: boolean; errors: string[]; causes: LintErrorCause[] }> = []
+      const files: Array<{
+        path: string
+        ok: boolean
+        errors: string[]
+        causes: LintErrorCause[]
+      }> = []
       // Aggregate cause counts across every file, surfaced as `causeBreakdown`
       // on the final result — the single field evals/production telemetry
       // read to tell "environment noise" apart from "the model's mistake"
@@ -8261,11 +9540,9 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         }
         if (relPath.endsWith('.d.ts') || relPath.endsWith('.pyi')) continue
 
-        const filteredDiags = diags
-          .filter(d => (d.severity ?? 1) === 1)
-          .filter(d => d.code !== TS_RETURN_OUTSIDE_FN)
-        const errors = filteredDiags.map(d => `Line ${d.range.start.line + 1}: ${d.message}`)
-        const errorCauses = filteredDiags.map(d => classifyLintErrorCause(d.message, ctx.depsReady))
+        const filteredDiags = diags.filter((d) => (d.severity ?? 1) === 1).filter((d) => d.code !== TS_RETURN_OUTSIDE_FN)
+        const errors = filteredDiags.map((d) => `Line ${d.range.start.line + 1}: ${d.message}`)
+        const errorCauses = filteredDiags.map((d) => classifyLintErrorCause(d.message, ctx.depsReady))
 
         const portErrors = portErrorsByFile.get(relPath) ?? []
         // Hardcoded-port issues are always something the model wrote —
@@ -8277,7 +9554,12 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         if (combined.length === 0) continue
         totalErrors += combined.length
         for (const cause of combinedCauses) tallyCause(cause)
-        files.push({ path: relPath, ok: false, errors: combined, causes: combinedCauses })
+        files.push({
+          path: relPath,
+          ok: false,
+          errors: combined,
+          causes: combinedCauses,
+        })
         portErrorsByFile.delete(relPath)
       }
       // Files that only had port errors (no LSP diags at all) still need to land.

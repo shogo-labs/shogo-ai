@@ -8,14 +8,7 @@
  */
 
 import { memo, useState, useCallback, useMemo, useRef, useEffect } from "react"
-import {
-  View,
-  Text,
-  Image,
-  Pressable,
-  Linking,
-  Platform,
-} from "react-native"
+import { View, Text, Image, Pressable, Linking, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
@@ -23,11 +16,11 @@ import { InlineToolWidget } from "./InlineToolWidget"
 import { SubagentCard } from "./SubagentCard"
 import { TeamCard } from "./TeamCard"
 import { ExecWidget } from "./ExecWidget"
+import { ConnectToolWidget, parseToolInstallResult } from "./ConnectToolWidget"
 import {
-  ConnectToolWidget,
-  parseToolInstallResult,
-} from "./ConnectToolWidget"
-import { AskUserQuestionWidget, AskUserQuestionBar } from "./AskUserQuestionWidget"
+  AskUserQuestionWidget,
+  AskUserQuestionBar,
+} from "./AskUserQuestionWidget"
 import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
@@ -44,15 +37,13 @@ import {
   shouldShowPlanningStatus,
 } from "./turnShaping"
 import { buildFallbackWorkedLabel } from "./workSummary"
-import {
-  TASK_TOOL_NAMES,
-  extractOrderedParts,
-} from "./messageParts"
+import { TASK_TOOL_NAMES, extractOrderedParts } from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { MarkdownText } from "../MarkdownText"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { GeneratedImageGallery } from "./GeneratedImageGallery"
 import { BrowserWidget } from "./BrowserWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
@@ -62,12 +53,20 @@ import { PlanReferenceCard } from "./PlanReferenceCard"
 import { extractPlanFilepath } from "./plan-tool"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
-import { useTodoStateStore, parseTodos as parseTodosForStore } from "../../../lib/todo-state-store"
-import { useFileChangeStore, classifyFileToolName, extractFilePath } from "../../../lib/file-change-store"
+import {
+  useTodoStateStore,
+  parseTodos as parseTodosForStore,
+} from "../../../lib/todo-state-store"
+import {
+  useFileChangeStore,
+  classifyFileToolName,
+  extractFilePath,
+} from "../../../lib/file-change-store"
 import { logScreencast } from "../../../lib/screencast-debug"
 import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
+import { useAgentImageSource } from "../../../lib/agent-image-source"
 
 /**
  * Throttle a streaming value so heavy downstream work (markdown parsing, part
@@ -185,11 +184,17 @@ const TEAM_TOOL_NAMES = new Set(["team_create"])
 // by default, so it's NOT in this set — only tools that flow through
 // `InlineToolWidget` need to be flagged here.
 const MINIMAL_TOOL_NAMES = new Set([
-  "Read", "read_file",
-  "ReadLints", "read_lints",
-  "Grep", "grep", "search",
-  "Glob", "glob",
-  "WebSearch", "WebFetch",
+  "Read",
+  "read_file",
+  "ReadLints",
+  "read_lints",
+  "Grep",
+  "grep",
+  "search",
+  "Glob",
+  "glob",
+  "WebSearch",
+  "WebFetch",
   "Delete",
   "exec_wait",
 ])
@@ -199,6 +204,13 @@ function isItemActive(item: MessagePart): boolean {
   if (item.type === "tool") return item.tool.state === "streaming"
   if (item.type === "reasoning") return item.isStreaming
   return false
+}
+
+function isGeneratedImagePart(part: GroupedMessagePart): boolean {
+  return (
+    part.type === "image-gallery" ||
+    (part.type === "tool" && part.tool.toolName === "generate_image")
+  )
 }
 
 interface GroupSlotProps {
@@ -250,7 +262,11 @@ function ImageThumbnail({
   const [showModal, setShowModal] = useState(false)
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT)
   const imageWidth = useChatImageWidth()
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const imageSource = useAgentImageSource(url)
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+  } | null>(null)
 
   const handlePress = useCallback(() => {
     setShowModal(true)
@@ -287,27 +303,31 @@ function ImageThumbnail({
     <>
       <Pressable
         onPress={handlePress}
-        {...(Platform.OS === "web" ? { onContextMenu: handleContextMenu } as any : {})}
+        {...(Platform.OS === "web"
+          ? ({ onContextMenu: handleContextMenu } as any)
+          : {})}
         testID="image-thumbnail"
         accessibilityRole="button"
         accessibilityLabel={`Open image attachment ${index + 1}`}
         accessibilityHint="Opens a larger preview."
         className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
       >
-        <Image
-          source={{ uri: url }}
-          className="max-w-full rounded-md"
-          resizeMode="contain"
-          accessibilityLabel={`Image attachment ${index + 1}`}
-          onError={() => setHasError(true)}
-          onLoad={(event) => {
-            const source = event.nativeEvent?.source
-            if (source?.width && source?.height) {
+        {imageSource ? (
+          <Image
+            source={imageSource}
+            className="max-w-full rounded-md"
+            resizeMode="contain"
+            accessibilityLabel={`Image attachment ${index + 1}`}
+            onError={() => setHasError(true)}
+            onLoad={(event) => {
+              const source = event.nativeEvent?.source
+              if (source?.width && source?.height) {
                 setAspectRatio(clampAspectRatio(source.width, source.height))
-            }
-          }}
-          style={{ width: imageWidth, aspectRatio }}
-        />
+              }
+            }}
+            style={{ width: imageWidth, aspectRatio }}
+          />
+        ) : null}
       </Pressable>
       <ImagePreviewModal
         visible={showModal}
@@ -413,299 +433,338 @@ export const AssistantContent = memo(
     isStreaming = false,
     className,
   }: AssistantContentProps) {
-  const chatContext = useChatContextSafe()
-  const nativePhone = useIsNativePhoneLayout()
-  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+    const chatContext = useChatContextSafe()
+    const nativePhone = useIsNativePhoneLayout()
+    const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
 
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+    const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
-  const toggleTool = useCallback((toolId: string) => {
-    setExpandedTools((prev) => {
-      const next = new Set(prev)
-      if (next.has(toolId)) {
-        next.delete(toolId)
-      } else {
-        next.add(toolId)
-      }
-      return next
-    })
-  }, [])
-
-  const toggleCacheRef = useRef<Map<string, () => void>>(new Map())
-  const getToggle = useCallback((id: string) => {
-    let fn = toggleCacheRef.current.get(id)
-    if (!fn) {
-      fn = () => toggleTool(id)
-      toggleCacheRef.current.set(id, fn)
-    }
-    return fn
-  }, [toggleTool])
-
-  // Per-chat TodoWrite store, provided by the enclosing ChatPanel so
-  // sibling tabs don't share `latestTodos` / `orderedToolIds`.
-  const todoStateStore = useTodoStateStore()
-  // Per-chat changed-files store feeding the dock's "Changes" panel — see
-  // file-change-store.ts for why this uses the canonical write_file /
-  // edit_file / delete_file names rather than ChatPanel's legacy helper.
-  const fileChangeStore = useFileChangeStore()
-
-  // Throttle the streaming message to ~30fps so markdown re-parsing and part
-  // extraction don't run per-token. When streaming ends, the final value is
-  // flushed immediately so the committed UI is always exact.
-  const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
-
-  const orderedParts = useMemo(
-    () => extractOrderedParts(throttledMessage),
-    [throttledMessage],
-  )
-
-  // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
-  useEffect(() => {
-    for (const part of orderedParts) {
-      if (part.type === "tool" && (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write")) {
-        const todos = parseTodosForStore(part.tool.args)
-        if (todos.length > 0) {
-          todoStateStore.registerWrite(part.tool.id, todos)
+    const toggleTool = useCallback((toolId: string) => {
+      setExpandedTools((prev) => {
+        const next = new Set(prev)
+        if (next.has(toolId)) {
+          next.delete(toolId)
+        } else {
+          next.add(toolId)
         }
-        continue
-      }
-      if (part.type === "tool") {
-        const fileKind = classifyFileToolName(part.tool.toolName)
-        if (fileKind && part.tool.state === "success") {
-          const path = extractFilePath(part.tool.args as Record<string, unknown> | undefined)
-          if (path) fileChangeStore.registerChange(part.tool.id, path, fileKind)
-        }
-      }
-      if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName)) continue
-      const tool = part.tool
-      const args = tool.args as Record<string, unknown> | undefined
-      const agentType = (args?.subagent_type as string) ?? (args?.type as string) ?? "task"
-      const description = (args?.description as string) ?? (args?.prompt as string) ?? ""
-      const isDone = tool.state === "success"
-      const isError = tool.state === "error"
-      subagentStreamStore.init(tool.id, {
-        agentId: tool.id,
-        agentType,
-        description,
-        status: isError ? "error" : isDone ? "completed" : "running",
+        return next
       })
-      const resultParts = (tool.result as any)?.parts as any[] | undefined
-      if (resultParts?.length) {
-        subagentStreamStore.setParts(tool.id, resultParts)
-      }
-      // Capture the AgentManager instance id from the preliminary/final tool output
-      // so the Agents panel can open the live browser screencast for this run.
-      // Skip if we've already captured it — session restores replay every
-      // historical agent_spawn tool part and we don't want to spam logs or
-      // re-notify the store on every load.
-      const instanceId = (tool.result as any)?.instance_id as string | undefined
-      const existing = subagentStreamStore.get(tool.id)
-      if (instanceId && existing?.instanceId !== instanceId) {
-        logScreencast(
-          `[screencast] AssistantContent capture instance_id toolId=${tool.id} ` +
-          `instanceId=${instanceId}`,
-        )
-        subagentStreamStore.setInstanceId(tool.id, instanceId)
-      }
-      const model = (tool.result as any)?.model as string | undefined
-      if (model && existing?.model !== model) {
-        subagentStreamStore.setModel(tool.id, model)
-      }
-    }
-  }, [orderedParts, todoStateStore, fileChangeStore])
+    }, [])
 
-  const groupedParts = useMemo(
-    () => groupWorkParts(orderedParts),
-    [orderedParts],
-  )
-
-  const { workLog, finalSegment } = useMemo(
-    () => partitionTurn(groupedParts),
-    [groupedParts],
-  )
-
-  const timing = useMemo(() => extractTurnTiming(message), [message])
-
-  const lastGroupId = useMemo(() => {
-    const last = groupedParts[groupedParts.length - 1]
-    return last && (last.type === "work-group" || last.type === "tool-group") ? last.id : null
-  }, [groupedParts])
-
-  const showPlanningStatus = useMemo(
-    () => shouldShowPlanningStatus(orderedParts, isStreaming),
-    [orderedParts, isStreaming],
-  )
-
-  const fallbackWorkedLabel = useMemo(
-    () => buildFallbackWorkedLabel(workLog),
-    [workLog],
-  )
-
-  if (groupedParts.length === 0) {
-    return null
-  }
-
-  function renderPart(part: GroupedMessagePart, index: number) {
-        if (part.type === "reasoning") {
-          // Streaming reasoning renders as the turn-level "Planning next
-          // moves" status line instead of a live ThinkingWidget — see
-          // `shouldShowPlanningStatus`. Once it completes it becomes the
-          // collapsed "Thought briefly" / "Thought for Ns" row.
-          if (part.isStreaming) return null
-          return (
-            <ThinkingWidget
-              key={part.id}
-              text={part.text}
-              isStreaming={false}
-              durationSeconds={part.durationSeconds}
-            />
-          )
+    const toggleCacheRef = useRef<Map<string, () => void>>(new Map())
+    const getToggle = useCallback(
+      (id: string) => {
+        let fn = toggleCacheRef.current.get(id)
+        if (!fn) {
+          fn = () => toggleTool(id)
+          toggleCacheRef.current.set(id, fn)
         }
+        return fn
+      },
+      [toggleTool],
+    )
 
-        if (part.type === "text") {
-          return (
-            <View key={part.id}>
-              <MarkdownText
-                className={
-                  Platform.OS !== "web" || usesMobileWorkspaceChrome
-                    ? "text-foreground text-base leading-6"
-                    : "text-foreground text-xs prose-sm"
-                }
-                isStreaming={isStreaming}
-                onFilePress={chatContext?.openFile}
-              >
-                {part.text}
-              </MarkdownText>
-            </View>
-          )
+    // Per-chat TodoWrite store, provided by the enclosing ChatPanel so
+    // sibling tabs don't share `latestTodos` / `orderedToolIds`.
+    const todoStateStore = useTodoStateStore()
+    // Per-chat changed-files store feeding the dock's "Changes" panel — see
+    // file-change-store.ts for why this uses the canonical write_file /
+    // edit_file / delete_file names rather than ChatPanel's legacy helper.
+    const fileChangeStore = useFileChangeStore()
+
+    // Throttle the streaming message to ~30fps so markdown re-parsing and part
+    // extraction don't run per-token. When streaming ends, the final value is
+    // flushed immediately so the committed UI is always exact.
+    const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
+
+    const orderedParts = useMemo(
+      () => extractOrderedParts(throttledMessage),
+      [throttledMessage],
+    )
+
+    // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
+    useEffect(() => {
+      for (const part of orderedParts) {
+        if (
+          part.type === "tool" &&
+          (part.tool.toolName === "TodoWrite" ||
+            part.tool.toolName === "todo_write")
+        ) {
+          const todos = parseTodosForStore(part.tool.args)
+          if (todos.length > 0) {
+            todoStateStore.registerWrite(part.tool.id, todos)
+          }
+          continue
         }
-
-        if (part.type === "work-group") {
-          return (
-            <WorkGroupSlot
-              key={part.id}
-              items={part.items}
-              id={part.id}
-              messageIsStreaming={isStreaming}
-              isLastGroup={part.id === lastGroupId}
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
-            />
-          )
-        }
-
-        if (part.type === "tool-group") {
-          return (
-            <ToolCallGroup
-              key={part.id}
-              toolName={part.toolName}
-              tools={part.tools}
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
-            />
-          )
-        }
-
         if (part.type === "tool") {
-          if (TEAM_TOOL_NAMES.has(part.tool.toolName)) {
-            return <TeamCard key={part.id} tool={part.tool} />
+          const fileKind = classifyFileToolName(part.tool.toolName)
+          if (fileKind && part.tool.state === "success") {
+            const path = extractFilePath(
+              part.tool.args as Record<string, unknown> | undefined,
+            )
+            if (path)
+              fileChangeStore.registerChange(part.tool.id, path, fileKind)
           }
+        }
+        if (part.type !== "tool" || !TASK_TOOL_NAMES.has(part.tool.toolName))
+          continue
+        const tool = part.tool
+        const args = tool.args as Record<string, unknown> | undefined
+        const agentType =
+          (args?.subagent_type as string) ?? (args?.type as string) ?? "task"
+        const description =
+          (args?.description as string) ?? (args?.prompt as string) ?? ""
+        const isDone = tool.state === "success"
+        const isError = tool.state === "error"
+        subagentStreamStore.init(tool.id, {
+          agentId: tool.id,
+          agentType,
+          description,
+          status: isError ? "error" : isDone ? "completed" : "running",
+        })
+        const resultParts = (tool.result as any)?.parts as any[] | undefined
+        if (resultParts?.length) {
+          subagentStreamStore.setParts(tool.id, resultParts)
+        }
+        // Capture the AgentManager instance id from the preliminary/final tool output
+        // so the Agents panel can open the live browser screencast for this run.
+        // Skip if we've already captured it — session restores replay every
+        // historical agent_spawn tool part and we don't want to spam logs or
+        // re-notify the store on every load.
+        const instanceId = (tool.result as any)?.instance_id as
+          string | undefined
+        const existing = subagentStreamStore.get(tool.id)
+        if (instanceId && existing?.instanceId !== instanceId) {
+          logScreencast(
+            `[screencast] AssistantContent capture instance_id toolId=${tool.id} ` +
+              `instanceId=${instanceId}`,
+          )
+          subagentStreamStore.setInstanceId(tool.id, instanceId)
+        }
+        const model = (tool.result as any)?.model as string | undefined
+        if (model && existing?.model !== model) {
+          subagentStreamStore.setModel(tool.id, model)
+        }
+      }
+    }, [orderedParts, todoStateStore, fileChangeStore])
 
-          if (TASK_TOOL_NAMES.has(part.tool.toolName)) {
-            return <SubagentCard key={part.id} tool={part.tool} />
-          }
+    const groupedParts = useMemo(
+      () => groupWorkParts(orderedParts),
+      [orderedParts],
+    )
 
-          if (part.tool.toolName === "ask_user") {
-            // While pending, the interactive answer UI is attached above the
-            // chat input. The stream only shows a small collapsed bar that
-            // scrolls to that widget when tapped.
-            if (askUserStreamVariant(part.tool.result) === "bar") {
-              return (
-                <AskUserQuestionBar
-                  key={part.id}
-                  tool={part.tool}
-                  onPress={() => chatContext?.focusPendingQuestion?.()}
-                />
-              )
-            }
+    const { workLog, finalSegment } = useMemo(
+      () => partitionTurn(groupedParts),
+      [groupedParts],
+    )
 
-            // Answered: keep the existing collapsed summary widget in-stream.
+    const timing = useMemo(() => extractTurnTiming(message), [message])
+
+    const lastGroupId = useMemo(() => {
+      const last = groupedParts[groupedParts.length - 1]
+      return last && (last.type === "work-group" || last.type === "tool-group")
+        ? last.id
+        : null
+    }, [groupedParts])
+
+    const showPlanningStatus = useMemo(
+      () => shouldShowPlanningStatus(orderedParts, isStreaming),
+      [orderedParts, isStreaming],
+    )
+
+    const collapsibleWorkParts = useMemo(
+      () => workLog.filter((part) => !isGeneratedImagePart(part)),
+      [workLog],
+    )
+
+    const fallbackWorkedLabel = useMemo(
+      () => buildFallbackWorkedLabel(collapsibleWorkParts),
+      [collapsibleWorkParts],
+    )
+
+    if (groupedParts.length === 0) {
+      return null
+    }
+
+    function renderPart(part: GroupedMessagePart, index: number) {
+      if (part.type === "reasoning") {
+        // Streaming reasoning renders as the turn-level "Planning next
+        // moves" status line instead of a live ThinkingWidget — see
+        // `shouldShowPlanningStatus`. Once it completes it becomes the
+        // collapsed "Thought briefly" / "Thought for Ns" row.
+        if (part.isStreaming) return null
+        return (
+          <ThinkingWidget
+            key={part.id}
+            text={part.text}
+            isStreaming={false}
+            durationSeconds={part.durationSeconds}
+          />
+        )
+      }
+
+      if (part.type === "text") {
+        return (
+          <View key={part.id}>
+            <MarkdownText
+              className={
+                Platform.OS !== "web" || usesMobileWorkspaceChrome
+                  ? "text-foreground text-base leading-6"
+                  : "text-foreground text-xs prose-sm"
+              }
+              isStreaming={isStreaming}
+              onFilePress={chatContext?.openFile}
+            >
+              {part.text}
+            </MarkdownText>
+          </View>
+        )
+      }
+
+      if (part.type === "work-group") {
+        return (
+          <WorkGroupSlot
+            key={part.id}
+            items={part.items}
+            id={part.id}
+            messageIsStreaming={isStreaming}
+            isLastGroup={part.id === lastGroupId}
+            isExpanded={expandedTools.has(part.id)}
+            onToggle={getToggle(part.id)}
+          />
+        )
+      }
+
+      if (part.type === "tool-group") {
+        return (
+          <ToolCallGroup
+            key={part.id}
+            toolName={part.toolName}
+            tools={part.tools}
+            isExpanded={expandedTools.has(part.id)}
+            onToggle={getToggle(part.id)}
+          />
+        )
+      }
+
+      if (part.type === "image-gallery") {
+        return <GeneratedImageGallery key={part.id} tools={part.tools} />
+      }
+
+      if (part.type === "tool") {
+        if (TEAM_TOOL_NAMES.has(part.tool.toolName)) {
+          return <TeamCard key={part.id} tool={part.tool} />
+        }
+
+        if (TASK_TOOL_NAMES.has(part.tool.toolName)) {
+          return <SubagentCard key={part.id} tool={part.tool} />
+        }
+
+        if (part.tool.toolName === "ask_user") {
+          // While pending, the interactive answer UI is attached above the
+          // chat input. The stream only shows a small collapsed bar that
+          // scrolls to that widget when tapped.
+          if (askUserStreamVariant(part.tool.result) === "bar") {
             return (
-              <AskUserQuestionWidget
+              <AskUserQuestionBar
                 key={part.id}
                 tool={part.tool}
-                isExpanded={expandedTools.has(part.id)}
-                onToggle={getToggle(part.id)}
-                onSubmitResponse={(response) => {
-                  if (chatContext?.sendMessage) {
-                    chatContext.sendMessage(response)
-                  }
-                  if (chatContext?.saveToolOutput) {
-                    chatContext.saveToolOutput({
-                      messageId: message.id,
-                      toolCallId: part.id,
-                      output: response,
-                    })
-                  }
-                }}
+                onPress={() => chatContext?.focusPendingQuestion?.()}
               />
             )
           }
 
-          if (part.tool.toolName === "TodoWrite" || part.tool.toolName === "todo_write") {
-            return (
-              <TodoRow
-                key={part.id}
-                tool={part.tool}
-              />
-            )
-          }
+          // Answered: keep the existing collapsed summary widget in-stream.
+          return (
+            <AskUserQuestionWidget
+              key={part.id}
+              tool={part.tool}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
+              onSubmitResponse={(response) => {
+                if (chatContext?.sendMessage) {
+                  chatContext.sendMessage(response)
+                }
+                if (chatContext?.saveToolOutput) {
+                  chatContext.saveToolOutput({
+                    messageId: message.id,
+                    toolCallId: part.id,
+                    output: response,
+                  })
+                }
+              }}
+            />
+          )
+        }
 
+        if (
+          part.tool.toolName === "TodoWrite" ||
+          part.tool.toolName === "todo_write"
+        ) {
+          return <TodoRow key={part.id} tool={part.tool} />
+        }
+
+        if (
+          (part.tool.toolName === "connect" ||
+            part.tool.toolName === "tool_install" ||
+            part.tool.toolName === "mcp_install") &&
+          part.tool.state === "success"
+        ) {
+          const installResult = parseToolInstallResult(part.tool.result)
           if (
-            (part.tool.toolName === "connect" ||
-              part.tool.toolName === "tool_install" ||
-              part.tool.toolName === "mcp_install") &&
-            part.tool.state === "success"
+            installResult?.authStatus === "needs_auth" &&
+            installResult?.authUrl
           ) {
-            const installResult = parseToolInstallResult(part.tool.result)
-            if (installResult?.authStatus === "needs_auth" && installResult?.authUrl) {
-              return (
-                <ConnectToolWidget
-                  key={part.id}
-                  toolkitName={installResult.integration || "Service"}
-                  authUrl={installResult.authUrl}
-                  toolCount={installResult.toolCount || 0}
-                />
-              )
-            }
-          }
-
-          if (part.tool.toolName === "generate_image") {
             return (
-              <GenerateImageWidget key={part.id} tool={part.tool} />
+              <ConnectToolWidget
+                key={part.id}
+                toolkitName={installResult.integration || "Service"}
+                authUrl={installResult.authUrl}
+                toolCount={installResult.toolCount || 0}
+              />
             )
           }
+        }
 
-          if (part.tool.toolName === "create_plan" || part.tool.toolName === "update_plan") {
-            const args = part.tool.args as Record<string, unknown> | undefined
-            const pendingPlan = chatContext?.pendingPlan
-            const confirmedPlan = chatContext?.confirmedPlan
-            const toolCallId = part.id
-            const matchesTool = (plan?: PlanData | null) => {
-              if (!plan) return false
-              if (plan.toolCallId && plan.toolCallId === toolCallId) return true
-              if (plan.filepath && args?.filepath && plan.filepath === args.filepath) return true
-              return (
-                part.tool.toolName === "create_plan" &&
-                !plan.toolCallId &&
-                !plan.filepath &&
-                plan.name === args?.name &&
-                plan.plan === args?.plan
-              )
-            }
-            const matchingPendingPlan = matchesTool(pendingPlan) ? pendingPlan : null
-            const matchingConfirmedPlan = matchesTool(confirmedPlan) ? confirmedPlan : null
-            const planData: PlanData | null = matchingPendingPlan ?? matchingConfirmedPlan ?? (args
+        if (part.tool.toolName === "generate_image") {
+          return <GenerateImageWidget key={part.id} tool={part.tool} />
+        }
+
+        if (
+          part.tool.toolName === "create_plan" ||
+          part.tool.toolName === "update_plan"
+        ) {
+          const args = part.tool.args as Record<string, unknown> | undefined
+          const pendingPlan = chatContext?.pendingPlan
+          const confirmedPlan = chatContext?.confirmedPlan
+          const toolCallId = part.id
+          const matchesTool = (plan?: PlanData | null) => {
+            if (!plan) return false
+            if (plan.toolCallId && plan.toolCallId === toolCallId) return true
+            if (
+              plan.filepath &&
+              args?.filepath &&
+              plan.filepath === args.filepath
+            )
+              return true
+            return (
+              part.tool.toolName === "create_plan" &&
+              !plan.toolCallId &&
+              !plan.filepath &&
+              plan.name === args?.name &&
+              plan.plan === args?.plan
+            )
+          }
+          const matchingPendingPlan = matchesTool(pendingPlan)
+            ? pendingPlan
+            : null
+          const matchingConfirmedPlan = matchesTool(confirmedPlan)
+            ? confirmedPlan
+            : null
+          const planData: PlanData | null =
+            matchingPendingPlan ??
+            matchingConfirmedPlan ??
+            (args
               ? {
                   name: (args.name as string) ?? "Plan",
                   overview: (args.overview as string) ?? "",
@@ -715,94 +774,41 @@ export const AssistantContent = memo(
                   toolCallId,
                 }
               : null)
-            if (!planData) return null
-            const isConfirmed =
-              !!matchingConfirmedPlan &&
-              ((matchingConfirmedPlan.toolCallId && matchingConfirmedPlan.toolCallId === toolCallId) ||
-                (!!matchingConfirmedPlan.filepath && matchingConfirmedPlan.filepath === planData.filepath))
-            const planFilepath =
-              planData.filepath ??
-              (typeof args?.filepath === "string" ? args.filepath : undefined) ??
-              extractPlanFilepath(part.tool.result)
-            // Native: the live pending plan is the oval above the composer, not a
-            // second card in the transcript.
-            if (nativePhone && matchingPendingPlan) return null
-            return (
-              <PlanReferenceCard
-                key={part.id}
-                plan={planData}
-                isConfirmed={isConfirmed}
-                isUpdate={part.tool.toolName === "update_plan"}
-                isStreaming={part.tool.state === "streaming"}
-                onViewPlan={
-                  chatContext?.openPlan
-                    ? () => chatContext.openPlan?.(planFilepath ?? null)
-                    : undefined
-                }
-                onBuild={isConfirmed ? null : chatContext?.buildPlan}
-                selectedModel={chatContext?.selectedModel}
-              />
-            )
-          }
-
-          if (part.tool.toolName === "exec" || part.tool.toolName === "Bash") {
-            return (
-              <ExecWidget
-                key={part.id}
-                tool={part.tool}
-                isExpanded={expandedTools.has(part.id)}
-                onToggle={getToggle(part.id)}
-              />
-            )
-          }
-
-          if (part.tool.toolName === "write_file" || part.tool.toolName === "Write") {
-            return (
-              <WriteFileWidget
-                key={part.id}
-                tool={part.tool}
-                isExpanded={expandedTools.has(part.id)}
-                onToggle={getToggle(part.id)}
-              />
-            )
-          }
-
-          if (part.tool.toolName === "edit_file" || part.tool.toolName === "Edit" || part.tool.toolName === "StrReplace") {
-            return (
-              <EditFileWidget
-                key={part.id}
-                tool={part.tool}
-                isExpanded={expandedTools.has(part.id)}
-                onToggle={getToggle(part.id)}
-              />
-            )
-          }
-
-          if (part.tool.toolName === "browser") {
-            return (
-              <BrowserWidget
-                key={part.id}
-                tool={part.tool}
-                isExpanded={expandedTools.has(part.id)}
-                onToggle={getToggle(part.id)}
-              />
-            )
-          }
-
-          if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
-            return (
-              <InlineToolWidget
-                key={part.id}
-                tool={part.tool}
-                variant="minimal"
-                isExpanded={expandedTools.has(part.id)}
-                onToggle={getToggle(part.id)}
-              />
-            )
-          }
-
+          if (!planData) return null
+          const isConfirmed =
+            !!matchingConfirmedPlan &&
+            ((matchingConfirmedPlan.toolCallId &&
+              matchingConfirmedPlan.toolCallId === toolCallId) ||
+              (!!matchingConfirmedPlan.filepath &&
+                matchingConfirmedPlan.filepath === planData.filepath))
+          const planFilepath =
+            planData.filepath ??
+            (typeof args?.filepath === "string" ? args.filepath : undefined) ??
+            extractPlanFilepath(part.tool.result)
+          // Native: the live pending plan is the oval above the composer, not a
+          // second card in the transcript.
+          if (nativePhone && matchingPendingPlan) return null
           return (
-            <InlineToolWidget
+            <PlanReferenceCard
+              key={part.id}
+              plan={planData}
+              isConfirmed={isConfirmed}
+              isUpdate={part.tool.toolName === "update_plan"}
+              isStreaming={part.tool.state === "streaming"}
+              onViewPlan={
+                chatContext?.openPlan
+                  ? () => chatContext.openPlan?.(planFilepath ?? null)
+                  : undefined
+              }
+              onBuild={isConfirmed ? null : chatContext?.buildPlan}
+              selectedModel={chatContext?.selectedModel}
+            />
+          )
+        }
+
+        if (part.tool.toolName === "exec" || part.tool.toolName === "Bash") {
+          return (
+            <ExecWidget
               key={part.id}
               tool={part.tool}
               isExpanded={expandedTools.has(part.id)}
@@ -811,58 +817,133 @@ export const AssistantContent = memo(
           )
         }
 
-        if (part.type === "image") {
+        if (
+          part.tool.toolName === "write_file" ||
+          part.tool.toolName === "Write"
+        ) {
           return (
-            <ImageThumbnail
+            <WriteFileWidget
               key={part.id}
-              url={resolveChatAttachmentUrl(part.url)}
-              mediaType={part.mediaType}
-              index={index}
+              tool={part.tool}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
             />
           )
         }
 
-        if (part.type === "file") {
+        if (
+          part.tool.toolName === "edit_file" ||
+          part.tool.toolName === "Edit" ||
+          part.tool.toolName === "StrReplace"
+        ) {
           return (
-            <FileThumbnail
+            <EditFileWidget
               key={part.id}
-              url={resolveChatAttachmentUrl(part.url)}
-              mediaType={part.mediaType}
-              index={index}
+              tool={part.tool}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
             />
           )
         }
 
-        return null
-  }
+        if (part.tool.toolName === "browser") {
+          return (
+            <BrowserWidget
+              key={part.id}
+              tool={part.tool}
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
+            />
+          )
+        }
 
-  // Collapse rule: everything before the turn's last text block folds
-  // under "Worked for X" once the turn is done. While streaming, the
-  // work log renders flat (same as today) — the reference screenshots
-  // show no header at all mid-stream, just the live one-line group
-  // labels ticking as work happens; the collapse only settles once the
-  // turn completes.
-  return (
-    <View className={cn("gap-y-1", className)}>
-      {!isStreaming && workLog.length > 0 && (
-        <WorkedForGroup
-          startedAt={timing.startedAt}
-          completedAt={timing.completedAt}
-          fallbackLabel={fallbackWorkedLabel}
-          isExpanded={expandedTools.has("worked-for")}
-          onToggle={getToggle("worked-for")}
-          hasBody
-        >
-          <View className="gap-y-1">
-            {workLog.map((part, index) => renderPart(part, index))}
-          </View>
-        </WorkedForGroup>
-      )}
-      {isStreaming && workLog.map((part, index) => renderPart(part, index))}
-      {finalSegment.map((part, index) => renderPart(part, workLog.length + index))}
-      {showPlanningStatus && <PlanningStatusLine />}
-    </View>
-  )
+        if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
+          return (
+            <InlineToolWidget
+              key={part.id}
+              tool={part.tool}
+              variant="minimal"
+              isExpanded={expandedTools.has(part.id)}
+              onToggle={getToggle(part.id)}
+            />
+          )
+        }
+
+        return (
+          <InlineToolWidget
+            key={part.id}
+            tool={part.tool}
+            isExpanded={expandedTools.has(part.id)}
+            onToggle={getToggle(part.id)}
+          />
+        )
+      }
+
+      if (part.type === "image") {
+        return (
+          <ImageThumbnail
+            key={part.id}
+            url={resolveChatAttachmentUrl(part.url)}
+            mediaType={part.mediaType}
+            index={index}
+          />
+        )
+      }
+
+      if (part.type === "file") {
+        return (
+          <FileThumbnail
+            key={part.id}
+            url={resolveChatAttachmentUrl(part.url)}
+            mediaType={part.mediaType}
+            index={index}
+          />
+        )
+      }
+
+      return null
+    }
+
+    // Collapse rule: everything before the turn's last text block folds
+    // under "Worked for X" once the turn is done. While streaming, the
+    // work log renders flat (same as today) — the reference screenshots
+    // show no header at all mid-stream, just the live one-line group
+    // labels ticking as work happens; the collapse only settles once the
+    // turn completes.
+    const collapsedWorkLog = workLog.flatMap((part, index) =>
+      isGeneratedImagePart(part) ? [] : [{ part, index }],
+    )
+    const visibleImageWork = workLog.flatMap((part, index) =>
+      isGeneratedImagePart(part) ? [{ part, index }] : [],
+    )
+
+    return (
+      <View className={cn("gap-y-1", className)}>
+        {!isStreaming && collapsedWorkLog.length > 0 && (
+          <WorkedForGroup
+            startedAt={timing.startedAt}
+            completedAt={timing.completedAt}
+            fallbackLabel={fallbackWorkedLabel}
+            isExpanded={expandedTools.has("worked-for")}
+            onToggle={getToggle("worked-for")}
+            hasBody
+          >
+            <View className="gap-y-1">
+              {collapsedWorkLog.map(({ part, index }) =>
+                renderPart(part, index),
+              )}
+            </View>
+          </WorkedForGroup>
+        )}
+        {isStreaming && workLog.map((part, index) => renderPart(part, index))}
+        {!isStreaming &&
+          visibleImageWork.map(({ part, index }) => renderPart(part, index))}
+        {finalSegment.map((part, index) =>
+          renderPart(part, workLog.length + index),
+        )}
+        {showPlanningStatus && <PlanningStatusLine />}
+      </View>
+    )
   },
   (prev, next) =>
     prev.message === next.message &&

@@ -10,7 +10,8 @@
  *    usage);
  *  - a pinned "blocking" zone directly above the composer for prompts
  *    that park the agent turn (permission approval, pending question,
- *    an active connectivity wait) — these never collapse.
+ *    an active connectivity wait). Blocking panels stay reachable; pending
+ *    questions may collapse their body behind the header.
  *
  * Web: `absolute` + `bottom: "100%"` so the dock floats over the message
  * list without pushing layout. The overlay spans the composer wrapper —
@@ -45,8 +46,21 @@
  * `isFirst`) rather than each being its own nested card.
  */
 
-import { useCallback, useEffect, useSyncExternalStore, type ReactNode } from "react"
-import { View, StyleSheet, ScrollView, Platform, useColorScheme, useWindowDimensions, type LayoutChangeEvent } from "react-native"
+import {
+  useCallback,
+  useEffect,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react"
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Platform,
+  useColorScheme,
+  useWindowDimensions,
+  type LayoutChangeEvent,
+} from "react-native"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useChatDockStore } from "../../../lib/chat-dock-store"
@@ -90,7 +104,14 @@ const styles = StyleSheet.create({
   statusScroll: {
     flexGrow: 0,
   },
-  topFade: { position: "absolute", top: 0, left: 0, right: 0, height: FADE_HEIGHT, pointerEvents: "none" },
+  topFade: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: FADE_HEIGHT,
+    pointerEvents: "none",
+  },
   scrollContent: { paddingTop: 2, paddingBottom: 2 },
 })
 
@@ -113,7 +134,11 @@ export interface ChatDockProps {
   testID?: string
 }
 
-export function ChatDock({ availableHeight, className, testID }: ChatDockProps) {
+export function ChatDock({
+  availableHeight,
+  className,
+  testID,
+}: ChatDockProps) {
   const store = useChatDockStore()
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion)
   const colorScheme = useColorScheme()
@@ -153,7 +178,9 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
     ? nativePhoneDockStatusMaxHeight(nativeCapHeight)
     : Math.min(
         MAX_STATUS_HEIGHT,
-        statusCapSource ? Math.round(statusCapSource * MAX_STATUS_HEIGHT_RATIO) : MAX_STATUS_HEIGHT,
+        statusCapSource
+          ? Math.round(statusCapSource * MAX_STATUS_HEIGHT_RATIO)
+          : MAX_STATUS_HEIGHT,
       )
   const blockingBodyMaxHeight = native
     ? nativePhoneDockBlockingBodyMaxHeight(nativeCapHeight)
@@ -166,9 +193,9 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
       summary={panel.summary}
       accent={panel.accent}
       headerActions={panel.headerActions}
-      expanded
-      collapsible={false}
-      onToggle={() => {}}
+      expanded={panel.collapsible ? store.isExpanded(panel.id) : true}
+      collapsible={!!panel.collapsible}
+      onToggle={() => store.toggle(panel.id)}
       isFirst={index === 0}
     >
       {panel.render({ expanded: true, bodyMaxHeight: blockingBodyMaxHeight })}
@@ -213,7 +240,10 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
         </ScrollView>
       )}
       {native && statusPanels.length > 1 && (
-        <LinearGradient colors={[fadeColors[2], fadeColors[0]]} style={styles.topFade} />
+        <LinearGradient
+          colors={[fadeColors[2], fadeColors[0]]}
+          style={styles.topFade}
+        />
       )}
     </View>
   )
@@ -236,7 +266,13 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
         pointerEvents="box-none"
         onLayout={handleLayout}
       >
-        <View className={cn("w-full self-center gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
+        <View
+          className={cn(
+            "w-full self-center gap-1.5",
+            HORIZONTAL_PADDING_CLASS,
+            className,
+          )}
+        >
           {body}
         </View>
       </View>
@@ -250,7 +286,9 @@ export function ChatDock({ availableHeight, className, testID }: ChatDockProps) 
       pointerEvents="box-none"
       onLayout={handleLayout}
     >
-      <View className={cn("w-full gap-1.5", HORIZONTAL_PADDING_CLASS, className)}>
+      <View
+        className={cn("w-full gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
+      >
         {body}
       </View>
     </View>

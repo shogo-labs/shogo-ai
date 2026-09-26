@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  Animated,
   Image,
   Platform,
   Pressable,
@@ -18,7 +19,18 @@ import {
   useWindowDimensions,
   View,
 } from "react-native"
-import { Check, ImageIcon, X } from "lucide-react-native"
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  ImageIcon,
+  X,
+} from "lucide-react-native"
+import {
+  PanGestureHandler,
+  PinchGestureHandler,
+  State,
+} from "react-native-gesture-handler"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   Modal,
@@ -33,14 +45,19 @@ import {
   copyImageToClipboard,
   isShogoDesktop,
 } from "./chatImageActions"
+import { useAgentImageSource } from "../../lib/agent-image-source"
 
 export interface ImagePreviewModalProps {
   visible: boolean
   onClose: () => void
   url: string
+  gallery?: Array<{ url: string; title?: string; alt?: string }>
+  initialIndex?: number
   mediaType?: string
   title?: string
   alt?: string
+  onSave?: (url: string) => void | Promise<void>
+  onShare?: (url: string) => void | Promise<void>
 }
 
 // The image right-click menu only exists in the Shogo desktop app. On web we
@@ -103,23 +120,149 @@ export function ChatImageContextMenu({
   )
 }
 
+function PinchableImage({
+  source,
+  width,
+  height,
+  alt,
+  onLoad,
+  onError,
+  onSwipeDown,
+}: {
+  source: { uri: string; headers?: Record<string, string> }
+  width: number
+  height: number
+  alt: string
+  onLoad: () => void
+  onError: () => void
+  onSwipeDown: () => void
+}) {
+  const scale = useRef(new Animated.Value(1)).current
+  const pinchScale = useRef(new Animated.Value(1)).current
+  const panX = useRef(new Animated.Value(0)).current
+  const panY = useRef(new Animated.Value(0)).current
+  const baseScale = useRef(1)
+  const lastTapAt = useRef(0)
+
+  const handleTap = useCallback(() => {
+    const now = Date.now()
+    if (now - lastTapAt.current > 280) {
+      lastTapAt.current = now
+      return
+    }
+    lastTapAt.current = 0
+    baseScale.current = baseScale.current > 1 ? 1 : 2
+    Animated.spring(scale, {
+      toValue: baseScale.current,
+      useNativeDriver: true,
+      bounciness: 0,
+    }).start()
+  }, [scale])
+
+  const pinchEvent = Animated.event([{ nativeEvent: { scale: pinchScale } }], {
+    useNativeDriver: true,
+  })
+  const panEvent = Animated.event(
+    [{ nativeEvent: { translationX: panX, translationY: panY } }],
+    { useNativeDriver: true },
+  )
+
+  const onPinchStateChange = useCallback(
+    (event: any) => {
+      if (event.nativeEvent.oldState !== State.ACTIVE) return
+      baseScale.current = Math.min(
+        3,
+        Math.max(1, baseScale.current * event.nativeEvent.scale),
+      )
+      pinchScale.setValue(1)
+      Animated.spring(scale, {
+        toValue: baseScale.current,
+        useNativeDriver: true,
+        bounciness: 0,
+      }).start()
+    },
+    [pinchScale, scale],
+  )
+
+  const onPanStateChange = useCallback(
+    (event: any) => {
+      if (event.nativeEvent.oldState !== State.ACTIVE) return
+      if (baseScale.current <= 1 && event.nativeEvent.translationY > 120) {
+        onSwipeDown()
+        panX.setValue(0)
+        panY.setValue(0)
+        return
+      }
+      panX.setValue(0)
+      panY.setValue(0)
+    },
+    [onSwipeDown, panX, panY],
+  )
+
+  return (
+    <Pressable onPress={handleTap} accessibilityLabel="Zoom image">
+      <PanGestureHandler
+        onGestureEvent={panEvent}
+        onHandlerStateChange={onPanStateChange}
+      >
+        <Animated.View
+          style={{ transform: [{ translateX: panX }, { translateY: panY }] }}
+        >
+          <PinchGestureHandler
+            onGestureEvent={pinchEvent}
+            onHandlerStateChange={onPinchStateChange}
+          >
+            <Animated.View>
+              <Animated.Image
+                source={source}
+                resizeMode="contain"
+                accessibilityLabel={alt}
+                onLoad={onLoad}
+                onError={onError}
+                style={{
+                  width,
+                  height,
+                  opacity: 1,
+                  transform: [{ scale: Animated.multiply(scale, pinchScale) }],
+                }}
+              />
+            </Animated.View>
+          </PinchGestureHandler>
+        </Animated.View>
+      </PanGestureHandler>
+    </Pressable>
+  )
+}
+
 export function ImagePreviewModal({
   visible,
   onClose,
   url,
+  gallery,
+  initialIndex = 0,
   mediaType,
   title = "Image preview",
   alt = "Image attachment",
+  onSave,
+  onShare,
 }: ImagePreviewModalProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle")
   const [loadState, setLoadState] = useState<"loading" | "loaded" | "failed">(
     "loading",
   )
+  const [currentIndex, setCurrentIndex] = useState(initialIndex ?? 0)
   const resetCopyStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   )
   const { width, height } = useWindowDimensions()
   const showCopy = !isShogoDesktop()
+  const activeItem = gallery?.[currentIndex]
+  const activeUrl = activeItem?.url ?? url
+  const activeTitle = activeItem?.title ?? title
+  const activeAlt = activeItem?.alt ?? alt
+  const imageSource = useAgentImageSource(activeUrl)
+  const isPhone = Platform.OS !== "web" && width < 600
+  const hasGallery = !!gallery && gallery.length > 1
 
   const panelMaxWidth = Math.min(Math.max(width - 32, 280), 960)
   const panelMaxHeight = Math.min(Math.max(height * 0.86, 320), 760)
@@ -141,7 +284,12 @@ export function ImagePreviewModal({
     }
     setCopyState("idle")
     setLoadState("loading")
-  }, [visible, url])
+    setCurrentIndex(initialIndex ?? 0)
+  }, [initialIndex, url, visible])
+
+  useEffect(() => {
+    if (visible) setLoadState("loading")
+  }, [activeUrl, visible])
 
   const statusLabel = useMemo(() => {
     switch (copyState) {
@@ -157,9 +305,9 @@ export function ImagePreviewModal({
   }, [copyState])
 
   const handleCopy = useCallback(async () => {
-    if (!url || copyState === "copying") return
+    if (!activeUrl || copyState === "copying") return
     setCopyState("copying")
-    const result = await copyImageToClipboard(url, mediaType)
+    const result = await copyImageToClipboard(activeUrl, mediaType)
     setCopyState(result)
     if (resetCopyStateTimerRef.current) {
       clearTimeout(resetCopyStateTimerRef.current)
@@ -168,23 +316,72 @@ export function ImagePreviewModal({
       setCopyState("idle")
       resetCopyStateTimerRef.current = null
     }, 2200)
-  }, [copyState, mediaType, url])
+  }, [activeUrl, copyState, mediaType])
 
   return (
     <Modal isOpen={visible} onClose={onClose} size="full">
       <ModalBackdrop />
       <ModalContent
-        className="bg-background m-4 overflow-hidden rounded-xl border border-border p-0"
-        style={{ maxWidth: panelMaxWidth, maxHeight: panelMaxHeight }}
+        className={cn(
+          "bg-background overflow-hidden border border-border p-0",
+          isPhone ? "m-0 h-full w-full rounded-none" : "m-4 rounded-xl",
+        )}
+        style={
+          isPhone
+            ? { width: "100%", height: "100%" }
+            : { maxWidth: panelMaxWidth, maxHeight: panelMaxHeight }
+        }
       >
-        <ModalHeader className="flex-row items-center justify-between border-b border-border px-4 py-3">
+        <ModalHeader
+          className={cn(
+            "flex-row items-center justify-between border-b border-border px-4 py-3",
+            isPhone && "bg-black border-white/10",
+          )}
+        >
           <View className="min-w-0 flex-1 flex-row items-center gap-2">
             <ImageIcon size={15} className="text-muted-foreground" />
-            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-              {title}
+            <Text
+              className="text-sm font-semibold text-foreground"
+              numberOfLines={1}
+            >
+              {activeTitle}
             </Text>
           </View>
           <View className="flex-row items-center gap-2">
+            {onSave ? (
+              <Pressable
+                onPress={() => void onSave(activeUrl)}
+                className="min-h-11 justify-center rounded-md px-2.5"
+                accessibilityRole="button"
+                accessibilityLabel="Save image"
+              >
+                <Text
+                  className={cn(
+                    "text-xs font-medium",
+                    isPhone ? "text-white" : "text-muted-foreground",
+                  )}
+                >
+                  Save
+                </Text>
+              </Pressable>
+            ) : null}
+            {onShare ? (
+              <Pressable
+                onPress={() => void onShare(activeUrl)}
+                className="min-h-11 justify-center rounded-md px-2.5"
+                accessibilityRole="button"
+                accessibilityLabel="Share image"
+              >
+                <Text
+                  className={cn(
+                    "text-xs font-medium",
+                    isPhone ? "text-white" : "text-muted-foreground",
+                  )}
+                >
+                  Share
+                </Text>
+              </Pressable>
+            ) : null}
             {showCopy ? (
               <Pressable
                 onPress={handleCopy}
@@ -207,7 +404,9 @@ export function ImagePreviewModal({
                     "text-xs font-medium",
                     copyState === "failed"
                       ? "text-destructive"
-                      : "text-muted-foreground",
+                      : isPhone
+                        ? "text-white"
+                        : "text-muted-foreground",
                   )}
                 >
                   {statusLabel}
@@ -215,13 +414,22 @@ export function ImagePreviewModal({
               </Pressable>
             ) : null}
             <ModalCloseButton className="h-11 w-11 items-center justify-center rounded-md">
-              <X size={16} className="text-muted-foreground" />
+              <X
+                size={16}
+                className={isPhone ? "text-white" : "text-muted-foreground"}
+              />
             </ModalCloseButton>
           </View>
         </ModalHeader>
 
         <ModalBody className="m-0 p-0">
-          <View className="bg-muted/20 p-3" style={{ maxHeight: imageMaxHeight }}>
+          <View
+            className={cn(
+              "flex-1 items-center justify-center p-3",
+              isPhone && "bg-black",
+            )}
+            style={{ maxHeight: imageMaxHeight }}
+          >
             {loadState === "loading" ? (
               <View className="absolute inset-0 items-center justify-center">
                 <ActivityIndicator size="large" />
@@ -246,26 +454,90 @@ export function ImagePreviewModal({
                   alignItems: "center",
                   justifyContent: "center",
                 }}
-                maximumZoomScale={3}
+                maximumZoomScale={Platform.OS === "ios" ? 3 : 1}
                 minimumZoomScale={1}
                 centerContent
                 showsHorizontalScrollIndicator={false}
                 showsVerticalScrollIndicator={false}
               >
-                <Image
-                  source={{ uri: url }}
-                  resizeMode="contain"
-                  accessibilityLabel={alt}
-                  onLoad={() => setLoadState("loaded")}
-                  onError={() => setLoadState("failed")}
-                  style={{
-                    width: panelMaxWidth - 24,
-                    height: imageMaxHeight,
-                    opacity: loadState === "loaded" ? 1 : 0,
-                  }}
-                />
+                {imageSource ? (
+                  isPhone ? (
+                    <PinchableImage
+                      source={imageSource}
+                      width={width - 24}
+                      height={imageMaxHeight}
+                      alt={activeAlt}
+                      onLoad={() => setLoadState("loaded")}
+                      onError={() => setLoadState("failed")}
+                      onSwipeDown={onClose}
+                    />
+                  ) : (
+                    <Image
+                      source={imageSource}
+                      resizeMode="contain"
+                      accessibilityLabel={activeAlt}
+                      onLoad={() => setLoadState("loaded")}
+                      onError={() => setLoadState("failed")}
+                      style={{
+                        width: panelMaxWidth - 24,
+                        height: imageMaxHeight,
+                        opacity: loadState === "loaded" ? 1 : 0,
+                      }}
+                    />
+                  )
+                ) : null}
               </ScrollView>
             )}
+            {hasGallery ? (
+              <View className="absolute bottom-5 left-0 right-0 flex-row items-center justify-center gap-3">
+                <Pressable
+                  onPress={() =>
+                    setCurrentIndex((index) => Math.max(0, index - 1))
+                  }
+                  disabled={currentIndex === 0}
+                  className={cn(
+                    "h-11 w-11 items-center justify-center rounded-full",
+                    isPhone ? "bg-white/15" : "bg-background/80",
+                    currentIndex === 0 && "opacity-40",
+                  )}
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous generated image"
+                >
+                  <ChevronLeft
+                    size={20}
+                    className={isPhone ? "text-white" : "text-foreground"}
+                  />
+                </Pressable>
+                <Text
+                  className={cn(
+                    "text-xs font-medium",
+                    isPhone ? "text-white" : "text-foreground",
+                  )}
+                >
+                  {currentIndex + 1} of {gallery?.length}
+                </Text>
+                <Pressable
+                  onPress={() =>
+                    setCurrentIndex((index) =>
+                      Math.min((gallery?.length ?? 1) - 1, index + 1),
+                    )
+                  }
+                  disabled={currentIndex === (gallery?.length ?? 1) - 1}
+                  className={cn(
+                    "h-11 w-11 items-center justify-center rounded-full",
+                    isPhone ? "bg-white/15" : "bg-background/80",
+                    currentIndex === (gallery?.length ?? 1) - 1 && "opacity-40",
+                  )}
+                  accessibilityRole="button"
+                  accessibilityLabel="Next generated image"
+                >
+                  <ChevronRight
+                    size={20}
+                    className={isPhone ? "text-white" : "text-foreground"}
+                  />
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         </ModalBody>
       </ModalContent>
