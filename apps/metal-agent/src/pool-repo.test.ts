@@ -221,12 +221,14 @@ describe('pool host-mediated repo persist', () => {
   })
 
   describe('workspace runtime assign', () => {
-    function assignWorkspace(repoRef: object | null) {
+    function assignWorkspace(repoRef: object | null, onGuest?: (path: string) => Promise<void>) {
       const seen: string[] = []
       const guest = Bun.serve({
         port: 0,
-        fetch: (req) => {
-          seen.push(new URL(req.url).pathname)
+        fetch: async (req) => {
+          const path = new URL(req.url).pathname
+          seen.push(path)
+          await onGuest?.(path)
           return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
         },
       })
@@ -267,6 +269,42 @@ describe('pool host-mediated repo persist', () => {
       await pool.saveRepoToStore(a)
       expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })
     })
+
+    test('does not export the seed .git while the repo hydrate is still running', async () => {
+      const results: boolean[] = []
+      const { pool, run } = assignWorkspace(
+        { url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' },
+        async (path) => {
+          if (path !== '/pool/hydrate-url') return
+          const live = (pool as any).assigned.get('ws:proj:p1') as AssignedVm
+          results.push(await pool.saveRepoToStore(live))
+        },
+      )
+      const a = await run
+      expect(results).toEqual([false])
+      expect(pool.uploads).toHaveLength(0)
+      expect(a.repoHydratePending).toBe(false)
+      expect(a.repoHeadSha).toBeUndefined()
+    })
+
+    test('a VM that found no durable repo at assign never supersedes one written later', async () => {
+      const { pool, run } = assignWorkspace(null)
+      const a = await run
+      expect(a.repoLinked).toBe(true)
+      pool.outcomes = [{ status: 'conflict', quarantineKey: 'conflict/p1/q.tar.gz', reason: 'raced-create' }]
+      pool.durable = { etag: '"other-writer"', lastModified: 1_000 }
+
+      expect(await pool.saveRepoToStore(a)).toBe(false)
+      expect(pool.statCalls).toBe(0)
+      expect(pool.preserved).toHaveLength(0)
+    })
+  })
+
+  test('a save while the assign-time repo hydrate is pending is skipped', async () => {
+    const pool = makePool(dir)
+    const a = pool.add('ws:proj:p1', { repoHydratePending: true })
+    expect(await pool.saveRepoToStore(a)).toBe(false)
+    expect(pool.uploads).toHaveLength(0)
   })
 
   test('pollActivity exports when repoHeadSha changes', async () => {
