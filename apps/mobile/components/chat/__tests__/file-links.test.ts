@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   fileHref,
+  linkifyBareUrls,
   linkifyFilePaths,
   pathFromFileHref,
   resolveChatFilePath,
@@ -48,6 +49,29 @@ describe("linkifyFilePaths", () => {
     expect(linkifyFilePaths("See README.md for details.")).toBe(
       "See README.md for details.",
     )
+  })
+})
+
+describe("linkifyBareUrls", () => {
+  test("links common bare domains and keeps punctuation outside the link", () => {
+    expect(linkifyBareUrls("Read example.com, then open www.shogo.ai/docs.")).toBe(
+      "Read [example.com](https://example.com), then open [www.shogo.ai/docs](https://www.shogo.ai/docs).",
+    )
+  })
+
+  test("does not turn emails, code, or workspace paths into web links", () => {
+    const input = [
+      "Email support@example.com.",
+      "Use `example.com` in the fixture.",
+      "See src/app.tsx and https://example.com/already-linked.",
+    ].join("\n")
+    const linked = linkifyBareUrls(input)
+    expect(linked).toContain("support@example.com")
+    expect(linked).toContain("`example.com`")
+    expect(linked).toContain("src/app.tsx")
+    expect(linked).toContain("https://example.com/already-linked")
+    expect(linked).not.toContain("[support@example.com]")
+    expect(linked).not.toContain("[`example.com`]")
   })
 })
 

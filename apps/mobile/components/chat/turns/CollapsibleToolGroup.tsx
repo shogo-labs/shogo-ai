@@ -33,7 +33,7 @@ import {
 import { Motion, AnimatePresence } from "@legendapp/motion"
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
-import { ChevronDown } from "lucide-react-native"
+import { ChevronDown, ChevronRight } from "lucide-react-native"
 import {
   useIsNativePhoneLayout,
   usePhoneLayout,
@@ -316,17 +316,18 @@ function CollapsibleToolGroupImpl({
   }
 
   if (nativePhone && !insideSheet) {
-    const chatLabel = isStreaming ? "Working…" : "Worked"
+    const chatLabel = isStreaming ? "Working…" : label
     return (
       <View className={cn("py-0.5", className)}>
         <Pressable
           onPress={() => setSheetOpen(true)}
-          className="flex-row items-center gap-1.5 self-start py-1"
+          className="min-h-11 flex-row items-center gap-1.5 self-start rounded-md px-1 py-1 active:bg-muted/60"
           role="button"
           accessibilityLabel={label}
         >
           <Text className="text-xs text-muted-foreground">{chatLabel}</Text>
           {badge}
+          <ChevronRight size={15} className="text-muted-foreground" />
         </Pressable>
         <NativeActivitySheet
           visible={sheetOpen}

@@ -13,6 +13,7 @@ import {
   Image,
   Platform,
   Pressable,
+  ScrollView,
   Text,
   useWindowDimensions,
   View,
@@ -191,7 +192,7 @@ export function ImagePreviewModal({
                 accessibilityRole="button"
                 accessibilityLabel={statusLabel}
                 className={cn(
-                  "h-8 flex-row items-center gap-1.5 rounded-md px-2.5",
+                  "min-h-11 flex-row items-center gap-1.5 rounded-md px-2.5",
                   Platform.OS === "web" && "hover:bg-muted/60",
                   copyState === "failed" && "bg-destructive/10",
                 )}
@@ -213,17 +214,14 @@ export function ImagePreviewModal({
                 </Text>
               </Pressable>
             ) : null}
-            <ModalCloseButton className="h-8 w-8 items-center justify-center rounded-md">
+            <ModalCloseButton className="h-11 w-11 items-center justify-center rounded-md">
               <X size={16} className="text-muted-foreground" />
             </ModalCloseButton>
           </View>
         </ModalHeader>
 
         <ModalBody className="m-0 p-0">
-          <View
-            className="items-center justify-center bg-muted/20 p-3"
-            style={{ maxHeight: imageMaxHeight }}
-          >
+          <View className="bg-muted/20 p-3" style={{ maxHeight: imageMaxHeight }}>
             {loadState === "loading" ? (
               <View className="absolute inset-0 items-center justify-center">
                 <ActivityIndicator size="large" />
@@ -240,18 +238,33 @@ export function ImagePreviewModal({
                 </Text>
               </View>
             ) : (
-              <Image
-                source={{ uri: url }}
-                resizeMode="contain"
-                accessibilityLabel={alt}
-                onLoad={() => setLoadState("loaded")}
-                onError={() => setLoadState("failed")}
-                style={{
-                  width: panelMaxWidth - 24,
-                  height: imageMaxHeight,
-                  opacity: loadState === "loaded" ? 1 : 0,
+              <ScrollView
+                horizontal
+                contentContainerStyle={{
+                  minWidth: panelMaxWidth - 24,
+                  minHeight: imageMaxHeight,
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
-              />
+                maximumZoomScale={3}
+                minimumZoomScale={1}
+                centerContent
+                showsHorizontalScrollIndicator={false}
+                showsVerticalScrollIndicator={false}
+              >
+                <Image
+                  source={{ uri: url }}
+                  resizeMode="contain"
+                  accessibilityLabel={alt}
+                  onLoad={() => setLoadState("loaded")}
+                  onError={() => setLoadState("failed")}
+                  style={{
+                    width: panelMaxWidth - 24,
+                    height: imageMaxHeight,
+                    opacity: loadState === "loaded" ? 1 : 0,
+                  }}
+                />
+              </ScrollView>
             )}
           </View>
         </ModalBody>

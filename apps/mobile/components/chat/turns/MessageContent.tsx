@@ -9,7 +9,15 @@
  */
 
 import { useState, useCallback } from "react";
-import { View, Text, Image, Pressable, Linking, Platform } from "react-native";
+import {
+  View,
+  Text,
+  Image,
+  Pressable,
+  Linking,
+  Platform,
+  useWindowDimensions,
+} from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { FileText, Play } from "lucide-react-native";
 import type { UIMessage } from "@ai-sdk/react";
@@ -129,6 +137,9 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [aspectRatio, setAspectRatio] = useState(4 / 3);
+  const { width: viewportWidth } = useWindowDimensions();
+  const thumbnailWidth = Math.min(144, Math.max(96, viewportWidth * 0.38));
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -182,15 +193,21 @@ function ImageThumbnail({
         className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
       >
         <View
-          className="rounded-lg overflow-hidden border border-border/40"
-          style={{ width: 96, height: 72 }}
+          className="rounded-lg overflow-hidden border border-border/40 bg-muted/30"
+          style={{ width: thumbnailWidth, aspectRatio }}
         >
           <Image
             source={{ uri: url }}
-            resizeMode="cover"
+            resizeMode="contain"
             accessibilityLabel={`Image attachment ${index + 1}`}
             onError={() => setHasError(true)}
-            style={{ width: 96, height: 72 }}
+            onLoad={(event) => {
+              const source = event.nativeEvent?.source;
+              if (source?.width && source?.height) {
+                setAspectRatio(source.width / source.height);
+              }
+            }}
+            style={{ width: "100%", height: "100%" }}
           />
         </View>
       </Pressable>
@@ -389,8 +406,9 @@ export function MessageContent({
 }: MessageContentProps) {
   const isPhoneLayout = usePhoneLayout();
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+  const { width: viewportWidth } = useWindowDimensions();
   const usesMobileChatTypography =
-    isPhoneLayout || usesMobileWorkspaceChrome;
+    isPhoneLayout || usesMobileWorkspaceChrome || viewportWidth < 640;
   const content = extractTextContent(message);
   const images = extractImageParts(message);
   const files = extractFileParts(message);
@@ -453,13 +471,18 @@ export function MessageContent({
         <LongTextPreviewCard text={content} title="Your Message" />
       ) : (
         <Text
+          style={
+            usesMobileChatTypography
+              ? { fontSize: 16, lineHeight: 24 }
+              : undefined
+          }
           className={
             userBubble
               ? usesMobileChatTypography
-                ? "text-base leading-6 text-white"
+                ? "text-[16px] leading-6 text-white"
                 : "text-sm leading-5 text-white"
               : usesMobileChatTypography
-                ? "text-base leading-6 text-foreground"
+                ? "text-[16px] leading-6 text-foreground"
                 : "text-sm leading-5 text-foreground"
           }
           selectable={!userBubble}

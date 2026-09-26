@@ -8,7 +8,15 @@
  */
 
 import { memo, useState, useCallback, useMemo, useRef, useEffect } from "react"
-import { View, Text, Image, Pressable, Linking, Platform } from "react-native"
+import {
+  View,
+  Text,
+  Image,
+  Pressable,
+  Linking,
+  Platform,
+  useWindowDimensions,
+} from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
@@ -239,6 +247,9 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
+  const [aspectRatio, setAspectRatio] = useState(4 / 3)
+  const { width: viewportWidth } = useWindowDimensions()
+  const imageWidth = Math.min(320, Math.max(220, viewportWidth - 80))
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
 
   const handlePress = useCallback(() => {
@@ -285,11 +296,17 @@ function ImageThumbnail({
       >
         <Image
           source={{ uri: url }}
-          className="max-w-[280px] rounded-md"
+          className="max-w-full rounded-md"
           resizeMode="contain"
           accessibilityLabel={`Image attachment ${index + 1}`}
           onError={() => setHasError(true)}
-          style={{ width: 280, aspectRatio: 4 / 3 }}
+          onLoad={(event) => {
+            const source = event.nativeEvent?.source
+            if (source?.width && source?.height) {
+              setAspectRatio(source.width / source.height)
+            }
+          }}
+          style={{ width: imageWidth, aspectRatio }}
         />
       </Pressable>
       <ImagePreviewModal

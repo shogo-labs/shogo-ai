@@ -7215,13 +7215,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     colors={
                       isDark
                         ? [
-                            "rgba(16,16,16,0.94)",
-                            "rgba(16,16,16,0.62)",
+                            "rgba(16,16,16,0.76)",
+                            "rgba(16,16,16,0.42)",
                             "rgba(16,16,16,0)",
                           ]
                         : [
-                            "rgba(255,255,255,0.94)",
-                            "rgba(255,255,255,0.62)",
+                            "rgba(255,255,255,0.76)",
+                            "rgba(255,255,255,0.42)",
                             "rgba(255,255,255,0)",
                           ]
                     }

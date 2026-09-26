@@ -242,7 +242,7 @@ function renderChatInput() {
 }
 
 describe("ChatInput — native caret regression guard", () => {
-  test("animates prominent height changes and fades the stable placeholder", () => {
+  test("animates prominent height changes and removes the placeholder while typing", () => {
     const input = renderChatInput()
     const contentSizeChangeBeforeTyping = latestContentSizeChange
 
@@ -260,7 +260,10 @@ describe("ChatInput — native caret regression guard", () => {
       ),
     ).toBe(true)
 
-    expect(screen.getByText("Ask Shogo...")).toBeTruthy()
+    // The placeholder must be removed from the tree as soon as text exists;
+    // fading an overlaid label leaves a visible ghost during native
+    // compositing.
+    expect(screen.queryByText("Ask Shogo...")).toBeNull()
     expect(
       animationConfigs.some(
         (config) =>

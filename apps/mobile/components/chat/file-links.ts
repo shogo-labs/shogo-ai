@@ -34,6 +34,10 @@ const BARE_PATH_RE = new RegExp(
   `(?<![A-Za-z0-9_./:-])(?!https?:\\/\\/|www\\.)(?:${SEGMENT}/)+${SEGMENT}\\.[A-Za-z0-9]{1,12}(?![A-Za-z0-9_/])`,
   "g",
 )
+const BARE_URL_RE =
+  /(?<![A-Za-z0-9_@./:-])((?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s<]*)?)/g
+const PUBLIC_TLD_RE =
+  /^(?:com|org|net|io|ai|co|dev|app|edu|gov|me|ly|xyz|info|biz|tech|cloud|ca|uk|us|de|fr|in|jp|au)$/i
 
 export function fileHref(path: string): string {
   return `${FILE_HREF_PREFIX}${encodeURIComponent(path)}`
@@ -114,6 +118,46 @@ export function linkifyFilePaths(markdown: string): string {
   text = unmask(text, links, "LINK")
   text = unmask(text, fences, "FENCE")
   return text
+}
+
+/**
+ * Make the domains people naturally type in chat clickable too. Markdown
+ * already handles explicit links, but bare `example.com` text otherwise
+ * remains plain text. Fences, inline code, existing links, emails, and file
+ * paths are masked so this does not alter code or workspace references.
+ */
+export function linkifyBareUrls(markdown: string): string {
+  const fences: string[] = []
+  const links: string[] = []
+  const inlineCode: string[] = []
+  let text = mask(markdown, FENCE_RE, fences, "FENCE")
+  text = mask(text, EXISTING_LINK_RE, links, "LINK")
+  text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
+
+  text = text.replace(BARE_URL_RE, (match) => {
+    const trailing = match.match(/[.,!?;:)\]}]+$/)?.[0] ?? ""
+    const candidate = trailing ? match.slice(0, -trailing.length) : match
+    const host = candidate.split("/")[0]?.split(".").pop() ?? ""
+    const firstSegment = candidate.split("/")[0] ?? ""
+
+    // `src/file.ts` is a file path, not a web address. Keep it available to
+    // the file-path linkifier instead.
+    if (
+      !candidate ||
+      firstSegment.includes("@") ||
+      (candidate.includes("/") && !firstSegment.includes(".")) ||
+      !PUBLIC_TLD_RE.test(host)
+    ) {
+      return match
+    }
+
+    const href = `https://${candidate}`
+    return `[${candidate}](${href})${trailing}`
+  })
+
+  text = unmask(text, inlineCode, "CODE")
+  text = unmask(text, links, "LINK")
+  return unmask(text, fences, "FENCE")
 }
 
 export interface ResolvedChatFile {

@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import React, { memo, useMemo, type AnchorHTMLAttributes, type MouseEvent } from "react"
+import { useWindowDimensions } from "react-native"
 import { Streamdown, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
-import { FILE_HREF_PREFIX, linkifyFilePaths, pathFromFileHref } from "./file-links"
+import {
+  FILE_HREF_PREFIX,
+  linkifyBareUrls,
+  linkifyFilePaths,
+  pathFromFileHref,
+} from "./file-links"
 
 export interface MarkdownTextProps {
   children: string
@@ -68,12 +74,15 @@ function FileAwareLink({
 export const MarkdownText = memo(
   function MarkdownText({ children, className, isStreaming, onFilePress }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
-    const baseClassName = usesMobileWorkspaceChrome
+    const { width } = useWindowDimensions()
+    const usesMobileChatTypography = usesMobileWorkspaceChrome || width < 640
+    const baseClassName = usesMobileChatTypography
       ? "chat-md chat-md-mobile"
       : "chat-md"
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
-    const body = onFilePress ? linkifyFilePaths(source) : source
+    const fileLinked = onFilePress ? linkifyFilePaths(source) : source
+    const body = linkifyBareUrls(fileLinked)
     const components = useMemo(
       () =>
         onFilePress
