@@ -294,4 +294,28 @@ test.describe("Agent preview hygiene + publish", () => {
       "agent must not falsely report a successful publish to a taken subdomain",
     ).not.toMatch(new RegExp(`live at[^\\n]*${subdomain}\\.shogo\\.one`, "i"))
   })
+
+  test("agent gives a Free user a working direct file download link", async ({ request }) => {
+    test.setTimeout(360_000)
+
+    await createProject(page, "A project for testing direct artifact delivery")
+    await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+    await sendProjectChatMessage(
+      page,
+      "Create a small PDF named artifact-delivery-test.pdf in the workspace. " +
+        "Then use the file-sharing tool to give me a direct download link. " +
+        "Do not give me localhost, a preview URL, or a published app URL.",
+    )
+    await waitForAgentResponse(page, 180_000)
+
+    const text = await transcript(page)
+    expect(text, "file delivery must not expose localhost").not.toMatch(LOCALHOST_RE)
+    expect(text, "file delivery must not use an app preview URL").not.toMatch(PREVIEW_URL_RE)
+    const match = text.match(/https?:\/\/[^\s<>()]+\/f\/[A-Za-z0-9._-]+/i)
+    expect(match, "agent should surface an expiring /f/ download URL").toBeTruthy()
+
+    const response = await request.get(match![0], { timeout: 60_000 })
+    expect(response.status()).toBe(200)
+    expect(response.headers()["content-disposition"]).toMatch(/^attachment;/i)
+  })
 })

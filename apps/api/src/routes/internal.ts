@@ -13,6 +13,7 @@ import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
+import { signSharedFileToken } from '../lib/shared-file-token'
 
 const app = new Hono()
 
@@ -385,6 +386,75 @@ app.post('/projects/:projectId/publish', async (c) => {
   } catch (err: any) {
     console.error(`[Internal] publish for ${projectId} failed:`, err.message)
     return c.json({ error: { code: 'publish_failed', message: 'Failed to publish' } }, 500)
+  }
+})
+
+/**
+ * POST /api/internal/projects/:projectId/shared-files
+ *
+ * Mint a short-lived capability URL for one file in the project's runtime.
+ * The file remains in the runtime workspace; this route intentionally does
+ * not copy it to object storage.
+ */
+app.post('/projects/:projectId/shared-files', async (c) => {
+  const projectId = c.req.param('projectId')
+  if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+  if (!(await validateAuth(c, projectId))) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  let body: { path?: string; expiresInDays?: number }
+  try {
+    body = (await c.req.json()) as typeof body
+  } catch {
+    return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
+  }
+
+  const path = typeof body.path === 'string' ? body.path : ''
+  const segments = path.split('/')
+  if (
+    !path ||
+    path.length > 4096 ||
+    path.startsWith('/') ||
+    path.includes('\\') ||
+    segments.some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    return c.json({ error: { code: 'invalid_path', message: 'path must be a relative workspace path' } }, 400)
+  }
+
+  const requestedDays = typeof body.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
+    ? Math.floor(body.expiresInDays)
+    : 7
+  const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+  const now = Math.floor(Date.now() / 1000)
+
+  try {
+    const { prisma } = await import('../lib/prisma')
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+
+    const token = signSharedFileToken({
+      projectId,
+      workspaceId: project.workspaceId,
+      path,
+      exp: now + expiresInDays * 24 * 60 * 60,
+      now,
+    })
+    const configuredOrigin = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+    const origin = (configuredOrigin || new URL(c.req.url).origin).replace(/\/+$/, '')
+
+    return c.json({
+      ok: true,
+      url: `${origin}/f/${encodeURIComponent(token)}`,
+      expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
+      path,
+    })
+  } catch (err: any) {
+    console.error(`[Internal] shared file token for ${projectId} failed:`, err?.message || err)
+    return c.json({ error: { code: 'shared_file_failed', message: 'Failed to create shared file link' } }, 500)
   }
 })
 

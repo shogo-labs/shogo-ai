@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, test, mock } from 'bun:test'
+import { verifySharedFileToken } from '../../lib/shared-file-token'
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -1311,5 +1312,52 @@ describe('POST /projects/:projectId/publish', () => {
       body: JSON.stringify({ subdomain: 'my-site' }),
     })
     expect(res.status).toBe(200)
+  })
+})
+
+// ─── POST /projects/:projectId/shared-files ─────────────────────────────────
+
+describe('POST /projects/:projectId/shared-files', () => {
+  test('mints a project/workspace-bound expiring URL', async () => {
+    const previousOrigin = process.env.SHOGO_PUBLIC_API_URL
+    const previousSecret = process.env.BETTER_AUTH_SECRET
+    process.env.SHOGO_PUBLIC_API_URL = 'https://api.example'
+    process.env.BETTER_AUTH_SECRET = 'internal-shared-file-test-secret'
+    store.prismaProjectFindUnique = { workspaceId: 'ws-1' }
+
+    try {
+      const res = await app.request('/projects/proj-x/shared-files', {
+        method: 'POST',
+        headers: { ...SA, ...JSON_H },
+        body: JSON.stringify({ path: 'reports/final report.pdf', expiresInDays: 30 }),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as { url: string; expiresAt: string; path: string }
+      expect(body.url).toMatch(/^https:\/\/api\.example\/f\//)
+      expect(body.path).toBe('reports/final report.pdf')
+      expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now())
+
+      const token = body.url.split('/f/')[1]
+      const payload = verifySharedFileToken(token)
+      expect(payload?.projectId).toBe('proj-x')
+      expect(payload?.workspaceId).toBe('ws-1')
+      expect(payload?.path).toBe('reports/final report.pdf')
+      expect(payload!.exp - payload!.iat).toBe(7 * 24 * 60 * 60)
+    } finally {
+      if (previousOrigin === undefined) delete process.env.SHOGO_PUBLIC_API_URL
+      else process.env.SHOGO_PUBLIC_API_URL = previousOrigin
+      if (previousSecret === undefined) delete process.env.BETTER_AUTH_SECRET
+      else process.env.BETTER_AUTH_SECRET = previousSecret
+    }
+  })
+
+  test('rejects traversal paths', async () => {
+    const res = await app.request('/projects/proj-x/shared-files', {
+      method: 'POST',
+      headers: { ...SA, ...JSON_H },
+      body: JSON.stringify({ path: '../secret.txt' }),
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('invalid_path')
   })
 })

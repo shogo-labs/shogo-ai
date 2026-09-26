@@ -43,6 +43,7 @@ import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { MarkdownText } from "../MarkdownText"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { FileDeliveryWidget } from "./FileDeliveryWidget"
 import { GeneratedImageGallery } from "./GeneratedImageGallery"
 import { BrowserWidget } from "./BrowserWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
@@ -728,6 +729,10 @@ export const AssistantContent = memo(
 
         if (part.tool.toolName === "generate_image") {
           return <GenerateImageWidget key={part.id} tool={part.tool} />
+        }
+
+        if (part.tool.toolName === "share_file") {
+          return <FileDeliveryWidget key={part.id} tool={part.tool} />
         }
 
         if (
