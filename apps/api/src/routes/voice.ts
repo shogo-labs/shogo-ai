@@ -54,7 +54,13 @@
  */
 
 import { Hono } from 'hono'
-import { streamText, convertToModelMessages, type UIMessage } from 'ai'
+import {
+  streamText,
+  generateText,
+  convertToModelMessages,
+  type ModelMessage,
+  type UIMessage,
+} from 'ai'
 import { stripOrphanToolParts } from '../lib/strip-orphan-tool-parts'
 import { resolveLanguageModel, DEFAULT_ASSISTANT_MODEL } from '../lib/resolve-language-model'
 import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
@@ -62,8 +68,12 @@ import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import {
   TRANSLATOR_SYSTEM_PROMPT,
   TRANSLATOR_AI_SDK_TOOLS,
-  TRANSLATOR_RESPONSES_TOOLS,
+  TRANSLATOR_LIVE_CONVERSATION_PROMPT,
+  TRANSLATOR_LIVE_DELEGATION_SUFFIX,
 } from '@shogo/agent-runtime/src/voice-mode/translator-persona'
+import { generateProxyToken } from '../lib/ai-proxy-token'
+import { resolveApiBaseUrl } from '../lib/internal-proxy-config'
+import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
 import { prisma } from '../lib/prisma'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
@@ -374,6 +384,44 @@ async function authorizeChatSession(
   return { ok: true }
 }
 
+/**
+ * The project a chat session belongs to. Workspace sessions may carry the
+ * project only as `contextId` (see `authorizeChatSession`).
+ */
+async function resolveChatSessionProject(
+  chatSessionId: string,
+): Promise<{ id: string; workspaceId: string } | null> {
+  const session = await prisma.chatSession.findUnique({
+    where: { id: chatSessionId },
+    select: {
+      contextId: true,
+      contextType: true,
+      project: { select: { id: true, workspaceId: true } },
+    },
+  })
+  if (session?.project) return session.project
+  if (session?.contextType === 'workspace' && session.contextId) {
+    return prisma.project.findUnique({
+      where: { id: session.contextId },
+      select: { id: true, workspaceId: true },
+    })
+  }
+  return null
+}
+
+/** Voice context for GPT-Live prompts; an empty block if the runtime is unreachable. */
+async function resolveVoiceContextSafe(projectId: string, signal: AbortSignal): Promise<string> {
+  try {
+    return await resolveVoiceContext({ projectId, signal })
+  } catch (err: any) {
+    console.warn(
+      '[Voice] live: resolveVoiceContext failed, falling back to bare persona:',
+      err?.message || err,
+    )
+    return ''
+  }
+}
+
 /** Extract the plain-text content of a UIMessage by concatenating its `text` parts. */
 function uiMessageText(m: UIMessage): string {
   const parts = (m as any).parts
@@ -582,8 +630,14 @@ export function voiceRoutes() {
    * POST /voice/live/session/:chatSessionId
    *
    * Browser EZ Mode entry point for GPT-Live WebRTC sessions. The browser
-   * supplies only its SDP offer; the prompt, model, and Responses tools are
+   * supplies only its SDP offer; the conversation prompt and model are
    * composed server-side from the authenticated chat session.
+   *
+   * The session uses client delegation: GPT-Live runs the spoken
+   * conversation only, and the browser answers each delegation through
+   * `POST /voice/live/delegate/:chatSessionId`. Responses delegation is not
+   * used because OpenAI runs that backend itself, which limits it to OpenAI
+   * models; client delegation lets the translator run on Auto.
    */
   router.post('/voice/live/session/:chatSessionId', async (c) => {
     const auth = c.get('auth')
@@ -610,59 +664,22 @@ export function voiceRoutes() {
       return c.json({ error: 'sdp is required' }, 400)
     }
 
-    const session = await prisma.chatSession.findUnique({
-      where: { id: chatSessionId },
-      select: {
-        contextId: true,
-        contextType: true,
-        project: { select: { id: true, workspaceId: true } },
-      },
-    })
-    let project = session?.project
-    if (!project && session?.contextType === 'workspace' && session.contextId) {
-      project = await prisma.project.findUnique({
-        where: { id: session.contextId },
-        select: { id: true, workspaceId: true },
-      })
-    }
+    const project = await resolveChatSessionProject(chatSessionId)
     if (!project) {
       return c.json({ error: 'Chat session is not accessible to this user' }, 403)
     }
 
-    let contextBlock = ''
-    try {
-      contextBlock = await resolveVoiceContext({
-        projectId: project.id,
-        signal: c.req.raw.signal,
-      })
-    } catch (err: any) {
-      console.warn(
-        '[Voice] live session: resolveVoiceContext failed, falling back to bare persona:',
-        err?.message || err,
-      )
-    }
-
-    const liveModel = process.env.SHOGO_EZ_MODE_LIVE_MODEL || 'gpt-live-1'
-    const backendModel =
-      process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL || AUTO_MODEL_ID
+    const contextBlock = await resolveVoiceContextSafe(project.id, c.req.raw.signal)
     const liveSession: LiveSessionStart = {
-      model: liveModel,
-      instructions: composeVoiceSystemPrompt(TRANSLATOR_SYSTEM_PROMPT, contextBlock),
+      model: process.env.SHOGO_EZ_MODE_LIVE_MODEL || 'gpt-live-1',
+      instructions: composeVoiceSystemPrompt(TRANSLATOR_LIVE_CONVERSATION_PROMPT, contextBlock),
       audio: {
         format: { type: 'audio/pcm', rate: 24000 },
         output: {
           voice: process.env.SHOGO_EZ_MODE_LIVE_VOICE || 'marin',
         },
       },
-      delegation: {
-        type: 'responses',
-        responses: {
-          model: backendModel,
-          tools: TRANSLATOR_RESPONSES_TOOLS,
-          tool_choice: 'auto',
-          parallel_tool_calls: false,
-        },
-      },
+      delegation: { type: 'client' },
     }
     const now = Math.floor(Date.now() / 1000)
     const tokenPayload = {
@@ -693,6 +710,124 @@ export function voiceRoutes() {
       return c.json({ error: 'Live provider returned an invalid session response' }, 502)
     }
     return c.json({ sessionId, sdp: answerSdp })
+  })
+
+  /**
+   * POST /voice/live/delegate/:chatSessionId
+   *
+   * Answers one step of a GPT-Live client delegation with the translator
+   * persona on the Auto model (the connected cloud's Auto when a local
+   * instance forwards to Shogo Cloud). The translator's tools run in the
+   * browser, so this route is a manual tool loop: when the model calls a
+   * tool the response carries `toolCalls` plus opaque `steps`, and the
+   * browser calls again with the same transcript, those `steps`, and its
+   * `toolResults`. A response with no `toolCalls` is final; its `text` is
+   * what GPT-Live should say.
+   *
+   * Body: `{ transcript: { role: 'user' | 'assistant', text }[],
+   *          steps?: ModelMessage[], toolResults?: { toolCallId, toolName, output }[] }`
+   */
+  router.post('/voice/live/delegate/:chatSessionId', async (c) => {
+    const auth = c.get('auth')
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return c.json({ error: 'Authentication required' }, 401)
+    }
+
+    const chatSessionId = c.req.param('chatSessionId')
+    if (!chatSessionId) {
+      return c.json({ error: 'chatSessionId is required' }, 400)
+    }
+    const authz = await authorizeChatSession(chatSessionId, auth.userId, auth.via)
+    if (!authz.ok) {
+      return c.json({ error: authz.message }, authz.status)
+    }
+
+    let body: {
+      transcript?: Array<{ role?: string; text?: string }>
+      steps?: ModelMessage[]
+      toolResults?: Array<{ toolCallId?: string; toolName?: string; output?: string }>
+    }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+    const transcript = (Array.isArray(body.transcript) ? body.transcript : [])
+      .filter((turn): turn is { role: 'user' | 'assistant'; text: string } =>
+        (turn?.role === 'user' || turn?.role === 'assistant') &&
+        typeof turn.text === 'string' && turn.text.trim().length > 0)
+    if (transcript.length === 0) {
+      return c.json({ error: 'transcript is required' }, 400)
+    }
+    const steps = Array.isArray(body.steps) ? body.steps : []
+    const toolResults = (Array.isArray(body.toolResults) ? body.toolResults : [])
+      .filter((r): r is { toolCallId: string; toolName: string; output: string } =>
+        typeof r?.toolCallId === 'string' && typeof r.toolName === 'string')
+      .map((r) => ({ ...r, output: String(r.output ?? '') }))
+
+    const project = await resolveChatSessionProject(chatSessionId)
+    if (!project) {
+      return c.json({ error: 'Chat session is not accessible to this user' }, 403)
+    }
+
+    const configuredModel = process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL || AUTO_MODEL_ID
+    const modelId = configuredModel === AUTO_MODEL_ID
+      ? (await resolveAutoTierModel(project.workspaceId)).id
+      : configuredModel
+    // Meter against the caller's workspace, not the server's own proxy token.
+    const proxyToken = await generateProxyToken(
+      project.id,
+      project.workspaceId,
+      auth.userId,
+      10 * 60 * 1000,
+    )
+    const resolved = resolveLanguageModel(modelId, {
+      proxy: { url: `${resolveApiBaseUrl()}/api/ai/v1`, token: proxyToken },
+    })
+    if (!resolved) {
+      return c.json({ error: 'Voice delegation model is not configured' }, 503)
+    }
+
+    const contextBlock = await resolveVoiceContextSafe(project.id, c.req.raw.signal)
+    const toolMessages: ModelMessage[] = toolResults.length > 0
+      ? [{
+          role: 'tool',
+          content: toolResults.map((r) => ({
+            type: 'tool-result' as const,
+            toolCallId: r.toolCallId,
+            toolName: r.toolName,
+            output: { type: 'text' as const, value: r.output },
+          })),
+        }]
+      : []
+    const priorSteps = [...steps, ...toolMessages]
+
+    try {
+      const result = await generateText({
+        model: resolved.model,
+        system:
+          composeVoiceSystemPrompt(TRANSLATOR_SYSTEM_PROMPT, contextBlock) +
+          TRANSLATOR_LIVE_DELEGATION_SUFFIX,
+        messages: [
+          ...transcript.map((turn): ModelMessage => ({ role: turn.role, content: turn.text })),
+          ...priorSteps,
+        ],
+        tools: TRANSLATOR_AI_SDK_TOOLS,
+        abortSignal: c.req.raw.signal,
+      })
+      return c.json({
+        text: result.text,
+        toolCalls: result.toolCalls.map((call) => ({
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          input: call.input,
+        })),
+        steps: [...priorSteps, ...result.response.messages],
+      })
+    } catch (err: any) {
+      console.error('[Voice] live delegation failed:', err?.message || err)
+      return c.json({ error: 'Voice delegation failed', detail: err?.message ?? String(err) }, 502)
+    }
   })
 
   /**

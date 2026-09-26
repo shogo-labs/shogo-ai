@@ -4,8 +4,9 @@ import { describe, test, expect } from 'bun:test'
 import {
   TRANSLATOR_SYSTEM_PROMPT,
   TRANSLATOR_ELEVENLABS_TOOLS,
-  TRANSLATOR_RESPONSES_TOOLS,
   TRANSLATOR_AI_SDK_TOOLS,
+  TRANSLATOR_CONTEXT_MARKER,
+  TRANSLATOR_LIVE_CONVERSATION_PROMPT,
   SEND_TO_CHAT_PARAMS,
   SET_MODE_PARAMS,
 } from '../voice-mode/translator-persona'
@@ -38,14 +39,10 @@ describe('translator-persona', () => {
     )
   })
 
-  test('Responses tools mirror ElevenLabs tool names and schemas', () => {
-    expect(TRANSLATOR_RESPONSES_TOOLS.map((tool) => tool.name).sort()).toEqual(
-      ['get_recent_activity', 'send_to_chat', 'set_mode'],
-    )
-    for (const tool of TRANSLATOR_RESPONSES_TOOLS) {
-      expect(tool.type).toBe('function')
-      expect(tool.parameters.type).toBe('object')
-      expect(tool.parameters.additionalProperties).toBe(false)
+  test('GPT-Live conversation prompt carries the context marker and no tool names', () => {
+    expect(TRANSLATOR_LIVE_CONVERSATION_PROMPT).toContain(TRANSLATOR_CONTEXT_MARKER)
+    for (const name of Object.keys(TRANSLATOR_AI_SDK_TOOLS)) {
+      expect(TRANSLATOR_LIVE_CONVERSATION_PROMPT).not.toContain(name)
     }
   })
 

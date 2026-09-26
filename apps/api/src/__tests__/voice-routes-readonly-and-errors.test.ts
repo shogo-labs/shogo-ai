@@ -18,6 +18,7 @@
 
 import { describe, test, expect, beforeAll, beforeEach, mock } from 'bun:test'
 import { Hono } from 'hono'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.AI_PROXY_SECRET =
   process.env.AI_PROXY_SECRET ?? 'test-signing-secret-for-runtime-token'
@@ -88,7 +89,7 @@ const mockPrisma = {
   },
 }
 
-mock.module('../lib/prisma', () => ({ prisma: mockPrisma }))
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 mock.module('../auth', () => ({
   auth: { api: { getSession: mock(() => Promise.resolve(null)) } },
 }))
@@ -112,6 +113,8 @@ mock.module('@shogo-ai/sdk/voice', () => ({ ElevenLabsClient: MockElevenLabsClie
 mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({
   TRANSLATOR_SYSTEM_PROMPT: '',
   TRANSLATOR_AI_SDK_TOOLS: {},
+  TRANSLATOR_LIVE_CONVERSATION_PROMPT: '',
+  TRANSLATOR_LIVE_DELEGATION_SUFFIX: '',
   TRANSLATOR_CONTEXT_MARKER: '{{C}}',
   composeVoiceSystemPrompt: (b: string) => b,
 }))
@@ -155,6 +158,7 @@ mock.module('../lib/voice-context', () => ({
 }))
 
 mock.module('ai', () => ({
+  generateText: async () => ({ text: '', toolCalls: [], response: { messages: [] } }),
   streamText: () => ({
     toUIMessageStreamResponse: () => new Response('data: x\n\n', {
       status: 200,

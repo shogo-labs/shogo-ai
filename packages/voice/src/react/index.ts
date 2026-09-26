@@ -16,6 +16,8 @@ export {
 export {
   useLiveVoiceConversation,
   type LiveVoiceSessionResponse,
+  type LiveTranscriptTurn,
+  type LiveDelegationRequest,
   type UseLiveVoiceConversationOptions,
   type UseLiveVoiceConversationResult,
 } from './useLiveVoiceConversation.js'

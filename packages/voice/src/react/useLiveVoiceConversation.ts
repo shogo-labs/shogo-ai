@@ -12,15 +12,36 @@ export interface LiveVoiceSessionResponse {
   sdp: string
 }
 
+export interface LiveTranscriptTurn {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface LiveDelegationRequest {
+  delegationId: string
+  /** Recent conversation, oldest first, including the turn that triggered the delegation. */
+  transcript: LiveTranscriptTurn[]
+}
+
 export interface UseLiveVoiceConversationOptions {
   /** Mint a GPT-Live WebRTC answer from the browser's SDP offer. */
   mintSession: (sdp: string) => Promise<LiveVoiceSessionResponse>
+  /** Function tools for sessions that use Responses delegation. */
   clientTools?: Record<string, ClientToolFn>
+  /**
+   * Answer a client delegation. GPT-Live's delegation event carries no task
+   * text, so the handler gets the recent transcript instead. A returned
+   * string is sent back as spoken commentary for that delegation.
+   */
+  onDelegation?: (request: LiveDelegationRequest) => Promise<string | null | void>
   onError?: (error: unknown) => void
   onMessage?: (message: { source: string; message: string }) => void
 }
 
-export type UseLiveVoiceConversationResult = BaseVoiceConversationResult
+export type UseLiveVoiceConversationResult = BaseVoiceConversationResult & {
+  /** Recent transcript across sessions started by this hook, oldest first. */
+  getTranscript: () => LiveTranscriptTurn[]
+}
 
 type LiveStatus = BaseVoiceConversationResult['status']
 
@@ -36,7 +57,7 @@ interface LiveEvent {
     name?: string
     arguments?: string
   }
-  delegation?: { id?: string }
+  delegation?: { id?: string; target?: string }
   error?: { message?: string }
   [key: string]: unknown
 }
@@ -68,6 +89,7 @@ function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
   })
 }
 
+/** Session append events accept at most 500 tokens of content each. */
 function splitContext(text: string): string[] {
   const chunks: string[] = []
   for (let offset = 0; offset < text.length; offset += 1800) {
@@ -75,6 +97,8 @@ function splitContext(text: string): string[] {
   }
   return chunks.length ? chunks : ['']
 }
+
+const TRANSCRIPT_HISTORY_MAX = 30
 
 /**
  * GPT-Live WebRTC conversation hook. The API route is injected so this
@@ -102,13 +126,17 @@ export function useLiveVoiceConversation(
   const speakingFrameRef = useRef<number | null>(null)
   const inputTranscriptRef = useRef('')
   const outputTranscriptRef = useRef('')
-  const startedRef = useRef(false)
+  const historyRef = useRef<LiveTranscriptTurn[]>([])
   const closingRef = useRef(false)
   const mutedRef = useRef(false)
 
-  const emit = useCallback((source: string, message: string) => {
+  const emit = useCallback((source: 'user' | 'agent', message: string) => {
     const text = message.trim()
-    if (text) optionsRef.current.onMessage?.({ source, message: text })
+    if (!text) return
+    const history = historyRef.current
+    history.push({ role: source === 'user' ? 'user' : 'assistant', text })
+    if (history.length > TRANSCRIPT_HISTORY_MAX) history.splice(0, history.length - TRANSCRIPT_HISTORY_MAX)
+    optionsRef.current.onMessage?.({ source, message: text })
   }, [])
 
   const flushTranscripts = useCallback(() => {
@@ -172,6 +200,34 @@ export function useLiveVoiceConversation(
       type === 'response.completed'
     ) {
       flushTranscripts()
+    }
+
+    if (
+      type === 'session.delegation.created' &&
+      nested.delegation?.target !== 'responses' &&
+      typeof nested.delegation?.id === 'string'
+    ) {
+      const onDelegation = optionsRef.current.onDelegation
+      if (!onDelegation) return
+      const delegationId = nested.delegation.id
+      flushTranscripts()
+      let result: string | null | void
+      try {
+        result = await onDelegation({ delegationId, transcript: [...historyRef.current] })
+      } catch (error) {
+        optionsRef.current.onError?.(error)
+        result = 'That request failed before it could finish. Nothing was confirmed.'
+      }
+      const text = typeof result === 'string' ? result.trim() : ''
+      if (!text) return
+      for (const content of splitContext(text)) {
+        sendEvent({
+          type: 'session.commentary.append',
+          delegation_id: delegationId,
+          content,
+        })
+      }
+      return
     }
 
     const item = nested.item
@@ -345,6 +401,8 @@ export function useLiveVoiceConversation(
     return frequencyRef.current
   }, [])
 
+  const getTranscript = useCallback(() => [...historyRef.current], [])
+
   useEffect(() => () => end(), [end])
 
   return {
@@ -360,6 +418,7 @@ export function useLiveVoiceConversation(
     sendContextualUpdate,
     sendUserMessage,
     sendUserActivity,
+    getTranscript,
     conversationId: sessionId,
     convaiConversationId: sessionId,
   }
