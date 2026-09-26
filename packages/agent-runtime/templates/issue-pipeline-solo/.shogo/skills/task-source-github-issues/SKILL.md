@@ -10,6 +10,8 @@ tools: [exec, exec_wait, web]
 
 Active when this project has a GitHub App connection. `apps/api/src/routes/github.ts` forwards `issues`, `issue_comment`, `pull_request_review`, and `pull_request_review_comment` webhooks straight to this project's agent as a rendered message — you never fetch the event yourself.
 
+`gh` is already authenticated as this environment's GitHub App bot (`GH_TOKEN` is the installation token). Comments, reviews, and commits from these commands show up as that bot — the same account that opens pull requests. Do not run `gh auth login` and do not save a personal `GITHUB_TOKEN` over it.
+
 ## `comment(ref, body, runId)`
 ```bash
 gh issue comment <number> --repo <owner/repo> --body "$(cat <<'EOF'

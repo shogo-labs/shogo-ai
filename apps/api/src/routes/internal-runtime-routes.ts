@@ -702,6 +702,50 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * GET /api/internal/projects/:projectId/github/cli-credentials
+   *
+   * Mints a short-lived installation token so the project runtime can run
+   * `gh` and `git commit` as the GitHub App bot. The token is returned to
+   * the runtime only — never written to the workspace or logs.
+   */
+  app.get('/projects/:projectId/github/cli-credentials', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    try {
+      if (!loadGitHub) {
+        return c.json(
+          {
+            error: {
+              code: 'github_app_not_installed',
+              message: 'GitHub App credentials are not available on this runtime.',
+            },
+          },
+          409,
+        )
+      }
+      const github = await loadGitHub()
+      const credentials = await github.getProjectGitHubCliCredentials(projectId)
+      if (!credentials) {
+        return c.json(
+          {
+            error: {
+              code: 'github_app_not_installed',
+              message: 'This project has no GitHub App connection.',
+            },
+          },
+          409,
+        )
+      }
+      return c.json({ ok: true, ...credentials })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub CLI credentials for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: 'Failed to mint GitHub App credentials' }, 502)
+    }
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/github/pull-request
    *   body: { title, head, base?, body?, draft?, runId? }
    *

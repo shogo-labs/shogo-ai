@@ -201,6 +201,7 @@ const TOKEN_RESPONSE = (token = 'ghs_token_abc') =>
   new Response(JSON.stringify({ token, expires_at: '2026-01-01T00:00:00Z' }), { status: 200 })
 
 beforeEach(() => {
+  svc.clearGitHubBotIdentityCache()
   connections.clear()
   updateCalls.length = 0
   updateManyCalls.length = 0
@@ -1078,5 +1079,46 @@ describe('handlePullRequestReviewCommentWebhook', () => {
       comment: { user: { login: 'shogo-ai[bot]' }, body: 'self note', path: 'a.ts', html_url: 'rc-url' },
     })
     expect(agentCallCalls).toHaveLength(0)
+  })
+})
+
+describe('getProjectGitHubCliCredentials', () => {
+  it('returns an installation token and the bot commit identity', async () => {
+    process.env.GH_APP_SLUG = 'shogo-ai-staging'
+    seedConnection({ projectId: 'proj_cli', installationId: 164878837 })
+    const urls: string[] = []
+    fetchHandler = async (url: string, init: any) => {
+      urls.push(url)
+      if (url.endsWith('/access_tokens')) {
+        expect(init.method).toBe('POST')
+        return TOKEN_RESPONSE('ghs_bot')
+      }
+      expect(url).toBe('https://api.github.com/users/shogo-ai-staging%5Bbot%5D')
+      return new Response(JSON.stringify({ id: 42, login: 'shogo-ai-staging[bot]' }), { status: 200 })
+    }
+
+    const creds = await svc.getProjectGitHubCliCredentials('proj_cli')
+    expect(creds).toEqual({
+      token: 'ghs_bot',
+      expiresAt: '2026-01-01T00:00:00Z',
+      login: 'shogo-ai-staging[bot]',
+      name: 'shogo-ai-staging[bot]',
+      email: '42+shogo-ai-staging[bot]@users.noreply.github.com',
+    })
+
+    fetchHandler = async (url: string) => {
+      urls.push(url)
+      if (url.endsWith('/access_tokens')) return TOKEN_RESPONSE('ghs_bot_2')
+      throw new Error('bot user should be cached')
+    }
+    const again = await svc.getProjectGitHubCliCredentials('proj_cli')
+    expect(again?.token).toBe('ghs_bot_2')
+    expect(again?.email).toBe(creds?.email)
+    expect(urls.filter((url) => url.includes('/users/'))).toHaveLength(1)
+    delete process.env.GH_APP_SLUG
+  })
+
+  it('returns null when the project has no GitHub connection', async () => {
+    expect(await svc.getProjectGitHubCliCredentials('missing')).toBeNull()
   })
 })

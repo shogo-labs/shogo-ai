@@ -342,6 +342,37 @@ export interface GitHubPullRequestResult {
   author?: string
 }
 
+export interface GitHubCliCredentials {
+  token: string
+  expiresAt: string
+  login: string
+  name: string
+  email: string
+}
+
+/**
+ * Installation token for the connected GitHub App. The runtime injects this
+ * as `GH_TOKEN` so `gh` comments, reviews, and commits are the App bot.
+ * 409 `github_app_not_installed` means the project has no connection.
+ */
+export async function getGitHubCliCredentials(
+  projectId: string,
+): Promise<CheckpointCallResult<GitHubCliCredentials>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/cli-credentials`,
+    {
+      method: 'GET',
+      parse: (j) => ({
+        token: j?.token,
+        expiresAt: j?.expiresAt,
+        login: j?.login,
+        name: j?.name,
+        email: j?.email,
+      }) as GitHubCliCredentials,
+    },
+  )
+}
+
 export async function createGitHubPullRequest(
   projectId: string,
   opts: GitHubPullRequestOptions,
