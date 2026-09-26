@@ -164,3 +164,67 @@ describe('AgentGateway auto-registers .shogo/agents/*.md (post-attachPersistence
     expect(gw.agentManager.listTypes().some(t => t.name === 'planner')).toBe(true)
   })
 })
+
+describe('workspace runtime: each attached project owns its .shogo/agents/', () => {
+  const saved = { mode: process.env.WORKSPACE_RUNTIME, ids: process.env.WORKSPACE_PROJECT_IDS }
+  afterEach(() => {
+    for (const [k, v] of [['WORKSPACE_RUNTIME', saved.mode], ['WORKSPACE_PROJECT_IDS', saved.ids]] as const) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+
+  function writeAgent(dir: string, name: string, description: string) {
+    mkdirSync(join(dir, '.shogo', 'agents'), { recursive: true })
+    writeFileSync(join(dir, '.shogo', 'agents', `${name}.md`), `---\nname: ${name}\ndescription: ${description}\n---\n\nBody.\n`)
+  }
+
+  test("registers agents from member project directories, not just the merged root", async () => {
+    const ws = makeWs('ws-members')
+    writeAgent(join(ws, 'proj-a'), 'done-gate', 'from proj-a')
+    writeAgent(join(ws, 'proj-b'), 'fix-designer', 'from proj-b')
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.WORKSPACE_PROJECT_IDS = 'proj-a,proj-b'
+
+    const gw = await startedGateway(ws)
+    expect(gw.agentManager.getConfig('done-gate')?.description).toBe('from proj-a')
+    expect(gw.agentManager.getConfig('fix-designer')?.description).toBe('from proj-b')
+  })
+
+  test('the root definition wins a name clash with a member project', async () => {
+    const ws = makeWs('ws-clash')
+    writeAgent(ws, 'reviewer', 'from root')
+    writeAgent(join(ws, 'proj-a'), 'reviewer', 'from proj-a')
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.WORKSPACE_PROJECT_IDS = 'proj-a'
+
+    const gw = await startedGateway(ws)
+    expect(gw.agentManager.getConfig('reviewer')?.description).toBe('from root')
+  })
+
+  test('member directories are ignored outside workspace runtime mode', async () => {
+    const ws = makeWs('project-mode')
+    writeAgent(join(ws, 'proj-a'), 'done-gate', 'from proj-a')
+    delete process.env.WORKSPACE_RUNTIME
+    process.env.WORKSPACE_PROJECT_IDS = 'proj-a'
+
+    const gw = await startedGateway(ws)
+    expect(gw.agentManager.getConfig('done-gate')).toBeNull()
+  })
+
+  test('syncCustomAgents picks up agents written after start()', async () => {
+    const ws = makeWs('ws-hot')
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.WORKSPACE_PROJECT_IDS = 'proj-a'
+    const gw = await startedGateway(ws)
+    expect(gw.agentManager.getConfig('coder')).toBeNull()
+
+    writeAgent(join(ws, 'proj-a'), 'coder', 'v1')
+    gw.syncCustomAgents()
+    expect(gw.agentManager.getConfig('coder')?.description).toBe('v1')
+
+    writeAgent(join(ws, 'proj-a'), 'coder', 'v2')
+    gw.syncCustomAgents()
+    expect(gw.agentManager.getConfig('coder')?.description).toBe('v2')
+  })
+})

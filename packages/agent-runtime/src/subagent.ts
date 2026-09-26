@@ -519,6 +519,31 @@ export function loadCustomAgents(workspaceDir: string): CustomAgentDef[] {
   return agents
 }
 
+/**
+ * Custom agents for a runtime: the root's `.shogo/agents/` plus, for a
+ * workspace runtime, each member project's `<root>/<id>/.shogo/agents/`
+ * (each project owns its own roster). On a name clash the root wins, then the
+ * first member in `memberIds` order.
+ */
+export function loadWorkspaceCustomAgents(workspaceDir: string, memberIds: string[] = []): CustomAgentDef[] {
+  const seen = new Map<string, string>()
+  const agents: CustomAgentDef[] = []
+  const sources: Array<[string, string]> = [['workspace root', workspaceDir]]
+  for (const id of memberIds) sources.push([`project ${id}`, join(workspaceDir, id)])
+  for (const [label, dir] of sources) {
+    for (const def of loadCustomAgents(dir)) {
+      const owner = seen.get(def.name)
+      if (owner) {
+        if (owner !== label) console.warn(`[Subagent] Ignoring "${def.name}" from ${label}: already defined by ${owner}`)
+        continue
+      }
+      seen.set(def.name, label)
+      agents.push(def)
+    }
+  }
+  return agents
+}
+
 function parseAgentFrontmatter(raw: string): CustomAgentDef {
   const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
   if (!match) {
