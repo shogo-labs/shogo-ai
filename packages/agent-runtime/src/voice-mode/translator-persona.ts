@@ -181,6 +181,63 @@ export const TRANSLATOR_ELEVENLABS_TOOLS: ReadonlyArray<ConvaiClientTool> = [
 ]
 
 /**
+ * OpenAI Responses function-tool descriptors used by GPT-Live delegation.
+ * These deliberately describe the same client-executed actions as the
+ * ElevenLabs and AI-SDK tool maps above.
+ */
+export const TRANSLATOR_RESPONSES_TOOLS = [
+  {
+    type: 'function',
+    name: 'send_to_chat',
+    description:
+      'Queue the user\'s request to your background build subsystem. Call this after confirming intent.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description:
+            'A clear natural-language instruction describing the outcome the user wants. No code, file paths, or identifiers.',
+        },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'set_mode',
+    description:
+      'Toggle the interaction mode for your background build subsystem. Use "plan" to explore or review before executing, "agent" for direct execution.',
+    parameters: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['agent', 'plan'],
+          description:
+            'The new mode. "plan" for explore/review, "agent" for direct execution.',
+        },
+      },
+      required: ['mode'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'get_recent_activity',
+    description:
+      'Fetch a short plain-text log of what your background build subsystem has been doing recently. Use sparingly — only when you need more detail before producing a high-level summary.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+]
+
+/**
  * AI-SDK tool definitions for `streamText({ tools })`. The tool execution
  * itself happens in the browser (Shogo has no server-side effects on the
  * translator route); the server just declares the tool so the model

@@ -4,6 +4,7 @@ import { describe, test, expect } from 'bun:test'
 import {
   TRANSLATOR_SYSTEM_PROMPT,
   TRANSLATOR_ELEVENLABS_TOOLS,
+  TRANSLATOR_RESPONSES_TOOLS,
   TRANSLATOR_AI_SDK_TOOLS,
   SEND_TO_CHAT_PARAMS,
   SET_MODE_PARAMS,
@@ -35,6 +36,17 @@ describe('translator-persona', () => {
     expect(Object.keys(TRANSLATOR_AI_SDK_TOOLS).sort()).toEqual(
       ['get_recent_activity', 'send_to_chat', 'set_mode'],
     )
+  })
+
+  test('Responses tools mirror ElevenLabs tool names and schemas', () => {
+    expect(TRANSLATOR_RESPONSES_TOOLS.map((tool) => tool.name).sort()).toEqual(
+      ['get_recent_activity', 'send_to_chat', 'set_mode'],
+    )
+    for (const tool of TRANSLATOR_RESPONSES_TOOLS) {
+      expect(tool.type).toBe('function')
+      expect(tool.parameters.type).toBe('object')
+      expect(tool.parameters.additionalProperties).toBe(false)
+    }
   })
 
   test('Zod schemas reject invalid modes and empty text', () => {

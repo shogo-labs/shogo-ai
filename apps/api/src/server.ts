@@ -86,6 +86,7 @@ import {
   _resetAgentModelDefaultsCache,
   _resetUpstreamCredentialCache,
 } from './lib/federated-upstream'
+import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 import type { MetricsPeriod } from './services/node-metrics.service'
 import { agentModelDefaultsRoute } from './lib/runtime/agent-model-defaults-route'
 import {
@@ -996,6 +997,14 @@ app.get('/api/config', async (c) => {
     publishing: !localMode,
     marketplace: true,
     ezMode: true,
+    ezModeVoiceProvider:
+      getNativeProviderApiKeySync('openai') ||
+      (localMode &&
+        !!process.env.SHOGO_API_KEY &&
+        process.env.AI_MODE !== 'api-keys' &&
+        process.env.AI_MODE !== 'local-llm')
+        ? 'gpt-live'
+        : 'elevenlabs',
     phoneChannel: !localMode,
     // Companion-shell rollout kill switch: personal workspaces render the
     // simplified Muse/Grok-style companion shell (see `workspaceExperience`)
@@ -1011,6 +1020,7 @@ app.get('/api/config', async (c) => {
 
   // Super-admin overrides from PlatformSetting (absence = use default).
   let overrides: Record<string, boolean> = {}
+  let ezModeVoiceProviderOverride: 'gpt-live' | 'elevenlabs' | undefined
   try {
     const rows = await prisma.platformSetting.findMany({
       where: {
@@ -1018,6 +1028,7 @@ app.get('/api/config', async (c) => {
           in: [
             'feature.marketplace',
             'feature.ez_mode',
+            'feature.ez_mode_voice_provider',
             'feature.phone_channel',
             'feature.personal_shell',
             'feature.agent_shell',
@@ -1030,6 +1041,12 @@ app.get('/api/config', async (c) => {
       const bool = row.value === 'true'
       if (row.key === 'feature.marketplace') overrides.marketplace = bool
       if (row.key === 'feature.ez_mode') overrides.ezMode = bool
+      if (
+        row.key === 'feature.ez_mode_voice_provider' &&
+        (row.value === 'gpt-live' || row.value === 'elevenlabs')
+      ) {
+        ezModeVoiceProviderOverride = row.value
+      }
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
       if (row.key === 'feature.personal_shell') overrides.personalShell = bool
       if (row.key === 'feature.agent_shell') overrides.agentShell = bool
@@ -1043,7 +1060,13 @@ app.get('/api/config', async (c) => {
     localMode,
     needsSetup,
     shogoKeyConnected: hasShogоApiKey,
-    features: { ...featureDefaults, ...overrides },
+    features: {
+      ...featureDefaults,
+      ...overrides,
+      ...(ezModeVoiceProviderOverride
+        ? { ezModeVoiceProvider: ezModeVoiceProviderOverride }
+        : {}),
+    },
   })
 })
 
@@ -6584,6 +6607,7 @@ const FEATURE_FLAG_KEYS = {
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
+const EZ_MODE_VOICE_PROVIDER_KEY = 'feature.ez_mode_voice_provider'
 
 // GET /api/admin/settings/features - Read feature flag overrides (null = use default)
 app.get('/api/admin/settings/features', async (c) => {
@@ -6652,6 +6676,45 @@ app.put('/api/admin/settings/features', async (c) => {
       }
     }
     return c.json({ ok: true, flags })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// GET /api/admin/settings/ez-mode-voice-provider
+app.get('/api/admin/settings/ez-mode-voice-provider', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({
+      where: { key: EZ_MODE_VOICE_PROVIDER_KEY },
+    })
+    const provider =
+      row?.value === 'gpt-live' || row?.value === 'elevenlabs' ? row.value : null
+    return c.json({ provider })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/ez-mode-voice-provider
+app.put('/api/admin/settings/ez-mode-voice-provider', async (c) => {
+  try {
+    const body = await c.req.json()
+    const provider = body?.provider
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    if (provider === null || provider === '') {
+      await prisma.platformSetting.deleteMany({ where: { key: EZ_MODE_VOICE_PROVIDER_KEY } })
+      return c.json({ ok: true, provider: null })
+    }
+    if (provider !== 'gpt-live' && provider !== 'elevenlabs') {
+      return c.json({ error: 'provider must be gpt-live, elevenlabs, or null' }, 400)
+    }
+    await prisma.platformSetting.upsert({
+      where: { key: EZ_MODE_VOICE_PROVIDER_KEY },
+      create: { key: EZ_MODE_VOICE_PROVIDER_KEY, value: provider, updatedBy: userId },
+      update: { value: provider, updatedBy: userId },
+    })
+    return c.json({ ok: true, provider })
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }

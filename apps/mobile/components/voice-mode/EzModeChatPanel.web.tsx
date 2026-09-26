@@ -90,9 +90,11 @@ import { Eye, Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
 import {
   OrganicParticles,
   ShogoVoiceProvider,
+  useLiveVoiceConversation,
   useVoiceConversation,
 } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
+import { usePlatformConfig } from '../../lib/platform-config'
 import { useEzModeInputModePreference } from '../../lib/ez-mode-preference'
 import { MarkdownText } from '../chat/MarkdownText'
 import { useChatBridge, useSubagentCards } from './ChatBridgeContext'
@@ -237,6 +239,8 @@ export function EzModeChatPanel(props: EzModeChatPanelProps) {
 function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
   const bridge = useChatBridge()
   const chatSessionId = bridge.chatSessionId
+  const { features } = usePlatformConfig()
+  const voiceProvider = features.ezModeVoiceProvider ?? 'elevenlabs'
   // Snapshot of the technical chat's task / agent_spawn tool calls.
   // Rendered as <SubagentCard /> rows so EZ Mode shares the exact
   // same agent card UI (and live browser preview) as the regular chat.
@@ -402,7 +406,7 @@ function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
     ? `${API_URL ?? ''}/api/voice/signed-url?chatSessionId=${encodeURIComponent(chatSessionId)}`
     : `${API_URL ?? ''}/api/voice/signed-url`
 
-  const conversation = useVoiceConversation({
+  const elevenConversation = useVoiceConversation({
     characterName: 'Shogo',
     signedUrlPath,
     // Dev mode serves Metro on 8081 and the API on 8002 — without
@@ -433,6 +437,57 @@ function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
       appendTranscriptRef.current(entrySource, message)
     },
   })
+
+  const mintLiveSession = useCallback(async (sdp: string) => {
+    if (!chatSessionId) throw new Error('A chat session is required for GPT-Live voice')
+    const response = await fetch(
+      `${API_URL ?? ''}/api/voice/live/session/${encodeURIComponent(chatSessionId)}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdp }),
+      },
+    )
+    const body = await response.json().catch(() => ({})) as {
+      sessionId?: string
+      sdp?: string
+      error?: string | { message?: string }
+    }
+    if (!response.ok || !body.sessionId || !body.sdp) {
+      const error =
+        typeof body.error === 'string' ? body.error : body.error?.message
+      throw new Error(error || `GPT-Live session failed (${response.status})`)
+    }
+    return { sessionId: body.sessionId, sdp: body.sdp }
+  }, [chatSessionId])
+
+  const liveConversation = useLiveVoiceConversation({
+    mintSession: mintLiveSession,
+    clientTools,
+    onError: (err) => {
+      console.warn('[EzModeChatPanel] GPT-Live voice error', err)
+      setVoiceError(
+        (err as Error)?.message ||
+          'Voice connection failed. Check your microphone and try again.',
+      )
+    },
+    onMessage: ({ source, message }) => {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.log('[EzModeChatPanel] GPT-Live onMessage', {
+          source,
+          preview: message?.slice(0, 120),
+        })
+      }
+      if (!message?.trim()) return
+      const entrySource: TranscriptEntry['source'] =
+        source === 'user' ? 'user-voice' : 'shogo-voice'
+      appendTranscriptRef.current(entrySource, message)
+    },
+  })
+
+  const conversation =
+    voiceProvider === 'gpt-live' ? liveConversation : elevenConversation
 
   const voiceActive =
     conversation.status === 'connected' || conversation.status === 'connecting'

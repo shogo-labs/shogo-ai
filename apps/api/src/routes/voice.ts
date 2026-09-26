@@ -61,11 +61,14 @@ import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
 import {
   TRANSLATOR_SYSTEM_PROMPT,
   TRANSLATOR_AI_SDK_TOOLS,
+  TRANSLATOR_RESPONSES_TOOLS,
 } from '@shogo/agent-runtime/src/voice-mode/translator-persona'
 import { prisma } from '../lib/prisma'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
 import { resolveShogoTwilioClient, verifyTwilioSignature } from '../lib/twilio'
+import { createLiveWebRtcSession } from '../lib/live-webrtc'
+import type { LiveSessionStart } from '../lib/live-session'
 import {
   getUsdBalance,
   resolvePlanIdForWorkspace,
@@ -567,6 +570,113 @@ export function voiceRoutes() {
         502,
       )
     }
+  })
+
+  /**
+   * POST /voice/live/session/:chatSessionId
+   *
+   * Browser EZ Mode entry point for GPT-Live WebRTC sessions. The browser
+   * supplies only its SDP offer; the prompt, model, and Responses tools are
+   * composed server-side from the authenticated chat session.
+   */
+  router.post('/voice/live/session/:chatSessionId', async (c) => {
+    const auth = c.get('auth')
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return c.json({ error: 'Authentication required' }, 401)
+    }
+
+    const chatSessionId = c.req.param('chatSessionId')
+    if (!chatSessionId) {
+      return c.json({ error: 'chatSessionId is required' }, 400)
+    }
+    const authz = await authorizeChatSession(chatSessionId, auth.userId, auth.via)
+    if (!authz.ok) {
+      return c.json({ error: authz.message }, authz.status)
+    }
+
+    let body: { sdp?: string }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+    if (typeof body.sdp !== 'string' || !body.sdp.trim()) {
+      return c.json({ error: 'sdp is required' }, 400)
+    }
+
+    const session = await prisma.chatSession.findUnique({
+      where: { id: chatSessionId },
+      select: { project: { select: { id: true, workspaceId: true } } },
+    })
+    const project = session?.project
+    if (!project) {
+      return c.json({ error: 'Chat session is not accessible to this user' }, 403)
+    }
+
+    let contextBlock = ''
+    try {
+      contextBlock = await resolveVoiceContext({
+        projectId: project.id,
+        signal: c.req.raw.signal,
+      })
+    } catch (err: any) {
+      console.warn(
+        '[Voice] live session: resolveVoiceContext failed, falling back to bare persona:',
+        err?.message || err,
+      )
+    }
+
+    const liveModel = process.env.SHOGO_EZ_MODE_LIVE_MODEL || 'gpt-live-1'
+    const backendModel =
+      process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL || 'gpt-6-luna'
+    const liveSession: LiveSessionStart = {
+      model: liveModel,
+      instructions: composeVoiceSystemPrompt(TRANSLATOR_SYSTEM_PROMPT, contextBlock),
+      audio: {
+        format: { type: 'audio/pcm', rate: 24000 },
+        output: {
+          voice: process.env.SHOGO_EZ_MODE_LIVE_VOICE || 'marin',
+        },
+      },
+      delegation: {
+        type: 'responses',
+        responses: {
+          model: backendModel,
+          tools: TRANSLATOR_RESPONSES_TOOLS,
+          tool_choice: 'auto',
+          parallel_tool_calls: false,
+        },
+      },
+    }
+    const now = Math.floor(Date.now() / 1000)
+    const tokenPayload = {
+      projectId: project.id,
+      workspaceId: project.workspaceId,
+      userId: auth.userId,
+      type: 'ai-proxy' as const,
+      authKind: 'session' as const,
+      iat: now,
+      exp: now + 3600,
+    }
+
+    const upstreamResponse = await createLiveWebRtcSession({
+      tokenPayload,
+      session: liveSession,
+      sdp: body.sdp,
+      signal: c.req.raw.signal,
+    })
+    if (!upstreamResponse.ok) return upstreamResponse
+
+    const upstreamBody = await upstreamResponse.json() as {
+      session?: { id?: string }
+      transport?: { sdp?: string }
+    }
+    const answerSdp = upstreamBody.transport?.sdp
+    const sessionId = upstreamBody.session?.id
+    if (!answerSdp || !sessionId) {
+      return c.json({ error: 'Live provider returned an invalid session response' }, 502)
+    }
+    return c.json({ sessionId, sdp: answerSdp })
   })
 
   /**
