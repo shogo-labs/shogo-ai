@@ -120,6 +120,8 @@ mock.module('@shogo-ai/sdk/voice', () => ({
 mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({
   TRANSLATOR_SYSTEM_PROMPT: '',
   TRANSLATOR_AI_SDK_TOOLS: {},
+  TRANSLATOR_LIVE_CONVERSATION_PROMPT: '',
+  TRANSLATOR_LIVE_DELEGATION_SUFFIX: '',
   TRANSLATOR_CONTEXT_MARKER: '{{PROJECT_CONTEXT}}',
   composeVoiceSystemPrompt: (base: string, _ctx: string) => base,
 }))

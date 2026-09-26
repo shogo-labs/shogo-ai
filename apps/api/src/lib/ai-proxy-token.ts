@@ -76,9 +76,10 @@ export interface ProxyTokenPayload {
    * part of the signed JWT). Used to gate privileged behaviors that only the
    * server itself may request — e.g. tagging an internal, non-billable
    * completion. Only `'proxy-jwt'` (a server-minted token) is trusted for that;
-   * `'api-key'` (workspace key) and `'runtime'` (per-project pod token) are not.
+   * `'api-key'` (workspace key), `'runtime'` (per-project pod token), and
+   * `'session'` (a browser session) are not.
    */
-  authKind?: 'api-key' | 'runtime' | 'proxy-jwt'
+  authKind?: 'api-key' | 'runtime' | 'proxy-jwt' | 'session'
 }
 
 // =============================================================================

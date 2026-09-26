@@ -14,12 +14,11 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-secret-voice-v4'
-void withPrismaExports
 
 const prismaCalls: Array<{ method: string; args: unknown }> = []
 const voiceConfigStore = new Map<string, { elevenlabsAgentId?: string; workspaceId: string }>()
 
-mock.module('../lib/prisma', () => ({
+mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     voiceProjectConfig: {
       findUnique: async (args: { where: { projectId: string } }) => {

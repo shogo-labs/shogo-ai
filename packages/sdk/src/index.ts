@@ -97,6 +97,8 @@ export {
   type WorkspaceSummary,
   type FeatureFlagOverrides,
   type FeatureFlagPatch,
+  type EzModeVoiceProvider,
+  type EzModeVoiceProviderOverride,
   type VisibleModelsConfig,
   type VisibleOpenRouterModel,
   type VisibleCatalogModel,

@@ -46,7 +46,7 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
  *   - K8s (SYSTEM_NAMESPACE set): the Knative service DNS on port 80.
  *   - Otherwise: `http://${API_HOST||localhost}:${API_PORT||8002}`.
  */
-function resolveApiBaseUrl(): string {
+export function resolveApiBaseUrl(): string {
   const ns = process.env.SYSTEM_NAMESPACE
   if (ns) return `http://api.${ns}.svc.cluster.local`
   const apiPort = process.env.API_PORT || '8002'

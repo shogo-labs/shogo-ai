@@ -3,8 +3,9 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { fetchCloudVisibleModels } from '../lib/federated-upstream'
+import { fetchCloudAgentModelDefaults, fetchCloudVisibleModels } from '../lib/federated-upstream'
 import { resolvePlatformVisibleModels } from '../services/visible-models.service'
+import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 
 /**
  * Platform metadata used by the desktop/local shell.
@@ -30,6 +31,15 @@ export function localPlatformRoutes(): Hono {
         publishing: false,
         marketplace: true,
         ezMode: true,
+        ezModeVoiceProvider:
+          Boolean(
+            getNativeProviderApiKeySync('openai') ||
+              (!!process.env.SHOGO_API_KEY &&
+                process.env.AI_MODE !== 'api-keys' &&
+                process.env.AI_MODE !== 'local-llm'),
+          )
+            ? 'gpt-live'
+            : 'elevenlabs',
         phoneChannel: false,
         personalShell: true,
       },
@@ -50,7 +60,16 @@ export function localPlatformRoutes(): Hono {
     })))
   })
 
-  router.get('/platform/agent-model-defaults', (c) => c.json({
+  router.get('/platform/agent-model-defaults', async (c) => {
+    const fromCloud = await fetchCloudAgentModelDefaults().catch(() => null)
+    if (fromCloud) return c.json(fromCloud)
+    return c.json(localAgentModelDefaults())
+  })
+  return router
+}
+
+function localAgentModelDefaults() {
+  return {
     basic: process.env.AGENT_BASIC_MODEL || 'claude-haiku-4-5-20251001',
     advanced: process.env.AGENT_ADVANCED_MODEL || 'claude-sonnet-4-6',
     defaultMode: process.env.AGENT_DEFAULT_MODE || null,
@@ -61,6 +80,5 @@ export function localPlatformRoutes(): Hono {
     },
     hasAdvancedModelAccess: true,
     deepseekModelIds: [],
-  }))
-  return router
+  }
 }

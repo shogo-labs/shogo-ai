@@ -50,6 +50,7 @@ export interface PlatformConfig {
     publishing: boolean
     marketplace: boolean
     ezMode: boolean
+    ezModeVoiceProvider: EzModeVoiceProvider
     phoneChannel: boolean
     /** Companion-shell rollout kill switch for personal workspaces. */
     personalShell: boolean
@@ -60,6 +61,8 @@ export interface PlatformConfig {
   }
 }
 
+export type EzModeVoiceProvider = 'gpt-live' | 'elevenlabs'
+
 /** Super-admin feature flag overrides. `null` means "use platform default". */
 export interface FeatureFlagOverrides {
   marketplace: boolean | null
@@ -68,6 +71,10 @@ export interface FeatureFlagOverrides {
   personalShell: boolean | null
   agentShell: boolean | null
   mobileAgentShell: boolean | null
+}
+
+export interface EzModeVoiceProviderOverride {
+  provider: EzModeVoiceProvider | null
 }
 
 /** Partial feature flag patch; omit a key to leave it unchanged; `null` to reset to default. */
@@ -1228,6 +1235,23 @@ export class PlatformApi {
         },
       }
     )
+  }
+
+  async getEzModeVoiceProvider(): Promise<EzModeVoiceProviderOverride> {
+    const res = await this.http.get<EzModeVoiceProviderOverride>(
+      '/api/admin/settings/ez-mode-voice-provider',
+    )
+    return res.data ?? { provider: null }
+  }
+
+  async putEzModeVoiceProvider(
+    provider: EzModeVoiceProvider | null,
+  ): Promise<{ ok: boolean; provider: EzModeVoiceProvider | null }> {
+    const res = await this.http.request<{ ok: boolean; provider: EzModeVoiceProvider | null }>(
+      '/api/admin/settings/ez-mode-voice-provider',
+      { method: 'PUT', body: { provider } },
+    )
+    return res.data ?? { ok: false, provider: null }
   }
 
   // ===========================================================================
