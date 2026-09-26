@@ -102,6 +102,32 @@ export async function describeRepoArchive(
   return describeObject(s3.client, repoArchiveKey(projectId), expiresInSec)
 }
 
+/** ETag and last-write time of the durable repo, or null when there is none. */
+export async function statRepoArchive(
+  projectId: string,
+  cfg: MetalConfig,
+): Promise<{ etag: string | null; lastModified: number | null } | null> {
+  const s3 = workspaceS3(cfg)
+  if (!s3) return null
+  const file = s3.client.file(repoArchiveKey(projectId))
+  if (!(await file.exists())) return null
+  const st = await file.stat()
+  const lastModified = st.lastModified ? new Date(st.lastModified).getTime() : NaN
+  return { etag: st.etag ?? null, lastModified: Number.isFinite(lastModified) ? lastModified : null }
+}
+
+/** Copy the durable repo to a conflict key before it is replaced. */
+export async function preserveRepoArchive(projectId: string, cfg: MetalConfig): Promise<string | null> {
+  const s3 = workspaceS3(cfg)
+  if (!s3) return null
+  const current = s3.client.file(repoArchiveKey(projectId))
+  if (!(await current.exists())) return null
+  const rand = Math.random().toString(36).slice(2, 8)
+  const key = `conflict/${projectId}/${Date.now()}-${rand}-superseded-repo.tar.gz`
+  await s3.client.write(key, new Uint8Array(await current.arrayBuffer()), { type: 'application/gzip' })
+  return key
+}
+
 async function quarantine(
   projectId: string,
   bytes: Uint8Array,

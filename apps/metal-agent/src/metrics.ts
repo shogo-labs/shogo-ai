@@ -153,6 +153,7 @@ export const M = {
   staleSnapshotSkipped: 'metal_stale_snapshot_skipped_total',
   // Host-mediated `.git` durability (see pool.saveRepoToStore).
   repoConflict: 'metal_repo_conflict_total',
+  repoPromoted: 'metal_repo_unlinked_promoted_total',
   repoRefused: 'metal_repo_refused_untrusted_total',
   repoTooLarge: 'metal_repo_too_large_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
