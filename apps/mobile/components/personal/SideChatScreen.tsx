@@ -7,7 +7,7 @@
  * is opened from.
  */
 import { useEffect, useState } from "react"
-import { View } from "react-native"
+import { Platform, View } from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
 import { useAuth } from "../../contexts/auth"
@@ -29,6 +29,11 @@ export const SideChatScreen = observer(function SideChatScreen() {
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+  // Legacy native routes do not mount MobileWorkspaceShell, but side chats
+  // should still use its floating companion chrome instead of an in-flow
+  // route-title header.
+  const useFloatingAgentChrome =
+    usesMobileWorkspaceChrome || Platform.OS !== "web"
   const workspaceId = workspace?.id
   const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
   const [prefillRequest, setPrefillRequest] =
@@ -68,7 +73,7 @@ export const SideChatScreen = observer(function SideChatScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      {usesMobileWorkspaceChrome && profile ? (
+      {useFloatingAgentChrome && profile ? (
         <PersonalAgentMobileHeader profile={profile} actions={profileActions} />
       ) : null}
       <View className="min-h-0 flex-1">
@@ -91,9 +96,10 @@ export const SideChatScreen = observer(function SideChatScreen() {
           }
           className="flex-1"
           isActive
-          phoneTranscriptTopPadding={
-            usesMobileWorkspaceChrome ? "floating-agent" : "chrome"
-          }
+          // The floating profile intentionally overlaps the transcript like
+          // the primary Mina chat. Keep the normal chrome inset so the first
+          // message is not pushed down by a second header-sized gap.
+          phoneTranscriptTopPadding="chrome"
         />
       </View>
     </View>
