@@ -14,6 +14,7 @@ import { Globe, ImageIcon } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
+import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 
 interface BrowserScreenshotDetails {
   ok?: boolean
@@ -31,6 +32,7 @@ function parseScreenshotResult(result: unknown): BrowserScreenshotDetails | null
     const details = r.details as BrowserScreenshotDetails
     if (Array.isArray(r.content)) {
       const imgPart = (r.content as any[]).find((c: any) => c.type === "image")
+      if (imgPart?.url) details.url = imgPart.url
       if (imgPart?.data) details.base64 = imgPart.data
     }
     return details
@@ -42,6 +44,9 @@ function parseScreenshotResult(result: unknown): BrowserScreenshotDetails | null
     let parsed: BrowserScreenshotDetails | null = null
     if (textPart?.text) {
       try { parsed = JSON.parse(textPart.text) } catch { parsed = null }
+    }
+    if (imgPart?.url) {
+      return { ...parsed, url: imgPart.url }
     }
     if (imgPart?.data) {
       return { ...parsed, base64: imgPart.data }
@@ -78,13 +83,16 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
   const details = useMemo(() => parseScreenshotResult(tool.result), [tool.result])
 
   const imageUrl = useMemo(() => {
+    if (details?.url) {
+      return resolveChatAttachmentUrl(details.url)
+    }
     if (details?.base64) {
       return `data:image/png;base64,${details.base64}`
     }
     const path = details?.path
     if (!path || !chatContext?.agentUrl) return null
     return `${chatContext.agentUrl}/agent/workspace/download/${path}?t=${Date.now()}`
-  }, [details?.base64, details?.path, chatContext?.agentUrl])
+  }, [details?.base64, details?.path, details?.url, chatContext?.agentUrl])
 
   const pageUrl = details?.url
 

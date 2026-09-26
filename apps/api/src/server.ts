@@ -38,6 +38,7 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
+import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { aiLiveRoutes } from './routes/ai-live'
@@ -758,6 +759,10 @@ function isTokenGatedThumbnailPath(path: string): boolean {
   return /^\/api\/projects\/[^/]+\/thumbnail\.png$/.test(path)
 }
 
+function isTokenGatedChatAttachmentPath(path: string): boolean {
+  return path.startsWith('/api/chat-attachments/')
+}
+
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
@@ -806,6 +811,7 @@ app.use(
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
     if (isTokenGatedThumbnailPath(path)) return next()
+    if (isTokenGatedChatAttachmentPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
     if (path.endsWith('/heartbeat/sync')) return next()
     // Voice provider webhooks (signature-verified in-handler). These have
@@ -2377,6 +2383,8 @@ app.all('/api/published/:subdomain/api/*', publishedApiHandler)
 // =============================================================================
 // Thumbnail routes
 // =============================================================================
+
+app.route('/api', chatAttachmentRoutes())
 
 app.post('/api/projects/:projectId/thumbnail', async (c) => {
   const router = thumbnailRoutes()

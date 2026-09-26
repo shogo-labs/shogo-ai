@@ -23,6 +23,7 @@ import { VideoPreviewModal } from "../VideoPreviewModal";
 import { downloadImage, isShogoDesktop } from "../chatImageActions";
 import { usePhoneLayout } from "../../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
+import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url";
 
 export interface MessageContentProps {
   message: UIMessage;
@@ -429,7 +430,7 @@ export function MessageContent({
           {images.map((img, i) => (
             <ImageThumbnail
               key={`${message.id}-img-${i}`}
-              url={img.url}
+              url={resolveChatAttachmentUrl(img.url)}
               mediaType={img.mediaType}
               index={i}
             />
@@ -437,7 +438,7 @@ export function MessageContent({
           {files.map((file, i) => (
             <DocumentThumbnail
               key={`${message.id}-file-${i}`}
-              url={file.url}
+              url={resolveChatAttachmentUrl(file.url)}
               mediaType={file.mediaType}
               name={file.name}
               index={i}
@@ -513,7 +514,7 @@ export function MessageContent({
           {images.map((img, i) => (
             <ImageThumbnail
               key={`${message.id}-img-${i}`}
-              url={img.url}
+              url={resolveChatAttachmentUrl(img.url)}
               mediaType={img.mediaType}
               index={i}
             />
@@ -521,7 +522,7 @@ export function MessageContent({
           {files.map((file, i) => (
             <DocumentThumbnail
               key={`${message.id}-file-${i}`}
-              url={file.url}
+              url={resolveChatAttachmentUrl(file.url)}
               mediaType={file.mediaType}
               name={file.name}
               index={i}
