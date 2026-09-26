@@ -23,7 +23,23 @@ const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.
 class TestPool extends MetalWarmPool {
   uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { lineage: RepoLineage } }> = []
   outcome: RepoWriteOutcome = { status: 'written', etag: '"new-repo"' }
+  /** Per-call outcomes, consumed before falling back to `outcome`. */
+  outcomes: RepoWriteOutcome[] = []
   exportBytes: Uint8Array | null = new Uint8Array([1, 2, 3])
+  durable: { etag: string | null; lastModified: number | null } | null = null
+  statCalls = 0
+  preserved: string[] = []
+  preserveKey: string | null = 'conflict/p1/superseded-repo.tar.gz'
+
+  protected override async statDurableRepo() {
+    this.statCalls++
+    return this.durable
+  }
+
+  protected override async preserveDurableRepo(projectId: string) {
+    this.preserved.push(projectId)
+    return this.preserveKey
+  }
 
   protected override async fetchRepoExport(): Promise<Uint8Array | null> {
     return this.exportBytes
@@ -35,7 +51,7 @@ class TestPool extends MetalWarmPool {
     opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
   ): Promise<RepoWriteOutcome> {
     this.uploads.push({ projectId, bytes, opts })
-    return this.outcome
+    return this.outcomes.shift() ?? this.outcome
   }
 
   add(projectId: string, extra: Partial<AssignedVm> = {}): AssignedVm {
@@ -96,6 +112,59 @@ describe('pool host-mediated repo persist', () => {
     const a = pool.add('p1')
     expect(await pool.saveRepoToStore(a)).toBe(true)
     expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })
+  })
+
+  describe('an unlinked VM whose export hits an existing durable repo', () => {
+    const conflict: RepoWriteOutcome = { status: 'conflict', quarantineKey: 'conflict/p1/q.tar.gz', reason: 'raced-create' }
+
+    test('supersedes a repo nobody wrote since its state began, keeping the old archive', async () => {
+      const pool = makePool(dir)
+      pool.outcomes = [conflict, { status: 'written', etag: '"promoted"' }]
+      pool.durable = { etag: '"stale"', lastModified: 1_000 }
+      const a = pool.add('ws:proj:p1', { stateSince: 5_000 })
+
+      expect(await pool.saveRepoToStore(a)).toBe(true)
+      expect(pool.preserved).toEqual(['ws:proj:p1'])
+      expect(pool.uploads[1].opts.lineage).toEqual({ kind: 'descends', etag: '"stale"' })
+      expect(a.repoParentEtag).toBe('"promoted"')
+
+      pool.outcomes = []
+      await pool.saveRepoToStore(a)
+      expect(pool.uploads[2].opts.lineage).toEqual({ kind: 'descends', etag: '"promoted"' })
+    })
+
+    test('leaves the conflict when another VM wrote the repo after its state began', async () => {
+      const pool = makePool(dir)
+      pool.outcomes = [conflict]
+      pool.durable = { etag: '"other-writer"', lastModified: 9_000 }
+      const a = pool.add('ws:proj:p1', { stateSince: 5_000 })
+
+      expect(await pool.saveRepoToStore(a)).toBe(false)
+      expect(pool.uploads).toHaveLength(1)
+      expect(pool.preserved).toHaveLength(0)
+      expect(a.repoParentEtag).toBeUndefined()
+    })
+
+    test('a linked VM never tries to supersede', async () => {
+      const pool = makePool(dir)
+      pool.outcomes = [{ ...conflict, reason: 'lineage' }]
+      pool.durable = { etag: '"x"', lastModified: 1_000 }
+      const a = pool.add('ws:proj:p1', { repoParentEtag: '"old"', stateSince: 5_000 })
+
+      expect(await pool.saveRepoToStore(a)).toBe(false)
+      expect(pool.statCalls).toBe(0)
+    })
+
+    test('does not overwrite when the old archive could not be kept', async () => {
+      const pool = makePool(dir)
+      pool.outcomes = [conflict]
+      pool.durable = { etag: '"stale"', lastModified: 1_000 }
+      pool.preserveKey = null
+      const a = pool.add('ws:proj:p1', { stateSince: 5_000 })
+
+      expect(await pool.saveRepoToStore(a)).toBe(false)
+      expect(pool.uploads).toHaveLength(1)
+    })
   })
 
   describe('cold-boot repo hydrate', () => {
