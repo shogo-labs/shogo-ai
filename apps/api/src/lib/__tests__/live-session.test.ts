@@ -68,6 +68,12 @@ mock.module('../../services/workspace-models.service', () => ({
     WORKSPACE_ALLOWED_IDS === null || WORKSPACE_ALLOWED_IDS.has(modelId),
 }))
 
+let AUTO_BACKEND: { id: string; fromCloud: boolean } | null = null
+
+mock.module('../runtime/agent-model-defaults', () => ({
+  resolveAutoLiveBackendModel: async () => AUTO_BACKEND,
+}))
+
 const { validateLiveSessionStart } = await import('../live-session')
 
 const TOKEN: ProxyTokenPayload = {
@@ -84,6 +90,57 @@ describe('validateLiveSessionStart', () => {
     VISIBLE_CATALOG_MODELS = []
     PROVIDER_CONFIGURED = true
     WORKSPACE_ALLOWED_IDS = null
+    AUTO_BACKEND = null
+    delete process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_API_KEY
+  })
+
+  test('auto backend resolves to the Auto tier OpenAI model', async () => {
+    VISIBLE_CATALOG_MODELS = [
+      { id: 'gpt-live-1', provider: 'openai', kind: 'live' },
+      { id: 'gpt-6-astra', provider: 'openai' },
+    ]
+    AUTO_BACKEND = { id: 'gpt-6-astra', fromCloud: false }
+    const result = await validateLiveSessionStart(TOKEN, {
+      model: 'gpt-live-1',
+      delegation: { type: 'responses', responses: { model: 'auto' } },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.backendModel).toBe('gpt-6-astra')
+      expect(result.upstreamBackendModel).toBe('gpt-6-astra')
+    }
+  })
+
+  test('auto backend fails when no Auto tier is an OpenAI model', async () => {
+    VISIBLE_CATALOG_MODELS = [{ id: 'gpt-live-1', provider: 'openai', kind: 'live' }]
+    const result = await validateLiveSessionStart(TOKEN, {
+      model: 'gpt-live-1',
+      delegation: { type: 'responses', responses: { model: 'auto' } },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe('backend_model_not_supported')
+  })
+
+  test('cloud-sourced auto backend skips the local id-match visibility check when forwarding', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.SHOGO_API_KEY = 'shogo_sk_test'
+    // Cloud-mirrored visible entries are keyed by opaque DB ids.
+    VISIBLE_CATALOG_MODELS = [
+      { id: 'b1918b49-c3c6-49c8-8e33-aa7defc8b5f9', provider: 'openai', kind: 'live' },
+      { id: '5a0f7c1e-0000-4000-8000-000000000000', provider: 'openai' },
+    ]
+    AUTO_BACKEND = { id: 'gpt-6-astra', fromCloud: true }
+    const result = await validateLiveSessionStart(
+      TOKEN,
+      {
+        model: 'gpt-live-1',
+        delegation: { type: 'responses', responses: { model: 'auto' } },
+      },
+      { allowCloudForwarding: true },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.backendModel).toBe('gpt-6-astra')
   })
 
   test('passes when the cloud-mirrored visible entry shares the id (normal case)', async () => {

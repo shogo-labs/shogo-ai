@@ -58,6 +58,7 @@ import { streamText, convertToModelMessages, type UIMessage } from 'ai'
 import { stripOrphanToolParts } from '../lib/strip-orphan-tool-parts'
 import { resolveLanguageModel, DEFAULT_ASSISTANT_MODEL } from '../lib/resolve-language-model'
 import { ElevenLabsClient } from '@shogo-ai/sdk/voice'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import {
   TRANSLATOR_SYSTEM_PROMPT,
   TRANSLATOR_AI_SDK_TOOLS,
@@ -643,7 +644,7 @@ export function voiceRoutes() {
 
     const liveModel = process.env.SHOGO_EZ_MODE_LIVE_MODEL || 'gpt-live-1'
     const backendModel =
-      process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL || 'gpt-6-luna'
+      process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL || AUTO_MODEL_ID
     const liveSession: LiveSessionStart = {
       model: liveModel,
       instructions: composeVoiceSystemPrompt(TRANSLATOR_SYSTEM_PROMPT, contextBlock),

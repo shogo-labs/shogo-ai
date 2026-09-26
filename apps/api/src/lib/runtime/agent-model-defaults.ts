@@ -183,6 +183,32 @@ export async function resolveEffectiveAgentModelDefaults(
   }
 }
 
+/**
+ * Resolve the `auto` backend model for a Live session's Responses delegation.
+ *
+ * Uses the same Auto tier map agent runtimes get: the connected cloud's when
+ * this is a cloud-forwarding local instance, otherwise this server's
+ * entitlement-capped defaults. Live delegation only runs on OpenAI, so the
+ * first OpenAI tier (standard, then economy, then premium) wins. Returns null
+ * when no Auto tier is an OpenAI model.
+ */
+export async function resolveAutoLiveBackendModel(
+  workspaceId: string,
+): Promise<{ id: string; fromCloud: boolean } | null> {
+  const cloudDefaults = await fetchCloudAgentModelDefaults()
+  const autoTiers = cloudDefaults?.autoTiers
+    ?? (await resolveEffectiveAgentModelDefaults(workspaceId)).autoTiers
+  for (const tier of ['standard', 'economy', 'premium'] as const) {
+    const entry = autoTiers[tier]
+    if (!entry?.id) continue
+    const provider = getMergedModelEntrySync(entry.id)?.provider
+      ?? entry.provider
+      ?? inferProviderFromModel(entry.id, 'custom')
+    if (provider === 'openai') return { id: entry.id, fromCloud: !!cloudDefaults }
+  }
+  return null
+}
+
 export function serializeAutoTierMapEnv(
   autoTiers: Partial<Record<AgentModelTier, AgentModelEntry>>,
 ): string | undefined {

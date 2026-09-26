@@ -8,7 +8,8 @@ import {
   resolveVisibleModelsForWorkspace,
 } from '../services/visible-models.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
-import type { ModelEntry } from '@shogo/model-catalog'
+import { resolveAutoLiveBackendModel } from './runtime/agent-model-defaults'
+import { AUTO_MODEL_ID, type ModelEntry } from '@shogo/model-catalog'
 
 export interface LiveSessionStart {
   model?: string
@@ -112,7 +113,7 @@ export async function validateLiveSessionStart(
 
   const delegation = session.delegation
   if (delegation?.type === 'responses') {
-    const backendModelId = delegation.responses?.model
+    let backendModelId = delegation.responses?.model
     if (!backendModelId || typeof backendModelId !== 'string') {
       return {
         ok: false,
@@ -120,6 +121,24 @@ export async function validateLiveSessionStart(
         code: 'backend_model_required',
         message: 'Responses delegation requires delegation.responses.model.',
       }
+    }
+    let trustedAutoFromCloud = false
+    if (backendModelId === AUTO_MODEL_ID) {
+      const resolved = await resolveAutoLiveBackendModel(tokenPayload.workspaceId)
+      if (!resolved) {
+        return {
+          ok: false,
+          status: 400,
+          code: 'backend_model_not_supported',
+          message: 'Auto has no OpenAI model tier configured for Live Sessions.',
+        }
+      }
+      backendModelId = resolved.id
+      // The cloud's Auto tiers are already entitlement-capped for this
+      // workspace, and the cloud re-validates the forwarded session. Its
+      // visible-models payload keys entries by opaque DB ids, so a local
+      // id match against it is not meaningful.
+      trustedAutoFromCloud = resolved.fromCloud && !!cloudConfigured
     }
     const backend = getMergedModelEntrySync(backendModelId)
     if (!backend || backend.kind === 'live' || backend.provider !== 'openai') {
@@ -130,8 +149,10 @@ export async function validateLiveSessionStart(
         message: `Backend model '${backendModelId}' must be a visible OpenAI chat model.`,
       }
     }
-    if (!visibleEntry(visible.catalogModels, backend) ||
-        !await isModelVisibleForWorkspace(tokenPayload.workspaceId, backendModelId)) {
+    if (!trustedAutoFromCloud && (
+      !visibleEntry(visible.catalogModels, backend) ||
+      !await isModelVisibleForWorkspace(tokenPayload.workspaceId, backendModelId)
+    )) {
       return {
         ok: false,
         status: 403,
