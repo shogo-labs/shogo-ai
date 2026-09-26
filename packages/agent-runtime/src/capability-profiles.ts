@@ -123,7 +123,13 @@ export const CAPABILITY_PROFILES: Record<CapabilityProfileName, CapabilityProfil
   },
   personal: {
     disabledToolGroups: ['shell', 'code_review', 'builder', 'project_composition', 'orchestration'],
-    disabledToolNames: [],
+    // Personal workspaces connect channels through a Shogo-managed flow, not
+    // the bring-your-own-bot surface that `channel_connect` /
+    // `channel_disconnect` / `channel_list` expose — so those tools are
+    // physically removed, not just re-prompted. `send_message` shares the
+    // `messaging` group and is deliberately NOT listed: disabling the whole
+    // group would take messaging down with it.
+    disabledToolNames: ['channel_connect', 'channel_disconnect', 'channel_list'],
     activeMode: 'none',
     allowedModes: ['none'],
     shellEnabled: false,

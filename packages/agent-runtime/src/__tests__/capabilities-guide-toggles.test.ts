@@ -98,4 +98,32 @@ describe('Capabilities / Action Tools prompt gating', () => {
 
     expect(section('action-tools-guide')).toBeDefined()
   })
+
+  test('personal profile drops the channel surfaces even with channels enabled', async () => {
+    // Team baseline — channels are on, so both surfaces are at full size.
+    setupWorkspace()
+    gateway = await buildGatewayAndTurn()
+    const teamIndexChars = section('capabilities-index')!.chars
+    const teamActionChars = section('action-tools-guide')!.chars
+    await gateway.stop()
+
+    const prevKind = process.env.WORKSPACE_KIND
+    process.env.WORKSPACE_KIND = 'personal'
+    try {
+      setupWorkspace()
+      gateway = await buildGatewayAndTurn()
+
+      // Integrations stay on, so the guide itself survives — but the
+      // `channel_connect` invitation (Action Tools) and the `channel` line /
+      // `channel` subagent type (Capabilities Index) must be gone, shrinking
+      // both sections relative to the team baseline.
+      expect(section('action-tools-guide')).toBeDefined()
+      expect(section('action-tools-guide')!.chars).toBeLessThan(teamActionChars)
+      expect(section('capabilities-index')).toBeDefined()
+      expect(section('capabilities-index')!.chars).toBeLessThan(teamIndexChars)
+    } finally {
+      if (prevKind === undefined) delete process.env.WORKSPACE_KIND
+      else process.env.WORKSPACE_KIND = prevKind
+    }
+  })
 })

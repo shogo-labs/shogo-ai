@@ -31,6 +31,10 @@ import { usePlatformConfig } from '../../../lib/platform-config'
 import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
+import {
+  visibleChannelTypesForProfile,
+  type CapabilityProfile,
+} from '../../../lib/channel-profile'
 
 interface ChannelInfo {
   type: string
@@ -49,6 +53,10 @@ interface ChannelsPanelProps {
   agentUrl: string | null
   visible: boolean
   hasAdvancedModelAccess?: boolean
+  /** Owning workspace's capability profile. Personal workspaces connect
+   * channels through Shogo (managed), so the bring-your-own-credential
+   * channel types are replaced by a managed "connect in app" card. */
+  capabilityProfile?: CapabilityProfile
 }
 
 interface RunOnInstance {
@@ -191,7 +199,9 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
   },
 }
 
-export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAdvancedModelAccess = false }: ChannelsPanelProps) {
+export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAdvancedModelAccess = false, capabilityProfile = 'team' }: ChannelsPanelProps) {
+  const isPersonal = capabilityProfile === 'personal'
+  const visibleChannelTypes = visibleChannelTypesForProfile(Object.keys(CHANNEL_DEFS), capabilityProfile)
   const comfortable = useIsNativePhoneLayout()
   const { features } = usePlatformConfig()
   const [channels, setChannels] = useState<ChannelInfo[]>([])
@@ -656,7 +666,8 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
           </View>
         ) : (
           <View className="gap-2">
-            {Object.entries(CHANNEL_DEFS).map(([type, def]) => {
+            {visibleChannelTypes.map((type) => {
+              const def = CHANNEL_DEFS[type]
               const isSlackAgent = type === 'slack-agent'
               const liveChannel = channels.find(ch => ch.type === type)
               const isConnected = isSlackAgent
@@ -1102,6 +1113,28 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
               )
             })}
 
+            {/* Personal workspaces: Telegram/WhatsApp/Slack are managed by
+                Shogo instead of bring-your-own-credentials. The agent has no
+                `channel_connect` tool here, so this card replaces the BYO
+                forms rather than pointing at a flow that can't run. */}
+            {isPersonal && (
+              <View className="border border-border rounded-lg p-3">
+                <View className="flex-row items-center gap-3">
+                  <MessageSquare size={18} className="text-muted-foreground" />
+                  <View className="flex-1">
+                    <Text className="text-sm font-medium text-foreground">
+                      Managed connections
+                    </Text>
+                    <Text className="text-xs text-muted-foreground mt-0.5">
+                      Telegram, WhatsApp, and Slack connect through your Shogo account — no
+                      bot tokens, phone-number IDs, or provider credentials to paste. Link a
+                      channel with Connect in Shogo and it appears here.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            )}
+
             {/* Phone (Voice) — Twilio + ElevenLabs, provisioned by Shogo.
                 Gated by the `phoneChannel` super-admin feature flag. */}
             {features.phoneChannel && (
@@ -1139,10 +1172,9 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
             )}
 
             <Text className="text-xs text-muted-foreground mt-4">
-              Or ask the builder AI to connect channels. For example: "Connect my Telegram
-              bot", "Set up Discord", "Connect WhatsApp", "Add Slack", "Set up a webhook
-              channel", "Set up Microsoft Teams", "Add a webchat widget to my website",
-              or "Get me a phone number".
+              {isPersonal
+                ? 'Telegram, WhatsApp, and Slack are managed by Shogo — link a channel with Connect in Shogo. Other channel types can still be set up here.'
+                : 'Or ask the builder AI to connect channels. For example: "Connect my Telegram bot", "Set up Discord", "Connect WhatsApp", "Add Slack", "Set up a webhook channel", "Set up Microsoft Teams", "Add a webchat widget to my website", or "Get me a phone number".'}
             </Text>
           </View>
         )}
