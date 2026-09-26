@@ -61,7 +61,7 @@ function shouldScheduleDigest(): boolean {
 let digestTimer: ReturnType<typeof setTimeout> | null = null
 
 function formatThread(thread: ConversationThread): string {
-  const header = `[${thread.userName || 'Unknown'} / ${thread.projectName}${thread.templateId ? ` (template: ${thread.templateId})` : ''}]`
+  const header = `[${thread.source || 'cloud_chat'} / ${thread.userName || 'Unknown'} / ${thread.projectName}${thread.templateId ? ` (template: ${thread.templateId})` : ''}]`
   const msgs = thread.messages
     .map(m => `${m.role}: ${m.content}`)
     .join('\n')

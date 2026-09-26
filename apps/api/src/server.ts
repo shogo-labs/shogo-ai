@@ -9003,6 +9003,14 @@ async function gracefulShutdown(signal: string) {
     }
   }
 
+  try {
+    const { flushAndStopArchive, stopProxyCaptureRetention } = await import('./lib/proxy-capture')
+    stopProxyCaptureRetention()
+    await flushAndStopArchive()
+  } catch (error) {
+    console.error('[ProxyCapture] Failed to flush capture archive during shutdown:', error)
+  }
+
   stopAllPrismaStudios()
 
   try {
@@ -9510,6 +9518,13 @@ if (isKubernetes()) {
       startAnalyticsDigestCollector(prisma)
     } catch (err: any) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
+    }
+
+    try {
+      const { startProxyCaptureRetention } = await import('./lib/proxy-capture')
+      startProxyCaptureRetention(prisma)
+    } catch (err: any) {
+      console.error('[ProxyCapture] Failed to start retention cleanup (non-fatal):', err.message)
     }
 
     // Metal fleet reconciler — keeps the live bare-metal fleet in line with the

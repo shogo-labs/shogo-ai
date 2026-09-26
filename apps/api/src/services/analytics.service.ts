@@ -2563,6 +2563,7 @@ export interface ConversationThread {
   userName: string | null
   projectName: string
   templateId: string | null
+  source?: string
   messages: { role: string; content: string; sentAt: string }[]
 }
 
@@ -2579,6 +2580,7 @@ export async function getChatConversations(
     userName: string | null
     projectName: string
     templateId: string | null
+    source: string
     role: string
     content: string
     sentAt: Date
@@ -2594,6 +2596,7 @@ export async function getChatConversations(
       u."name" AS "userName",
       p."name" AS "projectName",
       ml."slug" AS "templateId",
+      'cloud_chat' AS "source",
       cm."role",
       CASE
         WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
@@ -2608,7 +2611,7 @@ export async function getChatConversations(
     LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
     LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
     WHERE cm."createdAt" >= ? AND cm."agent" = 'technical' ${filter}
-    ORDER BY cs."id", cm."createdAt" ASC
+    ORDER BY "sessionId", "sentAt" ASC
   `
       : `
     SELECT
@@ -2616,6 +2619,7 @@ export async function getChatConversations(
       u."name" AS "userName",
       p."name" AS "projectName",
       ml."slug" AS "templateId",
+      'cloud_chat' AS "source",
       cm."role",
       CASE
         WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
@@ -2630,7 +2634,41 @@ export async function getChatConversations(
     LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
     LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
     WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
-    ORDER BY cs."id", cm."createdAt" ASC
+    UNION ALL
+    SELECT
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      u."name" AS "userName",
+      COALESCE(pr."name", 'Proxy traffic') AS "projectName",
+      NULL AS "templateId",
+      pt."source" AS "source",
+      'user' AS "role",
+      LEFT(pt."userText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
+      pt."lastAt" AS "sentAt"
+    FROM "ai_analysis_turns" pt
+    LEFT JOIN "users" u ON u."id" = pt."userId"
+    LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
+    WHERE pt."source" <> 'cloud_chat'
+      AND pt."createdAt" >= $1
+      AND pt."userText" IS NOT NULL
+      ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
+    UNION ALL
+    SELECT
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      u."name" AS "userName",
+      COALESCE(pr."name", 'Proxy traffic') AS "projectName",
+      NULL AS "templateId",
+      pt."source" AS "source",
+      'assistant' AS "role",
+      RIGHT(pt."assistantText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
+      pt."lastAt" AS "sentAt"
+    FROM "ai_analysis_turns" pt
+    LEFT JOIN "users" u ON u."id" = pt."userId"
+    LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
+    WHERE pt."source" <> 'cloud_chat'
+      AND pt."createdAt" >= $1
+      AND pt."assistantText" IS NOT NULL
+      ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
+    ORDER BY "sessionId", "sentAt" ASC
   `,
     since
   )
@@ -2642,6 +2680,7 @@ export async function getChatConversations(
         userName: row.userName,
         projectName: row.projectName,
         templateId: row.templateId,
+        source: row.source,
         messages: [],
       })
     }

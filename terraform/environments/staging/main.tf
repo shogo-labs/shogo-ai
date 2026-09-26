@@ -511,6 +511,11 @@ output "published_data_bucket" {
   value       = module.object_storage.published_data_bucket
 }
 
+output "llm_captures_bucket" {
+  description = "Raw LLM proxy capture archive bucket."
+  value       = module.object_storage.llm_captures_bucket
+}
+
 output "server_backed_kv_namespace_id" {
   description = "Workers KV namespace id flagging server-backed published subdomains (null when disabled). Wire into the api ksvc/custom-domains-config secret as CF_SERVER_BACKED_KV_NAMESPACE_ID."
   value       = module.publish_hosting.server_backed_kv_namespace_id

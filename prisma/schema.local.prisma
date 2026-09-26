@@ -126,6 +126,10 @@ model Workspace {
   // "workspace" (one OAuth shared across the workspace); existing
   // workspaces are migrated to "project" to preserve current behavior.
   composioScope     String   @default("workspace")
+  // Whether proxy requests and responses may be retained for product
+  // analysis and training. "default" follows the workspace plan; "enabled"
+  // and "disabled" are explicit admin overrides.
+  trainingDataMode   String   @default("default")
   // Optional parent workspace. When set, this workspace is a "child" that
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
@@ -163,6 +167,7 @@ model Workspace {
   agentEvalSets          AgentEvalSet[]
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
+  proxyTurns             ProxyTurn[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
   slackInstallation      SlackWorkspaceInstallation?
@@ -171,6 +176,45 @@ model Workspace {
 
   @@index([parentWorkspaceId])
   @@map("workspaces")
+}
+
+model ProxyTurn {
+  id                String   @id @default(uuid())
+  firstAt           DateTime @default(now())
+  lastAt            DateTime @default(now())
+  source            String
+  workspaceId       String
+  projectId         String?
+  userId            String?
+  chatSessionId     String?
+  turnKey           String
+  resolvedModel     String?
+  llmCalls          Int      @default(0)
+  inputTokens       Int      @default(0)
+  outputTokens      Int      @default(0)
+  cachedInputTokens Int      @default(0)
+  cacheWriteTokens  Int      @default(0)
+  reasoningTokens   Int      @default(0)
+  errorCount        Int      @default(0)
+  userText          String?
+  assistantText     String?
+  toolNames         String   @default("[]")
+  archivePrefix     String?
+  feedback          String?
+  revertedAt        DateTime?
+  hadError          Boolean  @default(false)
+  truncated         Boolean  @default(false)
+  userFollowupKind  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, turnKey])
+  @@index([workspaceId, lastAt])
+  @@index([chatSessionId, lastAt])
+  @@index([source])
+  @@map("proxy_turns")
 }
 
 model WorkspaceAgentProfile {
