@@ -19,6 +19,7 @@ import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { getStreamFinishReason } from './stream-finish'
+import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
   readFileSync,
@@ -3039,6 +3040,9 @@ const EXPORT_FLUSH_TIMEOUT_MS = 20_000
  */
 async function flushGitBeforeExport(dir: string): Promise<void> {
   if (!gitSyncInstance || dir !== WORKSPACE_DIR) return
+  // Mid-turn edits are committed at turn-complete; committing here would
+  // create a checkpoint for each tool call during a host-driven export.
+  if (!shouldFlushGitBeforeExport(activeStreams)) return
   const sync = gitSyncInstance
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
