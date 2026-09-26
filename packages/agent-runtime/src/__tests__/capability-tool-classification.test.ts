@@ -68,6 +68,9 @@ describe('capability tool classification', () => {
       'project_list', 'project_create', 'project_call', 'project_configure',
       'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list', 'set_status',
       'ask_user', 'read_file', 'write_file', 'edit_file', 'web', 'memory_read',
+      // The reminder skill's reach-the-user boundary capability must stay
+      // enabled for personal workspaces (issue #1046).
+      'notify_user',
     ]) {
       expect(disabled.has(kept)).toBe(false)
     }

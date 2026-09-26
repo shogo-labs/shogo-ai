@@ -3,7 +3,7 @@ name: reminder-manage
 version: 2.0.0
 description: Set and manage reminders — store in memory, check on heartbeat, notify when due
 trigger: "remind me|set reminder|reminder|don't forget|remember to|alarm|due"
-tools: [memory_read, write_file, send_message]
+tools: [memory_read, write_file, send_message, notify_user]
 ---
 
 # Reminder Management
@@ -20,6 +20,7 @@ Manage reminders stored in agent memory:
    - Check which ones are due (compare to current time)
    - For due reminders: notify the user
 3. **Notify** — When a reminder is due:
+   - `notify_user` with the reminder text (app notification + device push; skipped during quiet hours, so retry on the next heartbeat)
    - If channel configured: `send_message` with the reminder
    - If in chat: mention it in the next response
    - Mark as delivered in memory

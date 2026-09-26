@@ -20,6 +20,7 @@ import { createProjectTools } from './project-tools'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
+import { isInQuietHours } from './quiet-hours'
 import { disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
@@ -4831,6 +4832,103 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
   }
 }
 
+/**
+ * Boundary capability: deliver an in-app notification (and, when it is newly
+ * created, an OS push) to the current user. This is the server-backed "reach
+ * the user" primitive the reminder-manage skill uses on a heartbeat instead of
+ * pretending a chat reply / channel message is a push.
+ *
+ * Writes go through the same `/api/internal` bridge as the workspace meta
+ * tools (`workspaceMetaFetch`), so auth, the derived API URL and the injected
+ * `userId` are shared. Firing is suppressed during the workspace's configured
+ * quiet hours (mirrors the heartbeat scheduler).
+ */
+function createNotifyUserTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'notify_user',
+    label: 'Notify User',
+    description:
+      'Send the user an app notification (and a device push) about something that needs ' +
+      'their attention, e.g. a due reminder. Only available in a workspace runtime. Does ' +
+      'nothing during the configured quiet hours.',
+    parameters: Type.Object({
+      title: Type.String({ description: 'Short notification title' }),
+      body: Type.String({ description: 'Notification body / reminder text' }),
+      actionUrl: Type.Optional(
+        Type.String({ description: 'In-app deep link to open on tap, e.g. "/activity"' }),
+      ),
+      dedupeKey: Type.Optional(
+        Type.String({
+          description:
+            'Stable key so re-firing the same notification does not create a duplicate inbox row',
+        }),
+      ),
+      type: Type.Optional(
+        Type.String({
+          description:
+            'Notification type (must be an existing NotificationType member). Defaults to "workspace_updated".',
+        }),
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { title, body, actionUrl, dedupeKey, type } = params as {
+        title: string
+        body: string
+        actionUrl?: string
+        dedupeKey?: string
+        type?: string
+      }
+
+      if (!workspaceMetaToolEnabled(ctx)) {
+        return textResult({ error: 'This tool is only available in a workspace runtime.' })
+      }
+
+      // Respect quiet hours: a due reminder is deferred, not dropped — the
+      // agent keeps it in memory and re-attempts on a later heartbeat.
+      let quietHours: { start?: string; end?: string; timezone?: string } | undefined
+      try {
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        if (existsSync(configPath)) {
+          quietHours = JSON.parse(readFileSync(configPath, 'utf-8'))?.quietHours
+        }
+      } catch {
+        // Unreadable/invalid config → treat as no quiet hours.
+      }
+      if (isInQuietHours(quietHours?.start ?? null, quietHours?.end ?? null, quietHours?.timezone ?? null)) {
+        return textResult({
+          ok: false,
+          skipped: 'quiet_hours',
+          message: 'Suppressed by quiet hours — retry after the quiet window ends.',
+        })
+      }
+
+      const workspaceId = resolveWorkspaceId(ctx)
+      try {
+        const result = await workspaceMetaFetch(ctx, '/api/internal/reminders/notify', {
+          method: 'POST',
+          body: JSON.stringify({
+            workspaceId,
+            projectId: ctx.projectId,
+            title,
+            body,
+            ...(actionUrl ? { actionUrl } : {}),
+            ...(dedupeKey ? { dedupeKey } : {}),
+            ...(type ? { type } : {}),
+            // Distinct push payload type so the delivered push is
+            // distinguishable; the Android channel stays the default
+            // `chat-complete` (already registered on the device) since this
+            // change does not touch the mobile app.
+            pushType: 'reminder-due',
+          }),
+        })
+        return textResult(result)
+      } catch (err: any) {
+        return textResult({ error: `Failed to notify user: ${err?.message ?? err}` })
+      }
+    },
+  }
+}
+
 function createChannelDisconnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'channel_disconnect',
@@ -6939,6 +7037,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     tools.push(createMountProjectTool(ctx))
     tools.push(createUnmountProjectTool(ctx))
     tools.push(createPreviewProjectTool(ctx))
+    // Reach-the-user boundary: the reminder-manage skill's notify path.
+    // Workspace runtimes only (personal agents), same bridge as the meta tools.
+    tools.push(createNotifyUserTool(ctx))
   }
 
   if (extraTools) {
@@ -7450,6 +7551,7 @@ export const ALL_TOOL_NAMES = [
   'memory_read',
   'memory_search',
   'send_message',
+  'notify_user',
   'channel_connect',
   'channel_disconnect',
   'channel_list',
