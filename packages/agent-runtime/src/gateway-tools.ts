@@ -21,6 +21,7 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
 import { disabledToolNamesForProfile } from './capability-profiles'
+import { mainAgentBrowserAvailable } from './browser-capability'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
@@ -7546,11 +7547,22 @@ export const SUBAGENT_ONLY_TOOLS = new Set([
  * literally no way to generate images — despite its own AGENTS.md
  * instructing it to call `generate_image` directly for avatar changes — and
  * it will correctly (if unhelpfully) tell the user it has no image tool.
- * `browser`/`server_sync` stay delegated-only on personal workspaces too;
- * only the media tools need this carve-out.
+ * `browser` is delegated-only on personal workspaces UNLESS
+ * `personalBrowserEnabled` (or `SHOGO_PERSONAL_BROWSER=1`) is set, in which
+ * case it is kept directly callable so the tool list matches the guide/index
+ * that only advertise it when `mainAgentBrowserAvailable()` is true. `server_sync`
+ * stays delegated-only on personal workspaces.
  */
 export function filterSubagentOnlyTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
-  const exempt = config.capabilityProfile === 'personal' ? new Set(['generate_image', 'transcribe_audio']) : new Set<string>()
+  const exempt = new Set<string>()
+  if (config.capabilityProfile === 'personal') {
+    exempt.add('generate_image')
+    exempt.add('transcribe_audio')
+    // Browser is admitted to the personal main agent only when the capability
+    // is explicitly enabled (default off). Kept in lockstep with the inline
+    // BROWSER_TOOL_GUIDE and the Capabilities Index via the same predicate.
+    if (mainAgentBrowserAvailable(config)) exempt.add('browser')
+  }
   return tools.filter((t) => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
 }
 
