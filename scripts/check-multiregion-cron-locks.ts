@@ -610,6 +610,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Stamped on the redeeming key immediately after `WorkspaceGrant.create` inside the same redeem request; one-to-one with the grant we just minted.',
   },
+  {
+    key: 'ProxyTurn.(turnKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'The proxy capture path upserts one summary per workspace turn key; writes are scoped to the workspace and deduplicate retries of the same captured turn.',
+  },
 ]
 
 // ===========================================================================

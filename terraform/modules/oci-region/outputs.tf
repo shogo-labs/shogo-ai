@@ -117,6 +117,11 @@ output "published_data_bucket" {
   value       = local.is_full ? module.object_storage[0].published_data_bucket : null
 }
 
+output "llm_captures_bucket" {
+  description = "Raw LLM proxy capture archive bucket (null for Tier 2)"
+  value       = local.is_full ? module.object_storage[0].llm_captures_bucket : null
+}
+
 output "file_system_export_path" {
   description = "NFS export path (null for Tier 2)"
   value       = local.is_full ? module.file_storage[0].export_path : null

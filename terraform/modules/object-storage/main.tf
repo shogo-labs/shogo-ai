@@ -53,6 +53,12 @@ variable "published_apps_compartment_id" {
   default     = null
 }
 
+variable "llm_captures_compartment_id" {
+  description = "Override compartment for the LLM capture bucket. Defaults to var.compartment_id."
+  type        = string
+  default     = null
+}
+
 variable "environment" {
   description = "Environment name (staging, production)"
   type        = string
@@ -79,6 +85,12 @@ variable "lifecycle_service_policy_scope" {
   description = "Compartment scope for the service-principal lifecycle policy. Use `\"tenancy\"` to cover every bucket in the tenancy regardless of compartment, or a compartment name (e.g. `\"shogo-staging\"`) to scope tighter. Only used when `lifecycle_service_policy_compartment_id != null`."
   type        = string
   default     = "tenancy"
+}
+
+variable "llm_capture_retention_days" {
+  description = "Number of days to retain raw LLM proxy captures."
+  type        = number
+  default     = 90
 }
 
 data "oci_objectstorage_namespace" "current" {
@@ -315,6 +327,36 @@ resource "oci_objectstorage_object_lifecycle_policy" "published_data_lifecycle" 
 }
 
 # -----------------------------------------------------------------------------
+# LLM Proxy Capture Bucket (raw training and analysis archive)
+# -----------------------------------------------------------------------------
+resource "oci_objectstorage_bucket" "llm_captures" {
+  compartment_id = coalesce(var.llm_captures_compartment_id, var.compartment_id)
+  namespace      = local.namespace
+  name           = "shogo-llm-captures-${var.environment}"
+  access_type    = "NoPublicAccess"
+
+  freeform_tags = merge(var.tags, {
+    Purpose = "llm-proxy-captures"
+  })
+}
+
+resource "oci_objectstorage_object_lifecycle_policy" "llm_captures_lifecycle" {
+  depends_on = [oci_identity_policy.lifecycle_service_principal]
+
+  namespace = local.namespace
+  bucket    = oci_objectstorage_bucket.llm_captures.name
+
+  rules {
+    name        = "delete-expired-captures"
+    action      = "DELETE"
+    time_amount = var.llm_capture_retention_days
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "objects"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "namespace" {
@@ -350,4 +392,9 @@ output "published_apps_bucket" {
 output "published_data_bucket" {
   description = "Published-app writable-state bucket name (server-backed apps' SQLite DB + uploads)"
   value       = oci_objectstorage_bucket.published_data.name
+}
+
+output "llm_captures_bucket" {
+  description = "Raw LLM proxy capture archive bucket name"
+  value       = oci_objectstorage_bucket.llm_captures.name
 }

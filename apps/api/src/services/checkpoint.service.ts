@@ -19,6 +19,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { writeFile, readFile, unlink } from 'fs/promises';
 import { join } from 'path';
 import { prisma } from '../lib/prisma';
+import { markProjectTurnsReverted } from '../lib/proxy-capture';
 import * as gitService from './git.service';
 
 // =============================================================================
@@ -569,6 +570,10 @@ export async function rollback(options: RollbackOptions): Promise<RollbackResult
   } catch (err) {
     console.warn('[Checkpoint] Failed to create post-rollback checkpoint:', err);
   }
+
+  void markProjectTurnsReverted(projectId, checkpoint.createdAt).catch((err) => {
+    console.warn('[Checkpoint] Failed to mark proxy turns as reverted:', err);
+  });
 
   return {
     success: true,

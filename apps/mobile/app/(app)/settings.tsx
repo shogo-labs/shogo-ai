@@ -695,8 +695,17 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const members = useMemberCollection();
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
+  const { subscription } = useBillingData(currentWorkspace?.id);
+  const isEnterprisePlan = subscription?.planId?.toLowerCase?.().startsWith("enterprise") ?? false;
 
   const [name, setName] = useState(currentWorkspace?.name || "");
+  const [trainingDataEnabled, setTrainingDataEnabled] = useState(
+    currentWorkspace?.trainingDataMode === "enabled" ||
+      (currentWorkspace?.trainingDataMode !== "disabled" && !isEnterprisePlan)
+  );
+  const [trainingDataSaveStatus, setTrainingDataSaveStatus] = useState<
+    "idle" | "saved" | "error"
+  >("idle");
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
     "idle"
@@ -723,6 +732,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
     (m: any) => m.userId === currentUserId
   );
   const isOwner = currentUserMember?.role === "owner";
+  const canManageWorkspace = isOwner || currentUserMember?.role === "admin";
 
   // `kind` (not a slug/name heuristic) is the source of truth — a team
   // workspace named e.g. "My Personal Brand" must stay deletable.
@@ -736,7 +746,12 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   useEffect(() => {
     setName(currentWorkspace?.name || "");
     setSaveStatus("idle");
-  }, [currentWorkspace?.name]);
+    setTrainingDataEnabled(
+      currentWorkspace?.trainingDataMode === "enabled" ||
+        (currentWorkspace?.trainingDataMode !== "disabled" && !isEnterprisePlan)
+    );
+    setTrainingDataSaveStatus("idle");
+  }, [currentWorkspace?.name, currentWorkspace?.trainingDataMode, isEnterprisePlan]);
 
   useEffect(() => {
     if (currentWorkspace?.id) {
@@ -773,6 +788,24 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
       console.error("Failed to delete workspace:", error);
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleTrainingDataChange = async (enabled: boolean) => {
+    if (!currentWorkspace?.id || !canManageWorkspace) return;
+    const previous = trainingDataEnabled;
+    setTrainingDataEnabled(enabled);
+    setTrainingDataSaveStatus("idle");
+    try {
+      await actions.updateWorkspace(currentWorkspace.id, {
+        trainingDataMode: enabled ? "enabled" : "disabled",
+      });
+      setTrainingDataSaveStatus("saved");
+      setTimeout(() => setTrainingDataSaveStatus("idle"), 2000);
+    } catch (error) {
+      console.error("Failed to update training data setting:", error);
+      setTrainingDataEnabled(previous);
+      setTrainingDataSaveStatus("error");
     }
   };
 
@@ -874,6 +907,37 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               )}
             </View>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-0">
+          <View className="px-6 py-5 flex-row items-center justify-between">
+            <View className="flex-1 mr-4">
+              <Text className="text-base font-semibold text-foreground">
+                Help improve Shogo models
+              </Text>
+              <Text className="text-sm text-muted-foreground mt-0.5">
+                When enabled, prompts and responses sent through Shogo&apos;s AI
+                service may be stored and used for analysis and training.
+              </Text>
+              {trainingDataSaveStatus === "saved" && (
+                <Text className="text-xs text-green-600 mt-1">
+                  Changes saved successfully!
+                </Text>
+              )}
+              {trainingDataSaveStatus === "error" && (
+                <Text className="text-xs text-destructive mt-1">
+                  Failed to save changes. Please try again.
+                </Text>
+              )}
+            </View>
+            <Switch
+              value={trainingDataEnabled}
+              onValueChange={handleTrainingDataChange}
+              disabled={!canManageWorkspace}
+            />
+          </View>
         </CardContent>
       </Card>
 

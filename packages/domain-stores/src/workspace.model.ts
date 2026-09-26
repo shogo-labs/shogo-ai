@@ -35,6 +35,7 @@ export const WorkspaceModel = types
     ssoSettings: types.optional(types.frozen(), {}),
     instanceSize: types.optional(types.enumeration("InstanceSize", ["micro", "small", "medium", "large", "xlarge"]), "micro"),
     composioScope: types.optional(types.string, "workspace"),
+    trainingDataMode: types.optional(types.string, "default"),
     homeRegion: types.optional(types.string, ""),
     parentWorkspaceId: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),

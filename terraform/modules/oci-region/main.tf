@@ -161,6 +161,7 @@ module "object_storage" {
   pg_backups_compartment_id     = var.object_storage_pg_backups_compartment_id
   schemas_compartment_id        = var.object_storage_schemas_compartment_id
   published_apps_compartment_id = var.object_storage_published_apps_compartment_id
+  llm_captures_compartment_id   = var.object_storage_llm_captures_compartment_id
 
   lifecycle_service_policy_compartment_id = var.object_storage_lifecycle_service_policy_compartment_id
   lifecycle_service_policy_scope          = var.object_storage_lifecycle_service_policy_scope
