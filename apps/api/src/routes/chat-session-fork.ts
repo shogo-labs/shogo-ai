@@ -42,7 +42,9 @@
  * tunnel-authenticated (desktop bridge) callers skipping the check.
  */
 
+import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
+import { copyChatPartsToSession } from '../lib/chat-attachments'
 import { prisma } from '../lib/prisma'
 
 type AuthContext = {
@@ -119,9 +121,25 @@ export function createChatSessionForkRoutes(): Hono {
       orderBy: { createdAt: 'asc' },
     })
 
+    const newSessionId = randomUUID()
+    const attachmentCopies = new Map<string, Promise<string>>()
+    let clonedParts: Array<string | null | undefined>
+    try {
+      clonedParts = await Promise.all(
+        messagesToClone.map((m) => copyChatPartsToSession(m.parts, newSessionId, attachmentCopies)),
+      )
+    } catch (error: any) {
+      console.error(`[chat-session-fork] attachment copy failed for ${id}:`, error?.message || error)
+      return c.json(
+        { error: { code: 'attachment_copy_failed', message: 'Could not copy chat attachments' } },
+        502,
+      )
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       const newSession = await tx.chatSession.create({
         data: {
+          id: newSessionId,
           name: session.name ? `${session.name} (fork)` : null,
           inferredName: `${session.inferredName} (fork)`,
           contextType: session.contextType,
@@ -133,14 +151,14 @@ export function createChatSessionForkRoutes(): Hono {
 
       if (messagesToClone.length > 0) {
         await tx.chatMessage.createMany({
-          data: messagesToClone.map((m) => ({
+          data: messagesToClone.map((m, index) => ({
             sessionId: newSession.id,
             role: m.role,
             content: m.content,
             // Attachments are referenced from `parts` after externalization.
             // Never duplicate the legacy first-file base64 column.
             imageData: null,
-            parts: m.parts,
+            parts: clonedParts[index],
             agent: m.agent,
             model: m.model,
             createdAt: m.createdAt,

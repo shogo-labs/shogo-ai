@@ -89,8 +89,11 @@ export async function runChatAttachmentBackfill(
   let cursor: string | undefined
 
   while (true) {
+    // Page by `id > cursor` rather than a Prisma cursor: a migrated cursor row
+    // no longer matches the filter, and `skip: 1` would drop the next row.
     const rows = await db.chatMessage.findMany({
       where: {
+        ...(cursor ? { id: { gt: cursor } } : {}),
         OR: [
           { imageData: { not: null } },
           { parts: { contains: 'data:' } },
@@ -100,7 +103,6 @@ export async function runChatAttachmentBackfill(
       select: { id: true, sessionId: true, parts: true, imageData: true },
       orderBy: { id: 'asc' },
       take: PAGE_SIZE,
-      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     })
     if (rows.length === 0) break
 
