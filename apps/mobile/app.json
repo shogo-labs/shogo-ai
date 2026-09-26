@@ -35,6 +35,15 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 80,
+          "resizeMode": "contain",
+          "backgroundColor": "#121212"
+        }
+      ],
       "expo-apple-authentication",
       "react-native-iap",
       [
