@@ -171,6 +171,19 @@ describe('buildExecEnv — agent shell env', () => {
     const env = sandbox.buildExecEnv('/work/proj')
     expect(env.DATABASE_URL).toBe('file:/work/proj/prisma/dev.db')
   })
+
+  test('extraEnv wins over a workspace GITHUB_TOKEN so gh uses the App bot', () => {
+    const env = sandbox.buildExecEnv('/work/proj', {
+      extraEnv: {
+        GH_TOKEN: 'ghs_bot',
+        GIT_AUTHOR_NAME: 'shogo-ai[bot]',
+        GIT_AUTHOR_EMAIL: '1+shogo-ai[bot]@users.noreply.github.com',
+      },
+    })
+    expect(env.GH_TOKEN).toBe('ghs_bot')
+    expect(env.GIT_AUTHOR_NAME).toBe('shogo-ai[bot]')
+    expect(env.GIT_AUTHOR_EMAIL).toBe('1+shogo-ai[bot]@users.noreply.github.com')
+  })
 })
 
 describe('sandboxExecAsync (non-sandbox)', () => {

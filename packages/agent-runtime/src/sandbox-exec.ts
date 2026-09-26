@@ -283,7 +283,7 @@ export function projectScopedDatabaseUrl(
  */
 export function buildExecEnv(
   workspaceDir: string,
-  opts: { containerWorkspace?: string } = {},
+  opts: { containerWorkspace?: string; extraEnv?: Record<string, string> } = {},
 ): NodeJS.ProcessEnv {
   const base = stripRuntimeVars(getSanitizedEnv())
   const workspaceEnv = loadWorkspaceEnv(workspaceDir)
@@ -294,7 +294,20 @@ export function buildExecEnv(
     workspaceEnv.DATABASE_URL,
     opts.containerWorkspace,
   )
+  if (opts.extraEnv) {
+    for (const [key, value] of Object.entries(opts.extraEnv)) {
+      if (value) merged[key] = value
+    }
+  }
   return merged
+}
+
+function appendDockerEnv(dockerArgs: string[], env: Record<string, string> | undefined): void {
+  if (!env) return
+  for (const [key, value] of Object.entries(env)) {
+    if (!key || !value) continue
+    dockerArgs.push('-e', `${key}=${value}`)
+  }
 }
 
 /**
@@ -392,6 +405,11 @@ export interface SandboxExecOptions {
   sandboxConfig?: Partial<SandboxConfig>
   sessionId?: string
   mainSessionIds?: string[]
+  /**
+   * Merged last, so these win over the workspace `.env`. Used for the
+   * GitHub App installation token (`GH_TOKEN`) and bot git identity.
+   */
+  extraEnv?: Record<string, string>
 }
 
 export interface SandboxExecResult {
@@ -431,7 +449,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
   const useSandbox = shouldSandbox(opts)
 
   if (!useSandbox) {
-    return nativeExec(opts.command, opts.workspaceDir, opts.timeout)
+    return nativeExec(opts)
   }
 
   const config = { ...defaultSandboxConfig(), ...opts.sandboxConfig }
@@ -461,6 +479,7 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
     '-e',
     `DATABASE_URL=${projectScopedDatabaseUrl(opts.workspaceDir, workspaceEnv.DATABASE_URL, '/workspace')}`,
   )
+  appendDockerEnv(dockerArgs, opts.extraEnv)
 
   dockerArgs.push(config.image, 'bash', '-c', opts.command)
 
@@ -482,16 +501,16 @@ export function sandboxExec(opts: SandboxExecOptions): SandboxExecResult {
   }
 }
 
-function nativeExec(command: string, cwd: string, timeout?: number): SandboxExecResult {
+function nativeExec(opts: SandboxExecOptions): SandboxExecResult {
   const shell = resolveShell()
-  const finalCommand = rewriteBunxOnWindows(command)
+  const finalCommand = rewriteBunxOnWindows(opts.command)
   try {
     const stdout = execSync(finalCommand, {
-      cwd,
-      timeout: timeout || 300_000,
+      cwd: opts.workspaceDir,
+      timeout: opts.timeout || 300_000,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024,
-      env: buildExecEnv(cwd),
+      env: buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv }),
       ...(shell ? { shell } : {}),
     })
     return { stdout: stdout.trim(), stderr: '', exitCode: 0, sandboxed: false }
@@ -651,6 +670,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
       '-e',
       `DATABASE_URL=${projectScopedDatabaseUrl(opts.workspaceDir, workspaceEnv.DATABASE_URL, '/workspace')}`,
     )
+    appendDockerEnv(dockerArgs, opts.extraEnv)
     dockerArgs.push(config.image, 'bash', '-c', opts.command)
 
     child = spawn('docker', dockerArgs, {
@@ -659,7 +679,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     })
   } else {
     const shell = resolveShell()
-    const env = buildExecEnv(opts.workspaceDir)
+    const env = buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv })
     const finalCommand = rewriteBunxOnWindows(opts.command)
 
     if (shell) {

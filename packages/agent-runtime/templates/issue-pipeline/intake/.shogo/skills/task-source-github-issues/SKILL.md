@@ -12,6 +12,8 @@ Active when this project has a GitHub App connection (repo sync configured). Imp
 
 Every event arrives as a wake, not a poll — `apps/api/src/routes/github.ts` forwards `issues`, `issue_comment`, `pull_request_review`, and `pull_request_review_comment` webhooks straight to this project's agent as a rendered message. You never need to fetch the event yourself; by the time you're running, the message already contains the issue/comment/review body and URL.
 
+`gh` is already authenticated as this environment's GitHub App bot (`GH_TOKEN` is the installation token). Comments, reviews, and commits from these commands show up as that bot — the same account that opens pull requests. Do not run `gh auth login` and do not save a personal `GITHUB_TOKEN` over it.
+
 ## `comment(ref, body, runId)`
 Post a comment on an issue or PR with the run's `runId` embedded so a later reply can be traced back:
 ```bash

@@ -135,6 +135,17 @@ export function generateAppJWT(): string {
  * Tokens are valid for 1 hour.
  */
 export async function getInstallationToken(installationId: number): Promise<string> {
+  return (await mintInstallationAccessToken(installationId)).token;
+}
+
+/**
+ * Installation tokens expire after one hour. Callers that cache the token
+ * (the agent shell's `GH_TOKEN`) need `expiresAt` so they refresh before
+ * GitHub rejects it.
+ */
+async function mintInstallationAccessToken(
+  installationId: number,
+): Promise<{ token: string; expiresAt: string }> {
   const jwt = generateAppJWT();
 
   const response = await fetch(
@@ -155,7 +166,79 @@ export async function getInstallationToken(installationId: number): Promise<stri
   }
 
   const data = await response.json();
-  return data.token;
+  if (typeof data?.token !== 'string' || !data.token) {
+    throw new Error('GitHub installation token response did not contain a token');
+  }
+  const expiresAt = typeof data.expires_at === 'string' && data.expires_at
+    ? data.expires_at
+    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  return { token: data.token, expiresAt };
+}
+
+/**
+ * GitHub links a commit to an App bot when the author email is
+ * `{userId}+{login}@users.noreply.github.com` (the same form Actions uses
+ * for `github-actions[bot]`).
+ */
+export function githubBotCommitEmail(userId: number, login: string): string {
+  return `${userId}+${login}@users.noreply.github.com`;
+}
+
+const botIdentityCache = new Map<string, { email: string }>();
+
+export function clearGitHubBotIdentityCache(): void {
+  botIdentityCache.clear();
+}
+
+async function resolveBotIdentity(token: string): Promise<{ login: string; name: string; email: string }> {
+  const login = botLogin();
+  const cached = botIdentityCache.get(login);
+  if (cached) return { login, name: login, email: cached.email };
+
+  const response = await fetch(`${GITHUB_API_URL}/users/${encodeURIComponent(login)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to resolve GitHub App bot user: ${error}`);
+  }
+  const user = await response.json();
+  if (typeof user?.id !== 'number') {
+    throw new Error('GitHub App bot user response did not contain an id');
+  }
+  const email = githubBotCommitEmail(user.id, login);
+  botIdentityCache.set(login, { email });
+  return { login, name: login, email };
+}
+
+export interface GitHubCliCredentials {
+  token: string;
+  expiresAt: string;
+  login: string;
+  name: string;
+  email: string;
+}
+
+/**
+ * Short-lived credentials so the project runtime can run `gh` and `git commit`
+ * as the GitHub App bot (the same identity that opens pull requests).
+ * Returns null when the project has no App connection.
+ */
+export async function getProjectGitHubCliCredentials(
+  projectId: string,
+): Promise<GitHubCliCredentials | null> {
+  const connection = await getConnection(projectId);
+  const installationId = connection?.installationId;
+  if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
+    return null;
+  }
+  const minted = await mintInstallationAccessToken(installationId);
+  const identity = await resolveBotIdentity(minted.token);
+  return { token: minted.token, expiresAt: minted.expiresAt, ...identity };
 }
 
 // =============================================================================

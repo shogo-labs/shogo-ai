@@ -134,6 +134,7 @@ import {
   postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
+import { githubCliEnvForProject } from './github-cli-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
@@ -820,12 +821,16 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       // Spawn the command via the async primitive so we can race it against
       // a soft timeout and hand the agent a run_id if it overruns.
+      // GH_TOKEN is the App installation token when the project is connected,
+      // so `gh` comments and git commits are the bot rather than a user PAT.
+      const githubEnv = await githubCliEnvForProject(ctx.projectId)
       const handle = sandboxExecAsync({
         command: wrappedCommand,
         workspaceDir: ctx.workspaceDir,
         sandboxConfig: ctx.sandbox,
         sessionId: ctx.sessionId,
         mainSessionIds: ctx.mainSessionIds,
+        extraEnv: githubEnv,
       })
 
       const meta: ExecRunMetadata = { cwdFileHost, isSandboxed, previousCwd: currentCwd, cwdReset }
