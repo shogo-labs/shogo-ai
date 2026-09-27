@@ -267,7 +267,7 @@ export const GH_CLI_EXEC_MOCK: ToolMockMap = {
         },
       },
     ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
+    default: '__passthrough',
   },
 }
 
@@ -3139,6 +3139,10 @@ const BUILTIN_MOCKS: ToolMockMap = {
   send_message: DEFAULT_SEND_MESSAGE,
   browser: { type: 'static', response: { ok: true, snapshot: '<html>Mock browser snapshot</html>' } },
   ask_user: { type: 'static', response: { answered: true, choice: 'Proceed with defaults' } },
+  share_file: {
+    type: 'static',
+    response: { ok: true, url: 'https://studio.shogo.ai/f/eval-share-link', expiresAt: '2026-04-08T00:00:00Z' },
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -3652,6 +3656,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
   },
   JIRA_GET_ISSUES: {
     type: 'static',
+    hidden: true,
     description: 'Search and list Jira issues. Accepts JQL or project key.',
     paramKeys: ['jql', 'project', 'maxResults'],
     response: {
@@ -3672,6 +3677,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
   },
   JIRA_GET_SPRINT: {
     type: 'static',
+    hidden: true,
     description: 'Get current or specified sprint details.',
     paramKeys: ['sprintId', 'boardId'],
     response: {
@@ -3692,6 +3698,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
   },
   GITHUB_LIST_PULL_REQUESTS: {
     type: 'static',
+    hidden: true,
     description: 'List pull requests in a repository. Filter by state, author, base branch.',
     paramKeys: ['state', 'base', 'sort', 'per_page'],
     response: {
@@ -3710,6 +3717,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
   },
   GITHUB_GET_PULL_REQUEST: {
     type: 'pattern',
+    hidden: true,
     patterns: [
       {
         match: { pull_number: '234' },

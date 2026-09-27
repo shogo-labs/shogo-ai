@@ -285,6 +285,11 @@ export interface EvalResult {
   loopDetected?: boolean
   hitMaxTurns?: boolean
   responseEmpty?: boolean
+  /**
+   * Set when the run never reached the model (provider/quota/auth error with
+   * zero tokens and zero tool calls). The score is not a model signal.
+   */
+  infraError?: string
 }
 
 export interface CriterionResult {

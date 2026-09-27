@@ -37,9 +37,24 @@ function spawnCount(result: EvalResult): number {
     + callsByName(result, 'agent_spawn').length
 }
 
+/** A foreground (non-background) spawn blocks and returns the finished result inline. */
+function isInlineCompletedSpawn(tc: ToolCallRecord): boolean {
+  if (tc.name !== 'agent_spawn' && tc.name !== 'task') return false
+  let out: any = tc.output
+  if (typeof out === 'string') {
+    try { out = JSON.parse(out) } catch { return false }
+  }
+  return out?.status === 'completed'
+}
+
+function awaitedResultCount(result: EvalResult): number {
+  return callsByName(result, 'agent_result').length
+    + callsByName(result, 'task_result').length
+    + result.toolCalls.filter(isInlineCompletedSpawn).length
+}
+
 function awaitedAtLeastOneResult(result: EvalResult): boolean {
-  return callsByName(result, 'agent_result').length > 0
-    || callsByName(result, 'task_result').length > 0
+  return awaitedResultCount(result) > 0
 }
 
 function spawnedAndAwaited(result: EvalResult): boolean {
@@ -195,9 +210,7 @@ export const SUBAGENT_SMOKE_EVALS: AgentEval[] = [
         description: 'Agent fetched at least two results',
         points: 4,
         phase: 'intention',
-        validate: (r) =>
-          (callsByName(r, 'agent_result').length
-            + callsByName(r, 'task_result').length) >= 2,
+        validate: (r) => awaitedResultCount(r) >= 2,
       },
       {
         id: 'correct-sum',

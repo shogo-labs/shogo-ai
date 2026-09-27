@@ -100,6 +100,34 @@ describe('sendTurn timeout/abort policy', () => {
     expect(elapsed).toBeLessThan(150 * 4)
   })
 
+  test('timeout mid-stream keeps the tool calls streamed before the cap', async () => {
+    server.stopHits = 0
+    server.chatHits = 0
+    server.setHandler(() => {
+      const enc = new TextEncoder()
+      const body = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          ctrl.enqueue(enc.encode(
+            'data: {"type":"tool-input-start","toolCallId":"t1","toolName":"agent_spawn"}\n\n' +
+            'data: {"type":"tool-input-available","toolCallId":"t1","toolName":"agent_spawn","input":{"type":"roadmap"}}\n\n' +
+            'data: {"type":"text-delta","delta":"working"}\n\n',
+          ))
+        },
+      })
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    })
+
+    const result = await sendTurn(
+      [{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+      baseConfig(server, { timeoutMs: 150 }),
+    )
+
+    expect(server.chatHits).toBe(1)
+    expect(server.stopHits).toBe(1)
+    expect(result.toolCalls.map(t => t.name)).toEqual(['agent_spawn'])
+    expect(result.text).toContain('150ms cap')
+  })
+
   test('transient 502 retries then succeeds without calling /agent/stop', async () => {
     server.chatHits = 0
     server.stopHits = 0

@@ -3,17 +3,14 @@
 /**
  * Sub-Agent Code Writing Eval Test Cases
  *
- * Tests the agent's ability to decompose coding tasks, delegate work to
- * sub-agents, and assemble correct multi-file output.
+ * Tests coding outcomes on single- and multi-file tasks. Delegation is only
+ * scored where the prompt asks for parallel sub-agents (fullstack-feature).
  */
 
 import type { AgentEval, EvalResult } from './types'
+import { failedToolCallCount } from './eval-helpers'
 
-function subagentWasSpawned(r: EvalResult): boolean {
-  return r.toolCalls.some(tc =>
-    tc.name === 'task' || tc.name === 'agent_spawn',
-  )
-}
+const MAX_TOOL_ERRORS = 3
 
 function fileWasWritten(r: EvalResult, pathSubstr: string): boolean {
   return r.toolCalls.some(tc =>
@@ -56,11 +53,11 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
     },
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent delegated code writing to a sub-agent',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 3,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'file-written',
@@ -160,11 +157,11 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
     },
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent used sub-agents for analysis or refactoring',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 3,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'shared-module-created',
@@ -249,11 +246,11 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
     },
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent used a sub-agent (explore to read, then code agent to write tests)',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 3,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'test-file-created',
@@ -344,11 +341,11 @@ export const SUBAGENT_CODE_EVALS: AgentEval[] = [
     },
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent used sub-agents to find and/or fix the bug',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 3,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'identified-calculate',
