@@ -114,7 +114,9 @@ Custom agents defined in \`.shogo/agents/\` are also available by name.
 Use \`agent_create\` to define a new specialist when no existing agent type fits.
 Write a clear, focused system prompt. Pick the minimum set of tools it needs. Choose the
 cheapest \`model_tier\` that can handle the work (\`fast\` for search, \`default\` for general,
-\`capable\` for complex reasoning). Set \`persist: true\` to save for future sessions.
+\`capable\` for complex reasoning). Leave \`context\` unset: agents inherit the shared
+Shogo/project rules by default, which keeps their work consistent with yours. Set
+\`persist: true\` to save for future sessions.
 
 ### IMPORTANT — When to Delegate
 - When searching or analyzing a codebase, ALWAYS delegate to an \`explore\` sub-agent rather than searching directly. This saves tokens and runs faster.

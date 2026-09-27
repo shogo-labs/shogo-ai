@@ -311,3 +311,29 @@ describe('getStatus', () => {
     expect(s.memory.fileCount).toBeGreaterThanOrEqual(3)
   })
 })
+
+describe('subagentPromptInheritance config', () => {
+  const prev = process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE
+  afterAll(() => {
+    if (prev === undefined) delete process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE
+    else process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE = prev
+  })
+
+  test('defaults on', () => {
+    delete process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE
+    const gw = new AgentGateway(makeWs('inherit-default'), 'p1')
+    expect((gw as any).config.subagentPromptInheritance).toBe(true)
+  })
+
+  test('SHOGO_SUBAGENT_PROMPT_INHERITANCE=0 turns it off', () => {
+    process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE = '0'
+    const gw = new AgentGateway(makeWs('inherit-env-off'), 'p1')
+    expect((gw as any).config.subagentPromptInheritance).toBe(false)
+  })
+
+  test('explicit config.json value wins over the env default', () => {
+    process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE = '0'
+    const gw = new AgentGateway(makeWs('inherit-config-on', { subagentPromptInheritance: true }), 'p1')
+    expect((gw as any).config.subagentPromptInheritance).toBe(true)
+  })
+})

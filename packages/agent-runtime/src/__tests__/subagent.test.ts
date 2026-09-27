@@ -43,6 +43,7 @@ import {
   getBuiltinSubagentConfig,
   loadCustomAgents,
   resolveModelTier,
+  resolveSubagentContext,
   filterIncompleteToolCalls,
   createAgentId,
   clearSubagentOverrideCache,
@@ -125,6 +126,7 @@ description: "code review buddy"
 tools: [read_file, search]
 model: sonnet
 maxTurns: 8
+context: platform
 ---
 You are a careful reviewer.`,
     )
@@ -135,6 +137,7 @@ You are a careful reviewer.`,
     expect(out[0].tools).toEqual(['read_file', 'search'])
     expect(out[0].model).toBe('sonnet')
     expect(out[0].maxTurns).toBe(8)
+    expect(out[0].context).toBe('platform')
     expect(out[0].systemPrompt).toContain('careful reviewer')
   })
 
@@ -163,6 +166,22 @@ You are a careful reviewer.`,
     } finally {
       console.warn = warn
     }
+  })
+})
+
+describe('resolveSubagentContext', () => {
+  it('defaults coding and general-purpose workers to platform context', () => {
+    expect(resolveSubagentContext({ name: 'coder', description: '', systemPrompt: '' })).toBe('platform')
+    expect(resolveSubagentContext({ name: 'general-purpose', description: '', systemPrompt: '' })).toBe('platform')
+  })
+
+  it('defaults specialized read-only workers to no inherited platform context', () => {
+    expect(resolveSubagentContext({ name: 'explore', description: '', systemPrompt: '' })).toBe('none')
+    expect(resolveSubagentContext({ name: 'browser', description: '', systemPrompt: '' })).toBe('none')
+  })
+
+  it('honors an explicit context level', () => {
+    expect(resolveSubagentContext({ name: 'explore', description: '', systemPrompt: '', context: 'platform' })).toBe('platform')
   })
 })
 
@@ -456,6 +475,71 @@ describe('runSubagent — success paths', () => {
     } as any
     await runSubagent(cfg, 'p', makeCtx(), allTools)
     expect(observedTools.map(t => t.name).sort()).toEqual(['exec', 'read_file'])
+  })
+
+  it('prepends platform context for a coding worker and reports inherited tokens', async () => {
+    let observedSystem = ''
+    runAgentLoopImpl = async (opts: any) => {
+      observedSystem = opts.system
+      return {
+        text: 'ok', toolCalls: [], iterations: 1,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        newMessages: [], effectiveModelId: 'm',
+      }
+    }
+    const cfg = {
+      name: 'coder',
+      description: 'd',
+      systemPrompt: 'ROLE_PROMPT',
+      context: 'platform',
+    } as any
+    const ctx = makeCtx({
+      buildWorkerPrompt: (toolNames: string[], includePlatform: boolean) => {
+        expect(toolNames).toEqual(['read_file', 'edit_file'])
+        expect(includePlatform).toBe(true)
+        return { prompt: 'PLATFORM_CONTEXT', sectionLabels: ['coding'], estimatedTokens: 12 }
+      },
+    })
+
+    const result = await runSubagent(cfg, 'implement it', ctx, [
+      { name: 'read_file', execute: async () => ({}) },
+      { name: 'edit_file', execute: async () => ({}) },
+    ] as any)
+
+    expect(observedSystem).toBe('PLATFORM_CONTEXT\n\n---\n\nROLE_PROMPT')
+    expect(result.inheritedPromptTokens).toBe(12)
+  })
+
+  it('keeps a none-context worker on restrictions only', async () => {
+    let includePlatform: boolean | undefined
+    let observedSystem = ''
+    runAgentLoopImpl = async (opts: any) => {
+      observedSystem = opts.system
+      return {
+        text: 'ok', toolCalls: [], iterations: 1,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        newMessages: [], effectiveModelId: 'm',
+      }
+    }
+    const cfg = {
+      name: 'explore',
+      description: 'd',
+      systemPrompt: 'ROLE_PROMPT',
+      context: 'none',
+    } as any
+    const ctx = makeCtx({
+      buildWorkerPrompt: (_toolNames: string[], inherited: boolean) => {
+        includePlatform = inherited
+        return { prompt: 'RESTRICTIONS', sectionLabels: [], estimatedTokens: 2 }
+      },
+    })
+
+    await runSubagent(cfg, 'inspect it', ctx, [
+      { name: 'read_file', execute: async () => ({}) },
+    ] as any)
+
+    expect(includePlatform).toBe(false)
+    expect(observedSystem).toBe('RESTRICTIONS\n\n---\n\nROLE_PROMPT')
   })
 
   it('strips orchestration tools (task, agent_*)', async () => {

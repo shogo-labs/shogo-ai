@@ -491,6 +491,49 @@ describe('runSubagent — workspace override wins over tier', () => {
   })
 })
 
+describe('runSubagent — tier shorthand provider', () => {
+  const capture = () => {
+    const seen: { model?: string; provider?: string } = {}
+    runAgentLoopImpl = async (opts: any) => {
+      seen.model = opts.model
+      seen.provider = opts.provider
+      return {
+        text: 'ok', toolCalls: [], iterations: 1,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        newMessages: [], effectiveModelId: opts.model,
+      }
+    }
+    return seen
+  }
+  const openaiParent = () => makeCtx({
+    effectiveModel: 'hoshi-2.0',
+    config: { model: { name: 'hoshi-2.0', provider: 'openai' } },
+  })
+
+  it('infers the tier model provider instead of inheriting the parent provider', async () => {
+    const seen = capture()
+    const cfg = { name: 'c', description: 'd', systemPrompt: 's', modelTier: 'capable' } as any
+    await runSubagent(cfg, 'p', openaiParent(), [])
+    expect(seen.model).toBe('claude-sonnet-4-6')
+    expect(seen.provider).toBe('anthropic')
+  })
+
+  it('keeps the parent provider when the worker runs the parent model', async () => {
+    const seen = capture()
+    const cfg = { name: 'c', description: 'd', systemPrompt: 's', model: 'hoshi-2.0' } as any
+    await runSubagent(cfg, 'p', openaiParent(), [])
+    expect(seen.model).toBe('hoshi-2.0')
+    expect(seen.provider).toBe('openai')
+  })
+
+  it('honours an explicit provider', async () => {
+    const seen = capture()
+    const cfg = { name: 'c', description: 'd', systemPrompt: 's', modelTier: 'capable', provider: 'openai' } as any
+    await runSubagent(cfg, 'p', openaiParent(), [])
+    expect(seen.provider).toBe('openai')
+  })
+})
+
 // --- estimateContextTokens via auto-routing with array-content history ----
 
 describe('runSubagent — estimateContextTokens covers array content', () => {

@@ -103,6 +103,7 @@ import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
+import { buildWorkerPrompt, type PromptSection, type WorkerPromptBuild } from './prompt-context'
 import { CommandRegistry } from './command-registry'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
@@ -436,6 +437,8 @@ export interface GatewayConfig {
   canvasEnabled?: boolean
   /** Prompt profile: 'full' = all sections (default), 'swe' = minimal coding-only profile for SWE evals, 'general' = workspace + tools + skills (no personality/canvas) */
   promptProfile?: 'full' | 'swe' | 'general'
+  /** Whether normal workers inherit worker-safe platform/project prompt sections (default: true). */
+  subagentPromptInheritance?: boolean
   /** Enable coordinator mode (leader only delegates, never does work directly) */
   coordinatorMode?: boolean
   /**
@@ -507,6 +510,10 @@ export class AgentGateway {
   private currentGuideRegistry?: Map<string, string>
   /** Per-section prompt breakdown from the last loadBootstrapContext() call */
   lastPromptBreakdown?: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }>
+  /** Full section contents used to build worker prompts without coordinator-only guidance. */
+  private lastPromptSections: PromptSection[] = []
+  /** Turn-scoped restrictions that must reach every worker, including context:none. */
+  private workerRestrictionPrompt = ''
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
@@ -883,6 +890,9 @@ export class AgentGateway {
     // acts as the boot default. An explicit value in config.json (written by
     // PATCH /agent/config when the user toggles) always wins.
     const worktreesEnvDefault = process.env.SHOGO_GIT_WORKTREES === '1'
+    // Kill switch / A-B lever: SHOGO_SUBAGENT_PROMPT_INHERITANCE=0 turns
+    // inheritance off by default; an explicit config.json value still wins.
+    const inheritanceEnvDefault = process.env.SHOGO_SUBAGENT_PROMPT_INHERITANCE !== '0'
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
       try {
@@ -905,6 +915,7 @@ export class AgentGateway {
             heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
             channels: Array.isArray(raw.channels) ? raw.channels : [],
             gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
+            subagentPromptInheritance: raw.subagentPromptInheritance ?? inheritanceEnvDefault,
           },
           profileName,
         )
@@ -912,7 +923,7 @@ export class AgentGateway {
         console.error('[AgentGateway] Failed to parse config.json:', error.message)
       }
     }
-    return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault }
+    return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault, subagentPromptInheritance: inheritanceEnvDefault }
   }
 
   /**
@@ -934,6 +945,7 @@ export class AgentGateway {
           disallowedTools: def.disallowedTools,
           model: def.model,
           maxTurns: def.maxTurns,
+          context: def.context,
         })
         if (!result.ok) failed.push(`${def.name}: ${result.error}`)
       }
@@ -1066,7 +1078,16 @@ export class AgentGateway {
       void postCostMetric({
         workspaceId,
         projectId: projectScopedId(this.projectId),
-        ...(pipelineRunId ? { metadata: { pipelineRunId } } : {}),
+        ...((pipelineRunId || data.inheritedPromptTokens !== undefined)
+          ? {
+              metadata: {
+                ...(pipelineRunId ? { pipelineRunId } : {}),
+                ...(data.inheritedPromptTokens !== undefined
+                  ? { inheritedPromptTokens: data.inheritedPromptTokens }
+                  : {}),
+              },
+            }
+          : {}),
         agentRunId: data.agentRunId,
         agentType: data.agentType,
         model: data.model,
@@ -2079,6 +2100,7 @@ export class AgentGateway {
     }
 
     let systemPrompt = this.loadBootstrapContext(sessionId)
+    this.workerRestrictionPrompt = ''
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
     // Interaction mode system prompt injection
@@ -2100,6 +2122,7 @@ export class AgentGateway {
         '8. Do NOT make any changes until the user confirms the plan',
       ].join('\n')
       systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
+      this.workerRestrictionPrompt = planModePrompt
     } else if (interactionMode === 'ask') {
       const askModePrompt = [
         '## ASK MODE ACTIVE',
@@ -2107,6 +2130,7 @@ export class AgentGateway {
         'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
       ].join('\n')
       systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
+      this.workerRestrictionPrompt = askModePrompt
     }
 
     if (this.config.coordinatorMode) {
@@ -2240,6 +2264,7 @@ export class AgentGateway {
       autoRouting,
       autoTierOverride: this.autoTierOverride,
       dualPlan,
+      buildWorkerPrompt: (toolNames, includePlatform) => this.buildWorkerPromptForTools(toolNames, includePlatform),
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
@@ -3722,10 +3747,20 @@ export class AgentGateway {
 
   private buildSWEPrompt(sessionId?: string): string {
     const parts: string[] = []
+    const sections: PromptSection[] = []
+    const push = (
+      label: string,
+      content: string,
+      audience: PromptSection['audience'] = 'worker',
+      requiresTools?: string[],
+    ) => {
+      parts.push(content)
+      sections.push({ label, zone: 'dynamic', content, audience, requiresTools })
+    }
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
     const now = new Date()
-    parts.push([
+    push('current-context', [
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
@@ -3736,32 +3771,39 @@ export class AgentGateway {
     ].join('\n'))
 
     if (process.env.TERMINAL_EXEC_URL) {
-      parts.push([
+      push('desktop-terminal-context', [
         '## Desktop Terminal Context',
         'When the user asks about terminal state, recent commands, command output, or "what did I just do?", call `terminal_read` before answering.',
         'Use `terminal_exec` only when you need to run a new command in the user-visible desktop terminal.',
-      ].join('\n'))
+      ].join('\n'), 'worker', ['terminal_read'])
     }
 
     const workspaceTree = this.buildWorkspaceTreeContext()
     if (workspaceTree) {
-      parts.push(workspaceTree)
+      push('workspace-tree', workspaceTree)
     }
 
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
-    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
-    parts.push(OUTPUT_CONTRACT_GUIDE)
+    push('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.capabilityProfile === 'personal') push('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
+    push('output-contract', OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
-      parts.push(BROWSER_TOOL_GUIDE)
+      push('browser-guide', BROWSER_TOOL_GUIDE, 'worker', ['browser'])
     }
-    parts.push(SUBAGENT_GUIDE)
-    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
+    push('subagent-guide', SUBAGENT_GUIDE, 'main')
+    if (this.config.gitWorktreesEnabled) push('worktree-guide', WORKTREE_GUIDE, 'worker', ['exec'])
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
-      if (teamCtx) parts.push(teamCtx)
+      if (teamCtx) push('team-context', teamCtx)
     }
 
+    this.lastPromptSections = sections
+    this.lastPromptBreakdown = sections.map(({ label, zone, content }) => ({
+      label,
+      zone,
+      chars: content.length,
+      estTokens: Math.ceil(content.length / 4),
+    }))
     return parts.join('\n\n---\n\n')
   }
 
@@ -3772,10 +3814,20 @@ export class AgentGateway {
    */
   private buildGeneralPrompt(sessionId?: string): string {
     const parts: string[] = []
+    const sections: PromptSection[] = []
+    const push = (
+      label: string,
+      content: string,
+      audience: PromptSection['audience'] = 'worker',
+      requiresTools?: string[],
+    ) => {
+      parts.push(content)
+      sections.push({ label, zone: 'dynamic', content, audience, requiresTools })
+    }
     const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
     const now = new Date()
-    parts.push([
+    push('current-context', [
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
@@ -3787,39 +3839,46 @@ export class AgentGateway {
 
     const workspaceTree = this.buildWorkspaceTreeContext()
     if (workspaceTree) {
-      parts.push(workspaceTree)
+      push('workspace-tree', workspaceTree)
     }
 
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
-    if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    push('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+    if (this.config.capabilityProfile === 'personal') push('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
     if (this.config.browserEnabled !== false) {
-      parts.push(BROWSER_TOOL_GUIDE)
+      push('browser-guide', BROWSER_TOOL_GUIDE, 'worker', ['browser'])
     }
-    parts.push(SELF_EVOLUTION_GUIDE)
+    push('self-evolution-guide', SELF_EVOLUTION_GUIDE, 'main')
 
     if (this.skills.length > 0) {
       const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
-        parts.push(skillsSection)
+        push('skills', skillsSection, 'main')
       }
     }
 
     if (this.config.quickActionsEnabled !== false) {
-      parts.push(QUICK_ACTION_GUIDE)
+      push('quick-action-guide', QUICK_ACTION_GUIDE, 'main')
       if (this.quickActions.length > 0) {
         const qaSection = buildQuickActionsPromptSection(this.quickActions)
-        if (qaSection) parts.push(qaSection)
+        if (qaSection) push('quick-actions', qaSection, 'main')
       }
     }
 
-    parts.push(SUBAGENT_GUIDE)
-    if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
+    push('subagent-guide', SUBAGENT_GUIDE, 'main')
+    if (this.config.gitWorktreesEnabled) push('worktree-guide', WORKTREE_GUIDE, 'worker', ['exec'])
 
     if (sessionId) {
       const teamCtx = this.buildTeamContext(sessionId)
-      if (teamCtx) parts.push(teamCtx)
+      if (teamCtx) push('team-context', teamCtx)
     }
 
+    this.lastPromptSections = sections
+    this.lastPromptBreakdown = sections.map(({ label, zone, content }) => ({
+      label,
+      zone,
+      chars: content.length,
+      estTokens: Math.ceil(content.length / 4),
+    }))
     return parts.join('\n\n---\n\n')
   }
 
@@ -3843,14 +3902,27 @@ export class AgentGateway {
     const stableParts: string[] = []
     const dynamicParts: string[] = []
     const sections: Array<{ label: string; zone: 'stable' | 'dynamic'; chars: number; estTokens: number }> = []
+    const promptSections: PromptSection[] = []
 
-    const pushStable = (label: string, content: string) => {
+    const pushStable = (
+      label: string,
+      content: string,
+      audience: PromptSection['audience'] = 'worker',
+      requiresTools?: string[],
+    ) => {
       stableParts.push(content)
       sections.push({ label, zone: 'stable', chars: content.length, estTokens: Math.ceil(content.length / 4) })
+      promptSections.push({ label, zone: 'stable', content, audience, requiresTools })
     }
-    const pushDynamic = (label: string, content: string) => {
+    const pushDynamic = (
+      label: string,
+      content: string,
+      audience: PromptSection['audience'] = 'worker',
+      requiresTools?: string[],
+    ) => {
       dynamicParts.push(content)
       sections.push({ label, zone: 'dynamic', chars: content.length, estTokens: Math.ceil(content.length / 4) })
+      promptSections.push({ label, zone: 'dynamic', content, audience, requiresTools })
     }
 
     // ---- STABLE ZONE: rarely changes within a session ----
@@ -3936,7 +4008,18 @@ export class AgentGateway {
       // SUBAGENT_ONLY_TOOLS carve-out above) rather than delegated.
       mediaDelegated: this.config.capabilityProfile !== 'personal',
       devops: devopsGuideOn,
-    }))
+    }), 'main')
+    if (this.config.browserEnabled !== false) {
+      // The coordinator receives the compact capabilities index above. A
+      // worker that actually has `browser` needs the full workflow guide.
+      promptSections.push({
+        label: 'browser-guide',
+        zone: 'stable',
+        content: BROWSER_TOOL_GUIDE,
+        audience: 'worker',
+        requiresTools: ['browser'],
+      })
+    }
 
     // Action Tools guide — only worth including when at least one of its
     // action surfaces (channels, managed integrations, heartbeat) is enabled.
@@ -3969,7 +4052,7 @@ export class AgentGateway {
         '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',
         '- A successful final response should summarize what you configured, not ask whether to start.',
       )
-      pushStable('action-tools-guide', actionLines.join('\n'))
+      pushStable('action-tools-guide', actionLines.join('\n'), 'main')
     }
 
     if (process.env.TERMINAL_EXEC_URL) {
@@ -3983,7 +4066,7 @@ export class AgentGateway {
     }
 
     if (this.config.quickActionsEnabled !== false) {
-      pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
+      pushStable('quick-action-guide', QUICK_ACTION_GUIDE, 'main')
     }
 
     // 4. Security permissions guide (stable once mode is set)
@@ -4077,7 +4160,7 @@ export class AgentGateway {
     if (existsSync(heartbeatLogPath)) {
       const heartbeatLog = readFileSync(heartbeatLogPath, 'utf-8').trim()
       if (heartbeatLog) {
-        pushDynamic('heartbeat-log', `## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`)
+      pushDynamic('heartbeat-log', `## Recent Autonomous Activity\nThese are your recent heartbeat check results. Reference them when users ask about your autonomous activity.\n\n${heartbeatLog}`, 'main')
       }
     }
 
@@ -4114,7 +4197,7 @@ export class AgentGateway {
           'Your configuration files (AGENTS.md, HEARTBEAT.md, skills/) are already',
           'set up with template-specific instructions. Follow the instructions in AGENTS.md.',
           '',
-        ].join('\n'))
+        ].join('\n'), 'worker')
       }
     }
 
@@ -4132,15 +4215,15 @@ export class AgentGateway {
     ].join('\n'))
 
     const modeLabel = activeMode === 'none' ? 'chat' : activeMode
-    pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
+    pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`, 'worker')
     if (this.viewerContextPrompt) {
-      pushDynamic('viewer-context', this.viewerContextPrompt)
+      pushDynamic('viewer-context', this.viewerContextPrompt, 'main')
     }
 
     // 10. Dynamic workspace context (changes as files are added/removed)
     const installedToolsContext = this.buildInstalledToolsContext()
     if (installedToolsContext) {
-      pushDynamic('installed-tools', installedToolsContext)
+      pushDynamic('installed-tools', installedToolsContext, 'main')
     }
 
     const uploadedFilesContext = this.buildUploadedFilesContext()
@@ -4157,7 +4240,7 @@ export class AgentGateway {
     if (this.skills.length > 0) {
       const skillsSection = buildSkillsPromptSection(this.skills)
       if (skillsSection) {
-        pushDynamic('skills', skillsSection)
+        pushDynamic('skills', skillsSection, 'main')
       }
     }
 
@@ -4165,13 +4248,13 @@ export class AgentGateway {
     if (this.config.quickActionsEnabled !== false && this.quickActions.length > 0) {
       const qaSection = buildQuickActionsPromptSection(this.quickActions)
       if (qaSection) {
-        pushDynamic('quick-actions', qaSection)
+        pushDynamic('quick-actions', qaSection, 'main')
       }
     }
 
     const skillServerSection = this.buildSkillServerPromptSection()
     if (skillServerSection) {
-      pushDynamic('skill-server', skillServerSection)
+      pushDynamic('skill-server', skillServerSection, 'main')
     }
 
     // 12. Active team context (persisted in SQLite, survives session resets)
@@ -4181,10 +4264,19 @@ export class AgentGateway {
     }
 
     this.lastPromptBreakdown = sections
+    this.lastPromptSections = promptSections
 
     const stableText = stableParts.join('\n\n---\n\n')
     const dynamicText = dynamicParts.join('\n\n---\n\n')
     return dynamicText ? stableText + CACHE_BOUNDARY + dynamicText : stableText
+  }
+
+  /**
+   * Build the worker-safe part of the current turn's prompt. Normal workers
+   * receive project/platform guidance but not coordinator-only instructions.
+   */
+  private buildWorkerPromptForTools(toolNames: string[], includePlatform = true): WorkerPromptBuild {
+    return buildWorkerPrompt(this.lastPromptSections, toolNames, this.workerRestrictionPrompt, includePlatform)
   }
 
   /**
