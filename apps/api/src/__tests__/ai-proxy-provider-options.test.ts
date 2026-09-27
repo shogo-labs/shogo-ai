@@ -396,6 +396,69 @@ describe('AI proxy: developer role (OpenAI reasoning) → Anthropic system', () 
   })
 })
 
+describe('AI proxy: OpenAI tool calls on the Anthropic conversion path', () => {
+  test('tool-only assistant turns become tool_use blocks and tool results are paired and merged', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [
+        { role: 'user', content: 'read two files' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } },
+            { id: 'call_b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b.ts"}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_a', content: 'A' },
+        { role: 'tool', tool_call_id: 'call_b', content: 'B' },
+        { role: 'assistant', content: 'done', tool_calls: [{ id: 'call_c', type: 'function', function: { name: 'ls', arguments: '' } }] },
+        { role: 'tool', tool_call_id: 'call_c', content: [{ type: 'text', text: 'x' }] },
+      ],
+    })
+
+    expect(forwarded.messages).toEqual([
+      { role: 'user', content: 'read two files' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'call_a', name: 'read_file', input: { path: 'a.ts' } },
+          { type: 'tool_use', id: 'call_b', name: 'read_file', input: { path: 'b.ts' } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_a', content: 'A' },
+          { type: 'tool_result', tool_use_id: 'call_b', content: 'B' },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'done' },
+          { type: 'tool_use', id: 'call_c', name: 'ls', input: {} },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_c', content: [{ type: 'text', text: 'x' }] }] },
+    ])
+  })
+
+  test('an assistant message with null content and no tool calls is dropped', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: null },
+        { role: 'user', content: 'again' },
+      ],
+    })
+
+    expect(forwarded.messages.every((m: any) => m.content != null)).toBe(true)
+    expect(forwarded.messages.map((m: any) => m.role)).toEqual(['user', 'user'])
+  })
+})
+
 afterAll(() => {
   globalThis.fetch = originalFetch
   for (const [k, v] of Object.entries(ORIGINAL_ENV)) {
