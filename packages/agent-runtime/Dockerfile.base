@@ -12,7 +12,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System packages + Node 24 + Bun 1.3
+# System packages + Node 24 + Bun
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl bash git git-lfs tar gzip zstd ca-certificates gnupg unzip \
     chromium nss-plugin-pem fonts-freefont-ttf \
@@ -22,8 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Node 24 via nodesource
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
-    # Bun 1.3
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.11" && \
+    # Bun — must match docker/workspace-deps/Dockerfile (see note there)
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.2" && \
     # AWS CLI v2 (dpkg returns arm64, AWS expects aarch64)
     ARCH="$(uname -m)" && \
     curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o /tmp/awscli.zip && \
