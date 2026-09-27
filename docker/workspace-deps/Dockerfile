@@ -23,7 +23,11 @@
 # (runtime base) and node:25-alpine (api production) — same arm64 ABI.
 # =============================================================================
 
-FROM oven/bun:1.3-debian
+# Keep this Bun version identical to apps/api/Dockerfile and
+# packages/agent-runtime/Dockerfile.base: both re-run `bun install` over this
+# node_modules tree, and a newer Bun fails relinking an older Bun's layout
+# (EEXIST on the root workspace symlink).
+FROM oven/bun:1.4.2-debian
 
 WORKDIR /app
 
