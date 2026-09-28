@@ -421,7 +421,18 @@ function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
   return resolveRuntimeIdentity().mode === 'workspace' && Boolean(resolveWorkspaceId(ctx))
 }
 
-async function workspaceMetaFetch(ctx: ToolContext, path: string, init: RequestInit = {}): Promise<any> {
+/**
+ * Mount/unmount may have to wait for a cold-booting workspace runtime: the API
+ * keeps retrying for up to 150s, so the caller must outlast it.
+ */
+const WORKSPACE_MEMBER_TIMEOUT_MS = 180_000
+
+async function workspaceMetaFetch(
+  ctx: ToolContext,
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 30_000,
+): Promise<any> {
   const apiUrl = deriveApiUrl()
   const workspaceId = resolveWorkspaceId(ctx)
   if (!apiUrl || !workspaceId) throw new Error('Workspace runtime API is not configured')
@@ -436,10 +447,21 @@ async function workspaceMetaFetch(ctx: ToolContext, path: string, init: RequestI
     ...init,
     headers,
     ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(result?.error?.message || result?.error || `Workspace API HTTP ${response.status}`)
+  const text = await response.text().catch(() => '')
+  let result: any = {}
+  try {
+    result = text ? JSON.parse(text) : {}
+  } catch {
+    // Non-JSON body: a proxy between us and the API answered.
+  }
+  if (!response.ok) {
+    const detail = result?.error?.message || result?.error
+    if (detail) throw new Error(detail)
+    const snippet = text.trim().slice(0, 200)
+    throw new Error(`Workspace API HTTP ${response.status}${snippet ? `: ${snippet}` : ''}`)
+  }
   return result
 }
 
@@ -497,6 +519,7 @@ function createMountProjectTool(ctx: ToolContext): AgentTool {
               sessionId: ctx.sessionId,
             }),
           },
+          WORKSPACE_MEMBER_TIMEOUT_MS,
         ),
       )
     },
@@ -529,6 +552,7 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
               sessionId: ctx.sessionId,
             }),
           },
+          WORKSPACE_MEMBER_TIMEOUT_MS,
         ),
       )
     },
@@ -7111,8 +7135,12 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   if (process.env.WORKSPACE_RUNTIME === 'true') {
     tools.push(createListProjectsTool(ctx))
-    tools.push(createMountProjectTool(ctx))
-    tools.push(createUnmountProjectTool(ctx))
+    // A project-anchored runtime serves project chats, which have no
+    // workspace session to mount into; the API rejects every call.
+    if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) {
+      tools.push(createMountProjectTool(ctx))
+      tools.push(createUnmountProjectTool(ctx))
+    }
     tools.push(createPreviewProjectTool(ctx))
     // Reach-the-user boundary: the reminder-manage skill's notify path.
     // Workspace runtimes only (personal agents), same bridge as the meta tools.

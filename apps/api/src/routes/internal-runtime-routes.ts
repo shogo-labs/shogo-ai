@@ -32,6 +32,7 @@ import {
   detachProject,
   getAttachedProjects,
 } from '../services/workspace-session.service'
+import { memberCallFailure, resolveWhileStarting } from '../lib/workspace-member-call'
 import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
@@ -494,12 +495,14 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     init: RequestInit,
     opts: { readonlyProjectIds?: string[]; hostRealPath?: string } = {},
   ) {
-    const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
-      runtimeManager: getRuntimeManager(),
-      alwaysEnabled: true,
-      logTag: 'WorkspaceMembers',
-    })
+    const resolved = await resolveWhileStarting(() =>
+      resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds,
+        runtimeManager: getRuntimeManager(),
+        alwaysEnabled: true,
+        logTag: 'WorkspaceMembers',
+      }),
+    )
     const requestJson =
       typeof init.body === 'string' ? JSON.parse(init.body) : {}
     if (resolved.mode === 'metal' && path.startsWith('/internal/workspace/members')) {
@@ -704,7 +707,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       )
       return c.json({ ok: true, attached: attachedRow, project, runtime: runtimeBody })
     } catch (error: any) {
-      return c.json({ error: error?.message ?? 'mount failed' }, 502)
+      const failure = memberCallFailure(error, 'mount')
+      console.error(
+        `[WorkspaceMembers] mount ${projectId} into ${workspaceId} (session ${sessionId}) failed (${failure.status}):`,
+        error?.message ?? error,
+      )
+      return c.json(failure.body, failure.status)
     }
   })
 
@@ -734,7 +742,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       )
       return c.json({ ok: true, removed, runtime: runtimeBody })
     } catch (error: any) {
-      return c.json({ error: error?.message ?? 'unmount failed' }, 502)
+      const failure = memberCallFailure(error, 'unmount')
+      console.error(
+        `[WorkspaceMembers] unmount ${projectId} from ${workspaceId} (session ${sessionId}) failed (${failure.status}):`,
+        error?.message ?? error,
+      )
+      return c.json(failure.body, failure.status)
     }
   })
 

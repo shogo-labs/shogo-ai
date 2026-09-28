@@ -1308,7 +1308,14 @@ export class MetalWarmPool {
     // that already exists, so every later export is refused as a conflict.
     try {
       const r = await this.hydrateRepo(projectId, vm.handle, env)
-      if (r.hydrated) a.repoParentEtag = r.parentEtag
+      if (r.hydrated) {
+        a.repoParentEtag = r.parentEtag
+        // A workspace runtime has no source backup of its own (members are
+        // backed up per project), so the durable merged-root repo is what
+        // makes it real source. Left at 'template', every suspend would be
+        // refused a durable snapshot push and every wake would cold-boot.
+        if (projectId.startsWith('ws:')) a.workspaceOrigin = 'backup'
+      }
       a.repoLinked = true
     } catch (err: any) {
       const reason = `repo hydrate failed at assign (${err?.message ?? err})`
