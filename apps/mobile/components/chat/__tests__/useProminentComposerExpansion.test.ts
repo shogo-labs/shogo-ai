@@ -33,6 +33,26 @@ describe("shouldStackProminentComposer", () => {
     ).toBe(true)
   })
 
+  test("does not oscillate when the stacked layout has no width measurement", () => {
+    let stacked = shouldStackProminentComposer({
+      ...base,
+      textWidth: 181,
+      contentHeight: 48,
+      currentlyStacked: false,
+    })
+
+    expect(stacked).toBe(true)
+
+    stacked = shouldStackProminentComposer({
+      ...base,
+      textWidth: 0,
+      contentHeight: 24,
+      currentlyStacked: stacked,
+    })
+
+    expect(stacked).toBe(true)
+  })
+
   test("collapses when the composer is emptied", () => {
     expect(
       shouldStackProminentComposer({

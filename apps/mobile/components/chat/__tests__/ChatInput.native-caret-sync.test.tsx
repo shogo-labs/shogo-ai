@@ -248,13 +248,14 @@ function renderChatInput() {
 }
 
 describe("ChatInput — native caret regression guard", () => {
-  test("animates prominent height changes and removes the placeholder while typing", () => {
+  test("animates prominent height changes and removes the placeholder while typing", async () => {
     const input = renderChatInput()
     const contentSizeChangeBeforeTyping = latestContentSizeChange
 
-    act(() => {
+    await act(async () => {
       fireEvent.change(input, { target: { value: "hello" } })
       contentSizeChangeBeforeTyping?.({ nativeEvent: { contentSize: { height: 54 } } })
+      await new Promise((resolve) => setTimeout(resolve, 32))
     })
 
     expect(
@@ -279,9 +280,10 @@ describe("ChatInput — native caret regression guard", () => {
       ),
     ).toBe(true)
 
-    act(() => {
+    await act(async () => {
       fireEvent.change(input, { target: { value: "" } })
       latestContentSizeChange?.({ nativeEvent: { contentSize: { height: 22 } } })
+      await new Promise((resolve) => setTimeout(resolve, 32))
     })
 
     expect(
@@ -300,6 +302,28 @@ describe("ChatInput — native caret regression guard", () => {
           config.useNativeDriver === true,
       ),
     ).toBe(true)
+  })
+
+  test("coalesces repeated content-size measurements to the latest height", async () => {
+    const input = renderChatInput()
+    act(() => {
+      fireEvent.change(input, { target: { value: "hello" } })
+    })
+    const reportContentSize = latestContentSizeChange
+    animationConfigs.length = 0
+
+    act(() => {
+      reportContentSize?.({ nativeEvent: { contentSize: { height: 54 } } })
+      reportContentSize?.({ nativeEvent: { contentSize: { height: 80 } } })
+    })
+
+    expect(animationConfigs.some((config) => config.toValue === 54)).toBe(false)
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 32))
+    })
+
+    expect(animationConfigs.some((config) => config.toValue === 80)).toBe(true)
   })
 
   test("on native, each keystroke commits synchronously (no rAF delay) so the controlled value never lags the native view", async () => {
