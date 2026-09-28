@@ -33,6 +33,13 @@ CASES = [
         "content_type": "application/octet-stream",
         "extra": {},
     },
+    {
+        "name": "server-side copy (daily restore point)",
+        "key": "proj-abc/project-data/daily/2026-08-06.tar.gz",
+        "body": b"",
+        "content_type": None,
+        "extra": {"x-amz-copy-source": f"/{BUCKET}/proj-abc/project-data.tar.gz"},
+    },
 ]
 
 out = []
@@ -40,10 +47,11 @@ for case in CASES:
     body = case["body"]
     headers = {
         "content-length": str(len(body)),
-        "content-type": case["content_type"],
         "x-amz-content-sha256": hashlib.sha256(body).hexdigest(),
         **case["extra"],
     }
+    if case["content_type"]:
+        headers["content-type"] = case["content_type"]
     # botocore percent-encodes the path itself; give it the raw key.
     from urllib.parse import quote
 

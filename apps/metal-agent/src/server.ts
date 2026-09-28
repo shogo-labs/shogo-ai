@@ -249,6 +249,20 @@ const server = Bun.serve({
         return Response.json({ ok: true, ...r })
       }
 
+      if (path === '/recycle' && req.method === 'POST') {
+        // Operator/watchdog restart: back everything up from the live guest,
+        // then stop WITHOUT a snapshot so the next open cold-boots clean. An
+        // aborted recycle removed nothing and the VM keeps running (409).
+        const { projectId, force, reason, env } = await json(req)
+        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        const r = await pool.recycle(projectId, { force: force === true, reason, env: env ?? {} })
+        if (!r.aborted) {
+          fwd.remove(projectId)
+          reportPlacement('cold', projectId)
+        }
+        return Response.json({ ok: !r.aborted, ...r }, { status: r.aborted ? 409 : 200 })
+      }
+
       if (path === '/resize' && req.method === 'POST') {
         // Instance-tier change. Firecracker can't hot-resize vCPU/RAM, so the
         // size takes effect on the next cold boot/resume (the assign env is
@@ -354,6 +368,17 @@ if (config.idleSuspendMs > 0) {
       })
       .catch((err) => console.error('[metal-agent] dead-vm reap error:', err?.message ?? err))
       .then(() => pool.pollActivity().catch(() => {}))
+      // After the poll (fresh health), before the reaper: a runtime recycled
+      // here is gone, so the reaper must not also try to suspend it.
+      .then(() => pool.autoRecycleUnhealthy())
+      .then((ids) => {
+        for (const id of ids) {
+          fwd.remove(id)
+          reportPlacement('cold', id)
+        }
+        if (ids.length) console.log(`[metal-agent] watchdog recycled: ${ids.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] api watchdog error:', err?.message ?? err))
       .then(() => pool.reapIdle())
       .then((ids) => {
         for (const id of ids) {

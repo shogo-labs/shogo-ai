@@ -399,6 +399,52 @@ export async function suspendRuntimeViaApi(page: Page, projectId: string): Promi
   return body?.ok === true
 }
 
+export interface RecycleViaApiResult {
+  status: number
+  body: {
+    ok?: boolean
+    error?: string
+    results?: Array<{
+      key: string
+      found: boolean
+      ok: boolean
+      report?: { aborted: boolean; steps: Array<{ step: string; ok: boolean; detail?: string }> }
+    }>
+    coldBoot?: { ok: boolean; apiReady: boolean; apiServerPhase: string | null; waitedMs: number }
+  }
+}
+
+/**
+ * Recycle a project's runtime via the API-side e2e backdoor
+ * (apps/api/src/routes/internal-e2e.ts → POST /recycle-runtime): back up
+ * everything, stop without a snapshot, cold-boot and wait for the API server.
+ * The call can take a few minutes.
+ *
+ * Returns `null` when the secret isn't set or the endpoint is disabled —
+ * callers should `test.skip` in that case. Otherwise returns the recycle's own
+ * status and body (200 recycled, 404 no metal runtime, 409 aborted).
+ */
+export async function recycleRuntimeViaApi(
+  page: Page,
+  projectId: string,
+): Promise<RecycleViaApiResult | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/recycle-runtime`, {
+      headers: {
+        "x-e2e-bootstrap-secret": secret,
+        "content-type": "application/json",
+      },
+      data: { projectId },
+      timeout: 600_000,
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503 || res.status() === 401) return null
+  return { status: res.status(), body: await res.json().catch(() => ({})) }
+}
+
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
   await signUpAndOnboard(page, user)
 
