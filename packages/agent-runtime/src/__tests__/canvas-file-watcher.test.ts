@@ -3,7 +3,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdirSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
-import { CanvasFileWatcher, type CanvasEvent } from '../canvas-file-watcher'
+import { CanvasFileWatcher, type CanvasEvent, type RebuildTarget } from '../canvas-file-watcher'
 
 const TMP_BASE = join(import.meta.dir, '..', '..', '.test-tmp-canvas-watcher')
 
@@ -587,6 +587,82 @@ describe('normalizeRelativePath (explicit-notifier path hygiene)', () => {
     watcher.onFileChanged('./MEMORY.md', join(tmpDir, 'MEMORY.md'))
 
     expect(rebuildCalled).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Workspace-runtime member routing
+// ---------------------------------------------------------------------------
+//
+// Workspace runtimes serve each project from `<WORKSPACE_DIR>/<projectId>/`,
+// so agent and IDE edits arrive as `<projectId>/src/...`. Before members
+// were declared, those never matched `src/` and the Expo preview stayed on
+// its hydrate-time build forever (staging a0bea431-..., 2026-09-28).
+
+describe('workspace member routing', () => {
+  const MEMBER = 'a0bea431-e62e-45d1-8e48-6bfc912eeefc'
+
+  function memberWatcher(): { watcher: CanvasFileWatcher; targets: RebuildTarget[] } {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    const targets: RebuildTarget[] = []
+    watcher.setWorkspaceMembers(() => [MEMBER])
+    watcher.setOnRebuild((t) => { targets.push(t) })
+    return { watcher, targets }
+  }
+
+  test('routes a member source edit to that member, member-relative', () => {
+    const { watcher, targets } = memberWatcher()
+    watcher.onFileChanged(`${MEMBER}/src/components/SingView.tsx`, join(tmpDir, MEMBER, 'src', 'components', 'SingView.tsx'))
+    expect(targets).toEqual([{ projectId: MEMBER, path: 'src/components/SingView.tsx' }])
+  })
+
+  test('routes a member delete', () => {
+    const { watcher, targets } = memberWatcher()
+    watcher.onFileDeleted(`${MEMBER}/app/index.tsx`)
+    expect(targets).toEqual([{ projectId: MEMBER, path: 'app/index.tsx' }])
+  })
+
+  test('ignores non-buildable and ignored paths inside a member', () => {
+    const { watcher, targets } = memberWatcher()
+    watcher.onFileChanged(`${MEMBER}/MEMORY.md`, join(tmpDir, MEMBER, 'MEMORY.md'))
+    watcher.onFileChanged(`${MEMBER}/src/generated/routes.ts`, join(tmpDir, MEMBER, 'src', 'generated', 'routes.ts'))
+    watcher.onFileChanged(`${MEMBER}/dist/index.html`, join(tmpDir, MEMBER, 'dist', 'index.html'))
+    expect(targets).toEqual([])
+  })
+
+  test('root-level edits still target the workspace root', () => {
+    const { watcher, targets } = memberWatcher()
+    watcher.onFileChanged('src/App.tsx', join(tmpDir, 'src', 'App.tsx'))
+    expect(targets).toEqual([{ path: 'src/App.tsx' }])
+  })
+
+  test('an unknown top-level folder is not treated as a member', () => {
+    const { watcher, targets } = memberWatcher()
+    watcher.onFileChanged('other-project/src/App.tsx', join(tmpDir, 'other-project', 'src', 'App.tsx'))
+    expect(targets).toEqual([])
+  })
+
+  test('re-reads members per event so live mounts are picked up', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    const members: string[] = []
+    const targets: RebuildTarget[] = []
+    watcher.setWorkspaceMembers(() => members)
+    watcher.setOnRebuild((t) => { targets.push(t) })
+    members.push('late-mount')
+    watcher.onFileChanged('late-mount/app/index.tsx', join(tmpDir, 'late-mount', 'app', 'index.tsx'))
+    expect(targets).toEqual([{ projectId: 'late-mount', path: 'app/index.tsx' }])
+  })
+})
+
+describe('NativeWind / ESM config files are buildable', () => {
+  test.each([
+    'postcss.config.mjs',
+    'postcss.config.cjs',
+    'tailwind.config.js',
+    'tailwind.config.ts',
+    'global.css',
+  ])('%s', (path) => {
+    expect(isBuildableFile(path)).toBe(true)
   })
 })
 
