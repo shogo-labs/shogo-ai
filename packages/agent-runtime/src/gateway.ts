@@ -600,6 +600,7 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  private workspaceRebuild: ((projectId: string) => void) | null = null
   /**
    * Post-build `tsc --noEmit` gate. Vite/Expo transpile without
    * type-checking, so type errors (missing imports, boolean-as-component,
@@ -733,6 +734,16 @@ export class AgentGateway {
    */
   setWorkspaceDepsReady(fn: () => Promise<void>): void {
     this.workspaceDepsReady = fn
+  }
+
+  /**
+   * Workspace runtimes: route buildable edits under a member folder to that
+   * member's own preview. The root CanvasBuildManager is rooted at the
+   * merged root, which has no package.json, so it can never build them.
+   */
+  setWorkspaceRebuild(memberIds: () => readonly string[], rebuild: (projectId: string) => void): void {
+    this.workspaceRebuild = rebuild
+    this.canvasFileWatcher.setWorkspaceMembers(memberIds)
   }
 
   setUserTimezone(tz: string): void {
@@ -1214,7 +1225,10 @@ export class AgentGateway {
         // host-installed node_modules is 9p-mounted into the guest.
         waitForDeps: pm ? () => pm.depsReady : undefined,
       })
-      watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
+      watcher.setOnRebuild((target) => {
+        if (target.projectId) this.workspaceRebuild?.(target.projectId)
+        else this.canvasBuildManager?.triggerRebuild()
+      })
       this.canvasBuildManager.start().then(() => {
         // If the migration rewrote main.tsx, queue a rebuild so the slim
         // version replaces the stale dist/ output.
