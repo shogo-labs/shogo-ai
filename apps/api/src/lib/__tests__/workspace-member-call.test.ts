@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { WorkspaceSessionError } from '../../services/workspace-session.service'
 import { isRuntimeStillStarting, memberCallFailure, resolveWhileStarting } from '../workspace-member-call'
 
 function timeout(): Error {
   return Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' })
+}
+
+function sessionError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { name: 'WorkspaceSessionError', code })
 }
 
 function fakeClock() {
@@ -54,7 +57,7 @@ describe('resolveWhileStarting', () => {
 describe('memberCallFailure', () => {
   test('a project chat asking to mount is a 409 the agent should not retry', () => {
     const f = memberCallFailure(
-      new WorkspaceSessionError('not_workspace_session', 'Chat session s1 is not a workspace session'),
+      sessionError('not_workspace_session', 'Chat session s1 is not a workspace session'),
       'mount',
     )
     expect(f.status).toBe(409)
@@ -62,7 +65,7 @@ describe('memberCallFailure', () => {
   })
 
   test('an unknown session is a 404', () => {
-    expect(memberCallFailure(new WorkspaceSessionError('session_not_found', 'nope'), 'unmount').status).toBe(404)
+    expect(memberCallFailure(sessionError('session_not_found', 'nope'), 'unmount').status).toBe(404)
   })
 
   test('a runtime still starting is a 503 that says so', () => {

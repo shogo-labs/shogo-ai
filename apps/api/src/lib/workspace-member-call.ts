@@ -1,5 +1,3 @@
-import { WorkspaceSessionError } from '../services/workspace-session.service'
-
 /**
  * How long a member mount/unmount keeps asking for a workspace runtime that is
  * still cold-booting. A single metal assign gives up after ~30s while the host
@@ -49,7 +47,7 @@ export function memberCallFailure(
   error: any,
   op: 'mount' | 'unmount',
 ): { status: 404 | 409 | 502 | 503; body: { error: string; code?: string } } {
-  if (error instanceof WorkspaceSessionError) {
+  if (error?.name === 'WorkspaceSessionError' && typeof error.code === 'string') {
     return { status: error.code === 'session_not_found' ? 404 : 409, body: { error: error.message, code: error.code } }
   }
   if (isRuntimeStillStarting(error)) {
