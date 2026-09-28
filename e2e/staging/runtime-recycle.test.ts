@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type FrameLocator, type Page } from "@playwright/test"
 import {
+  canRecycleViaApi,
   createProjectAndWait,
   makeTestUser,
   recycleRuntimeViaApi,
@@ -22,16 +23,17 @@ import {
  *      database, with a form to add one.
  *   2. Add a note through the preview with a per-run unique title the agent
  *      never saw, so it can only come back from the database.
- *   3. Recycle via the API e2e backdoor. Expect 200, every backup step ok, the
- *      runtime destroyed, and the cold-booted API server ready.
+ *   3. Recycle. Expect 200, every backup step ok, the runtime destroyed, and
+ *      the cold-booted API server ready.
  *   4. Reopen the project: the code marker and the note must both render.
  *
- * Requires the recycle backdoor (`SHOGO_E2E_BOOTSTRAP_SECRET` +
- * `/api/internal/e2e/recycle-runtime`) and a metal-placed project; skips
- * cleanly otherwise.
+ * Recycles through the e2e backdoor (`SHOGO_E2E_BOOTSTRAP_SECRET`) or, without
+ * it, as a super-admin (`E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD`) through
+ * POST /api/admin/runtimes/recycle. Skips when neither is set, or when the
+ * project is not on a metal runtime.
  *
- * Run: STAGING_URL=... SHOGO_E2E_BOOTSTRAP_SECRET=... npx playwright test \
- *   --config e2e/playwright.config.ts runtime-recycle
+ * Run: E2E_TARGET_URL=... E2E_ADMIN_EMAIL=... E2E_ADMIN_PASSWORD=... \
+ *   npx playwright test --config e2e/playwright.config.ts runtime-recycle
  */
 
 const TEST_USER = makeTestUser("RuntimeRecycle")
@@ -115,8 +117,8 @@ test.describe("Runtime recycle", () => {
   test("recycle keeps code and database, and the API comes back", async () => {
     test.setTimeout(1_200_000)
     test.skip(
-      !process.env.SHOGO_E2E_BOOTSTRAP_SECRET,
-      "needs the recycle-runtime backdoor (SHOGO_E2E_BOOTSTRAP_SECRET)",
+      !canRecycleViaApi(),
+      "needs SHOGO_E2E_BOOTSTRAP_SECRET or super-admin E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD",
     )
 
     // 1. A project with its own API server and database.

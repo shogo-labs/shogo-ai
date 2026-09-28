@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, type Page } from "@playwright/test"
+import { request as playwrightRequest, test, type Page } from "@playwright/test"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -414,13 +414,24 @@ export interface RecycleViaApiResult {
   }
 }
 
+/** True when `recycleRuntimeViaApi` has credentials to try. */
+export function canRecycleViaApi(): boolean {
+  return (
+    !!process.env.SHOGO_E2E_BOOTSTRAP_SECRET ||
+    (!!process.env.E2E_ADMIN_EMAIL && !!process.env.E2E_ADMIN_PASSWORD)
+  )
+}
+
 /**
- * Recycle a project's runtime via the API-side e2e backdoor
- * (apps/api/src/routes/internal-e2e.ts → POST /recycle-runtime): back up
- * everything, stop without a snapshot, cold-boot and wait for the API server.
- * The call can take a few minutes.
+ * Recycle a project's runtime: back up everything, stop without a snapshot,
+ * cold-boot and wait for the API server. The call can take a few minutes.
  *
- * Returns `null` when the secret isn't set or the endpoint is disabled —
+ * Uses the e2e backdoor (apps/api/src/routes/internal-e2e.ts →
+ * POST /recycle-runtime) when `SHOGO_E2E_BOOTSTRAP_SECRET` is set, otherwise
+ * signs in as a super-admin (`E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD`) and calls
+ * POST /api/admin/runtimes/recycle, the route support uses.
+ *
+ * Returns `null` when neither is configured or the backdoor is disabled —
  * callers should `test.skip` in that case. Otherwise returns the recycle's own
  * status and body (200 recycled, 404 no metal runtime, 409 aborted).
  */
@@ -428,21 +439,42 @@ export async function recycleRuntimeViaApi(
   page: Page,
   projectId: string,
 ): Promise<RecycleViaApiResult | null> {
+  const base = bootstrapApiBase()
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
-  if (!secret) return null
+  if (secret) {
+    const res = await page.request
+      .post(`${base}/api/internal/e2e/recycle-runtime`, {
+        headers: {
+          "x-e2e-bootstrap-secret": secret,
+          "content-type": "application/json",
+        },
+        data: { projectId },
+        timeout: 600_000,
+      })
+      .catch(() => null)
+    if (!res || res.status() === 503 || res.status() === 401) return null
+    return { status: res.status(), body: await res.json().catch(() => ({})) }
+  }
 
-  const res = await page.request
-    .post(`${bootstrapApiBase()}/api/internal/e2e/recycle-runtime`, {
-      headers: {
-        "x-e2e-bootstrap-secret": secret,
-        "content-type": "application/json",
-      },
-      data: { projectId },
+  const email = process.env.E2E_ADMIN_EMAIL
+  const password = process.env.E2E_ADMIN_PASSWORD
+  if (!email || !password) return null
+  const admin = await playwrightRequest.newContext({
+    baseURL: base,
+    extraHTTPHeaders: { Origin: base },
+  })
+  try {
+    const signIn = await admin.post("/api/auth/sign-in/email", { data: { email, password } })
+    if (!signIn.ok()) throw new Error(`E2E_ADMIN sign-in failed: HTTP ${signIn.status()}`)
+    const res = await admin.post("/api/admin/runtimes/recycle", {
+      data: { projectId, reason: "e2e runtime-recycle" },
       timeout: 600_000,
     })
-    .catch(() => null)
-  if (!res || res.status() === 503 || res.status() === 401) return null
-  return { status: res.status(), body: await res.json().catch(() => ({})) }
+    if (res.status() === 403) throw new Error(`${email} is not a super_admin`)
+    return { status: res.status(), body: await res.json().catch(() => ({})) }
+  } finally {
+    await admin.dispose()
+  }
 }
 
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
