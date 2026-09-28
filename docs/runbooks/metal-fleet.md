@@ -277,6 +277,122 @@ hundred percent of control traffic, so the order below is not optional.
    rootfs rebuild left every local snapshot stale, so no guest ever reached
    `/hydrate-stream` there to exercise the guest-subnet rule end-to-end.
 
+## After a rollout that rebuilds the rootfs
+
+A release that rebuilds the guest rootfs (`metal-agent-deploy` with
+`rebuild_rootfs=true`, or any release that changes the runtime image) makes
+every existing snapshot stale. Without help, each user's next open cold-boots
+from S3, which takes about 90 seconds. The re-warm job handles this. It boots
+every runtime used recently on the new image and suspends it again, so the next
+open is a normal warm resume.
+
+It covers both kinds of runtime: project runtimes (`ws:proj:<projectId>`) and
+unpinned workspace chat sessions (`ws:<workspaceId>`). It never changes user
+code, schema or data. A boot hydrates from the latest backups, and the suspend
+takes a fresh snapshot. Nothing is written back.
+
+### It runs automatically
+
+A leader-elected watcher in the API (`metal-rewarm.ts`) checks the fleet every
+minute. It starts a job for a region once:
+
+- every live host in the region reports the same new `rootfsSha` on its
+  heartbeat;
+- that has held for `METAL_REWARM_SETTLE_MS` (2 minutes), because a host stamps
+  `ROOTFS_SHA` just before its agent restarts onto the new image; and
+- at least `METAL_REWARM_MIN_INTERVAL_MS` (2 hours) has passed since the last
+  automatic job in that region.
+
+The first sha the watcher ever sees is only recorded. A fresh deploy does not
+start a job. Look for `[metal-rewarm]` lines in the API logs.
+
+### What the job does with each runtime
+
+Candidates are managed projects with runtimes enabled, plus workspace sessions,
+active within `METAL_REWARM_SINCE_HOURS` (48), newest first, capped at
+`METAL_REWARM_MAX_RUNTIMES`. For each one:
+
+| State on the host | Outcome |
+| --- | --- |
+| Running on the new image, or suspended from it | `already-warm` |
+| Running on the old image, with an agent stream or activity in the last 10 minutes | `in-use` (left alone) |
+| Running on the old image, idle | recycled (backed up, stopped), then booted fresh |
+| Suspended on the old image, or not on any host | booted, then suspended |
+
+A job never suspends a runtime that a user opened while it was warming
+(`user-opened`), or one with an agent turn in flight (`busy`). It waits while a
+host is above `METAL_REWARM_MAX_HOST_UTIL_PCT` (75%) or over its disk
+watermark. Other outcomes to know:
+
+- `warmed-api-not-ready`: suspended, but the project's API server did not come
+  up within the readiness window. The next open works, but look at the project.
+- `boot-failed`, `recycle-aborted`, `suspend-failed`: the runtime was left as it
+  was. The next open cold-boots as it would have anyway.
+- `unknown-rootfs`: the host is running an agent too old to report which image a
+  VM booted from. It clears once the new agent is deployed.
+
+Outcomes are counted on the `metal.rewarm{outcome}` metric.
+
+### Operating a job by hand
+
+All endpoints need a super-admin session. Every action writes an
+`[admin-audit]` log line.
+
+```bash
+API=https://studio.shogo.ai/api/admin/metal/rewarm
+
+# See what would be warmed, without touching anything
+curl -X POST $API -H 'Content-Type: application/json' --cookie "$SUPER_ADMIN_SESSION" \
+  -d '{"dryRun":true,"sinceHours":48}'
+
+# Start a job (all fields optional)
+curl -X POST $API -H 'Content-Type: application/json' --cookie "$SUPER_ADMIN_SESSION" \
+  -d '{"region":"us","sinceHours":48,"concurrency":2,"reason":"rootfs rebuild for #123"}'
+
+# Progress: state, counts per outcome, the last 50 items, fleet stats before and after
+curl $API --cookie "$SUPER_ADMIN_SESSION"
+
+# Pause, resume, cancel
+curl -X POST $API/pause --cookie "$SUPER_ADMIN_SESSION"
+curl -X POST $API/resume --cookie "$SUPER_ADMIN_SESSION"
+curl -X DELETE $API --cookie "$SUPER_ADMIN_SESSION"
+```
+
+`POST` returns `202` when the job starts, and `409` when another job is already
+running (only one runs at a time, across all API replicas). `GET` reports
+`interrupted` if the API replica running the job died. Start it again; runtimes
+already warmed report `already-warm`.
+
+The `POST` body accepts `sinceHours` (1 to 336), `concurrency` per host (1 to
+12), `maxRuntimes`, `maxBytes` and `region`. Once the memory snapshots the job
+has written add up to `maxBytes`, the remaining runtimes are recorded as
+`skipped-bytes`.
+
+### How long it takes
+
+Each runtime takes about 90 seconds. Concurrency is
+`METAL_REWARM_CONCURRENCY_PER_HOST` (2) times the number of hosts in the region,
+up to 12. So about 400 runtimes on 6 hosts take about 50 minutes. Users who open
+a project during the job get a normal cold boot, and the job skips that project.
+
+### Settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `METAL_REWARM_AUTO` | `true` | Start jobs automatically after a rootfs change |
+| `METAL_REWARM_SINCE_HOURS` | `48` | How far back "recently used" goes |
+| `METAL_REWARM_CONCURRENCY_PER_HOST` | `2` | Boots in flight per host |
+| `METAL_REWARM_MAX_RUNTIMES` | `1000` | Most runtimes one job will warm |
+| `METAL_REWARM_MAX_BYTES` | `0` (off) | Stop after this many snapshot bytes |
+| `METAL_REWARM_MIN_INTERVAL_MS` | 2 hours | Minimum gap between automatic jobs per region |
+| `METAL_REWARM_SETTLE_MS` | 2 minutes | How long the new sha must hold before a job starts |
+| `METAL_REWARM_MAX_HOST_UTIL_PCT` | `75` | Wait while a host is busier than this |
+| `METAL_PLACEMENT_TTL_S` | 7 days | How long the API remembers which host holds a runtime |
+
+The placement TTL matters here. If the API forgets where a suspended runtime
+lives, the next open goes to a different host and cold-boots, which wastes the
+warming.
+
 ## Incident triage
 
 ### `MetalFcProcessLeak` — untracked firecracker processes climbing

@@ -66,6 +66,8 @@ export interface LiveVmEntry {
   lastTouchedAt: number
   /** Snapshot files this VM was restored from (protected from orphan reclaim). */
   restoredFrom?: { vmstate: string; mem: string }
+  /** Golden-rootfs identity the guest booted from. See AssignedVm.bootRootfsIdentity. */
+  bootRootfsIdentity?: string
   /** Always-on (paid tier): reaper never idle-suspends; persisted for adopt. */
   alwaysOn?: boolean
   /** Guest RUNTIME_AUTH_SECRET — lets suspend call the guest `/pool/export`. */
