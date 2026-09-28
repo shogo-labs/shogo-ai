@@ -85,6 +85,54 @@ const PRESIGN_TTL_SEC = 30 * 60
 export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
 
 /**
+ * How long past its own deadline the host waits on `/pool/repo-hydrated`. The
+ * guest gives up at `timeoutMs` and says so; this slack lets that answer
+ * arrive, so a host timeout means the guest went silent, not that it was slow.
+ */
+const REPO_HYDRATED_SLACK_MS = 15_000
+
+/** The guest answered `/pool/repo-hydrated` with an error, so it did not adopt. */
+export class RepoHydrateRefusedError extends Error {
+  constructor(
+    readonly status: number,
+    body: string,
+  ) {
+    super(`/pool/repo-hydrated failed (${status}): ${body}`)
+  }
+}
+
+/** The guest may have swapped `.git` and reset the tree, but the host never heard. */
+export class RepoAdoptUncertainError extends Error {}
+
+/**
+ * The top-level paths whose durable source is newer than the durable repo.
+ * When the repo's age is unknown, nothing is kept (the legacy full reset).
+ */
+export function repoKeepPaths(sourceTimes: Record<string, number | null>, repoLastModified: number | null): string[] {
+  if (repoLastModified === null) return []
+  return Object.entries(sourceTimes)
+    .filter(([, t]) => t !== null && t > repoLastModified)
+    .map(([path]) => path)
+    .sort()
+}
+
+/** Rebuild per-member lineage from the ETags a snapshot was stamped with. */
+function resumedMemberData(s: Pick<SuspendedVm, 'memberDataEtags' | 'memberSourceEtags'>): Record<string, MemberDataState> | undefined {
+  const ids = new Set([...Object.keys(s.memberDataEtags ?? {}), ...Object.keys(s.memberSourceEtags ?? {})])
+  if (ids.size === 0) return undefined
+  const out: Record<string, MemberDataState> = {}
+  for (const id of ids) {
+    const data = s.memberDataEtags?.[id]
+    const source = s.memberSourceEtags?.[id]
+    out[id] = {
+      ...(data ? { parentEtag: data } : {}),
+      ...(source ? { sourceParentEtag: source, sourceLinked: true } : {}),
+    }
+  }
+  return out
+}
+
+/**
  * After this long without a successful `/pool/activity`, a leftover
  * `activeStreams > 0` is a frozen turn, not a live one. Expire it so the
  * reaper and `/stop` can actually act. 3 minutes is comfortably longer than
@@ -288,6 +336,13 @@ export interface AssignedVm {
   /** Sticky: repo hydrate failed, so exports must not clobber the durable `.git`. */
   repoUntrustedReason?: string
   /**
+   * Sticky: the guest may have rewritten this VM's source tree without the
+   * host knowing (a repo adopt that outlived the host's deadline), so its
+   * source export is quarantined and its snapshot is never kept. Workspace
+   * runtimes record this per member in `memberData`.
+   */
+  sourceUntrustedReason?: string
+  /**
    * Epoch ms from which this VM's workspace is its own: the assign for a cold
    * boot, the snapshot's suspend for a resume. A durable write after this came
    * from some other VM.
@@ -385,6 +440,8 @@ export interface SuspendedVm {
   dataEtag?: string
   /** Workspace runtimes: per-member `dataEtag`. Carried back into AssignedVm.memberData. */
   memberDataEtags?: Record<string, string>
+  /** Workspace runtimes: per-member source backup ETag. Carried back into AssignedVm.memberData. */
+  memberSourceEtags?: Record<string, string>
   /**
    * ETag of the durable `.git` archive current when this snapshot was taken.
    * Carried back into AssignedVm.repoParentEtag on resume.
@@ -501,6 +558,7 @@ export class MetalWarmPool {
   private suspended = new Map<string, SuspendedVm>()
   /** One stale-snapshot drain at a time (see reclaimStaleSnapshots). */
   private staleReclaimRunning = false
+  protected repoHydratedSlackMs = REPO_HYDRATED_SLACK_MS
   private store: SnapshotStore
   private rootfsId: string
   private index: CacheIndex
@@ -866,6 +924,7 @@ export class MetalWarmPool {
         memberData: e.memberData,
         repoParentEtag: e.repoParentEtag,
         repoUntrustedReason: e.repoUntrustedReason,
+        sourceUntrustedReason: e.sourceUntrustedReason,
         stateSince: e.stateSince ?? e.assignedAt,
         repoLinked: e.repoLinked,
         lastHealthOk: healthy,
@@ -925,6 +984,7 @@ export class MetalWarmPool {
       memberData: a.memberData,
       repoParentEtag: a.repoParentEtag,
       repoUntrustedReason: a.repoUntrustedReason,
+      sourceUntrustedReason: a.sourceUntrustedReason,
       stateSince: a.stateSince,
       repoLinked: a.repoLinked,
       v: 1,
@@ -969,6 +1029,7 @@ export class MetalWarmPool {
         backupEtag: e.backupEtag,
         dataEtag: e.dataEtag,
         memberDataEtags: e.memberDataEtags,
+        memberSourceEtags: e.memberSourceEtags,
         repoEtag: e.repoEtag,
       })
       n++
@@ -1021,6 +1082,7 @@ export class MetalWarmPool {
     if (ref) {
       await this.applyArchive(assigned.handle, env, ref, `${projectId} workspace member`, destDir)
     }
+    this.linkMemberSource(assigned, projectId, ref)
     await this.hydrateMemberData(assigned, env, projectId, destDir)
     const response = await fetch(
       `${assigned.handle.agentUrl}/internal/workspace/members`,
@@ -1053,10 +1115,7 @@ export class MetalWarmPool {
     const bytes = await this.fetchExport(assigned.handle, assigned.runtimeToken, destDir)
     let exported = false
     if (bytes) {
-      const outcome = await this.uploadBackupGuarded(projectId, bytes, {
-        adoptWhenUnknown: true,
-      })
-      exported = outcome.status === 'created' || outcome.status === 'written' || outcome.status === 'adopted' || outcome.status === 'promoted'
+      exported = (await this.storeMemberSource(assigned, projectId, bytes)).ok
     }
     const slot = this.memberDataSlot(assigned, projectId, destDir)
     await this.dataFlight
@@ -1267,13 +1326,15 @@ export class MetalWarmPool {
     // never acceptable — the user sees the wrong app AND the template would be
     // snapshotted/backed up over their real source on the next idle-suspend.
     // Tear the VM down and surface the error so the control plane retries.
+    let sourceTimes: Record<string, number | null> = {}
     try {
-      const h = projectId.startsWith('ws:')
-        ? { hydrated: false as const }
+      const h: { hydrated: boolean; parentEtag?: string; lastModified?: number | null } = projectId.startsWith('ws:')
+        ? { hydrated: false }
         : await this.hydrateFromBackup(projectId, vm.handle, env)
       if (h.hydrated) {
         a.workspaceOrigin = 'backup'
         a.backupParentEtag = h.parentEtag
+        sourceTimes = { '.': h.lastModified ?? null }
         this.writeLive(a)
       }
     } catch (err: any) {
@@ -1286,7 +1347,7 @@ export class MetalWarmPool {
 
     if (projectId.startsWith('ws:')) {
       try {
-        await this.hydrateWorkspaceMembers(a, env)
+        sourceTimes = await this.hydrateWorkspaceMembers(a, env)
       } catch (err: any) {
         console.error(`[pool] workspace member hydrate failed for ${projectId}:`, err?.message ?? err)
         this.assigned.delete(projectId)
@@ -1340,7 +1401,7 @@ export class MetalWarmPool {
     // the hydrate leaves the replacement VM create-only against an archive
     // that already exists, so every later export is refused as a conflict.
     try {
-      const r = await this.hydrateRepo(projectId, vm.handle, env)
+      const r = await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
@@ -1353,6 +1414,7 @@ export class MetalWarmPool {
     } catch (err: any) {
       const reason = `repo hydrate failed at assign (${err?.message ?? err})`
       this.distrustRepo(a, reason)
+      if (err instanceof RepoAdoptUncertainError) this.distrustSource(a, reason)
       console.error(
         `[pool] repo hydrate failed for ${projectId} — booting with the source's ` +
           `.git. This VM is marked UNTRUSTED for repo.git.tar.gz and will NOT overwrite it:`,
@@ -1393,7 +1455,7 @@ export class MetalWarmPool {
     projectId: string,
     handle: FcVmHandle,
     env: Record<string, string>,
-  ): Promise<{ hydrated: boolean; parentEtag?: string }> {
+  ): Promise<{ hydrated: boolean; parentEtag?: string; lastModified?: number | null }> {
     const ref = await this.sourceRef(projectId)
     if (!ref) {
       console.log(`[pool] no durable backup for ${projectId} — cold start keeps template`)
@@ -1403,7 +1465,7 @@ export class MetalWarmPool {
     console.log(
       `[pool] hydrated ${projectId} from durable backup (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`,
     )
-    return { hydrated: true, parentEtag: ref.etag ?? undefined }
+    return { hydrated: true, parentEtag: ref.etag ?? undefined, lastModified: ref.lastModified ?? null }
   }
 
   /**
@@ -1588,7 +1650,7 @@ export class MetalWarmPool {
   protected uploadBackupGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { parentEtag?: string; adoptWhenUnknown?: boolean },
+    opts: { parentEtag?: string; adoptWhenUnknown?: boolean; untrusted?: boolean },
   ): Promise<BackupWriteOutcome> {
     return uploadWorkspaceArchiveGuarded(projectId, bytes, opts, this.cfg)
   }
@@ -1631,6 +1693,7 @@ export class MetalWarmPool {
       // may overwrite an object it can't prove it descends from. A template
       // origin must NEVER adopt — that is exactly the clobber we prevent.
       adoptWhenUnknown: a.workspaceOrigin === 'snapshot',
+      untrusted: !!a.sourceUntrustedReason,
     })
     switch (outcome.status) {
       case 'promoted':
@@ -1657,7 +1720,9 @@ export class MetalWarmPool {
           outcome.reason === 'size-regression'
             ? `SIZE BACKSTOP tripped — this ${bytes.byteLength}-byte (template-shaped) export would have ` +
               `collapsed a real durable backup; refusing to adopt/overwrite`
-            : `workspace lineage (origin=${a.workspaceOrigin ?? 'unknown'}, ` +
+            : outcome.reason === 'untrusted'
+              ? `its source tree is untrusted (${a.sourceUntrustedReason})`
+              : `workspace lineage (origin=${a.workspaceOrigin ?? 'unknown'}, ` +
               `parentEtag=${a.backupParentEtag ?? 'none'}) does not match current backup ` +
               `(etag=${outcome.currentEtag ?? 'none'})`
         console.error(
@@ -1684,14 +1749,11 @@ export class MetalWarmPool {
           `/app/workspace/${projectId}`,
         )
         if (!bytes) continue
-        const outcome = await this.uploadBackupGuarded(projectId, bytes, {
-          adoptWhenUnknown: true,
-        })
-        if (['created', 'written', 'adopted', 'promoted'].includes(outcome.status)) {
+        const { ok, outcome } = await this.storeMemberSource(a, projectId, bytes)
+        if (ok) {
           console.log(`[pool] saved workspace member backup for ${projectId} (${bytes.byteLength} bytes)`)
         } else {
           failed.push({ projectId, reason: `not promoted (${outcome.status})` })
-          console.warn(`[pool] workspace member backup for ${projectId} was not promoted (${outcome.status})`)
         }
       } catch (error: any) {
         failed.push({ projectId, reason: error?.message ?? String(error) })
@@ -1701,11 +1763,72 @@ export class MetalWarmPool {
     return failed
   }
 
-  private async hydrateWorkspaceMembers(a: AssignedVm, env: Record<string, string>): Promise<void> {
+  /**
+   * Upload one member's source under its own lineage. Before this was guarded,
+   * any VM holding the member (a second host, or one whose tree the guest had
+   * reset to a stale repo HEAD) overwrote the backup outright.
+   */
+  private async storeMemberSource(
+    a: AssignedVm,
+    memberId: string,
+    bytes: Uint8Array,
+  ): Promise<{ ok: boolean; outcome: BackupWriteOutcome }> {
+    const state = this.memberDataState(a, memberId)
+    const outcome = await this.uploadBackupGuarded(memberId, bytes, {
+      parentEtag: state.sourceParentEtag,
+      // Lineage from before member source was tracked (an adopted or resumed VM
+      // from older code) is unknown rather than mismatched; keep trusting it.
+      adoptWhenUnknown: !state.sourceLinked && !state.sourceParentEtag,
+      untrusted: !!state.sourceUntrustedReason,
+    })
+    switch (outcome.status) {
+      case 'created':
+      case 'written':
+      case 'adopted':
+      case 'promoted':
+        state.sourceParentEtag = outcome.etag ?? state.sourceParentEtag
+        state.sourceLinked = true
+        this.writeLive(a)
+        return { ok: true, outcome }
+      case 'conflict':
+        metrics.inc(M.backupConflict)
+        console.error(
+          `[pool] REFUSED to overwrite workspace member backup for ${memberId} (${a.projectId}) — ` +
+            (outcome.reason === 'untrusted'
+              ? `this member's tree is untrusted (${state.sourceUntrustedReason})`
+              : `lineage (parentEtag=${state.sourceParentEtag ?? 'none'}) does not match current ` +
+                `backup (etag=${outcome.currentEtag ?? 'none'})`) +
+            `. Export quarantined at ${outcome.quarantineKey} (${bytes.byteLength} bytes) — durable backup left intact.`,
+        )
+        return { ok: false, outcome }
+      default:
+        return { ok: false, outcome }
+    }
+  }
+
+  /** Record which backup (if any) a member's subfolder was hydrated from. */
+  private linkMemberSource(a: AssignedVm, memberId: string, ref: ArchiveRef | null): void {
+    const state = this.memberDataState(a, memberId)
+    state.sourceParentEtag = ref?.etag ?? undefined
+    state.sourceLinked = true
+  }
+
+  /**
+   * Hydrate each member's source. Returns when each member's backup was last
+   * written (null when unknown or absent), which the repo hydrate needs to
+   * avoid resetting a newer member tree to an older repo HEAD.
+   */
+  private async hydrateWorkspaceMembers(
+    a: AssignedVm,
+    env: Record<string, string>,
+  ): Promise<Record<string, number | null>> {
+    const sourceTimes: Record<string, number | null> = {}
     for (const projectId of a.workspaceMemberIds ?? []) {
       const ref = await this.sourceRef(projectId)
+      this.linkMemberSource(a, projectId, ref)
       if (!ref) {
         console.log(`[pool] no durable backup for workspace member ${projectId} — keeping its seeded directory`)
+        sourceTimes[projectId] = null
         continue
       }
       await this.applyArchive(
@@ -1715,7 +1838,10 @@ export class MetalWarmPool {
         `${projectId} workspace member`,
         `/app/workspace/${projectId}`,
       )
+      sourceTimes[projectId] = ref.lastModified ?? null
     }
+    this.writeLive(a)
+    return sourceTimes
   }
 
   /**
@@ -1765,6 +1891,25 @@ export class MetalWarmPool {
   private memberDataState(a: AssignedVm, memberId: string): MemberDataState {
     a.memberData ??= {}
     return (a.memberData[memberId] ??= {})
+  }
+
+  /** Per-member source ETags safe to stamp into a snapshot (untrusted members omitted). */
+  private trustedMemberSourceEtags(a: AssignedVm): Record<string, string> | undefined {
+    if (!a.memberData) return undefined
+    const out: Record<string, string> = {}
+    for (const [id, s] of Object.entries(a.memberData)) {
+      if (s.sourceParentEtag && !s.sourceUntrustedReason) out[id] = s.sourceParentEtag
+    }
+    return Object.keys(out).length ? out : undefined
+  }
+
+  /** Why this VM's source tree (or any member's) cannot be vouched for, if it cannot. */
+  private sourceUntrustedReason(a: AssignedVm): string | undefined {
+    if (a.sourceUntrustedReason) return a.sourceUntrustedReason
+    for (const [id, s] of Object.entries(a.memberData ?? {})) {
+      if (s.sourceUntrustedReason) return `member ${id}: ${s.sourceUntrustedReason}`
+    }
+    return undefined
   }
 
   /** Per-member data ETags safe to stamp into a snapshot (untrusted members omitted). */
@@ -1871,6 +2016,24 @@ export class MetalWarmPool {
     if (a.repoUntrustedReason) return { kind: 'untrusted', reason: a.repoUntrustedReason }
     if (a.repoParentEtag) return { kind: 'descends', etag: a.repoParentEtag }
     return { kind: 'create-only' }
+  }
+
+  /**
+   * The source tree may have been rewritten behind the host, so no export of
+   * it may land on a durable source backup. Workspace runtimes mark every
+   * member: the reset spans the whole merged root.
+   */
+  private distrustSource(a: AssignedVm, reason: string): void {
+    if (a.projectId.startsWith('ws:')) {
+      for (const id of a.workspaceMemberIds ?? []) {
+        const state = this.memberDataState(a, id)
+        state.sourceUntrustedReason ??= reason
+      }
+    } else {
+      a.sourceUntrustedReason ??= reason
+    }
+    console.error(`[pool] source of ${a.projectId} is UNTRUSTED — its exports go to conflict/ only: ${reason}`)
+    this.writeLive(a)
   }
 
   private distrustRepo(a: AssignedVm, reason: string): void {
@@ -2003,11 +2166,23 @@ export class MetalWarmPool {
     return preserveRepoArchive(projectId, this.cfg)
   }
 
+  /**
+   * `sourceTimes` maps each top-level path the source hydrate just wrote
+   * (`'.'` for a single project, member ids for a workspace runtime) to when
+   * its durable backup was last written. Those newer than the durable repo are
+   * kept as they are: the repo stops advancing whenever its exports are
+   * refused, and resetting to its HEAD would rewind the newer source.
+   *
+   * Throws {@link RepoAdoptUncertainError} when the guest may have rewritten
+   * the tree without the host seeing the result; any other throw leaves the
+   * tree as the source hydrate left it.
+   */
   private async hydrateRepo(
     projectId: string,
     handle: FcVmHandle,
     env: Record<string, string>,
-  ): Promise<{ hydrated: boolean; parentEtag?: string }> {
+    sourceTimes: Record<string, number | null> = {},
+  ): Promise<{ hydrated: boolean; parentEtag?: string; keptPaths?: string[] }> {
     const ref = await this.repoRef(projectId)
     if (!ref) {
       console.log(`[pool] no durable repo for ${projectId} — guest keeps its seeded .git`)
@@ -2017,33 +2192,64 @@ export class MetalWarmPool {
     // Overlaying straight onto the live `.git` leaves a template seed commit
     // as HEAD when the durable repo is older or empty, and never rebuilds the
     // working tree, so the (older) source archive would be committed as a revert.
-    if (await this.callRepoHydrated(handle, env, { probe: true })) {
-      await this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR)
-      await this.callRepoHydrated(handle, env, { stagingDir: REPO_STAGING_DIR })
-    } else {
+    const probe = await this.callRepoHydrated(handle, env, { probe: true })
+    if (!probe) {
       console.log(`[pool] guest has no /pool/repo-hydrated — overlaying ${projectId} repo the legacy way`)
       await this.applyArchive(handle, env, ref, `${projectId} repo`)
+      console.log(`[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`)
+      return { hydrated: true, parentEtag: ref.etag ?? undefined }
     }
-    console.log(`[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`)
-    return { hydrated: true, parentEtag: ref.etag ?? undefined }
+
+    const keepPaths = repoKeepPaths(sourceTimes, ref.lastModified ?? null)
+    if (keepPaths.length && probe.deadline !== true) {
+      throw new Error(
+        `durable repo is older than the source of ${keepPaths.join(', ')} and this guest cannot keep ` +
+          `paths out of the reset — leaving the tree as hydrated`,
+      )
+    }
+    await this.applyArchive(handle, env, ref, `${projectId} repo`, REPO_STAGING_DIR)
+    const timeoutMs = this.cfg.hydrateTimeoutMs
+    try {
+      await this.callRepoHydrated(
+        handle,
+        env,
+        { stagingDir: REPO_STAGING_DIR, timeoutMs, ...(keepPaths.length ? { keepPaths } : {}) },
+        timeoutMs + this.repoHydratedSlackMs,
+      )
+    } catch (err: any) {
+      if (err instanceof RepoHydrateRefusedError) throw err
+      throw new RepoAdoptUncertainError(
+        `guest did not answer /pool/repo-hydrated (${err?.message ?? err}); it may still reset the tree`,
+      )
+    }
+    console.log(
+      `[pool] hydrated .git for ${projectId} (${ref.bytes} bytes, etag=${ref.etag ?? 'none'}` +
+        `${keepPaths.length ? `, kept newer source at ${keepPaths.join(', ')}` : ''})`,
+    )
+    return { hydrated: true, parentEtag: ref.etag ?? undefined, keptPaths: keepPaths }
   }
 
-  /** Returns false when the guest predates `/pool/repo-hydrated` (404). */
+  /**
+   * Returns null when the guest predates `/pool/repo-hydrated` (404), else its
+   * JSON answer. Throws {@link RepoHydrateRefusedError} when the guest answered
+   * with an error; network errors and timeouts propagate as they are.
+   */
   protected async callRepoHydrated(
     handle: FcVmHandle,
     env: Record<string, string>,
-    body: { probe: true } | { stagingDir: string },
-  ): Promise<boolean> {
+    body: { probe: true } | { stagingDir: string; timeoutMs?: number; keepPaths?: string[] },
+    waitMs: number = this.cfg.hydrateTimeoutMs,
+  ): Promise<{ deadline?: boolean } | null> {
     const token = env.RUNTIME_AUTH_SECRET
     const res = await fetch(`${handle.agentUrl}/pool/repo-hydrated`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+      signal: AbortSignal.timeout(waitMs),
     })
-    if (res.status === 404) return false
-    if (!res.ok) throw new Error(`/pool/repo-hydrated failed (${res.status}): ${await res.text()}`)
-    return true
+    if (res.status === 404) return null
+    if (!res.ok) throw new RepoHydrateRefusedError(res.status, await res.text())
+    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean }
   }
 
   protected repoRef(projectId: string): Promise<ArchiveRef | null> {
@@ -2546,10 +2752,24 @@ export class MetalWarmPool {
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
         memberDataEtags: this.trustedMemberDataEtags(a),
+        memberSourceEtags: this.trustedMemberSourceEtags(a),
         repoEtag: this.trustedRepoEtag(a),
       }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
+
+      // A tree we could not vouch for must not come back by resume: it would
+      // carry the backup lineage stamped above and write itself over the
+      // backup on its next suspend. Cold-boot from the durable backups instead.
+      const untrustedSource = this.sourceUntrustedReason(a)
+      if (untrustedSource) {
+        console.error(
+          `[pool] not keeping a snapshot of ${projectId} — its source tree is untrusted (${untrustedSource}). ` +
+            `The next open cold-boots from the durable backups.`,
+        )
+        this.evictLocal(projectId)
+        return s
+      }
 
       if (this.store.kind !== 'none' && this.localSnapshotIsStale(s)) {
         // Booted from a superseded rootfs: every pull would reject this
@@ -2606,6 +2826,7 @@ export class MetalWarmPool {
           backupEtag: a.backupParentEtag,
           dataEtag: this.trustedDataEtag(a),
           memberDataEtags: this.trustedMemberDataEtags(a),
+          memberSourceEtags: this.trustedMemberSourceEtags(a),
           repoEtag: this.trustedRepoEtag(a),
           v: 1,
         }
@@ -2647,6 +2868,7 @@ export class MetalWarmPool {
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
       memberDataEtags: s.memberDataEtags,
+      memberSourceEtags: s.memberSourceEtags,
       repoEtag: s.repoEtag,
       v: 1,
     }
@@ -2686,7 +2908,13 @@ export class MetalWarmPool {
    */
   protected async snapshotBehindStore(
     projectId: string,
-    stamps: { backupEtag?: string; repoEtag?: string; dataEtag?: string; memberDataEtags?: Record<string, string> },
+    stamps: {
+      backupEtag?: string
+      repoEtag?: string
+      dataEtag?: string
+      memberDataEtags?: Record<string, string>
+      memberSourceEtags?: Record<string, string>
+    },
   ): Promise<string | null> {
     const norm = (e?: string | null) => (e ? e.replace(/"/g, '') : undefined)
     const checks: Array<[string, string | undefined, () => Promise<ArchiveRef | null>]> = [
@@ -2698,6 +2926,13 @@ export class MetalWarmPool {
           `member ${memberId} data`,
           etag,
           () => this.projectDataRef(memberId),
+        ],
+      ),
+      ...Object.entries(stamps.memberSourceEtags ?? {}).map(
+        ([memberId, etag]): [string, string | undefined, () => Promise<ArchiveRef | null>] => [
+          `member ${memberId} source`,
+          etag,
+          () => this.sourceRef(memberId),
         ],
       ),
     ]
@@ -2818,6 +3053,7 @@ export class MetalWarmPool {
         backupEtag: pulled.meta.backupEtag,
         dataEtag: pulled.meta.dataEtag,
         memberDataEtags: pulled.meta.memberDataEtags,
+        memberSourceEtags: pulled.meta.memberSourceEtags,
         repoEtag: pulled.meta.repoEtag,
       }
       source = 'store'
@@ -2873,9 +3109,7 @@ export class MetalWarmPool {
       // The resumed guest's database is the one frozen in the snapshot, which
       // descends from this archive — so its next export may overwrite it.
       dataParentEtag: s.dataEtag,
-      memberData: s.memberDataEtags
-        ? Object.fromEntries(Object.entries(s.memberDataEtags).map(([id, etag]) => [id, { parentEtag: etag }]))
-        : undefined,
+      memberData: resumedMemberData(s),
       repoParentEtag: s.repoEtag,
       stateSince: s.suspendedAt,
     }

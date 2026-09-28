@@ -32,6 +32,11 @@ export interface ArchiveRef {
   /** Compressed size, for the hydrate deadline and for logging. 0 if unreported. */
   bytes: number
   /**
+   * Epoch ms the object was last written, or null/absent if unreported. Lets a
+   * cold boot tell which of the source and repo archives is newer.
+   */
+  lastModified?: number | null
+  /**
    * Short-lived presigned GET the guest can pull from directly, or null when
    * the store cannot mint one. Null forces the push fallback; it is never a
    * reason to skip hydrating.
@@ -71,10 +76,13 @@ export async function describeObject(
 
   let etag: string | null = null
   let bytes = 0
+  let lastModified: number | null = null
   try {
     const st = await file.stat()
     etag = st.etag ?? null
     if (typeof st.size === 'number') bytes = st.size
+    const lm = st.lastModified ? new Date(st.lastModified).getTime() : NaN
+    if (Number.isFinite(lm)) lastModified = lm
   } catch {
     // Size and ETag are best-effort: a missing size only costs a less precise
     // deadline, and a missing ETag costs lineage (the writer will not be able
@@ -85,6 +93,7 @@ export async function describeObject(
   return {
     etag,
     bytes,
+    lastModified,
     url: presign(client, key, expiresInSec),
     range: async (start, end) => new Uint8Array(await client.file(key).slice(start, end).arrayBuffer()),
     load: () => download(file),

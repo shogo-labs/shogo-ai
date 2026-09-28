@@ -78,8 +78,11 @@ export type BackupWriteOutcome =
       status: 'conflict'
       quarantineKey: string
       currentEtag: string | null
-      /** Why we quarantined: a lineage mismatch, or the size backstop tripping. */
-      reason: 'lineage' | 'size-regression'
+      /**
+       * Why we quarantined: a lineage mismatch, the size backstop tripping, or
+       * a writer whose workspace is known to be unreliable (`untrusted`).
+       */
+      reason: 'lineage' | 'size-regression' | 'untrusted'
     }
   | { status: 'skipped' }
 
@@ -321,11 +324,16 @@ export async function describeWorkspaceArchive(
  * behavior for legitimate legacy workspaces while a genuine template origin
  * (which passes `adoptWhenUnknown:false`) is always quarantined. It is NOT a
  * bypass for a KNOWN mismatch (a stale ETag) — that always quarantines.
+ *
+ * `opts.untrusted` diverts the bytes to quarantine unconditionally: the writer
+ * cannot vouch for its own tree (e.g. the guest may have reset it to a stale
+ * repo HEAD after the host stopped waiting), so it must never replace the
+ * backup whatever its lineage says.
  */
 export async function uploadWorkspaceArchiveGuarded(
   projectId: string,
   bytes: Uint8Array,
-  opts: { parentEtag?: string | null; adoptWhenUnknown?: boolean },
+  opts: { parentEtag?: string | null; adoptWhenUnknown?: boolean; untrusted?: boolean },
   cfg: MetalConfig,
 ): Promise<BackupWriteOutcome> {
   const s3 = workspaceS3(cfg)
@@ -333,6 +341,13 @@ export async function uploadWorkspaceArchiveGuarded(
 
   const key = archiveKey(projectId)
   const file = s3.client.file(key)
+
+  if (opts.untrusted) {
+    const qkey = quarantineKey(projectId)
+    await s3.client.write(qkey, bytes, { type: 'application/gzip' })
+    const currentEtag = (await file.exists()) ? (await statMeta(file)).etag : null
+    return { status: 'conflict', quarantineKey: qkey, currentEtag, reason: 'untrusted' }
+  }
 
   // `exists()` decides the branch; `stat()` reads the ETag (lineage anchor) AND
   // the size (the backstop input) we compare against. A transport error here

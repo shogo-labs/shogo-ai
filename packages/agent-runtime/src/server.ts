@@ -80,7 +80,9 @@ import {
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
-  adoptHydratedRepo,
+  adoptHydratedRepoBefore,
+  AdoptDeadlineError,
+  normalizeKeepPaths,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
   ensureLfsRepoSetup,
@@ -3172,7 +3174,9 @@ app.post('/pool/repo-hydrated', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   // Capability probe: the host asks before staging so an old guest never
   // ends up with a stray `.git` inside its working tree.
-  if (body?.probe === true) return c.json({ ok: true, supported: true })
+  // `deadline` tells the host this guest honours `timeoutMs` and `keepPaths`;
+  // an older one resets the whole tree whenever it gets round to it.
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3180,12 +3184,29 @@ app.post('/pool/repo-hydrated', async (c) => {
     return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
   }
   if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
-
-  await gitLayerReady.catch(() => {})
-  const sync = gitSyncInstance
-  await sync?.pause()
+  let keepPaths: string[]
   try {
-    const res = await adoptHydratedRepo(WORKSPACE_DIR, stagingDir, { logger: console })
+    keepPaths = normalizeKeepPaths(body?.keepPaths)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid keepPaths' }, 400)
+  }
+
+  // The host stops waiting after `timeoutMs` and treats this VM's repo as
+  // untrusted. Swapping `.git` and resetting the tree after that point rewrites
+  // the workspace behind the host's back, so past the deadline we decline and
+  // leave the hydrated tree exactly as the host last saw it.
+  const timeoutMs = Number(body?.timeoutMs)
+  const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null
+  let sync = null as GitWorkspaceSync | null
+  try {
+    const res = await adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
+      deadline,
+      ready: gitLayerReady,
+      // Resumed below, once the LFS pull is done too.
+      pause: () => (sync = gitSyncInstance)?.pause(),
+      logger: console,
+      keepPaths,
+    })
     if (res.headSha) cachedRepoHeadSha = res.headSha
     if (res.reset && isLfsActive()) {
       // Smudge is skipped on checkout, so files the reset rewrote may be LFS
@@ -3200,6 +3221,10 @@ app.post('/pool/repo-hydrated', async (c) => {
     if (res.reset) scheduleHydrateRebuild()
     return c.json({ ok: true, ...res })
   } catch (err: any) {
+    if (err instanceof AdoptDeadlineError) {
+      console.warn('[pool/repo-hydrated] host deadline passed before the repo could be adopted — declining')
+      return c.json({ error: err.message, adopted: false }, 504)
+    }
     console.error('[pool/repo-hydrated] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'repo adopt failed' }, 500)
   } finally {

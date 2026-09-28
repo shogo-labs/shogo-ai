@@ -69,7 +69,7 @@ class TestPool extends MetalWarmPool {
   }
   hydrate(projectId: string, env: Record<string, string>) {
     // hydrateFromBackup is private; reach it through the instance.
-    return (this as any).hydrateFromBackup(projectId, HANDLE, env) as Promise<{ hydrated: boolean; parentEtag?: string }>
+    return (this as any).hydrateFromBackup(projectId, HANDLE, env) as Promise<{ hydrated: boolean; parentEtag?: string; lastModified?: number | null }>
   }
   budget(bytes: number) {
     return this.hydrateBudgetMs(bytes)
@@ -134,7 +134,7 @@ describe('pool.hydrateFromBackup (cold-start hydration)', () => {
     expect(pool.loads).toBe(0)
     // The returned lineage anchors the workspace to the backup we applied, so a
     // later suspend can safely overwrite exactly that object.
-    expect(result).toEqual({ hydrated: true, parentEtag: '"abc123"' })
+    expect(result).toEqual({ hydrated: true, parentEtag: '"abc123"', lastModified: null })
   })
 
   test('gives the guest a deadline to pull within, and waits longer than it', async () => {
@@ -234,7 +234,7 @@ describe('falling back to a push when the guest cannot pull', () => {
     ])
     expect(seen[1].sent).toEqual(pool.archive!)
     expect(pool.loads).toBe(1)
-    expect(result).toEqual({ hydrated: true, parentEtag: '"e"' })
+    expect(result).toEqual({ hydrated: true, parentEtag: '"e"', lastModified: null })
   })
 
   test('a store that cannot presign pushes without trying to pull first', async () => {
