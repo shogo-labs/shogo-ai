@@ -7305,6 +7305,10 @@ app.post('/api/billing/ios/notifications', async (c) => {
   }
 })
 
+const STRIPE_ZERO_DECIMAL_CURRENCIES = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+])
+
 app.post('/api/billing/verify-checkout', async (c) => {
   try {
     if (!stripe) {
@@ -7328,13 +7332,21 @@ app.post('/api/billing/verify-checkout', async (c) => {
     }
     const seats = Math.max(1, Math.floor(Number(seatsRaw) || 1))
 
+    // GA4 purchase `value` excludes tax and shipping.
+    const currency = (session.currency ?? 'usd').toUpperCase()
+    const minorUnitDivisor = STRIPE_ZERO_DECIMAL_CURRENCIES.has(currency) ? 1 : 100
+    const chargedMinor = (session.amount_total ?? 0)
+      - (session.total_details?.amount_tax ?? 0)
+      - (session.total_details?.amount_shipping ?? 0)
+    const amountPaid = Math.max(0, chargedMinor) / minorUnitDivisor
+
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
     const existing = await billingService.getSubscription(workspaceId)
     if (existing?.stripeSubscriptionId === (session.subscription as string)) {
-      return c.json({ ok: true, workspaceId, planId, seats, alreadyProvisioned: true }, 200)
+      return c.json({ ok: true, workspaceId, planId, seats, billingInterval, amountPaid, currency, alreadyProvisioned: true }, 200)
     }
 
     const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as StripeTypes.Subscription & {
@@ -7366,7 +7378,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
     await billingService.allocateMonthlyIncluded(workspaceId, planId, seats)
     console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId, 'seats:', seats)
 
-    return c.json({ ok: true, workspaceId, planId, seats }, 200)
+    return c.json({ ok: true, workspaceId, planId, seats, billingInterval, amountPaid, currency }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)

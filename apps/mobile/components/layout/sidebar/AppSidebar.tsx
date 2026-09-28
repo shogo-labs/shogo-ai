@@ -294,6 +294,10 @@ export const AppSidebar = observer(function AppSidebar({
           const result = await api.verifyCheckout(http, sessionId);
           trackPurchase({
             planId: result.planId,
+            billingInterval: result.billingInterval,
+            seats: result.seats,
+            value: result.amountPaid,
+            currency: result.currency,
             workspaceId: wsId,
             sessionId,
           });
