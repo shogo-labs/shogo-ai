@@ -597,6 +597,11 @@ spec:
             #       SHOGO_METAL_ALL_PROJECTS false
             - name: SHOGO_METAL_ALL_PROJECTS
               value: "true"
+            # How long one /assign waits on a host. A cold boot after a rootfs
+            # rebuild routinely runs past the 30s default, and a chat or render
+            # request that times out fails even though the boot is still going.
+            - name: METAL_ASSIGN_TIMEOUT_MS
+              value: "90000"
             #
             # Metal fleet reconciler: ENABLED runs the loop; ACTUATE
             # (deliberately unset = false) keeps it OBSERVE-only — it logs the
