@@ -8,7 +8,7 @@
 #   refs/tags/v1.13.34           → 1.13.34   (unified release)
 #   refs/tags/android-v1.13.34   → 1.13.34   (Android-only)
 #   refs/tags/ios-v1.13.34       → 1.13.34   (iOS-only)
-#   production dispatch / main   → latest existing v* production tag
+#   production dispatch          → latest existing v* production tag
 #   staging                     → apps/mobile/app.json
 set -euo pipefail
 
