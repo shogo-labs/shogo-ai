@@ -159,6 +159,8 @@ export interface AgentCostMetricData {
   agentRunId?: string
   /** Run hit the configured maxTurns ceiling without producing a final answer. */
   hitMaxTurns?: boolean
+  /** Estimated tokens inherited from the parent worker-safe prompt. */
+  inheritedPromptTokens?: number
   /** Loop detector tripped during this run. */
   loopDetected?: boolean
   /** Auto-router escalated to a higher-tier model mid-run. */
@@ -396,6 +398,7 @@ export class AgentManager {
           // behaviour the boss called out. Quality lives in the fields below.
           success: true,
           agentRunId: result.agentId,
+          inheritedPromptTokens: result.inheritedPromptTokens,
           hitMaxTurns: !!result.hitMaxTurns,
           loopDetected: !!result.loopDetected,
           escalated: !!result.escalated,

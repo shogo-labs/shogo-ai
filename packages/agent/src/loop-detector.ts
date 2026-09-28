@@ -296,7 +296,11 @@ function stableHash(value: any): string {
   if (value === null || value === undefined) return 'null'
   if (typeof value === 'string') return value.length > 200 ? value.substring(0, 200) : value
   try {
-    return JSON.stringify(value, Object.keys(value).sort())
+    return JSON.stringify(value, (_key, v) =>
+      v && typeof v === 'object' && !Array.isArray(v)
+        ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]]))
+        : v,
+    )
   } catch {
     return String(value)
   }

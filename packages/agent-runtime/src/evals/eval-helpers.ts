@@ -210,6 +210,11 @@ export function successfulToolCallCount(result: EvalResult, toolName: string): n
   return result.toolCalls.filter(t => t.name === toolName && !t.error).length
 }
 
+/** Count of tool calls (any tool, any turn, including sub-agent calls) that returned an error. */
+export function failedToolCallCount(result: EvalResult): number {
+  return result.toolCalls.filter(t => t.error).length
+}
+
 /** True if any connect call was made without `command` or `args` (i.e. managed-style name-only install). */
 export function installCalledWithoutCommand(result: EvalResult): boolean {
   return result.toolCalls

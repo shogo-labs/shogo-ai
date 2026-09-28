@@ -3,30 +3,27 @@
 /**
  * Sub-Agent Building Eval Test Cases
  *
- * Tests the agent's ability to create specialist sub-agents that connect
- * to external services (Jira, GitHub) and produce synthesized reports.
+ * Tests the agent's ability to connect to external services (Jira, GitHub)
+ * and produce synthesized reports. Scored on outcome, not on whether the
+ * agent chose to delegate.
  */
 
 import type { AgentEval, EvalResult } from './types'
 import { WEEKLY_REPORT_MOCKS } from './tool-mocks'
-import { usedTool, usedToolAnywhere, responseContains, toolCallsJson, usedGhCli } from './eval-helpers'
+import { usedTool, usedToolAnywhere, toolCallsJson, usedGhCli, failedToolCallCount } from './eval-helpers'
 
-function subagentWasSpawned(r: EvalResult): boolean {
-  return r.toolCalls.some(tc =>
-    tc.name === 'task' || tc.name === 'agent_spawn',
-  )
-}
-
-function dynamicAgentCreated(r: EvalResult): boolean {
-  return r.toolCalls.some(tc => tc.name === 'agent_create')
-}
+const MAX_TOOL_ERRORS = 3
 
 function usedIntegrationTool(r: EvalResult, ...toolNames: string[]): boolean {
   return toolNames.some(name => usedTool(r, name))
 }
 
-function usedCanvasTools(r: EvalResult): boolean {
-  return r.toolCalls.some(t => t.name.startsWith('canvas_'))
+function wroteCanvasCode(r: EvalResult): boolean {
+  return r.toolCalls.some(t =>
+    (t.name === 'write_file' || t.name === 'edit_file') &&
+    !t.error &&
+    /^src\/.*\.(tsx?|jsx?)$/.test(String((t.input as any).path ?? '')),
+  )
 }
 
 function allTextLower(r: EvalResult): string {
@@ -51,11 +48,11 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     toolMocks: WEEKLY_REPORT_MOCKS,
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent delegated work to sub-agents',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 5,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'installed-jira',
@@ -126,11 +123,11 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     toolMocks: WEEKLY_REPORT_MOCKS,
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent delegated to a sub-agent',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 4,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'used-gh-cli',
@@ -187,11 +184,11 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     toolMocks: WEEKLY_REPORT_MOCKS,
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent delegated analysis to sub-agents',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 4,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'installed-jira',
@@ -254,11 +251,11 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     toolMocks: WEEKLY_REPORT_MOCKS,
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent used sub-agents for data gathering',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 4,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'queried-both',
@@ -307,13 +304,14 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     input: 'Build a team metrics dashboard on a canvas. Show: PRs merged this week, tickets completed, story points velocity, and a breakdown of who contributed what. Pull data from both our Jira and GitHub.',
     toolMocks: WEEKLY_REPORT_MOCKS,
     initialMode: 'canvas' as const,
+    useRuntimeTemplate: true,
     validationCriteria: [
       {
-        id: 'used-subagent',
-        description: 'Agent used sub-agents for data gathering',
+        id: 'clean-execution',
+        description: `At most ${MAX_TOOL_ERRORS} failed tool calls`,
         points: 4,
-        phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        phase: 'execution',
+        validate: (r) => failedToolCallCount(r) <= MAX_TOOL_ERRORS,
       },
       {
         id: 'installed-jira',
@@ -338,10 +336,10 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
       },
       {
         id: 'used-canvas',
-        description: 'Agent created a canvas to display the dashboard',
+        description: 'Agent wrote dashboard code into the canvas app (src/)',
         points: 6,
         phase: 'execution',
-        validate: (r) => usedCanvasTools(r),
+        validate: (r) => wroteCanvasCode(r),
       },
       {
         id: 'dashboard-has-pr-count',

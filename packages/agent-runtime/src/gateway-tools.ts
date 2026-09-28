@@ -208,6 +208,8 @@ export interface ToolContext {
   renderedSystemPrompt?: string
   /** Parent's current conversation history (for fork mode context sharing) */
   sessionMessages?: import('@mariozechner/pi-ai').Message[]
+  /** Build the current turn's worker-safe prompt prefix for a tool set. */
+  buildWorkerPrompt?: (toolNames: string[], includePlatform?: boolean) => import('./prompt-context').WorkerPromptBuild
   /** Session persistence layer (for subagent transcript storage) */
   sessionPersistence?: import('./sqlite-session-persistence').SqliteSessionPersistence
   /** Team coordination manager (for teammate swarm features) */
@@ -5676,7 +5678,7 @@ function createDisconnectTool(ctx: ToolContext): AgentTool {
 // ---------------------------------------------------------------------------
 
 import { AgentManager } from './agent-manager'
-import type { ModelTierName, ForkContext } from './subagent'
+import type { ModelTierName, ForkContext, SubagentContextLevel } from './subagent'
 import { isInForkChild, buildForkDirective } from './subagent-prompts'
 
 function createAgentCreateTool(ctx: ToolContext): AgentTool {
@@ -5701,6 +5703,11 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
         }),
       ),
       model_tier: Type.Optional(Type.String({ description: 'Model tier: fast, default, or capable' })),
+      context: Type.Optional(
+        Type.String({
+          description: 'Usually omit. Defaults to platform (shared Shogo/project rules). Only use "none" for a trivial one-shot helper that needs no project rules.',
+        }),
+      ),
       max_turns: Type.Optional(Type.Number({ description: 'Max agentic turns (default: 10)' })),
       readonly: Type.Optional(
         Type.Boolean({
@@ -5720,6 +5727,7 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
         system_prompt,
         tools,
         model_tier,
+        context,
         max_turns,
         readonly: ro,
         persist,
@@ -5729,6 +5737,7 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
         system_prompt: string
         tools?: string[]
         model_tier?: string
+        context?: string
         max_turns?: number
         readonly?: boolean
         persist?: boolean
@@ -5742,6 +5751,9 @@ function createAgentCreateTool(ctx: ToolContext): AgentTool {
         systemPrompt: system_prompt,
         toolNames: tools,
         modelTier: (model_tier as ModelTierName) || 'default',
+        context: context === 'none' || context === 'platform' || context === 'full'
+          ? context as SubagentContextLevel
+          : undefined,
         maxTurns: max_turns || 10,
         readonly: ro,
       }
@@ -5942,6 +5954,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
             toolCallCount: result.toolCalls,
             subagent: type,
             model: subModel,
+            inheritedPromptTokens: result.inheritedPromptTokens,
             dollarCost: calculateDollarCost(
               subModel,
               result.inputTokens,

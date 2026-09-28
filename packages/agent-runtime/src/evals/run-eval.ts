@@ -1728,6 +1728,13 @@ async function main() {
   console.log(`  Duration:           ${totalTime.toFixed(1)}s`)
   console.log('')
 
+  const infraErrored = results.filter(r => r.infraError)
+  if (infraErrored.length > 0) {
+    console.log(`INFRA ERRORS (${infraErrored.length}) — these never reached the model; scores are not a model signal`)
+    for (const r of infraErrored) console.log(`  ${r.eval.id}: ${r.infraError}`)
+    console.log('')
+  }
+
   if (Object.keys(byCategory).length > 1) {
     console.log('BY CATEGORY')
     console.log('-'.repeat(50))
@@ -1742,7 +1749,7 @@ async function main() {
   console.log('  Name'.padEnd(42) + 'Score'.padEnd(10) + 'Intent'.padEnd(10) + 'Exec'.padEnd(10) + 'Tools'.padEnd(8) + 'Tokens (in/out)')
   console.log('-'.repeat(100))
   for (const r of results) {
-    const status = r.passed ? 'PASS' : 'FAIL'
+    const status = r.infraError ? 'INFRA' : r.passed ? 'PASS' : 'FAIL'
     const name = `${status} ${r.eval.name}`.slice(0, 40)
     const score = `${r.score}/${r.eval.maxScore}`
     const intent = r.phaseScores ? `${r.phaseScores.intention.percentage.toFixed(0)}%` : '-'

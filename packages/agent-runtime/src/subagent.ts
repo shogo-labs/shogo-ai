@@ -44,6 +44,7 @@ const CORE_GATEWAY_TOOLS = new Set([
 // ---------------------------------------------------------------------------
 
 export type ModelTierName = 'fast' | 'default' | 'capable'
+export type SubagentContextLevel = 'none' | 'platform' | 'full'
 
 export interface SubagentConfig {
   name: string
@@ -66,6 +67,11 @@ export interface SubagentConfig {
   maxTokens?: number
   /** Override loop detector config. Pass false to disable. */
   loopDetection?: Partial<LoopDetectorConfig> | false
+  /**
+   * Prompt context inherited from the parent. `platform` includes worker-safe
+   * Shogo/project guidance; `full` is reserved for fork mode.
+   */
+  context?: SubagentContextLevel
   /** When true, strip all write/mutating tools — only read-only tools are available. */
   readonly?: boolean
 }
@@ -85,6 +91,8 @@ export interface SubagentResult {
   agentId?: string
   /** The actual model used for the final iteration (may differ from config if router active). */
   effectiveModelId?: string
+  /** Estimated tokens inherited from the parent worker-safe prompt. */
+  inheritedPromptTokens?: number
   // ------------------------------------------------------------------------
   // Quality signals (Phase 2.1) — surfaced through SubagentResult so the
   // AgentManager can include them in the AgentCostMetric row, and the
@@ -391,6 +399,7 @@ export function getBuiltinSubagentConfig(
       return {
         name: 'explore',
         description: 'Fast read-only codebase exploration agent',
+        context: 'none',
         systemPrompt: buildExploreSystemPrompt(),
         // Only advertise `search` when it's actually registered (SHOGO_SEARCH_ENABLED=1).
         toolNames: isSearchEnabled()
@@ -404,6 +413,7 @@ export function getBuiltinSubagentConfig(
       return {
         name: 'general-purpose',
         description: 'Full-capability subagent for complex multi-step tasks',
+        context: 'platform',
         systemPrompt: GENERAL_PURPOSE_SYSTEM_PROMPT,
         disallowedTools: ['task', 'skill'],
       }
@@ -411,6 +421,7 @@ export function getBuiltinSubagentConfig(
       return {
         name: 'code-reviewer',
         description: 'Code review agent — analyzes changes, risk scores, test gaps, and execution flows',
+        context: 'platform',
         systemPrompt: CODE_REVIEWER_SYSTEM_PROMPT,
         toolNames: ['read_file', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
         disallowedTools: ['task', 'skill'],
@@ -420,6 +431,7 @@ export function getBuiltinSubagentConfig(
       return {
         name: 'browser',
         description: 'Browser automation and web research agent',
+        context: 'none',
         systemPrompt: BROWSER_SUBAGENT_PROMPT,
         toolNames: ['browser', 'web', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
@@ -492,6 +504,15 @@ export interface CustomAgentDef {
   disallowedTools?: string[]
   model?: string
   maxTurns?: number
+  /** Frontmatter `context`: none, platform, or full. */
+  context?: SubagentContextLevel
+}
+
+export function resolveSubagentContext(config: SubagentConfig): SubagentContextLevel {
+  if (config.context) return config.context
+  if (config.readonly) return 'none'
+  if (['explore', 'browser', 'channel', 'media'].includes(config.name)) return 'none'
+  return 'platform'
 }
 
 export function loadCustomAgents(workspaceDir: string): CustomAgentDef[] {
@@ -575,6 +596,9 @@ function parseAgentFrontmatter(raw: string): CustomAgentDef {
     disallowedTools: Array.isArray(meta.disallowedTools) ? meta.disallowedTools : undefined,
     model: meta.model,
     maxTurns: meta.maxTurns ? parseInt(meta.maxTurns, 10) : undefined,
+    context: meta.context === 'none' || meta.context === 'platform' || meta.context === 'full'
+      ? meta.context
+      : undefined,
   }
 }
 
@@ -595,6 +619,7 @@ import {
   type SpawnClassificationInput,
 } from './model-router'
 import { inferProviderFromModel } from '@shogo/model-catalog'
+import { PROMPT_SECTION_SEPARATOR } from './prompt-context'
 
 const MODEL_TIER_MAP: Record<ModelTierName, string> = {
   fast: 'claude-haiku-4-5',
@@ -873,6 +898,7 @@ export async function runSubagent(
   let systemPrompt: string
   let history: Message[]
   let thinkingLevel: ThinkingLevel = 'medium'
+  let inheritedPromptTokens = 0
 
   if (isFork) {
     // Fork mode: use parent's exact system prompt, tools, and filtered history.
@@ -936,6 +962,22 @@ export async function runSubagent(
     if (config.readonly) {
       tools = tools.filter(t => READONLY_TOOLS.has(t.name))
     }
+
+    const contextLevel = resolveSubagentContext(config)
+    const inheritanceEnabled = parentCtx.config?.subagentPromptInheritance !== false
+    if (contextLevel === 'full' && inheritanceEnabled && parentCtx.renderedSystemPrompt) {
+      systemPrompt = `${parentCtx.renderedSystemPrompt}${PROMPT_SECTION_SEPARATOR}${systemPrompt}`
+      inheritedPromptTokens = Math.ceil(parentCtx.renderedSystemPrompt.length / 4)
+    } else {
+      const inherited = parentCtx.buildWorkerPrompt?.(
+        tools.map((tool) => tool.name),
+        contextLevel === 'platform' && inheritanceEnabled,
+      )
+      if (inherited?.prompt) {
+        systemPrompt = `${inherited.prompt}${PROMPT_SECTION_SEPARATOR}${systemPrompt}`
+        inheritedPromptTokens = inherited.estimatedTokens
+      }
+    }
   }
 
   // Apply eval mock interceptors so subagent tool calls hit the same mocks
@@ -948,9 +990,13 @@ export async function runSubagent(
       return {
         ...tool,
         execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
-          const result = mockFn(params)
+          const result = await mockFn(params)
           if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
-          return textResult(typeof result === 'string' ? result : result)
+          if (result && typeof result === 'object' && (result as any).__multipart === true) {
+            const { __multipart: _m, ...rest } = result as any
+            return rest
+          }
+          return textResult(result)
         },
       }
     })
@@ -1013,7 +1059,9 @@ export async function runSubagent(
     || config.model
     || parentCtx.effectiveModel
     || parentCtx.config.model.name
-  const provider = resolvedOverride?.provider || config.provider || parentCtx.config.model.provider
+  const parentProvider = parentCtx.config.model.provider
+  const parentModelName = parentCtx.effectiveModel || parentCtx.config.model.name
+  const provider = resolvedOverride?.provider || config.provider || parentProvider
   const maxIterations = config.maxTurns || (isFork ? 200 : 50)
 
   // Spawn-time model routing: when Auto mode is active and no explicit
@@ -1050,9 +1098,15 @@ export async function runSubagent(
   try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
 
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
+    // A tier shorthand (e.g. "capable" → a Claude model) can land on a model
+    // from a different provider than the parent; inheriting the parent's
+    // provider would send it through the wrong wire protocol.
+    const providerPinned = !!config.provider || !!resolvedOverride?.provider
     const runProvider = useAutoRouting
       ? (autoProviderHints[runModel] ?? inferProviderFromModel(runModel, provider))
-      : provider
+      : providerPinned || runModel === parentModelName
+        ? provider
+        : inferProviderFromModel(runModel, parentProvider)
     const result = await runAgentLoop({
       provider: runProvider,
       model: runModel,
@@ -1108,6 +1162,7 @@ export async function runSubagent(
       newMessages: result.newMessages,
       agentId,
       effectiveModelId: result.effectiveModelId,
+      inheritedPromptTokens,
       hitMaxTurns: result.maxIterationsExhausted === true,
       loopDetected: !!result.loopBreak,
       escalated: false,

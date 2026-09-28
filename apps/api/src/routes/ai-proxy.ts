@@ -924,6 +924,43 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
 
     const msgCC = mapCacheControl(msg.providerOptions?.anthropic?.cacheControl)
 
+    // Anthropic rejects `content: null`, and tool calls/results must be
+    // `tool_use` / `tool_result` blocks paired by id rather than plain text.
+    if (msg.role === 'tool') {
+      const block: Record<string, unknown> = {
+        type: 'tool_result',
+        tool_use_id: msg.tool_call_id,
+        content: typeof msg.content === 'string'
+          ? msg.content
+          : (msg.content ?? []).map(p => ({ type: 'text', text: p.text || '' })),
+      }
+      if (msgCC) block.cache_control = msgCC
+      const prev = messages[messages.length - 1]
+      if (prev?.role === 'user' && Array.isArray(prev.content) && prev.content.every(b => b?.type === 'tool_result')) {
+        prev.content.push(block)
+      } else {
+        messages.push({ role: 'user', content: [block] })
+      }
+      continue
+    }
+
+    if (msg.role === 'assistant' && (msg.tool_calls?.length || msg.content == null)) {
+      const blocks: Array<Record<string, unknown>> = []
+      const text = typeof msg.content === 'string'
+        ? msg.content
+        : (msg.content ?? []).map(p => p.text || '').join('')
+      if (text) blocks.push({ type: 'text', text })
+      for (const tc of msg.tool_calls ?? []) {
+        let input: unknown = {}
+        try { input = tc.function.arguments ? JSON.parse(tc.function.arguments) : {} } catch { input = {} }
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input })
+      }
+      if (!blocks.length) continue
+      if (msgCC) blocks[blocks.length - 1].cache_control = msgCC
+      messages.push({ role: 'assistant', content: blocks })
+      continue
+    }
+
     if (Array.isArray(msg.content)) {
       // Preserve / translate per-content-block cache metadata.
       const blocks = msg.content.map(b => {

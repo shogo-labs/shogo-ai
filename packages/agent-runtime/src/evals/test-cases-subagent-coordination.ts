@@ -15,7 +15,7 @@
  *   5. Board Package — compile final deliverables via delegation
  */
 
-import type { AgentEval, EvalResult } from './types'
+import type { AgentEval, EvalResult, ToolCallRecord } from './types'
 import {
   usedTool,
   toolCallCount,
@@ -74,19 +74,44 @@ function agentCreatePromptsContain(r: EvalResult, term: string): boolean {
     })
 }
 
-function anyAgentUsesModelTier(r: EvalResult, tier: string): boolean {
-  return r.toolCalls
-    .filter(tc => AGENT_TOOLS.includes(tc.name))
-    .some(tc => {
-      const input = tc.input as Record<string, any>
-      return input.model_tier === tier || input.model === tier
-    })
+/** True unless every created agent was put on the most expensive tier. */
+function notAllAgentsOnCapableTier(r: EvalResult): boolean {
+  const creates = r.toolCalls.filter(tc => tc.name === 'agent_create')
+  if (creates.length === 0) return false
+  return creates.some(tc => (tc.input as Record<string, any>).model_tier !== 'capable')
 }
 
-function agentCreateIncludesTool(r: EvalResult, tool: string): boolean {
-  return r.toolCalls
-    .filter(tc => AGENT_TOOLS.includes(tc.name))
-    .some(tc => JSON.stringify(tc.input).toLowerCase().includes(tool.toLowerCase()))
+/** Every created agent can read files — either an explicit read_file grant or the default (all) tools. */
+function allAgentsCanRead(r: EvalResult): boolean {
+  const creates = r.toolCalls.filter(tc => tc.name === 'agent_create')
+  if (creates.length === 0) return false
+  return creates.every(tc => {
+    const tools = (tc.input as Record<string, any>).tools
+    return !Array.isArray(tools) || tools.length === 0 || tools.includes('read_file')
+  })
+}
+
+/**
+ * Tool calls made in this phase only. For pipeline phases, intention criteria
+ * receive `toolCalls` swapped to the cumulative pipeline history.
+ */
+function currentPhaseCalls(r: EvalResult): ToolCallRecord[] {
+  return r.perTurnToolCalls?.length ? r.perTurnToolCalls.flat() : r.toolCalls
+}
+
+function parsedOutput(tc: ToolCallRecord): any {
+  if (typeof tc.output !== 'string') return tc.output
+  try { return JSON.parse(tc.output) } catch { return null }
+}
+
+/** A foreground spawn blocks and returns the finished result inline. */
+function isInlineCompletedSpawn(tc: ToolCallRecord): boolean {
+  return tc.name === 'agent_spawn' && parsedOutput(tc)?.status === 'completed'
+}
+
+function resultCompleted(tc: ToolCallRecord): boolean {
+  const status = parsedOutput(tc)?.status
+  return status === undefined || status === 'completed'
 }
 
 function spawnedInParallel(r: EvalResult): boolean {
@@ -463,18 +488,17 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'cost-efficient-tier',
-      description: 'At least one agent uses model_tier "fast" for cost efficiency',
+      description: 'Not every agent is on the capable tier',
       points: 3,
       phase: 'intention',
-      validate: (r) => anyAgentUsesModelTier(r, 'fast'),
+      validate: (r) => notAllAgentsOnCapableTier(r),
     },
     {
       id: 'read-tools-provided',
-      description: 'Agents include read_file and grep in tool lists',
+      description: 'Every agent can read the data files',
       points: 4,
       phase: 'intention',
-      validate: (r) =>
-        agentCreateIncludesTool(r, 'read_file') && agentCreateIncludesTool(r, 'grep'),
+      validate: (r) => allAgentsCanRead(r),
     },
     {
       id: 'explored-data-first',
@@ -626,7 +650,7 @@ const PHASE_3: AgentEval = {
       points: 6,
       phase: 'intention',
       validate: (r) => {
-        const spawns = r.toolCalls.filter(tc => tc.name === 'agent_spawn')
+        const spawns = currentPhaseCalls(r).filter(tc => tc.name === 'agent_spawn')
         if (spawns.length < 1) return false
         const firstPrompt = JSON.stringify(spawns[0].input).toLowerCase()
         return (firstPrompt.includes('customer') || firstPrompt.includes('churn')) &&
@@ -639,7 +663,7 @@ const PHASE_3: AgentEval = {
       points: 8,
       phase: 'intention',
       validate: (r) => {
-        const spawns = r.toolCalls.filter(tc => tc.name === 'agent_spawn')
+        const spawns = currentPhaseCalls(r).filter(tc => tc.name === 'agent_spawn')
         if (spawns.length < 2) return false
         const secondPrompt = JSON.stringify(spawns[1].input).toLowerCase()
         return secondPrompt.includes('roadmap') || secondPrompt.includes('first agent') ||
@@ -652,13 +676,13 @@ const PHASE_3: AgentEval = {
       points: 6,
       phase: 'intention',
       validate: (r) => {
-        const calls = r.toolCalls.map((tc, i) => ({ ...tc, idx: i }))
-        const spawns = calls.filter(tc => tc.name === 'agent_spawn')
-        const results = calls.filter(tc => tc.name === 'agent_result')
-        if (spawns.length < 2 || results.length < 1) return false
-        const firstResult = results[0].idx
-        const secondSpawn = spawns[1].idx
-        return secondSpawn > firstResult
+        const calls = currentPhaseCalls(r)
+        const spawnIdx = calls.flatMap((tc, i) => (tc.name === 'agent_spawn' ? [i] : []))
+        if (spawnIdx.length < 2) return false
+        const firstDone = isInlineCompletedSpawn(calls[spawnIdx[0]])
+          ? spawnIdx[0]
+          : calls.findIndex((tc, i) => i > spawnIdx[0] && tc.name === 'agent_result' && resultCompleted(tc))
+        return firstDone >= 0 && spawnIdx[1] > firstDone
       },
     },
     {

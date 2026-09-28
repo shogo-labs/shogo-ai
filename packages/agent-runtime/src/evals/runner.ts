@@ -138,8 +138,15 @@ export async function sendTurn(
       }
 
       if (config.verbose) console.log(`      [sendTurn] Response OK, parsing SSE...`)
-      const result = await parseSSEStream(res, config.verbose)
+      const result = await parseSSEStream(res, config.verbose, () => timedOut)
       clearTimeout(timeout)
+      if (timedOut) {
+        if (config.verbose) {
+          console.log(`      [sendTurn] Hit ${config.timeoutMs}ms cap mid-stream; stopping agent and returning partial.`)
+        }
+        await stopAgentTurn(config).catch(() => {})
+        result.text += `[ERROR: turn exceeded ${config.timeoutMs}ms cap]`
+      }
       return result
     } catch (err: any) {
       clearTimeout(timeout)
@@ -218,6 +225,8 @@ function emptyResponse(text: string): ParsedAgentResponse {
 async function parseSSEStream(
   response: Response,
   verbose: boolean,
+  /** When true after a read fails, return what was parsed so far instead of throwing. */
+  isAborted?: () => boolean,
 ): Promise<ParsedAgentResponse> {
   const toolCalls: ToolCallRecord[] = []
   const toolInputs: Record<string, string> = {}
@@ -244,7 +253,14 @@ async function parseSSEStream(
   let chunkCount = 0
   try {
     while (true) {
-      const { done, value } = await reader.read()
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch (err) {
+        if (isAborted?.()) break
+        throw err
+      }
+      const { done, value } = chunk
       if (done) break
 
       chunkCount++
@@ -740,6 +756,9 @@ export async function runEval(
   const finalScore = Math.max(0, totalScore - antiPenalty - toolErrorPenalty)
   const percentage = (finalScore / eval_.maxScore) * 100
   const passed = percentage >= 70 && triggeredAntiPatterns.length === 0
+  const infraErrorMatch = toolCalls.length === 0 && totalTokens === 0 && !/\[ERROR: turn exceeded/.test(responseText)
+    ? responseText.match(/\[ERROR: ([^\]]+)\]/)
+    : null
 
   return {
     ...evalBase,
@@ -748,6 +767,7 @@ export async function runEval(
     percentage,
     criteriaResults,
     triggeredAntiPatterns,
+    infraError: infraErrorMatch?.[1],
     phaseScores: {
       intention: {
         score: intentionScore,
