@@ -116,4 +116,30 @@ describe('recycleRuntimes', () => {
     expect(r.status).toBe(200)
     expect(r.body.coldBoot).toMatchObject({ ok: false, apiReady: false, apiServerPhase: 'crashed' })
   })
+
+  it('keeps asking while a slow cold boot outlasts a single open call', async () => {
+    let attempts = 0
+    const { d } = deps({
+      results: { 'ws:proj:p1': { found: true, ok: true } },
+      coldBoot: async () => {
+        if (++attempts < 3) throw new Error('The operation timed out.')
+        return 'http://guest:8080'
+      },
+    })
+    const r = await recycleRuntimes({ projectId: 'p1' }, ACTOR, d)
+    expect(attempts).toBe(3)
+    expect(r.body.coldBoot).toMatchObject({ ok: true, apiReady: true })
+  })
+
+  it('reports the last boot error once the deadline passes', async () => {
+    const { d } = deps({
+      results: { 'ws:proj:p1': { found: true, ok: true } },
+      coldBoot: async () => {
+        throw new Error('The operation timed out.')
+      },
+    })
+    const r = await recycleRuntimes({ projectId: 'p1' }, ACTOR, d)
+    expect(r.status).toBe(200)
+    expect(r.body.coldBoot).toMatchObject({ ok: false, error: 'cold boot failed: The operation timed out.' })
+  })
 })
