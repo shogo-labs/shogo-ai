@@ -234,6 +234,10 @@ export interface MetalHostRegistration {
    * the node-agent. Absent on a host that has never rebuilt, or an agent
    * predating this field. */
   rootfsSha?: string
+  /** Commit stamped inside the host's golden rootfs (/etc/shogo-runtime-revision),
+   * i.e. what the image pull actually returned. The rootfs release gate reads
+   * this. Absent for images built before the stamp existed. */
+  rootfsRevision?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
   /**
    * Per-VM-class capacity (Phase 1 docker project class). Absent on older
@@ -474,6 +478,7 @@ export class MetalWarmPoolController {
       arch: reg.arch,
       agentVersion: reg.agentVersion,
       rootfsSha: reg.rootfsSha,
+      rootfsRevision: reg.rootfsRevision,
       capacity: reg.capacity,
       load: reg.load,
       disk: reg.disk,
@@ -1303,6 +1308,7 @@ export class MetalWarmPoolController {
           arch: h.arch,
           agentVersion: h.agentVersion,
           rootfsSha: h.rootfsSha,
+          rootfsRevision: h.rootfsRevision,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,
@@ -1347,6 +1353,7 @@ export class MetalWarmPoolController {
           arch: h.arch,
           agentVersion: h.agentVersion,
           rootfsSha: h.rootfsSha,
+          rootfsRevision: h.rootfsRevision,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,

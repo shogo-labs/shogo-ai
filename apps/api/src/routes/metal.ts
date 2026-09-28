@@ -64,6 +64,7 @@ export function metalRoutes(): Hono {
       // "never reported" from an empty string rather than showing a blank.
       agentVersion: body.agentVersion ? String(body.agentVersion) : undefined,
       rootfsSha: body.rootfsSha ? String(body.rootfsSha) : undefined,
+      rootfsRevision: body.rootfsRevision ? String(body.rootfsRevision) : undefined,
       capacity: {
         poolSize: Number(body.capacity?.poolSize ?? 0),
         memMiB: Number(body.capacity?.memMiB ?? 0),
@@ -133,7 +134,8 @@ export function metalRoutes(): Hono {
   // POST /api/internal/metal/release — publish a node-agent release to a
   // region/channel pointer. Called by the metal-agent-deploy CI after it has
   // built + uploaded the immutable bundle; hosts converge on their next
-  // heartbeat. Body: { region, channel, release: { version, bundleUrl, sha256, rebuildRootfs? } }.
+  // heartbeat. Body: { region, channel, release: { version, bundleUrl, sha256,
+  // rebuildRootfs?, runtimeImage?, runtimeRevision? } }.
   app.post('/release', async (c) => {
     if (!authOk(c.req.header('authorization'))) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
@@ -187,6 +189,17 @@ export function metalRoutes(): Hono {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
     return c.json({ ok: true, ...getMetalWarmPoolController().getStatus() })
+  })
+
+  // GET /api/internal/metal/fleet — every live host any replica has heard from,
+  // with the guest revision baked into its rootfs. /status is only this
+  // replica's view, so a host heartbeating to a sibling pod would be missing.
+  // The rootfs release gate (scripts/ci/metal-rootfs-gate.sh) reads this.
+  app.get('/fleet', async (c) => {
+    if (!authOk(c.req.header('authorization'))) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    return c.json({ ok: true, ...(await getMetalWarmPoolController().getFleetStatus()) })
   })
 
   return app

@@ -32,7 +32,7 @@ import { M, metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
 import { reportPlacement, startRegistration } from './register'
-import { getRootfsSha } from './self-update'
+import { getRootfsRevision, getRootfsSha } from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -118,6 +118,7 @@ const server = Bun.serve({
           hostId: config.hostId,
           agentVersion: config.agentVersion,
           rootfsSha: getRootfsSha(),
+          rootfsRevision: getRootfsRevision(),
         })
       }
       if (path === '/vms') return Response.json(pool.status())

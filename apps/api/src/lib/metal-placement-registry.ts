@@ -43,6 +43,8 @@ export interface HostScalars {
   agentVersion?: string
   /** Release the host's golden rootfs was last rebuilt from. Drives rollout re-warm. */
   rootfsSha?: string
+  /** Commit stamped inside the golden rootfs itself. Read by the rootfs release gate. */
+  rootfsRevision?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
   load: {
     available: number

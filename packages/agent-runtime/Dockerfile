@@ -107,4 +107,13 @@ USER appuser
 RUN --mount=type=cache,target=/app/.bun/cache,uid=1001,gid=1001 \
     BUN_CONFIG_SKIP_SAVE_LOCKFILE=1 bun install --ignore-scripts --no-save
 
+# The commit this image was built from. Metal hosts read this file out of the
+# rootfs they bake to prove which guest code they run, so it must stay the
+# last layer: the value changes on every build and would bust the cache of
+# anything after it.
+ARG SHOGO_RUNTIME_REVISION=unknown
+USER root
+RUN echo "$SHOGO_RUNTIME_REVISION" > /etc/shogo-runtime-revision
+USER appuser
+
 ENTRYPOINT ["/entrypoint.sh"]
