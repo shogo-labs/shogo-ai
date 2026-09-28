@@ -1009,7 +1009,19 @@ export class MetalWarmPoolController {
       const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
       return { suspended, busy, ...(memBytes !== undefined ? { memBytes } : {}) }
     } catch (err) {
-      console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`)
+      // The host answers /stop only once the snapshot is uploaded, which can
+      // outlast the timeout under load; by then the VM is usually suspended.
+      const settled = await this.getRuntimeHostStatus(projectId)
+      if (settled?.state === 'suspended') {
+        console.log(
+          `[MetalPool] stop ${projectId} on ${host.hostId}: /stop outlasted ${STOP_TIMEOUT_MS}ms, host reports it suspended`,
+        )
+        return { suspended: true, busy: false }
+      }
+      console.warn(
+        `[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}` +
+          (settled ? ` (host state: ${settled.state})` : ''),
+      )
       return { suspended: false, busy: false }
     }
   }
