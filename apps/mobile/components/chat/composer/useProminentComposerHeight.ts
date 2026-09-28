@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Animated } from "react-native";
 import {
   PROMINENT_COMPOSER_HEIGHT_ANIMATION_DURATION,
   PROMINENT_COMPOSER_HEIGHT_EASING,
+  PROMINENT_COMPOSER_MAX_HEIGHT,
   PROMINENT_COMPOSER_MIN_HEIGHT,
+  nextProminentComposerHeight,
   useProminentComposerExpansion,
 } from "../useProminentComposerExpansion";
 
@@ -16,6 +18,7 @@ type UseProminentComposerHeightOptions = {
   text: string;
   inputHeight: number;
   minHeight?: number;
+  maxHeight?: number;
   lineHeight: number;
   paddingTop: number;
   paddingHorizontal: number;
@@ -43,6 +46,7 @@ export function useProminentComposerHeight({
   text,
   inputHeight,
   minHeight = PROMINENT_COMPOSER_MIN_HEIGHT,
+  maxHeight = PROMINENT_COMPOSER_MAX_HEIGHT,
   lineHeight,
   paddingTop,
   paddingHorizontal,
@@ -58,6 +62,18 @@ export function useProminentComposerHeight({
   const previousEnabledRef = useRef(enabled);
   const skipNextHeightAnimationRef = useRef(false);
   const wasStackedRef = useRef(false);
+  const inputHeightRef = useRef(inputHeight);
+  const enabledRef = useRef(enabled);
+  const maxHeightRef = useRef(maxHeight);
+  const pendingContentSizeRef = useRef<{
+    height: number;
+    empty: boolean;
+  } | null>(null);
+  const contentSizeFrameRef = useRef<number | null>(null);
+
+  inputHeightRef.current = inputHeight;
+  enabledRef.current = enabled;
+  maxHeightRef.current = maxHeight;
 
   const expansion = useProminentComposerExpansion({
     enabled,
@@ -72,6 +88,58 @@ export function useProminentComposerHeight({
     duration,
     easing,
   });
+
+  const reportContentSize = useCallback(
+    (height: number, isEmpty = empty) => {
+      pendingContentSizeRef.current = {
+        height,
+        empty: isEmpty,
+      };
+
+      if (contentSizeFrameRef.current != null) return;
+
+      contentSizeFrameRef.current = requestAnimationFrame(() => {
+        contentSizeFrameRef.current = null;
+        const measurement = pendingContentSizeRef.current;
+        pendingContentSizeRef.current = null;
+
+        if (!measurement || !enabledRef.current) return;
+
+        expansion.reportContentHeight(measurement.height);
+        const nextHeight = nextProminentComposerHeight(
+          measurement.height,
+          {
+            empty: measurement.empty,
+            minHeight,
+            maxHeight: maxHeightRef.current,
+            lineHeight,
+          },
+        );
+        if (nextHeight !== inputHeightRef.current) {
+          inputHeightRef.current = nextHeight;
+          setInputHeight?.(nextHeight);
+        }
+      });
+    },
+    [
+      empty,
+      expansion.reportContentHeight,
+      lineHeight,
+      minHeight,
+      setInputHeight,
+    ],
+  );
+
+  useEffect(
+    () => () => {
+      if (contentSizeFrameRef.current != null) {
+        cancelAnimationFrame(contentSizeFrameRef.current);
+        contentSizeFrameRef.current = null;
+      }
+      pendingContentSizeRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     const modeChanged = previousEnabledRef.current !== enabled;
@@ -116,5 +184,6 @@ export function useProminentComposerHeight({
   return {
     ...expansion,
     inputHeightAnimation,
+    reportContentSize,
   };
 }
