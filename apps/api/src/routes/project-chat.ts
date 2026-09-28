@@ -245,6 +245,10 @@ export async function trackUsageFromStream(
   // turn's actual start time doesn't change across a resume.
   let turnStartedAt: number | undefined
   let turnCompletedAt: number | undefined
+  // The runtime keys its stream buffer by chat session, not by turn, so a
+  // newer turn on the same session replaces it. Resume must only replay the
+  // turn this tracker owns, or it overwrites this row with the next turn's parts.
+  let trackedTurnId: string | undefined
   let assistantMessageId: string | null = null
   let lastPartialPersistAt = 0
   let partialPersistInFlight: Promise<void> | null = null
@@ -572,6 +576,10 @@ export async function trackUsageFromStream(
       const startedAt = data?.data?.startedAt
       if (typeof startedAt === 'number') turnStartedAt = startedAt
     }
+    if (type === 'data-turn-start' && trackedTurnId === undefined) {
+      const turnId = data?.data?.turnId
+      if (typeof turnId === 'string' && turnId) trackedTurnId = turnId
+    }
 
     // The runtime writes `data-turn-complete` exactly once at the tail
     // of every successfully-streamed turn (including failed turns it
@@ -757,7 +765,15 @@ export async function trackUsageFromStream(
       resumeOutcome = 'failed'
     }
 
-    if (resumeRes) {
+    const resumeTurnId = resumeRes?.headers.get('X-Turn-Id') || undefined
+    if (resumeRes && resumeRes.status === 200 && trackedTurnId && resumeTurnId && resumeTurnId !== trackedTurnId) {
+      resumeOutcome = 'buffer-gone'
+      console.log(
+        `[ProjectChat] Resume for session ${chatSessionId} returned turn ${resumeTurnId}, expected ${trackedTurnId} — ` +
+          `a newer turn replaced the buffer; persisting partial`
+      )
+      try { resumeRes.body?.cancel() } catch { /* noop */ }
+    } else if (resumeRes) {
       if (resumeRes.status === 200 && resumeRes.body) {
         // Reset state — we're going to re-consume the entire turn from the
         // buffer's full replay, so any text/tool data we accumulated from
