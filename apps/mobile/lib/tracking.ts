@@ -104,13 +104,16 @@ export function trackPurchase(params: {
   billingInterval?: string
   seats?: number
   value?: number
+  currency?: string
   workspaceId?: string
   sessionId?: string
 }) {
+  const hasChargedValue = params.value != null
   const value = params.value ??
     (params.planId && params.billingInterval
       ? lookupPlanValue(params.planId, params.billingInterval, params.seats)
       : undefined)
+  const currency = hasChargedValue && params.currency ? params.currency.toUpperCase() : 'USD'
   const eventId = params.sessionId ?? generateEventId('purchase')
 
   // Primary conversion event for ad optimization
@@ -119,7 +122,7 @@ export function trackPurchase(params: {
     content_name: params.planId,
     content_category: 'subscription',
     content_type: 'product',
-    currency: 'USD',
+    currency,
     value,
     num_items: 1,
   }, { eventID: eventId })
@@ -127,13 +130,13 @@ export function trackPurchase(params: {
   // Subscription-specific event for Meta reporting
   fbq('track', 'Subscribe', {
     content_name: params.planId,
-    currency: 'USD',
+    currency,
     value,
     predicted_ltv: value != null ? value * 12 : undefined,
   }, { eventID: `${eventId}_sub` })
 
   gtag('event', 'purchase', {
-    currency: 'USD',
+    currency,
     value,
     transaction_id: params.sessionId ?? params.workspaceId,
     items: [{

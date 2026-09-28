@@ -147,8 +147,10 @@ export default function NewWorkspacePage() {
                   console.log('[NewWorkspace] verify result:', verifyResult)
                   trackPurchase({
                     planId: verifyResult.planId,
-                    billingInterval,
-                    seats: (verifyResult as { seats?: number }).seats ?? safeSeats,
+                    billingInterval: verifyResult.billingInterval ?? billingInterval,
+                    seats: verifyResult.seats ?? safeSeats,
+                    value: verifyResult.amountPaid,
+                    currency: verifyResult.currency,
                     workspaceId: verifyResult.workspaceId ?? wsId ?? undefined,
                     sessionId,
                   })
