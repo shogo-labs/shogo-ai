@@ -1099,19 +1099,14 @@ export class PreviewManager {
    */
   private publishBuildInFlight: Promise<PublishBuildResult> | null = null
   /**
-   * Reentrancy guard for `runExpoExportWeb`. Without it, the staging-pod
-   * boot path can spawn `expo export --platform web` twice in parallel:
-   *   - Once via `start() -> backgroundSetupMetro()` (fire-and-forget).
-   *   - Once via a second `start()`/`restart()` call slipping through
-   *     before `this.started` is observed by the caller.
-   *
-   * Each invocation forks ~6 jest-worker children and competes for the
-   * same `dist.staging/` output dir, doubling Metro's already-heavy
-   * memory footprint and producing the OOM kills we saw in staging on
-   * 2026-05-13 (project 9e7ecdc7-...). The guard keeps the export
-   * strictly serial — concurrent callers receive the in-flight promise.
+   * In-flight Expo exports keyed by their output mode. Calls requesting the
+   * exact same mode share a promise, while different modes are serialized by
+   * `expoExportQueue`. A preview export and a publish export cannot share a
+   * promise because they write different staging directories and only the
+   * preview export promotes its output into `dist/`.
    */
-  private expoExportInFlight: Promise<void> | null = null
+  private expoExportInFlight = new Map<string, Promise<void>>()
+  private expoExportQueue: Promise<void> = Promise.resolve()
   /**
    * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
    * above. `startApiServer()` is reachable from many independent entry
@@ -4063,15 +4058,36 @@ export class PreviewManager {
     cwd: string,
     options: { basePath?: string | null; stagingDir?: string; promote?: boolean } = {},
   ): Promise<void> {
-    // Reentrancy guard — see `expoExportInFlight` field doc.
-    if (this.expoExportInFlight) {
+    const basePath = options.basePath === undefined ? this.basePath : options.basePath
+    const stagingDir = options.stagingDir ?? DEFAULT_STAGING_DIR
+    const promote = options.promote ?? true
+    const modeKey = JSON.stringify({ cwd, basePath, stagingDir, promote })
+    const existing = this.expoExportInFlight.get(modeKey)
+    if (existing) {
       console.log(`[${LOG_PREFIX}] expo export already running — awaiting in-flight build`)
-      return this.expoExportInFlight
+      return existing
     }
-    this.expoExportInFlight = this._runExpoExportWebImpl(timings, cwd, options).finally(() => {
-      this.expoExportInFlight = null
-    })
-    return this.expoExportInFlight
+
+    // Keep exports for different output modes strictly serial. This preserves
+    // the old same-mode reentrancy behavior while ensuring a publish export
+    // cannot accidentally join a preview export (or vice versa).
+    const run = this.expoExportQueue.then(() => this._runExpoExportWebImpl(timings, cwd, {
+      ...options,
+      basePath,
+      stagingDir,
+      promote,
+    }))
+    this.expoExportInFlight.set(modeKey, run)
+    this.expoExportQueue = run.catch(() => {})
+    void run.then(
+      () => {
+        if (this.expoExportInFlight.get(modeKey) === run) this.expoExportInFlight.delete(modeKey)
+      },
+      () => {
+        if (this.expoExportInFlight.get(modeKey) === run) this.expoExportInFlight.delete(modeKey)
+      },
+    )
+    return run
   }
 
   private async _runExpoExportWebImpl(
