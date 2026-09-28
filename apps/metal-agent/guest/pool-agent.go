@@ -11,6 +11,8 @@
 //   GET  /pool/status      -> current assignment + liveness proof
 //   POST /pool/quiesce     -> pre-snapshot hook (flush + drop stale sockets)
 //   POST /pool/rehydrate   -> post-restore hook (reconnect external services)
+//   POST /e2e/state        {apiPhase?, activeStreams?} -> what /pool/activity
+//                             reports as API health and agent turns (e2e only)
 //
 // The quiesce/rehydrate hooks mirror what the real agent-runtime needs around a
 // freeze: on quiesce it would close AI-proxy/MCP/LSP/DB sockets (which won't
@@ -63,6 +65,11 @@ var (
 	quiesceCount   int
 	rehydrateCount int
 	quiesced       bool
+
+	// Set through POST /e2e/state so the recycle e2e can make this guest look
+	// like a runtime whose API server crashed, or one mid agent turn.
+	apiPhase      string
+	activeStreams int
 )
 
 // track wraps a handler so any real request refreshes lastRequestAt. The real
@@ -122,11 +129,43 @@ func main() {
 		writeJSON(w, http.StatusOK, statusPayload())
 	})
 	http.HandleFunc("/pool/activity", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
+		mu.Lock()
+		body := map[string]any{
 			"lastRequestAt": lastRequestAt.Load(),
 			"counter":       counter.Load(),
 			"bootID":        bootID,
-		})
+			"activeStreams": activeStreams,
+		}
+		if apiPhase != "" {
+			body["previewHealth"] = []map[string]any{{
+				"projectId": assigned,
+				"apiPhase":  apiPhase,
+				"apiReady":  apiPhase == "healthy",
+			}}
+		}
+		mu.Unlock()
+		writeJSON(w, http.StatusOK, body)
+	})
+	http.HandleFunc("/e2e/state", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
+			return
+		}
+		var body struct {
+			APIPhase      *string `json:"apiPhase"`
+			ActiveStreams *int    `json:"activeStreams"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		if body.APIPhase != nil {
+			apiPhase = *body.APIPhase
+		}
+		if body.ActiveStreams != nil {
+			activeStreams = *body.ActiveStreams
+		}
+		state := map[string]any{"apiPhase": apiPhase, "activeStreams": activeStreams}
+		mu.Unlock()
+		writeJSON(w, http.StatusOK, state)
 	})
 	http.HandleFunc("/pool/status", track(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, statusPayload())

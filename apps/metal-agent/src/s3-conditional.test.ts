@@ -22,7 +22,9 @@ import {
   amzDates,
   canonicalUriFor,
   conditionalPutObject,
+  copyObject,
   objectUrl,
+  signCopyHeaders,
   signPutHeaders,
   type S3Target,
 } from './s3-conditional'
@@ -136,6 +138,55 @@ describe('signPutHeaders', () => {
     const b = signPutHeaders({ ...base, payload: new TextEncoder().encode('two') })
     expect(a['x-amz-content-sha256']).not.toBe(b['x-amz-content-sha256'])
     expect(a.authorization).not.toBe(b.authorization)
+  })
+})
+
+describe('signCopyHeaders', () => {
+  test('matches botocore: server-side copy to a daily restore point', () => {
+    const headers = signCopyHeaders({
+      target: TARGET,
+      sourceKey: 'proj-abc/project-data.tar.gz',
+      destKey: 'proj-abc/project-data/daily/2026-08-06.tar.gz',
+      now: dateOf('20260928T063725Z'),
+    })
+    expect(headers['x-amz-copy-source']).toBe(
+      '/shogo-workspaces-production/proj-abc/project-data.tar.gz',
+    )
+    expect(headers.authorization).toBe(
+      'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260928/us-ashburn-1/s3/aws4_request, ' +
+        'SignedHeaders=content-length;host;x-amz-content-sha256;x-amz-copy-source;x-amz-date, ' +
+        'Signature=c4f10797470c88cf3c54f98840c22a7e64e8105de4389b0be1dad0e495caa1bf',
+    )
+  })
+})
+
+describe('copyObject', () => {
+  const copy = (response: Response) => {
+    let sent: Request | null = null
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      sent = new Request(url, init)
+      return response
+    }) as unknown as typeof fetch
+    return copyObject({
+      target: TARGET,
+      sourceKey: 'p/project-data.tar.gz',
+      destKey: 'p/project-data/daily/2026-08-06.tar.gz',
+      fetchImpl,
+    }).then(() => sent as Request | null)
+  }
+
+  test('PUTs to the destination with the copy source header', async () => {
+    const sent = await copy(new Response('<CopyObjectResult/>', { status: 200 }))
+    expect(sent!.method).toBe('PUT')
+    expect(sent!.url).toBe(`${TARGET.endpoint}/${TARGET.bucket}/p/project-data/daily/2026-08-06.tar.gz`)
+    expect(sent!.headers.get('x-amz-copy-source')).toBe(`/${TARGET.bucket}/p/project-data.tar.gz`)
+  })
+
+  test('throws on HTTP errors and on a 200 carrying an <Error> body', async () => {
+    await expect(copy(new Response('nope', { status: 404 }))).rejects.toThrow(/failed \(404\)/)
+    await expect(
+      copy(new Response('<Error><Code>InternalError</Code></Error>', { status: 200 })),
+    ).rejects.toThrow(/failed \(200\)/)
   })
 })
 

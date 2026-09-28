@@ -30,7 +30,7 @@ import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } fro
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
-import { LiveRegistry, pidAlive } from './live-registry'
+import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
 import {
@@ -50,8 +50,11 @@ import {
   uploadPublishedDataArchive,
 } from './published-data-archive'
 import {
+  copyProjectDataToDaily,
   describeProjectDataArchive,
   uploadProjectDataGuarded,
+  utcDate,
+  type DailyCopyResult,
   type DataLineage,
   type DataWriteOutcome,
 } from './project-data-archive'
@@ -227,6 +230,19 @@ export interface AssignedVm {
    * the refusal log says what actually went wrong.
    */
   dataUntrustedReason?: string
+  /** Epoch ms of the last successful `project-data.tar.gz` upload (large-DB cadence limit). */
+  dataLastUploadAt?: number
+  /** Size of the last exported writable-state archive (large-DB cadence limit). */
+  dataLastBytes?: number
+  /** UTC date (YYYY-MM-DD) of the last daily restore point copied for this project. */
+  dataLastDailyCopyDate?: string
+  /**
+   * Workspace runtimes (`ws:` keys): writable-state lineage per MEMBER project,
+   * keyed by member id. Each member's database lives in its own subfolder and
+   * is backed up to `{memberId}/project-data.tar.gz`, so each needs its own
+   * lineage — the top-level `dataParentEtag` is unused for these VMs.
+   */
+  memberData?: Record<string, MemberDataState>
   /**
    * The guest predates `/pool/export-data` and answers 404. A running VM never
    * gains the endpoint — only a reboot onto a newer rootfs does, and that
@@ -271,6 +287,58 @@ export interface AssignedVm {
   activityPollFailedAt?: number
   /** Last health/activity poll outcome. `false` = assigned-but-unhealthy. */
   lastHealthOk?: boolean
+  /** When a project API sidecar in this VM was first seen unhealthy (cleared once healthy). */
+  apiUnhealthySince?: number
+  /** `projectId:phase` of each unhealthy sidecar, for logs. */
+  apiUnhealthyProjects?: string[]
+  /** Observe-mode watchdog already logged this unhealthy episode. */
+  apiWatchdogObserved?: boolean
+}
+
+/**
+ * `final` marks the last export before a VM goes away (suspend, recycle): it
+ * bypasses the large-database cadence limit and quarantines refused bytes.
+ * `reason` only labels the upload metric.
+ */
+type SourceSaveResult = 'written' | 'empty' | 'quarantined' | 'lost'
+
+export interface RecycleStep {
+  step: string
+  ok: boolean
+  detail?: string
+}
+
+/** What `recycle()` did. `aborted` means nothing was removed. */
+export interface RecycleReport {
+  runtimeKey: string
+  state: 'assigned' | 'suspended' | 'none'
+  resumed: boolean
+  forced: boolean
+  aborted: boolean
+  steps: RecycleStep[]
+  destroyed?: { stoppedVm: boolean; removedLocal: boolean; removedDurable: boolean }
+}
+
+interface DataSaveOpts {
+  final?: boolean
+  reason?: 'periodic' | 'final' | 'recycle'
+}
+
+/**
+ * One writable-state backup target: a single-project VM (the top-level
+ * `dataParentEtag` fields) or one member of a workspace runtime. `commit`
+ * persists `state` back to wherever it lives.
+ */
+interface DataSlot {
+  /** Id the archive is stored under: `{storageId}/project-data.tar.gz`. */
+  storageId: string
+  /** Serialization + change-tag key; unique per target. */
+  flightKey: string
+  /** Guest workspace dir to export; undefined = the runtime root. */
+  dir?: string
+  label: string
+  state: MemberDataState
+  commit(): void
 }
 
 export interface SuspendedVm {
@@ -292,6 +360,8 @@ export interface SuspendedVm {
    * VM's next export can overwrite the data archive its database derives from.
    */
   dataEtag?: string
+  /** Workspace runtimes: per-member `dataEtag`. Carried back into AssignedVm.memberData. */
+  memberDataEtags?: Record<string, string>
   /**
    * ETag of the durable `.git` archive current when this snapshot was taken.
    * Carried back into AssignedVm.repoParentEtag on resume.
@@ -420,6 +490,8 @@ export class MetalWarmPool {
   private openFlight = new Singleflight<OpenResult | null>()
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
+  private recycleFlight = new Singleflight<RecycleReport>()
+  private autoRecycleHistory = new Map<string, number[]>()
   /**
    * Serializes writable-state exports per project. The periodic exporter and
    * `suspend()` both export, and two concurrent exports carry the SAME lineage,
@@ -489,15 +561,23 @@ export class MetalWarmPool {
   }
 
   /**
-   * Best-effort guest lifecycle hook. The in-guest runtime flushes + drops
-   * stale external sockets (AI-proxy/MCP/LSP/DB) on `quiesce` before we freeze
-   * RAM, and re-establishes them on `rehydrate` after wake. A 404 (guest opted
-   * out) or timeout is tolerated so the substrate works with any guest.
+   * Best-effort guest lifecycle hook. On `quiesce` the guest stops its project
+   * API sidecars and frees their ports before we freeze RAM; on `rehydrate`
+   * after wake it restarts them. Without this a snapshot resumes a sidecar
+   * mid-flight — and a wedged one keeps holding its port, so every restart
+   * fails with EADDRINUSE. A 404 (guest opted out) or timeout is tolerated so
+   * the substrate works with any guest.
    */
-  private async callGuestHook(url: string, hook: 'quiesce' | 'rehydrate', timeoutMs: number): Promise<boolean> {
+  protected async callGuestHook(
+    url: string,
+    hook: 'quiesce' | 'rehydrate',
+    timeoutMs: number,
+    token?: string,
+  ): Promise<boolean> {
     try {
       const res = await fetch(`${url}/pool/${hook}`, {
         method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (res.status === 404) return false
@@ -754,6 +834,7 @@ export class MetalWarmPool {
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
         dataUntrustedReason: e.dataUntrustedReason,
+        memberData: e.memberData,
         repoParentEtag: e.repoParentEtag,
         repoUntrustedReason: e.repoUntrustedReason,
         stateSince: e.stateSince ?? e.assignedAt,
@@ -811,6 +892,7 @@ export class MetalWarmPool {
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
       dataUntrustedReason: a.dataUntrustedReason,
+      memberData: a.memberData,
       repoParentEtag: a.repoParentEtag,
       repoUntrustedReason: a.repoUntrustedReason,
       stateSince: a.stateSince,
@@ -856,6 +938,7 @@ export class MetalWarmPool {
         rootfsIdentity: e.rootfsIdentity,
         backupEtag: e.backupEtag,
         dataEtag: e.dataEtag,
+        memberDataEtags: e.memberDataEtags,
         repoEtag: e.repoEtag,
       })
       n++
@@ -903,11 +986,12 @@ export class MetalWarmPool {
   ): Promise<{ hydrated: boolean }> {
     const assigned = this.assigned.get(runtimeKey)
     if (!assigned) throw new Error(`workspace runtime ${runtimeKey} is not assigned`)
-    const env = assigned.runtimeToken ? { RUNTIME_AUTH_SECRET: assigned.runtimeToken } : {}
+    const env: Record<string, string> = assigned.runtimeToken ? { RUNTIME_AUTH_SECRET: assigned.runtimeToken } : {}
     const ref = await this.sourceRef(projectId)
     if (ref) {
       await this.applyArchive(assigned.handle, env, ref, `${projectId} workspace member`, destDir)
     }
+    await this.hydrateMemberData(assigned, env, projectId, destDir)
     const response = await fetch(
       `${assigned.handle.agentUrl}/internal/workspace/members`,
       {
@@ -944,6 +1028,12 @@ export class MetalWarmPool {
       })
       exported = outcome.status === 'created' || outcome.status === 'written' || outcome.status === 'adopted' || outcome.status === 'promoted'
     }
+    const slot = this.memberDataSlot(assigned, projectId, destDir)
+    await this.dataFlight
+      .run(slot.flightKey, () => this.saveDataSlotInner(assigned, slot, { final: true }))
+      .catch((err) =>
+        console.error(`[pool] writable-state backup for unmounted member ${projectId} failed:`, err?.message ?? err),
+      )
     const response = await fetch(
       `${assigned.handle.agentUrl}/internal/workspace/members/${encodeURIComponent(projectId)}`,
       {
@@ -956,6 +1046,8 @@ export class MetalWarmPool {
       throw new Error(`workspace member unmount failed (${response.status}): ${await response.text().catch(() => '')}`)
     }
     assigned.workspaceMemberIds = (assigned.workspaceMemberIds ?? []).filter((id) => id !== projectId)
+    if (assigned.memberData) delete assigned.memberData[projectId]
+    this.dataTags.delete(slot.flightKey)
     this.writeLive(assigned)
     return { exported }
   }
@@ -1182,24 +1274,26 @@ export class MetalWarmPool {
     // (usually an empty one), while a real archive still sits in S3. Marking it
     // untrusted is what stops that empty database from being exported over the
     // user's data — the exact incident this subsystem exists to prevent.
-    try {
-      const d = projectId.startsWith('ws:')
-        ? { hydrated: false as const }
-        : await this.hydrateProjectData(projectId, vm.handle, env)
-      if (d.hydrated) {
-        a.dataParentEtag = d.parentEtag
-        this.writeLive(a)
+    if (projectId.startsWith('ws:')) {
+      await this.hydrateWorkspaceMemberData(a, env)
+    } else {
+      try {
+        const d = await this.hydrateProjectData(projectId, vm.handle, env)
+        if (d.hydrated) {
+          a.dataParentEtag = d.parentEtag
+          this.writeLive(a)
+        }
+        // Not hydrated + no error = no durable archive exists yet. Nothing to
+        // lose, so the VM keeps create-only rights and can seed the first one.
+      } catch (err: any) {
+        const reason = `writable-state hydrate failed at assign (${err?.message ?? err})`
+        this.distrustData(a, reason)
+        console.error(
+          `[pool] writable-state hydrate failed for ${projectId} — booting with the source's ` +
+            `database. This VM is marked UNTRUSTED and will NOT write to the durable archive:`,
+          err?.message ?? err,
+        )
       }
-      // Not hydrated + no error = no durable archive exists yet. Nothing to
-      // lose, so the VM keeps create-only rights and can seed the first one.
-    } catch (err: any) {
-      const reason = `writable-state hydrate failed at assign (${err?.message ?? err})`
-      this.distrustData(a, reason)
-      console.error(
-        `[pool] writable-state hydrate failed for ${projectId} — booting with the source's ` +
-          `database. This VM is marked UNTRUSTED and will NOT write to the durable archive:`,
-        err?.message ?? err,
-      )
     }
 
     // Overlay the project's durable `.git`. git_only's per-turn artifact is
@@ -1473,13 +1567,13 @@ export class MetalWarmPool {
    * it (`adoptWhenUnknown`) to preserve pre-change behavior for legitimate
    * legacy workspaces — a genuine template origin is never trusted this way.
    */
-  private async saveBackupToStore(a: AssignedVm): Promise<void> {
+  private async saveBackupToStore(a: AssignedVm): Promise<SourceSaveResult> {
     const bytes = await this.fetchExport(a.handle, a.runtimeToken)
     if (!bytes) {
       console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
-      return
+      return 'empty'
     }
-    await this.storeSourceBytes(a, bytes)
+    return this.storeSource(a, bytes)
   }
 
   /**
@@ -1487,6 +1581,10 @@ export class MetalWarmPool {
    * are durable somewhere — written, or diverted to a quarantine key.
    */
   private async storeSourceBytes(a: AssignedVm, bytes: Uint8Array): Promise<boolean> {
+    return (await this.storeSource(a, bytes)) !== 'lost'
+  }
+
+  private async storeSource(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
     const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
       parentEtag: a.backupParentEtag,
       // Only a resumed legacy snapshot (origin 'snapshot' with no stamped ETag)
@@ -1511,7 +1609,7 @@ export class MetalWarmPool {
         a.workspaceOrigin = 'backup'
         this.writeLive(a)
         console.log(`[pool] saved source backup for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`)
-        return true
+        return 'written'
       case 'conflict': {
         metrics.inc(M.backupConflict)
         if (outcome.reason === 'size-regression') metrics.inc(M.backupSizeRegression)
@@ -1527,15 +1625,17 @@ export class MetalWarmPool {
             `Export quarantined at ${outcome.quarantineKey} (${bytes.byteLength} bytes) — ` +
             `durable backup left intact.`,
         )
-        return !!outcome.quarantineKey
+        return outcome.quarantineKey ? 'quarantined' : 'lost'
       }
       case 'skipped':
-        return false
+        return 'lost'
     }
-    return false
+    return 'lost'
   }
 
-  private async saveWorkspaceMembersToStore(a: AssignedVm): Promise<void> {
+  /** Back up each member's source. Returns the members whose latest source is NOT the durable backup. */
+  private async saveWorkspaceMembersToStore(a: AssignedVm): Promise<Array<{ projectId: string; reason: string }>> {
+    const failed: Array<{ projectId: string; reason: string }> = []
     for (const projectId of a.workspaceMemberIds ?? []) {
       try {
         const bytes = await this.fetchExport(
@@ -1550,12 +1650,15 @@ export class MetalWarmPool {
         if (['created', 'written', 'adopted', 'promoted'].includes(outcome.status)) {
           console.log(`[pool] saved workspace member backup for ${projectId} (${bytes.byteLength} bytes)`)
         } else {
+          failed.push({ projectId, reason: `not promoted (${outcome.status})` })
           console.warn(`[pool] workspace member backup for ${projectId} was not promoted (${outcome.status})`)
         }
       } catch (error: any) {
+        failed.push({ projectId, reason: error?.message ?? String(error) })
         console.error(`[pool] workspace member backup failed for ${projectId}:`, error?.message ?? error)
       }
     }
+    return failed
   }
 
   private async hydrateWorkspaceMembers(a: AssignedVm, env: Record<string, string>): Promise<void> {
@@ -1573,6 +1676,65 @@ export class MetalWarmPool {
         `/app/workspace/${projectId}`,
       )
     }
+  }
+
+  /**
+   * Overlay each member's durable writable state (`{memberId}/project-data.tar.gz`)
+   * onto its subfolder, after the member's source is in place. Same contract as
+   * the single-project hydrate: a hydrated member claims descent from that
+   * archive; a member with no archive keeps create-only rights; a FAILED
+   * hydrate distrusts only that member so its (probably empty) database can
+   * never be exported over the real one. Never fails the open.
+   */
+  private async hydrateWorkspaceMemberData(a: AssignedVm, env: Record<string, string>): Promise<void> {
+    for (const memberId of a.workspaceMemberIds ?? []) {
+      await this.hydrateMemberData(a, env, memberId, `/app/workspace/${memberId}`)
+    }
+    this.writeLive(a)
+  }
+
+  private async hydrateMemberData(
+    a: AssignedVm,
+    env: Record<string, string>,
+    memberId: string,
+    destDir: string,
+  ): Promise<void> {
+    const state = this.memberDataState(a, memberId)
+    try {
+      const ref = await this.projectDataRef(memberId)
+      if (!ref) {
+        console.log(`[pool] no durable writable state for workspace member ${memberId} — using the source's database`)
+        return
+      }
+      await this.applyArchive(a.handle, env, ref, `${memberId} member writable state`, destDir)
+      state.parentEtag = ref.etag ?? undefined
+      console.log(
+        `[pool] hydrated writable state for workspace member ${memberId} ` +
+          `(${ref.bytes} bytes, etag=${ref.etag ?? 'none'})`,
+      )
+    } catch (err: any) {
+      state.untrustedReason = `writable-state hydrate failed (${err?.message ?? err})`
+      console.error(
+        `[pool] writable-state hydrate failed for workspace member ${memberId} of ${a.projectId} — ` +
+          `booting with the source's database. This member is marked UNTRUSTED:`,
+        err?.message ?? err,
+      )
+    }
+  }
+
+  private memberDataState(a: AssignedVm, memberId: string): MemberDataState {
+    a.memberData ??= {}
+    return (a.memberData[memberId] ??= {})
+  }
+
+  /** Per-member data ETags safe to stamp into a snapshot (untrusted members omitted). */
+  private trustedMemberDataEtags(a: AssignedVm): Record<string, string> | undefined {
+    if (!a.memberData) return undefined
+    const out: Record<string, string> = {}
+    for (const [id, s] of Object.entries(a.memberData)) {
+      if (s.parentEtag && !s.untrustedReason) out[id] = s.parentEtag
+    }
+    return Object.keys(out).length ? out : undefined
   }
 
   // --- per-project writable-state durability (database + uploads) ----------
@@ -1597,13 +1759,16 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     token?: string,
     knownTag?: string,
+    dir?: string,
   ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
       method: 'POST',
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(knownTag ? { 'If-None-Match': knownTag } : {}),
+        ...(dir ? { 'Content-Type': 'application/json' } : {}),
       },
+      ...(dir ? { body: JSON.stringify({ dir }) } : {}),
       signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
     })
     if (res.status === 304) return 'unchanged'
@@ -1877,10 +2042,10 @@ export class MetalWarmPool {
     return a.dataUntrustedReason ? undefined : a.dataParentEtag
   }
 
-  /** What this VM is entitled to do to the durable writable-state archive. */
-  protected dataLineageOf(a: AssignedVm): DataLineage {
-    if (a.dataUntrustedReason) return { kind: 'untrusted', reason: a.dataUntrustedReason }
-    if (a.dataParentEtag) return { kind: 'descends', etag: a.dataParentEtag }
+  /** What a backup target is entitled to do to its durable writable-state archive. */
+  private dataLineageFor(state: MemberDataState): DataLineage {
+    if (state.untrustedReason) return { kind: 'untrusted', reason: state.untrustedReason }
+    if (state.parentEtag) return { kind: 'descends', etag: state.parentEtag }
     return { kind: 'create-only' }
   }
 
@@ -1910,15 +2075,82 @@ export class MetalWarmPool {
    * Returns true when something was written, false when skipped, unchanged,
    * refused, or there was nothing to persist.
    */
-  async saveProjectDataToStore(a: AssignedVm, opts: { final?: boolean } = {}): Promise<boolean> {
-    return this.dataFlight.run(a.projectId, () => this.saveProjectDataInner(a, opts))
+  async saveProjectDataToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
+    if (a.projectId.startsWith('ws:')) return this.saveWorkspaceMemberDataToStore(a, opts)
+    const slot = this.projectDataSlot(a)
+    return this.dataFlight.run(slot.flightKey, () => this.saveDataSlotInner(a, slot, opts))
   }
 
-  private async saveProjectDataInner(
+  /**
+   * Workspace runtimes: back up each member's writable state to its own
+   * `{memberId}/project-data.tar.gz`. The runtime root holds no database —
+   * every member's lives in `/app/workspace/<memberId>` — so exporting the root
+   * (what the single-project path does) would never persist anything.
+   *
+   * Members are independent: one failing does not skip the rest. The first
+   * error is rethrown afterwards so the periodic exporter's backoff still sees
+   * a sick guest.
+   */
+  async saveWorkspaceMemberDataToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
+    let wrote = false
+    let firstError: unknown
+    for (const memberId of a.workspaceMemberIds ?? []) {
+      const slot = this.memberDataSlot(a, memberId)
+      try {
+        if (await this.dataFlight.run(slot.flightKey, () => this.saveDataSlotInner(a, slot, opts))) wrote = true
+      } catch (err: any) {
+        firstError ??= err
+        console.error(`[pool] writable-state backup failed for workspace member ${memberId}:`, err?.message ?? err)
+      }
+      if (a.dataExportUnsupported) break
+    }
+    if (firstError) throw firstError
+    return wrote
+  }
+
+  private projectDataSlot(a: AssignedVm): DataSlot {
+    const state: MemberDataState = {
+      parentEtag: a.dataParentEtag,
+      untrustedReason: a.dataUntrustedReason,
+      lastUploadAt: a.dataLastUploadAt,
+      lastBytes: a.dataLastBytes,
+      lastDailyCopyDate: a.dataLastDailyCopyDate,
+    }
+    return {
+      storageId: a.projectId,
+      flightKey: a.projectId,
+      label: a.projectId,
+      state,
+      commit: () => {
+        a.dataParentEtag = state.parentEtag
+        a.dataUntrustedReason = state.untrustedReason
+        a.dataLastUploadAt = state.lastUploadAt
+        a.dataLastBytes = state.lastBytes
+        a.dataLastDailyCopyDate = state.lastDailyCopyDate
+        this.writeLive(a)
+      },
+    }
+  }
+
+  private memberDataSlot(a: AssignedVm, memberId: string, dir = `/app/workspace/${memberId}`): DataSlot {
+    return {
+      storageId: memberId,
+      flightKey: `${a.projectId}#${memberId}`,
+      dir,
+      label: `workspace member ${memberId} (${a.projectId})`,
+      state: this.memberDataState(a, memberId),
+      commit: () => this.writeLive(a),
+    }
+  }
+
+  private async saveDataSlotInner(
     a: AssignedVm,
-    opts: { final?: boolean },
+    slot: DataSlot,
+    opts: DataSaveOpts,
   ): Promise<boolean> {
-    const lineage = this.dataLineageOf(a)
+    const { state } = slot
+    const lineage = this.dataLineageFor(state)
+    const now = Date.now()
 
     // An untrusted VM can never write, so there is no point packing a database
     // and shipping it across the control channel to find that out. The only
@@ -1928,10 +2160,15 @@ export class MetalWarmPool {
       return false
     }
 
+    if (!opts.final && this.largeDataThrottled(state, now)) {
+      metrics.inc(M.dataUploadThrottled)
+      return false
+    }
+
     // The guest short-circuits on an unchanged tag, so an idle project costs
     // one round-trip with no snapshot, no packing and no transfer.
-    const known = this.dataTags.get(a.projectId)
-    const exported = await this.fetchDataExport(a.handle, a.runtimeToken, known)
+    const known = this.dataTags.get(slot.flightKey)
+    const exported = await this.fetchDataExport(a.handle, a.runtimeToken, known, slot.dir)
     if (exported === 'unchanged') {
       metrics.inc(M.dataUnchanged)
       return false
@@ -1950,7 +2187,9 @@ export class MetalWarmPool {
     if (!exported) return false
     const { bytes, tag } = exported
 
-    const outcome = await this.uploadDataGuarded(a.projectId, bytes, {
+    if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
+
+    const outcome = await this.uploadDataGuarded(slot.storageId, bytes, {
       lineage,
       preserveOnRefusal: opts.final === true,
     })
@@ -1959,12 +2198,21 @@ export class MetalWarmPool {
       case 'written': {
         // Re-anchor lineage to what we just wrote, from the PUT's own response,
         // so the next write's precondition matches without a second round-trip.
-        a.dataParentEtag = outcome.etag ?? a.dataParentEtag
-        a.dataUntrustedReason = undefined
-        this.writeLive(a)
-        if (tag) this.dataTags.set(a.projectId, tag)
+        state.parentEtag = outcome.etag ?? state.parentEtag
+        state.untrustedReason = undefined
+        state.lastUploadAt = now
+        state.lastBytes = bytes.byteLength
+        slot.commit()
+        if (tag) this.dataTags.set(slot.flightKey, tag)
+        metrics.inc(
+          opts.reason === 'recycle'
+            ? M.dataUploadRecycle
+            : opts.final
+              ? M.dataUploadFinal
+              : M.dataUploadPeriodic,
+        )
         console.log(
-          `[pool] saved writable state for ${a.projectId} ` +
+          `[pool] saved writable state for ${slot.label} ` +
             `(${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
         )
         return true
@@ -1977,10 +2225,13 @@ export class MetalWarmPool {
         const why =
           outcome.reason === 'raced-create'
             ? `a durable archive already exists and this workspace cannot prove it descends from it`
-            : `its lineage (etag=${a.dataParentEtag ?? 'none'}) no longer matches the durable archive`
-        this.distrustData(a, why)
+            : `its lineage (etag=${state.parentEtag ?? 'none'}) no longer matches the durable archive`
+        if (state.untrustedReason !== why) {
+          state.untrustedReason = why
+          slot.commit()
+        }
         console.error(
-          `[pool] REFUSED to overwrite durable writable state for ${a.projectId} — ${why}. ` +
+          `[pool] REFUSED to overwrite durable writable state for ${slot.label} — ${why}. ` +
             `Durable archive left intact` +
             (outcome.quarantineKey ? `; export preserved at ${outcome.quarantineKey}` : '') +
             `.`,
@@ -1990,7 +2241,7 @@ export class MetalWarmPool {
       case 'refused': {
         metrics.inc(M.dataRefused)
         console.error(
-          `[pool] writable state for ${a.projectId} NOT persisted — ${outcome.reason}. ` +
+          `[pool] writable state for ${slot.label} NOT persisted — ${outcome.reason}. ` +
             `This project is running without durability` +
             (outcome.quarantineKey ? `; final export preserved at ${outcome.quarantineKey}` : '') +
             `.`,
@@ -2000,7 +2251,7 @@ export class MetalWarmPool {
       case 'too-large':
         metrics.inc(M.dataTooLarge)
         console.error(
-          `[pool] writable state for ${a.projectId} is ${outcome.bytes} bytes, over the ` +
+          `[pool] writable state for ${slot.label} is ${outcome.bytes} bytes, over the ` +
             `${outcome.limit}-byte durability limit — NOT persisted. This project's data is ` +
             `only as durable as its VM snapshot; it needs a real storage backend.`,
         )
@@ -2008,6 +2259,47 @@ export class MetalWarmPool {
       case 'skipped':
         return false
     }
+  }
+
+  /**
+   * True when a periodic upload should wait: the last archive was large and
+   * the last upload is more recent than the large-database interval. Every
+   * replaced archive is retained as a noncurrent version for a day, so a big
+   * database changing every cycle would otherwise store hundreds of copies.
+   */
+  private largeDataThrottled(state: MemberDataState, now: number): boolean {
+    const { projectDataLargeBytes: large, projectDataLargeMinIntervalMs: gap } = this.cfg
+    if (!(large > 0) || !(gap > 0)) return false
+    if (state.lastBytes == null || state.lastBytes <= large) return false
+    if (state.lastUploadAt == null) return false
+    return now - state.lastUploadAt < gap
+  }
+
+  /**
+   * Before the first overwrite of a new UTC day, server-side copy the current
+   * archive to yesterday's restore point. Failure never blocks the backup
+   * itself; the day stays unmarked so the next cycle retries.
+   */
+  private async ensureDailyRestorePoint(slot: DataSlot, now: number): Promise<void> {
+    const today = utcDate(now)
+    if (slot.state.lastDailyCopyDate === today) return
+    const day = utcDate(now - 24 * 60 * 60 * 1000)
+    try {
+      const result = await this.copyDataToDaily(slot.storageId, day)
+      if (result === 'copied') {
+        metrics.inc(M.dataDailyCopied)
+        console.log(`[pool] saved ${day} restore point for ${slot.label}`)
+      }
+      slot.state.lastDailyCopyDate = today
+    } catch (err: any) {
+      metrics.inc(M.dataDailyCopyFailed)
+      console.error(`[pool] ${day} restore point for ${slot.label} failed (will retry):`, err?.message ?? err)
+    }
+  }
+
+  /** `protected` for tests. */
+  protected copyDataToDaily(projectId: string, date: string): Promise<DailyCopyResult> {
+    return copyProjectDataToDaily(projectId, date, this.cfg)
   }
 
   // --- server-backed published writable-state durability -------------------
@@ -2151,6 +2443,7 @@ export class MetalWarmPool {
    * host-wide semaphore; concurrent suspends for one project collapse.
    */
   async suspend(projectId: string): Promise<SuspendedVm> {
+    if (this.recycleFlight.has(projectId)) throw new Error(`project ${projectId} is being recycled`)
     return this.suspendFlight.run(projectId, async () => {
       const a = this.assigned.get(projectId)
       if (!a) throw new Error(`project ${projectId} not assigned`)
@@ -2188,8 +2481,15 @@ export class MetalWarmPool {
         )
       }
 
-      await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs)
-      const snapshot = await this.heavy.run(() => this.mgr.snapshotVM(a.handle))
+      await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs, a.runtimeToken)
+      let snapshot: FcSnapshot
+      try {
+        snapshot = await this.heavy.run(() => this.mgr.snapshotVM(a.handle))
+      } catch (err) {
+        // The VM keeps running, so bring back the sidecars quiesce stopped.
+        await this.callGuestHook(a.handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken)
+        throw err
+      }
       this.assigned.delete(projectId)
       this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
@@ -2205,6 +2505,7 @@ export class MetalWarmPool {
         rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
+        memberDataEtags: this.trustedMemberDataEtags(a),
         repoEtag: this.trustedRepoEtag(a),
       }
       this.suspended.set(projectId, s)
@@ -2256,6 +2557,7 @@ export class MetalWarmPool {
           dataDriveMiB: a.handle.dataDrive ? classConfig(this.cfg, a.handle.vmClass).dataDriveMiB : undefined,
           backupEtag: a.backupParentEtag,
           dataEtag: this.trustedDataEtag(a),
+          memberDataEtags: this.trustedMemberDataEtags(a),
           repoEtag: this.trustedRepoEtag(a),
           v: 1,
         }
@@ -2296,6 +2598,7 @@ export class MetalWarmPool {
       dataDrive: s.snapshot.dataDrive,
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
+      memberDataEtags: s.memberDataEtags,
       repoEtag: s.repoEtag,
       v: 1,
     }
@@ -2335,13 +2638,20 @@ export class MetalWarmPool {
    */
   protected async snapshotBehindStore(
     projectId: string,
-    stamps: { backupEtag?: string; repoEtag?: string; dataEtag?: string },
+    stamps: { backupEtag?: string; repoEtag?: string; dataEtag?: string; memberDataEtags?: Record<string, string> },
   ): Promise<string | null> {
     const norm = (e?: string | null) => (e ? e.replace(/"/g, '') : undefined)
     const checks: Array<[string, string | undefined, () => Promise<ArchiveRef | null>]> = [
       ['source', stamps.backupEtag, () => this.sourceRef(projectId)],
       ['repo', stamps.repoEtag, () => this.repoRef(projectId)],
       ['data', stamps.dataEtag, () => this.projectDataRef(projectId)],
+      ...Object.entries(stamps.memberDataEtags ?? {}).map(
+        ([memberId, etag]): [string, string | undefined, () => Promise<ArchiveRef | null>] => [
+          `member ${memberId} data`,
+          etag,
+          () => this.projectDataRef(memberId),
+        ],
+      ),
     ]
     for (const [what, stamped, ref] of checks) {
       if (!stamped) continue
@@ -2458,6 +2768,7 @@ export class MetalWarmPool {
         lastAccessAt: Date.now(),
         backupEtag: pulled.meta.backupEtag,
         dataEtag: pulled.meta.dataEtag,
+        memberDataEtags: pulled.meta.memberDataEtags,
         repoEtag: pulled.meta.repoEtag,
       }
       source = 'store'
@@ -2473,7 +2784,6 @@ export class MetalWarmPool {
     let readyMs: number
     try {
       readyMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
-      await this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs)
     } catch (err) {
       await this.mgr.stopVM(handle).catch(() => {})
       throw err
@@ -2511,6 +2821,9 @@ export class MetalWarmPool {
       // The resumed guest's database is the one frozen in the snapshot, which
       // descends from this archive — so its next export may overwrite it.
       dataParentEtag: s.dataEtag,
+      memberData: s.memberDataEtags
+        ? Object.fromEntries(Object.entries(s.memberDataEtags).map(([id, etag]) => [id, { parentEtag: etag }]))
+        : undefined,
       repoParentEtag: s.repoEtag,
       stateSince: s.suspendedAt,
     }
@@ -2528,8 +2841,94 @@ export class MetalWarmPool {
         err?.message ?? err,
       ),
     )
+    // After the env refresh, so restarted sidecars start with the fresh env.
+    await this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken)
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
+  }
+
+  /**
+   * Record when a runtime's project API sidecar went unhealthy: not ready and
+   * not simply absent (`idle`) or deliberately stopped. A guest that does not
+   * report `previewHealth` is treated as healthy.
+   */
+  private trackApiHealth(
+    a: AssignedVm,
+    health: Array<{ projectId: string; apiPhase: string; apiReady: boolean }> | undefined,
+    now: number,
+  ): void {
+    const bad = Array.isArray(health)
+      ? health.filter((p) => p.apiReady === false && p.apiPhase !== 'idle' && p.apiPhase !== 'stopped')
+      : []
+    if (bad.length === 0) {
+      a.apiUnhealthySince = undefined
+      a.apiUnhealthyProjects = undefined
+      a.apiWatchdogObserved = undefined
+      return
+    }
+    a.apiUnhealthySince ??= now
+    a.apiUnhealthyProjects = bad.map((p) => `${p.projectId}:${p.apiPhase}`)
+  }
+
+  /**
+   * Recycle runtimes whose API sidecar has been unhealthy past
+   * `apiUnhealthyRecycleMs` — the self-heal for a sidecar wedged on its port,
+   * which no amount of restarting inside the VM fixes. Skips runtimes with an
+   * agent turn in flight, and caps attempts per runtime (one per hour, two per
+   * day) so a project that is broken in its own code is not recycled forever.
+   * A recycle whose backups fail aborts with nothing removed. Returns the
+   * runtime keys actually recycled.
+   */
+  async autoRecycleUnhealthy(now = Date.now()): Promise<string[]> {
+    const live = [...this.assigned.values()]
+    metrics.gauge(M.apiUnhealthy, live.filter((a) => a.apiUnhealthySince !== undefined).length)
+    const mode = this.cfg.apiWatchdogMode
+    if (mode === 'off') return []
+    const recycled: string[] = []
+    for (const a of live) {
+      if (a.apiUnhealthySince === undefined) continue
+      const forMs = now - a.apiUnhealthySince
+      if (forMs < this.cfg.apiUnhealthyRecycleMs) continue
+      if ((a.activeStreams ?? 0) > 0) continue
+      const reason = `api unhealthy for ${Math.round(forMs / 60_000)}m (${(a.apiUnhealthyProjects ?? []).join(', ')})`
+      if (mode === 'observe') {
+        if (!a.apiWatchdogObserved) {
+          a.apiWatchdogObserved = true
+          metrics.inc(M.autoRecycleObserved)
+          console.warn(`[pool] watchdog (observe): would recycle ${a.projectId} — ${reason}`)
+        }
+        continue
+      }
+      if (!this.takeAutoRecycleSlot(a.projectId, now)) {
+        metrics.inc(M.autoRecycleRateLimited)
+        continue
+      }
+      console.warn(`[pool] watchdog: recycling ${a.projectId} — ${reason}`)
+      const r = await this.recycle(a.projectId, { reason: `watchdog: ${reason}` }).catch((err) => {
+        console.error(`[pool] watchdog recycle of ${a.projectId} failed:`, err?.message ?? err)
+        return null
+      })
+      if (r && !r.aborted) {
+        metrics.inc(M.autoRecycleOk)
+        recycled.push(a.projectId)
+      } else {
+        metrics.inc(M.autoRecycleAborted)
+      }
+    }
+    return recycled
+  }
+
+  /** Per-runtime cap on watchdog recycles: one per hour, two per rolling day. */
+  private takeAutoRecycleSlot(runtimeKey: string, now: number): boolean {
+    const HOUR = 60 * 60 * 1000
+    const history = (this.autoRecycleHistory.get(runtimeKey) ?? []).filter((t) => now - t < 24 * HOUR)
+    if (history.length >= 2 || history.some((t) => now - t < HOUR)) {
+      this.autoRecycleHistory.set(runtimeKey, history)
+      return false
+    }
+    history.push(now)
+    this.autoRecycleHistory.set(runtimeKey, history)
+    return true
   }
 
   /** Mark a project as active so the idle reaper doesn't suspend it. */
@@ -2574,9 +2973,11 @@ export class MetalWarmPool {
             appRequestCount?: number
             lastAgentRequestAt?: number | null
             repoHeadSha?: string | null
+            previewHealth?: Array<{ projectId: string; apiPhase: string; apiReady: boolean }>
           }
           a.lastHealthOk = true
           a.activityPollFailedAt = undefined
+          this.trackApiHealth(a, body.previewHealth, now)
           const last = typeof body.lastRequestAt === 'number' ? body.lastRequestAt : 0
           // Cache live-stream count so reapIdle can skip a project mid-generation
           // even when no new HTTP request has bumped lastRequestAt for a while.
@@ -3022,7 +3423,7 @@ export class MetalWarmPool {
         // Never race the paths that own the entry: a running VM is not suspended
         // at all, and an in-flight open is already deciding this snapshot's fate.
         if (this.assigned.has(id)) continue
-        if (this.openFlight.has(id) || this.suspendFlight.has(id)) continue
+        if (this.openFlight.has(id) || this.suspendFlight.has(id) || this.recycleFlight.has(id)) continue
         const b = this.entryBytes(s)
         if (!this.evictLocal(id)) continue
         projectIds.push(id)
@@ -3044,7 +3445,9 @@ export class MetalWarmPool {
     const s = this.suspended.get(projectId)
     if (!s) return false
     if (this.assigned.has(projectId)) return false // running — never evict
-    if (this.openFlight.has(projectId) || this.suspendFlight.has(projectId)) return false // in-flight
+    if (this.openFlight.has(projectId) || this.suspendFlight.has(projectId) || this.recycleFlight.has(projectId)) {
+      return false // in-flight
+    }
 
     if (!opts.alsoDurable) {
       // Must be durably backed & fresh before we drop the only local copy.
@@ -3443,6 +3846,170 @@ export class MetalWarmPool {
   }
 
   /**
+   * Replace a runtime's VM with a clean cold boot, WITHOUT losing anything.
+   *
+   * A plain stop suspends to a memory snapshot, and resuming that snapshot
+   * brings back exactly the stuck processes that made someone want to restart
+   * it. `destroy()` avoids that but drops the snapshot, which may hold the only
+   * copy of recent work. This does both halves safely:
+   *
+   *   1. make the VM live (resume it if only a snapshot exists);
+   *   2. back up source, git, database and published data from the live guest;
+   *   3. only if every backup landed (or `force`), stop it without a snapshot
+   *      and drop the local and durable snapshots.
+   *
+   * The next open then cold-boots from the durable backups. Without `force`, a
+   * failed step aborts before anything is removed and the VM keeps running.
+   */
+  async recycle(
+    runtimeKey: string,
+    opts: { reason?: string; force?: boolean; env?: Record<string, string> } = {},
+  ): Promise<RecycleReport> {
+    if (this.openFlight.has(runtimeKey) || this.suspendFlight.has(runtimeKey)) {
+      return {
+        runtimeKey,
+        state: this.getProjectStatus(runtimeKey).state,
+        resumed: false,
+        forced: !!opts.force,
+        aborted: true,
+        steps: [{ step: 'lock', ok: false, detail: 'an open or suspend is in flight; retry shortly' }],
+      }
+    }
+    return this.recycleFlight.run(runtimeKey, () => this.recycleInner(runtimeKey, opts))
+  }
+
+  private async recycleInner(
+    runtimeKey: string,
+    opts: { reason?: string; force?: boolean; env?: Record<string, string> },
+  ): Promise<RecycleReport> {
+    const force = !!opts.force
+    const state = this.getProjectStatus(runtimeKey).state
+    const steps: RecycleStep[] = []
+    const report = (aborted: boolean, extra: Partial<RecycleReport> = {}): RecycleReport => ({
+      runtimeKey,
+      state,
+      resumed: false,
+      forced: force,
+      aborted,
+      steps,
+      ...extra,
+    })
+    console.log(`[pool] recycle ${runtimeKey} requested (state=${state}, force=${force}, reason=${opts.reason ?? 'none'})`)
+
+    let a = this.assigned.get(runtimeKey)
+    if (a && (a.activeStreams ?? 0) > 0 && !force) {
+      steps.push({ step: 'idle', ok: false, detail: `${a.activeStreams} agent turn(s) in flight` })
+      return report(true)
+    }
+    let resumed = false
+    if (!a && (state === 'suspended' || this.store.kind !== 'none')) {
+      try {
+        const r = await this.resume(runtimeKey, opts.env ?? {})
+        if (r) {
+          a = r.assigned
+          resumed = true
+          steps.push({ step: 'resume', ok: true, detail: `from ${r.source} snapshot` })
+        } else {
+          steps.push({ step: 'resume', ok: true, detail: 'no usable snapshot; durable backups are current' })
+        }
+      } catch (err: any) {
+        steps.push({ step: 'resume', ok: false, detail: err?.message ?? String(err) })
+        if (!force) return report(true)
+      }
+    }
+
+    if (a) {
+      const ok = await this.backupForRecycle(a, steps)
+      if (!ok && !force) {
+        console.error(`[pool] recycle ${runtimeKey} ABORTED — a backup step failed; nothing removed`)
+        return report(true, { resumed })
+      }
+    }
+
+    const destroyed = await this.destroy(runtimeKey)
+    steps.push({ step: 'destroy', ok: true, detail: JSON.stringify(destroyed) })
+    console.log(`[pool] recycled ${runtimeKey} (force=${force}): ${JSON.stringify(steps)}`)
+    return report(false, { resumed, destroyed })
+  }
+
+  /**
+   * Every backup a recycle needs before it may drop the snapshot. Each step
+   * records whether the VM's CURRENT state is now in its durable home — a
+   * refused or quarantined write counts as a failure, because the cold boot
+   * that follows restores the durable copy, not the quarantined one.
+   */
+  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[]): Promise<boolean> {
+    const run = async (step: string, fn: () => Promise<string | null>) => {
+      try {
+        const problem = await fn()
+        steps.push(problem ? { step, ok: false, detail: problem } : { step, ok: true })
+      } catch (err: any) {
+        steps.push({ step, ok: false, detail: err?.message ?? String(err) })
+      }
+    }
+    const isWorkspace = a.projectId.startsWith('ws:')
+
+    if (isWorkspace && !a.workspaceMemberIds?.length) {
+      // A resume learns the members from the caller's env; without them every
+      // member backup below would silently cover nothing.
+      steps.push({ step: 'members', ok: false, detail: 'workspace member list unknown; member backups would be skipped' })
+    }
+
+    await run('repo', async () => {
+      if (a.repoHydratePending) return null
+      if (this.repoLineageOf(a).kind === 'untrusted') {
+        return `git history is untrusted (${a.repoUntrustedReason ?? 'unknown'}); durable repo left as is`
+      }
+      // Joining an in-flight periodic export would hand back its boolean, not
+      // our outcome — so if our closure did not run, run again once it ends.
+      let out: 'written' | 'quarantined' | 'lost' | 'empty' | undefined
+      const exportRepo = () =>
+        this.repoFlight.run(a.projectId, async () => {
+          const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
+          out = bytes ? await this.storeRepoBytes(a, bytes) : 'empty'
+          return out === 'written'
+        })
+      await exportRepo()
+      if (out === undefined) await exportRepo()
+      return out === 'written' || out === 'empty' ? null : `repo ${out}`
+    })
+
+    await run('source', async () => {
+      if (isWorkspace) {
+        const failed = await this.saveWorkspaceMembersToStore(a)
+        return failed.length ? failed.map((f) => `${f.projectId}: ${f.reason}`).join('; ') : null
+      }
+      const out = await this.saveBackupToStore(a)
+      return out === 'written' || out === 'empty' ? null : `source ${out}`
+    })
+
+    await run('data', async () => {
+      // Twice: the first may join an in-flight periodic export (possibly
+      // throttled). The second is a cheap 304 when the first already landed.
+      await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+      await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+      if (a.dataExportUnsupported) return 'guest cannot export its database (predates /pool/export-data)'
+      const untrusted = isWorkspace
+        ? Object.entries(a.memberData ?? {})
+            .filter(([, s]) => s.untrustedReason)
+            .map(([id, s]) => `${id}: ${s.untrustedReason}`)
+        : a.dataUntrustedReason
+          ? [a.dataUntrustedReason]
+          : []
+      return untrusted.length ? `database not persisted — ${untrusted.join('; ')}` : null
+    })
+
+    if (a.publishedSubdomain) {
+      await run('published-data', async () => {
+        await this.exportPublishedData(a)
+        return null
+      })
+    }
+
+    return steps.every((s) => s.ok)
+  }
+
+  /**
    * Project-scoped status for the control-plane substrate `getStatus()` — the
    * metal analog of KnativeProjectManager.getStatus (exists/ready/replicas).
    *   assigned  → running (replicas 1)
@@ -3516,6 +4083,8 @@ export class MetalWarmPool {
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
         unhealthy: a.lastHealthOk === false,
+        apiUnhealthyMs: a.apiUnhealthySince !== undefined ? now - a.apiUnhealthySince : null,
+        apiUnhealthyProjects: a.apiUnhealthyProjects ?? null,
       })),
       suspended: [...this.suspended.values()].map((s) => ({
         projectId: s.projectId,

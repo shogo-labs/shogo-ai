@@ -383,6 +383,23 @@ export interface StopResult {
   busy: boolean
 }
 
+export interface RecycleResult {
+  /** A host holds (or last held) this runtime. */
+  found: boolean
+  /** Backed up and stopped without a snapshot; the next open cold-boots. */
+  ok: boolean
+  hostId?: string
+  /** The host's per-step report (see metal-agent `RecycleReport`). */
+  report?: {
+    aborted?: boolean
+    forced?: boolean
+    resumed?: boolean
+    state?: string
+    steps?: Array<{ step: string; ok: boolean; detail?: string }>
+  }
+  error?: string
+}
+
 type EnvBuilder = (
   projectId: string,
   opts?: { logPrefix?: string; forMetal?: boolean },
@@ -978,6 +995,53 @@ export class MetalWarmPoolController {
   }
 
   /**
+   * Restart a runtime from a clean cold boot WITHOUT losing anything — the fix
+   * for a VM whose processes are wedged. A stop would suspend to a snapshot and
+   * the next open would resume the same wedged processes; `destroyProject`
+   * would drop the snapshot, which may hold the only copy of recent work.
+   *
+   * The owning host backs up source, git and database from the live guest
+   * (resuming it first if only a snapshot exists) and only then stops it
+   * without a snapshot. `buildEnv` supplies the same env an open would, for
+   * that resume. Without `force`, any failed backup aborts with nothing
+   * removed (`ok: false`, the host's report says which step failed).
+   */
+  async recycleRuntime(
+    runtimeKey: string,
+    opts: { force?: boolean; reason?: string; buildEnv?: () => Promise<Record<string, string>> } = {},
+  ): Promise<RecycleResult> {
+    this.urlCache.delete(runtimeKey)
+    const host = await this.hostForProject(runtimeKey)
+    if (!host) return { found: false, ok: false }
+    let env: Record<string, string> = {}
+    if (opts.buildEnv) {
+      try {
+        env = await opts.buildEnv()
+      } catch (err) {
+        console.warn(`[MetalPool] recycle ${runtimeKey}: env build failed (${(err as any)?.message ?? err}); resuming without env`)
+      }
+    }
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/recycle`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId: runtimeKey, force: !!opts.force, reason: opts.reason, env }),
+        // Backups of a large project can take minutes.
+        signal: AbortSignal.timeout(10 * 60_000),
+      })
+      const report: any = await res.json().catch(() => ({}))
+      if (res.status === 404) {
+        return { found: true, ok: false, hostId: host.hostId, error: 'host agent predates /recycle' }
+      }
+      return { found: true, ok: res.ok && report?.aborted === false, hostId: host.hostId, report }
+    } catch (err) {
+      return { found: true, ok: false, hostId: host.hostId, error: (err as any)?.message ?? String(err) }
+    } finally {
+      this.urlCache.delete(runtimeKey)
+    }
+  }
+
+  /**
    * Every project running or cached on the fleet — the metal analog of
    * KnativeProjectManager.listAllServices, for the admin panel + infra metrics.
    * Queries each live host's /vms; a down host is skipped rather than failing.
@@ -1272,6 +1336,14 @@ export async function stopMetalProject(projectId: string): Promise<StopResult> {
 /** Permanently destroy a project's metal runtime fleet-wide (substrate.destroy). */
 export async function destroyMetalProject(projectId: string): Promise<void> {
   return getMetalWarmPoolController().destroyProject(projectId)
+}
+
+/** Back up and cold-restart a runtime without snapshot (admin recycle). */
+export async function recycleMetalRuntime(
+  runtimeKey: string,
+  opts?: { force?: boolean; reason?: string; buildEnv?: () => Promise<Record<string, string>> },
+): Promise<RecycleResult> {
+  return getMetalWarmPoolController().recycleRuntime(runtimeKey, opts)
 }
 
 /** Every project running/cached on the metal fleet (substrate.listAll). */

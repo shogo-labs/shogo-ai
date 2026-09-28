@@ -5806,6 +5806,7 @@ app.use('/api/admin/regions', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions/*', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/metal', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/metal/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/runtimes/*', authMiddleware, requireAuth, requireSuperAdmin)
 
 // GET /api/admin/pods - List all project pods
 app.get('/api/admin/pods', async (c) => {
@@ -6049,6 +6050,32 @@ app.delete('/api/admin/metal/hosts/:hostId/config', async (c) => {
     return c.json({ ok: true, data: records })
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'delete failed' }, 500)
+  }
+})
+
+// POST /api/admin/runtimes/recycle — restart a stuck runtime from a clean cold
+// boot without touching code, schema, database or data. Body:
+// { projectId?, workspaceId?, force?, reason?, coldBoot? }. See
+// lib/admin-runtime-recycle.ts and docs/runbooks/metal-fleet.md.
+app.post('/api/admin/runtimes/recycle', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const auth = c.get('auth') as any
+    const { recycleRuntimes, defaultRecycleDeps } = await import('./lib/admin-runtime-recycle')
+    const result = await recycleRuntimes(
+      {
+        projectId: typeof body?.projectId === 'string' ? body.projectId : undefined,
+        workspaceId: typeof body?.workspaceId === 'string' ? body.workspaceId : undefined,
+        force: body?.force === true,
+        reason: typeof body?.reason === 'string' ? body.reason : undefined,
+        coldBoot: body?.coldBoot !== false,
+      },
+      { id: auth?.user?.id ?? auth?.userId ?? 'unknown', email: auth?.user?.email },
+      await defaultRecycleDeps('admin-audit'),
+    )
+    return c.json(result.body, result.status as any)
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'recycle failed' }, 500)
   }
 })
 
@@ -6723,6 +6750,10 @@ app.put('/api/admin/settings/ez-mode-voice-provider', async (c) => {
 })
 
 // DELETE /api/admin/pods/:projectId - Delete project pod
+// DESTRUCTIVE: this is project-deletion teardown (Knative service + storage,
+// and the project's custom-domain Cloudflare hostnames), not a restart, and it
+// does nothing for a metal runtime. To restart a stuck runtime without losing
+// data use POST /api/admin/runtimes/recycle.
 app.delete('/api/admin/pods/:projectId', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)

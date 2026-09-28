@@ -983,6 +983,10 @@ export class PreviewManager {
   // EADDRINUSE source). Resumed via resumeWatchers(), which flushes any
   // change that landed while paused.
   private watchersPaused = false
+  // Set by `quiesceApiServer()` so `rehydrateApiServer()` restarts only what
+  // quiesce stopped and resumes only watchers quiesce (not `shogo push`) paused.
+  private quiescedApi = false
+  private quiescePausedWatchers = false
   private lastGenerateError: string | null = null
   // Surfaced via getStatus() so external observers (the API's import
   // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
@@ -3561,6 +3565,58 @@ export class PreviewManager {
     // killApiServer / forceKillPort have set `intentionalStop=true`;
     // `startApiServer` will reset it before spawning the new process.
     await this.startApiServer()
+  }
+
+  /**
+   * Stop the API sidecar and free its port ahead of a VM memory snapshot, and
+   * hold watchers so nothing respawns it before the freeze. A snapshot taken
+   * with the sidecar running resumes it mid-flight with dead sockets; a wedged
+   * one keeps the port, so every later start fails with EADDRINUSE. Undone by
+   * {@link rehydrateApiServer}. Returns whether a sidecar was stopped.
+   */
+  async quiesceApiServer(): Promise<boolean> {
+    if (!this.watchersPaused) {
+      this.pauseWatchers()
+      this.quiescePausedWatchers = true
+    }
+    const running =
+      this.hasApiServer === true && this.apiPhase !== 'stopped' && this.apiPhase !== 'idle'
+    if (!running) return false
+    this.quiescedApi = true
+    this.apiPhase = 'stopped'
+    await this.killApiServer()
+    await this.forceKillPort()
+    await this.waitForPortRelease()
+    return true
+  }
+
+  /**
+   * After a snapshot resume: restart a sidecar that {@link quiesceApiServer}
+   * stopped, or one that came back broken (a snapshot taken before quiesce
+   * existed), then release the watchers quiesce held. `restart` resolves when
+   * the new sidecar is healthy or its start gives up.
+   */
+  rehydrateApiServer(): { restarting: boolean; restart: Promise<void> } {
+    const wasQuiesced = this.quiescedApi
+    this.quiescedApi = false
+    const release = () => {
+      if (this.quiescePausedWatchers) {
+        this.quiescePausedWatchers = false
+        this.resumeWatchers()
+      }
+    }
+    const broken = this.hasApiServer === true && this.apiPhase === 'crashed'
+    if (!wasQuiesced && !broken) {
+      const restart =
+        this.hasApiServer === true && this.apiPhase === 'healthy'
+          ? this.isApiHealthy().then((ok) =>
+              ok ? undefined : this.restartApiServerOnly(),
+            )
+          : Promise.resolve()
+      return { restarting: false, restart: restart.finally(release) }
+    }
+    this.crashCount = 0
+    return { restarting: true, restart: this.restartApiServerOnly().finally(release) }
   }
 
   /**
