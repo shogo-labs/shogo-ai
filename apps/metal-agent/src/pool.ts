@@ -104,6 +104,21 @@ export interface PooledVm {
   createdAt: number
 }
 
+/** `POST /status` body: the substrate contract fields plus what re-warm needs. */
+export interface ProjectStatus {
+  exists: boolean
+  ready: boolean
+  replicas: number
+  url?: string
+  state: 'assigned' | 'suspended' | 'none'
+  /** Whether the running guest / local snapshot is on the host's current rootfs. */
+  rootfsFresh?: boolean
+  assignedAt?: number
+  lastRealActivityAt?: number
+  realIdleMs?: number
+  activeStreams?: number
+}
+
 export interface AssignedVm {
   projectId: string
   handle: FcVmHandle
@@ -111,6 +126,14 @@ export interface AssignedVm {
   lastTouchedAt: number
   /** Snapshot files this VM was restored from; protected from orphan reclaim. */
   restoredFrom?: { vmstate: string; mem: string }
+  /**
+   * Identity of the golden rootfs this VM's guest actually booted from. It can
+   * differ from the host's current identity: a VM adopted across a rootfs
+   * rebuild keeps running the old image. Its snapshot must carry THIS identity
+   * so it is recognised as stale, not the host's current one. Undefined for
+   * VMs adopted from a registry entry that predates the field.
+   */
+  bootRootfsIdentity?: string
   /** Last activity counter seen from the guest (for the activity poll). */
   lastActivityAt?: number
   /**
@@ -759,6 +782,11 @@ export class MetalWarmPool {
     return this.rootfsIds[vmClass] ?? this.rootfsIds.standard
   }
 
+  /** Rootfs identity the assigned VM's guest booted from (current image if unknown). */
+  private bootRootfsIdentity(a: AssignedVm): string {
+    return a.bootRootfsIdentity ?? this.classRootfsIdentity(a.handle.vmClass)
+  }
+
   /**
    * Re-adopt microVMs that survived a node-agent restart (rolling deploy). For
    * each entry in the durable live registry, verify the firecracker pid is still
@@ -830,6 +858,7 @@ export class MetalWarmPool {
         // every rolling deploy.
         lastRealActivityAt: Date.now(),
         restoredFrom: e.restoredFrom,
+        bootRootfsIdentity: e.bootRootfsIdentity,
         workspaceOrigin: e.workspaceOrigin,
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
@@ -885,6 +914,7 @@ export class MetalWarmPool {
       assignedAt: a.assignedAt,
       lastTouchedAt: a.lastTouchedAt,
       restoredFrom: a.restoredFrom,
+      bootRootfsIdentity: a.bootRootfsIdentity,
       alwaysOn: a.alwaysOn,
       runtimeToken: a.runtimeToken,
       publishedSubdomain: a.publishedSubdomain,
@@ -1208,6 +1238,9 @@ export class MetalWarmPool {
       repoHydratePending: true,
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      // Warm VMs never outlive the agent process (prepareForRestart kills
+      // them), so this one booted from the image this process was started on.
+      bootRootfsIdentity: this.classRootfsIdentity(vm.handle.vmClass),
       runtimeToken: env.RUNTIME_AUTH_SECRET,
       workspaceMemberIds:
         typeof env.WORKSPACE_PROJECT_IDS === 'string'
@@ -2509,7 +2542,7 @@ export class MetalWarmPool {
         snapshot,
         suspendedAt: now,
         lastAccessAt,
-        rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
+        rootfsIdentity: this.bootRootfsIdentity(a),
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
         memberDataEtags: this.trustedMemberDataEtags(a),
@@ -2518,7 +2551,15 @@ export class MetalWarmPool {
       this.suspended.set(projectId, s)
       this.writeIndex(s)
 
-      if (this.store.kind !== 'none') {
+      if (this.store.kind !== 'none' && this.localSnapshotIsStale(s)) {
+        // Booted from a superseded rootfs: every pull would reject this
+        // snapshot, so uploading it only costs bytes. The final backups above
+        // already hold the work, and the next open cold-boots from them.
+        console.log(
+          `[pool] skipping durable push for ${projectId}: snapshot is from rootfs ${s.rootfsIdentity}, ` +
+            `host is on ${this.classRootfsIdentity(a.handle.vmClass)}`,
+        )
+      } else if (this.store.kind !== 'none') {
         // Anti-clobber for the DURABLE SNAPSHOT tier (mirrors the backup guard):
         // a template-origin VM must not push a template snapshot over a real
         // one. If this workspace is still the template AND a durable snapshot
@@ -2555,8 +2596,8 @@ export class MetalWarmPool {
           rootfsPath: snapshot.rootfs,
           rootfsArtifactPath: this.mgr.restoreRootfsArtifactPath(snapshot.rootfs),
           rootfsMode: durable.mode,
-          baseIdentity: this.classRootfsIdentity(a.handle.vmClass),
-          rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
+          baseIdentity: this.bootRootfsIdentity(a),
+          rootfsIdentity: this.bootRootfsIdentity(a),
           vmClass: a.handle.vmClass,
           // Not durably persisted (see data-drive.ts header) — recorded only so
           // a cross-host/cold resume can provision a FRESH empty drive of the
@@ -2600,7 +2641,7 @@ export class MetalWarmPool {
       createdAt: s.snapshot.createdAt,
       suspendedAt: s.suspendedAt,
       lastAccessAt: s.lastAccessAt,
-      rootfsIdentity: this.classRootfsIdentity(vmClass),
+      rootfsIdentity: s.rootfsIdentity ?? this.classRootfsIdentity(vmClass),
       vmClass,
       dataDrive: s.snapshot.dataDrive,
       backupEtag: s.backupEtag,
@@ -2773,6 +2814,7 @@ export class MetalWarmPool {
         snapshot,
         suspendedAt: pulled.meta.createdAt,
         lastAccessAt: Date.now(),
+        rootfsIdentity: pulled.meta.rootfsIdentity,
         backupEtag: pulled.meta.backupEtag,
         dataEtag: pulled.meta.dataEtag,
         memberDataEtags: pulled.meta.memberDataEtags,
@@ -2809,6 +2851,9 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       lastRealActivityAt: now,
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
+      // The restored guest runs the image its snapshot was taken on (already
+      // gated fresh above); unstamped legacy snapshots count as current.
+      bootRootfsIdentity: s.rootfsIdentity ?? this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard'),
       // Carry the runtime token so /pool/export (source backup on suspend) and
       // adopt-on-restart keep working after a resume, not just after an assign.
       runtimeToken: env.RUNTIME_AUTH_SECRET || undefined,
@@ -3190,7 +3235,7 @@ export class MetalWarmPool {
             projectId: a.projectId,
             why,
             at: new Date().toISOString(),
-            rootfsIdentity: this.classRootfsIdentity(a.handle.vmClass),
+            rootfsIdentity: this.bootRootfsIdentity(a),
             backupParentEtag: a.backupParentEtag,
             repoParentEtag: a.repoParentEtag,
           }),
@@ -4023,16 +4068,25 @@ export class MetalWarmPool {
    *   suspended → exists but scaled-to-zero (replicas 0, resumable)
    *   neither   → does not exist here
    */
-  getProjectStatus(projectId: string): {
-    exists: boolean
-    ready: boolean
-    replicas: number
-    url?: string
-    state: 'assigned' | 'suspended' | 'none'
-  } {
+  getProjectStatus(projectId: string): ProjectStatus {
     const a = this.assigned.get(projectId)
-    if (a) return { exists: true, ready: true, replicas: 1, url: a.handle.agentUrl, state: 'assigned' }
-    if (this.suspended.has(projectId)) return { exists: true, ready: false, replicas: 0, state: 'suspended' }
+    if (a) {
+      const now = Date.now()
+      return {
+        exists: true,
+        ready: true,
+        replicas: 1,
+        url: a.handle.agentUrl,
+        state: 'assigned',
+        rootfsFresh: this.bootRootfsIdentity(a) === this.classRootfsIdentity(a.handle.vmClass),
+        assignedAt: a.assignedAt,
+        lastRealActivityAt: a.lastRealActivityAt ?? a.assignedAt,
+        realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        activeStreams: a.activeStreams ?? 0,
+      }
+    }
+    const s = this.suspended.get(projectId)
+    if (s) return { exists: true, ready: false, replicas: 0, state: 'suspended', rootfsFresh: !this.localSnapshotIsStale(s) }
     return { exists: false, ready: false, replicas: 0, state: 'none' }
   }
 

@@ -74,6 +74,11 @@ export interface ResolveWorkspaceRuntimeOpts {
   runtimeManager?: IRuntimeManager
   /** Correlates a UI open attempt with host runtime boot logs. */
   openAttemptId?: string
+  /**
+   * A system boot (rollout re-warm), not a user or integration open: it is not
+   * recorded as an open and does not enter the keep-warm MRU.
+   */
+  background?: boolean
 
   /** @deprecated Workspace runtimes are always enabled. */
   _isEnabled?: () => boolean
@@ -254,11 +259,20 @@ export async function resolveWorkspaceRuntimeUrl(
         readonlyProjectIds: opts.readonlyProjectIds,
       }),
     )
-    try {
-      const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')
-      getWorkspaceKeepWarm().recordOpened(leaseKey, url)
-    } catch {
-      // Keep-warm is an optimization and must never fail a runtime resolve.
+    if (!opts.background) {
+      try {
+        const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')
+        getWorkspaceKeepWarm().recordOpened(leaseKey, url)
+      } catch {
+        // Keep-warm is an optimization and must never fail a runtime resolve.
+      }
+      if (!opts._metalResolver) {
+        void import('./metal-rewarm')
+          .then(({ markRuntimeOpened }) =>
+            markRuntimeOpened(opts.anchorProjectId ? `ws:proj:${opts.anchorProjectId}` : `ws:${workspaceId}`),
+          )
+          .catch(() => {})
+      }
     }
     return { mode: 'metal', url }
   }

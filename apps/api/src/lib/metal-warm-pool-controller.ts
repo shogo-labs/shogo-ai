@@ -381,6 +381,21 @@ export interface StopResult {
   suspended: boolean
   /** The node-agent refused because the project has an active agent message. */
   busy: boolean
+  /** Size of the memory snapshot a fresh suspend wrote (absent otherwise). */
+  memBytes?: number
+}
+
+/** A runtime's state on the host that holds it (the node-agent `/status` body). */
+export interface RuntimeHostStatus {
+  hostId: string
+  region: string
+  state: 'assigned' | 'suspended' | 'none'
+  /** Running guest / local snapshot is on the host's current rootfs. Absent on older agents. */
+  rootfsFresh?: boolean
+  assignedAt?: number
+  lastRealActivityAt?: number
+  realIdleMs?: number
+  activeStreams?: number
 }
 
 export interface RecycleResult {
@@ -451,6 +466,8 @@ export class MetalWarmPoolController {
       agentPort: reg.agentPort,
       region: reg.region,
       arch: reg.arch,
+      agentVersion: reg.agentVersion,
+      rootfsSha: reg.rootfsSha,
       capacity: reg.capacity,
       load: reg.load,
       disk: reg.disk,
@@ -897,6 +914,39 @@ export class MetalWarmPoolController {
   }
 
   /**
+   * Full host-side state of a runtime key, including rootfs freshness and user
+   * activity. Null when the key isn't placed on any known host, or the host
+   * didn't answer.
+   */
+  async getRuntimeHostStatus(runtimeKey: string): Promise<RuntimeHostStatus | null> {
+    const host = await this.hostForProject(runtimeKey)
+    if (!host) return null
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId: runtimeKey }),
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return null
+      const b = (await res.json()) as Partial<RuntimeHostStatus> & { exists?: boolean; ready?: boolean }
+      const state = b.state ?? (b.ready ? 'assigned' : b.exists ? 'suspended' : 'none')
+      return {
+        hostId: host.hostId,
+        region: host.region,
+        state,
+        rootfsFresh: b.rootfsFresh,
+        assignedAt: b.assignedAt,
+        lastRealActivityAt: b.lastRealActivityAt,
+        realIdleMs: b.realIdleMs,
+        activeStreams: b.activeStreams,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Stop a project (suspend-to-snapshot, freeing host RAM) — the metal analog of
    * scaling a Knative service to zero. Best-effort and idempotent: no live
    * placement, a down host, or an already-stopped project are all no-ops.
@@ -927,7 +977,8 @@ export class MetalWarmPoolController {
       if (busy) {
         console.log(`[MetalPool] stop ${projectId} on ${host.hostId} skipped: busy (active message)`)
       }
-      return { suspended, busy }
+      const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
+      return { suspended, busy, ...(memBytes !== undefined ? { memBytes } : {}) }
     } catch (err) {
       console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`)
       return { suspended: false, busy: false }

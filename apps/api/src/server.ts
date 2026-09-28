@@ -6059,6 +6059,65 @@ app.delete('/api/admin/metal/hosts/:hostId/config', async (c) => {
   }
 })
 
+// Rollout re-warm (lib/metal-rewarm.ts): boot and re-suspend recently active
+// runtimes on the current rootfs so their next open resumes a fresh snapshot.
+// POST   /api/admin/metal/rewarm         start ({ sinceHours?, region?, dryRun?, concurrency?, maxRuntimes?, maxBytes?, reason? })
+// GET    /api/admin/metal/rewarm         status of the latest job
+// DELETE /api/admin/metal/rewarm         cancel
+// POST   /api/admin/metal/rewarm/pause   pause (in-flight runtimes finish)
+// POST   /api/admin/metal/rewarm/resume  resume
+function rewarmActor(c: any): { id: string; email?: string } {
+  const auth = c.get('auth') as any
+  return { id: auth?.user?.id ?? auth?.userId ?? 'unknown', email: auth?.user?.email }
+}
+
+app.post('/api/admin/metal/rewarm', async (c) => {
+  try {
+    const { parseRewarmRequest, startRewarmJob } = await import('./lib/metal-rewarm')
+    const parsed = parseRewarmRequest(await c.req.json().catch(() => ({})), rewarmActor(c))
+    if (!parsed.ok) return c.json({ ok: false, error: parsed.error }, 400)
+    const result = await startRewarmJob(parsed.input)
+    if (result.dryRun) return c.json({ ok: true, ...result })
+    if (!result.started) return c.json({ ok: false, ...result }, 409)
+    return c.json({ ok: true, ...result }, 202)
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'rewarm failed' }, 500)
+  }
+})
+
+app.get('/api/admin/metal/rewarm', async (c) => {
+  try {
+    const { getRewarmStatus } = await import('./lib/metal-rewarm')
+    return c.json({ ok: true, data: await getRewarmStatus() })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'unavailable' }, 500)
+  }
+})
+
+app.delete('/api/admin/metal/rewarm', async (c) => {
+  try {
+    const { setRewarmControl } = await import('./lib/metal-rewarm')
+    await setRewarmControl('cancel')
+    console.log(`[admin-audit] ${JSON.stringify({ event: 'admin.metal.rewarm.cancel', actorId: rewarmActor(c).id, actorEmail: rewarmActor(c).email })}`)
+    return c.json({ ok: true, control: 'cancel' })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'cancel failed' }, 500)
+  }
+})
+
+app.post('/api/admin/metal/rewarm/:action', async (c) => {
+  const action = c.req.param('action')
+  if (action !== 'pause' && action !== 'resume') return c.json({ ok: false, error: 'unknown_action' }, 400)
+  try {
+    const { setRewarmControl } = await import('./lib/metal-rewarm')
+    await setRewarmControl(action === 'pause' ? 'pause' : null)
+    console.log(`[admin-audit] ${JSON.stringify({ event: `admin.metal.rewarm.${action}`, actorId: rewarmActor(c).id, actorEmail: rewarmActor(c).email })}`)
+    return c.json({ ok: true, control: action === 'pause' ? 'pause' : null })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? `${action} failed` }, 500)
+  }
+})
+
 // POST /api/admin/runtimes/recycle — restart a stuck runtime from a clean cold
 // boot without touching code, schema, database or data. Body:
 // { projectId?, workspaceId?, force?, reason?, coldBoot? }. See
@@ -9635,6 +9694,20 @@ if (isKubernetes()) {
       startMetalFleetReconciler()
     } catch (err: any) {
       console.error('[metal-fleet] Failed to start reconciler (non-fatal):', err.message)
+    }
+
+    // Rollout re-warm: once every live metal host in a region reports a new
+    // rootfs, boot and re-suspend the runtimes active in the last 48h so their
+    // next open resumes a fresh snapshot instead of cold-booting.
+    // METAL_REWARM_AUTO=false turns the automatic trigger off.
+    try {
+      const { isMetalEnabled } = await import('./lib/metal-eligibility')
+      if (isMetalEnabled()) {
+        const { startMetalRewarmWatcher } = await import('./lib/metal-rewarm')
+        startMetalRewarmWatcher()
+      }
+    } catch (err: any) {
+      console.error('[MetalRewarm] Failed to start watcher (non-fatal):', err.message)
     }
   }, 2000)
 }
