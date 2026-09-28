@@ -34,6 +34,8 @@ export interface ResolvePodUrlOpts {
   metalRetryDelayMs?: number
   runtimeManager?: IRuntimeManager
   openAttemptId?: string
+  /** System boot (rollout re-warm); see ResolveWorkspaceRuntimeOpts.background. */
+  background?: boolean
   _k8sResolver?: (projectId: string) => Promise<string>
   _isKubernetes?: () => boolean
   /** @deprecated Host warm pools are not part of the workspace topology. */
@@ -99,6 +101,7 @@ async function resolveAnchoredProject(
     _metalResolver: opts._workspaceMetalResolver,
     _hostStartProject: opts._hostStartProject,
     openAttemptId: opts.openAttemptId,
+    background: opts.background,
     _spawnLease: spawnLease,
   })
 
