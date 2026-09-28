@@ -2581,13 +2581,19 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
       const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
       if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
         const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
-        await new MetalSubstrate().stop(projectId)
+        const { suspended, busy } = await new MetalSubstrate().suspend(projectId)
         return c.json({
           success: true,
           projectId,
           status: 'scaling_down',
           substrate: 'metal',
-          message: 'Project suspended to snapshot',
+          suspended,
+          busy,
+          message: busy
+            ? 'Project is mid-generation; left running'
+            : suspended
+              ? 'Project suspended to snapshot'
+              : 'Project runtime is not running',
         })
       }
       // Knative: scales to zero automatically after idle timeout.
