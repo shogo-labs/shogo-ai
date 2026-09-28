@@ -6480,6 +6480,11 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // Gate the gateway's deps-dependent work (the LSP) on the background install
   // kicked off above / in essentials, instead of blocking the whole start.
   agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)
+  if (IS_WORKSPACE_RUNTIME) {
+    agentGateway.setWorkspaceRebuild(effectiveWorkspaceProjectIds, (projectId: string) => {
+      workspacePreviewManagers.get(projectId)?.requestWebRebuild()
+    })
+  }
   // Wire the runtime's root-serving PreviewManager into the gateway so prompt
   // builders/tools query the active backend, and vite-watch build completion
   // emits canvas reload events for the preview the user is actually viewing.

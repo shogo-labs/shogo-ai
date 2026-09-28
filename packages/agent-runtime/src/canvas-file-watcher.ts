@@ -54,10 +54,14 @@ const BUILDABLE_PREFIXES = [
   'babel.config',
   'metro.config',
   'expo-router',
+  // NativeWind: Tailwind config + the root stylesheet it compiles.
+  'tailwind.config',
+  'global.css',
   // Copied into dist/ without a content hash (worklets, wasm, static assets).
   'public/',
 ] as const
-const BUILDABLE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.html', '.json'] as const
+// `.mjs` / `.cjs` cover ESM/CJS configs (`postcss.config.mjs`, `tailwind.config.cjs`).
+const BUILDABLE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs', '.css', '.html', '.json'] as const
 
 function isBuildableFile(relativePath: string): boolean {
   if (BUILDABLE_PREFIXES.some(p => relativePath.startsWith(p))) {
@@ -372,6 +376,17 @@ export type CanvasEvent =
   | { type: 'file.changed'; path: string; mtime: number }
   | { type: 'file.deleted'; path: string }
 
+/**
+ * What a buildable change should rebuild. `projectId` is set when the path
+ * lives under a workspace-runtime member folder (`<projectId>/src/...`);
+ * `path` is then relative to that member's root. Otherwise the change
+ * belongs to the workspace root itself.
+ */
+export interface RebuildTarget {
+  projectId?: string
+  path: string
+}
+
 export class CanvasFileWatcher {
   private static instance: CanvasFileWatcher | null = null
 
@@ -384,7 +399,13 @@ export class CanvasFileWatcher {
 
   private subscribers = new Set<(event: CanvasEvent) => void>()
   private workspaceDir: string
-  private onRebuildCallback: (() => void) | null = null
+  private onRebuildCallback: ((target: RebuildTarget) => void) | null = null
+  /**
+   * Workspace-runtime member ids. Members are top-level folders of the
+   * merged root, so their edits arrive as `<projectId>/src/...` and would
+   * never match `BUILDABLE_PREFIXES` without stripping the member segment.
+   */
+  private workspaceMemberIds: (() => readonly string[]) | null = null
   /**
    * LSP bridge: receives every disk-side file event so the workspace
    * language server can `workspace/didChangeWatchedFiles` instead of
@@ -532,7 +553,7 @@ export class CanvasFileWatcher {
       this.notifyLspBridge(absPath, 'deleted')
       if (this.shouldDedupe('file.deleted', path)) return
       this.broadcast({ type: 'file.deleted', path })
-      if (isBuildableFile(path)) this.onRebuildCallback?.()
+      this.maybeRebuild(path)
       return
     }
 
@@ -546,7 +567,28 @@ export class CanvasFileWatcher {
     this.notifyLspBridge(absPath, op === 'add' ? 'created' : 'changed')
     if (this.shouldDedupe('file.changed', path)) return
     this.broadcast({ type: 'file.changed', path, mtime })
-    if (isBuildableFile(path)) this.onRebuildCallback?.()
+    this.maybeRebuild(path)
+  }
+
+  /**
+   * Resolve a merged-root path to the project whose build it affects, or
+   * `null` when it isn't a buildable source file.
+   */
+  resolveRebuildTarget(path: string): RebuildTarget | null {
+    const slash = path.indexOf('/')
+    if (slash > 0 && this.workspaceMemberIds) {
+      const head = path.slice(0, slash)
+      if (this.workspaceMemberIds().includes(head)) {
+        const inner = path.slice(slash + 1)
+        return !shouldIgnore(inner) && isBuildableFile(inner) ? { projectId: head, path: inner } : null
+      }
+    }
+    return isBuildableFile(path) ? { path } : null
+  }
+
+  private maybeRebuild(path: string): void {
+    const target = this.resolveRebuildTarget(path)
+    if (target) this.onRebuildCallback?.(target)
   }
 
   private notifyLspBridge(absPath: string, kind: 'created' | 'changed' | 'deleted'): void {
@@ -576,8 +618,16 @@ export class CanvasFileWatcher {
     return false
   }
 
-  setOnRebuild(callback: () => void): void {
+  setOnRebuild(callback: (target: RebuildTarget) => void): void {
     this.onRebuildCallback = callback
+  }
+
+  /**
+   * Declare the workspace-runtime member folders (pass `null` to clear).
+   * The getter is re-read per event because members can be mounted live.
+   */
+  setWorkspaceMembers(getIds: (() => readonly string[]) | null): void {
+    this.workspaceMemberIds = getIds
   }
 
   /**
@@ -599,18 +649,14 @@ export class CanvasFileWatcher {
     const path = normalizeRelativePath(relativePath)
     if (this.shouldDedupe('file.changed', path)) return
     this.broadcast({ type: 'file.changed', path, mtime: Date.now() })
-    if (isBuildableFile(path)) {
-      this.onRebuildCallback?.()
-    }
+    this.maybeRebuild(path)
   }
 
   onFileDeleted(relativePath: string): void {
     const path = normalizeRelativePath(relativePath)
     if (this.shouldDedupe('file.deleted', path)) return
     this.broadcast({ type: 'file.deleted', path })
-    if (isBuildableFile(path)) {
-      this.onRebuildCallback?.()
-    }
+    this.maybeRebuild(path)
   }
 
   broadcastReload(): void {

@@ -156,6 +156,8 @@ import {
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
+/** Matches CanvasBuildManager's debounce so an agent's burst of edits coalesces into one export. */
+const WEB_REBUILD_DEBOUNCE_MS = 500
 
 /** Expo's `experiments.baseUrl` is conventionally stored without a trailing slash. */
 export function normalizeExpoBasePath(basePath: string): string {
@@ -1066,6 +1068,10 @@ export class PreviewManager {
    * strictly serial — concurrent callers receive the in-flight promise.
    */
   private expoExportInFlight: Promise<void> | null = null
+  /** Debounce timer + trailing-edge state for {@link requestWebRebuild}. */
+  private webRebuildTimer: ReturnType<typeof setTimeout> | null = null
+  private webRebuildRunning = false
+  private webRebuildPending = false
   /**
    * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
    * above. `startApiServer()` is reachable from many independent entry
@@ -2657,6 +2663,10 @@ export class PreviewManager {
       clearTimeout(this.crashRestartTimer)
       this.crashRestartTimer = null
     }
+    if (this.webRebuildTimer) {
+      clearTimeout(this.webRebuildTimer)
+      this.webRebuildTimer = null
+    }
     if (this.apiServerProcess) {
       console.log(`[${LOG_PREFIX}] Stopping API server...`)
       this.apiServerProcess.kill('SIGTERM')
@@ -3926,6 +3936,46 @@ export class PreviewManager {
    *
    * Re-run on demand via `restart()`.
    */
+  /**
+   * Re-export the Expo web bundle after a source edit, without the sidecar
+   * restart that `restart()` does. Debounced; edits that land while an
+   * export is running queue exactly one more export, because the running
+   * one may already have read the old sources.
+   *
+   * No-op for non-Metro stacks (Vite rebuilds via its own watch process)
+   * and for managers that were never started — their first `start()`
+   * exports the current tree anyway.
+   */
+  requestWebRebuild(): void {
+    if (this.resolveDevServer() !== 'metro') return
+    if (!this.started && !this.expoExportInFlight) return
+    if (this.webRebuildTimer) clearTimeout(this.webRebuildTimer)
+    this.webRebuildTimer = setTimeout(() => {
+      this.webRebuildTimer = null
+      void this.runWebRebuild()
+    }, WEB_REBUILD_DEBOUNCE_MS)
+  }
+
+  private async runWebRebuild(): Promise<void> {
+    if (this.webRebuildRunning) {
+      this.webRebuildPending = true
+      return
+    }
+    this.webRebuildRunning = true
+    try {
+      do {
+        this.webRebuildPending = false
+        if (this.expoExportInFlight) await this.expoExportInFlight.catch(() => {})
+        console.log(`[${LOG_PREFIX}] Source changed — re-exporting Expo web bundle`)
+        await this.runExpoExportWeb({}, this.resolveBundlerCwd())
+      } while (this.webRebuildPending)
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Expo web rebuild failed: ${err?.message ?? err}`)
+    } finally {
+      this.webRebuildRunning = false
+    }
+  }
+
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
     // Reentrancy guard — see `expoExportInFlight` field doc.
     if (this.expoExportInFlight) {
