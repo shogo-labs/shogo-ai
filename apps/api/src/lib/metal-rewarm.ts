@@ -818,7 +818,25 @@ export async function listRewarmCandidatesFromDb(sinceMs: number, maxRuntimes: n
     })
   }
 
-  return out.sort((a, b) => b.lastActiveAt - a.lastActiveAt).slice(0, Math.max(0, maxRuntimes))
+  // Regions share one database, but a workspace's chat and writes run in its
+  // home region; warming it anywhere else boots it on the wrong fleet.
+  const { homeRegionWorkspaceWhere } = await import('./region')
+  const home = homeRegionWorkspaceWhere()
+  let local = out
+  if (home) {
+    const workspaceIds = [...new Set(out.map((c) => c.workspaceId).filter((id): id is string => !!id))]
+    const homeIds = new Set<string>()
+    for (let i = 0; i < workspaceIds.length; i += 500) {
+      const rows = await prisma.workspace.findMany({
+        where: { id: { in: workspaceIds.slice(i, i + 500) }, ...home },
+        select: { id: true },
+      })
+      for (const w of rows) homeIds.add(w.id)
+    }
+    local = out.filter((c) => !!c.workspaceId && homeIds.has(c.workspaceId))
+  }
+
+  return local.sort((a, b) => b.lastActiveAt - a.lastActiveAt).slice(0, Math.max(0, maxRuntimes))
 }
 
 /** The real controller, resolvers and Redis, wired for the job and watcher. */

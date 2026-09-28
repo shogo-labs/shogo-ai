@@ -310,7 +310,9 @@ start a job. Look for `[metal-rewarm]` lines in the API logs.
 
 Candidates are managed projects with runtimes enabled, plus workspace sessions,
 active within `METAL_REWARM_SINCE_HOURS` (48), newest first, capped at
-`METAL_REWARM_MAX_RUNTIMES`. For each one:
+`METAL_REWARM_MAX_RUNTIMES`. Only workspaces whose `homeRegion` is this region
+are included: the regions share one database, and warming a workspace outside
+its home region would boot it on the wrong fleet. For each one:
 
 | State on the host | Outcome |
 | --- | --- |
