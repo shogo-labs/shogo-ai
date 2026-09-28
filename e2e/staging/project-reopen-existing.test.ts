@@ -30,11 +30,12 @@ import {
  *      marker STILL renders and the template markers ("Project Ready" /
  *      "Start building your app!") are absent.
  *
- * Requires the suspend backdoor (`SHOGO_E2E_BOOTSTRAP_SECRET` +
- * `/api/internal/e2e/suspend-runtime`); the reopen assertion is meaningless
- * against a warm VM, so the test skips cleanly when the backdoor is unavailable.
+ * Suspends through the e2e backdoor (`SHOGO_E2E_BOOTSTRAP_SECRET` +
+ * `/api/internal/e2e/suspend-runtime`) or, without it, the user's own
+ * `POST /api/projects/:id/runtime/stop`. The reopen assertion is meaningless
+ * against a warm VM, so the test skips when the runtime could not be suspended.
  *
- * Run: STAGING_URL=... SHOGO_E2E_BOOTSTRAP_SECRET=... npx playwright test \
+ * Run: STAGING_URL=... npx playwright test \
  *   --config e2e/playwright.config.ts project-reopen-existing
  */
 
@@ -202,15 +203,14 @@ test.describe("Reopen existing project", () => {
     await page.goto(`/projects/${projectId}`)
     await setAppHeadingViaAgent(page, MARKER)
 
-    // 2. Force a fresh runtime: suspend it out-of-band. Without the backdoor a
-    //    reopen would just re-attach to the warm VM and the assertion below
+    // 2. Force a fresh runtime: suspend it out-of-band. Without a real suspend
+    //    a reopen would just re-attach to the warm VM and the assertion below
     //    would be a tautology, so skip cleanly.
     const suspended = await suspendRuntimeViaApi(page, projectId)
     test.skip(
       !suspended,
-      "reopen assertion requires the suspend-runtime backdoor " +
-        "(SHOGO_E2E_BOOTSTRAP_SECRET). A warm-VM reload cannot catch a reopen " +
-        "regression.",
+      "reopen assertion requires a real runtime suspend (backdoor or the " +
+        "user stop route). A warm-VM reload cannot catch a reopen regression.",
     )
     // Give the substrate a moment to actually tear the runtime down.
     await page.waitForTimeout(3_000)

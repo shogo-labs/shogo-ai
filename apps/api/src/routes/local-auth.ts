@@ -30,6 +30,7 @@
  */
 
 import { Hono } from 'hono'
+import { toErrorMessage } from '@shogo-ai/sdk'
 import { prisma } from '../lib/prisma'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { onUpstreamRejection } from '../lib/federated-upstream'
@@ -151,6 +152,7 @@ export function localAuthRoutes() {
       })
       const data = await res.json().catch(() => ({} as any))
       if (!res.ok || data?.ok === false) {
+        const errorMessage = toErrorMessage(data?.error, `HTTP ${res.status}`)
         // 401 ⇒ key revoked or superseded; surface so the UI can prompt
         // the user to re-sign-in. We never wipe credentials automatically.
         if (res.status === 401) {
@@ -164,10 +166,10 @@ export function localAuthRoutes() {
         }
         lastHeartbeatOk = false
         lastHeartbeatAt = Date.now()
-        lastHeartbeatError = data?.error || `HTTP ${res.status}`
+        lastHeartbeatError = errorMessage
         return c.json({
           ok: false,
-          error: data?.error || `HTTP ${res.status}`,
+          error: errorMessage,
           cloudKeyRejected: res.status === 401,
           ...(res.status === 401 ? { keyPrefix: key.slice(0, 16) } : {}),
         }, res.status as any)
@@ -177,11 +179,12 @@ export function localAuthRoutes() {
       lastHeartbeatAt = Date.now()
       lastHeartbeatError = null
       return c.json({ ok: true })
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = toErrorMessage(err, 'Heartbeat failed')
       lastHeartbeatOk = false
       lastHeartbeatAt = Date.now()
-      lastHeartbeatError = err?.message || 'Heartbeat failed'
-      return c.json({ ok: false, error: err?.message || 'Heartbeat failed' }, 502)
+      lastHeartbeatError = errorMessage
+      return c.json({ ok: false, error: errorMessage }, 502)
     }
   })
 

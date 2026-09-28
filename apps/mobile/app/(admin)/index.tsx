@@ -28,6 +28,7 @@ import {
   Zap,
   Activity,
   Monitor,
+  Smartphone,
   Trash2,
 } from 'lucide-react-native'
 import { useRouter } from 'expo-router'
@@ -77,7 +78,7 @@ interface ActiveUsersData {
   mau: number
 }
 
-interface DesktopInstallsData {
+interface InstallSegment {
   totalDevices: number
   active: {
     d1: number
@@ -95,6 +96,22 @@ interface DesktopInstallsData {
     count: number
   }>
   distinctUsers: number
+}
+
+interface AppInstallsData {
+  desktop: InstallSegment
+  ios: InstallSegment
+  android: InstallSegment
+  totals: {
+    totalDevices: number
+    active: {
+      d1: number
+      d7: number
+      d30: number
+    }
+    newLast30d: number
+    distinctUsers: number
+  }
 }
 
 interface GrowthDataPoint {
@@ -306,7 +323,72 @@ function ActiveUsersCard({ data, loading }: { data: ActiveUsersData | null; load
   )
 }
 
-function DesktopInstallsCard({ data, loading }: { data: DesktopInstallsData | null; loading: boolean }) {
+function InstallSegmentCard({
+  label,
+  data,
+  icon: Icon,
+}: {
+  label: string
+  data: InstallSegment
+  icon: typeof Monitor
+}) {
+  const versions = data.byVersion.slice(0, 4)
+  const maxVersionCount = Math.max(...versions.map((version) => version.count), 1)
+
+  return (
+    <View className="flex-1 rounded-xl border border-border/50 bg-muted/20 p-4 gap-4">
+      <View className="flex-row items-center justify-between">
+        <View className="flex-row items-center gap-2">
+          <Icon size={16} className="text-muted-foreground" />
+          <Text className="text-sm font-semibold text-foreground">{label}</Text>
+        </View>
+        <Text className="text-lg font-bold text-foreground">{data.totalDevices.toLocaleString()}</Text>
+      </View>
+      <View className="flex-row gap-3">
+        <View className="flex-1">
+          <Text className="text-xs text-muted-foreground">Active 7d</Text>
+          <Text className="text-sm font-semibold text-foreground">{data.active.d7.toLocaleString()}</Text>
+        </View>
+        <View className="flex-1">
+          <Text className="text-xs text-muted-foreground">New 30d</Text>
+          <Text className="text-sm font-semibold text-foreground">{data.newLast30d.toLocaleString()}</Text>
+        </View>
+      </View>
+      <View className="gap-2">
+        <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Versions</Text>
+        {versions.length > 0 ? versions.map((version) => (
+          <View key={version.version} className="gap-1">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-xs text-foreground">{version.version}</Text>
+              <Text className="text-xs text-muted-foreground">{version.count.toLocaleString()}</Text>
+            </View>
+            <View className="h-1.5 bg-muted rounded-full overflow-hidden">
+              <View
+                className="h-full bg-primary rounded-full"
+                style={{ width: `${(version.count / maxVersionCount) * 100}%` }}
+              />
+            </View>
+          </View>
+        )) : (
+          <Text className="text-xs text-muted-foreground">No device data</Text>
+        )}
+      </View>
+      <View className="gap-1">
+        <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Platforms</Text>
+        {data.byPlatform.length > 0 ? data.byPlatform.slice(0, 4).map((platform) => (
+          <View key={platform.platform} className="flex-row items-center justify-between">
+            <Text className="text-xs text-foreground">{platform.platform}</Text>
+            <Text className="text-xs font-medium text-foreground">{platform.count.toLocaleString()}</Text>
+          </View>
+        )) : (
+          <Text className="text-xs text-muted-foreground">No device data</Text>
+        )}
+      </View>
+    </View>
+  )
+}
+
+function AppInstallsCard({ data, loading }: { data: AppInstallsData | null; loading: boolean }) {
   const { width } = useWindowDimensions()
   const stackMetrics = isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH
 
@@ -324,19 +406,17 @@ function DesktopInstallsCard({ data, loading }: { data: DesktopInstallsData | nu
   }
 
   const metrics = [
-    { label: 'Total Devices', value: data?.totalDevices, icon: Monitor, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-    { label: 'Active 1d', value: data?.active.d1, icon: Activity, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-    { label: 'Active 7d', value: data?.active.d7, icon: Calendar, color: 'text-purple-500', bg: 'bg-purple-500/10' },
-    { label: 'Active 30d', value: data?.active.d30, icon: CalendarDays, color: 'text-orange-500', bg: 'bg-orange-500/10' },
+    { label: 'Total Devices', value: data?.totals.totalDevices, icon: Monitor, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    { label: 'Active 1d', value: data?.totals.active.d1, icon: Activity, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    { label: 'Active 7d', value: data?.totals.active.d7, icon: Calendar, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+    { label: 'Active 30d', value: data?.totals.active.d30, icon: CalendarDays, color: 'text-orange-500', bg: 'bg-orange-500/10' },
   ]
-  const versions = data?.byVersion.slice(0, 6) ?? []
-  const maxVersionCount = Math.max(...versions.map((version) => version.count), 1)
 
   return (
     <View className="rounded-xl border border-border bg-card p-5">
       <View className="flex-row items-center justify-between mb-4">
-        <Text className="text-sm font-semibold text-foreground">Desktop Installs</Text>
-        <Text className="text-xs text-muted-foreground">Signed-in desktops only</Text>
+        <Text className="text-sm font-semibold text-foreground">App Installs</Text>
+        <Text className="text-xs text-muted-foreground">Signed-in devices only</Text>
       </View>
       <View className={cn(stackMetrics ? 'gap-3' : 'flex-row gap-3')}>
         {metrics.map((m) => {
@@ -357,45 +437,23 @@ function DesktopInstallsCard({ data, loading }: { data: DesktopInstallsData | nu
         })}
       </View>
 
-      <View className={cn('mt-5 gap-5', isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH ? '' : 'flex-row')}>
-        <View className="flex-1 gap-2">
-          <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Versions</Text>
-          {versions.length > 0 ? versions.map((version) => (
-            <View key={version.version} className="gap-1">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-xs text-foreground">{version.version}</Text>
-                <Text className="text-xs text-muted-foreground">
-                  {version.count.toLocaleString()} ({version.activeD7.toLocaleString()} active 7d)
-                </Text>
-              </View>
-              <View className="h-1.5 bg-muted rounded-full overflow-hidden">
-                <View
-                  className="h-full bg-primary rounded-full"
-                  style={{ width: `${(version.count / maxVersionCount) * 100}%` }}
-                />
-              </View>
-            </View>
-          )) : (
-            <Text className="text-xs text-muted-foreground">No device data</Text>
-          )}
-        </View>
-        <View className="flex-1 gap-2">
-          <Text className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Platforms</Text>
-          {data?.byPlatform.length ? data.byPlatform.map((platform) => (
-            <View key={platform.platform} className="flex-row items-center justify-between">
-              <Text className="text-xs text-foreground">{platform.platform}</Text>
-              <Text className="text-xs font-medium text-foreground">{platform.count.toLocaleString()}</Text>
-            </View>
-          )) : (
-            <Text className="text-xs text-muted-foreground">No device data</Text>
-          )}
-          {data && (
-            <Text className="text-xs text-muted-foreground mt-1">
-              {data.newLast30d.toLocaleString()} new in 30d · {data.distinctUsers.toLocaleString()} users
-            </Text>
-          )}
-        </View>
+      <View className={cn(
+        'mt-5 gap-3',
+        isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH ? '' : 'flex-row',
+      )}>
+        {data && (
+          <>
+            <InstallSegmentCard label="Desktop" data={data.desktop} icon={Monitor} />
+            <InstallSegmentCard label="iOS" data={data.ios} icon={Smartphone} />
+            <InstallSegmentCard label="Android" data={data.android} icon={Smartphone} />
+          </>
+        )}
       </View>
+      {data && (
+        <Text className="text-xs text-muted-foreground mt-3">
+          {data.totals.newLast30d.toLocaleString()} new in 30d · {data.totals.distinctUsers.toLocaleString()} users
+        </Text>
+      )}
     </View>
   )
 }
@@ -740,7 +798,7 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
-  const [desktopInstalls, setDesktopInstalls] = useState<{ data: DesktopInstallsData | null; loading: boolean }>({
+  const [appInstalls, setAppInstalls] = useState<{ data: AppInstallsData | null; loading: boolean }>({
     data: null,
     loading: true,
   })
@@ -788,7 +846,7 @@ export default function AdminDashboard() {
   const loadData = useCallback(async () => {
     setOverview((s) => ({ ...s, loading: true }))
     setActiveUsers((s) => ({ ...s, loading: true }))
-    setDesktopInstalls((s) => ({ ...s, loading: true }))
+    setAppInstalls((s) => ({ ...s, loading: true }))
     setGrowth((s) => ({ ...s, loading: true }))
     setUsage((s) => ({ ...s, loading: true }))
     setActiveUsersTs((s) => ({ ...s, loading: true }))
@@ -806,7 +864,7 @@ export default function AdminDashboard() {
     const [
       overviewData,
       activeData,
-      desktopInstallsData,
+      appInstallsData,
       growthData,
       usageData,
       activeUsersTsData,
@@ -816,7 +874,7 @@ export default function AdminDashboard() {
     ] = await Promise.all([
       fetchAdminJson<OverviewData>('/analytics/overview'),
       fetchAdminJson<ActiveUsersData>('/analytics/active-users', { period }),
-      fetchAdminJson<DesktopInstallsData>('/analytics/desktop-installs'),
+      fetchAdminJson<AppInstallsData>('/analytics/app-installs'),
       fetchAdminJson<GrowthDataPoint[]>('/analytics/growth', { period }),
       fetchAdminJson<UsageSummaryData>('/analytics/usage-summary', { period }),
       fetchAdminJson<ActiveUsersTimeseriesPoint[]>('/analytics/active-users-timeseries', { period }),
@@ -833,7 +891,7 @@ export default function AdminDashboard() {
 
     setOverview({ data: overviewData, loading: false })
     setActiveUsers({ data: activeData, loading: false })
-    setDesktopInstalls({ data: desktopInstallsData, loading: false })
+    setAppInstalls({ data: appInstallsData, loading: false })
     setGrowth({ data: growthData, loading: false })
     setUsage({ data: usageData, loading: false })
     setActiveUsersTs({ data: activeUsersTsData, loading: false })
@@ -991,9 +1049,9 @@ export default function AdminDashboard() {
         )}
       </View>
 
-      {/* Row 3: Signed-in desktop install and activity metrics */}
+      {/* Row 3: Signed-in app install and activity metrics */}
       <View className="mb-6">
-        <DesktopInstallsCard data={desktopInstalls.data} loading={desktopInstalls.loading} />
+        <AppInstallsCard data={appInstalls.data} loading={appInstalls.loading} />
       </View>
 
       {/* Row 4: Growth over time (Daily / Cumulative) */}

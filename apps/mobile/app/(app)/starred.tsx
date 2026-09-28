@@ -103,7 +103,6 @@ export default observer(function StarredProjectsPage() {
       setIsLoading(true)
       try {
         await Promise.all([
-          workspaces.loadAll({}),
           projects.loadAll(),
           starredColl.loadAll({ userId: user.id }),
         ])

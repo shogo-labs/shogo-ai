@@ -777,6 +777,65 @@ describe('getAgentClient()', () => {
 // uses globalThis.fetch when no fetch is supplied
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// workspaceScope
+// ---------------------------------------------------------------------------
+
+describe("AgentClient — workspaceScope: 'project'", () => {
+  function scopedClient(calls: Call[]) {
+    return new AgentClient({
+      baseUrl: 'http://x.test',
+      workspaceScope: 'project',
+      fetch: makeFetch((url) => {
+        if (url.includes('/agent/workspace/tree')) return jsonResponse({ tree: [] })
+        if (url.includes('/agent/workspace/download/')) return new Response('bytes')
+        if (url.includes('/agent/workspace/files/')) return jsonResponse({ content: 'x' })
+        return emptyOk()
+      }, calls),
+    })
+  }
+
+  test('scopes every workspace file route to the project', async () => {
+    const calls: Call[] = []
+    const c = scopedClient(calls)
+    await c.getWorkspaceTree()
+    await c.getWorkspaceTree('src/lib')
+    await c.readFile('agents/main block.py')
+    await c.writeFile('src/a.ts', 'x')
+    await c.writeFileBytes('img.png', new Uint8Array([1]))
+    await c.deleteFile('src/a.ts')
+    await c.mkdirWorkspace('docs')
+    await c.readFileBlob('img.png')
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://x.test/agent/workspace/tree?scope=project',
+      'http://x.test/agent/workspace/tree?path=src%2Flib&scope=project',
+      'http://x.test/agent/workspace/files/agents/main%20block.py?scope=project',
+      'http://x.test/agent/workspace/files/src/a.ts?scope=project',
+      'http://x.test/agent/workspace/files/img.png?scope=project',
+      'http://x.test/agent/workspace/files/src/a.ts?scope=project',
+      'http://x.test/agent/workspace/mkdir?scope=project',
+      'http://x.test/agent/workspace/download/img.png?scope=project',
+    ])
+    expect(c.workspaceFileDownloadUrl('img.png')).toBe('http://x.test/agent/workspace/download/img.png?scope=project')
+  })
+
+  test('scopes the live workspace event stream', () => {
+    const dispose = scopedClient([]).subscribeToWorkspace(() => {})
+    expect(esInstances[0]?.url).toBe('http://x.test/agent/canvas/stream?scope=project')
+    dispose()
+  })
+
+  test('leaves non-file routes and the default scope untouched', async () => {
+    const calls: Call[] = []
+    await scopedClient(calls).getStatus()
+    const unscoped: Call[] = []
+    await new AgentClient({ baseUrl: 'http://x.test', fetch: makeFetch(() => jsonResponse({ tree: [] }), unscoped) })
+      .getWorkspaceTree()
+    expect(calls[0]?.url).toBe('http://x.test/agent/status')
+    expect(unscoped[0]?.url).toBe('http://x.test/agent/workspace/tree')
+  })
+})
+
 describe('AgentClient — default fetch wiring', () => {
   test('falls back to globalThis.fetch when config.fetch is omitted', async () => {
     const originalFetch = globalThis.fetch

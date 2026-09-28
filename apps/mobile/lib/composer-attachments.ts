@@ -72,6 +72,7 @@ export function isFileSizeExempt(file: {
 }
 
 export function estimateDataUrlSize(dataUrl: string): number {
+  if (!dataUrl.startsWith("data:")) return 0;
   const base64 = dataUrl.includes(",")
     ? dataUrl.split(",").pop() || ""
     : dataUrl;

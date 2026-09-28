@@ -36,10 +36,15 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..', '..', '..')
 const MANAGER_ENTRY = join(REPO_ROOT, 'apps/api/src/lib/runtime/manager.ts')
+/** The entry `bundle-api.mjs` actually ships as `resources/bundle/api.js`. */
+const API_ENTRY = join(REPO_ROOT, 'apps/api/src/entry.ts')
+
+/** Bundler module banners are `// <path>` comments with forward slashes on every platform. */
+const inlines = (bundle: string, repoPath: string) => bundle.includes(`// ${repoPath}`)
 
 /** Mirrors EXTERNAL_PACKAGES in apps/desktop/scripts/bundle-api.mjs. */
 const EXTERNAL_PACKAGES = [
@@ -65,13 +70,13 @@ const EXTERNAL_PACKAGES = [
  * bundle with modules missing. A subprocess is isolated from that registry,
  * and it is also exactly what packaging does.
  */
-function buildLocalModeBundle(outDir: string): string {
+function buildLocalModeBundle(outDir: string, entry = MANAGER_ENTRY): string {
   const externals = EXTERNAL_PACKAGES.flatMap((pkg) => ['--external', pkg])
   const proc = Bun.spawnSync({
     cmd: [
       'bun',
       'build',
-      MANAGER_ENTRY,
+      entry,
       '--target',
       'bun',
       '--outdir',
@@ -90,7 +95,7 @@ function buildLocalModeBundle(outDir: string): string {
       `bun build failed (exit ${proc.exitCode}):\n${proc.stderr.toString()}`
     )
   }
-  return readFileSync(join(outDir, 'manager.js'), 'utf-8')
+  return readFileSync(join(outDir, `${basename(entry, '.ts')}.js`), 'utf-8')
 }
 
 /**
@@ -146,5 +151,50 @@ describe('desktop local-mode bundle integrity', () => {
       'cloud-content-sync must be inlined into the desktop bundle, not ' +
         'imported at runtime from resources/bundle/cloud-content-sync.ts'
     ).toEqual({ inlined: true, unresolvable: false })
+  })
+})
+
+describe('desktop API bundle (apps/api/src/entry.ts) integrity', () => {
+  let outDir: string
+  let bundle: string
+
+  beforeAll(() => {
+    outDir = mkdtempSync(join(tmpdir(), 'shogo-api-bundle-integrity-'))
+    bundle = buildLocalModeBundle(outDir, API_ENTRY)
+  })
+
+  afterAll(() => {
+    rmSync(outDir, { recursive: true, force: true })
+  })
+
+  test('no runtime-relative .ts import survives anywhere in the shipped API', () => {
+    // Reachable ones fail at runtime on desktop, e.g. every
+    // `/chat/status` request imported `../lib/metal-eligibility.ts`.
+    expect(survivingRuntimeTsImports(bundle)).toEqual([])
+  })
+
+  test('desktop resolves agent models with the real resolver, not a divergent shim', () => {
+    expect({
+      resolver: inlines(bundle, 'apps/api/src/lib/runtime/agent-model-defaults.ts'),
+      shim: inlines(bundle, 'apps/api/src/lib/runtime/agent-model-defaults-runtime.ts'),
+    }).toEqual({ resolver: true, shim: false })
+  })
+
+  test('local-reachable features ship; cloud-only islands stay out', () => {
+    expect({
+      // `/api/chat` resolves named project agents on desktop too.
+      projectAgentService: inlines(bundle, 'apps/api/src/services/projectAgent.service.ts'),
+      // Warm pools, the GitHub App client and Redis-backed billing sessions are cloud-only.
+      warmPoolController: inlines(bundle, 'apps/api/src/lib/warm-pool-controller.ts'),
+      githubService: inlines(bundle, 'apps/api/src/services/github.service.ts'),
+      proxyBillingSession: inlines(bundle, 'apps/api/src/lib/proxy-billing-session.ts'),
+      ioredis: bundle.includes('node_modules/ioredis/') || bundle.includes('node_modules/.bun/ioredis@'),
+    }).toEqual({
+      projectAgentService: true,
+      warmPoolController: false,
+      githubService: false,
+      proxyBillingSession: false,
+      ioredis: false,
+    })
   })
 })

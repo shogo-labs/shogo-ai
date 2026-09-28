@@ -10,6 +10,7 @@ const HTML_PATH = path.resolve(__dirname, '..', 'dist', 'index.html')
 const GA4_ID = process.env.EXPO_PUBLIC_GA4_ID || ''
 const FB_PIXEL_ID = process.env.EXPO_PUBLIC_FB_PIXEL_ID || ''
 const GOOGLE_NOTRANSLATE_META = '<meta name="google" content="notranslate">'
+const THEME_BOOTSTRAP_SCRIPT = `<script data-shogo-theme-bootstrap>(function(){try{var preference=window.localStorage.getItem('theme-preference');var isDark=preference==='dark'||(preference!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(isDark)document.documentElement.classList.add('dark')}catch(e){}})();</script>`
 
 let snippets = ''
 
@@ -32,6 +33,10 @@ if (FB_PIXEL_ID) {
 }
 
 let html = fs.readFileSync(HTML_PATH, 'utf8')
+
+if (!html.includes('data-shogo-theme-bootstrap')) {
+  snippets = THEME_BOOTSTRAP_SCRIPT + snippets
+}
 
 html = html.replace(/<html([^>]*)>/, (_tag, attrs) => {
   let nextAttrs = attrs

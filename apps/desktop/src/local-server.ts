@@ -7,6 +7,7 @@ import path from 'path'
 import { getBunPath, getDbPath, getWorkspacesDir, getProjectRoot, getDataDir } from './paths'
 import { DatabaseRecoveryError, detectFailedMigrations } from './db-recovery'
 import { resolveHostTier } from './runtime-memory'
+import { resolveDesktopPath } from './login-shell-path'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -307,12 +308,11 @@ export async function startLocalServer(): Promise<void> {
     os.cpus().length,
   )
   const bunDir = path.dirname(bunPath)
-  const pathSep = isWindows ? ';' : ':'
-  const defaultPath = isWindows ? '' : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+  const desktopPath = await resolveDesktopPath({ bunDir, inheritedPath: process.env.PATH })
   const { app } = require('electron') as typeof import('electron')
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
-    PATH: `${bunDir}${pathSep}${process.env.PATH || defaultPath}`,
+    PATH: desktopPath,
     HOME: process.env.HOME || process.env.USERPROFILE || os.homedir(),
     SHOGO_LOCAL_MODE: 'true',
     SHOGO_HOST_TIER: hostTier,
@@ -338,19 +338,6 @@ export async function startLocalServer(): Promise<void> {
     SHOGO_BUN_PATH: bunPath,
     ...(process.env.TERMINAL_EXEC_URL ? { TERMINAL_EXEC_URL: process.env.TERMINAL_EXEC_URL } : {}),
     ...(process.env.TERMINAL_EXEC_TOKEN ? { TERMINAL_EXEC_TOKEN: process.env.TERMINAL_EXEC_TOKEN } : {}),
-    // Path-safe SDK CLI fallback. PreviewManager uses this when a
-    // project's `package.json` declares the legacy
-    // `"generate": "bunx shogo generate"` script — `bunx` would resolve
-    // that to the published @shogo-ai/sdk@0.4.0, whose execSync-based
-    // sub-shell breaks on workspace paths containing spaces (notably
-    // every macOS install under "~/Library/Application Support/Shogo").
-    // 0.4.1 fixed the bug but was never published to npm, so we ship
-    // the in-repo CLI as a sibling resource and route around the
-    // broken script when detected. See apps/desktop/scripts/bundle-api.mjs
-    // for the bundling step.
-    SHOGO_BUNDLED_SDK_CLI: IS_DEV
-      ? path.join(projectRoot, 'packages', 'sdk', 'bin', 'cli.mjs')
-      : path.join(projectRoot, 'sdk-cli.mjs'),
     AGENT_RUNTIME_ENTRY: agentRuntimeEntry,
     CANVAS_RUNTIME_DIST: IS_DEV
       ? path.join(projectRoot, 'packages', 'canvas-runtime', 'dist')

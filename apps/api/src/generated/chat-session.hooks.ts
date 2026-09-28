@@ -7,6 +7,8 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import { deleteChatAttachmentPrefix } from "../lib/chat-attachments"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -319,5 +321,15 @@ export const chatSessionHooks: ChatSessionHooks = {
     }
 
     return { ok: true }
+  },
+
+  afterDelete: async (id) => {
+    try {
+      await deleteChatAttachmentPrefix(id)
+    } catch (error: any) {
+      // Database deletion has already succeeded; cleanup is best-effort and
+      // can be retried by the storage maintenance job.
+      console.warn(`[chatSession.afterDelete] attachment cleanup failed for ${id}:`, error?.message || error)
+    }
   },
 }

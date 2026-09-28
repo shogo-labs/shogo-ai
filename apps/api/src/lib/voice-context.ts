@@ -102,10 +102,12 @@ async function fetchPodFile(params: {
       // carry a valid runtime token, so a 401 with the missing-auth
       // sentinel is unambiguously a stale assignment.
       const body = await res.text().catch(() => '')
-      const { evictOnSingleMissingAuth } = await import(
-        new URL('./warm-pool-self-heal.ts', import.meta.url).href
-      )
-      await evictOnSingleMissingAuth(projectId, res.status, body)
+      // Warm pools are cloud-only; the guard lets the desktop bundle
+      // dead-code-eliminate the island (see local-bundle-integrity.test.ts).
+      if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+        const { evictOnSingleMissingAuth } = await import('./warm-pool-self-heal')
+        await evictOnSingleMissingAuth(projectId, res.status, body)
+      }
       return null
     }
     const body = (await res.json()) as { content?: unknown }

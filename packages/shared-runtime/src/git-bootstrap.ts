@@ -30,6 +30,11 @@
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import {
+  getShogoAgentEmail,
+  getShogoAgentName,
+  withShogoCommitTrailer,
+} from './agent-attribution'
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>
 
@@ -43,17 +48,17 @@ interface SpawnResult {
 
 function spawnGit(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
+    const child = spawn('git', withShogoCommitTrailer(args, env), {
       cwd,
       env: { ...process.env, ...(env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const out: string[] = []
     const err: string[] = []
-    child.stdout.setEncoding('utf-8')
-    child.stderr.setEncoding('utf-8')
-    child.stdout.on('data', (c: string) => out.push(c))
-    child.stderr.on('data', (c: string) => err.push(c))
+    child.stdout?.setEncoding('utf-8')
+    child.stderr?.setEncoding('utf-8')
+    child.stdout?.on('data', (c: string) => out.push(c))
+    child.stderr?.on('data', (c: string) => err.push(c))
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL') } catch { /* ignore */ }
       reject(new Error(`git ${args[0]} timed out after ${GIT_TIMEOUT_MS}ms`))
@@ -118,8 +123,8 @@ export async function ensureWorkspaceRepo(
     runtimeAuthSecret,
     projectId,
     branch = 'main',
-    authorName = 'Shogo Agent',
-    authorEmail = 'agent-runtime@shogo.ai',
+    authorName = getShogoAgentName(),
+    authorEmail = getShogoAgentEmail(),
     logger = console,
   } = cfg
 

@@ -21,6 +21,7 @@ import { prisma } from "../lib/prisma"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
+import { wrapSseStreamWithKeepalive } from "@shogo/shared-runtime/sse-keepalive"
 import { stampModelProvider } from "../lib/stamp-model-provider"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
@@ -31,6 +32,16 @@ import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
 import { recordClientTurn, isRecentClientTurn } from "../lib/chat-turn-idempotency"
 import { sendPushToUser } from "../lib/push-notifications"
+import {
+  externalizeToolOutput,
+  inlineChatBodyAttachments,
+} from "../lib/chat-attachments"
+import {
+  clearActiveTurn,
+  markTurnEnded,
+  markTurnStarted,
+  startTurnHeartbeat,
+} from "../services/chat-turn-state.service"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -200,6 +211,7 @@ export async function trackUsageFromStream(
   let orderedParts: any[] = []
   // Index into orderedParts by toolCallId so we can back-fill output later
   let toolPartIndex = new Map<string, any>()
+  let pendingToolOutputWrites: Promise<void>[] = []
   let currentTextPart: { type: 'text'; text: string } | null = null
   let currentReasoningPart: { type: 'reasoning'; text: string; durationMs?: number } | null = null
   let reasoningStartedAt: number | null = null
@@ -268,6 +280,11 @@ export async function trackUsageFromStream(
     const run = (async () => {
       const session = await prisma.chatSession.findUnique({ where: { id: chatSessionId } })
       if (!session) return
+      if (pendingToolOutputWrites.length > 0) {
+        const writes = pendingToolOutputWrites
+        pendingToolOutputWrites = []
+        await Promise.all(writes)
+      }
       const parts = buildPersistedParts()
       const data = {
         role: 'assistant' as const,
@@ -505,7 +522,17 @@ export async function trackUsageFromStream(
       }
       const part = toolPartIndex.get(toolCallId)
       if (part) {
-        part.output = data.output ?? { success: true }
+        const output = data.output ?? { success: true }
+        part.output = output
+        if (chatSessionId) {
+          const write = externalizeToolOutput(chatSessionId, output)
+            .then((externalized) => {
+              part.output = externalized
+              if (record) record.result = externalized
+            })
+            .catch(() => undefined)
+          pendingToolOutputWrites.push(write)
+        }
         part.state = 'output-available'
       }
       persistenceDirty = true
@@ -1085,6 +1112,25 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let parsedBody: any = {}
       try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
 
+      // Persisted chat messages use capability URLs for attachments. The
+      // runtime still expects bytes/data URLs for the current model turn, so
+      // hydrate only the explicit files and latest user message before proxying.
+      if (parsedBody && typeof parsedBody === 'object') {
+        try {
+          const hydratedBody = await inlineChatBodyAttachments(parsedBody)
+          if (hydratedBody !== parsedBody) {
+            parsedBody = hydratedBody
+            body = JSON.stringify(parsedBody)
+          }
+        } catch (error: any) {
+          console.error('[ProjectChat] Failed to load chat attachment:', error?.message || error)
+          return c.json(
+            { error: { code: 'attachment_unavailable', message: 'A chat attachment could not be loaded' } },
+            502,
+          )
+        }
+      }
+
       const balanceCheck = await billingService.checkUsageBalance(project.workspaceId)
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -1331,6 +1377,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       if (clientTurnId) {
         recordClientTurn(incomingChatSessionId, clientTurnId)
       }
+      let activityTurnId: string | null = null
 
       // Open a billing session so the AI proxy accumulates tokens across
       // all API calls in the agentic loop instead of charging per-call.
@@ -1383,9 +1430,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const MAX_RETRIES = 30
       const BASE_DELAY_MS = 500
       const MAX_DELAY_MS = 4000
-      const metalChat = process.env.KUBERNETES_SERVICE_HOST
-        ? (await import(new URL('../lib/metal-eligibility.ts', import.meta.url).href))
-            .isMetalEligibleProject(projectId)
+      const metalChat = process.env.SHOGO_LOCAL_MODE !== 'true' && process.env.KUBERNETES_SERVICE_HOST
+        ? (await import('../lib/metal-eligibility')).isMetalEligibleProject(projectId)
         : false
       // Metal guests currently hang rather than refuse — a 4h fetch timeout
       // never fires before the client aborts, so we never invalidate the
@@ -1450,16 +1496,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // Threshold is intentionally higher than other callers because the
             // chat path sees transient 401s during normal warm-pool transitions.
             const EVICT_AFTER_ATTEMPTS = 8
-            const { evictIfPodMissingAuth } = await import(
-              new URL('../lib/warm-pool-self-heal.ts', import.meta.url).href
-            )
-            const evicted = await evictIfPodMissingAuth(
-              projectId,
-              response.status,
-              errorText,
-              attempt,
-              EVICT_AFTER_ATTEMPTS,
-            )
+            // Warm pools are cloud-only; the guard lets the desktop bundle
+            // dead-code-eliminate the island (see local-bundle-integrity.test.ts).
+            const evicted = process.env.SHOGO_LOCAL_MODE !== 'true'
+              ? await (await import('../lib/warm-pool-self-heal')).evictIfPodMissingAuth(
+                  projectId,
+                  response.status,
+                  errorText,
+                  attempt,
+                  EVICT_AFTER_ATTEMPTS,
+                )
+              : false
             if (evicted) {
               return c.json(
                 { error: { code: "pod_restarted", message: "Your session pod restarted. Please try again — a fresh pod will be assigned automatically." } },
@@ -1534,6 +1581,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // resolves (Bun has historically mis-handled that path and
           // left the tracking consumer hung). A cancel() handler also
           // unblocks pull() if the consumer goes away.
+          try {
+            activityTurnId = await markTurnStarted(incomingChatSessionId)
+          } catch (error) {
+            // Activity is observational; a schema/database issue must not block chat.
+            console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)
+          }
           const bgReader = response.body!.getReader()
           const trackingChunks: Uint8Array[] = []
           let trackingDone = false
@@ -1561,14 +1614,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           let clientEnqueueErrors = 0
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
-              const keepaliveChunk = new TextEncoder().encode(': proxy-keep-alive\n\n')
-              const proxyKeepalive = setInterval(() => {
-                try {
-                  controller.enqueue(keepaliveChunk)
-                } catch {
-                  clearInterval(proxyKeepalive)
-                }
-              }, 15_000)
               ;(async () => {
                 try {
                   let chunkCount = 0
@@ -1591,7 +1636,6 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                   console.log(`[ProjectChat:Stream] Background reader error: ${err.message}`)
                   try { controller.error(err) } catch { /* client gone */ }
                 } finally {
-                  clearInterval(proxyKeepalive)
                   trackingDone = true
                   trackingNotify?.()
                   trackingNotify = null
@@ -1605,6 +1649,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           // closeSession after the stream finishes. Mark the handoff so
           // our finally guard doesn't double-close.
           billingSessionHandedOff = true
+          const turnId = activityTurnId
+          const stopTurnHeartbeat = turnId ? startTurnHeartbeat(incomingChatSessionId, turnId) : null
           trackUsageFromStream(trackingStream, parsedBody, project, {
             // Single source of truth for the chat-session id. The route
             // handler resolved it from `X-Chat-Session-Id` || body, and
@@ -1642,7 +1688,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             },
           }).catch((err) =>
             console.error("[ProjectChat] Usage tracking error:", err)
-          )
+          ).finally(() => {
+            stopTurnHeartbeat?.()
+            if (turnId) {
+              markTurnEnded(incomingChatSessionId, turnId).catch((error) =>
+                console.warn(`[ProjectChat] Failed to clear active chat ${incomingChatSessionId}:`, error),
+              )
+            }
+          })
 
           chatSpan.setAttribute("chat.status", response.status)
           chatSpan.setStatus({ code: SpanStatusCode.OK })
@@ -1653,7 +1706,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             trackEvent(billingUserId, 'chat_message_sent', { project_id: projectId }).catch(() => {})
           }
 
-          return new Response(clientStream, {
+          return new Response(wrapSseStreamWithKeepalive(clientStream), {
             status: response.status,
             headers: responseHeaders,
           })
@@ -1695,21 +1748,18 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             fetchError.name === 'TimeoutError' ||
             (fetchError.name === 'AbortError' && fetchSignal.aborted && !clientSignal?.aborted)
 
-          if (isUpstreamTimeout && metalChat) {
-            // Invalidate + destroy so the next client retry cold-boots. Do
-            // not await destroy in a way a later 499 can cancel — fire and
-            // forget after cache invalidation.
+          if (process.env.SHOGO_LOCAL_MODE !== 'true' && isUpstreamTimeout && metalChat) {
+            // Only drop the cached URL so the retry re-resolves. Never destroy
+            // here: a slow turn is not a dead runtime, and destroy discards
+            // the snapshot. Wedged runtimes are handled by the watchdog/recycle.
             console.warn(
-              `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating placement`,
+              `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating cached URL`,
             )
             try {
-              const { getMetalWarmPoolController, destroyMetalProject } = await import(
-                new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
+              const { getMetalWarmPoolController, workspaceRuntimeKey } = await import(
+                '../lib/metal-warm-pool-controller'
               )
-              getMetalWarmPoolController().invalidateUrlCache(projectId)
-              void destroyMetalProject(projectId).catch((err: any) =>
-                console.error(`[ProjectChat] destroy after timeout failed for ${projectId}:`, err),
-              )
+              getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
             } catch (err: any) {
               console.error(`[ProjectChat] failed to invalidate metal placement:`, err?.message ?? err)
             }
@@ -1814,6 +1864,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
+          if (activityTurnId) {
+            markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
+              console.warn(`[ProjectChat] Failed to clear abandoned active chat ${incomingChatSessionId}:`, error),
+            )
+          }
         }
       }
     } catch (error: any) {
@@ -1997,6 +2052,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         signal: c.req.raw.signal,
       })
 
+      let parsed: any = {}
+      try { parsed = JSON.parse(body || "{}") } catch { /* noop */ }
+      const chatSessionId =
+        c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
+      if (typeof chatSessionId === "string" && chatSessionId && response.ok) {
+        await clearActiveTurn({ id: chatSessionId, contextId: projectId }).catch((error) =>
+          console.warn(`[ProjectChat] Failed to clear stopped chat ${chatSessionId}:`, error),
+        )
+      }
       const result = await response.json()
       return c.json(result)
     } catch (error: any) {
@@ -2089,13 +2153,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Metal-only mode: the project runs on the metal microVM substrate, not
       // Knative. Report readiness off the live host fleet — the actual resume
       // happens on the chat call (fast), same contract as the warm pool.
-      const { isMetalAllProjects } = await import(
-        new URL('../lib/metal-eligibility.ts', import.meta.url).href
-      )
-      if (isMetalAllProjects()) {
-        const { getMetalWarmPoolController } = await import(
-          new URL('../lib/metal-warm-pool-controller.ts', import.meta.url).href
-        )
+      const { isMetalAllProjects } = await import('../lib/metal-eligibility')
+      if (process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalAllProjects()) {
+        const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
         const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",
@@ -2106,11 +2166,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         })
       }
 
-      if (isKubernetes()) {
+      if (process.env.SHOGO_LOCAL_MODE !== 'true' && isKubernetes()) {
         // In Kubernetes: Check Knative Service status
-        const { getKnativeProjectManager } = await import(
-          new URL('../lib/knative-project-manager.ts', import.meta.url).href
-        )
+        const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
         const manager = getKnativeProjectManager()
         const status = await manager.getStatus(projectId)
 
@@ -2170,10 +2228,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const url = await getProjectUrl(projectId)
 
       // In Kubernetes, wait for pod to be ready
-      if (isKubernetes()) {
-        const { getKnativeProjectManager } = await import(
-          new URL('../lib/knative-project-manager.ts', import.meta.url).href
-        )
+      if (process.env.SHOGO_LOCAL_MODE !== 'true' && isKubernetes()) {
+        const { getKnativeProjectManager } = await import('../lib/knative-project-manager')
         const manager = getKnativeProjectManager()
         await manager.waitForReady(projectId, 60000)
       }

@@ -144,32 +144,51 @@ describe('PreviewManager.start (non-blocking)', () => {
     expect(hits.length).toBe(4)
   })
 
-  test('second start() (after the first fully settles) re-runs the lifecycle rather than short-circuiting', async () => {
-    // The old `if (this.started) return already-running` guard only
-    // protected against a caller re-entering after a prior start() had
-    // already resolved — it did nothing for true concurrent overlap
-    // (see the single-flight tests below). That guard is now replaced by
-    // the `lifecycleInFlight` gate, which only coalesces calls that
-    // overlap in time; a start() issued well after the previous one
-    // settled has nothing in flight to join, so it runs its own fresh
-    // lifecycle body.
-    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: false })
+  test('a start() while background setup is still running does not start a second pipeline', async () => {
+    // start() resolves as soon as background setup is scheduled, and the
+    // canvas client keeps calling /preview/start until `running`. Each of
+    // those used to run another install/prisma/build/API pipeline next to
+    // the first (seen on staging: two vite builds + two db pushes per open).
+    const root = makeWorkspace({ prebuiltDist: false, hasPrisma: false })
     workspaces.push(root)
 
     const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
-    stubBackgroundWork(pm, 50, [])
+    const hits: string[] = []
+    stubBackgroundWork(pm, 100, hits)
 
     const first = await pm.start()
-    expect(first.mode).toBe('prebuilt-dist')
+    expect(first.mode).toBe('background-build')
 
-    const t0 = Date.now()
     const second = await pm.start()
-    const elapsed = Date.now() - t0
+    expect(second.mode).toBe('already-started')
 
-    expect(second.mode).toBe('prebuilt-dist')
-    // Still a fast return — the second run schedules its own background
-    // work rather than blocking on it.
-    expect(elapsed).toBeLessThan(250)
+    await new Promise((r) => setTimeout(r, 800))
+    expect(hits.filter((h) => h === 'build')).toHaveLength(1)
+    expect(hits.filter((h) => h === 'api')).toHaveLength(1)
+    expect(pm.getStatus().phase).toBe('ready')
+    expect((await pm.start()).mode).toBe('already-started')
+  })
+
+  test('start() after a failed setup runs the lifecycle again', async () => {
+    const root = makeWorkspace({ prebuiltDist: false, hasPrisma: false })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const hits: string[] = []
+    stubBackgroundWork(pm, 20, hits)
+    ;(pm as any).startBuildWatch = async () => {
+      hits.push('build')
+      throw new Error('vite exploded')
+    }
+
+    await pm.start()
+    await new Promise((r) => setTimeout(r, 200))
+    expect(pm.getStatus().phase).toBe('failed')
+
+    const retry = await pm.start()
+    expect(retry.mode).toBe('background-build')
+    await new Promise((r) => setTimeout(r, 200))
+    expect(hits.filter((h) => h === 'build')).toHaveLength(2)
   })
 
   test('concurrent start() calls coalesce onto the same in-flight lifecycle run', async () => {

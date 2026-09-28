@@ -9,7 +9,12 @@ import { useEffect, useState } from "react";
 import { useDomainHttp } from "../contexts/domain";
 import { api } from "../lib/api";
 
-export type WorkspacePlanRecord = { planId: string; status: string | null };
+export type WorkspacePlanRecord = {
+  planId: string;
+  status: string | null;
+  /** Owner/admin/billing admin: may create child workspaces under this one. */
+  canManageChildren?: boolean;
+};
 
 export function useWorkspacePlans(
   workspaceIds: string[],

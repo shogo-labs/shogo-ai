@@ -4,9 +4,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
+  StyleSheet,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -75,6 +77,17 @@ export function MobileSettingsSheet({
     : activeTab
     ? settingsTab(activeTab).label
     : "Settings";
+  const settingsDismissSwipeHandlers = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          gesture.dy > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dy >= 48 || gesture.vy > 0.45) onClose();
+        },
+      }).panHandlers,
+    [onClose]
+  );
 
   return (
     <Modal
@@ -88,7 +101,9 @@ export function MobileSettingsSheet({
           accessibilityRole="button"
           accessibilityLabel="Close settings"
           onPress={onClose}
-          className="absolute inset-0"
+          // NativeWind's `absolute inset-0` does not apply reliably to this
+          // Modal backdrop Pressable.
+          style={StyleSheet.absoluteFill}
         />
         <View
           className="max-h-[88%] overflow-hidden rounded-t-[28px] bg-card"
@@ -97,10 +112,16 @@ export function MobileSettingsSheet({
             paddingBottom: Math.max(insets.bottom, 16),
           }}
         >
-          <View className="items-center pb-2 pt-3">
+          <View
+            className="items-center pb-2 pt-3"
+            {...settingsDismissSwipeHandlers}
+          >
             <View className="h-1 w-9 rounded-full bg-muted-foreground/30" />
           </View>
-          <View className="flex-row items-center px-6 pb-4 pt-2">
+          <View
+            className="flex-row items-center px-6 pb-4 pt-2"
+            {...settingsDismissSwipeHandlers}
+          >
             {activeTab || projectSettingsOpen || workspaceActionsOpen ? (
               <Pressable
                 accessibilityRole="button"

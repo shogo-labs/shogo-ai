@@ -55,7 +55,7 @@ const STAGING_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_TnJUouAXCoO5ke',
     name: 'Shogo Business',
-    description: "Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
+    description: "Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits, and unlimited workspaces for better organization. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
     metadata: { plan: 'business', included_usd_per_seat: '40', per_seat: 'true', markup: '0.20' },
   },
   {
@@ -91,7 +91,7 @@ const PRODUCTION_PRODUCTS: ProductCopy[] = [
   {
     id: 'prod_U4QkWE1XUGKOvb',
     name: 'Shogo Business',
-    description: "Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
+    description: "Includes $40 of AI usage per seat per month. Team analytics, SSO, audit logs, per-member spending limits, and unlimited workspaces for better organization. Every request billed at the AI provider's raw cost plus a flat 20% markup. No credits, no unit conversions.",
     metadata: { plan: 'business', included_usd_per_seat: '40', per_seat: 'true', markup: '0.20' },
   },
   {

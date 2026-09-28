@@ -66,7 +66,10 @@ import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
 import { resolveActiveWorkspaceId } from "../../../../lib/workspace-store";
-import { usePlatformConfig } from "../../../../lib/platform-config";
+import {
+  isProjectWorkspaceRuntimeEnabled,
+  usePlatformConfig,
+} from "../../../../lib/platform-config";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -349,6 +352,8 @@ export default observer(function ProjectLayout() {
      * project, so the apply effect re-fires even though `tab` is unchanged.
      */
     tabNonce?: string;
+    /** Workspace-relative file to open in the IDE (or Files, on native). */
+    file?: string;
     /**
      * When '1', create a fresh chat on arrival (sidebar project "+" pressed
      * for a project that isn't open yet). Consumed once per `newChatNonce`.
@@ -478,10 +483,9 @@ export default observer(function ProjectLayout() {
     () => params.chatSessionId ?? null
   );
 
-  // Workspace runtimes are the only supported project runtime topology. Keep
-  // this local boolean because the surrounding state machine still uses it to
-  // coordinate pinned-session resolution and avoid remount races.
-  const workspaceRuntimeEnabled = true
+  // Coordinates pinned-session resolution and avoids remount races. Off in
+  // cloud builds, where the project-pinned session endpoints are not mounted.
+  const workspaceRuntimeEnabled = isProjectWorkspaceRuntimeEnabled()
   // The project-pinned workspace session id (resolved from the API when the
   // flag is on). Tabs whose id is this session chat in 'workspace' scope.
   const [pinnedWorkspaceSessionId, setPinnedWorkspaceSessionId] = useState<
@@ -1337,7 +1341,9 @@ export default observer(function ProjectLayout() {
         const ownIds = (store.workspaceCollection.all ?? []).map(
           (w: any) => w.id
         );
-        const wsId = resolveActiveWorkspaceId(ownIds);
+        const wsId = resolveActiveWorkspaceId(ownIds, undefined, {
+          listLoaded: true,
+        });
         const projectFilter = workspaceProjectFilter(wsId);
         if (projectFilter) {
           store.projectCollection
@@ -1929,7 +1935,7 @@ export default observer(function ProjectLayout() {
     }
     const token = `${projectId}:${requested}:${params.tabNonce ?? ""}:${
       params.openCanvas ?? ""
-    }`;
+    }:${params.file ?? ""}`;
     if (appliedTabIntentRef.current === token) return;
     if (requested === "canvas" && params.openCanvas === "1") {
       userRequestedCanvasRef.current = true;
@@ -1964,11 +1970,18 @@ export default observer(function ProjectLayout() {
       setActiveTab("chat");
       return;
     }
+    if (typeof params.file === "string" && params.file.length > 0) {
+      openIdeFileNonceRef.current += 1;
+      setRequestedIdeFile({
+        path: params.file,
+        nonce: openIdeFileNonceRef.current,
+      });
+    }
     setPreviewTab(requested);
     if (phoneLayout) {
       setActiveTab(requested === "chat-fullscreen" ? "chat" : "canvas");
     }
-  }, [projectId, params.tab, params.tabNonce, phoneLayout, nativePhone, isWide]);
+  }, [projectId, params.tab, params.tabNonce, params.file, phoneLayout, nativePhone, isWide]);
 
   useEffect(() => {
     if (!projectId || !project) return;
@@ -2391,6 +2404,40 @@ export default observer(function ProjectLayout() {
     setBuildPlanRequest((curr) => (curr && curr.nonce === nonce ? null : curr));
   }, []);
 
+  const [requestedIdeFile, setRequestedIdeFile] = useState<{
+    path: string;
+    nonce: number;
+  } | null>(null);
+  const openIdeFileNonceRef = useRef(0);
+
+  const handleOpenFile = useCallback(
+    (targetProjectId: string, relPath: string) => {
+      if (targetProjectId === projectId) {
+        openIdeFileNonceRef.current += 1;
+        setRequestedIdeFile({
+          path: relPath,
+          nonce: openIdeFileNonceRef.current,
+        });
+        setPreviewTab(Platform.OS === "web" ? "ide" : "files");
+        if (!isWide) setActiveTab("canvas");
+        return;
+      }
+      router.push({
+        pathname: "/(app)/projects/[id]",
+        params: {
+          id: targetProjectId,
+          tab: Platform.OS === "web" ? "ide" : "files",
+          file: relPath,
+          tabNonce: String(Date.now()),
+          ...(chatSessionId
+            ? { chatSessionId, chatScope: "workspace" }
+            : {}),
+        },
+      } as any);
+    },
+    [chatSessionId, isWide, projectId, router],
+  );
+
   const handleOpenPlan = useCallback(
     (filepath?: string | null) => {
       openPlanNonceRef.current += 1;
@@ -2773,13 +2820,27 @@ export default observer(function ProjectLayout() {
           recentLogs,
         });
 
-        const newSession = await actions.createChatSession({
-          inferredName: `Debug: ${phase} error`,
-          contextType: "project",
-          contextId: projectId,
-        });
-        if (!newSession?.id) return;
-        const newId = newSession.id;
+        let newId: string | null = null;
+        if (workspaceRuntimeEnabled) {
+          const result = await api.createProjectWorkspaceSession(http, projectId, {
+            inferredName: `Debug: ${phase} error`,
+          });
+          newId = result.session?.id ?? null;
+          if (!newId && result.error) {
+            console.error(
+              "[ProjectLayout] Failed to create workspace debug chat:",
+              result.error,
+            );
+          }
+        } else {
+          const newSession = await actions.createChatSession({
+            inferredName: `Debug: ${phase} error`,
+            contextType: "project",
+            contextId: projectId,
+          });
+          newId = newSession?.id ?? null;
+        }
+        if (!newId) return;
 
         setDebugInitMessages((prev) => ({ ...prev, [newId]: prompt }));
         setOpenChatTabIds((prev) =>
@@ -2799,7 +2860,7 @@ export default observer(function ProjectLayout() {
         console.error("[ProjectLayout] Failed to open debug chat:", err);
       }
     },
-    [projectId, actions, isWide]
+    [actions, http, isWide, projectId, workspaceRuntimeEnabled]
   );
 
   const handleCanvasError = useCallback(
@@ -3428,6 +3489,7 @@ export default observer(function ProjectLayout() {
                   isActive ? handleBuildPlanConsumed : undefined
                 }
                 onOpenPlan={handleOpenPlan}
+                onOpenFile={handleOpenFile}
                 selectedModel={selectedModel}
                 onModelChange={handleModelChange}
                 onResolveSessionModel={handleResolveSessionModel}
@@ -4239,6 +4301,7 @@ export default observer(function ProjectLayout() {
                         isExternalProject={isExternalProject}
                         folderPath={primaryFolderPath ?? undefined}
                         primarySideBarPosition={idePrimarySideBarPosition}
+                        requestedFile={requestedIdeFile}
                       />
                     </PanelErrorBoundary>
                     <PanelErrorBoundary panelName="Files">
@@ -4246,6 +4309,7 @@ export default observer(function ProjectLayout() {
                         visible={effectiveTab === "files"}
                         projectId={projectId!}
                         agentUrl={agentUrl}
+                        requestedFile={requestedIdeFile}
                       />
                     </PanelErrorBoundary>
                     <PanelErrorBoundary panelName="Plans">

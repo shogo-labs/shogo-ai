@@ -26,6 +26,10 @@ import { ArrowLeft, AlertCircle, ShieldCheck, Building2, ExternalLink, Check } f
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useDomainHttp } from '../../../../contexts/domain'
 import { cn } from '@shogo/shared-ui/primitives'
+import {
+  ConnectCountryPicker,
+  type ConnectCountryCode,
+} from '../../../../components/marketplace/ConnectCountryPicker'
 
 function payoutStatusColor(status: string): string {
   if (status === 'verified') return 'bg-green-500'
@@ -52,6 +56,7 @@ export default observer(function PayoutSetupScreen() {
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [country, setCountry] = useState<ConnectCountryCode>('US')
 
   // Re-read the live Connect status (the endpoint re-syncs from Stripe and
   // persists), so the screen reflects a now-verified/pending account without
@@ -108,7 +113,7 @@ export default observer(function PayoutSetupScreen() {
     try {
       const res = await http.post<{ onboardUrl?: string; error?: string }>(
         '/api/marketplace/creator/connect/onboard',
-        {},
+        { country },
       )
       const url = res.data?.onboardUrl
       if (!url) {
@@ -129,7 +134,7 @@ export default observer(function PayoutSetupScreen() {
     } finally {
       setWorking(false)
     }
-  }, [http, loadStatus])
+  }, [http, loadStatus, country])
 
   if (loading) {
     return (
@@ -252,31 +257,36 @@ export default observer(function PayoutSetupScreen() {
               </Text>
             </View>
           ) : (
-            <Pressable
-              onPress={startOnboarding}
-              disabled={working}
-              className={cn(
-                'flex-row items-center justify-center gap-2 py-4 rounded-2xl',
-                working ? 'bg-primary/60' : 'bg-primary active:opacity-90',
+            <>
+              {payoutStatus === 'not_setup' && (
+                <ConnectCountryPicker value={country} onChange={setCountry} disabled={working} />
               )}
-            >
-              {working ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  {payoutStatus === 'not_setup' ? (
-                    <Building2 size={16} color="#fff" />
-                  ) : (
-                    <ExternalLink size={16} color="#fff" />
-                  )}
-                  <Text className="text-sm font-semibold text-primary-foreground">
-                    {payoutStatus === 'not_setup'
-                      ? 'Set up payouts with Stripe'
-                      : 'Continue payout setup'}
-                  </Text>
-                </>
-              )}
-            </Pressable>
+              <Pressable
+                onPress={startOnboarding}
+                disabled={working}
+                className={cn(
+                  'flex-row items-center justify-center gap-2 py-4 rounded-2xl',
+                  working ? 'bg-primary/60' : 'bg-primary active:opacity-90',
+                )}
+              >
+                {working ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    {payoutStatus === 'not_setup' ? (
+                      <Building2 size={16} color="#fff" />
+                    ) : (
+                      <ExternalLink size={16} color="#fff" />
+                    )}
+                    <Text className="text-sm font-semibold text-primary-foreground">
+                      {payoutStatus === 'not_setup'
+                        ? 'Set up payouts with Stripe'
+                        : 'Continue payout setup'}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+            </>
           )}
         </View>
       </ScrollView>

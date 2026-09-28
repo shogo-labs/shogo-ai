@@ -17,6 +17,7 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   PlatformApi,
+  toErrorMessage,
   type ApiKeyCreateResult,
   type ApiKeyInfo,
   type ApiKeyValidation,
@@ -30,6 +31,26 @@ import {
   type ShogoKeyStatus,
   type WorkspaceSummary,
 } from '../index'
+
+describe('toErrorMessage', () => {
+  test('returns a non-empty string unchanged', () => {
+    expect(toErrorMessage('Key revoked', 'fallback')).toBe('Key revoked')
+  })
+
+  test('uses an object message', () => {
+    expect(toErrorMessage({ message: 'Key revoked' }, 'fallback')).toBe('Key revoked')
+  })
+
+  test('uses an object code when message is absent', () => {
+    expect(toErrorMessage({ code: 'key_revoked' }, 'fallback')).toBe('key_revoked')
+  })
+
+  test('uses the fallback for empty and non-message values', () => {
+    expect(toErrorMessage('  ', 'fallback')).toBe('fallback')
+    expect(toErrorMessage(null, 'fallback')).toBe('fallback')
+    expect(toErrorMessage({ message: 42 }, 'fallback')).toBe('fallback')
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Fake HttpClient — records calls + serves canned responses
@@ -93,7 +114,7 @@ describe('PlatformApi.getConfig', () => {
       localMode: true,
       features: {
         billing: false, admin: false, oauth: true, analytics: false,
-        publishing: false, marketplace: true, ezMode: false, phoneChannel: false,
+        publishing: false, marketplace: true, ezMode: false, ezModeVoiceProvider: 'elevenlabs', phoneChannel: false,
         personalShell: true, agentShell: false, mobileAgentShell: false,
       },
     }
@@ -470,6 +491,27 @@ describe('PlatformApi.putFeatureFlags', () => {
           marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
       },
     })
+  })
+})
+
+describe('PlatformApi EZ Mode voice provider', () => {
+  test('reads the configured provider', async () => {
+    const { api, http } = mkApi()
+    http.setGet('/api/admin/settings/ez-mode-voice-provider', { provider: 'gpt-live' })
+    expect(await api.getEzModeVoiceProvider()).toEqual({ provider: 'gpt-live' })
+  })
+
+  test('writes the configured provider', async () => {
+    const { api, http } = mkApi()
+    http.setRequest('PUT', '/api/admin/settings/ez-mode-voice-provider', {
+      ok: true,
+      provider: 'elevenlabs',
+    })
+    expect(await api.putEzModeVoiceProvider('elevenlabs')).toEqual({
+      ok: true,
+      provider: 'elevenlabs',
+    })
+    expect(http.calls[0]!.body).toEqual({ provider: 'elevenlabs' })
   })
 })
 

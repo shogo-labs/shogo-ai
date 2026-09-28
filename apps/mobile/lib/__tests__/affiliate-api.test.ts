@@ -122,6 +122,19 @@ describe('affiliateApi.getDownline', () => {
 })
 
 describe('affiliateApi stripe connect helpers', () => {
+  test('onboardStripeConnect forwards an explicit country', async () => {
+    const { http, calls } = makeHttp({
+      'POST /api/affiliates/me/stripe-connect/onboard': { onboardUrl: 'https://x/y' },
+    })
+    const res = await affiliateApi.onboardStripeConnect(http, 'CA')
+    expect(res.onboardUrl).toBe('https://x/y')
+    expect(calls[0]).toEqual({
+      method: 'POST',
+      url: '/api/affiliates/me/stripe-connect/onboard',
+      body: { country: 'CA' },
+    })
+  })
+
   test('onboardStripeConnect posts with empty body', async () => {
     const { http, calls } = makeHttp({
       'POST /api/affiliates/me/stripe-connect/onboard': { onboardUrl: 'https://x/y' },

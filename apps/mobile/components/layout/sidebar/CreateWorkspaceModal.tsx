@@ -17,31 +17,41 @@ import {
 
 const X = accountSheetIcon(XIcon);
 
-// ─── CreateWorkspaceModal (free — shown until the account owns a team workspace) ────
+// ─── CreateWorkspaceModal ──────────────────────────────────────────────────────
 
 export function CreateWorkspaceModal({
   visible,
   onClose,
   onSubmit,
+  parentName,
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (name: string) => void;
+  /** Resolving to `false` keeps the modal open so the typed name isn't lost. */
+  onSubmit: (name: string) => void | boolean | Promise<void | boolean>;
+  parentName?: string | null;
 }) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
+    if (submitting) return;
     const trimmed = name.trim();
     if (!trimmed) {
       setError("Give your workspace a name to continue.");
       return;
     }
-    onSubmit(trimmed);
+    setSubmitting(true);
+    try {
+      if ((await onSubmit(trimmed)) === false) return;
+    } finally {
+      setSubmitting(false);
+    }
     setName("");
     setError(null);
     onClose();
-  }, [name, onSubmit, onClose]);
+  }, [name, onSubmit, onClose, submitting]);
 
   return (
     <Modal
@@ -67,7 +77,9 @@ export function CreateWorkspaceModal({
             </Pressable>
           </View>
           <Text className="text-sm text-muted-foreground mb-4">
-            Create a new workspace for your team or projects
+            {parentName
+              ? `Included with ${parentName}'s plan. Shares its usage, billing, and seats.`
+              : "Create a new workspace for your team or projects"}
           </Text>
           <Text className="text-sm font-medium text-foreground mb-1.5">
             Workspace name
@@ -99,10 +111,11 @@ export function CreateWorkspaceModal({
             </Pressable>
             <Pressable
               onPress={handleSubmit}
-              className="px-4 py-2 rounded-md bg-primary active:bg-primary/80"
+              disabled={submitting}
+              className={`px-4 py-2 rounded-md bg-primary active:bg-primary/80${submitting ? " opacity-60" : ""}`}
             >
               <Text className="text-sm text-primary-foreground">
-                Create workspace
+                {submitting ? "Creating..." : "Create workspace"}
               </Text>
             </Pressable>
           </View>

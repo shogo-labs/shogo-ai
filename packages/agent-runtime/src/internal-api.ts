@@ -28,6 +28,18 @@ export function derivePublicApiUrl(): string | null {
   return deriveApiUrl()
 }
 
+/**
+ * Returns `projectId` only when it names a real project. A workspace runtime
+ * bound with no attached projects gets its runtime key (`ws:<workspaceId>`)
+ * as PROJECT_ID, and an unassigned pool runtime has `__POOL__`; the API
+ * rejects project-scoped internal calls for either, so callers must skip the
+ * call or omit the field instead.
+ */
+export function projectScopedId(projectId: string | null | undefined): string | undefined {
+  if (!projectId || projectId === '__POOL__' || projectId.startsWith('ws:')) return undefined
+  return projectId
+}
+
 export function getInternalHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
@@ -94,7 +106,8 @@ export async function postCheckpointRecord(
   payload: CheckpointRecordPayload,
 ): Promise<boolean> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return false
+  // A projectless workspace runtime has no project to attach the row to.
+  if (!apiUrl || !projectScopedId(projectId)) return false
   try {
     const res = await fetch(
       `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/checkpoints/record`,
@@ -313,6 +326,67 @@ export async function rollbackCheckpoint(
   )
 }
 
+export interface GitHubPullRequestOptions {
+  title: string
+  head: string
+  base?: string
+  body?: string
+  draft?: boolean
+  runId?: string
+}
+
+export interface GitHubPullRequestResult {
+  number: number
+  url: string
+  htmlUrl?: string
+  author?: string
+}
+
+export interface GitHubCliCredentials {
+  token: string
+  expiresAt: string
+  login: string
+  name: string
+  email: string
+}
+
+/**
+ * Installation token for the connected GitHub App. The runtime injects this
+ * as `GH_TOKEN` so `gh` comments, reviews, and commits are the App bot.
+ * 409 `github_app_not_installed` means the project has no connection.
+ */
+export async function getGitHubCliCredentials(
+  projectId: string,
+): Promise<CheckpointCallResult<GitHubCliCredentials>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/cli-credentials`,
+    {
+      method: 'GET',
+      parse: (j) => ({
+        token: j?.token,
+        expiresAt: j?.expiresAt,
+        login: j?.login,
+        name: j?.name,
+        email: j?.email,
+      }) as GitHubCliCredentials,
+    },
+  )
+}
+
+export async function createGitHubPullRequest(
+  projectId: string,
+  opts: GitHubPullRequestOptions,
+): Promise<CheckpointCallResult<GitHubPullRequestResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/pull-request`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => j as GitHubPullRequestResult,
+    },
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Publish wrappers — let the agent's `publish` tool deploy to {subdomain}.shogo.one
 //
@@ -387,6 +461,28 @@ export async function publishProject(
     method: 'POST',
     body: JSON.stringify(opts),
     parse: (j) => j as PublishResult,
+  })
+}
+
+export interface SharedFileResult {
+  url: string
+  expiresAt: string
+  path: string
+}
+
+export interface SharedFileOptions {
+  path: string
+  expiresInDays?: number
+}
+
+export async function createSharedFileLink(
+  projectId: string,
+  opts: SharedFileOptions,
+): Promise<CheckpointCallResult<SharedFileResult>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/shared-files`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    parse: (j) => j as SharedFileResult,
   })
 }
 

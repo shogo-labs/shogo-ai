@@ -40,6 +40,7 @@ mock.module('../services/analytics.service', () => {
     getUsageAnalytics: record('usage', { totalUsd: 2 }),
     getActiveUsers: record('activeUsers', { dau: 3 }),
     getDesktopInstalls: record('desktopInstalls', { totalDevices: 2 }),
+    getAppInstalls: record('appInstalls', { totals: { totalDevices: 3 } }),
     getChatAnalytics: record('chat', { messages: 4 }),
     getProjectAnalytics: record('projects', { total: 5 }),
     getBillingAnalytics: record('billing', { mrr: 6 }),
@@ -185,6 +186,7 @@ describe('adminRoutes analytics endpoints', () => {
       '/analytics/usage?period=24h',
       '/analytics/active-users?period=30d',
       '/analytics/desktop-installs',
+      '/analytics/app-installs',
       '/analytics/chat?period=7d',
       '/analytics/projects',
       '/analytics/billing',
@@ -202,6 +204,7 @@ describe('adminRoutes analytics endpoints', () => {
     }
 
     expect(analyticsCalls.map(([name]) => name)).toContain('desktopInstalls')
+    expect(analyticsCalls.map(([name]) => name)).toContain('appInstalls')
     expect(analyticsCalls.map(([name]) => name)).toContain('usageLog')
     expect(analyticsCalls.find(([name]) => name === 'usageLog')?.[1][2]).toEqual({
       page: 2,

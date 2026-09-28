@@ -77,6 +77,7 @@ export {
 export {
   PlatformApi,
   BYOK_PROVIDERS,
+  toErrorMessage,
   type BYOKProviderId,
   type PlatformConfig,
   type ApiKeyInfo,
@@ -96,6 +97,8 @@ export {
   type WorkspaceSummary,
   type FeatureFlagOverrides,
   type FeatureFlagPatch,
+  type EzModeVoiceProvider,
+  type EzModeVoiceProviderOverride,
   type VisibleModelsConfig,
   type VisibleOpenRouterModel,
   type VisibleCatalogModel,

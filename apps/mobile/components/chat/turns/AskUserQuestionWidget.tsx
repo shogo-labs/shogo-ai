@@ -8,7 +8,15 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
-import { View, Text, TextInput, Pressable, Animated, ScrollView, Image } from "react-native"
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  Animated,
+  ScrollView,
+  Image,
+} from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   CheckCircle2,
@@ -19,13 +27,12 @@ import {
   MessageCircleQuestion,
   ArrowDown,
 } from "lucide-react-native"
-import {
-  type ToolCallData,
-  type AskUserQuestionItem,
-} from "../tools/types"
+import { type ToolCallData, type AskUserQuestionItem } from "../tools/types"
 import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useChatContextSafe } from "../ChatContext"
+import { buildAgentWorkspaceUrl } from "../../../lib/agent-workspace-url"
+import { useAgentImageSource } from "../../../lib/agent-image-source"
 
 export interface AskUserQuestionWidgetProps {
   tool: ToolCallData
@@ -58,16 +65,14 @@ function isValidQuestionItem(item: unknown): item is AskUserQuestionItem {
 }
 
 function isValidOption(
-  opt: unknown
+  opt: unknown,
 ): opt is { label: string; description: string } {
   if (!opt || typeof opt !== "object") return false
   const o = opt as Record<string, unknown>
   return typeof o.label === "string" && typeof o.description === "string"
 }
 
-function normalizeQuestionItem(
-  item: AskUserQuestionItem
-): AskUserQuestionItem {
+function normalizeQuestionItem(item: AskUserQuestionItem): AskUserQuestionItem {
   return {
     ...item,
     options: Array.isArray(item.options)
@@ -77,9 +82,7 @@ function normalizeQuestionItem(
   }
 }
 
-function parseQuestions(
-  args?: Record<string, unknown>
-): AskUserQuestionItem[] {
+function parseQuestions(args?: Record<string, unknown>): AskUserQuestionItem[] {
   if (!args?.questions || !Array.isArray(args.questions)) {
     return []
   }
@@ -90,7 +93,7 @@ function parseQuestions(
 function formatResponse(
   questions: AskUserQuestionItem[],
   selections: Map<number, string[]>,
-  otherTexts: Map<number, string>
+  otherTexts: Map<number, string>,
 ): string {
   const lines: string[] = []
 
@@ -117,7 +120,10 @@ function formatResponse(
       responseLine += regularSelections.join(", ")
     }
 
-    if (responseLine && (regularSelections.length > 0 || (hasOther && otherText?.trim()))) {
+    if (
+      responseLine &&
+      (regularSelections.length > 0 || (hasOther && otherText?.trim()))
+    ) {
       lines.push(responseLine)
     }
   })
@@ -148,6 +154,7 @@ function OptionRow({
   label,
   description,
   imageUrl,
+  imageGrid = false,
   isSelected,
   isMultiSelect,
   onSelect,
@@ -158,71 +165,112 @@ function OptionRow({
   description: string
   /** Resolved thumbnail URL (already built from chatContext.agentUrl + imagePath), if any. */
   imageUrl?: string | null
+  /** Render visual options as cards with the title below the image. */
+  imageGrid?: boolean
   isSelected: boolean
   isMultiSelect: boolean
   onSelect: () => void
   disabled?: boolean
 }) {
   const [imageFailed, setImageFailed] = useState(false)
+  const imageSource = useAgentImageSource(imageUrl ?? null)
 
   return (
     <Pressable
       onPress={onSelect}
       disabled={disabled}
       className={cn(
-        "w-full p-2.5 rounded-md border",
+        imageGrid
+          ? "w-[48%] rounded-md border p-2.5"
+          : "w-full rounded-md border p-2.5",
         isSelected
           ? "border-primary/40 bg-primary/10"
-          : "border-border/50 bg-background/40"
+          : "border-border/50 bg-background/40",
       )}
     >
-      <View className="flex-row items-start gap-2.5">
+      <View className={imageGrid ? "gap-0.5" : "flex-row items-start gap-2.5"}>
         {/* Letter badge — doubles as the selection indicator. */}
         <View
           className={cn(
-            "w-6 h-6 items-center justify-center border",
+            imageGrid
+              ? "absolute left-1.5 top-1.5 z-10 h-6 w-6 items-center justify-center rounded-full border"
+              : "h-6 w-6 items-center justify-center border",
             isMultiSelect ? "rounded-sm" : "rounded-full",
             isSelected
               ? "border-primary bg-primary"
-              : "border-border/60 bg-muted/40"
+              : "border-border/60 bg-muted/40",
           )}
         >
           <Text
             className={cn(
               "font-mono text-[10px] font-semibold",
-              isSelected ? "text-primary-foreground" : "text-muted-foreground"
+              isSelected ? "text-primary-foreground" : "text-muted-foreground",
             )}
           >
             {letter}
           </Text>
         </View>
 
-        {imageUrl && !imageFailed ? (
-          <Image
-            source={{ uri: imageUrl }}
-            className="w-12 h-12 rounded-md border border-border/50"
-            resizeMode="cover"
-            accessibilityLabel={`Preview for option: ${label}`}
-            onError={() => setImageFailed(true)}
-          />
-        ) : null}
+        {imageGrid ? (
+          <>
+            <View className="aspect-square w-full overflow-hidden rounded-md border border-border/50 bg-muted/40">
+              {imageUrl && imageSource && !imageFailed ? (
+                <Image
+                  source={imageSource}
+                  className="h-full w-full"
+                  resizeMode="cover"
+                  accessibilityLabel={`Preview for option: ${label}`}
+                  onError={() => setImageFailed(true)}
+                />
+              ) : null}
+            </View>
+            <View className="gap-0.5 pt-1">
+              <Text
+                className="font-medium text-xs leading-[15px] text-foreground"
+                numberOfLines={2}
+              >
+                {label}
+              </Text>
+              {description && description !== label ? (
+                <Text
+                  className="text-[10px] leading-[14px] text-foreground/75"
+                  numberOfLines={3}
+                >
+                  {description}
+                </Text>
+              ) : null}
+            </View>
+          </>
+        ) : (
+          <>
+            {imageUrl && imageSource && !imageFailed ? (
+              <Image
+                source={imageSource}
+                className="h-12 w-12 rounded-md border border-border/50"
+                resizeMode="cover"
+                accessibilityLabel={`Preview for option: ${label}`}
+                onError={() => setImageFailed(true)}
+              />
+            ) : null}
 
-        <View className="flex-1">
-          {label !== description && label.length <= 32 ? (
-            <Text className="font-medium text-xs text-foreground">
-              {label}
-            </Text>
-          ) : null}
-          {description ? (
-            <Text className="text-[11px] leading-[15px] text-foreground/90">
-              {description}
-            </Text>
-          ) : (
-            <Text className="text-[11px] leading-[15px] text-foreground/90">
-              {label}
-            </Text>
-          )}
-        </View>
+            <View className="flex-1">
+              {label !== description && label.length <= 32 ? (
+                <Text className="font-medium text-xs text-foreground">
+                  {label}
+                </Text>
+              ) : null}
+              {description ? (
+                <Text className="text-[11px] leading-[15px] text-foreground/90">
+                  {description}
+                </Text>
+              ) : (
+                <Text className="text-[11px] leading-[15px] text-foreground/90">
+                  {label}
+                </Text>
+              )}
+            </View>
+          </>
+        )}
       </View>
     </Pressable>
   )
@@ -252,7 +300,7 @@ function QuestionPagination({
         accessibilityLabel="Previous question"
         className={cn(
           "w-5 h-5 items-center justify-center rounded",
-          isFirstQuestion ? "opacity-30" : "opacity-100"
+          isFirstQuestion ? "opacity-30" : "opacity-100",
         )}
       >
         <ChevronLeft className="w-3.5 h-3.5 text-muted-foreground" />
@@ -267,7 +315,7 @@ function QuestionPagination({
         accessibilityLabel="Next question"
         className={cn(
           "w-5 h-5 items-center justify-center rounded",
-          isLastQuestion ? "opacity-30" : "opacity-100"
+          isLastQuestion ? "opacity-30" : "opacity-100",
         )}
       >
         <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
@@ -295,7 +343,7 @@ export function AskUserQuestionWidget({
   const resolveOptionImageUrl = useCallback(
     (imagePath?: string) => {
       if (!imagePath || !chatContext?.agentUrl) return null
-      return `${chatContext.agentUrl}/agent/workspace/download/${imagePath}`
+      return buildAgentWorkspaceUrl(chatContext.agentUrl, imagePath)
     },
     [chatContext?.agentUrl],
   )
@@ -329,7 +377,8 @@ export function AskUserQuestionWidget({
   // For the pending state we want the card open by default; once answered we
   // collapse to a one-line summary that the user can re-expand if they want.
   const [internalExpanded, setInternalExpanded] = useState(true)
-  const isExpanded = controlledExpanded ?? (effectivelyPending ? true : internalExpanded)
+  const isExpanded =
+    controlledExpanded ?? (effectivelyPending ? true : internalExpanded)
 
   const handleToggle = useCallback(() => {
     // Toggling is only meaningful in the answered state — while pending we
@@ -387,7 +436,7 @@ export function AskUserQuestionWidget({
         })
       })
     },
-    [activeTab, questions.length, setActiveTab, bodyOpacity]
+    [activeTab, questions.length, setActiveTab, bodyOpacity],
   )
 
   const handleSelect = useCallback(
@@ -406,7 +455,7 @@ export function AskUserQuestionWidget({
           if (current.includes(optionLabel)) {
             next.set(
               questionIndex,
-              current.filter((l) => l !== optionLabel)
+              current.filter((l) => l !== optionLabel),
             )
           } else {
             next.set(questionIndex, [...current, optionLabel])
@@ -431,7 +480,7 @@ export function AskUserQuestionWidget({
         animateToQuestion(questionIndex + 1)
       }
     },
-    [setSelections, selections, questions.length, animateToQuestion]
+    [setSelections, selections, questions.length, animateToQuestion],
   )
 
   const handleOtherTextChange = useCallback(
@@ -442,7 +491,7 @@ export function AskUserQuestionWidget({
         return next
       })
     },
-    [setOtherTexts]
+    [setOtherTexts],
   )
 
   const hasAnyAnswer = useMemo(() => {
@@ -493,7 +542,8 @@ export function AskUserQuestionWidget({
 
   useEffect(() => {
     onQuestionProgress?.({
-      index: questions.length === 0 ? 0 : Math.min(questions.length, activeTab + 1),
+      index:
+        questions.length === 0 ? 0 : Math.min(questions.length, activeTab + 1),
       total: questions.length,
     })
   }, [activeTab, onQuestionProgress, questions.length])
@@ -528,8 +578,7 @@ export function AskUserQuestionWidget({
       : undefined
 
   const isStillLoading =
-    tool.state === "streaming" &&
-    (questions.length === 0 || !currentQuestion)
+    tool.state === "streaming" && (questions.length === 0 || !currentQuestion)
 
   if (isStillLoading) {
     return (
@@ -538,7 +587,7 @@ export function AskUserQuestionWidget({
           embedded
             ? "py-0.5"
             : "rounded-md border border-primary/20 bg-primary/5 p-2.5",
-          className
+          className,
         )}
       >
         <View className="flex-row items-center gap-1.5">
@@ -557,8 +606,10 @@ export function AskUserQuestionWidget({
     return (
       <View
         className={cn(
-          embedded ? "py-0.5" : "rounded-md border border-border/50 bg-muted/30 p-2",
-          className
+          embedded
+            ? "py-0.5"
+            : "rounded-md border border-border/50 bg-muted/30 p-2",
+          className,
         )}
       >
         <Text className="text-xs text-muted-foreground">
@@ -581,6 +632,9 @@ export function AskUserQuestionWidget({
     return true
   })()
   const nextDisabled = !currentAnswered
+  const hasImageOptions = (currentQuestion.options ?? []).some(
+    (option) => Boolean(option.imagePath),
+  )
 
   const pagination = showPagination ? (
     <QuestionPagination
@@ -595,30 +649,36 @@ export function AskUserQuestionWidget({
 
   const optionList = (
     <View className="gap-1.5">
-      {(currentQuestion.options ?? []).map((option, optionIndex) => {
-        const currentSelections = selections.get(activeTab) || []
-        const isSelected = currentSelections.includes(option.label)
+      <View
+        testID={hasImageOptions ? "ask-user-image-options" : undefined}
+        className={hasImageOptions ? "flex-row flex-wrap gap-2" : "gap-1.5"}
+      >
+        {(currentQuestion.options ?? []).map((option, optionIndex) => {
+          const currentSelections = selections.get(activeTab) || []
+          const isSelected = currentSelections.includes(option.label)
 
-        return (
-          <OptionRow
-            key={option.label}
-            letter={letterForIndex(optionIndex)}
-            label={option.label}
-            description={option.description}
-            imageUrl={resolveOptionImageUrl(option.imagePath)}
-            isSelected={isSelected}
-            isMultiSelect={currentQuestion.multiSelect ?? false}
-            onSelect={() =>
-              handleSelect(
-                activeTab,
-                option.label,
-                currentQuestion.multiSelect ?? false,
-              )
-            }
-            disabled={effectivelyAnswered}
-          />
-        )
-      })}
+          return (
+            <OptionRow
+              key={option.label}
+              letter={letterForIndex(optionIndex)}
+              label={option.label}
+              description={option.description}
+              imageUrl={resolveOptionImageUrl(option.imagePath)}
+              imageGrid={hasImageOptions}
+              isSelected={isSelected}
+              isMultiSelect={currentQuestion.multiSelect ?? false}
+              onSelect={() =>
+                handleSelect(
+                  activeTab,
+                  option.label,
+                  currentQuestion.multiSelect ?? false,
+                )
+              }
+              disabled={effectivelyAnswered}
+            />
+          )
+        })}
+      </View>
 
       <View>
         <OptionRow
@@ -654,39 +714,40 @@ export function AskUserQuestionWidget({
     </View>
   )
 
-  const optionRowCount = (currentQuestion.options?.length ?? 0) + 1
+  const optionCount = currentQuestion.options?.length ?? 0
+  const optionRowCount = hasImageOptions
+    ? Math.ceil(optionCount / 2) + 1
+    : optionCount + 1
   const optionsNeedScroll =
     !isSheet &&
     bodyMaxHeight != null &&
     optionRowCount > ASK_USER_SCROLL_AFTER_OPTION_ROWS
   const optionsBody = optionsNeedScroll ? (
-      <ScrollView
-        testID="ask-user-question-options"
-        style={{ maxHeight: bodyMaxHeight }}
-        nestedScrollEnabled
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator
-        bounces={false}
-        alwaysBounceVertical={false}
-        overScrollMode="never"
-      >
-        {optionList}
-      </ScrollView>
-    ) : (
-      optionList
-    )
+    <ScrollView
+      testID="ask-user-question-options"
+      style={{ maxHeight: bodyMaxHeight }}
+      nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator
+      bounces={false}
+      alwaysBounceVertical={false}
+      overScrollMode="never"
+    >
+      {optionList}
+    </ScrollView>
+  ) : (
+    optionList
+  )
 
   return (
     <View
       className={cn(
-        embedded
-          ? undefined
-          : "rounded-md border overflow-hidden",
+        embedded ? undefined : "rounded-md border overflow-hidden",
         !embedded &&
           (effectivelyPending
             ? "border-primary/30 bg-primary/5"
             : "border-border/50 bg-muted/30"),
-        className
+        className,
       )}
     >
       {/* In-stream chrome. The dock already owns a "Question" header. */}
@@ -696,9 +757,7 @@ export function AskUserQuestionWidget({
           disabled={effectivelyPending}
           className="w-full flex-row items-center gap-2 px-3 py-2"
         >
-          <Text className="text-xs font-medium text-foreground">
-            Questions
-          </Text>
+          <Text className="text-xs font-medium text-foreground">Questions</Text>
 
           {effectivelyAnswered && (
             <CheckCircle2 className="w-3 h-3 text-green-500" />
@@ -751,18 +810,25 @@ export function AskUserQuestionWidget({
 
           {/* Next/Submit footer (pending state only) */}
           {effectivelyPending && (
-            <View className={cn("flex-row items-center justify-end", isSheet ? "pt-3" : "pt-1")}>
+            <View
+              className={cn(
+                "flex-row items-center justify-end",
+                isSheet ? "pt-3" : "pt-1",
+              )}
+            >
               <Pressable
                 onPress={handleNext}
                 disabled={nextDisabled}
                 accessibilityRole="button"
-                accessibilityLabel={isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"}
+                accessibilityLabel={
+                  isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"
+                }
                 className={cn(
                   "items-center justify-center",
                   isSheet
                     ? "h-11 rounded-full px-6 min-w-[96px]"
                     : "h-7 rounded-md px-3 min-w-[68px]",
-                  nextDisabled ? "bg-muted" : "bg-primary"
+                  nextDisabled ? "bg-muted" : "bg-primary",
                 )}
               >
                 <Text
@@ -771,7 +837,7 @@ export function AskUserQuestionWidget({
                     isSheet ? "text-base" : "text-xs",
                     nextDisabled
                       ? "text-muted-foreground"
-                      : "text-primary-foreground"
+                      : "text-primary-foreground",
                   )}
                 >
                   {isLastQuestion ? (isSheet ? "Done" : "Submit") : "Next"}
@@ -786,9 +852,7 @@ export function AskUserQuestionWidget({
               <Text className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 Your Response
               </Text>
-              <Text className="text-xs text-foreground">
-                {displayResult}
-              </Text>
+              <Text className="text-xs text-foreground">{displayResult}</Text>
 
               {/*
                 Mid-submit recovery: we persisted a response locally but the
@@ -848,7 +912,7 @@ export function AskUserQuestionBar({
       accessibilityLabel={`Pending question — ${actionHint.toLowerCase()}`}
       className={cn(
         "rounded-md border border-primary/30 bg-primary/5 w-full flex-row items-center gap-1.5 py-1.5 px-2",
-        className
+        className,
       )}
     >
       <MessageCircleQuestion className="w-3 h-3 text-primary" />
@@ -858,7 +922,8 @@ export function AskUserQuestionBar({
       </Text>
 
       <Text className="flex-1 text-[9px] text-muted-foreground text-right">
-        {count > 1 ? `${count} questions • ` : ""}{actionHint}
+        {count > 1 ? `${count} questions • ` : ""}
+        {actionHint}
       </Text>
 
       <ArrowDown className="w-3 h-3 text-primary" />

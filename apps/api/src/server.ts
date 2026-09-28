@@ -38,6 +38,8 @@ import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
+import { chatAttachmentRoutes } from './routes/chat-attachments'
+import { sharedFileRoutes } from './routes/shared-files'
 import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { aiLiveRoutes } from './routes/ai-live'
@@ -85,6 +87,7 @@ import {
   _resetAgentModelDefaultsCache,
   _resetUpstreamCredentialCache,
 } from './lib/federated-upstream'
+import { getNativeProviderApiKeySync } from './services/provider-credentials.service'
 import type { MetricsPeriod } from './services/node-metrics.service'
 import { agentModelDefaultsRoute } from './lib/runtime/agent-model-defaults-route'
 import {
@@ -196,6 +199,7 @@ const handleInstanceWsClose: any = cloud.handleInstanceWsClose ?? (() => {})
 const startTunnelHeartbeat: any = cloud.startTunnelHeartbeat ?? (() => {})
 const remoteAuditRoutes: any = cloud.remoteAuditRoutes ?? emptyRouter
 const mobilePushRoutes: any = cloud.mobilePushRoutes ?? emptyRouter
+const appInstallRoutes: any = cloud.appInstallRoutes ?? emptyRouter
 const syncRoutes: any = cloud.syncRoutes ?? emptyRouter
 const internalRoutes: any = cloud.internalRoutes ?? new Hono()
 const internalE2eRoutes: any = cloud.internalE2eRoutes ?? new Hono()
@@ -757,6 +761,10 @@ function isTokenGatedThumbnailPath(path: string): boolean {
   return /^\/api\/projects\/[^/]+\/thumbnail\.png$/.test(path)
 }
 
+function isTokenGatedChatAttachmentPath(path: string): boolean {
+  return path.startsWith('/api/chat-attachments/')
+}
+
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
@@ -805,6 +813,7 @@ app.use(
     if (publicPrefixes.some((p) => path.startsWith(p))) return next()
     if (isAllowedUnauthWebchatProxyPath(path)) return next()
     if (isTokenGatedThumbnailPath(path)) return next()
+    if (isTokenGatedChatAttachmentPath(path)) return next()
     // Heartbeat sync is called by the runtime with x-runtime-token auth
     if (path.endsWith('/heartbeat/sync')) return next()
     // Voice provider webhooks (signature-verified in-handler). These have
@@ -989,6 +998,14 @@ app.get('/api/config', async (c) => {
     publishing: !localMode,
     marketplace: true,
     ezMode: true,
+    ezModeVoiceProvider:
+      getNativeProviderApiKeySync('openai') ||
+      (localMode &&
+        !!process.env.SHOGO_API_KEY &&
+        process.env.AI_MODE !== 'api-keys' &&
+        process.env.AI_MODE !== 'local-llm')
+        ? 'gpt-live'
+        : 'elevenlabs',
     phoneChannel: !localMode,
     // Companion-shell rollout kill switch: personal workspaces render the
     // simplified Muse/Grok-style companion shell (see `workspaceExperience`)
@@ -1004,6 +1021,7 @@ app.get('/api/config', async (c) => {
 
   // Super-admin overrides from PlatformSetting (absence = use default).
   let overrides: Record<string, boolean> = {}
+  let ezModeVoiceProviderOverride: 'gpt-live' | 'elevenlabs' | undefined
   try {
     const rows = await prisma.platformSetting.findMany({
       where: {
@@ -1011,6 +1029,7 @@ app.get('/api/config', async (c) => {
           in: [
             'feature.marketplace',
             'feature.ez_mode',
+            'feature.ez_mode_voice_provider',
             'feature.phone_channel',
             'feature.personal_shell',
             'feature.agent_shell',
@@ -1023,6 +1042,12 @@ app.get('/api/config', async (c) => {
       const bool = row.value === 'true'
       if (row.key === 'feature.marketplace') overrides.marketplace = bool
       if (row.key === 'feature.ez_mode') overrides.ezMode = bool
+      if (
+        row.key === 'feature.ez_mode_voice_provider' &&
+        (row.value === 'gpt-live' || row.value === 'elevenlabs')
+      ) {
+        ezModeVoiceProviderOverride = row.value
+      }
       if (row.key === 'feature.phone_channel') overrides.phoneChannel = bool
       if (row.key === 'feature.personal_shell') overrides.personalShell = bool
       if (row.key === 'feature.agent_shell') overrides.agentShell = bool
@@ -1036,7 +1061,13 @@ app.get('/api/config', async (c) => {
     localMode,
     needsSetup,
     shogoKeyConnected: hasShogоApiKey,
-    features: { ...featureDefaults, ...overrides },
+    features: {
+      ...featureDefaults,
+      ...overrides,
+      ...(ezModeVoiceProviderOverride
+        ? { ezModeVoiceProvider: ezModeVoiceProviderOverride }
+        : {}),
+    },
   })
 })
 
@@ -1593,6 +1624,7 @@ app.route('/api', cliAuthRoutes())
 app.route('/api', instanceRoutes())
 app.route('/api', remoteAuditRoutes())
 app.route('/api', mobilePushRoutes())
+app.route('/api', appInstallRoutes())
 // Sync engine — Phase 2 event-driven bidirectional sync
 app.route('/api', syncRoutes())
 // Workspace-scoped chat + session management (multi-project / parent-folder
@@ -1946,7 +1978,7 @@ app.get('/api/published/:subdomain/wake', async (c) => {
   try {
     const project = await prisma.project.findUnique({
       where: { publishedSubdomain: subdomain },
-      select: { id: true },
+      select: { id: true, publishedAlwaysOn: true },
     })
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
@@ -1968,7 +2000,9 @@ app.get('/api/published/:subdomain/wake', async (c) => {
       const { getPublishSubstrate } = await import('./lib/substrate/router')
       const substrate = await getPublishSubstrate(project.id)
       if (substrate.kind === 'metal') {
-        const { ready } = await substrate.wakePublished(project.id, subdomain)
+        const { ready } = await substrate.wakePublished(project.id, subdomain, {
+          alwaysOn: project.publishedAlwaysOn,
+        })
         return c.json({ ready }, 200, WAKE_RESPONSE_HEADERS)
       }
     }
@@ -2374,6 +2408,9 @@ app.all('/api/published/:subdomain/api/*', publishedApiHandler)
 // Thumbnail routes
 // =============================================================================
 
+app.route('/api', chatAttachmentRoutes())
+app.route('/', sharedFileRoutes())
+
 app.post('/api/projects/:projectId/thumbnail', async (c) => {
   const router = thumbnailRoutes()
   const url = new URL(c.req.url)
@@ -2544,13 +2581,19 @@ app.post('/api/projects/:projectId/runtime/stop', async (c) => {
       const { isMetalEnabled, isMetalEligibleProject } = await import('./lib/metal-eligibility')
       if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
         const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
-        await new MetalSubstrate().stop(projectId)
+        const { suspended, busy } = await new MetalSubstrate().suspend(projectId)
         return c.json({
           success: true,
           projectId,
           status: 'scaling_down',
           substrate: 'metal',
-          message: 'Project suspended to snapshot',
+          suspended,
+          busy,
+          message: busy
+            ? 'Project is mid-generation; left running'
+            : suspended
+              ? 'Project suspended to snapshot'
+              : 'Project runtime is not running',
         })
       }
       // Knative: scales to zero automatically after idle timeout.
@@ -2910,10 +2953,14 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         return c.json(metalBody(false), 202)
       }
       try {
-        const { getMetalProjectUrl } = await import('./lib/metal-warm-pool-controller')
-        // Resolves once the microVM is resumed/booted and the guest agent is
-        // reachable; throws (NoMetalHostError / assign failure) while starting.
-        await getMetalProjectUrl(projectId)
+        // Resolves once the project's anchored workspace runtime
+        // (`ws:proj:<projectId>`) is resumed/booted and reachable; throws while
+        // starting. Must be the same resolver the preview wake/open/render and
+        // agent-proxy routes use: a bare per-project assign here would boot a
+        // second VM for the project that races the anchored one for the same
+        // durable source archive.
+        const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+        await resolveProjectPodUrl(projectId, { logTag: 'sandbox/url' })
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
         // Per-user open cap: record this open and suspend the user's
         // least-recently-opened project(s) beyond METAL_MAX_OPEN_PROJECTS_PER_USER
@@ -5765,6 +5812,7 @@ app.use('/api/admin/regions', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/regions/*', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/metal', authMiddleware, requireAuth, requireSuperAdmin)
 app.use('/api/admin/metal/*', authMiddleware, requireAuth, requireSuperAdmin)
+app.use('/api/admin/runtimes/*', authMiddleware, requireAuth, requireSuperAdmin)
 
 // GET /api/admin/pods - List all project pods
 app.get('/api/admin/pods', async (c) => {
@@ -6008,6 +6056,91 @@ app.delete('/api/admin/metal/hosts/:hostId/config', async (c) => {
     return c.json({ ok: true, data: records })
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'delete failed' }, 500)
+  }
+})
+
+// Rollout re-warm (lib/metal-rewarm.ts): boot and re-suspend recently active
+// runtimes on the current rootfs so their next open resumes a fresh snapshot.
+// POST   /api/admin/metal/rewarm         start ({ sinceHours?, region?, dryRun?, concurrency?, maxRuntimes?, maxBytes?, reason? })
+// GET    /api/admin/metal/rewarm         status of the latest job
+// DELETE /api/admin/metal/rewarm         cancel
+// POST   /api/admin/metal/rewarm/pause   pause (in-flight runtimes finish)
+// POST   /api/admin/metal/rewarm/resume  resume
+function rewarmActor(c: any): { id: string; email?: string } {
+  const auth = c.get('auth') as any
+  return { id: auth?.user?.id ?? auth?.userId ?? 'unknown', email: auth?.user?.email }
+}
+
+app.post('/api/admin/metal/rewarm', async (c) => {
+  try {
+    const { parseRewarmRequest, startRewarmJob } = await import('./lib/metal-rewarm')
+    const parsed = parseRewarmRequest(await c.req.json().catch(() => ({})), rewarmActor(c))
+    if (!parsed.ok) return c.json({ ok: false, error: parsed.error }, 400)
+    const result = await startRewarmJob(parsed.input)
+    if (result.dryRun) return c.json({ ok: true, ...result })
+    if (!result.started) return c.json({ ok: false, ...result }, 409)
+    return c.json({ ok: true, ...result }, 202)
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'rewarm failed' }, 500)
+  }
+})
+
+app.get('/api/admin/metal/rewarm', async (c) => {
+  try {
+    const { getRewarmStatus } = await import('./lib/metal-rewarm')
+    return c.json({ ok: true, data: await getRewarmStatus() })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'unavailable' }, 500)
+  }
+})
+
+app.delete('/api/admin/metal/rewarm', async (c) => {
+  try {
+    const { setRewarmControl } = await import('./lib/metal-rewarm')
+    await setRewarmControl('cancel')
+    console.log(`[admin-audit] ${JSON.stringify({ event: 'admin.metal.rewarm.cancel', actorId: rewarmActor(c).id, actorEmail: rewarmActor(c).email })}`)
+    return c.json({ ok: true, control: 'cancel' })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'cancel failed' }, 500)
+  }
+})
+
+app.post('/api/admin/metal/rewarm/:action', async (c) => {
+  const action = c.req.param('action')
+  if (action !== 'pause' && action !== 'resume') return c.json({ ok: false, error: 'unknown_action' }, 400)
+  try {
+    const { setRewarmControl } = await import('./lib/metal-rewarm')
+    await setRewarmControl(action === 'pause' ? 'pause' : null)
+    console.log(`[admin-audit] ${JSON.stringify({ event: `admin.metal.rewarm.${action}`, actorId: rewarmActor(c).id, actorEmail: rewarmActor(c).email })}`)
+    return c.json({ ok: true, control: action === 'pause' ? 'pause' : null })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? `${action} failed` }, 500)
+  }
+})
+
+// POST /api/admin/runtimes/recycle — restart a stuck runtime from a clean cold
+// boot without touching code, schema, database or data. Body:
+// { projectId?, workspaceId?, force?, reason?, coldBoot? }. See
+// lib/admin-runtime-recycle.ts and docs/runbooks/metal-fleet.md.
+app.post('/api/admin/runtimes/recycle', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const auth = c.get('auth') as any
+    const { recycleRuntimes, defaultRecycleDeps } = await import('./lib/admin-runtime-recycle')
+    const result = await recycleRuntimes(
+      {
+        projectId: typeof body?.projectId === 'string' ? body.projectId : undefined,
+        workspaceId: typeof body?.workspaceId === 'string' ? body.workspaceId : undefined,
+        force: body?.force === true,
+        reason: typeof body?.reason === 'string' ? body.reason : undefined,
+        coldBoot: body?.coldBoot !== false,
+      },
+      { id: auth?.user?.id ?? auth?.userId ?? 'unknown', email: auth?.user?.email },
+      await defaultRecycleDeps('admin-audit'),
+    )
+    return c.json(result.body, result.status as any)
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'recycle failed' }, 500)
   }
 })
 
@@ -6568,6 +6701,7 @@ const FEATURE_FLAG_KEYS = {
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
+const EZ_MODE_VOICE_PROVIDER_KEY = 'feature.ez_mode_voice_provider'
 
 // GET /api/admin/settings/features - Read feature flag overrides (null = use default)
 app.get('/api/admin/settings/features', async (c) => {
@@ -6641,7 +6775,50 @@ app.put('/api/admin/settings/features', async (c) => {
   }
 })
 
+// GET /api/admin/settings/ez-mode-voice-provider
+app.get('/api/admin/settings/ez-mode-voice-provider', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({
+      where: { key: EZ_MODE_VOICE_PROVIDER_KEY },
+    })
+    const provider =
+      row?.value === 'gpt-live' || row?.value === 'elevenlabs' ? row.value : null
+    return c.json({ provider })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/ez-mode-voice-provider
+app.put('/api/admin/settings/ez-mode-voice-provider', async (c) => {
+  try {
+    const body = await c.req.json()
+    const provider = body?.provider
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    if (provider === null || provider === '') {
+      await prisma.platformSetting.deleteMany({ where: { key: EZ_MODE_VOICE_PROVIDER_KEY } })
+      return c.json({ ok: true, provider: null })
+    }
+    if (provider !== 'gpt-live' && provider !== 'elevenlabs') {
+      return c.json({ error: 'provider must be gpt-live, elevenlabs, or null' }, 400)
+    }
+    await prisma.platformSetting.upsert({
+      where: { key: EZ_MODE_VOICE_PROVIDER_KEY },
+      create: { key: EZ_MODE_VOICE_PROVIDER_KEY, value: provider, updatedBy: userId },
+      update: { value: provider, updatedBy: userId },
+    })
+    return c.json({ ok: true, provider })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // DELETE /api/admin/pods/:projectId - Delete project pod
+// DESTRUCTIVE: this is project-deletion teardown (Knative service + storage,
+// and the project's custom-domain Cloudflare hostnames), not a restart, and it
+// does nothing for a metal runtime. To restart a stuck runtime without losing
+// data use POST /api/admin/runtimes/recycle.
 app.delete('/api/admin/pods/:projectId', async (c) => {
   const router = projectAdminRoutes()
   const url = new URL(c.req.url)
@@ -6923,14 +7100,25 @@ app.get('/api/billing/workspace-plan', async (c) => {
       const ids = workspaceIds.split(',').filter(Boolean)
       // Filter to only workspaces the user is a member of
       const memberships = userId
-        ? await prisma.member.findMany({ where: { userId, workspaceId: { in: ids } }, select: { workspaceId: true } })
+        ? await prisma.member.findMany({
+            where: { userId, workspaceId: { in: ids } },
+            select: { workspaceId: true, role: true, isBillingAdmin: true },
+          })
         : []
       const allowedIds = new Set(memberships.map((m: any) => m.workspaceId))
+      // Mirrors the owner/admin/billing-admin check in
+      // `validateChildWorkspaceCreation` so the client can skip offering the
+      // pooled "create workspace" flow to plain members.
+      const manageableIds = new Set(
+        memberships
+          .filter((m: any) => m.role === 'owner' || m.role === 'admin' || m.isBillingAdmin)
+          .map((m: any) => m.workspaceId),
+      )
       // `planId` here is the *effective* plan: a paid Stripe subscription
       // wins, otherwise an active super-admin grant's `planId` confers the
       // tier. `source` lets the client distinguish so it doesn't try to send
       // a grant-only workspace through Stripe portal/checkout flows.
-      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free' }> = {}
+      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free'; canManageChildren: boolean }> = {}
       await Promise.all(ids.filter(id => allowedIds.has(id)).map(async (id) => {
         const [sub, effective] = await Promise.all([
           billingService.getSubscription(id),
@@ -6942,6 +7130,7 @@ app.get('/api/billing/workspace-plan', async (c) => {
           planId: sub?.planId ?? effective,
           status: sub?.status ?? (source === 'grant' ? 'active' : null),
           source,
+          canManageChildren: manageableIds.has(id),
         }
       }))
       return c.json({ ok: true, plans })
@@ -7181,6 +7370,10 @@ app.post('/api/billing/ios/notifications', async (c) => {
   }
 })
 
+const STRIPE_ZERO_DECIMAL_CURRENCIES = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+])
+
 app.post('/api/billing/verify-checkout', async (c) => {
   try {
     if (!stripe) {
@@ -7204,13 +7397,21 @@ app.post('/api/billing/verify-checkout', async (c) => {
     }
     const seats = Math.max(1, Math.floor(Number(seatsRaw) || 1))
 
+    // GA4 purchase `value` excludes tax and shipping.
+    const currency = (session.currency ?? 'usd').toUpperCase()
+    const minorUnitDivisor = STRIPE_ZERO_DECIMAL_CURRENCIES.has(currency) ? 1 : 100
+    const chargedMinor = (session.amount_total ?? 0)
+      - (session.total_details?.amount_tax ?? 0)
+      - (session.total_details?.amount_shipping ?? 0)
+    const amountPaid = Math.max(0, chargedMinor) / minorUnitDivisor
+
     if (!await verifyWorkspaceMembership(c, workspaceId)) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
     const existing = await billingService.getSubscription(workspaceId)
     if (existing?.stripeSubscriptionId === (session.subscription as string)) {
-      return c.json({ ok: true, workspaceId, planId, seats, alreadyProvisioned: true }, 200)
+      return c.json({ ok: true, workspaceId, planId, seats, billingInterval, amountPaid, currency, alreadyProvisioned: true }, 200)
     }
 
     const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string) as StripeTypes.Subscription & {
@@ -7242,7 +7443,7 @@ app.post('/api/billing/verify-checkout', async (c) => {
     await billingService.allocateMonthlyIncluded(workspaceId, planId, seats)
     console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId, 'seats:', seats)
 
-    return c.json({ ok: true, workspaceId, planId, seats }, 200)
+    return c.json({ ok: true, workspaceId, planId, seats, billingInterval, amountPaid, currency }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
@@ -9493,6 +9694,20 @@ if (isKubernetes()) {
       startMetalFleetReconciler()
     } catch (err: any) {
       console.error('[metal-fleet] Failed to start reconciler (non-fatal):', err.message)
+    }
+
+    // Rollout re-warm: once every live metal host in a region reports a new
+    // rootfs, boot and re-suspend the runtimes active in the last 48h so their
+    // next open resumes a fresh snapshot instead of cold-booting.
+    // METAL_REWARM_AUTO=false turns the automatic trigger off.
+    try {
+      const { isMetalEnabled } = await import('./lib/metal-eligibility')
+      if (isMetalEnabled()) {
+        const { startMetalRewarmWatcher } = await import('./lib/metal-rewarm')
+        startMetalRewarmWatcher()
+      }
+    } catch (err: any) {
+      console.error('[MetalRewarm] Failed to start watcher (non-fatal):', err.message)
     }
   }, 2000)
 }

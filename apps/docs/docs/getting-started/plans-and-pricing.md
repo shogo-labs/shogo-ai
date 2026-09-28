@@ -75,12 +75,14 @@ in Pro, plus team-grade controls.
 - Audit logs
 - Personal & restricted projects
 - Per-member spending limits
+- Unlimited workspaces for better organization
 - Priority support
 - Annual billing: $400/seat/year
 
 ### Enterprise
 
-Custom pricing — contact us for higher volume, dedicated support,
+Custom pricing — contact us for higher volume, unlimited workspaces,
+dedicated support,
 onboarding services, custom connections, group-based access control,
 SCIM provisioning, and custom design systems.
 

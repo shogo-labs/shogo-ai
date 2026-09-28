@@ -79,7 +79,7 @@ afterEach(() => {
 })
 
 describe('WorkerRuntimeManager config closures (constructor wiring)', () => {
-  test('spawnCommand returns { command: bun, args: [run, entry] }', () => {
+  test('spawnCommand runs the source entry with the development condition', () => {
     new RuntimeManager()
     expect(capturedWorkerConfigs).toHaveLength(1)
     const cfg = capturedWorkerConfigs[0] as {
@@ -87,7 +87,7 @@ describe('WorkerRuntimeManager config closures (constructor wiring)', () => {
     }
     const result = cfg.spawnCommand('/tmp/foo.ts')
     expect(result.command).toMatch(/bun/)
-    expect(result.args).toEqual(['run', '/tmp/foo.ts'])
+    expect(result.args).toEqual(['--conditions=development', 'run', '/tmp/foo.ts'])
   })
 
   test('resolveBin: AGENT_RUNTIME_ENTRY env override wins when file exists', () => {

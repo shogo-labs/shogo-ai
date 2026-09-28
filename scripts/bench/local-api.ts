@@ -113,7 +113,6 @@ const env: Record<string, string> = {
   BETTER_AUTH_URL: `http://localhost:${port}`,
   BUN_INSTALL_CACHE_DIR: join(dataDir, '.bun-cache'),
   SHOGO_BUN_PATH: bunPath,
-  SHOGO_BUNDLED_SDK_CLI: join(repoRoot, 'packages', 'sdk', 'bin', 'cli.mjs'),
   AGENT_RUNTIME_ENTRY: join(repoRoot, 'packages', 'agent-runtime', 'src', 'server.ts'),
   CANVAS_RUNTIME_DIST: join(repoRoot, 'packages', 'canvas-runtime', 'dist'),
   CANVAS_GLOBALS_DTS: join(repoRoot, 'packages', 'canvas-runtime', 'src', 'canvas-globals.d.ts'),

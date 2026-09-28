@@ -128,39 +128,36 @@ export const ProminentComposerField = forwardRef<
         ]}
         onLayout={onLayout}
       >
-        <Animated.Text
-          pointerEvents="none"
-          numberOfLines={1}
-          ellipsizeMode="tail"
-          {...(Platform.OS !== "web"
-            ? {
-                accessibilityElementsHidden: !empty,
-                importantForAccessibility: empty
-                  ? "auto"
-                  : "no-hide-descendants",
-              }
-            : {})}
-          style={{
-            position: "absolute",
-            left: 4,
-            right: 4,
-            top: stacked
-              ? 0
-              : Platform.OS === "web"
-              ? 1 + PROMINENT_COMPOSER_WEB_COMPACT_TEXT_OFFSET
-              : PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
-            height: PROMINENT_COMPOSER_MIN_HEIGHT,
-            fontSize: PROMINENT_COMPOSER_FONT_SIZE,
-            lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-            color: placeholderColor,
-            // Do not let the fading placeholder paint over newly typed native
-            // text. Native can composite both layers for a frame while the
-            // Animated.Value transitions, which produces visible ghost text.
-            opacity: empty ? placeholderOpacity ?? 1 : 0,
-          }}
-        >
-          {placeholder}
-        </Animated.Text>
+        {empty ? (
+          <Animated.Text
+            pointerEvents="none"
+            numberOfLines={1}
+            ellipsizeMode="tail"
+            {...(Platform.OS !== "web"
+              ? {
+                  accessibilityElementsHidden: false,
+                  importantForAccessibility: "auto",
+                }
+              : {})}
+            style={{
+              position: "absolute",
+              left: 4,
+              right: 4,
+              top: stacked
+                ? 0
+                : Platform.OS === "web"
+                ? 1 + PROMINENT_COMPOSER_WEB_COMPACT_TEXT_OFFSET
+                : PROMINENT_COMPOSER_NATIVE_COMPACT_PLACEHOLDER_TOP,
+              height: PROMINENT_COMPOSER_MIN_HEIGHT,
+              fontSize: PROMINENT_COMPOSER_FONT_SIZE,
+              lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
+              color: placeholderColor,
+              opacity: placeholderOpacity ?? 1,
+            }}
+          >
+            {placeholder}
+          </Animated.Text>
+        ) : null}
         <FieldInput
           ref={ref}
           testID={testID}
@@ -187,8 +184,13 @@ export const ProminentComposerField = forwardRef<
             fontSize: PROMINENT_COMPOSER_FONT_SIZE,
             lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
             paddingHorizontal: stacked ? 0 : 4,
-            paddingTop: stacked ? 0 : 1,
-            paddingBottom: stacked ? 0 : 1,
+            paddingTop: 0,
+            paddingBottom: 0,
+            // A one-line textarea is a couple of pixels taller than its box,
+            // and the browser default is overflow:auto. Hide that scrollbar
+            // until the field has expanded to its max height.
+            overflow: scrollEnabled ? "auto" : "hidden",
+            overflowY: scrollEnabled ? "auto" : "hidden",
             margin: 0,
             backgroundColor: "transparent",
             textAlignVertical: stacked

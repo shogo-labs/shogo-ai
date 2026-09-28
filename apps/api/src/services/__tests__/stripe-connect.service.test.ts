@@ -711,6 +711,63 @@ describe('createCustomAccountForAffiliate', () => {
     expect(stripeCalls.some((c) => c.method === 'accounts.create')).toBe(false)
     expect(affiliates.get('a5')!.stripeCustomAccountId).toBe('acct_creator_shared')
   })
+
+  it('forwards an explicit country (e.g. CA) to Stripe account creation', async () => {
+    affiliates.set('a6', { id: 'a6', userId: 'u6', stripeCustomAccountId: null, user: { email: 'ca@x.io' } })
+    nextAccountCreate = { id: 'acct_live_ca' }
+    const id = await sc.createCustomAccountForAffiliate('a6', 'CA')
+    expect(id).toBe('acct_live_ca')
+    expect(stripeCalls[0]!.args[0].country).toBe('CA')
+  })
+})
+
+describe('SUPPORTED_CONNECT_COUNTRIES / isSupportedConnectCountry', () => {
+  it('accepts US and CA (case-insensitively)', () => {
+    expect(sc.isSupportedConnectCountry('US')).toBe(true)
+    expect(sc.isSupportedConnectCountry('ca')).toBe(true)
+    expect(sc.isSupportedConnectCountry('CA')).toBe(true)
+  })
+
+  it('rejects unvetted or malformed countries', () => {
+    expect(sc.isSupportedConnectCountry('FR')).toBe(false)
+    expect(sc.isSupportedConnectCountry('')).toBe(false)
+    expect(sc.isSupportedConnectCountry(undefined)).toBe(false)
+    expect(sc.isSupportedConnectCountry(123)).toBe(false)
+  })
+})
+
+describe('resetConnectAccountForCountryChange', () => {
+  it('returns reset:false with no_account when the user has no Connect account', async () => {
+    const result = await sc.resetConnectAccountForCountryChange('nope')
+    expect(result).toEqual({ reset: false, reason: 'no_account' })
+  })
+
+  it('refuses to reset an account that already submitted details / has payouts enabled', async () => {
+    profiles.set('cLocked', { id: 'cLocked', userId: 'uLocked', stripeCustomAccountId: 'acct_locked' })
+    nextAccountRetrieve = { payouts_enabled: true, details_submitted: true, requirements: {} }
+    const result = await sc.resetConnectAccountForCountryChange('uLocked')
+    expect(result).toEqual({ reset: false, reason: 'account_has_activity' })
+    expect(profiles.get('cLocked')!.stripeCustomAccountId).toBe('acct_locked')
+  })
+
+  it('clears stripeCustomAccountId on both profile and affiliate for an untouched account', async () => {
+    profiles.set('cFree', { id: 'cFree', userId: 'uFree', stripeCustomAccountId: 'acct_free' })
+    affiliates.set('aFree', { id: 'aFree', userId: 'uFree', stripeCustomAccountId: 'acct_free' })
+    nextAccountRetrieve = { payouts_enabled: false, details_submitted: false, requirements: {} }
+    const result = await sc.resetConnectAccountForCountryChange('uFree')
+    expect(result).toEqual({ reset: true })
+    expect(profiles.get('cFree')!.stripeCustomAccountId).toBeNull()
+    expect(affiliates.get('aFree')!.stripeCustomAccountId).toBeNull()
+  })
+
+  it('resets a mock account without calling Stripe', async () => {
+    delete (process.env as any).STRIPE_SECRET_KEY
+    profiles.set('cMock', { id: 'cMock', userId: 'uMock', stripeCustomAccountId: 'acct_mock_uMock' })
+    const result = await sc.resetConnectAccountForCountryChange('uMock')
+    expect(result).toEqual({ reset: true })
+    expect(profiles.get('cMock')!.stripeCustomAccountId).toBeNull()
+    expect(stripeCalls.some((c) => c.method === 'accounts.retrieve')).toBe(false)
+  })
 })
 
 describe('cancelMarketplaceSubscription', () => {

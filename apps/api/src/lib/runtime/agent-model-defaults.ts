@@ -16,7 +16,9 @@ import {
   inferProviderFromModel,
   resolveAgentModeDefault,
 } from '@shogo/model-catalog'
-import * as billingService from '../../services/billing.service'
+// The seam, not billing.service: this resolver also runs in the desktop's
+// local bundle, which must not pull in the Stripe-backed billing service.
+import * as billingService from '../../services/billing-runtime'
 import { resolvePublicModelSync } from '../../services/public-models.service'
 import { getMergedModelEntrySync } from '../../services/model-registry.service'
 import { prisma } from '../prisma'
@@ -179,6 +181,23 @@ export async function resolveEffectiveAgentModelDefaults(
       .filter((entry) => entry.upstream === 'deepseek')
       .map((entry) => entry.id),
   }
+}
+
+/**
+ * Resolve one Auto tier to a concrete model for server-initiated surfaces.
+ *
+ * Uses the same Auto tier map agent runtimes get: the connected cloud's when
+ * this is a cloud-forwarding local instance (its ids may be opaque cloud DB
+ * ids, which the in-process proxy forwards unchanged), otherwise this
+ * server's entitlement-capped defaults.
+ */
+export async function resolveAutoTierModel(
+  workspaceId: string,
+  tier: AgentModelTier = 'standard',
+): Promise<AgentModelEntry> {
+  const cloudDefaults = await fetchCloudAgentModelDefaults()
+  if (cloudDefaults) return cloudDefaults.autoTiers[tier]
+  return (await resolveEffectiveAgentModelDefaults(workspaceId)).autoTiers[tier]
 }
 
 export function serializeAutoTierMapEnv(

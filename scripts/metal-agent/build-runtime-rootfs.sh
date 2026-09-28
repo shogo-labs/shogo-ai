@@ -117,6 +117,13 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
+
+# A kernel-exec'd init starts with RLIMIT_NOFILE 1024/4096, and the runtime is
+# PID 1 here: at 4096 fds every spawn fails with EMFILE (Bun hands back a child
+# with no stdio), the runtime throws, init exits and the kernel panics.
+# Containers get ~1M from containerd; match that.
+ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true
+
 mkdir -p /dev/pts
 if ! grep -Eq ' /dev/pts .* - devpts ' /proc/self/mountinfo 2>/dev/null; then
   mount -t devpts devpts /dev/pts -o newinstance,ptmxmode=0666,mode=0620,gid=5 2>/dev/null || true
@@ -137,6 +144,14 @@ fi
 # the boot-time workspace pre-seed can't reach npm. Point at public resolvers.
 rm -f /etc/resolv.conf
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+
+# docker export leaves /etc/hosts empty (Docker bind-mounts it at run time), so
+# "localhost" falls through to the public resolvers above and never reaches the
+# IPv4 listeners here: every in-guest http://localhost:<port> call (the API
+# sidecar's /health among them) is refused. Keep localhost on 127.0.0.1 only;
+# the sidecars bind IPv4.
+rm -f /etc/hosts
+printf '127.0.0.1\tlocalhost\n::1\tip6-localhost ip6-loopback\n' > /etc/hosts
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export HOME=/app

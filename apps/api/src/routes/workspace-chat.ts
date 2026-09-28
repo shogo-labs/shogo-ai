@@ -23,6 +23,7 @@ import type { IRuntimeManager } from '../lib/runtime'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 import { stampModelProvider } from '../lib/stamp-model-provider'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
@@ -35,10 +36,14 @@ import {
   getOrCreatePrimaryWorkspaceSession,
   getAttachedProjects,
   listWorkspaceSessions,
+  pinWorkspaceSessionToProject,
+  unpinWorkspaceSession,
+  upgradeProjectSessionToWorkspace,
   WorkspaceSessionError,
   type AttachMode,
 } from '../services/workspace-session.service'
 import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
+import { readWorkspaceSessionRuntimeArgs, type WorkspaceSessionRuntimeArgs } from '../lib/workspace-runtime-args'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
@@ -47,6 +52,12 @@ import {
   attachProjectToProject,
   syncPinnedSessionAttachments,
 } from '../services/project-attachment.service'
+import {
+  clearActiveTurn,
+  markTurnEnded,
+  markTurnStarted,
+  startTurnHeartbeat,
+} from '../services/chat-turn-state.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -97,63 +108,15 @@ async function stopAnchorRuntime(anchorProjectId: string, manager?: any): Promis
 }
 
 /**
- * Anchor-aware runtime resolution opts for a session.
- *
- * A workspace session can be PROJECT-PINNED: its `contextId` is the anchor
- * project of an anchor-keyed merged-root runtime (the universal "every
- * project runs on the workspace runtime" path). When pinned we tell the
- * resolver the anchor (so it keys `ws:proj:<anchor>` + adds the anchor's
- * linked folders) and which attached projects are read-only. Home/workspace
- * sessions (no `contextId`) resolve the workspace-keyed runtime as before.
- */
-async function anchorRuntimeOpts(
-  sessionId: string,
-  attached: { projectId: string; attachMode: AttachMode }[],
-): Promise<{ anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] }> {
-  let anchorProjectId: string | undefined
-  try {
-    const session = (await prisma.chatSession.findUnique({
-      where: { id: sessionId },
-      select: { contextId: true } as any,
-    })) as { contextId?: string | null } | null
-    anchorProjectId = session?.contextId ?? undefined
-  } catch {
-    anchorProjectId = undefined
-  }
-  if (!anchorProjectId) return {}
-
-  const readonlyProjectIds = attached
-    .filter((a) => a.attachMode === 'readonly')
-    .map((a) => a.projectId)
-
-  let localFolders: string[] = []
-  try {
-    const folders = (await prisma.projectFolder.findMany({
-      where: { projectId: anchorProjectId },
-      select: { path: true },
-    })) as Array<{ path: string }>
-    localFolders = folders.map((f) => f.path).filter((p) => typeof p === 'string' && p.length > 0)
-  } catch {
-    localFolders = []
-  }
-
-  return { anchorProjectId, localFolders, readonlyProjectIds }
-}
-
-/**
  * Load the runtime resolution inputs for a session: the attached project
  * ids plus the anchor-aware extras (anchor, linked folders, read-only set).
- * One call so every route resolves the same merged-root runtime.
+ * One call so every route resolves the same merged-root runtime. Upgrades a
+ * legacy project session first, so the read sees its final attachments.
  */
-async function loadRuntimeArgs(workspaceId: string, sessionId: string): Promise<{
-  attachedProjectIds: string[]
-  extra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] }
-}> {
-  await assertWorkspaceSessionInWorkspace(workspaceId, sessionId)
-  const attached = await getAttachedProjects(sessionId)
-  const attachedProjectIds = attached.map((a) => a.projectId)
-  const extra = await anchorRuntimeOpts(sessionId, attached)
-  return { attachedProjectIds, extra }
+async function loadRuntimeArgs(workspaceId: string, sessionId: string): Promise<WorkspaceSessionRuntimeArgs> {
+  const upgradedAnchorId = await upgradeProjectSessionToWorkspace(workspaceId, sessionId)
+  if (upgradedAnchorId) await syncPinnedSessionAttachments(upgradedAnchorId, sessionId)
+  return readWorkspaceSessionRuntimeArgs(workspaceId, sessionId)
 }
 
 export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
@@ -165,11 +128,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
    * spawn time. Scope mutations are therefore not complete until the active
    * runtime has been stopped and a replacement resolves with the new args.
    */
-  const refreshSessionRuntime = async (workspaceId: string, sessionId: string) => {
+  const refreshSessionRuntime = async (
+    workspaceId: string,
+    sessionId: string,
+    opts: { keepAnchorRuntime?: boolean } = {},
+  ) => {
     const args = await loadRuntimeArgs(workspaceId, sessionId)
     const manager: any = runtimeManager
     if (args.extra.anchorProjectId) {
-      await stopAnchorRuntime(args.extra.anchorProjectId, manager)
+      if (!opts.keepAnchorRuntime) await stopAnchorRuntime(args.extra.anchorProjectId, manager)
     } else if (typeof manager?.stopWorkspace === 'function') {
       await manager.stopWorkspace(workspaceId)
     }
@@ -367,6 +334,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         inferredName: body?.inferredName,
         attachProjectIds: Array.isArray(body?.attachProjectIds) ? body.attachProjectIds : undefined,
         attachMode: body?.attachMode as AttachMode | undefined,
+        anchorProjectId: typeof body?.anchorProjectId === 'string' ? body.anchorProjectId : undefined,
       })
       return c.json({ session }, 201)
     } catch (err) {
@@ -387,7 +355,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     return c.json({ attached })
   })
 
-  // Attach a project to a session.
+  // Attach a project to a session. `pinAsAnchor` additionally pins the session
+  // to that project when safe (see pinWorkspaceSessionToProject) so a chat
+  // handed off to the project page runs on the runtime serving its preview;
+  // the response's `pinned` tells the caller whether that happened.
   router.post('/workspaces/:workspaceId/sessions/:sessionId/projects', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
@@ -405,11 +376,18 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         body.projectId,
         (body.attachMode as AttachMode) ?? 'readwrite',
       )
+      const pin = body.pinAsAnchor === true
+        ? await pinWorkspaceSessionToProject(sessionId, body.projectId)
+        : { pinned: false, changed: false }
       try {
-        await refreshSessionRuntime(workspaceId, sessionId)
+        // A fresh pin means the session's only project is the anchor, which
+        // its `ws:proj:` runtime (possibly already warming for the canvas)
+        // mounts anyway, so there's no reason to restart it.
+        await refreshSessionRuntime(workspaceId, sessionId, { keepAnchorRuntime: pin.changed })
       } catch (err) {
         // Do not leave a durable scope that the currently selected runtime
         // cannot actually mount. Restore the prior relationship on failure.
+        if (pin.changed) await unpinWorkspaceSession(sessionId, body.projectId)
         if (previous) {
           await attachProject(sessionId, previous.projectId, previous.attachMode)
         } else {
@@ -417,7 +395,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         }
         throw err
       }
-      return c.json({ attached, runtime: { ready: true } }, 201)
+      return c.json({ attached, pinned: pin.pinned, runtime: { ready: true } }, 201)
     } catch (err) {
       if (err instanceof WorkspaceRuntimeNotEnabledError) {
         return c.json({ error: { code: 'workspace_runtime_unavailable', message: 'Workspace runtime is unavailable' } }, 503)
@@ -575,50 +553,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     return c.json({ success: true, workspaceId, status: 'warming' }, 202)
   })
 
-  // Preemptively warm a workspace runtime. Returns 202 immediately and
-  // resolves the runtime in the background, so a merged-root pod is being
-  // claimed/cold-started while the user composes their first message. The
-  // homepage calls this on Send (the workspace-aware sibling of the
-  // per-project /runtime/prewarm). Body accepts `sessionId` and/or
-  // `attachProjectIds` to determine which subfolders the runtime mounts.
-  router.post('/workspaces/:workspaceId/runtime/prewarm', async (c) => {
-    const auth = await authorize(c)
-    if ('res' in auth) return auth.res
-    const workspaceId = c.req.param('workspaceId')
-
-    const body = await c.req.json().catch(() => ({} as any))
-    let attachedProjectIds: string[] = Array.isArray(body?.attachProjectIds)
-      ? body.attachProjectIds.filter((x: unknown) => typeof x === 'string')
-      : []
-    let runtimeExtra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] } = {}
-    if (typeof body?.sessionId === 'string' && body.sessionId) {
-      try {
-        const args = await loadRuntimeArgs(body.sessionId)
-        if (attachedProjectIds.length === 0) attachedProjectIds = args.attachedProjectIds
-        runtimeExtra = args.extra
-      } catch {
-        /* best-effort */
-      }
-    }
-
-    // Fire-and-forget: resolve (and thus spawn/claim) the workspace runtime.
-    // Swallow the disabled-flag 501 and transient errors — this is a warm-up
-    // hint, not a correctness path.
-    void resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
-      logTag: 'WorkspacePrewarm',
-      runtimeManager,
-      ...runtimeExtra,
-    }).catch((err) => {
-      console.warn(
-        `[WorkspaceChat] Prewarm failed for ${workspaceId} (non-blocking):`,
-        err?.message ?? err,
-      )
-    })
-
-    return c.json({ accepted: true }, 202)
-  })
-
   // Proxy chat to the workspace runtime.
   //
   // Parity with project-chat.ts POST /projects/:projectId/chat: workspace
@@ -673,7 +607,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         400,
       )
     }
-
     // Normalize the body so the runtime reads the same session id from
     // `chatSessionId` (its durable buffer + resume key) that we billed under.
     if (parsedBody.chatSessionId !== sessionId) {
@@ -817,10 +750,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // we have an anchor project; a zero-attachment session degrades to a bare
     // proxy. trackUsageFromStream closes the session after the stream ends;
     // the finally guard closes an orphaned session on early exit.
-    let billingSessionHandedOff = false
+    // trackUsageFromStream owns the stream (persistence, billing close when
+    // anchored, active-turn end) once handed off, with or without a project.
+    let streamHandedOff = false
     if (billingProjectId) {
       await openSession(billingProjectId, workspaceId, billingUserId || 'system', sessionId)
     }
+    let activityTurnId: string | null = null
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       headers['x-runtime-token'] = deriveWorkspaceRuntimeToken(workspaceId)
@@ -927,6 +863,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             return new Response(null, { status: upstream.status, headers: responseHeaders })
           }
 
+          try {
+            activityTurnId = await markTurnStarted(sessionId)
+          } catch (error) {
+            // Activity is observational; a schema/database issue must not block chat.
+            console.warn(`[WorkspaceChat] Failed to mark active chat ${sessionId}:`, error)
+          }
+
           // Decoupled fan-out (same pattern as project-chat): read the
           // upstream body in a background loop and independently push chunks
           // to both the client stream and a tracking queue, so billing +
@@ -959,14 +902,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
 
           const clientStream = new ReadableStream<Uint8Array>({
             start(controller) {
-              const keepaliveChunk = new TextEncoder().encode(': proxy-keep-alive\n\n')
-              const proxyKeepalive = setInterval(() => {
-                try {
-                  controller.enqueue(keepaliveChunk)
-                } catch {
-                  clearInterval(proxyKeepalive)
-                }
-              }, 15_000)
               ;(async () => {
                 try {
                   while (true) {
@@ -988,7 +923,6 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                     /* client gone */
                   }
                 } finally {
-                  clearInterval(proxyKeepalive)
                   trackingDone = true
                   trackingNotify?.()
                   trackingNotify = null
@@ -1010,7 +944,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           // to checkpoint, but the assistant's reply must still be saved so
           // chat history survives a page reload. See the doc comment on
           // `trackUsageFromStream` in project-chat.ts.
-          if (billingProjectId) billingSessionHandedOff = true
+          streamHandedOff = true
+          const turnId = activityTurnId
+          const stopTurnHeartbeat = turnId ? startTurnHeartbeat(sessionId, turnId) : null
           trackUsageFromStream(
             trackingStream,
             parsedBody,
@@ -1037,13 +973,20 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                 }
               },
             },
-          ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err))
+          ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
+            stopTurnHeartbeat?.()
+            if (turnId) {
+              markTurnEnded(sessionId, turnId).catch((error) =>
+                console.warn(`[WorkspaceChat] Failed to clear active chat ${sessionId}:`, error),
+              )
+            }
+          })
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
           // (the anchor is checkpointed by trackUsageFromStream). Best-effort,
           // fires on clean client-stream close.
           const checkpointTargets = attachedProjectIds.filter((id) => id !== billingProjectId)
-          let outBody: ReadableStream<Uint8Array> = clientStream
+          let outBody: ReadableStream<Uint8Array> = wrapSseStreamWithKeepalive(clientStream)
           if (checkpointTargets.length > 0) {
             const checkpointWatcher = new TransformStream<Uint8Array, Uint8Array>({
               flush() {
@@ -1058,7 +1001,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                 )
               },
             })
-            outBody = clientStream.pipeThrough(checkpointWatcher)
+            outBody = outBody.pipeThrough(checkpointWatcher)
           }
 
           return new Response(outBody, { status: upstream.status, headers: responseHeaders })
@@ -1108,12 +1051,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     } finally {
       // Guard: close the billing session if trackUsageFromStream never took
       // ownership (retry exhaustion, client disconnect, thrown error).
-      if (billingProjectId && !billingSessionHandedOff) {
+      if (billingProjectId && !streamHandedOff) {
         closeSession(billingProjectId, { chatSessionId: sessionId }).catch((err: any) =>
           console.error(
             `[WorkspaceChat] Failed to close orphaned billing session for ${billingProjectId}:`,
             err,
           ),
+        )
+      }
+      if (activityTurnId && !streamHandedOff) {
+        markTurnEnded(sessionId, activityTurnId).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to clear abandoned active chat ${sessionId}:`, error),
         )
       }
     }
@@ -1243,6 +1191,14 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         body: body || '{}',
       }, runtimeExtra)
       const result = await response.json()
+      if (sessionId && response.ok) {
+        await clearActiveTurn({
+          id: sessionId,
+          OR: [{ workspaceId }, { project: { workspaceId } }],
+        }).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
+        )
+      }
       return c.json(result)
     } catch (error: any) {
       console.error('[WorkspaceChat] Stop error:', error)

@@ -66,7 +66,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi, type WorkspaceSummary } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp } from '../../contexts/domain'
+import { DomainProvider, useDomainHttp } from '../../contexts/domain'
 
 interface LocalLinkParams {
   state?: string
@@ -87,7 +87,7 @@ type Status =
   | 'ready'
   | 'error'
 
-export default function LocalLinkBridge() {
+function LocalLinkBridge() {
   const router = useRouter()
   const params = useLocalSearchParams<LocalLinkParams>()
   const { user, isLoading: isAuthLoading, isAuthenticated } = useAuth()
@@ -355,5 +355,13 @@ export default function LocalLinkBridge() {
         )}
       </View>
     </View>
+  )
+}
+
+export default function LocalLinkBridgeRoute() {
+  return (
+    <DomainProvider>
+      <LocalLinkBridge />
+    </DomainProvider>
   )
 }

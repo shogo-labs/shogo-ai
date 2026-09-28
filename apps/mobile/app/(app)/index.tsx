@@ -45,7 +45,8 @@ import { loadModelPreference, saveModelPreference } from '../../lib/agent-mode-p
 import { useReconcileStaleModelSelection } from '../../lib/visible-models'
 import { setPendingFiles } from '../../lib/pending-image-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { workspaceExperience } from '@shogo/shared-app'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
+import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
@@ -275,7 +276,11 @@ export const HomeScreen = observer(function HomeScreen({
   const isNarrowAgentSurface = Platform.OS !== 'web' || screenWidth < WEB_WIDE_MIN_WIDTH
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
   const homeEntrance = useRef(new Animated.Value(Platform.OS === 'web' ? 1 : 0)).current
-  const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
+  // The phone tab bar already owns the bottom safe-area inset. Match
+  // ChatPanel so Home reserves only the visual gap above that bar.
+  const restComposerPad = isNativePhone
+    ? NATIVE_COMPOSER_KEYBOARD_GAP
+    : Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   const restComposerSidePad = NATIVE_PHONE_GUTTER
   const iosComposerAvoiding = Platform.OS === 'ios'
   const composerKeyboardPad = useNativeComposerDockPad({
@@ -342,8 +347,6 @@ export const HomeScreen = observer(function HomeScreen({
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   // APP_MODE_DISABLED: homeAppTemplates state removed
 
-  const [workspaceError, setWorkspaceError] = useState(false)
-
   useEffect(() => {
     void loadInteractionModePreference().then((stored) => {
       if (stored) setInteractionMode(stored)
@@ -351,7 +354,7 @@ export const HomeScreen = observer(function HomeScreen({
   }, [])
 
   const currentWorkspace = useActiveWorkspace()
-  const currentExperience = workspaceExperience(currentWorkspace?.kind)
+  const currentExperience = useWorkspaceExperience()
   // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`, which
   // mounts its own checklist.
   const rendersAgentChat =
@@ -381,17 +384,12 @@ export const HomeScreen = observer(function HomeScreen({
     let cancelled = false
 
     async function loadData(attempt = 0) {
-      setWorkspaceError(false)
-      // Use the active workspace (which falls back to the first workspace
-      // once `workspaces.loadAll()` has resolved). Relying on
-      // `getActiveWorkspaceId()` alone breaks the first ever load because
-      // nothing has been persisted to storage yet — the effect re-runs
-      // when `currentWorkspace?.id` changes, so this also covers the
-      // post-load case.
+      // Workspaces load from the app layout. This effect re-runs when
+      // `currentWorkspace?.id` appears, so the first project load happens
+      // after that id is known.
       const projectFilter = workspaceProjectFilter(currentWorkspace?.id)
       const results = await Promise.allSettled([
         projectFilter ? projects.loadAll(projectFilter) : Promise.resolve(),
-        workspaces.loadAll(),
         user?.id ? membersColl.loadAll({ userId: user.id }) : Promise.resolve(),
       ])
 
@@ -407,12 +405,8 @@ export const HomeScreen = observer(function HomeScreen({
 
       if (results[0].status === 'rejected')
         console.error('[Home] Failed to load projects:', results[0].reason)
-      if (results[1].status === 'rejected') {
-        console.error('[Home] Failed to load workspaces:', results[1].reason)
-        setWorkspaceError(true)
-      }
-      if (results[2].status === 'rejected')
-        console.error('[Home] Failed to load memberships:', results[2].reason)
+      if (results[1].status === 'rejected')
+        console.error('[Home] Failed to load memberships:', results[1].reason)
     }
 
     loadData()
@@ -511,18 +505,29 @@ export const HomeScreen = observer(function HomeScreen({
   const createHomeDraftSession = useCallback(
     async (projectId: string, workspaceId: string): Promise<HomeDraft> => {
       if (isWorkspaceRuntimeEnabled()) {
+        // The project page's canvas is served by the project's own runtime, so
+        // the handed-off chat must be pinned to the project or its edits land
+        // on a different VM than the preview.
         if (originWorkspaceSessionId) {
-          await api.attachProject(http, workspaceId, originWorkspaceSessionId, projectId, 'readwrite')
-          return {
+          const { pinned } = await api.attachProjectAsAnchor(
+            http,
+            workspaceId,
+            originWorkspaceSessionId,
             projectId,
-            chatSessionId: originWorkspaceSessionId,
-            chatScope: 'workspace',
+          )
+          if (pinned) {
+            return {
+              projectId,
+              chatSessionId: originWorkspaceSessionId,
+              chatScope: 'workspace',
+            }
           }
         }
         const session = await api.createWorkspaceSession(http, workspaceId, {
           inferredName: 'Untitled',
           attachProjectIds: [projectId],
           attachMode: 'readwrite',
+          anchorProjectId: projectId,
         })
         return { projectId, chatSessionId: session.id, chatScope: 'workspace' }
       }
@@ -696,14 +701,19 @@ export const HomeScreen = observer(function HomeScreen({
       // Consume the draft so subsequent home interactions create a new one.
       draftRef.current = null
       router.push({
-        pathname: '/(app)/projects/[id]',
+        // Native project creation should land on the same standalone chat
+        // route used after returning to a project. The full project-detail
+        // layout has different header/chrome during its initial render.
+        pathname:
+          Platform.OS === 'web'
+            ? '/(app)/projects/[id]'
+            : '/(app)/project-chat/[id]',
         params: {
           id: consumed.projectId,
           chatSessionId: consumed.chatSessionId,
           chatScope: consumed.chatScope,
           initialMessage: text,
           initialInteractionMode: submissionInteractionMode,
-          ...(Platform.OS !== 'web' ? { tab: 'chat-fullscreen' } : {}),
         },
       } as any)
 
@@ -917,6 +927,14 @@ export const HomeScreen = observer(function HomeScreen({
     )
   }
 
+  if (!currentExperience.resolved) {
+    return (
+      <View className="flex-1 bg-background px-4 pt-16" testID="home-chrome-skeleton">
+        <WorkspaceChromeSkeletonRows count={4} />
+      </View>
+    )
+  }
+
   // Personal workspaces use the agent chat surface on every platform.
   // Shared workspaces use it on narrow surfaces while wide web retains the
   // established builder home.
@@ -926,7 +944,7 @@ export const HomeScreen = observer(function HomeScreen({
 
   const greeting = (
     <>
-      {!localMode && !hasPersonalWorkspace ? (
+      {!localMode && (workspaces?.all ?? []).length > 0 && !hasPersonalWorkspace ? (
         <View className={isNativePhone ? 'mb-5 w-full' : 'mb-5 w-full max-w-2xl'}>
           <CreatePersonalSpaceBanner
             userId={user?.id}
@@ -939,12 +957,32 @@ export const HomeScreen = observer(function HomeScreen({
           <GetStartedChecklist state={gettingStarted} />
         </View>
       ) : null}
-      <Text
-        className={`text-center text-foreground ${isNativePhone ? 'font-medium' : 'font-bold mb-2'}`}
-        style={heroTitleStyle}
-      >
-        {isNativePhone ? `What are we building,\n${firstName}?` : `What are we building, ${firstName}?`}
-      </Text>
+      {isNativePhone ? (
+        <View className="w-full items-center">
+          <Text
+            className="text-center font-medium text-foreground"
+            style={heroTitleStyle}
+          >
+            What are we building,
+          </Text>
+          <Text
+            className="w-full text-center font-medium text-foreground"
+            style={heroTitleStyle}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.75}
+          >
+            {firstName}?
+          </Text>
+        </View>
+      ) : (
+        <Text
+          className="text-center font-bold mb-2 text-foreground"
+          style={heroTitleStyle}
+        >
+          {`What are we building, ${firstName}?`}
+        </Text>
+      )}
       {!localMode && currentExperience.kind === 'team' ? (
         <Text
           className={`text-center text-muted-foreground ${isNativePhone ? 'mt-2' : 'mb-6'}`}

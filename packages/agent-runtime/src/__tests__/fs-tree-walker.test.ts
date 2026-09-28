@@ -20,6 +20,7 @@ import {
   WORKSPACE_TREE_LAZY_DIRS,
   walkFilesTree,
 } from '../fs-tree-walker'
+import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
 
 const ROOT = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-'))
 
@@ -468,7 +469,7 @@ describe('walkFilesTree (defensive caps)', () => {
 })
 
 describe('walkFilesTree (fs error tolerance)', () => {
-  test('skips entries whose stat() throws (broken symlink) instead of bubbling', async () => {
+  test.skipIf(!SYMLINKS_SUPPORTED)('skips entries whose stat() throws (broken symlink) instead of bubbling', async () => {
     // Set up a freshly isolated root so the broken symlink is the ONLY
     // entry — that way an assertion-shaped "missing the file" check
     // proves the catch-and-continue branch actually fired.
@@ -579,5 +580,63 @@ describe('walkFilesTree (nested per-project ignores)', () => {
     const srcNames = srcTree.map((n) => n.name).sort()
     expect(srcNames).toContain('keep.ts')
     expect(srcNames).not.toContain('gen.local')
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Linked directories (workspace-runtime mounts).
+//
+// A workspace runtime's merged root mounts every project and linked folder as
+// a directory link: a junction on Windows, a `dir` symlink elsewhere. Both
+// report `Dirent.isDirectory() === false`. Junctions need no elevation, so
+// this runs for real on Windows CI too.
+// ───────────────────────────────────────────────────────────────────────────
+
+const DIR_LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir'
+
+describe('walkFilesTree (linked directories)', () => {
+  let merged: string
+  let userFolder: string
+
+  beforeAll(() => {
+    const base = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-links-'))
+    merged = join(base, 'merged')
+    userFolder = join(base, 'alignment-project-server')
+    mkdirSync(join(userFolder, 'agents', 'BuildingBlocks'), { recursive: true })
+    writeFileSync(join(userFolder, 'agents', 'BuildingBlocks', 'main_block.py'), 'print(1)\n')
+    writeFileSync(join(userFolder, 'app.py'), 'app = 1\n')
+    mkdirSync(merged, { recursive: true })
+    writeFileSync(join(merged, 'AGENTS.md'), '# agents')
+    symlinkSync(userFolder, join(merged, 'project-1'), DIR_LINK_TYPE)
+    // A link back into its own ancestor chain: following links must not loop.
+    symlinkSync(userFolder, join(userFolder, 'agents', 'loop'), DIR_LINK_TYPE)
+  })
+
+  afterAll(() => {
+    rmSync(join(merged, '..'), { recursive: true, force: true })
+  })
+
+  test('lists a directory link as a directory and walks into it', async () => {
+    const tree = await walkFilesTree(merged, merged, { eagerDepth: 2 })
+    const mount = tree.find((n) => n.name === 'project-1')
+    expect(mount?.type).toBe('directory')
+    const childNames = (mount?.children ?? []).map((n) => n.name).sort()
+    expect(childNames).toEqual(['agents', 'app.py'])
+    expect(mount?.children?.find((n) => n.name === 'app.py')?.path).toBe('project-1/app.py')
+  })
+
+  test('a lazy re-fetch rooted inside a link lists its real contents', async () => {
+    const subtree = await walkFilesTree(join(merged, 'project-1', 'agents'), merged)
+    const blocks = subtree.find((n) => n.name === 'BuildingBlocks')
+    expect(blocks?.type).toBe('directory')
+    expect(blocks?.path).toBe('project-1/agents/BuildingBlocks')
+  })
+
+  test('a link back into its own ancestor chain is a lazy stub, not an infinite walk', async () => {
+    const tree = await walkFilesTree(userFolder, userFolder, { eagerDepth: Number.POSITIVE_INFINITY })
+    const agents = tree.find((n) => n.name === 'agents')
+    const loop = agents?.children?.find((n) => n.name === 'loop')
+    expect(loop).toEqual(expect.objectContaining({ type: 'directory', lazy: true }))
+    expect(loop?.children).toBeUndefined()
   })
 })

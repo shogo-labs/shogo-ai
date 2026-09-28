@@ -353,6 +353,116 @@ resource "null_resource" "knative_pdb_patches" {
 }
 
 # -----------------------------------------------------------------------------
+# Kourier gateway capacity
+# -----------------------------------------------------------------------------
+# The gateway (Envoy) is on the request path for every API/studio request, and
+# its memory grows with the number of Knative routes it holds. At the upstream
+# 800Mi limit it was OOM-killed ~daily in prod-us (73 restarts in 78 days), and
+# as a single replica each kill was a full-region 502 until it restarted.
+#
+# Every replica holds the full route table, so the memory limit is what stops
+# the OOMs; the replica floor and PDB are what keep a single kill (or a node
+# drain) from taking the region's ingress down.
+#
+# Unlike `knative_pdb_patches` this is NOT gated on `manage_install`: all live
+# clusters run with manage_install = false, which is why those patches never
+# reached prod. When `cluster_id` is set, kubectl is pointed at that cluster
+# explicitly instead of trusting the operator's ambient KUBECONFIG.
+variable "manage_ingress_capacity" {
+  description = "Apply the Kourier gateway replica floor, memory sizing, and PDB (independent of manage_install)"
+  type        = bool
+  default     = true
+}
+
+variable "cluster_id" {
+  description = "OKE cluster OCID that kubectl should target for ingress capacity patches. Empty = ambient KUBECONFIG."
+  type        = string
+  default     = ""
+}
+
+variable "region" {
+  description = "OCI region of cluster_id (required when cluster_id is set)"
+  type        = string
+  default     = ""
+}
+
+variable "kourier_gateway_min_replicas" {
+  description = "HPA minReplicas for 3scale-kourier-gateway"
+  type        = number
+  default     = 2
+}
+
+variable "kourier_gateway_memory_request" {
+  description = "Memory request for the kourier-gateway container"
+  type        = string
+  default     = "512Mi"
+}
+
+variable "kourier_gateway_memory_limit" {
+  description = "Memory limit for the kourier-gateway container"
+  type        = string
+  default     = "2Gi"
+}
+
+resource "null_resource" "kourier_gateway_capacity" {
+  count = var.manage_ingress_capacity ? 1 : 0
+
+  triggers = {
+    cluster_id     = var.cluster_id
+    min_replicas   = var.kourier_gateway_min_replicas
+    memory_request = var.kourier_gateway_memory_request
+    memory_limit   = var.kourier_gateway_memory_limit
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+
+      %{if var.cluster_id != ""}
+      export KUBECONFIG="$(mktemp)"
+      trap 'rm -f "$KUBECONFIG"' EXIT
+      oci ce cluster create-kubeconfig \
+        --cluster-id ${var.cluster_id} \
+        --region ${var.region} \
+        --file "$KUBECONFIG" \
+        --token-version 2.0.0 \
+        --kube-endpoint PUBLIC_ENDPOINT >/dev/null
+      %{endif}
+
+      # Raise the floor before resizing so the resize rolls with a second
+      # replica already serving.
+      kubectl patch hpa 3scale-kourier-gateway -n kourier-system --type merge \
+        -p '{"spec":{"minReplicas":${var.kourier_gateway_min_replicas}}}'
+      current=$(kubectl get deployment 3scale-kourier-gateway -n kourier-system -o jsonpath='{.spec.replicas}')
+      if [ "$current" -lt ${var.kourier_gateway_min_replicas} ]; then
+        kubectl scale deployment 3scale-kourier-gateway -n kourier-system --replicas=${var.kourier_gateway_min_replicas}
+      fi
+      kubectl rollout status deployment/3scale-kourier-gateway -n kourier-system --timeout=300s
+
+      kubectl set resources deployment/3scale-kourier-gateway -n kourier-system \
+        -c kourier-gateway \
+        --requests=memory=${var.kourier_gateway_memory_request} \
+        --limits=memory=${var.kourier_gateway_memory_limit}
+      kubectl rollout status deployment/3scale-kourier-gateway -n kourier-system --timeout=300s
+
+      kubectl apply -f - <<'YAML'
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: 3scale-kourier-gateway-pdb
+        namespace: kourier-system
+      spec:
+        maxUnavailable: 1
+        selector:
+          matchLabels:
+            app: 3scale-kourier-gateway
+      YAML
+    EOT
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "knative_version" {

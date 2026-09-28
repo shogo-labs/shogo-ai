@@ -56,6 +56,56 @@ describe('workspace meta-agent tools', () => {
     }
   })
 
+  function withWorkspaceEnv(env: Record<string, string | undefined>, fn: () => Promise<void>) {
+    const keys = ['WORKSPACE_RUNTIME', 'WORKSPACE_ID', 'SHOGO_API_URL', 'WORKSPACE_ANCHOR_PROJECT_ID', ...Object.keys(env)]
+    const previous = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
+    const originalFetch = globalThis.fetch
+    process.env.WORKSPACE_RUNTIME = 'true'
+    process.env.WORKSPACE_ID = 'ws-test'
+    process.env.SHOGO_API_URL = 'http://api.test'
+    delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    return fn().finally(() => {
+      globalThis.fetch = originalFetch
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    })
+  }
+
+  const wsCtx = (): ToolContext => ({
+    workspaceDir: '/app/workspace',
+    channels: new Map(),
+    config: {} as any,
+    projectId: 'ws:ws-test',
+    workspaceId: 'ws-test',
+    sessionId: 'session-1',
+    userId: 'user-1',
+  })
+
+  it('does not offer mount/unmount in a project-anchored runtime (project chats have no workspace session)', async () => {
+    await withWorkspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' }, async () => {
+      const names = createTools(wsCtx()).map((tool) => tool.name)
+      expect(names).toContain('list_projects')
+      expect(names).not.toContain('mount_project')
+      expect(names).not.toContain('unmount_project')
+    })
+  })
+
+  it('surfaces a non-JSON proxy error body instead of a bare status', async () => {
+    await withWorkspaceEnv({}, async () => {
+      globalThis.fetch = (async () => new Response('upstream connect error', { status: 502 })) as unknown as typeof fetch
+      const mount = createTools(wsCtx()).find((tool) => tool.name === 'mount_project')
+      await expect(mount!.execute('call-1', { projectId: 'p1' })).rejects.toThrow(
+        'Workspace API HTTP 502: upstream connect error',
+      )
+    })
+  })
+
   it('preview_project builds the mounted member and returns a /p/<id>/ url, never the runtime\'s own port', async () => {
     const previous = {
       WORKSPACE_RUNTIME: process.env.WORKSPACE_RUNTIME,

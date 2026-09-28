@@ -235,21 +235,35 @@ export const MODEL_DOLLAR_COSTS: Record<BillingModel, {
   'gpt-5.4-mini': { inputPerMillion: 0.75, cacheWritePerMillion: 0.9375, cachedInputPerMillion: 0.075, outputPerMillion: 4.40 },
   sonnet:         { inputPerMillion: 3.00, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.30, outputPerMillion: 15.00 },
   opus:           { inputPerMillion: 5.00, cacheWritePerMillion: 6.25, cachedInputPerMillion: 0.50, outputPerMillion: 25.00 },
+  // Anthropic-published rates (anthropic.com/claude-opus-5-5, launched
+  // 2026-09-22) — 20% cheaper than Opus 5 on input/output, 60% cheaper on
+  // cache reads. `cacheWritePerMillion` is the 5-minute cache-write rate
+  // ($8/MTok for 1-hour writes isn't represented in this cost shape, same
+  // caveat as the `opus` bucket above).
+  'claude-opus-5-5': { inputPerMillion: 4.00, cacheWritePerMillion: 5.00, cachedInputPerMillion: 0.20, outputPerMillion: 20.00 },
   // Anthropic-published rates (platform.claude.com/docs/en/about-claude/pricing).
   // `cacheWritePerMillion` is the 5-minute cache-write rate (1-hour writes are
   // $20/MTok and aren't represented in this cost shape). `cachedInputPerMillion`
   // uses Fable 5.1's special 0.025x-of-input cache-read multiplier — 4x cheaper
   // than the standard 0.1x multiplier every other Claude model uses here.
   'claude-fable-5-1': { inputPerMillion: 10.00, cacheWritePerMillion: 12.50, cachedInputPerMillion: 0.25, outputPerMillion: 50.00 },
-  // OpenAI-published input/output rates as of launch. Cache write/read
-  // rates aren't broken out in OpenAI's public pricing pages yet — these
-  // follow the same ratio as the existing gpt-5.4-mini/nano buckets
-  // (cache write ~1.25x input, cached input ~0.1x input) as a placeholder
-  // until OpenAI publishes dedicated cache pricing for these models.
-  'gpt-5.6-luna':  { inputPerMillion: 1.00,  cacheWritePerMillion: 1.25,  cachedInputPerMillion: 0.10, outputPerMillion: 6.00 },
-  'gpt-5.6-terra': { inputPerMillion: 2.50,  cacheWritePerMillion: 3.125, cachedInputPerMillion: 0.25, outputPerMillion: 15.00 },
+  // OpenAI-published rates. Terra and Luna got a price cut on 2026-07-30
+  // (developers.openai.com/api/docs/pricing) — Luna dropped 80% (from
+  // $1.00/$6.00 in/out) and Terra dropped 20% (from $2.50/$15.00) — these
+  // are the current post-cut rates. Sol's pricing was explicitly called out
+  // as unchanged in the same announcement. Cache write/read rates follow
+  // OpenAI's standard ratio (cache write = 1.25x input, cached input = 0.1x
+  // input) for all three, matching the published pricing table exactly.
+  'gpt-5.6-luna':  { inputPerMillion: 0.20,  cacheWritePerMillion: 0.25,  cachedInputPerMillion: 0.02, outputPerMillion: 1.20 },
+  'gpt-5.6-terra': { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20, outputPerMillion: 12.00 },
   'gpt-5.6-sol':   { inputPerMillion: 5.00,  cacheWritePerMillion: 6.25,  cachedInputPerMillion: 0.50, outputPerMillion: 30.00 },
   'gpt-6-astra':   { inputPerMillion: 10.00, cacheWritePerMillion: 12.50, cachedInputPerMillion: 1.00, outputPerMillion: 50.00 },
+  // GPT-6 Sol/Luna (announced 2026-09-22, openai.com/index/introducing-gpt-6-sol-and-luna)
+  // are 50% cheaper than their GPT-5.6 predecessors' promotional pricing:
+  // Sol $4→$2 in / $20→$10 out, Luna $0.20→$0.10 in / $1.20→$0.50 out.
+  // Matches developers.openai.com/api/docs/pricing exactly.
+  'gpt-6-sol':     { inputPerMillion: 2.00,  cacheWritePerMillion: 2.50,  cachedInputPerMillion: 0.20, outputPerMillion: 10.00 },
+  'gpt-6-luna':    { inputPerMillion: 0.10,  cacheWritePerMillion: 0.125, cachedInputPerMillion: 0.01, outputPerMillion: 0.50 },
   'gpt-live-1':    { inputPerMillion: 0, cacheWritePerMillion: 0, cachedInputPerMillion: 0, outputPerMillion: 0 },
 }
 

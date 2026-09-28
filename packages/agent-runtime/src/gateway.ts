@@ -79,9 +79,14 @@ import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
-import { isWorkspaceRuntimeMode, workspaceAttachedProjectIds, workspaceProjectsManifest } from './workspace-runtime-mode'
+import {
+  isWorkspaceRuntimeMode,
+  workspaceAttachedProjectIds,
+  workspaceExternalProjectIds,
+  workspaceProjectsManifest,
+} from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
-import { deriveApiUrl, getInternalHeaders, postCostMetric } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, postCostMetric, projectScopedId } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -91,14 +96,15 @@ import {
   BROWSER_TOOL_GUIDE,
 } from './optimized-prompts'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
-import { workspaceKind } from './workspace-runtime-mode'
+import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
-import { loadCustomAgents } from './subagent'
+import { loadWorkspaceCustomAgents } from './subagent'
 import { CommandRegistry } from './command-registry'
+import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
 import { isInQuietHours } from './quiet-hours'
 import {
@@ -531,6 +537,8 @@ export class AgentGateway {
     success: boolean
     hitMaxTurns: boolean
     loopDetected: boolean
+    /** The loop detector's description when `loopDetected` is true. */
+    loopPattern?: string
     escalated: boolean
     responseEmpty: boolean
     /**
@@ -619,6 +627,8 @@ export class AgentGateway {
   private _lastTool: string | null = null
   /** Dynamic sub-agent registry and lifecycle manager */
   public agentManager = new AgentManager()
+  /** Signature of the last `.shogo/agents/` set registered, to log only on change. */
+  private customAgentsSignature = ''
   private teamManager?: TeamManager
   /** Per-session shell cwd tracking — persists cd across exec calls */
   private shellCwd = new Map<string, string>()
@@ -905,6 +915,40 @@ export class AgentGateway {
     return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault }
   }
 
+  /**
+   * Register `.shogo/agents/*.md` types from the workspace root and, in a
+   * workspace runtime, from every attached project. Idempotent; cheap enough
+   * to run per turn.
+   */
+  syncCustomAgents(): void {
+    try {
+      const memberIds = isWorkspaceRuntimeMode() ? workspaceAttachedProjectIds() : []
+      const customAgents = loadWorkspaceCustomAgents(this.workspaceDir, memberIds)
+      const failed: string[] = []
+      for (const def of customAgents) {
+        const result = this.agentManager.register({
+          name: def.name,
+          description: def.description,
+          systemPrompt: def.systemPrompt,
+          toolNames: def.tools,
+          disallowedTools: def.disallowedTools,
+          model: def.model,
+          maxTurns: def.maxTurns,
+        })
+        if (!result.ok) failed.push(`${def.name}: ${result.error}`)
+      }
+      const signature = customAgents.map((a) => a.name).join(',') + '|' + failed.join(',')
+      if (signature === this.customAgentsSignature) return
+      this.customAgentsSignature = signature
+      for (const f of failed) console.warn(`[AgentGateway] Failed to register custom agent type ${f}`)
+      if (customAgents.length > 0) {
+        console.log(`[AgentGateway] Loaded ${customAgents.length} custom agent type(s) from .shogo/agents/: ${customAgents.map(a => a.name).join(', ')}`)
+      }
+    } catch (err: any) {
+      console.warn(`[AgentGateway] Failed to load custom agent types: ${err?.message ?? err}`)
+    }
+  }
+
   async start(): Promise<void> {
     if (this.running) {
       console.warn('[AgentGateway] start() called but gateway is already running — skipping')
@@ -1008,28 +1052,7 @@ export class AgentGateway {
     // these come from disk and should reflect the current file content on
     // every boot, not fork into a separate DB-persisted copy that can drift
     // from it.
-    try {
-      const customAgents = loadCustomAgents(this.workspaceDir)
-      for (const def of customAgents) {
-        const result = this.agentManager.register({
-          name: def.name,
-          description: def.description,
-          systemPrompt: def.systemPrompt,
-          toolNames: def.tools,
-          disallowedTools: def.disallowedTools,
-          model: def.model,
-          maxTurns: def.maxTurns,
-        })
-        if (!result.ok) {
-          console.warn(`[AgentGateway] Failed to register custom agent type "${def.name}": ${result.error}`)
-        }
-      }
-      if (customAgents.length > 0) {
-        console.log(`[AgentGateway] Loaded ${customAgents.length} custom agent type(s) from .shogo/agents/: ${customAgents.map(a => a.name).join(', ')}`)
-      }
-    } catch (err: any) {
-      console.warn(`[AgentGateway] Failed to load custom agent types: ${err?.message ?? err}`)
-    }
+    this.syncCustomAgents()
 
     // Phase 2.1 — forward sub-agent cost metrics (with quality signals) to the
     // API server. Without this wiring the AgentManager's emitCostMetric()
@@ -1037,13 +1060,12 @@ export class AgentGateway {
     // sub-agent runs, only main-chat. We also send the multi-signal fields so
     // the recommendation gate can compute real success rates.
     this.agentManager.onCostMetric((data) => {
-      const projectId = this.projectId
       const workspaceId = process.env.WORKSPACE_ID || null
       if (!workspaceId) return // local-only test runs without a workspace
       const pipelineRunId = this.currentPipelineRunId()
       void postCostMetric({
         workspaceId,
-        projectId: projectId || undefined,
+        projectId: projectScopedId(this.projectId),
         ...(pipelineRunId ? { metadata: { pipelineRunId } } : {}),
         agentRunId: data.agentRunId,
         agentType: data.agentType,
@@ -1317,8 +1339,13 @@ export class AgentGateway {
       // tsconfig per project, but the watch-exclusion patch must be applied
       // to each attached project's tsconfig so program loads skip
       // node_modules/dist. Single-project runtimes leave this empty.
+      // Folder-linked members are skipped: their tsconfig is the user's own
+      // file, which Shogo must not rewrite (external mode never did).
+      const externalIds = workspaceExternalProjectIds()
       const tsconfigDirs = isWorkspaceRuntimeMode()
-        ? workspaceAttachedProjectIds().map((id) => join(this.workspaceDir, id))
+        ? workspaceAttachedProjectIds()
+            .filter((id) => !externalIds.has(id))
+            .map((id) => join(this.workspaceDir, id))
         : []
 
       this.lspManager = new WorkspaceLSPManager({
@@ -1962,13 +1989,14 @@ export class AgentGateway {
     return this.getOrCreateCommandRegistry(sessionId).kill(runId)
   }
 
-  /** Tear down per-session bookkeeping. Kills any backgrounded shell runs. */
+  /** Tear down per-session bookkeeping. Kills any backgrounded shell runs and releases browsers. */
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
     if (reg) {
       reg.killAll()
       this.commandRegistries.delete(sessionId)
     }
+    void releaseSessionBrowsers(sessionId)
   }
 
   // ---------------------------------------------------------------------------
@@ -2006,6 +2034,7 @@ export class AgentGateway {
       if (this.turnLocks.get(sessionId) === turnPromise) {
         this.turnLocks.delete(sessionId)
       }
+      reapOrphanChromium()
     }
   }
 
@@ -2212,8 +2241,9 @@ export class AgentGateway {
       autoTierOverride: this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
-        getCwd: () => this.shellCwd.get(sessionId!) || sessionWorkspaceDir,
+        getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),
         setCwd: (cwd: string) => this.shellCwd.set(sessionId!, cwd),
+        initialCwd: this.initialShellCwd(sessionWorkspaceDir),
       } : undefined,
       commandRegistry,
       guideRegistry: this.currentGuideRegistry,
@@ -2556,6 +2586,8 @@ export class AgentGateway {
         console.warn(`${this.logPrefix} Failed to emit team snapshot:`, err.message)
       }
     }
+    // Pick up `.shogo/agents/` edits and newly mounted projects without a restart.
+    this.syncCustomAgents()
     if (uiWriter && this.agentManager) {
       try {
         const types = this.agentManager.listTypes()
@@ -2638,16 +2670,20 @@ export class AgentGateway {
     // Stream live process-list updates to the UI for the duration of this turn.
     // The registry persists across turns; this subscription is per-turn so it
     // is torn down when the stream closes.
+    //
+    // Status frames below (process list, context usage, connectivity wait,
+    // tool progress) are `transient`: the client consumes them in `onData`,
+    // and the AI SDK would otherwise append each one to `message.parts`.
     let unsubscribeProcesses: (() => void) | undefined
     if (uiWriter && sessionId) {
       const reg = this.getOrCreateCommandRegistry(sessionId)
       // Push the current list immediately so a reconnecting client re-syncs.
       try {
-        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() } } as any)
+        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() }, transient: true } as any)
       } catch { /* writer may already be closed */ }
       unsubscribeProcesses = reg.onChange((processes) => {
         try {
-          uiWriter.write({ type: 'data-process-update', data: { processes } } as any)
+          uiWriter.write({ type: 'data-process-update', data: { processes }, transient: true } as any)
         } catch { /* writer closed — onChange teardown happens in finally */ }
       })
     }
@@ -2669,6 +2705,7 @@ export class AgentGateway {
           uiWriter.write({
             type: 'data-context-usage',
             data: { inputTokens: runningContextEstimate, contextWindowTokens },
+            transient: true,
           } as any)
         }
       }
@@ -2679,6 +2716,7 @@ export class AgentGateway {
         uiWriter.write({
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
+          transient: true,
         } as any)
       }
 
@@ -3181,6 +3219,7 @@ export class AgentGateway {
                 elapsedMs: info.elapsedMs,
                 nextProbeInMs: info.nextProbeInMs,
               },
+              transient: true,
             } as any)
           }
           console.warn(
@@ -3198,6 +3237,7 @@ export class AgentGateway {
             uiWriter.write({
               type: 'data-connectivity-wait',
               data: { state: 'reconnected' },
+              transient: true,
             } as any)
           }
           console.warn(`${this.logPrefix} Connectivity restored — resuming turn for session ${sessionId}`)
@@ -3243,6 +3283,7 @@ export class AgentGateway {
                     elapsedMs: Date.now() - startedAt,
                     status: 'running',
                   },
+                  transient: true,
                 } as any)
               } catch {
                 clearInterval(timer)
@@ -3492,6 +3533,7 @@ export class AgentGateway {
         uiWriter.write({
           type: 'data-context-usage',
           data: { inputTokens: runningContextEstimate, contextWindowTokens },
+          transient: true,
         } as any)
       }
 
@@ -3512,6 +3554,7 @@ export class AgentGateway {
         success: !result.error && !result.maxIterationsExhausted && !result.loopBreak && !responseEmpty,
         hitMaxTurns: !!result.maxIterationsExhausted,
         loopDetected: !!result.loopBreak,
+        ...(result.loopBreak?.pattern ? { loopPattern: result.loopBreak.pattern } : {}),
         escalated: false,
         responseEmpty,
         wasAborted: result.abortReason === 'external',
@@ -3535,6 +3578,18 @@ export class AgentGateway {
           console.warn(
             `${this.logPrefix} Loop detected in session ${sessionId}: ${result.loopBreak.pattern}`
           )
+          // The loop abort ends the turn without an error, so without this
+          // notice the turn looks finished even though the work was cut off.
+          if (uiWriter) {
+            const noticeId = `text-${Date.now()}-loop-break`
+            uiWriter.write({ type: 'text-start', id: noticeId })
+            uiWriter.write({
+              type: 'text-delta',
+              id: noticeId,
+              delta: `\n\nI stopped this turn early because I seemed to be stuck (${result.loopBreak.pattern}). The task may be incomplete — reply to continue.`,
+            })
+            uiWriter.write({ type: 'text-end', id: noticeId })
+          }
         }
 
         const totalInput = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens
@@ -3641,9 +3696,33 @@ export class AgentGateway {
     return lines
   }
 
+  /**
+   * Where a session's shell starts: the anchor project's mount in a
+   * merged-root runtime. A per-chat worktree keeps its own root.
+   */
+  private initialShellCwd(sessionWorkspaceDir: string): string {
+    return sessionWorkspaceDir === this.workspaceDir ? defaultShellCwd(this.workspaceDir) : sessionWorkspaceDir
+  }
+
+  /**
+   * File tools resolve relative paths from the workspace root while exec runs
+   * in the session's shell cwd; say so whenever the two differ.
+   */
+  private workingDirectoryLines(currentCwd: string): string[] {
+    if (currentCwd === this.workspaceDir) {
+      return [`- Working directory: \`${currentCwd}\``, '', 'All file paths are relative to the working directory.']
+    }
+    return [
+      `- Shell working directory: \`${currentCwd}\``,
+      `- Workspace root: \`${this.workspaceDir}\``,
+      '',
+      'File tool paths (read_file, write_file, edit_file, ...) are relative to the workspace root; shell commands run in the shell working directory.',
+    ]
+  }
+
   private buildSWEPrompt(sessionId?: string): string {
     const parts: string[] = []
-    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
     const now = new Date()
     parts.push([
@@ -3651,9 +3730,8 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${currentCwd}\``,
-      '',
-      'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+      ...this.workingDirectoryLines(currentCwd),
+      'Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the directories above.',
       ...this.buildShellNavLines(),
     ].join('\n'))
 
@@ -3694,7 +3772,7 @@ export class AgentGateway {
    */
   private buildGeneralPrompt(sessionId?: string): string {
     const parts: string[] = []
-    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
 
     const now = new Date()
     parts.push([
@@ -3702,9 +3780,8 @@ export class AgentGateway {
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${currentCwd}\``,
-      '',
-      'All file paths are relative to the working directory. Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the working directory above.',
+      ...this.workingDirectoryLines(currentCwd),
+      'Do NOT assume paths like `/workspace`, `/home/user`, or `/repo` — use the directories above.',
       ...this.buildShellNavLines(),
     ].join('\n'))
 
@@ -4043,15 +4120,13 @@ export class AgentGateway {
 
     // 9. Current date/time context (changes every turn)
     const now = new Date()
-    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.workspaceDir
+    const currentCwd = (sessionId && this.shellCwd.get(sessionId)) || this.initialShellCwd(this.workspaceDir)
     pushDynamic('current-context', [
       '## Current Context',
       `- Today: ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
       `- Year: ${now.getFullYear()}`,
       `- Timezone: ${this.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-      `- Working directory: \`${currentCwd}\``,
-      '',
-      'All file paths are relative to the working directory.',
+      ...this.workingDirectoryLines(currentCwd),
       'When users mention dates without a year, default to the current or next occurrence (never a past date).',
       ...this.buildShellNavLines(),
     ].join('\n'))

@@ -10,6 +10,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { execFileSync } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -198,8 +199,12 @@ describe('getCommit', () => {
     expect(commit!.sha).toHaveLength(40)
     expect(commit!.shortSha).toHaveLength(7)
     expect(commit!.message).toBe('Initial commit')
-    expect(commit!.author).toBe('Shogo AI')
-    expect(commit!.authorEmail).toBe('ai@shogo.dev')
+    expect(commit!.author).toBe('Shogo Agent')
+    expect(commit!.authorEmail).toBe('agent@shogo.ai')
+    expect(execFileSync('git', ['show', '-s', '--format=%B', 'HEAD'], {
+      cwd: workspacePath,
+      encoding: 'utf8',
+    })).toContain('Co-authored-by: Shogo Agent <agent@shogo.ai>')
     expect(commit!.date).toBeInstanceOf(Date)
     expect(commit!.date.getTime()).not.toBeNaN()
   })
@@ -212,8 +217,8 @@ describe('getCommit', () => {
 
     const commit = await gitService.getCommit(workspacePath, 'HEAD')
     expect(commit!.message).toBe('feat: A | B | C | D')
-    expect(commit!.author).toBe('Shogo AI')
-    expect(commit!.authorEmail).toBe('ai@shogo.dev')
+    expect(commit!.author).toBe('Shogo Agent')
+    expect(commit!.authorEmail).toBe('agent@shogo.ai')
     expect(commit!.date.getTime()).not.toBeNaN()
   })
 

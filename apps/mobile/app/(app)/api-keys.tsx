@@ -40,8 +40,7 @@ import {
 } from 'lucide-react-native'
 import { PlatformApi, type ApiKeyInfo } from '@shogo-ai/sdk'
 import { formatDistanceToNow } from 'date-fns'
-import { useAuth } from '../../contexts/auth'
-import { useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
+import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import {
   Card,
@@ -83,19 +82,9 @@ function PlatformIcon({ platform, size = 16 }: { platform?: string | null; size?
 export default observer(function ApiKeysPage() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const { user } = useAuth()
   const { isPhone: isNativePhone } = useNativePhoneWindow()
-  const workspaces = useWorkspaceCollection()
   const workspace = useActiveWorkspace()
   const http = useDomainHttp()
-
-  useEffect(() => {
-    if (user?.id) {
-      workspaces.loadAll({ userId: user.id }).catch((e: any) =>
-        console.error('[ApiKeys] Failed to load workspaces:', e)
-      )
-    }
-  }, [user?.id, workspaces])
 
   const platform = useMemo(() => new PlatformApi(http), [http])
 

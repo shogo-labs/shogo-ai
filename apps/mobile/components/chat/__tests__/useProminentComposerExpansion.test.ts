@@ -33,6 +33,26 @@ describe("shouldStackProminentComposer", () => {
     ).toBe(true)
   })
 
+  test("does not oscillate when the stacked layout has no width measurement", () => {
+    let stacked = shouldStackProminentComposer({
+      ...base,
+      textWidth: 181,
+      contentHeight: 48,
+      currentlyStacked: false,
+    })
+
+    expect(stacked).toBe(true)
+
+    stacked = shouldStackProminentComposer({
+      ...base,
+      textWidth: 0,
+      contentHeight: 24,
+      currentlyStacked: stacked,
+    })
+
+    expect(stacked).toBe(true)
+  })
+
   test("collapses when the composer is emptied", () => {
     expect(
       shouldStackProminentComposer({
@@ -42,6 +62,16 @@ describe("shouldStackProminentComposer", () => {
         textWidth: 400,
       }),
     ).toBe(false)
+  })
+
+  test("expands when the field is already taller than one line", () => {
+    expect(
+      shouldStackProminentComposer({
+        ...base,
+        textWidth: 40,
+        contentHeight: 48,
+      }),
+    ).toBe(true)
   })
 
   test("expands on an explicit newline even if the first line is short", () => {

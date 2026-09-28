@@ -108,17 +108,13 @@ export default observer(function BillingPage() {
   const actions = useDomainActions()
 
   useEffect(() => {
-    if (user?.id && workspaces) {
-      workspaces.loadAll({ userId: user.id }).catch((e) => console.error('[Billing] Failed to load workspaces:', e))
-    }
-  }, [user?.id, workspaces])
-
-  useEffect(() => {
     const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
-    if (!workspaceParam || ownWorkspaceIds.length === 0) return
-    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, workspaceParam)
+    if (!workspaceParam || ownWorkspaceIds.length === 0 || workspaces?.isLoading) return
+    const resolvedWorkspace = resolveActiveWorkspaceId(ownWorkspaceIds, workspaceParam, {
+      listLoaded: true,
+    })
     if (resolvedWorkspace) setActiveWorkspaceId(resolvedWorkspace)
-  }, [workspaceParam, workspaces?.all])
+  }, [workspaceParam, workspaces?.all, workspaces?.isLoading])
 
   const http = useDomainHttp()
   const currentWorkspace = useActiveWorkspace()
@@ -516,7 +512,7 @@ export default observer(function BillingPage() {
                   const verifyResult = await api.verifyCheckout(http, sessionId)
                   console.log('[Billing] verify result:', verifyResult)
                   if (checkout === 'success') {
-                    trackPurchase({ planId: verifyResult.planId, billingInterval, seats: (verifyResult as { seats?: number }).seats ?? safeSeats, workspaceId: currentWorkspace?.id, sessionId })
+                    trackPurchase({ planId: verifyResult.planId, billingInterval: verifyResult.billingInterval ?? billingInterval, seats: verifyResult.seats ?? safeSeats, value: verifyResult.amountPaid, currency: verifyResult.currency, workspaceId: currentWorkspace?.id, sessionId })
                   }
                 } catch (verifyErr) {
                   console.warn('[Billing] verify failed (webhook will handle):', verifyErr)

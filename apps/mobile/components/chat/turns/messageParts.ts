@@ -57,7 +57,24 @@ export function mapToolState(
  * — without coalescing, the chat column visibly bounces as the
  * cascade of close timers fires and the parent ScrollView auto-
  * follows each height change.
+ *
+ * `step-start` and non-rendered `data-*` parts don't break a reasoning
+ * run. `data-inference-retry` does: it marks a model call the runtime
+ * discarded and re-issued, so the text/reasoning rendered since the last
+ * other part (the failed attempt) is dropped. The SDK keeps those parts in
+ * its own message state, so they can't be removed from `onData`.
  */
+const INFERENCE_RETRY_PART = "data-inference-retry"
+
+function isTransparentToReasoning(part: any): boolean {
+  if (part?.type === "step-start") return true
+  return (
+    typeof part?.type === "string" &&
+    part.type.startsWith("data-") &&
+    part.type !== INFERENCE_RETRY_PART
+  )
+}
+
 export function extractOrderedParts(message: UIMessage): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
@@ -82,9 +99,15 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
       let anyStreaming = false
       let totalDurationMs = 0
       let hasDuration = false
+      let lastReasoningIndex = index
 
-      while (index < parts.length && parts[index].type === "reasoning") {
-        const r = parts[index]
+      for (let scan = index; scan < parts.length; scan++) {
+        const r = parts[scan]
+        if (r.type !== "reasoning") {
+          if (isTransparentToReasoning(r)) continue
+          break
+        }
+        lastReasoningIndex = scan
         if (r.text) {
           if (mergedText.length > 0) mergedText += "\n\n"
           mergedText += r.text
@@ -96,11 +119,9 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
           totalDurationMs += r.durationMs
           hasDuration = true
         }
-        index++
       }
-      // Step back so the outer-loop `index++` lands on the next part
-      // (the one that broke the reasoning run).
-      index--
+      // Resume the outer loop right after the last merged reasoning part.
+      index = lastReasoningIndex
 
       const hasContent = mergedText.trim().length > 0
       if (hasContent || anyStreaming) {
@@ -115,6 +136,12 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
           // identity stays stable as later bursts get appended into it.
           id: `reasoning-${firstIndex}`,
         })
+      }
+    } else if (part.type === INFERENCE_RETRY_PART) {
+      while (result.length > 0) {
+        const tail = result[result.length - 1]
+        if (tail.type !== "text" && tail.type !== "reasoning") break
+        result.pop()
       }
     } else if (part.type === "text") {
       if (part.text && part.text.trim()) {

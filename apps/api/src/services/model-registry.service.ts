@@ -402,6 +402,25 @@ export function getDbModelEntriesSync(): ModelEntry[] {
   return out
 }
 
+/**
+ * Synchronous accessor for only the cloud-mirrored models (cloud-proxy mode)
+ * — i.e. the connected cloud's own admin-managed set, excluding the static
+ * `MODEL_CATALOG` baseline. Empty outside cloud-proxy mode or when the cloud
+ * has no models. See `getDbModelEntriesSync` — kept as a separate accessor
+ * (rather than folded into it) so callers can tell "this instance's own DB
+ * rows" apart from "mirrored from the connected cloud", matching how
+ * `dbIds`/`cloudIds` are tracked separately in the snapshot.
+ */
+export function getCloudModelEntriesSync(): ModelEntry[] {
+  refreshIfStaleInBackground()
+  const out: ModelEntry[] = []
+  for (const id of snapshot.cloudIds) {
+    const entry = snapshot.merged.get(id)
+    if (entry) out.push(entry)
+  }
+  return out
+}
+
 /** Synchronous merged-entry lookup, resolving DB aliases. */
 export function getMergedModelEntrySync(id: string): ModelEntry | undefined {
   refreshIfStaleInBackground()

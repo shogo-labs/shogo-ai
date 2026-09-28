@@ -540,6 +540,71 @@ describe('GET /projects/:projectId/git/status', () => {
   })
 })
 
+// ─── hydrateRepo is called before create/rollback (regression) ───────────
+//
+// Root cause of a real data-loss report: the API pod is stateless and the
+// durable git repo lives in object storage, hydrated on demand via
+// `config.hydrateRepo`. The diff/status/detail routes already ran through
+// `withHydratedRepo`; create + rollback used to call `getWorkspacePath()`
+// directly instead, so a request landing on a pod that hadn't already
+// hydrated this project's repo would operate on a missing/stale local
+// `.git` — rollback then fails with "failed to unpack tree object <sha>",
+// which is indistinguishable from real data loss to the user even though
+// the checkpoint commit was durably stored all along.
+describe('hydrateRepo is invoked before create + rollback (regression)', () => {
+  function makeAppWithHydrate() {
+    const hydrateCalls: Array<{ projectId: string; workspacePath: string }> = []
+    const hydrateRepo = mock(async (projectId: string, workspacePath: string) => {
+      hydrateCalls.push({ projectId, workspacePath })
+    })
+    const app = new Hono()
+    app.route('/api', checkpointRoutes({ workspacesDir: WORKSPACES_DIR, hydrateRepo }))
+    return { app, hydrateRepo, hydrateCalls }
+  }
+
+  test('POST .../checkpoints hydrates the repo before creating a checkpoint', async () => {
+    const { app, hydrateCalls } = makeAppWithHydrate()
+    const res = await app.request('/api/projects/proj-1/checkpoints', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'snap' }),
+    })
+    expect(res.status).toBe(201)
+    expect(hydrateCalls).toEqual([
+      { projectId: 'proj-1', workspacePath: expectedWorkspacePath('proj-1') },
+    ])
+    expect(createCheckpoint.mock.calls[0][0].workspacePath).toBe(expectedWorkspacePath('proj-1'))
+  })
+
+  test('POST .../rollback hydrates the repo before restoring the checkpoint tree', async () => {
+    const { app, hydrateCalls } = makeAppWithHydrate()
+    const res = await app.request('/api/projects/proj-1/checkpoints/cp-1/rollback', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    expect(hydrateCalls).toEqual([
+      { projectId: 'proj-1', workspacePath: expectedWorkspacePath('proj-1') },
+    ])
+    expect(rollback.mock.calls[0][0].workspacePath).toBe(expectedWorkspacePath('proj-1'))
+  })
+
+  test('rollback still surfaces a clean error if hydration itself fails (never throws un-caught)', async () => {
+    const hydrateRepo = mock(async () => {
+      throw new Error('hydrate: repo.git.tar.gz not found in object storage')
+    })
+    const app = new Hono()
+    app.route('/api', checkpointRoutes({ workspacesDir: WORKSPACES_DIR, hydrateRepo }))
+    const res = await app.request('/api/projects/proj-1/checkpoints/cp-1/rollback', {
+      method: 'POST',
+    })
+    // withHydratedRepo swallows hydrate errors (best-effort, matching every
+    // other route in this file) and still attempts the git operation against
+    // whatever is locally present — rollback() itself is what ultimately
+    // fails/succeeds.
+    expect(res.status).toBe(200)
+  })
+})
+
 // ─── workspacesDir config plumbing ────────────────────────────────────────
 
 describe('workspacesDir config plumbing', () => {

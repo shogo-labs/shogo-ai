@@ -320,7 +320,7 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
         type: 'data-turn-complete',
         data: { status: 'aborted', lastSeq: 5 },
       }),
-      dataFrame({ type: 'finish', finishReason: 'abort', usage: { inputTokens: 200, outputTokens: 65 } }),
+      dataFrame({ type: 'finish', finishReason: 'other', usage: { inputTokens: 200, outputTokens: 65 } }),
     ])
 
     let resumeCalls = 0

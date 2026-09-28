@@ -426,10 +426,8 @@ export function MobileBottomNav() {
         ) : null}
         <View
           className={cn(
-            "w-full flex-row items-center gap-1 overflow-hidden border px-1.5 shadow-sm",
-            liquidGlass
-              ? "border-white/25 bg-transparent"
-              : "border-border bg-card/95"
+            "w-full flex-row items-center gap-1 overflow-hidden px-1.5 shadow-sm",
+            liquidGlass ? "bg-transparent" : "bg-card/95"
           )}
           style={{
             height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
@@ -446,7 +444,21 @@ export function MobileBottomNav() {
               borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
             }}
           />
-          {items.map(({ id, label, Icon, onPress }) => {
+          {!experience.resolved && !projectMode
+            ? Array.from({ length: 4 }, (_, index) => (
+                <View
+                  key={index}
+                  className="flex-1 items-center justify-center"
+                  style={{
+                    height:
+                      NATIVE_PHONE_COMPOSER_PILL_HEIGHT -
+                      NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2,
+                  }}
+                >
+                  <View className="h-6 w-6 rounded-full bg-muted" />
+                </View>
+              ))
+            : items.map(({ id, label, Icon, onPress }) => {
             const selected = active === id;
             return (
               <Pressable

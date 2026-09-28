@@ -16,7 +16,7 @@ const { CHAT_TRANSCRIPT_MAX_WIDTH } = await import("../../../../lib/native-compo
 const { ProjectComposerDock } = await import("../ProjectComposerDock")
 
 describe("ProjectComposerDock", () => {
-  test("puts the animated keyboard pad on Animated.View so iOS can lift the pill", () => {
+  test("matches the native dock to the transcript column without an extra gutter", () => {
     const pad = new Animated.Value(34)
     const { container } = render(
       <ProjectComposerDock columnWidth={390} keyboardPad={pad} applyKeyboardPad native>
@@ -25,7 +25,7 @@ describe("ProjectComposerDock", () => {
     )
     const dock = container.querySelector('[data-rn-shim="project-composer-dock"]') as HTMLElement
     expect(dock).toBeTruthy()
-    expect(dock.style.width).toBe("358px")
+    expect(dock.style.width).toBe("390px")
   })
 
   test("centers the web composer with the transcript column", () => {

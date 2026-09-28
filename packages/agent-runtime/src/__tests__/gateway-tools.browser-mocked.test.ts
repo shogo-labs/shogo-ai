@@ -97,10 +97,12 @@ let fakePage: FakePage = makeFakePage()
 let lastLaunchOpts: any = null
 let lastConnectArgs: any = null
 let connectOverCDPFn: any = null
+let contextsOpened = 0
 
 function installPlaywrightMock() {
   // Reset state so each test gets a fresh page/browser
   fakePage = makeFakePage()
+  contextsOpened = 0
   lastLaunchOpts = null
   lastConnectArgs = null
   connectOverCDPFn = null
@@ -111,8 +113,14 @@ function installPlaywrightMock() {
         lastLaunchOpts = opts
         return {
           newPage: async () => fakePage,
+          newContext: async () => {
+            contextsOpened++
+            return { newPage: async () => fakePage, close: async () => undefined }
+          },
           contexts: () => [],
           close: async () => undefined,
+          isConnected: () => true,
+          on: () => undefined,
         }
       },
       connectOverCDP: async (...args: any[]) => {
@@ -180,7 +188,9 @@ async function exec(tool: any, params: any) {
 // =====================================================================
 
 describe('gateway-tools browser tool (playwright-core mocked)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    const { resetSharedBrowserPool } = await import('../browser-pool')
+    await resetSharedBrowserPool()
     mkdirSync(TEST_DIR, { recursive: true })
     setEnv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH', undefined)
     setEnv('PLAYWRIGHT_MCP_EXTENSION_TOKEN', undefined)
@@ -490,6 +500,41 @@ describe('gateway-tools browser tool (playwright-core mocked)', () => {
     fakePage._currentUrl = 'about:blank'
     const r = await exec(tool, { action: 'navigate', url: 'https://x.example/' })
     expect(r.details.error).toContain('Browser error: nav-failed')
+  })
+
+  test('closed-page error releases the context so the next call re-acquires', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    expect(contextsOpened).toBe(1)
+    fakePage._evalErr = new Error('page.evaluate: Target page, context or browser has been closed')
+    const r = await exec(tool, { action: 'snapshot' })
+    expect(r.details.error).toContain('has been closed')
+    fakePage._evalErr = undefined
+    await exec(tool, { action: 'snapshot' })
+    expect(contextsOpened).toBe(2)
+  })
+
+  test('ordinary action error keeps the page for the next call', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    fakePage._evalErr = new Error('boom')
+    await exec(tool, { action: 'evaluate', value: 'x' })
+    fakePage._evalErr = undefined
+    await exec(tool, { action: 'snapshot' })
+    expect(contextsOpened).toBe(1)
+  })
+
+  test('browser tools share one launched browser with a context each', async () => {
+    const { tool, ctx } = await freshBrowserTool()
+    const { createBrowserTool } = await import('../gateway-tools')
+    const other = createBrowserTool(ctx)
+    await exec(tool, { action: 'navigate', url: 'https://a.example/' })
+    lastLaunchOpts = null
+    await exec(other, { action: 'navigate', url: 'https://b.example/' })
+    expect(lastLaunchOpts).toBeNull()
+    expect(contextsOpened).toBe(2)
+    await exec(tool, { action: 'close' })
+    await exec(other, { action: 'close' })
   })
 
   // -------------------------------------------------------------------

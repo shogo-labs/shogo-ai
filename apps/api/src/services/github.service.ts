@@ -65,6 +65,24 @@ export interface CreateRepoOptions {
   auto_init?: boolean;
 }
 
+export interface CreatePullRequestOptions {
+  installationId: number;
+  repoOwner: string;
+  repoName: string;
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  draft?: boolean;
+}
+
+export interface CreatedPullRequest {
+  number: number;
+  url: string;
+  html_url: string;
+  node_id?: string;
+}
+
 export interface ConnectRepoOptions {
   projectId: string;
   workspacePath: string;
@@ -117,6 +135,17 @@ export function generateAppJWT(): string {
  * Tokens are valid for 1 hour.
  */
 export async function getInstallationToken(installationId: number): Promise<string> {
+  return (await mintInstallationAccessToken(installationId)).token;
+}
+
+/**
+ * Installation tokens expire after one hour. Callers that cache the token
+ * (the agent shell's `GH_TOKEN`) need `expiresAt` so they refresh before
+ * GitHub rejects it.
+ */
+async function mintInstallationAccessToken(
+  installationId: number,
+): Promise<{ token: string; expiresAt: string }> {
   const jwt = generateAppJWT();
 
   const response = await fetch(
@@ -137,7 +166,79 @@ export async function getInstallationToken(installationId: number): Promise<stri
   }
 
   const data = await response.json();
-  return data.token;
+  if (typeof data?.token !== 'string' || !data.token) {
+    throw new Error('GitHub installation token response did not contain a token');
+  }
+  const expiresAt = typeof data.expires_at === 'string' && data.expires_at
+    ? data.expires_at
+    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  return { token: data.token, expiresAt };
+}
+
+/**
+ * GitHub links a commit to an App bot when the author email is
+ * `{userId}+{login}@users.noreply.github.com` (the same form Actions uses
+ * for `github-actions[bot]`).
+ */
+export function githubBotCommitEmail(userId: number, login: string): string {
+  return `${userId}+${login}@users.noreply.github.com`;
+}
+
+const botIdentityCache = new Map<string, { email: string }>();
+
+export function clearGitHubBotIdentityCache(): void {
+  botIdentityCache.clear();
+}
+
+async function resolveBotIdentity(token: string): Promise<{ login: string; name: string; email: string }> {
+  const login = botLogin();
+  const cached = botIdentityCache.get(login);
+  if (cached) return { login, name: login, email: cached.email };
+
+  const response = await fetch(`${GITHUB_API_URL}/users/${encodeURIComponent(login)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to resolve GitHub App bot user: ${error}`);
+  }
+  const user = await response.json();
+  if (typeof user?.id !== 'number') {
+    throw new Error('GitHub App bot user response did not contain an id');
+  }
+  const email = githubBotCommitEmail(user.id, login);
+  botIdentityCache.set(login, { email });
+  return { login, name: login, email };
+}
+
+export interface GitHubCliCredentials {
+  token: string;
+  expiresAt: string;
+  login: string;
+  name: string;
+  email: string;
+}
+
+/**
+ * Short-lived credentials so the project runtime can run `gh` and `git commit`
+ * as the GitHub App bot (the same identity that opens pull requests).
+ * Returns null when the project has no App connection.
+ */
+export async function getProjectGitHubCliCredentials(
+  projectId: string,
+): Promise<GitHubCliCredentials | null> {
+  const connection = await getConnection(projectId);
+  const installationId = connection?.installationId;
+  if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
+    return null;
+  }
+  const minted = await mintInstallationAccessToken(installationId);
+  const identity = await resolveBotIdentity(minted.token);
+  return { token: minted.token, expiresAt: minted.expiresAt, ...identity };
 }
 
 // =============================================================================
@@ -279,6 +380,51 @@ export async function createRepository(
   return response.json();
 }
 
+/**
+ * Create a pull request as the GitHub App installation.
+ *
+ * GitHub attributes resources created with an installation token to the
+ * App's bot account (for example, `shogo-ai[bot]`), which is the same
+ * attribution users see for Cursor cloud-agent PRs.
+ */
+export async function createPullRequest(
+  options: CreatePullRequestOptions,
+): Promise<CreatedPullRequest> {
+  const token = await getInstallationToken(options.installationId);
+  const response = await fetch(
+    `${GITHUB_API_URL}/repos/${encodeURIComponent(options.repoOwner)}/${encodeURIComponent(options.repoName)}/pulls`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: options.title,
+        head: options.head,
+        base: options.base,
+        body: options.body,
+        draft: options.draft ?? false,
+      }),
+    },
+  );
+
+  const body = await response.json().catch(() => null) as Partial<CreatedPullRequest> & { message?: string };
+  if (!response.ok) {
+    throw new Error(`Failed to create pull request: ${body?.message || JSON.stringify(body)}`);
+  }
+  if (
+    typeof body.number !== 'number' ||
+    typeof body.html_url !== 'string' ||
+    typeof body.url !== 'string'
+  ) {
+    throw new Error('GitHub pull request response did not contain a number or URL');
+  }
+  return body as CreatedPullRequest;
+}
+
 // =============================================================================
 // Project Connection
 // =============================================================================
@@ -390,6 +536,10 @@ async function refreshRemoteToken(
   repoOwner: string,
   repoName: string
 ): Promise<void> {
+  // A stateless API pod may not have the project workspace directory yet.
+  // Initialize it before changing the remote so child_process does not fail
+  // with ENOENT when git receives a missing cwd.
+  await gitService.initRepo(workspacePath);
   const token = await getInstallationToken(installationId);
   const remoteUrl = `https://x-access-token:${token}@github.com/${repoOwner}/${repoName}.git`;
   await gitService.addRemote(workspacePath, 'origin', remoteUrl);
@@ -482,6 +632,7 @@ export async function pullFromGitHub(
     // Pull with rebase
     const result = await gitService.pull(workspacePath, {
       remote: 'origin',
+      branch: connection.defaultBranch,
       rebase: true,
     });
 
@@ -555,8 +706,14 @@ export function verifyWebhookSignature(
   const crypto = require('crypto');
   const hmac = crypto.createHmac('sha256', secret);
   const digest = 'sha256=' + hmac.update(payload).digest('hex');
+  const providedSignature = Buffer.from(signature);
+  const expectedSignature = Buffer.from(digest);
 
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
+  if (providedSignature.length !== expectedSignature.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(providedSignature, expectedSignature);
 }
 
 /**
@@ -637,7 +794,8 @@ export async function handlePushWebhook(
  * Marker embedded in a PR body so later webhook events on that PR (reviews,
  * review comments, issue comments) can recover the pipeline `runId` that
  * opened it. Whichever agent opens the PR should append
- * `runIdMarker(runId)` to the body (e.g. via `gh pr create --body`).
+ * `runIdMarker(runId)` to the body (the agent's `github_create_pr` tool does
+ * this automatically).
  */
 const RUN_ID_MARKER_RE = /<!--\s*shogo:runId=([a-zA-Z0-9_-]+)\s*-->/;
 

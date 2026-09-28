@@ -19,10 +19,15 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'
-import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
+import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
+import {
+  killViteWatchFromPidfile,
+  removeViteWatchPidfile,
+  writeViteWatchPidfile,
+} from '@shogo-ai/sdk/vite-watch'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
 import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
@@ -155,6 +160,78 @@ import {
 
 const LOG_PREFIX = 'preview-manager'
 
+/** Expo's `experiments.baseUrl` is conventionally stored without a trailing slash. */
+export function normalizeExpoBasePath(basePath: string): string {
+  const normalized = basePath.trim().replace(/^\/+|\/+$/g, '')
+  return normalized ? `/${normalized}` : ''
+}
+
+/**
+ * Temporarily add the workspace preview prefix to an Expo app.json.
+ *
+ * Expo Router uses `experiments.baseUrl` when generating both the static
+ * document and the client-side linking config. Workspace previews already
+ * pass `basePath` to Vite, but Expo's exporter has no CLI base-path flag, so
+ * its config must carry the prefix during export.
+ *
+ * Dynamic app.config files are intentionally left alone: evaluating or
+ * wrapping arbitrary user config is unsafe. The export still receives
+ * EXPO_BASE_URL, which lets projects that opt into an env-driven config use
+ * the same path.
+ */
+export function patchExpoAppJsonForBasePath(
+  cwd: string,
+  basePath: string,
+): () => void {
+  const appJsonPath = join(cwd, 'app.json')
+  const dynamicConfig = ['app.config.js', 'app.config.cjs', 'app.config.mjs', 'app.config.ts']
+    .find((name) => existsSync(join(cwd, name)))
+  if (dynamicConfig) {
+    console.warn(
+      `[${LOG_PREFIX}] Expo workspace base path requires app.json; ` +
+        `leaving dynamic ${dynamicConfig} unchanged`,
+    )
+    return () => {}
+  }
+  if (!existsSync(appJsonPath)) return () => {}
+
+  const normalizedBasePath = normalizeExpoBasePath(basePath)
+  if (!normalizedBasePath) return () => {}
+
+  const original = readFileSync(appJsonPath, 'utf8')
+  try {
+    const parsed = JSON.parse(original) as Record<string, any>
+    const expo = parsed.expo && typeof parsed.expo === 'object' ? parsed.expo : {}
+    const experiments =
+      expo.experiments && typeof expo.experiments === 'object' ? expo.experiments : {}
+    const patched = {
+      ...parsed,
+      expo: {
+        ...expo,
+        experiments: {
+          ...experiments,
+          baseUrl: normalizedBasePath,
+        },
+      },
+    }
+    writeFileSync(appJsonPath, `${JSON.stringify(patched, null, 2)}\n`, 'utf8')
+  } catch (err: any) {
+    console.warn(`[${LOG_PREFIX}] Could not apply Expo base path: ${err?.message ?? err}`)
+    return () => {}
+  }
+
+  let restored = false
+  return () => {
+    if (restored) return
+    restored = true
+    try {
+      writeFileSync(appJsonPath, original, 'utf8')
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Could not restore Expo app.json: ${err?.message ?? err}`)
+    }
+  }
+}
+
 /**
  * Describes one `vite build --watch` process discovered by the stale-watcher
  * reaper. `pgid` is what we actually kill — the spawn in {@link PreviewManager.startBuildWatch}
@@ -199,9 +276,10 @@ export interface StaleViteWatcherInfo {
  * enter this workspace, so any pre-existing match by definition belongs
  * to a previous incarnation. We match on:
  *
- *   - argv contains `<workspaceDir>/node_modules/vite/bin/vite.js` —
- *     ties the orphan to THIS workspace's vite install, not some
- *     unrelated project the user is also running.
+ *   - argv contains this workspace's Vite entrypoint or `.bin/vite` shim —
+ *     both are emitted depending on whether system node is available.
+ *     We check both the supplied path and its realpath because workspace
+ *     roots can be exposed through `.workspace-roots` symlinks.
  *   - argv contains `build --watch` — the canonical watch-mode argv
  *     emitted by {@link PreviewManager.startBuildWatch}.
  *
@@ -243,11 +321,25 @@ export function reapStaleViteWatchers(
   const selfPid = opts.selfPid ?? process.pid
   const isWindows = platform === 'win32'
 
-  // The argv substring we use to claim a process as "ours". Tying it to
-  // the workspace's vite binary (rather than just "any bun running
-  // vite.js build --watch") is what keeps the reaper from mis-attributing
-  // an unrelated vite-watch in some other workspace.
-  const viteBinFragment = join(workspaceDir, 'node_modules', 'vite', 'bin', 'vite.js')
+  // Tying the command to this workspace's Vite install (rather than just
+  // "any bun running vite.js build --watch") keeps the reaper from
+  // mis-attributing an unrelated vite-watch in another workspace. The
+  // `.bin/vite` form is used when system node is available; the direct
+  // `vite/bin/vite.js` form is used by the bundled-bun fallback.
+  const roots = [workspaceDir]
+  try {
+    const realWorkspaceDir = realpathSync(workspaceDir)
+    if (!roots.includes(realWorkspaceDir)) roots.push(realWorkspaceDir)
+  } catch {
+    // The workspace may have disappeared during teardown; retain the
+    // original path so a process-table match can still be attempted.
+  }
+  const viteBinFragments = roots.flatMap((root) => [
+    join(root, 'node_modules', 'vite', 'bin', 'vite.js'),
+    join(root, 'node_modules', '.bin', 'vite'),
+    join(root, 'node_modules', '.bin', 'vite.cmd'),
+    join(root, 'node_modules', '.bin', 'vite.CMD'),
+  ])
 
   let raw = ''
   try {
@@ -272,8 +364,8 @@ export function reapStaleViteWatchers(
   }
 
   const matches = isWindows
-    ? parseWindowsCimJson(raw, viteBinFragment, selfPid)
-    : parsePosixPs(raw, viteBinFragment, selfPid)
+    ? parseWindowsCimJson(raw, viteBinFragments, selfPid)
+    : parsePosixPs(raw, viteBinFragments, selfPid)
 
   if (matches.length === 0) return []
 
@@ -332,7 +424,7 @@ export function reapStaleViteWatchers(
  */
 function parsePosixPs(
   output: string,
-  viteBinFragment: string,
+  viteBinFragments: string[],
   selfPid: number,
 ): StaleViteWatcherInfo[] {
   const out: StaleViteWatcherInfo[] = []
@@ -346,7 +438,7 @@ function parsePosixPs(
     if (!Number.isFinite(pid) || !Number.isFinite(pgid)) continue
     if (pid === selfPid) continue
     const command = parts.slice(2).join(' ')
-    if (!command.includes(viteBinFragment)) continue
+    if (!viteBinFragments.some((fragment) => command.includes(fragment))) continue
     if (!command.includes('build --watch')) continue
     out.push({ pid, pgid, command })
   }
@@ -365,7 +457,7 @@ function parsePosixPs(
  */
 function parseWindowsCimJson(
   output: string,
-  viteBinFragment: string,
+  viteBinFragments: string[],
   selfPid: number,
 ): StaleViteWatcherInfo[] {
   let parsed: unknown
@@ -381,7 +473,7 @@ function parseWindowsCimJson(
   // slashes (or vice versa). Normalize both sides to forward-slash so
   // a workspace under `C:\Users\...` matches a CommandLine spelled
   // `C:/Users/...` and the reverse.
-  const needle = viteBinFragment.replace(/\\/g, '/')
+  const needles = viteBinFragments.map((fragment) => fragment.replace(/\\/g, '/'))
   for (const row of arr as Array<Record<string, unknown>>) {
     if (!row || typeof row !== 'object') continue
     const pidRaw = row.ProcessId
@@ -389,7 +481,7 @@ function parseWindowsCimJson(
     if (typeof pidRaw !== 'number' || typeof cmdRaw !== 'string') continue
     if (pidRaw === selfPid) continue
     const command = cmdRaw.replace(/\\/g, '/')
-    if (!command.includes(needle)) continue
+    if (!needles.some((needle) => command.includes(needle))) continue
     if (!command.includes('build --watch')) continue
     out.push({ pid: pidRaw, pgid: pidRaw, command: cmdRaw })
   }
@@ -482,7 +574,8 @@ export interface PreviewManagerConfig {
    * the bundle must be built with that base or every absolute asset URL
    * (`/assets/app.js`) would 404 against the runtime root instead of the
    * project's prefix. When set, it is passed to `vite build` as
-   * `--base <basePath>`. Must start and end with `/` (e.g. `/p/abc/`).
+   * `--base <basePath>` and to Expo Router through `experiments.baseUrl`.
+   * Must start and end with `/` (e.g. `/p/abc/`).
    */
   basePath?: string
   /**
@@ -857,7 +950,6 @@ function isKnownBrokenSdkInstall(sdkPkgDir: string): boolean {
     return false
   }
 }
-
 export class PreviewManager {
   private workspaceDir: string
   private runtimePort: number
@@ -929,6 +1021,10 @@ export class PreviewManager {
   // EADDRINUSE source). Resumed via resumeWatchers(), which flushes any
   // change that landed while paused.
   private watchersPaused = false
+  // Set by `quiesceApiServer()` so `rehydrateApiServer()` restarts only what
+  // quiesce stopped and resumes only watchers quiesce (not `shogo push`) paused.
+  private quiescedApi = false
+  private quiescePausedWatchers = false
   private lastGenerateError: string | null = null
   // Surfaced via getStatus() so external observers (the API's import
   // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
@@ -1592,35 +1688,14 @@ export class PreviewManager {
     // indirection lets user-customised projects splice extra steps into
     // the pipeline without us having to teach PreviewManager about every
     // variation.
-    //
-    // EXCEPTION: legacy workspaces (pre-May 2026) carry the older
-    // `"generate": "bunx shogo generate"` script in their package.json.
-    // `bunx shogo` resolves to the only published `@shogo-ai/sdk` version
-    // that satisfies the pinned `^0.4.0` constraint — namely 0.4.0,
-    // which has the unquoted-`execSync` path-truncation bug. The fix
-    // (commit 68ab3e7d, May 8) was tagged as 0.4.1 internally but never
-    // published; npm's @shogo-ai/sdk goes 0.4.0 → 1.0.0 with no 0.4.x
-    // patch in between. Until the user upgrades their pin (or 0.4.1
-    // gets published), we must NOT honour that script — it will crash
-    // every workspace whose path contains a space (which is every
-    // standard macOS install under "~/Library/Application Support").
     let useBunRun = false
-    let legacyShogoGenerate = false
     try {
       const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
         scripts?: Record<string, string>
       }
       const gen = pkgJson.scripts?.generate?.trim()
       if (gen) {
-        // Match `bunx shogo …` and `bun x shogo …`, with or without
-        // `--bun`. We deliberately do NOT match the runtime-template
-        // form `bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate`
-        // — that path-based form is path-safe.
-        if (/^\s*(bunx|bun\s+x)(\s+--bun)?\s+shogo(\s|$)/.test(gen)) {
-          legacyShogoGenerate = true
-        } else {
-          useBunRun = true
-        }
+        useBunRun = true
       }
     } catch {
       // Malformed package.json — fall through to the path-based CLI.
@@ -1634,56 +1709,19 @@ export class PreviewManager {
     // crashed installs, etc.) would 404 there.
     const sdkCliPath = join(cwd, 'node_modules', '@shogo-ai', 'sdk', 'bin', 'cli.mjs')
     const hasSdkCli = existsSync(sdkCliPath)
-    // The installed CLI in node_modules is whatever version `bun install`
-    // resolved — frequently the broken `@shogo-ai/sdk@0.4.0` that ships
-    // an `execSync(\`bun ${absScriptPath}\`)` for the Step 2 script
-    // (templating the path into the shell command line truncates it on
-    // the first space, blowing up with `Module not found
-    // "/Users/foo/Library/Application"` on every macOS install). 0.4.1
-    // never made it to the npm registry, so the installed copy stays
-    // broken indefinitely. Detect that exact version and refuse to use it.
-    const installedSdkBroken = hasSdkCli && isKnownBrokenSdkInstall(join(cwd, 'node_modules', '@shogo-ai', 'sdk'))
-    const useInstalledCli = hasSdkCli && !installedSdkBroken
-    // Bundled with the desktop app at packaging time. Set by
-    // apps/desktop/src/local-server.ts. In dev mode it points at the
-    // monorepo source; in packaged mode at `Resources/sdk-cli.mjs`.
-    const bundledSdkCli = process.env.SHOGO_BUNDLED_SDK_CLI
-    const hasBundledSdkCli = !!(bundledSdkCli && existsSync(bundledSdkCli))
-
-    if (installedSdkBroken) {
-      console.warn(
-        `[${LOG_PREFIX}] installed @shogo-ai/sdk has a known path-truncation bug — ignoring it in favour of bundled CLI`,
-      )
-    }
 
     // Resolution order, in priority:
-    //   1. project-local node_modules CLI — only when NOT the known-broken
-    //      0.4.0 build (path-safe in 0.4.1+ / 1.x)
-    //   2. desktop-bundled CLI (always path-safe in HEAD)
-    //   3. project's `generate` script (only if it isn't the broken
-    //      `bunx shogo` pattern)
-    //   4. `bun x shogo` last-ditch (broken on space-paths, but better
-    //      than nothing for non-macOS installs)
+    //   1. project's `generate` script
+    //   2. project-local node_modules CLI
+    //   3. `bun x shogo` last-ditch
     let args: string[]
     let cmdLabel: string
-    if (legacyShogoGenerate && useInstalledCli) {
-      args = [sdkCliPath, 'generate']
-      cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate (legacy script bypass)'
-    } else if (legacyShogoGenerate && hasBundledSdkCli) {
-      args = [bundledSdkCli!, 'generate']
-      cmdLabel = `bun ${bundledSdkCli} generate (legacy script bypass — bundled fallback)`
-    } else if (installedSdkBroken && hasBundledSdkCli) {
-      args = [bundledSdkCli!, 'generate']
-      cmdLabel = `bun ${bundledSdkCli} generate (broken installed SDK — bundled fallback)`
-    } else if (useBunRun && !installedSdkBroken) {
+    if (useBunRun) {
       args = ['run', 'generate']
       cmdLabel = 'bun run generate'
-    } else if (useInstalledCli) {
+    } else if (hasSdkCli) {
       args = [sdkCliPath, 'generate']
       cmdLabel = 'bun ./node_modules/@shogo-ai/sdk/bin/cli.mjs generate'
-    } else if (hasBundledSdkCli) {
-      args = [bundledSdkCli!, 'generate']
-      cmdLabel = `bun ${bundledSdkCli} generate (bundled fallback)`
     } else {
       args = ['x', 'shogo', 'generate']
       cmdLabel = 'bun x shogo generate'
@@ -2028,6 +2066,7 @@ export class PreviewManager {
 
       if (devServer === 'metro') {
         await this.runExpoExportWeb(timings, cwd, {
+          basePath: '/',
           stagingDir: PUBLISH_STAGING_DIR,
           promote: false,
         })
@@ -2060,6 +2099,14 @@ export class PreviewManager {
     if (this.lifecycleInFlight) {
       if (kind === 'restart') this.lifecyclePending = true
       return this.lifecycleInFlight
+    }
+    // `_runLifecycleOnce` returns as soon as background setup is kicked off,
+    // so the in-flight gate above only covers that first instant. Clients
+    // poll `/preview/start` until `running`; without this a later start
+    // would run a duplicate install/prisma/build/API pipeline alongside the
+    // first one.
+    if (kind === 'start' && this.started && this._phase !== 'failed') {
+      return { mode: 'already-started', port: this.runtimePort, timings: {} }
     }
     this.lifecycleInFlight = this._runLifecycleOnce(kind).finally(() => {
       const pending = this.lifecyclePending
@@ -2256,6 +2303,43 @@ export class PreviewManager {
       // looking like it's mid-build. `start()` owns the real phase machine.
       if (!this.started) this._phase = 'idle'
     }
+  }
+
+  /**
+   * Pool pre-warm: build the seeded template into `outDir` with the given
+   * `--base`, without touching `dist/` or any serving state. A workspace
+   * runtime adopts this as its anchor's `dist/` so a new project's preview is
+   * serveable the moment it is assigned. Resolves false on any failure.
+   */
+  async buildPoolDist(outDir: string, base: string): Promise<boolean> {
+    if (this.started) return false
+    const cwd = this.resolveBundlerCwd()
+    const binDir = join(cwd, 'node_modules', '.bin')
+    const isWindows = process.platform === 'win32'
+    const viteBin = (isWindows ? [join(binDir, 'vite.CMD'), join(binDir, 'vite.cmd')] : [join(binDir, 'vite')]).find(
+      (p) => existsSync(p),
+    )
+    if (!viteBin || this.resolveDevServer() !== 'vite') return false
+    const invocation = resolveBinInvocation(cwd, 'vite') ?? { cmd: viteBin, argsPrefix: [] }
+    const exitCode = await new Promise<number | null>((resolveBuild) => {
+      try {
+        const proc = spawn(
+          isWindows ? `"${invocation.cmd}"` : invocation.cmd,
+          [...invocation.argsPrefix, 'build', '--outDir', outDir, '--emptyOutDir', '--base', base],
+          {
+            cwd,
+            stdio: 'ignore',
+            shell: isWindows,
+            env: { ...process.env, NODE_ENV: 'development', VITE_RUNTIME_PORT: String(this.runtimePort), CI: '1' },
+          },
+        )
+        proc.on('error', () => resolveBuild(null))
+        proc.on('exit', (code) => resolveBuild(code))
+      } catch {
+        resolveBuild(null)
+      }
+    })
+    return exitCode === 0 && existsSync(join(outDir, 'index.html'))
   }
 
   private async backgroundSetup(timings: Record<string, number>): Promise<void> {
@@ -2746,14 +2830,18 @@ export class PreviewManager {
    * `!proc.pid` branch is what records the `'build:SIGTERM'` assertion.
    */
   private killBuildWatchProcessGroup(proc: ChildProcess): void {
+    const pid = proc.pid
     if (process.platform === 'win32' || !proc.pid) {
       try { proc.kill('SIGTERM') } catch { /* already gone */ }
+      if (pid) removeViteWatchPidfile(this.workspaceDir, pid)
       return
     }
     try {
       process.kill(-proc.pid, 'SIGTERM')
     } catch {
       try { proc.kill('SIGTERM') } catch { /* already gone */ }
+    } finally {
+      removeViteWatchPidfile(this.workspaceDir, pid)
     }
   }
 
@@ -3100,6 +3188,10 @@ export class PreviewManager {
     // been observed accumulating 15+ orphans totalling 27GB before
     // anyone noticed. See {@link reapStaleViteWatchers} for the full
     // detection and kill logic.
+    // The pidfile is the precise cleanup path for the immediately previous
+    // incarnation. The process-table reaper remains as a fallback for older
+    // runtimes that predate pidfiles and for multiple accumulated orphans.
+    killViteWatchFromPidfile(this.workspaceDir)
     reapStaleViteWatchers(cwd)
 
     // Same node-missing fallback as runViteOneShotBuild — see
@@ -3150,6 +3242,18 @@ export class PreviewManager {
     }
 
     this.buildWatchProcess = viteProcess
+    if (viteProcess.pid) {
+      try {
+        writeViteWatchPidfile(this.workspaceDir, {
+          pid: viteProcess.pid,
+          pgid: useProcessGroup ? viteProcess.pid : viteProcess.pid,
+          startedAt: Date.now(),
+          bundlerCwd: cwd,
+        })
+      } catch (err: any) {
+        console.warn(`[${LOG_PREFIX}] Could not write Vite watch pidfile: ${err?.message ?? err}`)
+      }
+    }
 
     // Drop the internal handle from the agent-runtime's event-loop
     // ref-count. The HTTP server keeps the loop alive in steady state
@@ -3170,6 +3274,7 @@ export class PreviewManager {
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
       }
+      if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
 
     viteProcess.stdout?.on('data', (data: Buffer) => {
@@ -3206,6 +3311,7 @@ export class PreviewManager {
       if (this.buildWatchProcess === viteProcess) {
         this.buildWatchProcess = null
       }
+      if (viteProcess.pid) removeViteWatchPidfile(this.workspaceDir, viteProcess.pid)
     })
 
     await new Promise((resolve) => setTimeout(resolve, 3000))
@@ -3594,6 +3700,58 @@ export class PreviewManager {
   }
 
   /**
+   * Stop the API sidecar and free its port ahead of a VM memory snapshot, and
+   * hold watchers so nothing respawns it before the freeze. A snapshot taken
+   * with the sidecar running resumes it mid-flight with dead sockets; a wedged
+   * one keeps the port, so every later start fails with EADDRINUSE. Undone by
+   * {@link rehydrateApiServer}. Returns whether a sidecar was stopped.
+   */
+  async quiesceApiServer(): Promise<boolean> {
+    if (!this.watchersPaused) {
+      this.pauseWatchers()
+      this.quiescePausedWatchers = true
+    }
+    const running =
+      this.hasApiServer === true && this.apiPhase !== 'stopped' && this.apiPhase !== 'idle'
+    if (!running) return false
+    this.quiescedApi = true
+    this.apiPhase = 'stopped'
+    await this.killApiServer()
+    await this.forceKillPort()
+    await this.waitForPortRelease()
+    return true
+  }
+
+  /**
+   * After a snapshot resume: restart a sidecar that {@link quiesceApiServer}
+   * stopped, or one that came back broken (a snapshot taken before quiesce
+   * existed), then release the watchers quiesce held. `restart` resolves when
+   * the new sidecar is healthy or its start gives up.
+   */
+  rehydrateApiServer(): { restarting: boolean; restart: Promise<void> } {
+    const wasQuiesced = this.quiescedApi
+    this.quiescedApi = false
+    const release = () => {
+      if (this.quiescePausedWatchers) {
+        this.quiescePausedWatchers = false
+        this.resumeWatchers()
+      }
+    }
+    const broken = this.hasApiServer === true && this.apiPhase === 'crashed'
+    if (!wasQuiesced && !broken) {
+      const restart =
+        this.hasApiServer === true && this.apiPhase === 'healthy'
+          ? this.isApiHealthy().then((ok) =>
+              ok ? undefined : this.restartApiServerOnly(),
+            )
+          : Promise.resolve()
+      return { restarting: false, restart: restart.finally(release) }
+    }
+    this.crashCount = 0
+    return { restarting: true, restart: this.restartApiServerOnly().finally(release) }
+  }
+
+  /**
    * Watch `custom-routes.ts` (and `.tsx`) at the project root for
    * changes and trigger a fast restart via {@link restartApiServerOnly}.
    * Uses `fs.watch` on the parent directory since the file may not
@@ -3903,7 +4061,7 @@ export class PreviewManager {
   private async runExpoExportWeb(
     timings: Record<string, number>,
     cwd: string,
-    options: { stagingDir?: string; promote?: boolean } = {},
+    options: { basePath?: string | null; stagingDir?: string; promote?: boolean } = {},
   ): Promise<void> {
     // Reentrancy guard — see `expoExportInFlight` field doc.
     if (this.expoExportInFlight) {
@@ -3919,7 +4077,7 @@ export class PreviewManager {
   private async _runExpoExportWebImpl(
     timings: Record<string, number>,
     cwd: string,
-    options: { stagingDir?: string; promote?: boolean } = {},
+    options: { basePath?: string | null; stagingDir?: string; promote?: boolean } = {},
   ): Promise<void> {
     const expoBin = this.resolveExpoBin(cwd)
     if (!expoBin) {
@@ -3927,6 +4085,7 @@ export class PreviewManager {
       return
     }
     const isWindows = process.platform === 'win32'
+    const basePath = options.basePath === undefined ? this.basePath : options.basePath
     const stagingDir = options.stagingDir ?? DEFAULT_STAGING_DIR
     const promote = options.promote ?? true
 
@@ -3943,59 +4102,71 @@ export class PreviewManager {
     cleanupStagingOutput(cwd, stagingDir)
 
     const t0 = Date.now()
+    const restoreExpoConfig = basePath
+      ? patchExpoAppJsonForBasePath(cwd, basePath)
+      : () => {}
     console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
-    const exitCode = await new Promise<number | null>((resolveExport) => {
-      let proc: ChildProcess
-      try {
-        proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', stagingDir], {
-          cwd,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // `.CMD` shims must go through cmd.exe on Windows.
-          shell: isWindows,
-          env: {
-            ...process.env,
-            NODE_ENV: 'development',
-            // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
-            CI: '1',
-          },
+    let exitCode: number | null
+    try {
+      exitCode = await new Promise<number | null>((resolveExport) => {
+        let proc: ChildProcess
+        try {
+          proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', stagingDir], {
+            cwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            // `.CMD` shims must go through cmd.exe on Windows.
+            shell: isWindows,
+            env: {
+              ...process.env,
+              NODE_ENV: 'development',
+              // Expo Router reads this when a project's dynamic config opts
+              // into an environment-driven base URL. app.json projects are
+              // patched above with the same normalized value.
+              ...(basePath ? { EXPO_BASE_URL: normalizeExpoBasePath(basePath) } : {}),
+              // CI=1 keeps Expo non-interactive (no prompts to install missing deps).
+              CI: '1',
+            },
+          })
+        } catch (err: any) {
+          console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
+          resolveExport(null)
+          return
+        }
+        // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
+        // not bubble up — without this listener Node treats them as uncaught and
+        // tears down the entire agent runtime process.
+        proc.on('error', (err: Error) => {
+          console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
+          resolveExport(null)
         })
-      } catch (err: any) {
-        console.error(`[${LOG_PREFIX}] Failed to spawn expo export: ${err?.message ?? err}`)
-        resolveExport(null)
-        return
-      }
-      // Async spawn errors (e.g. ENOENT surfaced after the call returns) must
-      // not bubble up — without this listener Node treats them as uncaught and
-      // tears down the entire agent runtime process.
-      proc.on('error', (err: Error) => {
-        console.error(`[${LOG_PREFIX}] expo export error: ${err.message}`)
-        resolveExport(null)
+        proc.stdout?.on('data', (data: Buffer) => {
+          const text = data.toString()
+          for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (!line) continue
+            emitBuildLine(buildLogPath, '[expo-export-stdout]', line, 'stdout')
+            this.forwardLogLine(`[expo-export] ${line}`, 'stdout')
+          }
+        })
+        proc.stderr?.on('data', (data: Buffer) => {
+          const text = data.toString()
+          for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (!line) continue
+            emitBuildLine(buildLogPath, '[expo-export-stderr]', line, 'stderr')
+            this.forwardLogLine(`[expo-export] ${line}`, 'stderr')
+          }
+        })
+        proc.on('exit', (code) => {
+          if (code !== 0) {
+            console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
+          }
+          resolveExport(code)
+        })
       })
-      proc.stdout?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        for (const raw of text.split('\n')) {
-          const line = raw.trim()
-          if (!line) continue
-          emitBuildLine(buildLogPath, '[expo-export-stdout]', line, 'stdout')
-          this.forwardLogLine(`[expo-export] ${line}`, 'stdout')
-        }
-      })
-      proc.stderr?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        for (const raw of text.split('\n')) {
-          const line = raw.trim()
-          if (!line) continue
-          emitBuildLine(buildLogPath, '[expo-export-stderr]', line, 'stderr')
-          this.forwardLogLine(`[expo-export] ${line}`, 'stderr')
-        }
-      })
-      proc.on('exit', (code) => {
-        if (code !== 0) {
-          console.error(`[${LOG_PREFIX}] expo export failed (code=${code})`)
-        }
-        resolveExport(code)
-      })
-    })
+    } finally {
+      restoreExpoConfig()
+    }
 
     if (exitCode === 0) {
       // `expo export` can exit 0 even when Metro's bundle silently failed —

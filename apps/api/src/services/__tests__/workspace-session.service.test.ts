@@ -7,24 +7,29 @@ interface State {
   // project.findMany returns rows whose ids are in this set (filtered by the where.id.in)
   projectsInWorkspace: Set<string>
   // chatSession.findUnique result for getSessionWorkspaceId
-  sessionRow: { contextType?: string; workspaceId?: string | null } | null
+  sessionRow: { contextType?: string; workspaceId?: string | null; contextId?: string | null; isPrimary?: boolean } | null
+  updateManyCalls: any[]
   primarySession: any
   primaryCreateErrorCode: string | null
   createCalls: any[]
   upsertCalls: any[]
   deleteManyCount: number
   findManyAttached: any[]
+  // project.findUnique result: the workspace that owns the looked-up project
+  projectWorkspaceId: string | null
 }
 
 const s: State = {
   projectsInWorkspace: new Set(),
   sessionRow: null,
+  updateManyCalls: [],
   primarySession: null,
   primaryCreateErrorCode: null,
   createCalls: [],
   upsertCalls: [],
   deleteManyCount: 0,
   findManyAttached: [],
+  projectWorkspaceId: null,
 }
 
 mock.module('../../lib/prisma', () => ({
@@ -56,6 +61,13 @@ mock.module('../../lib/prisma', () => ({
       },
       findUnique: async (_args: any) => s.sessionRow,
       findFirst: async (_args: any) => s.primarySession,
+      updateMany: async (args: any) => {
+        s.updateManyCalls.push(args)
+        const row = s.sessionRow
+        if (!row || (args.where.contextId === null && row.contextId)) return { count: 0 }
+        Object.assign(row, args.data)
+        return { count: 1 }
+      },
     },
     chatSessionProject: {
       upsert: async (args: any) => {
@@ -74,6 +86,8 @@ mock.module('../../lib/prisma', () => ({
         const ids: string[] = args.where.id.in
         return ids.filter((id) => s.projectsInWorkspace.has(id)).map((id) => ({ id }))
       },
+      findUnique: async (_args: any) =>
+        s.projectWorkspaceId === null ? null : { workspaceId: s.projectWorkspaceId },
     },
   },
 }))
@@ -83,12 +97,47 @@ const svc = await import('../workspace-session.service')
 beforeEach(() => {
   s.projectsInWorkspace = new Set()
   s.sessionRow = null
+  s.updateManyCalls = []
   s.primarySession = null
   s.primaryCreateErrorCode = null
   s.createCalls = []
   s.upsertCalls = []
   s.deleteManyCount = 0
   s.findManyAttached = []
+  s.projectWorkspaceId = null
+})
+
+describe('upgradeProjectSessionToWorkspace', () => {
+  it('converts a legacy project session in place and returns its project', async () => {
+    s.sessionRow = { contextType: 'project', contextId: 'p1', workspaceId: null }
+    s.projectWorkspaceId = 'ws-1'
+
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'sess-1')).resolves.toBe('p1')
+    expect(s.sessionRow).toMatchObject({ contextType: 'workspace', contextId: 'p1', workspaceId: 'ws-1' })
+    await expect(svc.assertWorkspaceSessionInWorkspace('ws-1', 'sess-1')).resolves.toBeUndefined()
+  })
+
+  it('leaves a project session from another workspace alone', async () => {
+    s.sessionRow = { contextType: 'project', contextId: 'p1', workspaceId: null }
+    s.projectWorkspaceId = 'ws-other'
+
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'sess-1')).resolves.toBeNull()
+    expect(s.updateManyCalls).toHaveLength(0)
+    await expect(svc.assertWorkspaceSessionInWorkspace('ws-1', 'sess-1')).rejects.toMatchObject({
+      code: 'not_workspace_session',
+    })
+  })
+
+  it('is a no-op for sessions that are already workspace-scoped', async () => {
+    s.sessionRow = { contextType: 'workspace', contextId: 'p1', workspaceId: 'ws-1' }
+
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'sess-1')).resolves.toBeNull()
+    expect(s.updateManyCalls).toHaveLength(0)
+  })
+
+  it('returns null for an unknown session', async () => {
+    await expect(svc.upgradeProjectSessionToWorkspace('ws-1', 'missing')).resolves.toBeNull()
+  })
 })
 
 describe('createWorkspaceSession', () => {
@@ -119,6 +168,78 @@ describe('createWorkspaceSession', () => {
     s.projectsInWorkspace = new Set(['p1'])
     const res = await svc.createWorkspaceSession('ws-1', { attachProjectIds: ['p1', 'p1'] })
     expect(res.attached).toHaveLength(1)
+  })
+
+  it('leaves the session unpinned without an anchor', async () => {
+    const res = await svc.createWorkspaceSession('ws-1', {})
+    expect(res.contextId).toBeNull()
+    expect(s.createCalls[0].data.contextId).toBeNull()
+  })
+
+  it('pins to the anchor project and always attaches it read-write', async () => {
+    s.projectsInWorkspace = new Set(['p1', 'p2'])
+    const res = await svc.createWorkspaceSession('ws-1', {
+      anchorProjectId: 'p1',
+      attachProjectIds: ['p2'],
+      attachMode: 'readonly',
+    })
+    expect(res.contextId).toBe('p1')
+    expect(s.createCalls[0].data.contextId).toBe('p1')
+    expect(res.attached).toEqual([
+      { id: 'csp-0', projectId: 'p1', attachMode: 'readwrite' },
+      { id: 'csp-1', projectId: 'p2', attachMode: 'readonly' },
+    ])
+  })
+
+  it('rejects an anchor from another workspace', async () => {
+    s.projectsInWorkspace = new Set()
+    await expect(
+      svc.createWorkspaceSession('ws-1', { anchorProjectId: 'p-other' }),
+    ).rejects.toMatchObject({ code: 'project_not_in_workspace' })
+    expect(s.createCalls).toHaveLength(0)
+  })
+})
+
+describe('pinWorkspaceSessionToProject', () => {
+  it('pins an unpinned side chat whose only attachment is the project', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', contextId: null }
+    s.findManyAttached = [{ id: 'a', projectId: 'p1', attachMode: 'readwrite' }]
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: true, changed: true })
+    expect(s.updateManyCalls[0].data).toEqual({ contextId: 'p1' })
+  })
+
+  it('reports an existing pin to the same project without rewriting it', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', contextId: 'p1' }
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: true, changed: false })
+    expect(s.updateManyCalls).toHaveLength(0)
+  })
+
+  it('does not re-pin a session anchored to another project', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', contextId: 'p-other' }
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: false, changed: false })
+    expect(s.updateManyCalls).toHaveLength(0)
+  })
+
+  it('never pins the primary workspace chat', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', contextId: null, isPrimary: true }
+    s.findManyAttached = [{ id: 'a', projectId: 'p1', attachMode: 'readwrite' }]
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: false, changed: false })
+    expect(s.updateManyCalls).toHaveLength(0)
+  })
+
+  it('does not pin a chat that spans other projects', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', contextId: null }
+    s.findManyAttached = [
+      { id: 'a', projectId: 'p1', attachMode: 'readwrite' },
+      { id: 'b', projectId: 'p2', attachMode: 'readwrite' },
+    ]
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: false, changed: false })
+    expect(s.updateManyCalls).toHaveLength(0)
+  })
+
+  it('ignores project-scoped sessions', async () => {
+    s.sessionRow = { contextType: 'project', workspaceId: null, contextId: 'p1' }
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: false, changed: false })
   })
 })
 

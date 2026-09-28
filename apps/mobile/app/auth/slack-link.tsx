@@ -38,7 +38,7 @@ import { View, Text, ActivityIndicator, Platform } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
-import { useDomainHttp } from '../../contexts/domain'
+import { DomainProvider, useDomainHttp } from '../../contexts/domain'
 
 /** Long enough to read "✓ Account linked", short enough not to feel stuck. */
 const REDIRECT_TO_SETTINGS_DELAY_MS = 1200
@@ -49,7 +49,7 @@ interface SlackLinkParams {
 
 type Status = 'checking-auth' | 'redirect-signin' | 'linking' | 'linked' | 'error'
 
-export default function SlackLinkBridge() {
+function SlackLinkBridge() {
   const router = useRouter()
   const params = useLocalSearchParams<SlackLinkParams>()
   const { isLoading: isAuthLoading, isAuthenticated } = useAuth()
@@ -173,5 +173,13 @@ export default function SlackLinkBridge() {
         )}
       </View>
     </View>
+  )
+}
+
+export default function SlackLinkBridgeRoute() {
+  return (
+    <DomainProvider>
+      <SlackLinkBridge />
+    </DomainProvider>
   )
 }

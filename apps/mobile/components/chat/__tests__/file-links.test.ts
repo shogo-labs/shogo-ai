@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+import { describe, expect, test } from "bun:test"
+import {
+  fileHref,
+  linkifyBareUrls,
+  linkifyFilePaths,
+  pathFromFileHref,
+  resolveChatFilePath,
+} from "../file-links"
+
+const PROJECT = "6c2a5faf-9683-4cf1-b3d1-bfdab2e912a9"
+
+describe("linkifyFilePaths", () => {
+  test("links a bare workspace path and leaves the trailing note alone", () => {
+    const input = `Done — report written to the project folder:\n\n${PROJECT}/BILLING-AUDIT-2026-09-25.md (515 lines)`
+    const linked = linkifyFilePaths(input)
+    expect(linked).toContain(
+      `[${PROJECT}/BILLING-AUDIT-2026-09-25.md](${fileHref(`${PROJECT}/BILLING-AUDIT-2026-09-25.md`)})`,
+    )
+    expect(linked).toContain("(515 lines)")
+    expect(pathFromFileHref(fileHref(`${PROJECT}/BILLING-AUDIT-2026-09-25.md`))).toBe(
+      `${PROJECT}/BILLING-AUDIT-2026-09-25.md`,
+    )
+  })
+
+  test("links a backticked path, including one without a directory", () => {
+    const linked = linkifyFilePaths("Updated `src/app.tsx` and `README.md`.")
+    expect(linked).toContain("[`src/app.tsx`](")
+    expect(linked).toContain("[`README.md`](")
+  })
+
+  test("leaves fenced code, existing links, and urls alone", () => {
+    const input = [
+      "Use and/or here, see https://example.com/a.md, and [docs](https://example.com/b.md).",
+      "",
+      "```",
+      "foo/bar.md",
+      "```",
+    ].join("\n")
+    const linked = linkifyFilePaths(input)
+    expect(linked).not.toContain("/shogo-file?path=")
+    expect(linked).toContain("https://example.com/a.md")
+    expect(linked).toContain("[docs](https://example.com/b.md)")
+    expect(linked).toContain("foo/bar.md")
+  })
+
+  test("does not link a bare filename with no directory", () => {
+    expect(linkifyFilePaths("See README.md for details.")).toBe(
+      "See README.md for details.",
+    )
+  })
+})
+
+describe("linkifyBareUrls", () => {
+  test("links common bare domains and keeps punctuation outside the link", () => {
+    expect(linkifyBareUrls("Read example.com, then open www.shogo.ai/docs.")).toBe(
+      "Read [example.com](https://example.com), then open [www.shogo.ai/docs](https://www.shogo.ai/docs).",
+    )
+  })
+
+  test("does not turn emails, code, or workspace paths into web links", () => {
+    const input = [
+      "Email support@example.com.",
+      "Use `example.com` in the fixture.",
+      "See src/app.tsx and https://example.com/already-linked.",
+    ].join("\n")
+    const linked = linkifyBareUrls(input)
+    expect(linked).toContain("support@example.com")
+    expect(linked).toContain("`example.com`")
+    expect(linked).toContain("src/app.tsx")
+    expect(linked).toContain("https://example.com/already-linked")
+    expect(linked).not.toContain("[support@example.com]")
+    expect(linked).not.toContain("[`example.com`]")
+  })
+
+  test("keeps markdown emphasis and quotes outside the generated link", () => {
+    expect(linkifyBareUrls('**example.com/docs** and "example.com/docs"')).toBe(
+      '**[example.com/docs](https://example.com/docs)** and "[example.com/docs](https://example.com/docs)"',
+    )
+  })
+
+  test("preserves balanced path delimiters and strips surrounding punctuation", () => {
+    expect(linkifyBareUrls("Read example.com/wiki/Foo_(bar). (see example.com)")).toBe(
+      "Read [example.com/wiki/Foo_(bar)](https://example.com/wiki/Foo_(bar)). (see [example.com](https://example.com))",
+    )
+  })
+
+  test("does not link app bundle names or angle-bracket autolinks", () => {
+    expect(linkifyBareUrls("Open Shogo.app or <example.com>.")).toBe(
+      "Open Shogo.app or <example.com>.",
+    )
+  })
+})
+
+describe("resolveChatFilePath", () => {
+  test("treats a leading uuid as the project id", () => {
+    expect(resolveChatFilePath(`${PROJECT}/notes/BILLING.md`, "other")).toEqual({
+      projectId: PROJECT,
+      relPath: "notes/BILLING.md",
+    })
+  })
+
+  test("finds the uuid inside an absolute path", () => {
+    expect(
+      resolveChatFilePath(
+        `/Users/me/.workspace-roots/ws/${PROJECT}/src/app.tsx`,
+        null,
+      ),
+    ).toEqual({ projectId: PROJECT, relPath: "src/app.tsx" })
+  })
+
+  test("falls back to the current project when there is no uuid", () => {
+    expect(resolveChatFilePath("src/app.tsx", "proj-1")).toEqual({
+      projectId: "proj-1",
+      relPath: "src/app.tsx",
+    })
+    expect(resolveChatFilePath("src/app.tsx", null)).toBeNull()
+  })
+})

@@ -18,7 +18,7 @@ import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import { isSearchEnabled } from './search-flag'
 import type { ToolContext } from './gateway-tools'
-import { createBrowserTool, textResult } from './gateway-tools'
+import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-tools'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -519,6 +519,31 @@ export function loadCustomAgents(workspaceDir: string): CustomAgentDef[] {
   return agents
 }
 
+/**
+ * Custom agents for a runtime: the root's `.shogo/agents/` plus, for a
+ * workspace runtime, each member project's `<root>/<id>/.shogo/agents/`
+ * (each project owns its own roster). On a name clash the root wins, then the
+ * first member in `memberIds` order.
+ */
+export function loadWorkspaceCustomAgents(workspaceDir: string, memberIds: string[] = []): CustomAgentDef[] {
+  const seen = new Map<string, string>()
+  const agents: CustomAgentDef[] = []
+  const sources: Array<[string, string]> = [['workspace root', workspaceDir]]
+  for (const id of memberIds) sources.push([`project ${id}`, join(workspaceDir, id)])
+  for (const [label, dir] of sources) {
+    for (const def of loadCustomAgents(dir)) {
+      const owner = seen.get(def.name)
+      if (owner) {
+        if (owner !== label) console.warn(`[Subagent] Ignoring "${def.name}" from ${label}: already defined by ${owner}`)
+        continue
+      }
+      seen.set(def.name, label)
+      agents.push(def)
+    }
+  }
+  return agents
+}
+
 function parseAgentFrontmatter(raw: string): CustomAgentDef {
   const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
   if (!match) {
@@ -661,9 +686,11 @@ export async function fetchSubagentOverrideFromApi(
   }
 
   try {
-    const headers = (await import('./internal-api')).getInternalHeaders()
+    const { getInternalHeaders, projectScopedId } = await import('./internal-api')
+    const headers = getInternalHeaders()
     const params = new URLSearchParams({ workspaceId, agentType })
-    if (projectId) params.set('projectId', projectId)
+    const scopedProjectId = projectScopedId(projectId)
+    if (scopedProjectId) params.set('projectId', scopedProjectId)
     if (bucketKey) params.set('bucketKey', bucketKey)
     const res = await fetch(`${apiUrl}/api/internal/subagent-overrides/resolve?${params}`, {
       method: 'GET',
@@ -842,6 +869,7 @@ export async function runSubagent(
   }
 
   let tools: AgentTool[]
+  let ownBrowserTool: AgentTool | undefined
   let systemPrompt: string
   let history: Message[]
   let thinkingLevel: ThinkingLevel = 'medium'
@@ -888,7 +916,8 @@ export async function runSubagent(
         )
       }
       tools = tools.filter(t => t.name !== 'browser')
-      tools.push(createBrowserTool(subCtx))
+      ownBrowserTool = createBrowserTool(subCtx)
+      tools.push(ownBrowserTool)
     } else if (debugScreencast) {
       console.log(
         `[screencast] runSubagent no browser tool to rebuild instanceId=${options?.instanceId ?? '<none>'} ` +
@@ -1143,6 +1172,8 @@ export async function runSubagent(
       escalated: false,
       responseEmpty: true,
     }
+  } finally {
+    void disposeBrowserTool(ownBrowserTool)
   }
 }
 

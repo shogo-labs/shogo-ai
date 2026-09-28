@@ -332,7 +332,14 @@ export async function commitAndPush(opts: CommitAndPushOptions): Promise<CommitA
   if (!hasChanges) return { committed: false };
 
   await runGit(
-    ['commit', '-m', message, '--no-verify'],
+    [
+      'commit',
+      '-m',
+      message,
+      '--no-verify',
+      '--trailer',
+      `Co-authored-by: ${authorName || process.env.SHOGO_AGENT_GIT_NAME || 'Shogo Agent'} <${authorEmail || process.env.SHOGO_AGENT_GIT_EMAIL || 'agent@shogo.ai'}>`,
+    ],
     { cwd: localDir, env, logger, timeoutMs },
   );
 

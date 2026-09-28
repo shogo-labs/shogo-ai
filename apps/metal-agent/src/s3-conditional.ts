@@ -124,6 +124,40 @@ export function signPutHeaders(input: {
   /** Session token for temporary credentials, if any. */
   sessionToken?: string | null
 }): Record<string, string> {
+  return signObjectPut(input)
+}
+
+/**
+ * Signed headers for a server-side CopyObject (`PUT` with an empty body and
+ * `x-amz-copy-source`). The bytes never leave the object store.
+ */
+export function signCopyHeaders(input: {
+  target: S3Target
+  sourceKey: string
+  destKey: string
+  now: Date
+  sessionToken?: string | null
+}): Record<string, string> {
+  return signObjectPut({
+    target: input.target,
+    key: input.destKey,
+    payload: new Uint8Array(0),
+    extraHeaders: { 'x-amz-copy-source': canonicalUriFor(input.target.bucket, input.sourceKey) },
+    now: input.now,
+    sessionToken: input.sessionToken,
+  })
+}
+
+function signObjectPut(input: {
+  target: S3Target
+  key: string
+  payload: Uint8Array
+  contentType?: string
+  precondition?: WritePrecondition
+  extraHeaders?: Record<string, string>
+  now: Date
+  sessionToken?: string | null
+}): Record<string, string> {
   const { target, key, payload, contentType, precondition, now } = input
   const url = new URL(`${target.endpoint.replace(/\/+$/, '')}${canonicalUriFor(target.bucket, key)}`)
   const { amzDate, dateStamp } = amzDates(now)
@@ -132,10 +166,11 @@ export function signPutHeaders(input: {
   const headers: Record<string, string> = {
     host: url.host,
     'content-length': String(payload.byteLength),
-    'content-type': contentType,
     'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,
   }
+  if (contentType) headers['content-type'] = contentType
+  for (const [k, v] of Object.entries(input.extraHeaders ?? {})) headers[k.toLowerCase()] = v
   if (input.sessionToken) headers['x-amz-security-token'] = input.sessionToken
   if (precondition?.ifMatch) headers['if-match'] = precondition.ifMatch
   if (precondition?.ifNoneMatch) headers['if-none-match'] = precondition.ifNoneMatch
@@ -217,4 +252,36 @@ export async function conditionalPutObject(input: {
     throw new Error(`PUT ${input.key} failed (${res.status}): ${detail.slice(0, 300)}`)
   }
   return { status: 'ok', etag: res.headers.get('etag') }
+}
+
+/**
+ * Server-side copy of `sourceKey` to `destKey` in the same bucket. Throws on
+ * any failure, including S3's "200 OK with an <Error> body" copy failure mode.
+ */
+export async function copyObject(input: {
+  target: S3Target
+  sourceKey: string
+  destKey: string
+  timeoutMs?: number
+  fetchImpl?: typeof fetch
+  now?: Date
+}): Promise<void> {
+  const doFetch = input.fetchImpl ?? fetch
+  const headers = signCopyHeaders({
+    target: input.target,
+    sourceKey: input.sourceKey,
+    destKey: input.destKey,
+    now: input.now ?? new Date(),
+  })
+  const res = await doFetch(objectUrl(input.target, input.destKey), {
+    method: 'PUT',
+    headers,
+    ...(input.timeoutMs ? { signal: AbortSignal.timeout(input.timeoutMs) } : {}),
+  })
+  const detail = await res.text().catch(() => '')
+  if (!res.ok || /<Error>/.test(detail)) {
+    throw new Error(
+      `COPY ${input.sourceKey} -> ${input.destKey} failed (${res.status}): ${detail.slice(0, 300)}`,
+    )
+  }
 }

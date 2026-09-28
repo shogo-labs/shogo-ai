@@ -29,8 +29,45 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { DesktopFs, getDesktopFsBridge, type DesktopFsBridge } from '../desktopFs'
+import { DesktopFs, getDesktopFsBridge, isFolderLinkedProject, type DesktopFsBridge } from '../desktopFs'
 import { SdkFs } from '../sdkFs'
+
+describe('isFolderLinkedProject (IDEPanel fast-path selection)', () => {
+  test('folder-linked projects never use the managed-root IPC fast path', () => {
+    expect(isFolderLinkedProject({ isExternalProject: true })).toBe(true)
+    expect(isFolderLinkedProject({ folderPath: 'C:\\Users\\me\\repo' })).toBe(true)
+    expect(isFolderLinkedProject({ isExternalProject: false, folderPath: '/home/me/repo' })).toBe(true)
+  })
+
+  test('managed projects may use it', () => {
+    expect(isFolderLinkedProject({})).toBe(false)
+    expect(isFolderLinkedProject({ isExternalProject: false, folderPath: null })).toBe(false)
+    expect(isFolderLinkedProject({ folderPath: '' })).toBe(false)
+  })
+})
+
+describe('SdkFs addresses the project path space', () => {
+  test('tree, reads and writes are sent with scope=project', async () => {
+    const urls: string[] = []
+    const fetchImpl = mock(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      urls.push(url)
+      if (url.includes('/tree')) return new Response(JSON.stringify({ tree: [] }), { status: 200 })
+      return new Response(JSON.stringify({ content: 'x', ok: true }), { status: 200 })
+    })
+    const fs = new SdkFs('http://agent.test', 'ide', fetchImpl as any)
+    await fs.listTree()
+    await fs.readFile('agents/BuildingBlocks/main_block.py')
+    await fs.writeFile('src/a.ts', 'x')
+    await fs.mkdir('docs')
+    expect(urls).toEqual([
+      'http://agent.test/agent/workspace/tree?scope=project',
+      'http://agent.test/agent/workspace/files/agents/BuildingBlocks/main_block.py?scope=project',
+      'http://agent.test/agent/workspace/files/src/a.ts?scope=project',
+      'http://agent.test/agent/workspace/mkdir?scope=project',
+    ])
+  })
+})
 
 const ROOT = '/var/app-data/shogo/workspaces/proj-1'
 

@@ -52,6 +52,12 @@ export interface ResolveLanguageModelOptions {
    * `routes/ai-proxy.ts` `resolveInternalUsage`.
    */
   headers?: Record<string, string>
+  /**
+   * Explicit proxy credentials. Defaults to `AI_PROXY_URL` + `AI_PROXY_TOKEN`
+   * (the server's own token). Pass a user-scoped token so usage is metered
+   * against the caller's workspace instead of the server's.
+   */
+  proxy?: { url: string; token: string }
 }
 
 /**
@@ -79,8 +85,8 @@ export function resolveLanguageModel(
     provider === 'anthropic' ||
     (!provider && (backingId.startsWith('claude') || apiModel.startsWith('claude')))
 
-  const proxyUrl = process.env.AI_PROXY_URL
-  const proxyToken = process.env.AI_PROXY_TOKEN
+  const proxyUrl = opts?.proxy?.url ?? process.env.AI_PROXY_URL
+  const proxyToken = opts?.proxy?.token ?? process.env.AI_PROXY_TOKEN
 
   if (looksAnthropic) {
     if (proxyUrl && proxyToken) {

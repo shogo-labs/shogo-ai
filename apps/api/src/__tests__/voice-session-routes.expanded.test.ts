@@ -9,10 +9,17 @@ process.env.ELEVENLABS_API_KEY = 'el-test'
 process.env.ELEVENLABS_VOICE_MODE_AGENT_ID = 'agent-shared'
 process.env.AI_PROXY_URL = 'https://proxy.example/ai/v1'
 process.env.AI_PROXY_TOKEN = 'proxy-token'
+process.env.AI_PROXY_SECRET = 'test-proxy-secret'
+process.env.API_PORT = '8123'
 
 const chatMessages: any[] = []
 let sessionAllowed = true
 let streamTextCalls: any[] = []
+let generateTextCalls: any[] = []
+let generateTextResults: any[] = []
+let liveSessionCalls: any[] = []
+const resolveLanguageModelCalls: any[] = []
+const autoTierCalls: any[] = []
 
 mock.module('../middleware/auth', () => ({
   apiKeyOrSession: async (c: any, next: any) => {
@@ -85,14 +92,39 @@ mock.module('@shogo-ai/sdk/voice', () => ({ ElevenLabsClient: MockElevenLabsClie
 // suite only exercises the resolved (200) path, so return a sentinel model.
 mock.module('../lib/resolve-language-model', () => ({
   DEFAULT_ASSISTANT_MODEL: 'hoshi-1.0',
-  resolveLanguageModel: mock(() => ({
-    model: { provider: 'anthropic', model: 'test-model' },
-    billingModelId: 'test-model',
-    provider: 'anthropic',
-  })),
+  resolveLanguageModel: mock((id: string, opts?: any) => {
+    resolveLanguageModelCalls.push({ id, opts })
+    return {
+      model: { provider: 'anthropic', model: 'test-model' },
+      billingModelId: 'test-model',
+      provider: 'anthropic',
+    }
+  }),
+}))
+
+const realAgentModelDefaults = await import('../lib/runtime/agent-model-defaults')
+mock.module('../lib/runtime/agent-model-defaults', () => ({
+  ...realAgentModelDefaults,
+  resolveAutoTierModel: mock(async (workspaceId: string) => {
+    autoTierCalls.push(workspaceId)
+    return { id: 'cloud-auto-standard', provider: 'custom' }
+  }),
+}))
+
+mock.module('../lib/live-webrtc', () => ({
+  createLiveWebRtcSession: mock(async (args: any) => {
+    liveSessionCalls.push(args)
+    return Response.json({ session: { id: 'live-1' }, transport: { sdp: 'answer-sdp' } })
+  }),
 }))
 
 mock.module('ai', () => ({
+  generateText: mock(async (args: any) => {
+    generateTextCalls.push(args)
+    const next = generateTextResults.shift()
+    if (next?.error) throw next.error
+    return next ?? { text: 'done', toolCalls: [], response: { messages: [] } }
+  }),
   convertToModelMessages: mock(async (messages: any[]) => messages.map((m) => ({
     role: m.role,
     content: m.parts?.map((p: any) => p.text).join('') ?? '',
@@ -118,6 +150,8 @@ mock.module('ai', () => ({
 mock.module('@shogo/agent-runtime/src/voice-mode/translator-persona', () => ({
   TRANSLATOR_SYSTEM_PROMPT: 'base prompt',
   TRANSLATOR_AI_SDK_TOOLS: { send_to_chat: {} },
+  TRANSLATOR_LIVE_CONVERSATION_PROMPT: 'live prompt',
+  TRANSLATOR_LIVE_DELEGATION_SUFFIX: ' delegation suffix',
 }))
 
 mock.module('../lib/voice-context', () => ({
@@ -155,6 +189,12 @@ let voiceRoutes: typeof import('../routes/voice').voiceRoutes
 beforeEach(async () => {
   chatMessages.length = 0
   streamTextCalls = []
+  generateTextCalls = []
+  generateTextResults = []
+  liveSessionCalls = []
+  resolveLanguageModelCalls.length = 0
+  autoTierCalls.length = 0
+  delete process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL
   sessionAllowed = true
   const mod = await import('../routes/voice')
   voiceRoutes = mod.voiceRoutes
@@ -284,5 +324,126 @@ describe('voice session routes', () => {
       method: 'POST',
       body: JSON.stringify({ kind: 'voice-agent', text: 'x'.repeat(64_001) }),
     })).status).toBe(413)
+  })
+})
+
+describe('GPT-Live session routes', () => {
+  function post(path: string, body: unknown) {
+    return buildApp().request(`http://api.test/api${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    })
+  }
+
+  test('live session uses client delegation and the conversation prompt', async () => {
+    const res = await post('/voice/live/session/session-1', { sdp: 'offer-sdp' })
+
+    expect(res.status).toBe(200)
+    expect(await json(res)).toEqual({ sessionId: 'live-1', sdp: 'answer-sdp' })
+    const call = liveSessionCalls[0]
+    expect(call.sdp).toBe('offer-sdp')
+    expect(call.session.delegation).toEqual({ type: 'client' })
+    expect(call.session.instructions).toBe('live prompt\nproject context')
+    expect(call.tokenPayload).toMatchObject({
+      projectId: 'project-1',
+      workspaceId: 'workspace-1',
+      userId: 'user-1',
+    })
+  })
+
+  test('live session rejects a missing sdp and unauthorized sessions', async () => {
+    expect((await post('/voice/live/session/session-1', {})).status).toBe(400)
+    sessionAllowed = false
+    expect((await post('/voice/live/session/session-1', { sdp: 'x' })).status).toBe(404)
+    expect(liveSessionCalls).toHaveLength(0)
+  })
+
+  test('delegate resolves Auto and meters through a user-scoped in-process proxy token', async () => {
+    const res = await post('/voice/live/delegate/session-1', {
+      transcript: [
+        { role: 'user', text: 'make the header blue' },
+        { role: 'assistant', text: 'Sure.' },
+        { role: 'user', text: '   ' },
+      ],
+    })
+
+    expect(res.status).toBe(200)
+    expect(await json(res)).toEqual({ text: 'done', toolCalls: [], steps: [] })
+    expect(autoTierCalls).toEqual(['workspace-1'])
+    const resolved = resolveLanguageModelCalls.at(-1)
+    expect(resolved.id).toBe('cloud-auto-standard')
+    expect(resolved.opts.proxy.url).toBe('http://localhost:8123/api/ai/v1')
+    expect(resolved.opts.proxy.token).not.toBe('proxy-token')
+    const payload = JSON.parse(atob(resolved.opts.proxy.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    expect(payload).toMatchObject({ projectId: 'project-1', workspaceId: 'workspace-1', userId: 'user-1' })
+
+    const call = generateTextCalls[0]
+    expect(call.system).toBe('base prompt\nproject context delegation suffix')
+    expect(call.messages).toEqual([
+      { role: 'user', content: 'make the header blue' },
+      { role: 'assistant', content: 'Sure.' },
+    ])
+    expect(call.tools).toEqual({ send_to_chat: {} })
+  })
+
+  test('delegate honors an explicit backend model override', async () => {
+    process.env.SHOGO_EZ_MODE_LIVE_BACKEND_MODEL = 'claude-haiku-4-5'
+    await post('/voice/live/delegate/session-1', { transcript: [{ role: 'user', text: 'hi' }] })
+
+    expect(autoTierCalls).toHaveLength(0)
+    expect(resolveLanguageModelCalls.at(-1).id).toBe('claude-haiku-4-5')
+  })
+
+  test('delegate returns tool calls and continues with client tool results', async () => {
+    const assistantStep = {
+      role: 'assistant',
+      content: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'send_to_chat', input: { text: 'blue header' } }],
+    }
+    generateTextResults.push({
+      text: '',
+      toolCalls: [{ toolCallId: 'call-1', toolName: 'send_to_chat', input: { text: 'blue header' } }],
+      response: { messages: [assistantStep] },
+    })
+    const transcript = [{ role: 'user', text: 'make the header blue' }]
+
+    const first = await json(await post('/voice/live/delegate/session-1', { transcript }))
+    expect(first.toolCalls).toEqual([
+      { toolCallId: 'call-1', toolName: 'send_to_chat', input: { text: 'blue header' } },
+    ])
+    expect(first.steps).toEqual([assistantStep])
+
+    const second = await json(await post('/voice/live/delegate/session-1', {
+      transcript,
+      steps: first.steps,
+      toolResults: [{ toolCallId: 'call-1', toolName: 'send_to_chat', output: 'queued' }],
+    }))
+    const toolMessage = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        toolName: 'send_to_chat',
+        output: { type: 'text', value: 'queued' },
+      }],
+    }
+    expect(generateTextCalls[1].messages).toEqual([
+      { role: 'user', content: 'make the header blue' },
+      assistantStep,
+      toolMessage,
+    ])
+    expect(second).toEqual({ text: 'done', toolCalls: [], steps: [assistantStep, toolMessage] })
+  })
+
+  test('delegate validates the body and surfaces model failures as 502', async () => {
+    expect((await post('/voice/live/delegate/session-1', '{')).status).toBe(400)
+    expect((await post('/voice/live/delegate/session-1', { transcript: [] })).status).toBe(400)
+
+    generateTextResults.push({ error: new Error('upstream down') })
+    const failed = await post('/voice/live/delegate/session-1', { transcript: [{ role: 'user', text: 'hi' }] })
+    expect(failed.status).toBe(502)
+
+    sessionAllowed = false
+    expect((await post('/voice/live/delegate/session-1', { transcript: [{ role: 'user', text: 'hi' }] })).status).toBe(404)
   })
 })

@@ -264,7 +264,7 @@ export const workspaceHooks: WorkspaceHooks = {
             message:
               requestedKind === 'personal'
                 ? "You already have a personal workspace."
-                : "You already have a free workspace. Additional workspaces require a paid subscription.",
+                : "You already have a free workspace. Additional workspaces require a paid subscription, or are included free on Business and Enterprise plans.",
           },
         }
       }

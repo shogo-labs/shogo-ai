@@ -158,7 +158,7 @@ describe('pool.destroy / getProjectStatus', () => {
     seed(cfg, 'p1')
     pool.rehydrate()
 
-    expect(pool.getProjectStatus('p1')).toEqual({ exists: true, ready: false, replicas: 0, state: 'suspended' })
+    expect(pool.getProjectStatus('p1')).toMatchObject({ exists: true, ready: false, replicas: 0, state: 'suspended' })
     expect(pool.getProjectStatus('nope')).toEqual({ exists: false, ready: false, replicas: 0, state: 'none' })
   })
 })

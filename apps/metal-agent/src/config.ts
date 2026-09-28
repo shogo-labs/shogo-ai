@@ -14,6 +14,12 @@ import { join } from 'path'
 
 const env = (k: string, d: string) => process.env[k] ?? d
 
+export type ApiWatchdogMode = 'off' | 'observe' | 'enforce'
+
+function parseWatchdogMode(v: string): ApiWatchdogMode {
+  return v === 'off' || v === 'enforce' ? v : 'observe'
+}
+
 /** Where host-install.sh drops firecracker + kernel + rootfs. */
 export const WORK = env('METAL_WORK', '/opt/fc-spike')
 
@@ -210,14 +216,28 @@ export const config = {
 
   /**
    * Best-effort guest lifecycle hooks the node-agent calls around a
-   * snapshot/restore so the in-guest runtime can flush + drop stale sockets
-   * (AI-proxy/MCP/LSP/DB) before freeze and re-establish them after wake:
-   *   POST {agentUrl}/pool/quiesce    (pre-snapshot)
-   *   POST {agentUrl}/pool/rehydrate  (post-restore, once healthy)
-   * A 404/timeout is tolerated (older guests / runtimes that opt out).
+   * snapshot/restore, so the guest's project API sidecars are never frozen
+   * mid-flight:
+   *   POST {agentUrl}/pool/quiesce    (pre-snapshot: stop sidecars, free ports)
+   *   POST {agentUrl}/pool/rehydrate  (post-restore: restart them)
+   * A 404/timeout is tolerated (older guests / runtimes that opt out). Quiesce
+   * allows for the guest's 5s SIGTERM grace plus waiting for the port.
    */
-  quiesceTimeoutMs: parseInt(env('METAL_QUIESCE_TIMEOUT_MS', '5000'), 10),
+  quiesceTimeoutMs: parseInt(env('METAL_QUIESCE_TIMEOUT_MS', '12000'), 10),
   rehydrateTimeoutMs: parseInt(env('METAL_REHYDRATE_TIMEOUT_MS', '5000'), 10),
+
+  /**
+   * API health watchdog. A runtime whose project API sidecar has been
+   * unhealthy (crashed, or stuck starting/restarting) for
+   * `apiUnhealthyRecycleMs`, with no agent turn in flight, is recycled: backed
+   * up, then stopped without a snapshot so the next open cold-boots clean.
+   *   off     — no tracking action
+   *   observe — log + count what WOULD be recycled (default)
+   *   enforce — recycle
+   * At most one attempt per runtime per hour and two per day.
+   */
+  apiWatchdogMode: parseWatchdogMode(env('METAL_API_WATCHDOG', 'observe')),
+  apiUnhealthyRecycleMs: parseInt(env('METAL_API_UNHEALTHY_RECYCLE_MS', '600000'), 10),
   /**
    * Cold-start workspace hydration: how long the agent waits for the guest to
    * extract + accept the durable source backup streamed to `/pool/hydrate`.
@@ -225,6 +245,12 @@ export const config = {
    * (the subsequent rebuild is async and not covered by this timeout).
    */
   hydrateTimeoutMs: parseInt(env('METAL_HYDRATE_TIMEOUT_MS', '60000'), 10),
+  /**
+   * Per-export budget when asking a mute-but-running guest to export before it
+   * is discarded. Past this the host reads the workspace off the VM's disk
+   * instead, so it bounds how long a reprovisioning open waits on a wedged guest.
+   */
+  rescueGuestTimeoutMs: parseInt(env('METAL_RESCUE_GUEST_TIMEOUT_MS', '20000'), 10),
   /**
    * Extra hydrate budget per MiB of archive, on top of `hydrateTimeoutMs`.
    *
@@ -326,6 +352,16 @@ export const config = {
     env('METAL_PROJECT_DATA_EXPORT_INTERVAL_MS', '120000'),
     10,
   ),
+
+  /**
+   * Large-database cadence limit. Every replaced `project-data.tar.gz` is kept
+   * as a noncurrent version for a day, so a big database that changes every
+   * cycle would store hundreds of full copies. Above this archive size,
+   * periodic uploads happen at most every `projectDataLargeMinIntervalMs`.
+   * Final (suspend) and pre-recycle uploads are never limited.
+   */
+  projectDataLargeBytes: parseInt(env('METAL_PROJECT_DATA_LARGE_BYTES', String(100 * 1024 * 1024)), 10),
+  projectDataLargeMinIntervalMs: parseInt(env('METAL_PROJECT_DATA_LARGE_MIN_INTERVAL_MS', '900000'), 10),
 
   /**
    * Parallel ranged GET for large durable artifacts (the ~400 MiB compressed

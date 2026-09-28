@@ -160,6 +160,7 @@ mock.module("../../../lib/visible-models", () => ({
 mock.module("../ModelPickerMenu", () => ({
   ModelPickerMenu: () => null,
   ComposerModelPicker: () => null,
+  ModelPickerMenu: () => null,
   getNativeModelMenuWidth: () => 280,
 }))
 mock.module("../FileViewerModal", () => ({ FileViewerModal: () => null }))
@@ -180,6 +181,9 @@ mock.module("../../../lib/agent-fetch", () => ({ agentFetch: fetch }))
 let chatContext: any = null
 mock.module("../ChatContext", () => ({ useChatContextSafe: () => chatContext }))
 mock.module("../EnvironmentPicker", () => ({ EnvironmentPicker: () => null }))
+mock.module("../../../hooks/useWorkspaceExperience", () => ({
+  useWorkspaceExperience: () => ({ kind: "team" }),
+}))
 
 const { ChatInput } = await import("../ChatInput")
 

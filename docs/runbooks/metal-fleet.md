@@ -232,7 +232,7 @@ ssh root@<host> 'iptables -L SHOGO-CTRL -n -v --line-numbers'
 ### Production rollout (staging is already enforcing + filtered)
 
 Staging (`72.46.85.83`) runs `enforce` with the filter on. Production is still
-open: as of this writing all four hosts predate the auth code, and the
+open: all five production hosts are included in the auth rollout, and the
 production API sends no `Authorization` header at all, because `agentHeaders()`
 used to read only `METAL_REGISTER_TOKEN` and the pods set only
 `SHOGO_INTERNAL_SECRET`. Enforcing before the callers are fixed would 401 one
@@ -258,7 +258,7 @@ hundred percent of control traffic, so the order below is not optional.
    step 2's code fix has not landed yet.
 
    ```bash
-   for h in 152.236.12.71 67.213.118.79 103.219.171.29 109.94.96.189; do
+   for h in 152.236.12.71 67.213.118.79 103.219.171.29 109.94.96.189 160.202.131.99; do
      echo "== $h"; ssh root@$h 'curl -s localhost:9900/metrics | grep control_unauthenticated'
    done
    ```
@@ -276,6 +276,123 @@ hundred percent of control traffic, so the order below is not optional.
    thing staging could not prove: its cold boots have been failing since a
    rootfs rebuild left every local snapshot stale, so no guest ever reached
    `/hydrate-stream` there to exercise the guest-subnet rule end-to-end.
+
+## After a rollout that rebuilds the rootfs
+
+A release that rebuilds the guest rootfs (`metal-agent-deploy` with
+`rebuild_rootfs=true`, or any release that changes the runtime image) makes
+every existing snapshot stale. Without help, each user's next open cold-boots
+from S3, which takes about 90 seconds. The re-warm job handles this. It boots
+every runtime used recently on the new image and suspends it again, so the next
+open is a normal warm resume.
+
+It covers both kinds of runtime: project runtimes (`ws:proj:<projectId>`) and
+unpinned workspace chat sessions (`ws:<workspaceId>`). It never changes user
+code, schema or data. A boot hydrates from the latest backups, and the suspend
+takes a fresh snapshot. Nothing is written back.
+
+### It runs automatically
+
+A leader-elected watcher in the API (`metal-rewarm.ts`) checks the fleet every
+minute. It starts a job for a region once:
+
+- every live host in the region reports the same new `rootfsSha` on its
+  heartbeat;
+- that has held for `METAL_REWARM_SETTLE_MS` (2 minutes), because a host stamps
+  `ROOTFS_SHA` just before its agent restarts onto the new image; and
+- at least `METAL_REWARM_MIN_INTERVAL_MS` (2 hours) has passed since the last
+  automatic job in that region.
+
+The first sha the watcher ever sees is only recorded. A fresh deploy does not
+start a job. Look for `[metal-rewarm]` lines in the API logs.
+
+### What the job does with each runtime
+
+Candidates are managed projects with runtimes enabled, plus workspace sessions,
+active within `METAL_REWARM_SINCE_HOURS` (48), newest first, capped at
+`METAL_REWARM_MAX_RUNTIMES`. For each one:
+
+| State on the host | Outcome |
+| --- | --- |
+| Running on the new image, or suspended from it | `already-warm` |
+| Running on the old image, with an agent stream or activity in the last 10 minutes | `in-use` (left alone) |
+| Running on the old image, idle | recycled (backed up, stopped), then booted fresh |
+| Suspended on the old image, or not on any host | booted, then suspended |
+
+A job never suspends a runtime that a user opened while it was warming
+(`user-opened`), or one with an agent turn in flight (`busy`). It waits while a
+host is above `METAL_REWARM_MAX_HOST_UTIL_PCT` (75%) or over its disk
+watermark. Other outcomes to know:
+
+- `warmed-api-not-ready`: suspended, but the project's API server did not come
+  up within the readiness window. The next open works, but look at the project.
+- `boot-failed`, `recycle-aborted`, `suspend-failed`: the runtime was left as it
+  was. The next open cold-boots as it would have anyway.
+- `unknown-rootfs`: the host is running an agent too old to report which image a
+  VM booted from. It clears once the new agent is deployed.
+
+Outcomes are counted on the `metal.rewarm{outcome}` metric.
+
+### Operating a job by hand
+
+All endpoints need a super-admin session. Every action writes an
+`[admin-audit]` log line.
+
+```bash
+API=https://studio.shogo.ai/api/admin/metal/rewarm
+
+# See what would be warmed, without touching anything
+curl -X POST $API -H 'Content-Type: application/json' --cookie "$SUPER_ADMIN_SESSION" \
+  -d '{"dryRun":true,"sinceHours":48}'
+
+# Start a job (all fields optional)
+curl -X POST $API -H 'Content-Type: application/json' --cookie "$SUPER_ADMIN_SESSION" \
+  -d '{"region":"us","sinceHours":48,"concurrency":2,"reason":"rootfs rebuild for #123"}'
+
+# Progress: state, counts per outcome, the last 50 items, fleet stats before and after
+curl $API --cookie "$SUPER_ADMIN_SESSION"
+
+# Pause, resume, cancel
+curl -X POST $API/pause --cookie "$SUPER_ADMIN_SESSION"
+curl -X POST $API/resume --cookie "$SUPER_ADMIN_SESSION"
+curl -X DELETE $API --cookie "$SUPER_ADMIN_SESSION"
+```
+
+`POST` returns `202` when the job starts, and `409` when another job is already
+running (only one runs at a time, across all API replicas). `GET` reports
+`interrupted` if the API replica running the job died. Start it again; runtimes
+already warmed report `already-warm`.
+
+The `POST` body accepts `sinceHours` (1 to 336), `concurrency` per host (1 to
+12), `maxRuntimes`, `maxBytes` and `region`. Once the memory snapshots the job
+has written add up to `maxBytes`, the remaining runtimes are recorded as
+`skipped-bytes`.
+
+### How long it takes
+
+Each runtime takes about 90 seconds. Concurrency is
+`METAL_REWARM_CONCURRENCY_PER_HOST` (2) times the number of hosts in the region,
+up to 12. So about 400 runtimes on 6 hosts take about 50 minutes. Users who open
+a project during the job get a normal cold boot, and the job skips that project.
+
+### Settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `METAL_REWARM_AUTO` | `true` | Start jobs automatically after a rootfs change |
+| `METAL_REWARM_SINCE_HOURS` | `48` | How far back "recently used" goes |
+| `METAL_REWARM_CONCURRENCY_PER_HOST` | `2` | Boots in flight per host |
+| `METAL_REWARM_MAX_RUNTIMES` | `1000` | Most runtimes one job will warm |
+| `METAL_REWARM_MAX_BYTES` | `0` (off) | Stop after this many snapshot bytes |
+| `METAL_REWARM_MIN_INTERVAL_MS` | 2 hours | Minimum gap between automatic jobs per region |
+| `METAL_REWARM_SETTLE_MS` | 2 minutes | How long the new sha must hold before a job starts |
+| `METAL_REWARM_MAX_HOST_UTIL_PCT` | `75` | Wait while a host is busier than this |
+| `METAL_PLACEMENT_TTL_S` | 7 days | How long the API remembers which host holds a runtime |
+| `METAL_STOP_TIMEOUT_MS` | 90 seconds | How long the API waits for a host to suspend a runtime |
+
+The placement TTL matters here. If the API forgets where a suspended runtime
+lives, the next open goes to a different host and cold-boots, which wastes the
+warming.
 
 ## Incident triage
 
@@ -334,3 +451,80 @@ inflates p95). Cordon a saturated host.
 Fleet (partly) down. Check admin panel live-vs-desired; agent `register`
 warnings; that not every host is cordoned; `systemctl status metal-agent` on the
 hosts.
+
+### A user's runtime is stuck (API 502/503, `EADDRINUSE` on 3101)
+Symptom: the project's API returns 502/503 and the runtime log shows the API
+server crash-looping on `EADDRINUSE`. The usual cause is a process that was
+wedged when the VM was suspended: stop means suspend-to-snapshot, so every
+resume brings the wedged process back and it keeps holding the port. Stopping
+or reopening the project does not help. Guests with `/pool/quiesce` stop their
+API servers before each snapshot, which prevents most new cases.
+
+Do not use `DELETE /api/admin/pods/:projectId`. That is project-deletion
+teardown and does nothing for a metal runtime. Recycle instead. It backs up
+source, git, database and uploads from the live guest (resuming it first if only
+a snapshot exists), then stops it without a snapshot, so the next open
+cold-boots from the backups. Nothing in the user's code, schema or data changes.
+
+```bash
+curl -X POST https://studio.shogo.ai/api/admin/runtimes/recycle \
+  -H 'Content-Type: application/json' --cookie "$SUPER_ADMIN_SESSION" \
+  -d '{"projectId":"<projectId>","reason":"EADDRINUSE loop, ticket #123"}'
+```
+
+- `200`: recycled. `coldBoot.apiReady` says whether the API came back within
+  two minutes. `results[].report.steps` lists every backup step.
+- `409`: aborted, and nothing was removed. A step failed (S3 error, a
+  quarantined backup, an untrusted database, an agent turn in flight). The
+  report names the step. Fix the cause and retry. Only pass `"force": true` once
+  you have accepted losing whatever that step failed to save.
+- `404`: no host holds the runtime. It already cold-boots on next open.
+
+`workspaceId` targets a workspace-session runtime (`ws:<workspaceId>`) instead.
+Every call is logged as an `[admin-audit]` line with the actor, reason and step
+report.
+
+On a single host, the equivalent is `POST localhost:9900/recycle` with
+`{"projectId":"ws:proj:<id>","env":{...}}` and the control-plane bearer. Without
+the open `env`, a suspended workspace runtime cannot learn its members and the
+recycle aborts.
+
+#### API health watchdog (`METAL_API_WATCHDOG`)
+Each host also recycles on its own. Guests report every project's API server
+phase in `/pool/activity`. A runtime whose API server stays unhealthy (crashed,
+or stuck starting/restarting) for `METAL_API_UNHEALTHY_RECYCLE_MS` (default 10
+minutes), with no agent turn in flight, is recycled exactly as above, at most
+once an hour and twice a day per runtime. It runs in the idle-suspend scan, so
+it is inactive on a host with `METAL_IDLE_SUSPEND_MS=0`.
+
+- `observe` (default): logs `watchdog (observe): would recycle …` and counts
+  `metal_auto_recycle_observed_total`. Nothing is recycled.
+- `enforce`: recycles. Watch `metal_auto_recycle_ok_total`,
+  `metal_auto_recycle_aborted_total` (a backup failed, nothing removed) and
+  `metal_auto_recycle_rate_limited_total`.
+- `off`: disabled.
+
+`metal_api_unhealthy` is the number of live runtimes currently unhealthy, and
+`/vms` shows `apiUnhealthyMs` and `apiUnhealthyProjects` per VM. Run `observe`
+for a while and check that what it would have recycled matches real incidents
+before switching a host to `enforce`. A project that is broken in its own code
+stays unhealthy after a recycle, and the rate limit is what stops a loop.
+
+### Restoring a project's database from an earlier point
+Writable state (SQLite database + uploads) lives at
+`{projectId}/project-data.tar.gz` in `shogo-workspaces-<env>`, uploaded every 2
+minutes while it changes. Large databases (over
+`METAL_PROJECT_DATA_LARGE_BYTES`, default 100 MB) upload at most every
+`METAL_PROJECT_DATA_LARGE_MIN_INTERVAL_MS` (15 minutes); suspend and recycle
+always upload. Recovery points:
+
+- Last 24 hours: previous object versions of `project-data.tar.gz` (a
+  lifecycle rule reaps them after a day).
+  `oci os object list-object-versions -bn shogo-workspaces-production --prefix <projectId>/project-data.tar.gz`
+- Last 30 days: `{projectId}/project-data/daily/<YYYY-MM-DD>.tar.gz`, each the
+  state at the end of that UTC day.
+
+To restore, stop the project first (its final backup lands), then copy the
+chosen version over `project-data.tar.gz`. The copy gives the archive a new
+ETag, so the suspended snapshot counts as behind storage and the next open
+cold-boots and hydrates the restored archive instead of resuming.

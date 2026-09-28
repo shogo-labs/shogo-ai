@@ -40,6 +40,9 @@ import {
   type InstanceSizeName,
 } from '../config/instance-sizes';
 import { getMinimumInstanceSize } from '@shogo/shared-runtime';
+import { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason } from './usage-limits';
+import { recordLocalUsage } from './billing-local';
+export { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason };
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
@@ -751,31 +754,6 @@ export async function getUsageWindows(
 }
 
 /**
- * Why a balance check failed, in enough detail for the HTTP layer to return
- * an accurate error code/message instead of the one-size-fits-all
- * `usage_limit_reached`:
- *
- *   - `entitlement_expired`: `usage_wallets.overageEnabled` is still `true`
- *     (the user turned on / has on-demand usage) but the paid entitlement
- *     backing it (Stripe subscription or grant) has lapsed. This is the
- *     "user sees on-demand enabled but still gets blocked" bug — see
- *     `resolveEffectivePlan`'s `paidTier` doc comment for why the column
- *     alone can't be trusted (incident 2026-08-06 / 2026-09-02).
- *   - `overage_cap_reached`: overage is genuinely active, but the
- *     workspace's own spending cap (`overageHardLimitUsd`) is exhausted.
- *   - `usage_limit_reached`: the generic case — no overage configured at
- *     all (or an uncapped/free wallet was never found), so the window is
- *     just the hard stop.
- */
-export type UsageBlockReason = 'entitlement_expired' | 'overage_cap_reached' | 'usage_limit_reached'
-
-export interface BalanceCheck {
-  ok: boolean
-  /** Only set when `ok` is `false`. */
-  reason?: UsageBlockReason
-}
-
-/**
  * Best-effort, fire-and-forget clear of a wallet's stale `overageEnabled`
  * flag once we've determined the entitlement behind it is gone. Nothing
  * else walks this column back (see `resolveEffectivePlan`), so without this
@@ -864,36 +842,6 @@ export async function hasBalance(
 ): Promise<boolean> {
   return (await checkUsageBalance(workspaceId, minimumRequiredUsd)).ok
 }
-
-/**
- * Map a balance-check failure reason to the HTTP error code/message the
- * client should see. Centralized so every route (chat, AI proxy, public
- * API, voice) reports the same accurate reason instead of the generic
- * "Enable usage-based pricing" message even when the user already has
- * on-demand usage turned on.
- */
-export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { code: string; message: string } {
-  switch (reason) {
-    case 'entitlement_expired':
-      return {
-        code: 'entitlement_expired',
-        message:
-          "Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.",
-      }
-    case 'overage_cap_reached':
-      return {
-        code: 'overage_cap_reached',
-        message:
-          "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
-      }
-    default:
-      return {
-        code: 'usage_limit_reached',
-        message: "You've reached your usage limit. Enable usage-based pricing or upgrade your plan to continue.",
-      }
-  }
-}
-
 
 function isNewMonth(now: Date, lastMonthlyReset: Date): boolean {
   return now.getUTCMonth() !== lastMonthlyReset.getUTCMonth() ||
@@ -1142,27 +1090,7 @@ export async function consumeUsageLocal(
   const { workspaceId, projectId, memberId, actionType, billedUsd, actionMetadata } = params
   const rawUsd = params.rawUsd ?? null
 
-  if (isLocalMode) {
-    try {
-      await prisma.usageEvent.create({
-        data: {
-          workspaceId,
-          projectId,
-          memberId,
-          actionType,
-          rawUsd,
-          billedUsd: 0,
-          source: 'daily',
-          balanceBefore: 0,
-          balanceAfter: 0,
-          actionMetadata: actionMetadata ?? null,
-        },
-      })
-    } catch (e) {
-      console.warn('[billing] Failed to record local usage event:', e)
-    }
-    return { success: true, remainingIncludedUsd: Infinity, overageChargedUsd: 0, source: 'daily' }
-  }
+  if (isLocalMode) return recordLocalUsage(params)
 
   // Resolve the workspace whose wallet is actually debited (parent for a
   // child workspace). Overage charging and usage alerts operate on that

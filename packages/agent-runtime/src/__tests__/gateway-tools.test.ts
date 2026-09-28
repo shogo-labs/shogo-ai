@@ -442,11 +442,11 @@ describe('gateway-tools', () => {
     test('createTools returns expected tools', () => {
       // Base tool count with every feature flag at its production default
       // (notably SHOGO_SEARCH_ENABLED unset, so `search` is not registered).
-      // 61 = 52 + `search_history` + `read_history` (chat/plan history search)
+      // 63 = 52 + `search_history` + `read_history` (chat/plan history search)
       // + the 7 project-lifecycle tools (project_list/create/attach/detach/
-      // configure/call, system_apply — see project-tools.ts).
+      // configure/call, system_apply — see project-tools.ts) + github_create_pr.
       // (`notify_user_error` was removed along with the noisy error toast UI.)
-      expect(createTools(createCtx())).toHaveLength(61)
+      expect(createTools(createCtx())).toHaveLength(63)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()
@@ -455,6 +455,7 @@ describe('gateway-tools', () => {
       expect(createTools(createCtx()).find((t) => t.name === 'read_history')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'project_list')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'system_apply')).toBeDefined()
+      expect(createTools(createCtx()).find((t) => t.name === 'github_create_pr')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'canvas_create')).toBeUndefined()
       expect(createTools(createCtx()).find((t) => t.name === 'canvas_update')).toBeUndefined()
     })
@@ -782,6 +783,25 @@ describe('gateway-tools', () => {
       const result = await execStateful(ctx, 'pwd')
       expect(result.exitCode).toBe(0)
       expect(result.cwd).toBeDefined()
+    })
+
+    test('a deleted cwd resets to the session start directory, not the merged root', async () => {
+      const projectDir = join(TEST_DIR, 'project-mount')
+      mkdirSync(join(TEST_DIR, 'scratch'), { recursive: true })
+      mkdirSync(projectDir, { recursive: true })
+      const cwdMap = new Map<string, string>()
+      const ctx = createCtx({
+        sessionId: 's',
+        shellState: {
+          getCwd: () => cwdMap.get('s') || realpathSync(projectDir),
+          setCwd: (cwd: string) => cwdMap.set('s', cwd),
+          initialCwd: realpathSync(projectDir),
+        },
+      })
+      await execStateful(ctx, `cd "${join(REAL_TEST_DIR, 'scratch')}"`)
+      rmSync(join(TEST_DIR, 'scratch'), { recursive: true })
+      const result = await execStateful(ctx, 'pwd')
+      expect(result.stdout).toBe(realpathSync(projectDir))
     })
 
     test('rapid sequential calls have no temp file collision', async () => {

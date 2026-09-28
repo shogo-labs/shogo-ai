@@ -59,7 +59,7 @@ describe('getHomeFleetEnv', () => {
   it('scopes the production baseline to the EU control plane', () => {
     setEnv(undefined, 'eu-frankfurt-1')
     const env = getHomeFleetEnv('production')
-    expect(env.baseline.map((b) => b.hostId).sort()).toEqual(['latitude-fra-1', 'latitude-fra-2'])
+    expect(env.baseline.map((b) => b.hostId).sort()).toEqual(['latitude-fra-1', 'latitude-fra-2', 'latitude-fra-3'])
     expect(env.baseline.every((b) => b.region === 'eu')).toBe(true)
   })
 
@@ -73,12 +73,12 @@ describe('getHomeFleetEnv', () => {
   it('falls back to the full baseline when the region is unknown', () => {
     setEnv(undefined, undefined)
     const env = getHomeFleetEnv('production')
-    expect(env.baseline.length).toBe(4)
+    expect(env.baseline.length).toBe(5)
   })
 
   it('falls back to the full baseline rather than manage nothing on an unrecognized region', () => {
     setEnv(undefined, 'ap-tokyo-1')
     const env = getHomeFleetEnv('production')
-    expect(env.baseline.length).toBe(4)
+    expect(env.baseline.length).toBe(5)
   })
 })

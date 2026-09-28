@@ -141,6 +141,8 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const comfortable = usePhoneLayout();
   const nativeLongPress = isNativePlatform();
   const density = densityFor(comfortable);
+  const workspacePane =
+    Platform.OS === "web" && !comfortable && !mobileProjectDetail;
   const pathname = usePathname();
   const params = useLocalSearchParams<{ chatSessionId?: string }>();
   const http = useDomainHttp();
@@ -402,6 +404,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       );
       try {
         await actions.updateChatSession(sessionId, { isPinned: next });
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to toggle pin:", e);
         refreshChats();
@@ -417,6 +420,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       );
       try {
         await actions.updateChatSession(sessionId, { isArchived: next });
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to toggle archive:", e);
         refreshChats();
@@ -432,6 +436,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       );
       try {
         await actions.updateChatSession(sessionId, { name });
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to rename chat:", e);
         refreshChats();
@@ -447,6 +452,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
       try {
         await actions.deleteChatSession(sessionId);
+        chatSessionEvents.emit({ projectId: project.id, refresh: true });
       } catch (e) {
         console.error("[AppSidebar] Failed to delete chat:", e);
         refreshChats();
@@ -581,6 +587,7 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
         }
         onMeasureHeight={handleChatRowHeight}
         mobileProjectDetail={mobileProjectDetail}
+        variant={workspacePane ? "workspacePane" : undefined}
       />
     );
     const chatRows = createSidebarChatRows(
@@ -590,7 +597,15 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     );
 
     return (
-      <View className={mobileProjectDetail ? "flex-1" : "ml-6 mt-0.5"}>
+      <View
+        className={
+          mobileProjectDetail
+            ? "flex-1"
+            : workspacePane
+              ? "mt-0.5"
+              : "ml-6 mt-0.5"
+        }
+      >
         {sessions.length === 0 ? (
           <View className={mobileProjectDetail ? "pl-12 pr-2 py-3" : "px-2 py-3"}>
             <Text
@@ -758,7 +773,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           className={cn(
             "group flex-row items-center rounded-md pr-1",
             comfortable ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
-            isActive ? "bg-accent" : "active:bg-accent/50",
+            isActive
+              ? "bg-accent"
+              : "hover:bg-accent/50 active:bg-accent/50",
           )}
         >
           <Pressable
@@ -810,14 +827,14 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
               Hidden there — the Pinned section already groups these rows,
               and hover-reveal actions do not exist on touch. */}
           {isPinned && !comfortable && (
-            <View className="group-hover:hidden pr-1 shrink-0">
+            <View className="pr-1 shrink-0 opacity-100 group-hover:opacity-0">
               <Pin size={10} className="text-muted-foreground" />
             </View>
           )}
           {/* Hover-reveal actions (web). Siblings of the project Pressable, so
               tapping one never triggers the project-open press. */}
           {Platform.OS === "web" && (
-          <View className="hidden group-hover:flex flex-row items-center gap-0.5 shrink-0">
+          <View className="flex flex-row items-center gap-0.5 shrink-0 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto">
             <Pressable
               onPress={handleCreateChat}
               className="p-0.5"

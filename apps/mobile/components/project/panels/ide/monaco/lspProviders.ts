@@ -317,7 +317,9 @@ export function setupLspProviders(config: LspProvidersConfig): { dispose: () => 
 
   const post = async <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T | null> => {
     try {
-      const res = await fetchImpl(`${agentUrl}/agent/lsp/${path}`, {
+      // `scope=project`: document paths are the IDE's project-relative paths
+      // (same path space as the scoped workspace file API in sdkFs.ts).
+      const res = await fetchImpl(`${agentUrl}/agent/lsp/${path}?scope=project`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),

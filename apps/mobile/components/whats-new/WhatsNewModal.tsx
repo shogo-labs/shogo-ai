@@ -120,14 +120,6 @@ export function WhatsNewModal({
                   <Sparkles size={index % 2 === 0 ? 16 : 11} color="#fff7ed" />
                 </Motion.View>
               ))}
-              <Pressable
-                accessibilityLabel="Close What's New"
-                accessibilityRole="button"
-                onPress={onDismiss}
-                className="absolute right-4 top-4 rounded-full bg-black/10 p-2"
-              >
-                <X size={18} color="#fff" />
-              </Pressable>
               <View className="gap-1">
                 <Text className="text-xs font-semibold uppercase tracking-[2px] text-orange-100">
                   What's new
@@ -139,6 +131,15 @@ export function WhatsNewModal({
                   {release.intro}
                 </Text>
               </View>
+              {/* Rendered after the full-width text block so it stacks above it and stays clickable. */}
+              <Pressable
+                accessibilityLabel="Close What's New"
+                accessibilityRole="button"
+                onPress={onDismiss}
+                className="absolute right-4 top-4 rounded-full bg-black/10 p-2"
+              >
+                <X size={18} color="#fff" />
+              </Pressable>
             </LinearGradient>
           </View>
 
@@ -179,9 +180,11 @@ export function WhatsNewModal({
               accessibilityRole="button"
               accessibilityLabel="Dismiss What's New"
               onPress={onDismiss}
-              className="h-11 items-center justify-center rounded-xl bg-primary-500 active:bg-primary-600"
+              className="h-11 items-center justify-center rounded-xl bg-primary active:bg-primary/80"
             >
-              <Text className="text-sm font-semibold text-white">Got it</Text>
+              <Text className="text-sm font-semibold text-primary-foreground">
+                Got it
+              </Text>
             </Pressable>
             <Pressable
               accessibilityRole="link"
@@ -191,7 +194,7 @@ export function WhatsNewModal({
               }}
               className="flex-row items-center justify-center gap-1 py-1"
             >
-              <Text className="text-sm font-medium text-primary-600 dark:text-primary-400">
+              <Text className="text-sm font-medium text-primary">
                 Read the full changelog
               </Text>
               <ArrowRight size={15} color="#ea580c" />

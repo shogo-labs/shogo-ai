@@ -8,7 +8,7 @@ import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { API_URL } from '../../lib/api'
+import { autoSignInLocally } from '../../lib/auth-client'
 
 export default function OnboardingLayout() {
   const { isAuthenticated, isLoading, refreshSession } = useAuth()
@@ -21,14 +21,8 @@ export default function OnboardingLayout() {
     autoSignInAttempted.current = true
     setAutoSignInError(null)
     setAutoSigningIn(true)
-    fetch(`${API_URL}/api/local/auto-sign-in`, {
-      method: 'POST',
-      credentials: 'include',
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(`Auto-sign-in returned ${res.status}`)
-        return refreshSession()
-      })
+    autoSignInLocally()
+      .then(refreshSession)
       .catch((err) => {
         console.error('[LocalMode] Auto-sign-in failed:', err)
         setAutoSignInError(err instanceof Error ? err.message : String(err))

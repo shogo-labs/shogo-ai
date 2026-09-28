@@ -84,11 +84,18 @@ export function shouldStackProminentComposer({
     const threshold = currentlyStacked
       ? slotWidth - PROMINENT_COMPOSER_WRAP_SLOP
       : slotWidth
-    return textWidth > threshold
+    if (textWidth > threshold) return true
   }
 
-  if (currentlyStacked) return true
-  return contentHeight > lineHeight + PROMINENT_COMPOSER_WRAP_SLOP
+  // The hidden width measurer can miss a wrap. A taller field means the
+  // line already broke, so stack instead of letting it cover the buttons.
+  if (contentHeight > lineHeight + PROMINENT_COMPOSER_WRAP_SLOP) return true
+  // A stacked field can report a one-line height because it has more width
+  // than the compact slot. Keep it stacked until the hidden measurer gives us
+  // a real width that proves the text fits; otherwise the compact/stacked
+  // layout change can oscillate when `onTextLayout` is unavailable.
+  if (currentlyStacked && (!measuredSlot || textWidth <= 0)) return true
+  return false
 }
 
 export function nextProminentComposerHeight(

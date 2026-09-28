@@ -82,6 +82,7 @@ const SINGLETON_PACKAGES = [
   'react-dom',
   'react-native',
   'react-native-web',
+  'react-native-svg',
   'react/jsx-runtime',
   'react/jsx-dev-runtime',
   'mobx',

@@ -56,6 +56,8 @@ export interface CacheEntry {
    * taken. Same role as `backupEtag`, for the database + uploads.
    */
   dataEtag?: string
+  /** Per-member writable-state archive ETags for workspace runtimes (`dataEtag` per member). */
+  memberDataEtags?: Record<string, string>
   /**
    * ETag of the durable `.git` archive current when this snapshot was taken.
    */

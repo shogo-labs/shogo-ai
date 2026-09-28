@@ -3,7 +3,13 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Platform } from 'react-native'
-import { openInWorkspace, scheduleWorkspaceSwitch } from '../switch-workspace'
+import {
+  homePathForWorkspaceKind,
+  openInWorkspace,
+  reloadAfterWorkspaceSwitch,
+  scheduleWorkspaceSwitch,
+  subscribeWorkspaceSwitched,
+} from '../switch-workspace'
 import { clearActiveWorkspaceId, getActiveWorkspaceId } from '../workspace-store'
 
 afterEach(() => {
@@ -55,6 +61,35 @@ describe('scheduleWorkspaceSwitch', () => {
 
     expect(loaded).toEqual(['ws-2'])
     expect(getActiveWorkspaceId()).toBe('ws-2')
+  })
+})
+
+describe('homePathForWorkspaceKind', () => {
+  test('opens main chat for personal and the project builder for team', () => {
+    expect(homePathForWorkspaceKind('personal')).toBe('/(app)')
+    expect(homePathForWorkspaceKind('team')).toBe('/(app)/new-project')
+    expect(homePathForWorkspaceKind(undefined)).toBe('/(app)/new-project')
+  })
+})
+
+describe('reloadAfterWorkspaceSwitch', () => {
+  const originalOS = Platform.OS
+
+  afterEach(() => {
+    ;(Platform as { OS: string }).OS = originalOS
+  })
+
+  test('notifies native listeners so the shell can reset', () => {
+    ;(Platform as { OS: string }).OS = 'ios'
+    let calls = 0
+    const unsubscribe = subscribeWorkspaceSwitched(() => {
+      calls += 1
+    })
+    reloadAfterWorkspaceSwitch()
+    expect(calls).toBe(1)
+    unsubscribe()
+    reloadAfterWorkspaceSwitch()
+    expect(calls).toBe(1)
   })
 })
 

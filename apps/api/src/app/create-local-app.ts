@@ -27,6 +27,7 @@ import { databaseRoutes } from '../routes/database'
 import { checkpointRoutes } from '../routes/checkpoints'
 import { aiProxyRoutes } from '../routes/ai-proxy'
 import { aiLiveRoutes } from '../routes/ai-live'
+import { voiceRoutes } from '../routes/voice'
 import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
@@ -43,9 +44,12 @@ import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
 import { localSystemRoutes } from '../routes/local-system'
 import { localPlatformRoutes } from '../routes/local-platform'
+import { localSharedFileRoutes } from '../routes/local-shared-files'
 import { marketplaceRoutes } from '../routes/marketplace'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
+import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
+import { authenticateRuntimeToken } from '../routes/internal-runtime-auth'
 
 const VITE_PORT = Number(process.env.VITE_PORT || 8081)
 
@@ -80,7 +84,19 @@ export function createLocalApp(): LocalAppBundle {
 
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
+  app.route('/', localSharedFileRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
+  // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and
+  // members, ...). Without them "Trust folder" never reaches the agent and
+  // folder-linked repos stay read-only.
+  app.route(
+    '/api/internal',
+    runtimeInternalRoutes({
+      authenticate: authenticateRuntimeToken,
+      loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
+      loadAgentCall: () => import('../services/agent-call.service'),
+    }),
+  )
   app.route('/api/local', localLogsRoutes())
   app.route('/api', localAuthRoutes())
   app.route('/api', localUserRoutes())
@@ -110,6 +126,7 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', projectAuthConfigRoutes())
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
+  app.route('/api', voiceRoutes())
   app.route('/api', chatRoutes())
   app.route('/api', toolsProxyRoutes())
   app.route('/api', techStackRoutes())

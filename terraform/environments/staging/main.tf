@@ -290,6 +290,17 @@ module "knative" {
   domain             = local.domain
   publish_domain     = "shogo.one"
   enable_pvc_support = true
+
+  cluster_id = module.oke.cluster_id
+  region     = var.region
+}
+
+# =============================================================================
+# Metrics Server
+# =============================================================================
+
+module "metrics_server" {
+  source = "../../modules/metrics-server"
 }
 
 # =============================================================================

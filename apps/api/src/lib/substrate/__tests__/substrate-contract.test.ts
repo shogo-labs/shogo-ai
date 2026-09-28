@@ -67,24 +67,28 @@ const metalCase: Case = {
     const unpublished: string[] = []
     const alwaysOn: string[] = []
     const kv = new Map<string, string>()
+    // Lifecycle calls address the `ws:proj:<id>` runtime key; the shared
+    // vocabulary is in bare project ids (key mapping is asserted separately).
+    const bare = (key: string) => key.replace(/^ws:proj:/, '')
     const backend: MetalBackend = {
       async getMetalProjectUrl(id) {
         if (id === 'fails') throw new Error('no live metal host')
         return `http://metal/${id}`
       },
-      async getProjectStatus(id) {
+      async getProjectStatus(key) {
+        const id = bare(key)
         if (id === 'gone') return { exists: false, ready: false, replicas: 0 }
         return { exists: true, ready: true, replicas: 1, url: `http://metal/${id}` }
       },
-      async stopProject(id) {
-        stopped.push(id)
+      async stopProject(key) {
+        stopped.push(bare(key))
         return { suspended: true, busy: false }
       },
-      async destroyProject(id) {
-        destroyed.push(id)
+      async destroyProject(key) {
+        destroyed.push(bare(key))
       },
-      async resizeProject(id) {
-        resized.push(id)
+      async resizeProject(key) {
+        resized.push(bare(key))
       },
       async listProjects() {
         return [{ projectId: 'p1', ready: true, url: 'http://metal/p1', host: 'dal-1', region: 'us' }]
@@ -289,3 +293,80 @@ for (const c of [metalCase, knativeCase]) {
     })
   })
 }
+
+// Regression: MetalSubstrate used to pass the bare project id to the host, so
+// stop/status/resize missed the real `ws:proj:<id>` runtime (the user "stop"
+// route replied "suspended" while the VM kept running).
+describe('MetalSubstrate addresses the anchored workspace runtime key', () => {
+  function recordingBackend() {
+    const calls: Array<[string, string]> = []
+    const backend: MetalBackend = {
+      async getMetalProjectUrl(id) { return `http://metal/${id}` },
+      async getProjectStatus(id) { calls.push(['status', id]); return { exists: true, ready: true, replicas: 1 } },
+      async stopProject(id) { calls.push(['stop', id]); return { suspended: true, busy: false } },
+      async destroyProject(id) { calls.push(['destroy', id]) },
+      async resizeProject(id) { calls.push(['resize', id]) },
+      async listProjects() { return [] },
+      async getMetalPublishedUrl(_id, subdomain) { return { url: `http://metal/published/${subdomain}` } },
+      async destroyPublished() {},
+      async setPublishedAlwaysOn() {},
+    }
+    return { calls, substrate: new MetalSubstrate(backend, makeKv(new Map())) }
+  }
+
+  it('stop, getStatus and resize target ws:proj:<id>', async () => {
+    const { calls, substrate } = recordingBackend()
+    await substrate.stop('p1')
+    await substrate.getStatus('p1')
+    await substrate.resize('p1', { minScale: 1 })
+    expect(calls).toEqual([
+      ['stop', 'ws:proj:p1'],
+      ['status', 'ws:proj:p1'],
+      ['resize', 'ws:proj:p1'],
+    ])
+  })
+
+  it('destroy targets both ws:proj:<id> and the legacy bare key', async () => {
+    const { calls, substrate } = recordingBackend()
+    await substrate.destroy('p1')
+    expect(calls.map(([, id]) => id).sort()).toEqual(['p1', 'ws:proj:p1'])
+  })
+})
+
+// Regression coverage for the metal wake-path always-on bug: `wakePublished`
+// used to call `getMetalPublishedUrl(projectId, subdomain)` WITHOUT the
+// caller's `alwaysOn`, unlike `publish()` a few lines above it in the same
+// file — so resuming a suspended always-on published VM via a visitor wake
+// (the wake-on-visit loading page) could silently clear the host reaper's
+// idle-suspend exemption for a paid "always on" perk. `publish()` already had
+// a passing assertion for this; this locks down the `wakePublished` side too.
+describe('MetalSubstrate.wakePublished forwards alwaysOn (regression)', () => {
+  it('passes alwaysOn:true through to getMetalPublishedUrl when the caller says the site is always-on', async () => {
+    const calls: Array<{ id: string; subdomain: string; opts?: { alwaysOn?: boolean } }> = []
+    const backend: MetalBackend = {
+      async getMetalProjectUrl(id) { return `http://metal/${id}` },
+      async getProjectStatus() { return { exists: true, ready: true, replicas: 1 } },
+      async stopProject() { return { suspended: true, busy: false } },
+      async destroyProject() {},
+      async resizeProject() {},
+      async listProjects() { return [] },
+      async getMetalPublishedUrl(id, subdomain, opts) {
+        calls.push({ id, subdomain, opts })
+        return { url: `http://metal/published/${subdomain}` }
+      },
+      async destroyPublished() {},
+      async setPublishedAlwaysOn() {},
+    }
+    const substrate = new MetalSubstrate(backend, makeKv(new Map()))
+
+    await substrate.wakePublished('p1', 'my-site', { alwaysOn: true })
+    expect(calls[0]?.opts?.alwaysOn).toBe(true)
+
+    await substrate.wakePublished('p1', 'my-site', { alwaysOn: false })
+    expect(calls[1]?.opts?.alwaysOn).toBe(false)
+
+    // No opts at all (defensive default) must NOT silently claim always-on.
+    await substrate.wakePublished('p1', 'my-site')
+    expect(calls[2]?.opts?.alwaysOn).toBeUndefined()
+  })
+})

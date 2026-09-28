@@ -70,6 +70,7 @@ import type {
   WorkspaceAgentProfile as SharedWorkspaceAgentProfile,
   Goal as SharedGoal,
   WorkspaceActivityItem as SharedWorkspaceActivityItem,
+  WorkspaceActiveChat as SharedWorkspaceActiveChat,
   GoalEventRecord as SharedGoalEventRecord,
   GoalPlanStep as SharedGoalPlanStep,
   GoalDeliverable as SharedGoalDeliverable,
@@ -81,6 +82,7 @@ export type PersonalGoalEventKind = SharedGoalEventKind
 export type PersonalAgentProfile = SharedWorkspaceAgentProfile
 export type PersonalGoal = SharedGoal
 export type PersonalWorkspaceActivity = SharedWorkspaceActivityItem
+export type ActiveChatTurn = SharedWorkspaceActiveChat
 export type PersonalGoalEvent = SharedGoalEventRecord
 export type PersonalGoalPlanStep = SharedGoalPlanStep
 export type PersonalGoalDeliverable = SharedGoalDeliverable
@@ -439,7 +441,7 @@ export const api = {
   },
 
   async getWorkspacePlans(http: HttpClient, workspaceIds: string[]) {
-    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null; source?: 'subscription' | 'grant' | 'free' }> }>(
+    const res = await http.get<{ ok?: boolean; plans?: Record<string, { planId: string; status: string | null; source?: 'subscription' | 'grant' | 'free'; canManageChildren?: boolean }> }>(
       `/api/billing/workspace-plan?workspaceIds=${workspaceIds.join(',')}`
     )
     return res.data?.plans ?? {}
@@ -464,16 +466,35 @@ export const api = {
     http: HttpClient,
     params: { name: string; description?: string; parentWorkspaceId: string; ownerId: string },
   ) {
-    const res = await http.post<{ ok?: boolean; data?: { id: string; name: string; slug: string } }>(
-      '/api/workspaces',
-      params,
-    )
-    if (!res.data?.ok || !res.data.data) throw new Error('createChildWorkspace: workspace not created')
+    type CreateChildWorkspaceResponse = {
+      ok?: boolean
+      data?: { id: string; name: string; slug: string }
+      error?: { code?: string; message?: string }
+    }
+    let res: { data?: CreateChildWorkspaceResponse }
+    try {
+      res = await http.post<CreateChildWorkspaceResponse>('/api/workspaces', params)
+    } catch (cause: any) {
+      const apiError = cause?.details?.error
+      if (apiError?.code) {
+        const error = new Error(apiError.message ?? cause.message) as Error & { code?: string }
+        error.code = apiError.code
+        throw error
+      }
+      throw cause
+    }
+    if (!res.data?.ok || !res.data.data) {
+      const error = new Error(
+        res.data?.error?.message ?? 'createChildWorkspace: workspace not created',
+      ) as Error & { code?: string }
+      error.code = res.data?.error?.code
+      throw error
+    }
     return res.data.data
   },
 
   async verifyCheckout(http: HttpClient, sessionId: string) {
-    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string; seats?: number }>('/api/billing/verify-checkout', { sessionId })
+    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string; seats?: number; billingInterval?: 'monthly' | 'annual'; amountPaid?: number; currency?: string }>('/api/billing/verify-checkout', { sessionId })
     return res.data
   },
 
@@ -523,6 +544,17 @@ export const api = {
 
   async unregisterMobilePushSubscription(http: HttpClient, pushToken: string) {
     const res = await http.delete<{ ok?: boolean }>('/api/mobile-push-subscriptions', { pushToken })
+    return res.data
+  },
+
+  async sendAppInstallHeartbeat(http: HttpClient, body: {
+    deviceId: string
+    platform: 'ios' | 'android'
+    appVersion?: string | null
+    osVersion?: string | null
+    deviceModel?: string | null
+  }) {
+    const res = await http.post<{ ok?: boolean; id?: string }>('/api/app-installs/heartbeat', body)
     return res.data
   },
 
@@ -889,16 +921,36 @@ export const api = {
     return res.data
   },
 
+  // A subdomain availability check should be near-instant (a single DB
+  // uniqueness lookup). Bound it with a client-side timeout so a hung
+  // request (e.g. during a backend hiccup) can't leave the availability
+  // spinner — and therefore the Publish button — stuck forever with no
+  // error. See PublishDropdown's `checking` state, which gates `canPublish`.
   async checkSubdomain(http: HttpClient, subdomain: string) {
-    const res = await http.get<{ available: boolean; reason?: string }>(
-      `/api/subdomains/${encodeURIComponent(subdomain)}/check`,
-    )
-    return res.data
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
+    try {
+      const res = await http.request<{ available: boolean; reason?: string }>(
+        `/api/subdomains/${encodeURIComponent(subdomain)}/check`,
+        { method: 'GET', signal: controller.signal },
+      )
+      return res.data
+    } finally {
+      clearTimeout(timer)
+    }
   },
 
   // `password` is only sent (and required) when accessLevel === 'password' and
   // the site doesn't already have a password salted by this subdomain. The
   // server hashes it; the raw value is never persisted.
+  //
+  // Publishing can take a while (build + upload + provisioning), but every
+  // step on the server now has its own timeout (60s each, see publish.ts) —
+  // so bounding the whole request at a generous 5 minutes here is purely a
+  // backstop against a request that never got a response at all (dropped
+  // connection, proxy hiccup), not against normal publish latency. Without
+  // this, a hung connection leaves the Publish button spinner running
+  // indefinitely with no way to retry.
   async publishProject(
     http: HttpClient,
     projectId: string,
@@ -906,11 +958,17 @@ export const api = {
     accessLevel: string,
     password?: string,
   ) {
-    const res = await http.post<{ subdomain: string; publishedAt: number; accessLevel?: string; hasPassword?: boolean }>(
-      `/api/projects/${projectId}/publish`,
-      { subdomain, accessLevel, ...(password ? { password } : {}) },
-    )
-    return res.data
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5 * 60_000)
+    try {
+      const res = await http.request<{ subdomain: string; publishedAt: number; accessLevel?: string; hasPassword?: boolean }>(
+        `/api/projects/${projectId}/publish`,
+        { method: 'POST', body: { subdomain, accessLevel, ...(password ? { password } : {}) }, signal: controller.signal },
+      )
+      return res.data
+    } finally {
+      clearTimeout(timer)
+    }
   },
 
   async unpublishProject(http: HttpClient, projectId: string) {
@@ -1367,6 +1425,8 @@ export const api = {
       inferredName?: string
       attachProjectIds?: string[]
       attachMode?: 'readwrite' | 'readonly'
+      /** Pin the session to this project so chat runs on the runtime serving its preview. */
+      anchorProjectId?: string
     } = {},
   ): Promise<{ id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> }> {
     const res = await http.post<{ session: { id: string; workspaceId: string; attached: Array<{ id: string; projectId: string; attachMode: string }> } }>(
@@ -1486,6 +1546,13 @@ export const api = {
     return res.data?.activity ?? []
   },
 
+  async listWorkspaceActiveChats(http: HttpClient, workspaceId: string): Promise<ActiveChatTurn[]> {
+    const res = await http.get<{ chats?: ActiveChatTurn[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats`,
+    )
+    return res.data?.chats ?? []
+  },
+
   /** Attach a project to an existing workspace session. */
   async attachProject(
     http: HttpClient,
@@ -1500,6 +1567,25 @@ export const api = {
     )
     if (!res.data?.attached) throw new Error('attachProject: no attachment returned')
     return res.data.attached
+  },
+
+  /**
+   * Attach a project read-write and ask the server to pin the session to it.
+   * Resolves `pinned: false` when pinning would move other work off its
+   * runtime (primary chat, already pinned elsewhere, or other attachments).
+   */
+  async attachProjectAsAnchor(
+    http: HttpClient,
+    workspaceId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<{ pinned: boolean }> {
+    const res = await http.post<{ attached?: unknown; pinned?: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/projects`,
+      { projectId, attachMode: 'readwrite', pinAsAnchor: true },
+    )
+    if (!res.data?.attached) throw new Error('attachProjectAsAnchor: no attachment returned')
+    return { pinned: res.data.pinned === true }
   },
 
   /** List the projects mounted in a workspace chat, including their write mode. */

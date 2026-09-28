@@ -7,11 +7,12 @@
  * This file is safe to edit - it will not be overwritten.
  */
 import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/agent-templates'
-import * as billingService from '../services/billing.service'
+import * as billingService from '../services/billing-runtime'
 import { getModelTier } from '@shogo/model-catalog'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
+import { deleteChatAttachmentPrefix } from '../lib/chat-attachments'
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -482,8 +483,23 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
+    const cleanupChatAttachments = async () => {
+      try {
+        const sessions = await ctx.prisma.chatSession.findMany({
+          where: { contextType: 'project', contextId: id },
+          select: { id: true },
+        })
+        await Promise.all(
+          sessions.map((session: { id: string }) => deleteChatAttachmentPrefix(session.id)),
+        )
+      } catch (error: any) {
+        console.warn(`[project.beforeDelete] attachment cleanup failed for ${id}:`, error?.message || error)
+      }
+    }
+
     const wsMember = project.workspace.members.find((m: any) => m.userId === userId)
     if (wsMember && (wsMember.role === 'owner' || wsMember.role === 'admin')) {
+      await cleanupChatAttachments()
       return { ok: true }
     }
 
@@ -491,6 +507,7 @@ export const projectHooks: ProjectHooks = {
       where: { userId, projectId: id },
     })
     if (projectMember && (projectMember.role === 'owner' || projectMember.role === 'admin')) {
+      await cleanupChatAttachments()
       return { ok: true }
     }
 
@@ -528,11 +545,13 @@ export const projectHooks: ProjectHooks = {
     // runtime infra behind — the Knative ksvc + DomainMapping, and any metal
     // snapshot on NVMe/S3 — until an admin/GC sweep. Destroy both substrates so
     // nothing leaks (covers the drain window where a project has both).
-    try {
-      const { destroyProjectRuntime } = await import('../lib/substrate')
-      await destroyProjectRuntime(id)
-    } catch (err: any) {
-      console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      try {
+        const { destroyProjectRuntime } = await import('../lib/substrate')
+        await destroyProjectRuntime(id)
+      } catch (err: any) {
+        console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
+      }
     }
   },
 }

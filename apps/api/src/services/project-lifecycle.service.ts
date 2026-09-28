@@ -18,7 +18,7 @@ import { prisma } from '../lib/prisma'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
-import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing.service'
+import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing-runtime'
 
 export type ProjectLifecycleErrorCode =
   | 'unauthorized'

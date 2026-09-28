@@ -36,6 +36,7 @@ import { WorkspaceConversationSidebar } from "./WorkspaceConversationSidebar";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { CANVAS_NAV_HIDDEN } from "@shogo/shared-app";
 import { cn } from "@shogo/shared-ui/primitives";
+import { WorkspaceChromeSkeletonRows } from "./WorkspaceChromeSkeleton";
 
 interface NavItem {
   label: string;
@@ -108,12 +109,14 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
           accessibilityRole="link"
           accessibilityLabel="Shogo home"
           onPress={() => router.push("/(app)" as any)}
-          className="mb-5 h-9 w-9 items-center justify-center rounded-xl active:bg-muted"
+          className="mb-5 h-9 w-9 items-center justify-center rounded-xl hover:bg-muted active:bg-muted"
         >
           <ShogoLogoMark className="h-6 w-6" />
         </Pressable>
         <View className="items-center gap-2">
-          {primaryNav.map(({ href, label, icon: Icon, action }) => {
+          {!experience.resolved ? (
+            <WorkspaceChromeSkeletonRows count={4} testID="workspace-rail-skeleton" />
+          ) : primaryNav.map(({ href, label, icon: Icon, action }) => {
             const active =
               action === "search"
                 ? searchOpen
@@ -131,7 +134,7 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
                 }
                 className={cn(
                   "h-9 w-9 items-center justify-center rounded-lg",
-                  active ? "bg-primary/12" : "active:bg-muted"
+                  active ? "bg-primary/12" : "hover:bg-muted active:bg-muted"
                 )}
               >
                 <Icon
@@ -149,7 +152,7 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
             onPress={openSettings}
             className={cn(
               "h-9 w-9 items-center justify-center rounded-lg",
-              settingsOpen ? "bg-primary/12" : "active:bg-muted"
+              settingsOpen ? "bg-primary/12" : "hover:bg-muted active:bg-muted"
             )}
           >
             <Settings

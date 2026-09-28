@@ -89,7 +89,9 @@ export function setupLspDocumentSync(config: LspDocumentSyncConfig): { dispose: 
 
   const post = (path: string, body: unknown) => {
     // Fire-and-forget — failures are non-fatal (next change resyncs).
-    return fetchImpl(`${agentUrl}/agent/lsp/${path}`, {
+    // `scope=project`: document paths are the IDE's project-relative paths
+    // (same path space as the scoped workspace file API in sdkFs.ts).
+    return fetchImpl(`${agentUrl}/agent/lsp/${path}?scope=project`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

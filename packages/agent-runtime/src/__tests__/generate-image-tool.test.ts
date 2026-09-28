@@ -63,10 +63,13 @@ describe('generate_image tool', () => {
     // Synthesise a non-ok response so the tool's error branch fires
     // immediately. This keeps every test deterministic regardless of
     // whether the dev server is running on port 8002.
-    fetchSpy = mock(async () => new Response('mocked: image generation disabled in tests', {
-      status: 503,
-      statusText: 'Service Unavailable',
-    }))
+    fetchSpy = mock(
+      async () =>
+        new Response('mocked: image generation disabled in tests', {
+          status: 503,
+          statusText: 'Service Unavailable',
+        }),
+    )
     globalThis.fetch = fetchSpy as unknown as typeof fetch
   })
 
@@ -92,7 +95,17 @@ describe('generate_image tool', () => {
     expect(tool.parameters.properties).toHaveProperty('size')
     expect(tool.parameters.properties).toHaveProperty('model')
     expect(tool.parameters.properties).toHaveProperty('quality')
+    expect(tool.parameters.properties).toHaveProperty('options')
     expect(tool.parameters.properties).toHaveProperty('reference_image')
+  })
+
+  test('rejects an options count outside 1-4', async () => {
+    const tool = getImageTool(createCtx())
+    const result = await tool.execute('test-call', {
+      prompt: 'a sunset',
+      options: 5,
+    })
+    expect(result.details.error).toContain('between 1 and 4')
   })
 
   test('returns error when proxy not configured', async () => {

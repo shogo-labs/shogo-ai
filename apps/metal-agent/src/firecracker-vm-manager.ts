@@ -40,6 +40,7 @@ import {
 } from './net'
 import { RootfsProvisioner, type CowUsage } from './rootfs'
 import { digHoles } from './sparsify'
+import { packRescuedWorkspace, withReadOnlyMount, type RescuedArchives } from './workspace-rescue'
 
 export interface FcVmConfig {
   /** Guest-visible RAM ceiling (MiB). Overrides the class default when set. */
@@ -460,12 +461,30 @@ export class FirecrackerVMManager {
     }
   }
 
-  async stopVM(handle: FcVmHandle): Promise<void> {
+  /**
+   * `keepRootfs` stops the VM but leaves its disk in place so the host can
+   * still read the workspace off it (see pool.rescueWorkspace); the caller
+   * then owns calling {@link releaseRootfs} or {@link quarantineRootfs}.
+   */
+  async stopVM(handle: FcVmHandle, opts: { keepRootfs?: boolean } = {}): Promise<void> {
     this.killProc(handle.id)
     teardownTap(handle.net)
     rmSync(handle.socketPath, { force: true })
-    this.rootfs.release(handle.rootfs)
+    if (!opts.keepRootfs) this.rootfs.release(handle.rootfs)
     if (handle.dataDrive) this.dataDrives.release(handle.dataDrive)
+  }
+
+  /** Pack `/app/workspace` (source + `.git`) off a stopped VM's rootfs. */
+  async extractWorkspaceFromRootfs(rootfsPath: string, outDir: string): Promise<RescuedArchives> {
+    const { device, loop } = this.rootfs.readOnlySource(rootfsPath)
+    return withReadOnlyMount(device, join(this.cfg.runDir, 'rescue'), { loop }, (root) =>
+      packRescuedWorkspace(root, outDir),
+    )
+  }
+
+  /** Keep a stopped VM's disk out of GC's reach. Returns the kept path or null. */
+  quarantineRootfs(rootfsPath: string, label: string): string | null {
+    return this.rootfs.quarantine(rootfsPath, label)
   }
 
   /** Tear down an orphaned/evicted data-drive file directly by path (GC path). */

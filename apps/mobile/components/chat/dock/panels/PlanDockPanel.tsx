@@ -20,10 +20,6 @@ export interface PlanDockPanelProps {
   confirmedPlan: PlanData | null
   onBuild: ((plan: PlanData, modelId?: string) => void) | null
   onOpenPlan?: (filepath?: string) => void
-  /** Resolved value is intentionally untyped: `ChatPanel`'s generator
-   *  resolves with the generated text, but `PlanCard` only awaits
-   *  completion to know when to clear its loading state. */
-  onGenerateSummary?: (filepath: string) => Promise<unknown> | void
   selectedModel?: string
   isPro?: boolean
 }
@@ -33,7 +29,6 @@ export function PlanDockPanel({
   confirmedPlan,
   onBuild,
   onOpenPlan,
-  onGenerateSummary,
   selectedModel,
   isPro = true,
 }: PlanDockPanelProps) {
@@ -43,7 +38,7 @@ export function PlanDockPanel({
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
     // Native phone uses the compact plan summary above the composer, not this
-    // expanded Technical/Summary dock card.
+    // desktop dock card.
     if (nativePhone || !plan) return null
     return {
       id: "plan",
@@ -57,23 +52,17 @@ export function PlanDockPanel({
         <PlanCard
           plan={plan}
           embedded
+          compact
           selectedModel={selectedModel}
           isPro={isPro}
           onBuild={!isConfirmed && onBuild ? (modelId) => onBuild(plan, modelId) : undefined}
           onOpenPlan={onOpenPlan ? () => onOpenPlan(plan.filepath) : undefined}
-          onGenerateSummary={
-            onGenerateSummary && plan.filepath
-              ? async () => {
-                  await onGenerateSummary(plan.filepath!)
-                }
-              : undefined
-          }
           isConfirmed={isConfirmed}
         />
       ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nativePhone, plan, isConfirmed, onBuild, onOpenPlan, onGenerateSummary, selectedModel, isPro])
+  }, [nativePhone, plan, isConfirmed, onBuild, onOpenPlan, selectedModel, isPro])
 
   useDockPanel(descriptor)
   return null

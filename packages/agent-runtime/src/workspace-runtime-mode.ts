@@ -28,6 +28,9 @@
  * without importing the side-effectful `server.ts` boot path.
  */
 
+import { existsSync } from 'fs'
+import { join } from 'path'
+
 export type WorkingMode = 'managed' | 'external'
 
 /** True when the runtime was booted as a multi-project workspace runtime. */
@@ -39,6 +42,112 @@ export function isWorkspaceRuntimeMode(env: NodeJS.ProcessEnv = process.env): bo
 export function workspaceRuntimeId(env: NodeJS.ProcessEnv = process.env): string | null {
   if (!isWorkspaceRuntimeMode(env)) return null
   return env.WORKSPACE_ID || null
+}
+
+/**
+ * One entry of the host's merged-root mount table (`WORKSPACE_MOUNTS`, set by
+ * the API's RuntimeManager): `<WORKSPACE_DIR>/<mount>` links to `path`.
+ * Mirrors `WorkspaceMount` in apps/api/src/lib/runtime/manager.ts.
+ *
+ * - `managed`  — a Shogo-owned project dir.
+ * - `external` — a folder-linked project's primary folder, i.e. the user's
+ *                own repo, mounted under the project id.
+ * - `folder`   — an extra host folder linked to `projectId` (the anchor).
+ */
+export interface WorkspaceMount {
+  mount: string
+  path: string
+  projectId: string
+  kind: 'managed' | 'external' | 'folder'
+  runtimeEnabled?: boolean
+}
+
+/** Parse `WORKSPACE_MOUNTS`. Empty for non-workspace runtimes, unset or malformed values. */
+export function parseWorkspaceMounts(env: NodeJS.ProcessEnv = process.env): WorkspaceMount[] {
+  if (!isWorkspaceRuntimeMode(env)) return []
+  const raw = env.WORKSPACE_MOUNTS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (m): m is WorkspaceMount =>
+        !!m &&
+        typeof m.mount === 'string' && m.mount.length > 0 &&
+        typeof m.path === 'string' && m.path.length > 0 &&
+        typeof m.projectId === 'string' &&
+        (m.kind === 'managed' || m.kind === 'external' || m.kind === 'folder'),
+    )
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Directory the agent's shell starts in. A merged-root runtime's
+ * WORKSPACE_DIR is Shogo scaffolding holding one link per mount, so a shell
+ * started there put `git clone` and scaffolding output outside the project
+ * (missing from the project's files view and checkpoints). Start in the
+ * anchor project's mount when it is present.
+ */
+export function defaultShellCwd(
+  workspaceDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  const anchor = isWorkspaceRuntimeMode(env) ? env.WORKSPACE_ANCHOR_PROJECT_ID : undefined
+  if (!anchor) return workspaceDir
+  const mount = parseWorkspaceMounts(env).find((m) => m.projectId === anchor && m.kind !== 'folder')
+  const dir = join(workspaceDir, mount?.mount ?? anchor)
+  return exists(dir) ? dir : workspaceDir
+}
+
+/** Mounts whose content belongs to the user rather than to Shogo. */
+export function isUserOwnedMount(mount: WorkspaceMount): boolean {
+  return mount.kind === 'external' || mount.kind === 'folder'
+}
+
+/**
+ * Group user-owned mounts by the project whose trust governs them. A group
+ * is `external` (fail-closed until trust is read) when its project is
+ * folder-linked; extra folders linked to a managed project default open,
+ * matching that project's own default.
+ */
+export function userOwnedTrustGroups(
+  mounts: readonly WorkspaceMount[],
+): Array<{ projectId: string; external: boolean; roots: string[] }> {
+  const external = new Set(mounts.filter((m) => m.kind === 'external').map((m) => m.projectId))
+  const groups = new Map<string, { projectId: string; external: boolean; roots: string[] }>()
+  for (const mount of mounts) {
+    if (!isUserOwnedMount(mount) || !mount.projectId) continue
+    const group = groups.get(mount.projectId) ?? {
+      projectId: mount.projectId,
+      external: external.has(mount.projectId),
+      roots: [],
+    }
+    group.roots.push(mount.path)
+    groups.set(mount.projectId, group)
+  }
+  return [...groups.values()]
+}
+
+/** Project ids whose mount is a folder-linked (external) project's own folder. */
+export function workspaceExternalProjectIds(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  return new Set(parseWorkspaceMounts(env).filter((m) => m.kind === 'external').map((m) => m.projectId))
+}
+
+/**
+ * Whether to auto-start the anchor project's preview at boot. A folder-linked
+ * anchor is the user's own repo: like a single-project external runtime, it
+ * only gets a preview when the user opted in (`RUNTIME_ENABLED=true`).
+ */
+export function shouldAutoStartAnchorPreview(
+  anchorId: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!anchorId) return false
+  if (!workspaceExternalProjectIds(env).has(anchorId)) return true
+  return env.RUNTIME_ENABLED === 'true'
 }
 
 /** Workspace product mode, defaulting to the team experience for compatibility. */
@@ -159,6 +268,30 @@ export function workspaceAvailableProjectsManifest(
 }
 
 /**
+ * `WORKSPACE.md` lines naming the project the user opened, so the agent
+ * edits `<anchor>/src/...` rather than a same-named path at the root. Empty
+ * without an anchor.
+ */
+export function renderCurrentProjectSection(
+  anchorProjectId: string | undefined,
+  projects: ReadonlyArray<{ id: string; name: string }>,
+): string[] {
+  const anchor = anchorProjectId?.trim()
+  if (!anchor) return []
+  const name = projects.find((p) => p.id === anchor)?.name
+  return [
+    '## Current project',
+    '',
+    `The user has \`${anchor}/\`${name && name !== anchor ? ` (**${name}**)` : ''} open, and its canvas previews that folder.`,
+    `When they mean "the app" or "this project", work in \`${anchor}/\`: a file like \`src/App.tsx\` is`,
+    `\`${anchor}/src/App.tsx\`. The workspace root is not a project, so always include the project folder in paths.`,
+    `New work also goes inside \`${anchor}/\` (your shell starts there): clone repositories, scaffold, and download into it,`,
+    'never into the workspace root, or the files are missing from the project and its checkpoints.',
+    '',
+  ]
+}
+
+/**
  * Render the human-readable `WORKSPACE.md` that sits at the merged-tree
  * root so the agent immediately understands which subfolder is which
  * project. Kept as a pure function for snapshot-style unit testing.
@@ -166,7 +299,13 @@ export function workspaceAvailableProjectsManifest(
 export function renderWorkspaceManifestMarkdown(
   workspaceId: string,
   projects: WorkspaceProjectEntry[],
+  mounts: readonly WorkspaceMount[] = [],
+  anchorProjectId?: string,
 ): string {
+  const externalPathById = new Map(
+    mounts.filter((m) => m.kind === 'external').map((m) => [m.projectId, m.path] as const),
+  )
+  const folderMounts = mounts.filter((m) => m.kind === 'folder')
   const lines: string[] = [
     '# Workspace',
     '',
@@ -174,16 +313,39 @@ export function renderWorkspaceManifestMarkdown(
     'Each top-level UUID-named folder below is a separate project you can',
     'read and edit. Treat them as sibling repos under one root.',
     '',
-    '## Attached projects',
-    '',
   ]
+  lines.push(...renderCurrentProjectSection(anchorProjectId, projects))
+  lines.push('## Attached projects', '')
   if (projects.length === 0) {
     lines.push('_No projects attached._')
   } else {
     for (const p of projects) {
-      lines.push(`- \`${p.id}/\` — **${p.name}**`)
+      const hostPath = externalPathById.get(p.id)
+      lines.push(
+        hostPath
+          ? `- \`${p.id}/\` — **${p.name}** (the user's own folder \`${hostPath}\`)`
+          : `- \`${p.id}/\` — **${p.name}**`,
+      )
     }
   }
+  if (folderMounts.length > 0) {
+    lines.push('')
+    lines.push('## Linked folders')
+    lines.push('')
+    lines.push('Host folders the user linked to this workspace, mounted as top-level folders:')
+    lines.push('')
+    for (const m of folderMounts) {
+      lines.push(`- \`${m.mount}/\` — \`${m.path}\``)
+    }
+  }
+  if (externalPathById.size > 0 || folderMounts.length > 0) {
+    lines.push('')
+    lines.push(
+      "Folders marked as the user's own are their real files on disk, not Shogo copies. " +
+        'Edit them in place and do not add Shogo scaffolding to them.',
+    )
+  }
+  lines.push('')
   lines.push('## Available projects')
   lines.push('')
   lines.push(

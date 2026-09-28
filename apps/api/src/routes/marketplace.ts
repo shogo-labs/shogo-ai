@@ -487,9 +487,16 @@ export function marketplaceRoutes() {
         bio?: string | null
         avatarUrl?: string | null
         websiteUrl?: string | null
+        /** ISO-3166 alpha-2, e.g. 'US' | 'CA'. See SUPPORTED_CONNECT_COUNTRIES. */
+        country?: string
       }
       if (!body.displayName || typeof body.displayName !== 'string') {
         return c.json({ error: 'displayName is required' }, 400)
+      }
+      if (body.country && !stripeConnect.isSupportedConnectCountry(body.country)) {
+        return c.json({
+          error: `Payouts aren't supported for that country yet. Supported: ${stripeConnect.SUPPORTED_CONNECT_COUNTRIES.join(', ')}`,
+        }, 400)
       }
       const profile = await marketplaceService.createCreatorProfile(authCtx.userId, {
         displayName: body.displayName,
@@ -504,13 +511,23 @@ export function marketplaceRoutes() {
       // Connect account on first payout setup. Failing here would surface as
       // "Failed to create creator profile" even though the profile exists,
       // forcing the user to navigate away and back to recover.
-      try {
-        await stripeConnect.createCustomAccount(profile.id, authCtx.email)
-      } catch (stripeErr) {
-        console.error(
-          '[marketplace] createCreatorProfile stripe connect (non-fatal)',
-          stripeErr,
-        )
+      //
+      // Only eagerly create the account when the client tells us the
+      // country: a Connect account's country is immutable, so silently
+      // defaulting to 'US' here (as this used to do) permanently locks out
+      // a Canadian (or other non-US) creator's real country before they
+      // ever see a country picker. Without one, defer account creation to
+      // `/creator/connect/onboard`, which the payout-setup screen calls
+      // once it has asked for a country.
+      if (body.country) {
+        try {
+          await stripeConnect.createCustomAccount(profile.id, authCtx.email, body.country.toUpperCase())
+        } catch (stripeErr) {
+          console.error(
+            '[marketplace] createCreatorProfile stripe connect (non-fatal)',
+            stripeErr,
+          )
+        }
       }
       return c.json({ profile })
     } catch (err) {
@@ -578,13 +595,24 @@ export function marketplaceRoutes() {
       return c.json({ error: 'Email required' }, 400)
     }
     try {
+      const body = await c.req.json().catch(() => ({} as { country?: string }))
+      const country = typeof body?.country === 'string' ? body.country.toUpperCase() : undefined
+      if (country && !stripeConnect.isSupportedConnectCountry(country)) {
+        return c.json({
+          error: `Payouts aren't supported for that country yet. Supported: ${stripeConnect.SUPPORTED_CONNECT_COUNTRIES.join(', ')}`,
+        }, 400)
+      }
       const profile = await marketplaceService.getCreatorProfile(authCtx.userId)
       if (!profile) {
         return c.json({ error: 'Creator profile not found' }, 404)
       }
+      // country is only used if the Connect account doesn't exist yet
+      // (createCustomAccount short-circuits to the existing account id
+      // otherwise) — see the immutable-country note above.
       const onboardUrl = await stripeConnect.createCreatorOnboardingLink(
         profile.id,
         authCtx.email,
+        country,
       )
       return c.json({ onboardUrl })
     } catch (err) {

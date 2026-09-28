@@ -104,6 +104,9 @@ export interface ChatContextValue {
   /** Open the saved plan artifact in the Plans panel. */
   openPlan?: (filepath?: string | null) => void
 
+  /** Open a file the assistant mentioned. `path` may be project-relative or `<projectId>/...`. */
+  openFile?: (path: string) => void
+
   /** Chat's current model — the plan Build picker starts here. */
   selectedModel?: string
 

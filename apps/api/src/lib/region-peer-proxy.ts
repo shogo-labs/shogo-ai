@@ -62,11 +62,14 @@ const FORWARD_REQUEST_HEADERS = [
 ]
 
 /**
- * Response headers we must NOT copy back (hop-by-hop / length headers that the
- * runtime recomputes when we re-stream the body).
+ * Response headers we must NOT copy back (hop-by-hop / framing headers that the
+ * runtime recomputes when we re-stream the body). Bun's fetch transparently
+ * decompresses compressed responses but can preserve content-encoding, so
+ * forwarding that header would make the downstream client decode plain bytes.
  */
 const STRIP_RESPONSE_HEADERS = new Set([
   'content-length',
+  'content-encoding',
   'transfer-encoding',
   'connection',
   'keep-alive',

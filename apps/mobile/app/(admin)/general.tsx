@@ -36,7 +36,13 @@ import {
   ShieldCheck,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { PlatformApi, type InstanceInfo, type FeatureFlagOverrides } from '@shogo-ai/sdk'
+import {
+  PlatformApi,
+  toErrorMessage,
+  type InstanceInfo,
+  type FeatureFlagOverrides,
+  type EzModeVoiceProvider,
+} from '@shogo-ai/sdk'
 import { API_URL, createHttpClient } from '../../lib/api'
 import { useAccentTheme } from '../../contexts/accent-theme'
 import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
@@ -106,7 +112,7 @@ export default function AdminGeneralPage() {
       setShogoKeyMask(status.keyPrefix ? `${status.keyPrefix}…` : '')
       setCloudKeyRejected(!!status.cloudKeyRejected)
       setLastHeartbeatOk(status.lastHeartbeatOk ?? null)
-      setLastHeartbeatError(status.lastHeartbeatError || null)
+      setLastHeartbeatError(toErrorMessage(status.lastHeartbeatError) || null)
       if (status.cloudUrl) {
         setCloudUrl(status.cloudUrl)
       }
@@ -151,7 +157,7 @@ export default function AdminGeneralPage() {
         void loadStatus()
       } else {
         setLoginStatus('error')
-        setLoginError(result.error || 'Sign-in was cancelled')
+        setLoginError(toErrorMessage(result.error, 'Sign-in was cancelled'))
       }
     })
 
@@ -162,13 +168,13 @@ export default function AdminGeneralPage() {
     desktopExt?.onCloudConnectionStatus?.((status: {
       connected: boolean
       cloudKeyRejected: boolean
-      error?: string
+      error?: unknown
       lastHeartbeatOk?: boolean | null
     }) => {
       if (cancelled) return
       setCloudKeyRejected(status.cloudKeyRejected)
       setLastHeartbeatOk(status.lastHeartbeatOk ?? (status.connected ? true : false))
-      setLastHeartbeatError(status.error || null)
+      setLastHeartbeatError(toErrorMessage(status.error) || null)
     })
 
     return () => {
@@ -189,7 +195,7 @@ export default function AdminGeneralPage() {
         const result = await (window as any).shogoDesktop.startCloudLogin()
         if (!result?.ok) {
           setLoginStatus('error')
-          setLoginError(result?.error || 'Could not start the API-key connection')
+          setLoginError(toErrorMessage(result?.error, 'Could not start the API-key connection'))
         }
         return
       }
@@ -240,12 +246,12 @@ export default function AdminGeneralPage() {
       })
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean
-        error?: string
+        error?: unknown
       }
       if (!res.ok || !data.ok) {
         setLoginStatus('error')
         setLoginError(
-          data.error || `Cloud rejected the key (HTTP ${res.status}).`,
+          toErrorMessage(data.error, `Cloud rejected the key (HTTP ${res.status}).`),
         )
         return
       }
@@ -281,7 +287,7 @@ export default function AdminGeneralPage() {
         const result = await (window as any).shogoDesktop.startCloudLogin()
         if (!result?.ok) {
           setLoginStatus('error')
-          setLoginError(result?.error || 'Could not start workspace switch')
+          setLoginError(toErrorMessage(result?.error, 'Could not start workspace switch'))
         }
         return
       }
@@ -308,6 +314,8 @@ export default function AdminGeneralPage() {
       setShogoWorkspaceName('')
       setShogoEmail('')
       setCloudKeyRejected(false)
+      setLastHeartbeatOk(null)
+      setLastHeartbeatError(null)
       setLoginStatus('idle')
       setInstanceInfo(null)
     } catch (err) {
@@ -372,6 +380,7 @@ export default function AdminGeneralPage() {
 
         {/* Feature Flags — platform-wide, cloud-only (no meaning on a single-user local install). */}
         {!localMode && <FeatureFlagsCard />}
+        {!localMode && <LiveVoiceProviderCard />}
 
         {/* Shogo Cloud Connection */}
         <SectionCard
@@ -970,6 +979,79 @@ function FeatureFlagsCard() {
         )}
       </View>
     </View>
+  )
+}
+
+function LiveVoiceProviderCard() {
+  const [override, setOverride] = useState<EzModeVoiceProvider | null>(null)
+  const [effective, setEffective] = useState<EzModeVoiceProvider>('gpt-live')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([platform.getEzModeVoiceProvider(), platform.getConfig()])
+      .then(([saved, config]) => {
+        if (cancelled) return
+        setOverride(saved.provider)
+        setEffective(config.features?.ezModeVoiceProvider ?? 'gpt-live')
+      })
+      .catch((err) => console.error('[LiveVoiceProvider] load failed:', err))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [platform])
+
+  const persist = useCallback(async (provider: EzModeVoiceProvider | null) => {
+    setSaving(true)
+    try {
+      const result = await platform.putEzModeVoiceProvider(provider)
+      setOverride(result.provider)
+      invalidatePlatformConfigCache()
+      const config = await platform.getConfig()
+      setEffective(config.features?.ezModeVoiceProvider ?? 'gpt-live')
+    } catch (err) {
+      console.error('[LiveVoiceProvider] save failed:', err)
+    } finally {
+      setSaving(false)
+    }
+  }, [platform])
+
+  return (
+    <SectionCard
+      icon={Monitor}
+      title="EZ Mode voice provider"
+      description="Choose the live voice transport for EZ Mode. GPT-Live is the default; ElevenLabs remains available as a fallback."
+    >
+      {loading ? (
+        <ActivityIndicator />
+      ) : (
+        <View className="gap-2">
+          {([
+            { value: null, label: `Auto (${effective})`, hint: 'Use GPT-Live when available, otherwise ElevenLabs.' },
+            { value: 'gpt-live' as const, label: 'GPT-Live', hint: 'OpenAI GPT-Live with Responses delegation.' },
+            { value: 'elevenlabs' as const, label: 'ElevenLabs', hint: 'Existing ElevenLabs Conversational AI transport.' },
+          ]).map((option) => {
+            const selected = override === option.value
+            return (
+              <Pressable
+                key={option.value ?? 'auto'}
+                onPress={() => !saving && persist(option.value)}
+                disabled={saving}
+                className={cn(
+                  'rounded-xl border p-3',
+                  selected ? 'border-primary bg-primary/10' : 'border-border bg-muted/20',
+                  saving && 'opacity-60',
+                )}
+              >
+                <Text className="text-sm font-medium text-foreground">{option.label}</Text>
+                <Text className="text-xs text-muted-foreground mt-0.5">{option.hint}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
+      )}
+    </SectionCard>
   )
 }
 

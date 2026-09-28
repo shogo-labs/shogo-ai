@@ -34,8 +34,8 @@ import {
   useCallback,
   useMemo,
   useSyncExternalStore,
-} from "react";
-import * as Sentry from "@sentry/react-native";
+} from "react"
+import * as Sentry from "@sentry/react-native"
 import {
   Alert,
   View,
@@ -50,14 +50,14 @@ import {
   Keyboard,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-} from "react-native";
-import { observer } from "mobx-react-lite";
-import { useChat, type UIMessage } from "@ai-sdk/react";
-import { useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
-import { DefaultChatTransport } from "ai";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+} from "react-native"
+import { observer } from "mobx-react-lite"
+import { useChat, type UIMessage } from "@ai-sdk/react"
+import { useRouter } from "expo-router"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { LinearGradient } from "expo-linear-gradient"
+import { DefaultChatTransport } from "ai"
+import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
   formatErrorMessage,
@@ -67,7 +67,8 @@ import {
   getToolCategory,
   ERROR_CODE_MESSAGES,
   buildChatStreamErrorReport,
-} from "@shogo/shared-app/chat";
+  isReactUpdateDepthError,
+} from "@shogo/shared-app/chat"
 import {
   useChatTransportConfig,
   buildChatTurnUrl,
@@ -80,63 +81,73 @@ import {
   forkChatSession,
   type PrecedingCheckpointResult,
   type MessageFeedbackThumbs,
-} from "@shogo/shared-app/chat";
+} from "@shogo/shared-app/chat"
 import {
   useSDKDomains,
   useDomainActions,
   useChatMessageCollectionForSession,
   useProjectCollection,
-} from "@shogo/shared-app/domain";
-import { decideMessagesPropagation } from "./messages-propagation";
-import { useResolvedTheme } from "../../contexts/theme";
-import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete";
+} from "@shogo/shared-app/domain"
+import { decideMessagesPropagation } from "./messages-propagation"
+import { useResolvedTheme } from "../../contexts/theme"
+import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
   probeChatTurnStatus,
   shouldAttachLiveStream,
   type ChatTurnStatus,
-} from "./probe-turn-status";
+} from "./probe-turn-status"
 import {
   decideRetryAction,
   lastAssistantHasResumableWork,
-} from "./retry-triage";
+} from "./retry-triage"
 import {
   computeRecoveryBackoff,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
-} from "./stall-recovery";
-import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker";
+  shouldAutoRecoverStalledTurn,
+} from "./stall-recovery"
+import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
-} from "./resume-stream-single-flight";
-import { cn } from "@shogo/shared-ui/primitives";
-import { API_URL, api, createHttpClient } from "../../lib/api";
-import { workspaceProjectFilter } from "../../lib/project-load";
+} from "./resume-stream-single-flight"
+import {
+  dropUnfinishedAssistantTail,
+  withResumeReplayReset,
+} from "./resume-replay-transport"
+import { cn } from "@shogo/shared-ui/primitives"
+import { API_URL, api, createHttpClient } from "../../lib/api"
+import { workspaceProjectFilter } from "../../lib/project-load"
+import {
+  getActiveWorkspaceId,
+  setActiveWorkspaceId,
+} from "../../lib/workspace-store"
 import {
   hasAcceptedAiConsent,
   acceptAiConsent,
   revokeAiConsent,
   AI_PROVIDERS,
-} from "../../lib/ai-consent";
-import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier";
+} from "../../lib/ai-consent"
+import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
+import { autoNameSession } from "./auto-name-session"
 
 import {
   isPhoneLayout,
   useNativePhoneWindow,
-} from "../../lib/native-phone-layout";
-import { canvasViewerPayload } from "../../lib/canvas-viewer";
+} from "../../lib/native-phone-layout"
+import { canvasViewerPayload } from "../../lib/canvas-viewer"
 import {
   CHAT_TRANSCRIPT_MAX_WIDTH,
   NATIVE_COMPOSER_KEYBOARD_GAP,
-} from "../../lib/native-composer-keyboard";
-import { ProjectComposerDock } from "./composer/ProjectComposerDock";
-import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard";
-import { authClient } from "../../lib/auth-client";
-import { chatSessionEvents } from "../../lib/chat-session-events";
-import { useActiveInstance } from "../../contexts/active-instance";
-import { ChatHeader } from "./ChatHeader";
-import { MessageList } from "./MessageList";
-import type { ContextBreakdownData } from "./ContextBreakdownPanel";
+} from "../../lib/native-composer-keyboard"
+import { ProjectComposerDock } from "./composer/ProjectComposerDock"
+import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
+import { authClient } from "../../lib/auth-client"
+import { chatSessionEvents } from "../../lib/chat-session-events"
+import { useActiveInstance } from "../../contexts/active-instance"
+import { ChatHeader } from "./ChatHeader"
+import { MessageList } from "./MessageList"
+import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
   DEFAULT_MODEL_PRO,
@@ -146,13 +157,13 @@ import {
   type ChatReference,
   type ProjectMentionOption,
   type RestoreDraftRequest,
-} from "./ChatInput";
-import type { AgentHistoryResult } from "@shogo-ai/sdk/agent";
+} from "./ChatInput"
+import type { AgentHistoryResult } from "@shogo-ai/sdk/agent"
 import {
   loadInteractionModePreference,
   saveInteractionModePreference,
-} from "../../lib/interaction-mode-preference";
-import { useDualPlan } from "../../lib/dual-plan-preference";
+} from "../../lib/interaction-mode-preference"
+import { useDualPlan } from "../../lib/dual-plan-preference"
 import {
   isChatStalled,
   resolveProgressAfterVisibilityChange,
@@ -161,67 +172,68 @@ import {
   EMPTY_AGENT_RESPONSE_MESSAGE,
   DEFAULT_SUBMITTED_STALL_MS,
   DEFAULT_STREAMING_STALL_MS,
-} from "../../lib/chat-stall-watchdog";
+} from "../../lib/chat-stall-watchdog"
 import {
   createTodoStateStore,
   TodoStateStoreContext,
-} from "../../lib/todo-state-store";
+} from "../../lib/todo-state-store"
 import {
   createFileChangeStore,
   FileChangeStoreContext,
-} from "../../lib/file-change-store";
+} from "../../lib/file-change-store"
 import {
   createChatDockStore,
   ChatDockStoreContext,
   useChatDockStore,
   type DockPanelDescriptor,
-} from "../../lib/chat-dock-store";
-import { useDockPanel } from "./dock/useDockPanel";
-import { ChatDock } from "./dock/ChatDock";
-import { PlanDockPanel } from "./dock/panels/PlanDockPanel";
-import { PendingPlanComposerBar } from "./PendingPlanComposerBar";
-import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel";
-import { RunningDockPanel } from "./dock/panels/RunningDockPanel";
-import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel";
-import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel";
-import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel";
+} from "../../lib/chat-dock-store"
+import { useDockPanel } from "./dock/useDockPanel"
+import { ChatDock } from "./dock/ChatDock"
+import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
+import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
+import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
+import { RunningDockPanel } from "./dock/panels/RunningDockPanel"
+import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
+import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel"
+import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel"
 import {
   loadModelPreference,
   saveModelPreference,
-} from "../../lib/agent-mode-preference";
-import { useReconcileStaleModelSelection } from "../../lib/visible-models";
-import { CompactChatInput } from "./CompactChatInput";
-import { ExecutionBadge } from "./ExecutionBadge";
-import { ExpandTab } from "./ExpandTab";
-import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay";
+} from "../../lib/agent-mode-preference"
+import { useReconcileStaleModelSelection } from "../../lib/visible-models"
+import { CompactChatInput } from "./CompactChatInput"
+import { ExecutionBadge } from "./ExecutionBadge"
+import { ExpandTab } from "./ExpandTab"
+import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 import {
   ChatContextProvider,
   type ChatContextValue,
   type ChatMessage,
-} from "./ChatContext";
-import { useIdeBridge } from "./ideBridge";
+} from "./ChatContext"
+import { resolveChatFilePath } from "./file-links"
+import { useIdeBridge } from "./ideBridge"
 
-import { TurnList } from "./turns";
+import { TurnList } from "./turns"
 import {
   MessageEditProvider,
   dispatchNativeInlineEditTap,
   type MessageEditOptions,
-} from "./turns/MessageEditContext";
-import { TurnFooterProvider } from "./turns/TurnFooterContext";
-import { EditConfirmDialogHost } from "./turns/EditConfirmDialog";
-import { PhaseEmptyState } from "./empty";
+} from "./turns/MessageEditContext"
+import { TurnFooterProvider } from "./turns/TurnFooterContext"
+import { EditConfirmDialogHost } from "./turns/EditConfirmDialog"
+import { PhaseEmptyState } from "./empty"
 import {
   type SubagentProgress as SubagentProgressType,
   type RecentTool as RecentToolType,
-} from "./subagent";
-import { type RunningProcess } from "./ProcessPanel";
+} from "./subagent"
+import { type RunningProcess } from "./ProcessPanel"
 import {
   type ToolCallData,
   getToolCategory as getToolCategoryFromTools,
-} from "./tools/types";
-import { subagentStreamStore } from "../../lib/subagent-stream-store";
-import { teamStore } from "../../lib/team-store";
-import * as ExpoLinking from "expo-linking";
+} from "./tools/types"
+import { subagentStreamStore } from "../../lib/subagent-stream-store"
+import { teamStore } from "../../lib/team-store"
+import * as ExpoLinking from "expo-linking"
 import {
   AlertCircle,
   RefreshCw,
@@ -230,37 +242,37 @@ import {
   ChevronDown,
   Shield,
   MessageCircleQuestion,
-} from "lucide-react-native";
-import { type PlanData } from "./PlanCard";
-import { usePlanStreamSafe } from "./PlanStreamContext";
-import { AgentClient } from "@shogo-ai/sdk/agent";
-import { agentFetch } from "../../lib/agent-fetch";
-import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform";
-import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog";
-import { buildStopRequest } from "../../lib/chat-stop";
-import { planToPublishToStream } from "../../lib/plan-stream-publish";
-import { configureSubagentStop } from "../../lib/subagent-stop";
-import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext";
-import { extractTaskToolsFromMessages } from "./turns/messageParts";
+} from "lucide-react-native"
+import { type PlanData } from "./PlanCard"
+import { usePlanStreamSafe } from "./PlanStreamContext"
+import { AgentClient } from "@shogo-ai/sdk/agent"
+import { agentFetch } from "../../lib/agent-fetch"
+import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
+import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
+import { buildStopRequest } from "../../lib/chat-stop"
+import { planToPublishToStream } from "../../lib/plan-stream-publish"
+import { configureSubagentStop } from "../../lib/subagent-stop"
+import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
+import { extractTaskToolsFromMessages } from "./turns/messageParts"
 import {
   derivePendingQuestion,
   askUserQuestionPresentation,
-} from "./turns/pendingQuestion";
-import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget";
-import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet";
+} from "./turns/pendingQuestion"
+import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
+import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
   type FixInAgentPayload,
-} from "../project/panels/ide/agentFixProvider";
+} from "../project/panels/ide/agentFixProvider"
 import {
   workspaceExperience,
   type WorkspaceExperienceComposer,
-} from "@shogo/shared-app";
+} from "@shogo/shared-app"
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
-  workspaceExperience("team").composer;
+  workspaceExperience("team").composer
 
 // ============================================================
 // Types
@@ -270,69 +282,69 @@ const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
 // See the long comment near `contextValue` below — we intentionally do
 // not plumb the live message list through context, so this constant
 // satisfies the type without flipping per token.
-const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = [];
+const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
 const DELEGATED_TASK_PROMPT_PREFIX =
-  "This is a delegated task from the user's task list:";
-const DELEGATED_TASK_POLL_INTERVAL_MS = 1_000;
-const DELEGATED_TASK_MAX_WAIT_MS = 5 * 60 * 1_000;
+  "This is a delegated task from the user's task list:"
+const DELEGATED_TASK_POLL_INTERVAL_MS = 1_000
+const DELEGATED_TASK_MAX_WAIT_MS = 5 * 60 * 1_000
 
 function messageTimestamp(value: unknown): number {
-  if (value instanceof Date) return value.getTime();
-  if (typeof value === "number") return value;
-  const parsed = Date.parse(String(value ?? ""));
-  return Number.isNaN(parsed) ? 0 : parsed;
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === "number") return value
+  const parsed = Date.parse(String(value ?? ""))
+  return Number.isNaN(parsed) ? 0 : parsed
 }
 
 function latestDelegatedTaskPromptIndex(messages: readonly any[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
+    const message = messages[index]
     if (
       message?.role === "user" &&
       extractTextContent(message)
         .trim()
         .startsWith(DELEGATED_TASK_PROMPT_PREFIX)
     ) {
-      return index;
+      return index
     }
   }
-  return -1;
+  return -1
 }
 
 type SubagentProgressEvent =
   | {
-      type: "subagent-start";
-      agentId: string;
-      agentType: string;
-      timestamp: number;
+      type: "subagent-start"
+      agentId: string
+      agentType: string
+      timestamp: number
     }
   | { type: "subagent-stop"; agentId: string; timestamp: number }
   | {
-      type: "tool-complete";
-      toolName: string;
-      toolUseId: string;
-      timestamp: number;
-    };
+      type: "tool-complete"
+      toolName: string
+      toolUseId: string
+      timestamp: number
+    }
 
 interface VirtualToolEvent {
-  type: "virtual-tool-execute";
-  toolUseId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-  timestamp: number;
+  type: "virtual-tool-execute"
+  toolUseId: string
+  toolName: string
+  args: Record<string, unknown>
+  timestamp: number
 }
 
 type OptimisticUserInput = {
-  sessionId: string;
-  content: string;
-  files?: FileAttachment[];
-};
+  sessionId: string
+  content: string
+  files?: FileAttachment[]
+}
 
 export type QueuedMessage = {
-  id: string;
-  content: string;
-  files?: FileAttachment[];
-  selectedModel?: string;
-  references?: ChatReference[];
+  id: string
+  content: string
+  files?: FileAttachment[]
+  selectedModel?: string
+  references?: ChatReference[]
   /**
    * True when this entry is here because a send already failed on a client
    * network error (`isClientNetworkFailure`) — as opposed to the normal case
@@ -343,21 +355,21 @@ export type QueuedMessage = {
    * persisted the user message and set the optimistic bubble, so re-running
    * the full send path would duplicate both.
    */
-  offline?: boolean;
+  offline?: boolean
   /** Only set when `offline` is true: the exact wire payload to redeliver. */
   offlineRetry?: {
     messagePayload: {
-      text: string;
+      text: string
       files?: Array<{
-        type: "file";
-        mediaType: string;
-        url: string;
-        name?: string;
-      }>;
-    };
-    bodyExtra: Record<string, unknown>;
-  };
-};
+        type: "file"
+        mediaType: string
+        url: string
+        name?: string
+      }>
+    }
+    bodyExtra: Record<string, unknown>
+  }
+}
 
 /**
  * Client-generated turn idempotency id, forwarded as `X-Client-Turn-Id`
@@ -367,18 +379,18 @@ export type QueuedMessage = {
  * `apps/api/src/lib/chat-turn-idempotency.ts`.
  */
 function generateClientTurnId(): string {
-  return `ctid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `ctid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function buildOptimisticUserMessage(
   input: OptimisticUserInput,
-  id = "optimistic-user-pending"
+  id = "optimistic-user-pending",
 ): UIMessage {
-  const parts: any[] = [];
-  const text = input.content.trim();
+  const parts: any[] = []
+  const text = input.content.trim()
 
   if (text) {
-    parts.push({ type: "text", text });
+    parts.push({ type: "text", text })
   }
 
   for (const file of input.files ?? []) {
@@ -387,40 +399,40 @@ function buildOptimisticUserMessage(
       mediaType: file.type || "application/octet-stream",
       url: file.dataUrl,
       ...(file.name ? { name: file.name } : {}),
-    });
+    })
   }
 
   return {
     id,
     role: "user",
     parts,
-  } as unknown as UIMessage;
+  } as unknown as UIMessage
 }
 
 function hasMatchingUserMessage(
   messages: UIMessage[],
-  input: OptimisticUserInput
+  input: OptimisticUserInput,
 ): boolean {
-  const text = input.content.trim();
+  const text = input.content.trim()
   return messages.some((message) => {
-    if (message.role !== "user") return false;
-    if (text && extractTextContent(message).trim() === text) return true;
-    return !text && (input.files?.length ?? 0) > 0;
-  });
+    if (message.role !== "user") return false
+    if (text && extractTextContent(message).trim() === text) return true
+    return !text && (input.files?.length ?? 0) > 0
+  })
 }
 
 interface SubagentProgress {
-  agentId: string;
-  agentType: string;
-  startTime: number;
-  status: "running" | "completed";
-  toolCount: number;
+  agentId: string
+  agentType: string
+  startTime: number
+  status: "running" | "completed"
+  toolCount: number
 }
 
 interface RecentToolCall {
-  id: string;
-  toolName: string;
-  timestamp: number;
+  id: string
+  toolName: string
+  timestamp: number
 }
 
 // ============================================================
@@ -431,34 +443,34 @@ const LAYOUT_TO_TEMPLATE: Record<string, string> = {
   single: "layout-workspace-flexible",
   "split-h": "layout-workspace-split-h",
   "split-v": "layout-workspace-split-v",
-};
+}
 
 export interface WorkspacePanelData {
-  id: string;
-  type: "preview" | "code" | "schema" | "docs";
-  title: string;
-  content?: React.ReactNode;
+  id: string
+  type: "preview" | "code" | "schema" | "docs"
+  title: string
+  content?: React.ReactNode
 }
 
 export interface ChatPanelProps {
-  mode?: "compact" | "full";
+  mode?: "compact" | "full"
   /**
    * `agent` keeps the existing chat behavior while using the quieter,
    * centred surface intended for the Workspace Agent shell. `studio`
    * preserves the dense project/IDE presentation.
    */
-  presentation?: "agent" | "studio";
-  featureId: string | null;
-  featureName?: string;
-  phase: string | null;
-  workspaceId?: string;
-  userId?: string;
-  projectId?: string;
+  presentation?: "agent" | "studio"
+  featureId: string | null
+  featureName?: string
+  phase: string | null
+  workspaceId?: string
+  userId?: string
+  projectId?: string
   /**
    * Workspace project to prioritize for the next agent turn. The API verifies
    * this belongs to the chat's attached project set before forwarding it.
    */
-  focusedProjectId?: string | null;
+  focusedProjectId?: string | null
   /**
    * Chat routing scope. `'project'` (default) chats against the per-project
    * runtime (`/api/projects/:projectId/chat`); `'workspace'` chats against
@@ -466,29 +478,29 @@ export interface ChatPanelProps {
    * using `chatSessionId` as a workspace-scoped session id. The workspace
    * path requires `workspaceId`.
    */
-  chatScope?: "project" | "workspace";
-  localAgentUrl?: string | null;
-  children?: React.ReactNode;
-  className?: string;
-  onSchemaRefresh?: () => void;
-  onRefresh?: () => Promise<void>;
-  onStreamingChange?: (isStreaming: boolean) => void;
-  isPolling?: boolean;
-  onNavigateToPhase?: (phase: string) => void;
-  onOpenPanel?: (panel: WorkspacePanelData) => void;
-  chatSessionId?: string | null;
-  onChatSessionChange?: (sessionId: string) => void;
-  isCollapsed?: boolean;
-  onCollapsedChange?: (collapsed: boolean) => void;
-  initialMessage?: string;
-  initialFiles?: FileAttachment[];
+  chatScope?: "project" | "workspace"
+  localAgentUrl?: string | null
+  children?: React.ReactNode
+  className?: string
+  onSchemaRefresh?: () => void
+  onRefresh?: () => Promise<void>
+  onStreamingChange?: (isStreaming: boolean) => void
+  isPolling?: boolean
+  onNavigateToPhase?: (phase: string) => void
+  onOpenPanel?: (panel: WorkspacePanelData) => void
+  chatSessionId?: string | null
+  onChatSessionChange?: (sessionId: string) => void
+  isCollapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
+  initialMessage?: string
+  initialFiles?: FileAttachment[]
   /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
-  initialInteractionMode?: InteractionMode;
-  onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void;
-  compactValue?: string;
-  onCompactValueChange?: (value: string) => void;
+  initialInteractionMode?: InteractionMode
+  onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void
+  compactValue?: string
+  onCompactValueChange?: (value: string) => void
   /** Personal-shell composer prefill; stages text without sending it. */
-  prefillRequest?: RestoreDraftRequest | null;
+  prefillRequest?: RestoreDraftRequest | null
   /**
    * Called once `prefillRequest` has actually been applied to the composer,
    * with the nonce that was consumed. Callers should clear their
@@ -496,43 +508,48 @@ export interface ChatPanelProps {
    * than on a fixed-delay timer, which can race the composer's own restore
    * effect.
    */
-  onPrefillConsumed?: (nonce: number) => void;
+  onPrefillConsumed?: (nonce: number) => void
   /**
    * Composer capability descriptor (`workspaceExperience(kind).composer`).
    * Defaults to the full team composer (model picker + interaction modes,
    * no forced mode). Pass `workspaceExperience('personal').composer` for
    * the companion shell rather than a bespoke boolean.
    */
-  composer?: WorkspaceExperienceComposer;
-  onChatError?: (error: Error | null) => void;
-  injectMessage?: string | null;
-  onActiveToolCall?: (toolName: string | null) => void;
-  selectedThemeId?: string;
-  onSelectTheme?: (themeId: string) => void;
-  onCreateTheme?: () => void;
-  projectType?: string;
+  composer?: WorkspaceExperienceComposer
+  onChatError?: (error: Error | null) => void
+  injectMessage?: string | null
+  onActiveToolCall?: (toolName: string | null) => void
+  selectedThemeId?: string
+  onSelectTheme?: (themeId: string) => void
+  onCreateTheme?: () => void
+  projectType?: string
   /** Legacy domain stores (platformFeatures, componentBuilder) — optional on mobile */
   legacyDomains?: {
-    platformFeatures?: any;
-    componentBuilder?: any;
-  };
+    platformFeatures?: any
+    componentBuilder?: any
+  }
   /** Billing data — optional on mobile; if not provided, defaults to basic mode */
   billingData?: {
-    hasActiveSubscription: boolean;
-    hasAdvancedModelAccess?: boolean;
-    refetchUsageWallet: () => void;
-  };
+    hasActiveSubscription: boolean
+    hasAdvancedModelAccess?: boolean
+    refetchUsageWallet: () => void
+  }
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
-  onMessagesChange?: (messages: any[]) => void;
+  onMessagesChange?: (messages: any[]) => void
   /** Triggered from the Plans panel Build button — executes a saved plan */
-  buildPlanRequest?: { plan: PlanData; modelId: string; nonce: number } | null;
+  buildPlanRequest?: { plan: PlanData; modelId: string; nonce: number } | null
   /** Notifies the parent that a build request has been consumed so it can clear state. */
-  onBuildPlanConsumed?: (nonce: number) => void;
+  onBuildPlanConsumed?: (nonce: number) => void
   /** Opens the saved plan artifact in the Plans panel. */
-  onOpenPlan?: (filepath?: string | null) => void;
+  onOpenPlan?: (filepath?: string | null) => void
+  /**
+   * Opens a file in the project that owns it. When omitted, ChatPanel
+   * navigates to that project's IDE (or Files, on native) tab.
+   */
+  onOpenFile?: (projectId: string, relPath: string) => void
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
-  selectedModel?: string;
-  onModelChange?: (modelId: string) => void;
+  selectedModel?: string
+  onModelChange?: (modelId: string) => void
   /**
    * Reports this chat's last-used model (the most recent message that carries a
    * `model` value) so the parent can default the shared picker to it when this
@@ -540,11 +557,11 @@ export interface ChatPanelProps {
    * message yet (brand-new/empty chat), letting the parent fall back to the
    * global last-used preference. Only invoked while the panel `isActive`.
    */
-  onResolveSessionModel?: (modelId: string | null) => void;
+  onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
-  isActive?: boolean;
+  isActive?: boolean
   /** Enables IDE-specific context bridge and compact composer affordances. */
-  ideMode?: boolean;
+  ideMode?: boolean
   /**
    * Optional message enrichment hook — called before each outgoing message
    * to prepend auto-collected workspace context (terminal output, git status,
@@ -553,21 +570,21 @@ export interface ChatPanelProps {
    *
    * Desktop provides this via ContextAggregator; mobile passes nothing (no-op).
    */
-  enrichMessage?: (text: string) => Promise<string>;
+  enrichMessage?: (text: string) => Promise<string>
   /**
    * Phone transcript top inset. `"chrome"` (default) reserves room for
    * `MobileWorkspaceShell`'s floating menu/bell buttons. `"floating-agent"`
    * reserves extra room for the Muse-style avatar/name/status overlay
    * (`PersonalAgentMobileHeader`) that floats above those same buttons.
    */
-  phoneTranscriptTopPadding?: "chrome" | "floating-agent";
+  phoneTranscriptTopPadding?: "chrome" | "floating-agent"
 }
 
 // ============================================================
 // Constants
 // ============================================================
 
-const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed";
+const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed"
 
 // ============================================================
 // AsyncStorage Helpers
@@ -575,16 +592,16 @@ const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed";
 
 async function getStoredCollapsed(): Promise<boolean> {
   try {
-    const stored = await AsyncStorage.getItem(STORAGE_KEY_COLLAPSED);
-    return stored === "true";
+    const stored = await AsyncStorage.getItem(STORAGE_KEY_COLLAPSED)
+    return stored === "true"
   } catch {
-    return false;
+    return false
   }
 }
 
 async function setStoredCollapsed(collapsed: boolean): Promise<void> {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY_COLLAPSED, String(collapsed));
+    await AsyncStorage.setItem(STORAGE_KEY_COLLAPSED, String(collapsed))
   } catch {
     // Silently ignore storage errors
   }
@@ -595,63 +612,63 @@ async function setStoredCollapsed(collapsed: boolean): Promise<void> {
 // ============================================================
 
 interface ExtractedToolCall {
-  toolName: string;
-  state: ToolCallState;
-  args?: Record<string, unknown>;
-  result?: unknown;
-  error?: string;
+  toolName: string
+  state: ToolCallState
+  args?: Record<string, unknown>
+  result?: unknown
+  error?: string
 }
 
 function extractToolCalls(message: UIMessage): ExtractedToolCall[] {
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
-    return [];
+    return []
   }
 
   return ((message as any).parts as any[])
     .filter(
-      (part) => part.type === "tool-invocation" || part.type === "dynamic-tool"
+      (part) => part.type === "tool-invocation" || part.type === "dynamic-tool",
     )
     .map((part) => {
       if (part.type === "tool-invocation") {
-        const invocation = part.toolInvocation;
+        const invocation = part.toolInvocation
         return {
           toolName: invocation?.toolName || "unknown",
           state: mapToolCallState(invocation?.state),
           args: invocation?.args,
           result: invocation?.result,
           error: invocation?.error,
-        };
+        }
       } else {
         const errorContent =
           part.state === "output-error"
-            ? (part as { errorText?: string }).errorText ?? part.error
-            : part.error;
+            ? ((part as { errorText?: string }).errorText ?? part.error)
+            : part.error
         return {
           toolName: part.toolName || "unknown",
           state: mapToolCallState(part.state),
           args: part.input || part.args,
           result: part.output || part.result,
           error: errorContent,
-        };
+        }
       }
-    });
+    })
 }
 
 function mapToolCallState(state: string | undefined): ToolCallState {
   switch (state) {
     case "partial-call":
-      return "input-streaming";
+      return "input-streaming"
     case "call":
-      return "input-available";
+      return "input-available"
     case "result":
     case "output-available":
     case "success":
-      return "output-available";
+      return "output-available"
     case "error":
     case "output-error":
-      return "output-error";
+      return "output-error"
     default:
-      return "input-streaming";
+      return "input-streaming"
   }
 }
 
@@ -660,30 +677,30 @@ function mapToolCallState(state: string | undefined): ToolCallState {
 // ============================================================
 
 function hasToolCalls(message: UIMessage): boolean {
-  const parts = (message as any).parts as any[] | undefined;
-  if (!parts || !Array.isArray(parts)) return false;
+  const parts = (message as any).parts as any[] | undefined
+  if (!parts || !Array.isArray(parts)) return false
   return parts.some(
-    (p) => p.type === "tool-invocation" || p.type === "dynamic-tool"
-  );
+    (p) => p.type === "tool-invocation" || p.type === "dynamic-tool",
+  )
 }
 
 function serializeParts(parts: any[] | undefined): string | undefined {
-  if (!parts || !Array.isArray(parts)) return undefined;
+  if (!parts || !Array.isArray(parts)) return undefined
 
   const persistableParts = parts.filter(
     (p) =>
       p.type === "text" ||
       p.type === "tool-invocation" ||
       p.type === "dynamic-tool" ||
-      p.type === "file"
-  );
+      p.type === "file",
+  )
 
-  if (persistableParts.length === 0) return undefined;
+  if (persistableParts.length === 0) return undefined
 
-  const MAX_RESULT_SIZE = 50000;
+  const MAX_RESULT_SIZE = 50000
   const truncatedParts = persistableParts.map((p) => {
     if (p.type === "tool-invocation" && p.toolInvocation?.result) {
-      const resultStr = JSON.stringify(p.toolInvocation.result);
+      const resultStr = JSON.stringify(p.toolInvocation.result)
       if (resultStr.length > MAX_RESULT_SIZE) {
         return {
           ...p,
@@ -691,19 +708,19 @@ function serializeParts(parts: any[] | undefined): string | undefined {
             ...p.toolInvocation,
             result: { _truncated: true, size: resultStr.length },
           },
-        };
+        }
       }
     }
     if (p.type === "dynamic-tool" && p.output) {
-      const outputStr = JSON.stringify(p.output);
+      const outputStr = JSON.stringify(p.output)
       if (outputStr.length > MAX_RESULT_SIZE) {
-        return { ...p, output: { _truncated: true, size: outputStr.length } };
+        return { ...p, output: { _truncated: true, size: outputStr.length } }
       }
     }
-    return p;
-  });
+    return p
+  })
 
-  return JSON.stringify(truncatedParts);
+  return JSON.stringify(truncatedParts)
 }
 
 // ============================================================
@@ -719,7 +736,7 @@ const PLATFORM_FEATURES_MODEL_MAP: Record<string, string> = {
   ImplementationRun: "implementationRunCollection",
   TaskExecution: "taskExecutionCollection",
   FeatureSession: "featureSessionCollection",
-};
+}
 
 const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
   ComponentDefinition: "componentDefinitionCollection",
@@ -728,86 +745,86 @@ const COMPONENT_BUILDER_MODEL_MAP: Record<string, string> = {
   LayoutTemplate: "layoutTemplateCollection",
   Composition: "compositionCollection",
   ComponentSpec: "componentSpecCollection",
-};
+}
 
 interface RefreshTarget {
-  schema: "platform-features" | "component-builder";
-  collections: string[];
+  schema: "platform-features" | "component-builder"
+  collections: string[]
 }
 
 function getRefreshTarget(toolCall: ExtractedToolCall): RefreshTarget | null {
-  const { toolName, args } = toolCall;
+  const { toolName, args } = toolCall
 
   const normalizedToolName = toolName.includes("__")
     ? toolName.split("__").pop() || toolName
-    : toolName;
+    : toolName
 
   if (
     !["store_create", "store_update", "store_delete"].includes(
-      normalizedToolName
+      normalizedToolName,
     )
   ) {
-    return null;
+    return null
   }
 
-  const model = args?.model as string | undefined;
-  const schema = args?.schema as string | undefined;
+  const model = args?.model as string | undefined
+  const schema = args?.schema as string | undefined
 
-  if (!model) return null;
+  if (!model) return null
 
   if (schema === "component-builder") {
-    const collection = COMPONENT_BUILDER_MODEL_MAP[model];
+    const collection = COMPONENT_BUILDER_MODEL_MAP[model]
     if (collection) {
-      return { schema: "component-builder", collections: [collection] };
+      return { schema: "component-builder", collections: [collection] }
     }
   } else {
-    const collection = PLATFORM_FEATURES_MODEL_MAP[model];
+    const collection = PLATFORM_FEATURES_MODEL_MAP[model]
     if (collection) {
-      return { schema: "platform-features", collections: [collection] };
+      return { schema: "platform-features", collections: [collection] }
     }
   }
 
-  return null;
+  return null
 }
 
 function requiresSchemaRefresh(toolCall: ExtractedToolCall): boolean {
-  const { toolName } = toolCall;
+  const { toolName } = toolCall
 
   const normalizedToolName = toolName.includes("__")
     ? toolName.split("__").pop() || toolName
-    : toolName;
+    : toolName
 
   return (
     normalizedToolName === "schema_set" || normalizedToolName === "schema_load"
-  );
+  )
 }
 
 async function refreshCollections(
   domain: any,
   collectionNames: string[],
-  domainName: string = "domain"
+  domainName: string = "domain",
 ): Promise<void> {
   if (!domain || collectionNames.length === 0) {
-    return;
+    return
   }
 
-  const uniqueCollections = [...new Set(collectionNames)];
+  const uniqueCollections = [...new Set(collectionNames)]
 
   const refreshPromises = uniqueCollections.map(async (collectionName) => {
-    const collection = domain[collectionName];
+    const collection = domain[collectionName]
     if (collection?.query && typeof collection.query === "function") {
       try {
-        await collection.query().toArray();
+        await collection.query().toArray()
       } catch (err) {
         console.warn(
           `[ChatPanel] Failed to refresh ${domainName}.${collectionName}:`,
-          err
-        );
+          err,
+        )
       }
     }
-  });
+  })
 
-  await Promise.all(refreshPromises);
+  await Promise.all(refreshPromises)
 }
 
 // ============================================================
@@ -819,29 +836,29 @@ async function refreshCollections(
 // ============================================================
 
 /** Y offset from top below which we treat the viewport as "at the top" for loading older messages. */
-const LOAD_OLDER_SCROLL_EDGE_PX = 80;
+const LOAD_OLDER_SCROLL_EDGE_PX = 80
 
 /** Pixels from bottom to consider the user "at bottom" for follow-scroll heuristics (web). */
-const SCROLL_NEAR_BOTTOM_PX = 100;
+const SCROLL_NEAR_BOTTOM_PX = 100
 
 /**
  * Web only: debounce scheduling load-older when the user rests near the top.
  * Avoids firing on every scroll frame (wheel/trackpad).
  */
-const LOAD_OLDER_WEB_DEBOUNCE_MS = 450;
+const LOAD_OLDER_WEB_DEBOUNCE_MS = 450
 
 /** react-native-web exposes scrollbar*; not in core ViewStyle — cast for StyleSheet. */
 const CHAT_MESSAGES_SCROLL_WEB: ViewStyle = {
   scrollbarWidth: "thin",
   scrollbarColor: "rgba(150,150,150,0.3) transparent",
-} as ViewStyle;
+} as ViewStyle
 
 const chatMessagesScrollStyles = StyleSheet.create({
   scroll: Platform.select({
     web: CHAT_MESSAGES_SCROLL_WEB,
     default: {},
   }),
-});
+})
 
 // ============================================================
 // Per-session UIMessage cache
@@ -854,31 +871,31 @@ const chatMessagesScrollStyles = StyleSheet.create({
 //
 // Keyed by sessionId. Evicted on explicit `clearChatPanelMessageCache()` (e.g.
 // user logout). Memory cost is small: a few UIMessage arrays per session.
-const sessionMessageCache = new Map<string, UIMessage[]>();
+const sessionMessageCache = new Map<string, UIMessage[]>()
 
 /** Clear the in-memory per-session UIMessage cache (e.g. on logout). */
 export function clearChatPanelMessageCache(): void {
-  sessionMessageCache.clear();
+  sessionMessageCache.clear()
 }
 
 // Per-session queued-message cache. Survives ChatPanel unmount/remount during
 // navigation so users don't lose what they've typed and queued. Keyed by
 // sessionId; cleared on explicit `clearChatPanelQueueCache()` or whenever the
 // queue for a session drains naturally (delete, send, edit-out).
-const sessionQueueCache = new Map<string, QueuedMessage[]>();
+const sessionQueueCache = new Map<string, QueuedMessage[]>()
 
 /** Clear the in-memory per-session queued-message cache (e.g. on logout). */
 export function clearChatPanelQueueCache(): void {
-  sessionQueueCache.clear();
+  sessionQueueCache.clear()
 }
 
 function normalizePlanFilepath(filepath?: string | null): string | undefined {
-  if (!filepath) return undefined;
-  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/");
-  const filename = normalized.split("/").pop();
+  if (!filepath) return undefined
+  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
+  const filename = normalized.split("/").pop()
   if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename))
-    return undefined;
-  return `.shogo/plans/${filename}`;
+    return undefined
+  return `.shogo/plans/${filename}`
 }
 
 function normalizePlanData(plan: PlanData): PlanData {
@@ -888,7 +905,7 @@ function normalizePlanData(plan: PlanData): PlanData {
     filepath: normalizePlanFilepath(plan.filepath),
     summary: plan.summary,
     summaryStatus: plan.summaryStatus,
-  };
+  }
 }
 
 // ============================================================
@@ -941,6 +958,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   buildPlanRequest,
   onBuildPlanConsumed,
   onOpenPlan,
+  onOpenFile,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
@@ -949,210 +967,264 @@ const ChatPanelContent = observer(function ChatPanelContent({
   enrichMessage,
   phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
-  const composer = composerProp ?? DEFAULT_CHAT_COMPOSER;
-  const chatDockStore = useChatDockStore();
+  const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
+  const chatDockStore = useChatDockStore()
   const {
     width: windowWidth,
     height: windowHeight,
     isPhone: isNativePhoneLayout,
-  } = useNativePhoneWindow();
-  const insets = useSafeAreaInsets();
-  const isPhoneViewport = isPhoneLayout(windowWidth, windowHeight);
-  const isDark = useResolvedTheme() === "dark";
-  const ideBridge = useIdeBridge(ideMode);
+  } = useNativePhoneWindow()
+  const insets = useSafeAreaInsets()
+  const isPhoneViewport = isPhoneLayout(windowWidth, windowHeight)
+  const isDark = useResolvedTheme() === "dark"
+  const ideBridge = useIdeBridge(ideMode)
 
-  const { studioChat } = useSDKDomains();
-  const actions = useDomainActions();
+  const { studioChat } = useSDKDomains()
+  const actions = useDomainActions()
 
   // Sibling projects (same workspace, excluding the current one) for the
   // composer's "@" mention menu. Tagging one mounts it into the chat runtime
   // so the agent can read its files. AppSidebar already loads the collection
   // app-wide; we loadAll() defensively in case the panel mounts first.
-  const projectCollection = useProjectCollection();
+  const projectCollection = useProjectCollection()
   useEffect(() => {
     projectCollection
       .loadAll(workspaceProjectFilter(workspaceId))
-      .catch(() => {});
-  }, [projectCollection, workspaceId]);
+      .catch(() => {})
+  }, [projectCollection, workspaceId])
   // The current project's workspace: prefer the workspace-scope prop, else
   // recover it from the loaded collection so we only offer true siblings.
   const currentWorkspaceId =
     workspaceId ??
-    projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId;
+    projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId
   const projectMentionSignature = projectCollection.all
     .filter(
       (p: any) =>
         p.id !== projectId &&
-        (!currentWorkspaceId || p.workspaceId === currentWorkspaceId)
+        (!currentWorkspaceId || p.workspaceId === currentWorkspaceId),
     )
     .map((p: any) => `${p.id}:${p.name}`)
-    .join("|");
+    .join("|")
   const projectMentionOptions = useMemo<ProjectMentionOption[]>(
     () =>
       projectCollection.all
         .filter(
           (p: any) =>
             p.id !== projectId &&
-            (!currentWorkspaceId || p.workspaceId === currentWorkspaceId)
+            (!currentWorkspaceId || p.workspaceId === currentWorkspaceId),
         )
         .map((p: any) => ({ id: p.id, name: p.name })),
     // Signature keeps the array referentially stable across token-by-token
     // streaming re-renders (matters because ChatInput is memoized).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectMentionSignature]
-  );
+    [projectMentionSignature],
+  )
 
-  const platformFeatures = legacyDomains?.platformFeatures;
-  const componentBuilder = legacyDomains?.componentBuilder;
+  const platformFeatures = legacyDomains?.platformFeatures
+  const componentBuilder = legacyDomains?.componentBuilder
 
-  const router = useRouter();
+  const router = useRouter()
 
-  const hasActiveSubscription = billingData?.hasActiveSubscription ?? false;
+  const hasActiveSubscription = billingData?.hasActiveSubscription ?? false
   const hasAdvancedModelAccess =
-    billingData?.hasAdvancedModelAccess ?? hasActiveSubscription;
-  const refetchUsageWallet = billingData?.refetchUsageWallet ?? (() => {});
+    billingData?.hasAdvancedModelAccess ?? hasActiveSubscription
+  const refetchUsageWallet = billingData?.refetchUsageWallet ?? (() => {})
 
   const handleUpgradeClick = useCallback(() => {
-    router.push("/(app)/billing" as any);
-  }, [router]);
+    router.push("/(app)/billing" as any)
+  }, [router])
 
   // Panel state
-  const [internalIsCollapsed, setInternalIsCollapsed] = useState(false);
-  const isCollapsed = controlledIsCollapsed ?? internalIsCollapsed;
-  const setIsCollapsed = onCollapsedChange ?? setInternalIsCollapsed;
+  const [internalIsCollapsed, setInternalIsCollapsed] = useState(false)
+  const isCollapsed = controlledIsCollapsed ?? internalIsCollapsed
+  const setIsCollapsed = onCollapsedChange ?? setInternalIsCollapsed
 
   // Load stored collapse state from AsyncStorage on mount
   useEffect(() => {
     getStoredCollapsed().then((stored) => {
       if (controlledIsCollapsed === undefined) {
-        setInternalIsCollapsed(stored);
+        setInternalIsCollapsed(stored)
       }
-    });
-  }, [controlledIsCollapsed]);
+    })
+  }, [controlledIsCollapsed])
 
   const nativeHeaders = useMemo(() => {
-    if (Platform.OS === "web") return undefined;
+    if (Platform.OS === "web") return undefined
     return (): Record<string, string> => {
-      const cookie = authClient.getCookie();
-      return cookie ? { Cookie: cookie } : {};
-    };
-  }, []);
+      const cookie = authClient.getCookie()
+      return cookie ? { Cookie: cookie } : {}
+    }
+  }, [])
 
   const expoFetch = useMemo(() => {
-    if (Platform.OS === "web") return undefined;
-    return require("expo/fetch").fetch as typeof globalThis.fetch;
-  }, []);
+    if (Platform.OS === "web") return undefined
+    return require("expo/fetch").fetch as typeof globalThis.fetch
+  }, [])
 
   const workspaceHistorySearch = useCallback(
     async (query: string): Promise<AgentHistoryResult[]> => {
-      if (!workspaceId) return [];
+      if (!workspaceId) return []
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch;
+        const fetchFn = expoFetch ?? globalThis.fetch
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
-          : {};
+          : {}
         const params = new URLSearchParams({
           q: query,
           kind: "all",
           limit: "12",
           exclude: chatSessionId || "",
-        });
+        })
         const response = await fetchFn(
           `${API_URL}/api/workspaces/${encodeURIComponent(
-            workspaceId
+            workspaceId,
           )}/history/search?${params}`,
           {
             headers,
             credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any
-        );
-        if (!response.ok) return [];
-        const data = await response.json();
-        return Array.isArray(data?.results) ? data.results : [];
+          } as any,
+        )
+        if (!response.ok) return []
+        const data = await response.json()
+        return Array.isArray(data?.results) ? data.results : []
       } catch {
-        return [];
+        return []
       }
     },
-    [workspaceId, chatSessionId, nativeHeaders, expoFetch]
-  );
+    [workspaceId, chatSessionId, nativeHeaders, expoFetch],
+  )
 
   // Quick actions state
   const [quickActions, setQuickActions] = useState<
     { label: string; prompt: string }[]
-  >([]);
+  >([])
 
   const fetchQuickActions = useCallback(async () => {
     const url =
       localAgentUrl ||
-      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null);
-    if (!url) return;
+      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    if (!url) return
     try {
-      const fetchFn = expoFetch ?? globalThis.fetch;
+      const fetchFn = expoFetch ?? globalThis.fetch
       const headers: Record<string, string> = nativeHeaders
         ? nativeHeaders()
-        : {};
+        : {}
       const res = await fetchFn(`${url}/agent/quick-actions`, {
         headers,
         credentials: Platform.OS === "web" ? "include" : undefined,
-      } as any);
+      } as any)
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json()
         if (Array.isArray(data?.actions)) {
-          setQuickActions(data.actions);
+          setQuickActions(data.actions)
         }
       }
     } catch {
       // Silently ignore — quick actions are non-critical
     }
-  }, [localAgentUrl, projectId, nativeHeaders, expoFetch]);
+  }, [localAgentUrl, projectId, nativeHeaders, expoFetch])
 
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive) return
 
-    fetchQuickActions();
+    fetchQuickActions()
 
     // Retry after a delay — the agent runtime may not be ready on first mount
-    const retryTimer = setTimeout(() => fetchQuickActions(), 3000);
-    return () => clearTimeout(retryTimer);
-  }, [fetchQuickActions, isActive]);
+    const retryTimer = setTimeout(() => fetchQuickActions(), 3000)
+    return () => clearTimeout(retryTimer)
+  }, [fetchQuickActions, isActive])
 
   // Track whether we've already triggered AI naming for this session
-  const hasTriggeredNamingRef = useRef(false);
+  const hasTriggeredNamingRef = useRef(false)
 
   useEffect(() => {
-    hasTriggeredNamingRef.current = false;
-  }, [chatSessionId]);
+    hasTriggeredNamingRef.current = false
+  }, [chatSessionId])
+
+  const maybeAutoNameSession = useCallback(
+    (sessionId: string, userText: string) => {
+      if (!userText.trim() || hasTriggeredNamingRef.current) return
+
+      const session = studioChat.chatSessionCollection.get(sessionId)
+      const sessionName =
+        (session as any)?.inferredName || (session as any)?.name
+      if (sessionName && sessionName !== "Untitled") return
+
+      hasTriggeredNamingRef.current = true
+      const http = createHttpClient()
+      void autoNameSession({
+        sessionId,
+        userText,
+        workspaceId,
+        projectId,
+        getSession: (id) => studioChat.chatSessionCollection.get(id),
+        getProjectName: (id) =>
+          projectCollection.all.find((p: any) => p.id === id)?.name,
+        generateName: (text, currentWorkspaceId, currentProjectId) =>
+          api.generateProjectName(
+            http,
+            text,
+            currentWorkspaceId,
+            currentProjectId,
+          ),
+        updateProject: (id, changes) => actions.updateProject(id, changes),
+        updateSession: (id, changes) =>
+          actions.updateChatSession(id, changes),
+        emitRefresh: ({
+          projectId: currentProjectId,
+          workspaceId: currentWorkspaceId,
+          sessionId: currentSessionId,
+        }) =>
+          chatSessionEvents.emit({
+            ...(currentProjectId ? { projectId: currentProjectId } : {}),
+            ...(currentWorkspaceId ? { workspaceId: currentWorkspaceId } : {}),
+            activeSessionId: currentSessionId,
+            refresh: true,
+          }),
+      })
+        .catch((err) => {
+          console.warn("[ChatPanel] AI session naming failed:", err)
+        })
+    },
+    [
+      actions,
+      projectCollection,
+      projectId,
+      studioChat,
+      workspaceId,
+    ],
+  )
 
   // Auto-scroll refs
-  const scrollViewRef = useRef<ScrollView>(null);
-  const isUserAtBottomRef = useRef(true);
+  const scrollViewRef = useRef<ScrollView>(null)
+  const isUserAtBottomRef = useRef(true)
   /** Native only: true = follow new content; set false the instant the user drags */
-  const stickToBottomRef = useRef(true);
-  const isLoadingOlderRef = useRef(false);
-  const contentHeightBeforeLoadRef = useRef(0);
-  const prevDisplayLengthRef = useRef(0);
+  const stickToBottomRef = useRef(true)
+  const isLoadingOlderRef = useRef(false)
+  const contentHeightBeforeLoadRef = useRef(0)
+  const prevDisplayLengthRef = useRef(0)
   /** Web only: debounce timer for near-top load-older (see LOAD_OLDER_WEB_DEBOUNCE_MS). */
   const loadOlderWebDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+    null,
+  )
   /**
    * Timestamp (ms) until which any onScroll events should be treated as
    * programmatic and NOT used to flip follow state. Our own scrollToEnd /
    * scrollTo calls fire onScroll on web; without this guard, streaming-token
    * auto-scrolls silently re-engage follow after the user scrolled away.
    */
-  const programmaticScrollUntilRef = useRef(0);
-  const MESSAGE_PAGE_SIZE = 50;
-  const isNative = Platform.OS !== "web";
-  const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null);
+  const programmaticScrollUntilRef = useRef(0)
+  const MESSAGE_PAGE_SIZE = 50
+  const isNative = Platform.OS !== "web"
+  const nativeEditTapStartRef = useRef<{ x: number; y: number } | null>(null)
   /** Native re-engage threshold: distance from bottom (px) on drag/momentum end
    * within which we treat the user as having returned to the bottom and resume
    * follow. 40px is forgiving enough that a soft release after a peek-up does
    * not snap follow back on against the user's intent. */
-  const STICK_BOTTOM_PX = 40;
-  const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastScrollTimeRef = useRef(0);
-  const SCROLL_THROTTLE_MS = 300;
+  const STICK_BOTTOM_PX = 40
+  const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastScrollTimeRef = useRef(0)
+  const SCROLL_THROTTLE_MS = 300
   /**
    * Minimum positive `onContentSizeChange` delta that triggers an
    * auto-follow on native. Filters out spring-jitter (≤3px) and
@@ -1160,30 +1232,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * the parent ScrollView only chases real new content. See the long
    * comment at the call site (~line 4220).
    */
-  const AUTOSCROLL_MIN_DELTA_PX = 4;
+  const AUTOSCROLL_MIN_DELTA_PX = 4
   /** Duration of the programmatic-scroll guard window (ms). Must comfortably
    * exceed the time between a scrollTo* call and the resulting onScroll event. */
-  const PROGRAMMATIC_SCROLL_GUARD_MS = 250;
+  const PROGRAMMATIC_SCROLL_GUARD_MS = 250
 
   /**
    * Mark the next ~250ms of onScroll events as programmatic so handlers ignore
    * them. Call this immediately before any of our own scrollTo/scrollToEnd. */
   const markProgrammaticScroll = useCallback(() => {
     programmaticScrollUntilRef.current =
-      Date.now() + PROGRAMMATIC_SCROLL_GUARD_MS;
-  }, []);
+      Date.now() + PROGRAMMATIC_SCROLL_GUARD_MS
+  }, [])
 
   /** Mirrors stick/at-bottom into React so we can show the "Jump to latest"
    * pill. Source of truth for streaming follow remains the refs above. */
-  const [isFollowing, setIsFollowing] = useState(true);
-  const [hasScrollableTranscript, setHasScrollableTranscript] = useState(false);
-  const [nativeInlineEditing, setNativeInlineEditing] = useState(false);
-  const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false);
-  const restComposerPad = Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP);
+  const [isFollowing, setIsFollowing] = useState(true)
+  const [hasScrollableTranscript, setHasScrollableTranscript] = useState(false)
+  const [nativeInlineEditing, setNativeInlineEditing] = useState(false)
+  const [nativeKeyboardOpen, setNativeKeyboardOpen] = useState(false)
+  // Phone chrome renders the bottom nav outside this chat surface and that
+  // nav owns the home-indicator inset. Reserving it here too created an extra
+  // blank row between the composer and nav on native, unlike mobile web.
+  const restComposerPad = isPhoneViewport
+    ? NATIVE_COMPOSER_KEYBOARD_GAP
+    : Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   // Native phone chat uses the measured keyboard overlap below. Keeping the
   // KAV lift enabled here makes the composer depend on two independent layout
   // adjustments, which can leave it behind the keyboard in project chat.
-  const iosComposerAvoiding = Platform.OS === "ios" && !isNativePhoneLayout;
+  const iosComposerAvoiding = Platform.OS === "ios" && !isNativePhoneLayout
   const composerKeyboardPad = useNativeComposerDockPad({
     // Native phone uses the RN `Keyboard` bridge; mobile web has no such
     // bridge but tracks the same overlap via `visualViewport` (see
@@ -1193,79 +1270,79 @@ const ChatPanelContent = observer(function ChatPanelContent({
     safeAreaBottom: insets.bottom,
     iosKeyboardAvoiding: iosComposerAvoiding,
     onOpenChange: setNativeKeyboardOpen,
-  });
+  })
 
   const shouldFollowBottom = useCallback(
     () => (isNative ? stickToBottomRef.current : isUserAtBottomRef.current),
-    [isNative]
-  );
+    [isNative],
+  )
 
   const scrollToBottomIfFollowing = useCallback(
     (animated = false) => {
       if (shouldFollowBottom()) {
-        markProgrammaticScroll();
-        scrollViewRef.current?.scrollToEnd({ animated });
+        markProgrammaticScroll()
+        scrollViewRef.current?.scrollToEnd({ animated })
       }
     },
-    [shouldFollowBottom, markProgrammaticScroll]
-  );
+    [shouldFollowBottom, markProgrammaticScroll],
+  )
 
   const throttledScrollToEnd = useCallback(() => {
-    const now = Date.now();
-    const elapsed = now - lastScrollTimeRef.current;
+    const now = Date.now()
+    const elapsed = now - lastScrollTimeRef.current
     if (elapsed >= SCROLL_THROTTLE_MS) {
-      markProgrammaticScroll();
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-      lastScrollTimeRef.current = now;
+      markProgrammaticScroll()
+      scrollViewRef.current?.scrollToEnd({ animated: true })
+      lastScrollTimeRef.current = now
     } else if (!pendingScrollRef.current) {
       pendingScrollRef.current = setTimeout(() => {
-        markProgrammaticScroll();
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-        lastScrollTimeRef.current = Date.now();
-        pendingScrollRef.current = null;
-      }, SCROLL_THROTTLE_MS - elapsed);
+        markProgrammaticScroll()
+        scrollViewRef.current?.scrollToEnd({ animated: true })
+        lastScrollTimeRef.current = Date.now()
+        pendingScrollRef.current = null
+      }, SCROLL_THROTTLE_MS - elapsed)
     }
-  }, [markProgrammaticScroll]);
+  }, [markProgrammaticScroll])
 
   const syncStickFromNativeEvent = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!isNative) return;
-      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+      if (!isNative) return
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
       const fromBottom =
-        contentSize.height - contentOffset.y - layoutMeasurement.height;
-      const atBottom = fromBottom <= STICK_BOTTOM_PX;
-      stickToBottomRef.current = atBottom;
-      setIsFollowing(atBottom);
+        contentSize.height - contentOffset.y - layoutMeasurement.height
+      const atBottom = fromBottom <= STICK_BOTTOM_PX
+      stickToBottomRef.current = atBottom
+      setIsFollowing(atBottom)
     },
-    [isNative]
-  );
+    [isNative],
+  )
 
   /** Re-engage follow and snap to the latest message. Used by the
    * "Jump to latest" pill. */
   const jumpToLatest = useCallback(() => {
-    isUserAtBottomRef.current = true;
-    stickToBottomRef.current = true;
-    setIsFollowing(true);
-    markProgrammaticScroll();
-    scrollViewRef.current?.scrollToEnd({ animated: true });
-  }, [markProgrammaticScroll]);
+    isUserAtBottomRef.current = true
+    stickToBottomRef.current = true
+    setIsFollowing(true)
+    markProgrammaticScroll()
+    scrollViewRef.current?.scrollToEnd({ animated: true })
+  }, [markProgrammaticScroll])
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
-      scrollToBottomIfFollowing(true);
-    });
-    return () => sub.remove();
-  }, [scrollToBottomIfFollowing]);
+      scrollToBottomIfFollowing(true)
+    })
+    return () => sub.remove()
+  }, [scrollToBottomIfFollowing])
 
   useEffect(() => {
     return () => {
-      if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current);
+      if (pendingScrollRef.current) clearTimeout(pendingScrollRef.current)
       if (loadOlderWebDebounceRef.current)
-        clearTimeout(loadOlderWebDebounceRef.current);
+        clearTimeout(loadOlderWebDebounceRef.current)
       if (contextUsageTimerRef.current)
-        clearTimeout(contextUsageTimerRef.current);
-    };
-  }, []);
+        clearTimeout(contextUsageTimerRef.current)
+    }
+  }, [])
 
   /**
    * Web only: any user-initiated scroll input immediately disengages follow,
@@ -1275,96 +1352,96 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * and keyboard navigation all count as intent to leave the bottom.
    */
   useEffect(() => {
-    if (Platform.OS !== "web") return;
+    if (Platform.OS !== "web") return
     const node: any =
       (scrollViewRef.current as any)?.getScrollableNode?.() ??
-      (scrollViewRef.current as any);
-    if (!node || typeof node.addEventListener !== "function") return;
+      (scrollViewRef.current as any)
+    if (!node || typeof node.addEventListener !== "function") return
 
     const disengage = () => {
-      isUserAtBottomRef.current = false;
-      setIsFollowing(false);
-    };
+      isUserAtBottomRef.current = false
+      setIsFollowing(false)
+    }
 
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) disengage();
-    };
+      if (e.deltaY < 0) disengage()
+    }
     const onTouchStart = () => {
-      disengage();
-    };
+      disengage()
+    }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
-        disengage();
+        disengage()
       }
-    };
+    }
 
-    node.addEventListener("wheel", onWheel, { passive: true });
-    node.addEventListener("touchstart", onTouchStart, { passive: true });
-    node.addEventListener("keydown", onKeyDown);
+    node.addEventListener("wheel", onWheel, { passive: true })
+    node.addEventListener("touchstart", onTouchStart, { passive: true })
+    node.addEventListener("keydown", onKeyDown)
     return () => {
-      node.removeEventListener("wheel", onWheel);
-      node.removeEventListener("touchstart", onTouchStart);
-      node.removeEventListener("keydown", onKeyDown);
-    };
-  }, []);
+      node.removeEventListener("wheel", onWheel)
+      node.removeEventListener("touchstart", onTouchStart)
+      node.removeEventListener("keydown", onKeyDown)
+    }
+  }, [])
 
   // Chat session state — each ChatPanel instance receives a stable chatSessionId
-  const currentSessionId = chatSessionId ?? null;
+  const currentSessionId = chatSessionId ?? null
 
   useEffect(() => {
-    setHasScrollableTranscript(false);
-  }, [currentSessionId]);
+    setHasScrollableTranscript(false)
+  }, [currentSessionId])
 
   // Native push notifications are still useful when another project is open,
   // or when the app is backgrounded. Suppress only the notification for the
   // exact chat currently visible in the foreground.
   useEffect(() => {
-    if (!isActive || !currentSessionId || !projectId) return;
+    if (!isActive || !currentSessionId || !projectId) return
     setActiveChatNotificationContext({
       sessionId: currentSessionId,
       projectId,
-    });
-    return () => setActiveChatNotificationContext(null);
-  }, [currentSessionId, isActive, projectId]);
+    })
+    return () => setActiveChatNotificationContext(null)
+  }, [currentSessionId, isActive, projectId])
 
-  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
-  const prevSessionIdRef = useRef<string | null>(currentSessionId);
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
+  const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] =
-    useState<string>(DEFAULT_MODEL_FREE);
-  const isModelControlled = controlledSelectedModel !== undefined;
+    useState<string>(DEFAULT_MODEL_FREE)
+  const isModelControlled = controlledSelectedModel !== undefined
   // Gate reconciliation until the persisted preference has loaded, so the
   // reconciler never runs against the initial slug default (not a catalog UUID
   // id) and persist-clobbers the user's saved choice. See the home screen /
   // project layout for the same guard.
-  const [modelPrefLoaded, setModelPrefLoaded] = useState(false);
+  const [modelPrefLoaded, setModelPrefLoaded] = useState(false)
 
   useEffect(() => {
-    if (isModelControlled) return;
+    if (isModelControlled) return
     loadModelPreference(projectId).then((stored) => {
       if (stored) {
-        setInternalSelectedModel(stored);
+        setInternalSelectedModel(stored)
       } else if (hasAdvancedModelAccess) {
-        setInternalSelectedModel(DEFAULT_MODEL_PRO);
+        setInternalSelectedModel(DEFAULT_MODEL_PRO)
       }
-      setModelPrefLoaded(true);
-    });
-  }, [hasAdvancedModelAccess, isModelControlled, projectId]);
+      setModelPrefLoaded(true)
+    })
+  }, [hasAdvancedModelAccess, isModelControlled, projectId])
 
   const selectedModel = isModelControlled
     ? controlledSelectedModel
-    : internalSelectedModel;
+    : internalSelectedModel
 
   const handleModelChange = useCallback(
     (modelId: string) => {
       if (controlledOnModelChange) {
-        controlledOnModelChange(modelId);
+        controlledOnModelChange(modelId)
       } else {
-        setInternalSelectedModel(modelId);
-        saveModelPreference(modelId, projectId);
+        setInternalSelectedModel(modelId)
+        saveModelPreference(modelId, projectId)
       }
     },
-    [controlledOnModelChange, projectId]
-  );
+    [controlledOnModelChange, projectId],
+  )
 
   // Reset a pre-UUID stored selection (an old slug that's now only a server
   // alias, so the picker can't label it) to the tier default once the catalog
@@ -1374,69 +1451,69 @@ const ChatPanelContent = observer(function ChatPanelContent({
     internalSelectedModel,
     hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
     handleModelChange,
-    !isModelControlled && modelPrefLoaded
-  );
+    !isModelControlled && modelPrefLoaded,
+  )
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>(
-    () => initialInteractionMode ?? "agent"
-  );
+    () => initialInteractionMode ?? "agent",
+  )
 
   useEffect(() => {
     // A forced mode (e.g. the personal companion shell always forcing
     // "agent") wins outright — loading/restoring a persisted preference here
     // would just be immediately overridden by the forced-mode effect below,
     // and doing so on every mount is a wasted async round trip at best.
-    if (composer.forcedMode) return;
+    if (composer.forcedMode) return
     if (initialInteractionMode) {
-      setInteractionMode(initialInteractionMode);
-      void saveInteractionModePreference(initialInteractionMode);
-      return;
+      setInteractionMode(initialInteractionMode)
+      void saveInteractionModePreference(initialInteractionMode)
+      return
     }
     void loadInteractionModePreference().then((stored) => {
       if (stored) {
-        setInteractionMode(stored);
+        setInteractionMode(stored)
       }
-    });
-  }, [initialInteractionMode, composer.forcedMode]);
+    })
+  }, [initialInteractionMode, composer.forcedMode])
 
   // Mirror interactionMode in a ref so callbacks (sendMessageInternal, queue
   // processor) always observe the latest value even when fired in the same
   // tick as a mode change (e.g. plan confirm → switch to agent → send).
-  const interactionModeRef = useRef<InteractionMode>(interactionMode);
+  const interactionModeRef = useRef<InteractionMode>(interactionMode)
   useEffect(() => {
-    interactionModeRef.current = interactionMode;
-  }, [interactionMode]);
+    interactionModeRef.current = interactionMode
+  }, [interactionMode])
 
   useEffect(() => {
-    if (!composer.forcedMode) return;
-    interactionModeRef.current = composer.forcedMode;
-    setInteractionMode(composer.forcedMode);
-  }, [composer.forcedMode]);
+    if (!composer.forcedMode) return
+    interactionModeRef.current = composer.forcedMode
+    setInteractionMode(composer.forcedMode)
+  }, [composer.forcedMode])
 
   const handleInteractionModeChange = useCallback((mode: InteractionMode) => {
-    interactionModeRef.current = mode;
-    setInteractionMode(mode);
-    void saveInteractionModePreference(mode);
-  }, []);
+    interactionModeRef.current = mode
+    setInteractionMode(mode)
+    void saveInteractionModePreference(mode)
+  }, [])
 
   // Dual Plan preference — singleton-backed hook so the chat input, Plans
   // panel header, and user settings page all stay in sync. Persistent
   // per-device; the toggle stays sticky across sessions. Default is ON.
-  const [dualPlan, setDualPlanAsync] = useDualPlan();
-  const dualPlanRef = useRef<boolean>(dualPlan);
+  const [dualPlan, setDualPlanAsync] = useDualPlan()
+  const dualPlanRef = useRef<boolean>(dualPlan)
   useEffect(() => {
-    dualPlanRef.current = dualPlan;
-  }, [dualPlan]);
+    dualPlanRef.current = dualPlan
+  }, [dualPlan])
   const handleDualPlanChange = useCallback(
     (next: boolean) => {
-      dualPlanRef.current = next;
-      void setDualPlanAsync(next);
+      dualPlanRef.current = next
+      void setDualPlanAsync(next)
     },
-    [setDualPlanAsync]
-  );
+    [setDualPlanAsync],
+  )
 
   const [restoreDraftRequest, setRestoreDraftRequest] =
-    useState<RestoreDraftRequest | null>(null);
+    useState<RestoreDraftRequest | null>(null)
 
   // Stable identity: an inline arrow here would be a new prop value on every
   // ChatPanel render, re-running ChatInput's restore effect (which depends on
@@ -1444,12 +1521,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // actually consumed.
   const handleDraftRestored = useCallback(
     (nonce: number) => {
-      if (prefillRequest?.nonce === nonce) onPrefillConsumed?.(nonce);
+      if (prefillRequest?.nonce === nonce) onPrefillConsumed?.(nonce)
       else if (restoreDraftRequest?.nonce === nonce)
-        setRestoreDraftRequest(null);
+        setRestoreDraftRequest(null)
     },
-    [prefillRequest?.nonce, restoreDraftRequest?.nonce, onPrefillConsumed]
-  );
+    [prefillRequest?.nonce, restoreDraftRequest?.nonce, onPrefillConsumed],
+  )
 
   // Bridge for EZ Mode overlay (voice + text translator). The overlay
   // calls `send` / `setMode` to drive this panel, and subscribes to the
@@ -1457,56 +1534,56 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // emitted below. We capture the emitters in refs so hooks declared
   // before the registrar runs can reach the latest implementations
   // without a closure dance.
-  const emitTurnStartRef = useRef<(() => void) | null>(null);
+  const emitTurnStartRef = useRef<(() => void) | null>(null)
   const emitToolActivityRef = useRef<
     | ((args: {
-        toolName: string;
-        phase: "start" | "end";
-        label: string;
-        ok?: boolean;
+        toolName: string
+        phase: "start" | "end"
+        label: string
+        ok?: boolean
       }) => void)
     | null
-  >(null);
-  const emitTurnEndRef = useRef<((text: string) => void) | null>(null);
+  >(null)
+  const emitTurnEndRef = useRef<((text: string) => void) | null>(null)
   const setSubagentCardsRef = useRef<((cards: ToolCallData[]) => void) | null>(
-    null
-  );
-  const lastEmittedMessageIdRef = useRef<string | null>(null);
+    null,
+  )
+  const lastEmittedMessageIdRef = useRef<string | null>(null)
   /**
    * Per-tool-invocation state cache so the messages-watch effect only
    * emits `tool-activity` events when a part transitions to a new phase.
    * Keyed by a stable `${messageId}:${toolCallId||index}` string.
    */
-  const toolActivityStateRef = useRef<Map<string, "start" | "end">>(new Map());
+  const toolActivityStateRef = useRef<Map<string, "start" | "end">>(new Map())
 
-  const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null);
-  const confirmedPlanRef = useRef<PlanData | null>(null);
-  const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null);
-  const pendingPlanRef = useRef<PlanData | null>(null);
+  const [confirmedPlan, setConfirmedPlan] = useState<PlanData | null>(null)
+  const confirmedPlanRef = useRef<PlanData | null>(null)
+  const [pendingPlan, setPendingPlan] = useState<PlanData | null>(null)
+  const pendingPlanRef = useRef<PlanData | null>(null)
 
-  const planStream = usePlanStreamSafe();
+  const planStream = usePlanStreamSafe()
 
   // Per-panel TodoWrite store. Each open chat tab gets its own
   // instance so descendants (AssistantContent, TodoRow) read
   // and write isolated state — see todo-state-store.ts. Stable
   // for the panel's lifetime; the clear() below is a defensive
   // reset for the rare case where a panel switches sessions.
-  const todoStateStore = useMemo(() => createTodoStateStore(), []);
+  const todoStateStore = useMemo(() => createTodoStateStore(), [])
   // Per-chat store for the files-changed dock panel — see file-change-store.ts.
-  const fileChangeStore = useMemo(() => createFileChangeStore(), []);
+  const fileChangeStore = useMemo(() => createFileChangeStore(), [])
   // The chat dock's panel registry (context breakdown, plan, checklist,
   // changed files, live browser, running tasks, queue, worktree, plus the
   // blocking permission/question/connectivity panels). One per ChatPanel —
   // see chat-dock-store.ts.
   useEffect(() => {
-    pendingPlanRef.current = null;
-    setPendingPlan(null);
-    setConfirmedPlan(null);
-    confirmedPlanRef.current = null;
-    todoStateStore.clear();
-    fileChangeStore.clear();
-    chatDockStore.reset();
-  }, [currentSessionId, todoStateStore, fileChangeStore, chatDockStore]);
+    pendingPlanRef.current = null
+    setPendingPlan(null)
+    setConfirmedPlan(null)
+    confirmedPlanRef.current = null
+    todoStateStore.clear()
+    fileChangeStore.clear()
+    chatDockStore.reset()
+  }, [currentSessionId, todoStateStore, fileChangeStore, chatDockStore])
 
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
@@ -1514,22 +1591,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `loadById` (not `loadAll({ id })`) so the response doesn't
   // destructively wipe sibling sessions out of the shared MST collection.
   useEffect(() => {
-    if (!isActive || !chatSessionId) return;
-    if (studioChat.chatSessionCollection.get(chatSessionId)) return;
+    if (!isActive || !chatSessionId) return
+    if (studioChat.chatSessionCollection.get(chatSessionId)) return
     studioChat.chatSessionCollection
       .loadById(chatSessionId)
       .catch((err: any) =>
-        console.warn("[ChatPanel] Failed to load session:", err)
-      );
-  }, [isActive, chatSessionId, studioChat]);
+        console.warn("[ChatPanel] Failed to load session:", err),
+      )
+  }, [isActive, chatSessionId, studioChat])
 
   const currentSession = currentSessionId
     ? studioChat.chatSessionCollection.get(currentSessionId)
-    : null;
+    : null
 
   // Per-session MST collection: isolated from sibling ChatPanels. Reads never
   // flip to 0 because another session's `loadPage` clobbered the singleton.
-  const sessionMessages = useChatMessageCollectionForSession(currentSessionId);
+  const sessionMessages = useChatMessageCollectionForSession(currentSessionId)
 
   // Caller's own thumbs up/down reactions for this session, keyed by
   // messageId — powers the `TurnFooter` initial thumb state. Loaded
@@ -1537,33 +1614,33 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `handleSetFeedback` / `handleClearFeedback`.
   const [feedbackMap, setFeedbackMap] = useState<
     Record<string, MessageFeedbackThumbs>
-  >({});
+  >({})
 
   useEffect(() => {
     if (!currentSessionId) {
-      setFeedbackMap({});
-      return;
+      setFeedbackMap({})
+      return
     }
-    let cancelled = false;
-    setFeedbackMap({});
+    let cancelled = false
+    setFeedbackMap({})
     getSessionFeedback(studioChat.chatSessionCollection, currentSessionId)
       .then((feedback) => {
-        if (!cancelled) setFeedbackMap(feedback);
+        if (!cancelled) setFeedbackMap(feedback)
       })
       .catch((err) => {
-        console.warn("[ChatPanel] Failed to load session feedback:", err);
-      });
+        console.warn("[ChatPanel] Failed to load session feedback:", err)
+      })
     return () => {
-      cancelled = true;
-    };
-  }, [currentSessionId, studioChat]);
+      cancelled = true
+    }
+  }, [currentSessionId, studioChat])
 
   // Loading state for Effect 1. Kept as *both* a ref (for synchronous reads
   // elsewhere) AND state (so changes to it can retrigger Effect 1 via deps,
   // which is what unsticks the "skip: already loading" wedge when a prior
   // fetch was stalled behind a streaming SSE request).
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const isLoadingMessagesRef = useRef(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const isLoadingMessagesRef = useRef(false)
   // Monotonic counter bumped on every Effect 1 run. The async .then() /
   // .finally() callbacks compare their captured generation against the
   // current value to detect a session switch (or any other re-run) that
@@ -1571,22 +1648,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // the post-loadPage `resumeStream()` probe from attaching to the wrong
   // chat session if the user tab-switches while the history fetch is in
   // flight.
-  const loadGenerationRef = useRef(0);
+  const loadGenerationRef = useRef(0)
   // Per-session timestamp of the last successful (or attempted) refetch.
   // Used to skip redundant fetches on rapid Effect 1 re-runs — otherwise the
   // promote-ref-to-state change would drive an infinite refetch loop.
-  const cacheRefreshedAtRef = useRef<Map<string, number>>(new Map());
+  const cacheRefreshedAtRef = useRef<Map<string, number>>(new Map())
   // Tracks previous streaming state so the post-stream revalidate effect only
   // fires on the true→false transition (not every idle render).
-  const wasStreamingRef = useRef(false);
-  const cachedMessagesRef = useRef<any[] | null>(null);
-  const hasInjectedInitialMessageRef = useRef(false);
-  const isSendingMessageRef = useRef(false);
+  const wasStreamingRef = useRef(false)
+  const cachedMessagesRef = useRef<any[] | null>(null)
+  const hasInjectedInitialMessageRef = useRef(false)
+  const isSendingMessageRef = useRef(false)
   const lastUserInputRef = useRef<{
-    content: string;
-    files?: FileAttachment[];
-  } | null>(null);
-  const lastNonEmptyMessagesRef = useRef<UIMessage[]>([]);
+    content: string
+    files?: FileAttachment[]
+  } | null>(null)
+  const lastNonEmptyMessagesRef = useRef<UIMessage[]>([])
 
   // Reset stale state synchronously when the session changes so we never
   // render one frame of the previous session's messages before showing
@@ -1597,12 +1674,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // of briefly showing a loader while the stale-while-revalidate fetch runs.
   if (prevSessionIdRef.current !== currentSessionId) {
     const cachedForSession = currentSessionId
-      ? sessionMessageCache.get(currentSessionId) ?? null
-      : null;
-    prevSessionIdRef.current = currentSessionId;
-    cachedMessagesRef.current = cachedForSession;
-    lastNonEmptyMessagesRef.current = cachedForSession ?? [];
-    isLoadingMessagesRef.current = false;
+      ? (sessionMessageCache.get(currentSessionId) ?? null)
+      : null
+    prevSessionIdRef.current = currentSessionId
+    cachedMessagesRef.current = cachedForSession
+    lastNonEmptyMessagesRef.current = cachedForSession ?? []
+    isLoadingMessagesRef.current = false
     // State-mirror reset is deferred to an effect (can't call setState in
     // render); Effect 1 reads the ref for its in-flight dedup so behaviour
     // is correct immediately regardless.
@@ -1610,128 +1687,124 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // cache hit; otherwise Effect 1 will flip it true after first fetch.
     setIsInitialLoadComplete(
       !currentSessionId ||
-        (cachedForSession != null && cachedForSession.length > 0)
-    );
+        (cachedForSession != null && cachedForSession.length > 0),
+    )
   }
 
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>(() =>
-    currentSessionId ? sessionQueueCache.get(currentSessionId) ?? [] : []
-  );
-  const isProcessingQueueRef = useRef(false);
+    currentSessionId ? (sessionQueueCache.get(currentSessionId) ?? []) : [],
+  )
+  const isProcessingQueueRef = useRef(false)
 
-  const sessionContextUsage = (currentSession as any)?.contextUsageTokens;
-  const sessionContextWindow = (currentSession as any)?.contextWindowTokens;
+  const sessionContextUsage = (currentSession as any)?.contextUsageTokens
+  const sessionContextWindow = (currentSession as any)?.contextWindowTokens
   useEffect(() => {
     if (sessionContextUsage > 0 && sessionContextWindow > 0) {
       setContextUsage({
         inputTokens: sessionContextUsage,
         contextWindowTokens: sessionContextWindow,
-      });
+      })
     }
-  }, [sessionContextUsage, sessionContextWindow]);
+  }, [sessionContextUsage, sessionContextWindow])
 
   // Subagent progress tracking
   const [activeSubagents, setActiveSubagents] = useState<
     Map<string, SubagentProgress>
-  >(new Map());
-  const [recentTools, setRecentTools] = useState<RecentToolCall[]>([]);
-  const MAX_RECENT_TOOLS = 8;
+  >(new Map())
+  const [recentTools, setRecentTools] = useState<RecentToolCall[]>([])
+  const MAX_RECENT_TOOLS = 8
   const [accumulatedSubagentTools, setAccumulatedSubagentTools] = useState<
     ToolCallData[]
-  >([]);
-  const processedProgressEventsRef = useRef<Set<string>>(new Set());
+  >([])
+  const processedProgressEventsRef = useRef<Set<string>>(new Set())
 
   // Background shell processes the agent has started in this thread that are
   // still running. Seeded from the runtime's process endpoint on load and kept
   // live by `data-process-update` SSE frames during a turn.
-  const [runningProcesses, setRunningProcesses] = useState<RunningProcess[]>(
-    []
-  );
+  const [runningProcesses, setRunningProcesses] = useState<RunningProcess[]>([])
   const [killingProcesses, setKillingProcesses] = useState<Set<string>>(
-    new Set()
-  );
+    new Set(),
+  )
 
   const fetchRunningProcesses = useCallback(async () => {
     const base =
       localAgentUrl ||
-      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null);
-    if (!base || !currentSessionId) return;
+      (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+    if (!base || !currentSessionId) return
     try {
-      const fetchFn = expoFetch ?? globalThis.fetch;
+      const fetchFn = expoFetch ?? globalThis.fetch
       const headers: Record<string, string> = nativeHeaders
         ? nativeHeaders()
-        : {};
+        : {}
       const res = await fetchFn(
         `${base}/agent/chat/${currentSessionId}/processes`,
         {
           headers,
           credentials: Platform.OS === "web" ? "include" : undefined,
-        } as any
-      );
+        } as any,
+      )
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json()
         if (Array.isArray(data?.processes))
-          setRunningProcesses(data.processes as RunningProcess[]);
+          setRunningProcesses(data.processes as RunningProcess[])
       }
     } catch {
       // Non-critical — the panel just won't seed until the next live frame.
     }
-  }, [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch]);
+  }, [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch])
 
   const handleKillProcess = useCallback(
     async (runId: string) => {
       const base =
         localAgentUrl ||
-        (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null);
-      if (!base || !currentSessionId) return;
-      setKillingProcesses((prev) => new Set(prev).add(runId));
+        (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+      if (!base || !currentSessionId) return
+      setKillingProcesses((prev) => new Set(prev).add(runId))
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch;
+        const fetchFn = expoFetch ?? globalThis.fetch
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
-          : {};
+          : {}
         const res = await fetchFn(
           `${base}/agent/chat/${currentSessionId}/processes/${runId}/kill`,
           {
             method: "POST",
             headers,
             credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any
-        );
+          } as any,
+        )
         if (res.ok) {
-          const data = await res.json();
+          const data = await res.json()
           if (Array.isArray(data?.processes))
             setRunningProcesses(
               (data.processes as RunningProcess[]).filter(
-                (p) => p.runId !== runId
-              )
-            );
+                (p) => p.runId !== runId,
+              ),
+            )
           else
-            setRunningProcesses((prev) =>
-              prev.filter((p) => p.runId !== runId)
-            );
+            setRunningProcesses((prev) => prev.filter((p) => p.runId !== runId))
         }
       } catch {
         // Ignore — the live frame / next poll will reconcile.
       } finally {
         setKillingProcesses((prev) => {
-          const next = new Set(prev);
-          next.delete(runId);
-          return next;
-        });
+          const next = new Set(prev)
+          next.delete(runId)
+          return next
+        })
       }
     },
-    [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch]
-  );
+    [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch],
+  )
 
   // Seed the process list whenever the active thread changes.
   useEffect(() => {
     if (!currentSessionId) {
-      setRunningProcesses([]);
-      return;
+      setRunningProcesses([])
+      return
     }
-    fetchRunningProcesses();
-  }, [currentSessionId, fetchRunningProcesses]);
+    fetchRunningProcesses()
+  }, [currentSessionId, fetchRunningProcesses])
 
   // Durable-turn lifecycle tracking. The runtime emits `data-turn-start`
   // exactly once per turn, periodic `data-turn-seq` heartbeats, and
@@ -1739,49 +1812,50 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // auto-resume wrapper handles transparent reconnects on premature EOF;
   // these refs let the UI react to the higher-level lifecycle (e.g. show a
   // "stalled" indicator if we ever exhaust the resume budget).
-  const currentTurnIdRef = useRef<string | null>(null);
-  const turnCompletedRef = useRef<boolean>(false);
-  const turnLastSeqRef = useRef<number>(0);
+  const currentTurnIdRef = useRef<string | null>(null)
+  const turnCompletedRef = useRef<boolean>(false)
+  const turnLastSeqRef = useRef<number>(0)
   // Auto-recovery bookkeeping: which turn we've already tried to auto-recover
   // (so a single stalled turn fires recovery exactly once), and a ref-held
   // recovery callback so the early falling-edge effect can invoke the
   // callback that's defined later in the component (same pattern as
   // `handleRetryRef`). `currentSessionIdRef` lets the async recovery loop
   // detect a session switch and bail before reattaching to a stale stream.
-  const recoveredTurnIdRef = useRef<string | null>(null);
-  const stallRecoveryRef = useRef<(() => void) | null>(null);
-  const currentSessionIdRef = useRef<string | null>(null);
-  currentSessionIdRef.current = currentSessionId;
+  const recoveredTurnIdRef = useRef<string | null>(null)
+  const renderDepthErrorTurnIdRef = useRef<string | null>(null)
+  const stallRecoveryRef = useRef<(() => void) | null>(null)
+  const currentSessionIdRef = useRef<string | null>(null)
+  currentSessionIdRef.current = currentSessionId
 
   const [toolErrorBanner, setToolErrorBanner] = useState<{
-    toolkitName: string;
-    error: string;
-    isAuthError?: boolean;
-  } | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
+    toolkitName: string
+    error: string
+    isAuthError?: boolean
+  } | null>(null)
+  const [reconnecting, setReconnecting] = useState(false)
   const [contextUsage, setContextUsage] = useState<{
-    inputTokens: number;
-    contextWindowTokens: number;
-  } | null>(null);
+    inputTokens: number
+    contextWindowTokens: number
+  } | null>(null)
   const contextUsageThrottleRef = useRef<{
-    inputTokens: number;
-    contextWindowTokens: number;
-  } | null>(null);
+    inputTokens: number
+    contextWindowTokens: number
+  } | null>(null)
   const contextUsageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+    null,
+  )
   // Per-turn category rollup from `data-prompt-breakdown` — powers the
   // context-usage popover opened by clicking the ContextTracker ring.
   // Not persisted; recomputed by the gateway every turn.
   const [contextBreakdown, setContextBreakdown] =
-    useState<ContextBreakdownData | null>(null);
+    useState<ContextBreakdownData | null>(null)
 
   useEffect(() => {
-    if (!toolErrorBanner) return;
-    if (toolErrorBanner.isAuthError) return;
-    const timer = setTimeout(() => setToolErrorBanner(null), 10000);
-    return () => clearTimeout(timer);
-  }, [toolErrorBanner]);
+    if (!toolErrorBanner) return
+    if (toolErrorBanner.isAuthError) return
+    const timer = setTimeout(() => setToolErrorBanner(null), 10000)
+    return () => clearTimeout(timer)
+  }, [toolErrorBanner])
 
   // Stall watchdog liveness timestamp. Declared up here (before
   // `useChat`/`useChatTransportConfig`) so the auto-resuming fetch
@@ -1789,10 +1863,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // can both bump it. See the watchdog effect further down for how it's
   // consumed (`isChatStalled`) and the `chat-stall-watchdog.ts` history
   // comment for the underlying production incident.
-  const lastChatProgressAtRef = useRef<number>(Date.now());
+  const lastChatProgressAtRef = useRef<number>(Date.now())
   const bumpChatProgress = useCallback(() => {
-    lastChatProgressAtRef.current = Date.now();
-  }, []);
+    lastChatProgressAtRef.current = Date.now()
+  }, [])
+  // Last `data-*` frame from the runtime, transient or not. Transient
+  // heartbeats (`data-turn-seq`, `data-tool-progress`) don't touch
+  // `messages`, so the idle timeout reads this instead. Unlike
+  // `lastChatProgressAtRef` it ignores the API's keep-alive comments.
+  const lastRuntimeDataAtRef = useRef<number>(Date.now())
 
   // Turn idempotency id for the send currently in flight (or about to be).
   // Set in `sendMessageInternal` right before calling `sendMessage()`; the
@@ -1801,29 +1880,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // network failure) passes its previously-generated id back in via
   // `extraBody.clientTurnId` so this ref — and therefore the header the
   // server de-dupes on — stays stable across attempts.
-  const pendingClientTurnIdRef = useRef<string | undefined>(undefined);
+  const pendingClientTurnIdRef = useRef<string | undefined>(undefined)
 
   // Flipped synchronously in `handleStop` so `onFinish` (which fires after
   // `stop()` finalises the in-flight assistant message) can distinguish a
   // user-initiated abort from a real "agent returned nothing" condition.
   // Without this we raise a scary "context corruption" banner every time
   // the user taps Stop before the model produced any text or tool calls.
-  const userInitiatedStopRef = useRef(false);
+  const userInitiatedStopRef = useRef(false)
   // Set just before the stall watchdog calls `stop()`, so `onFinish` can
   // keep a timeout banner instead of wiping error state (silent dropped turns).
-  const stallWatchdogTrippedRef = useRef(false);
+  const stallWatchdogTrippedRef = useRef(false)
 
   // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
   // instead of the per-project endpoint. Only set when this panel is
   // operating in workspace scope and we actually have a workspace id.
   const chatWorkspaceId =
-    chatScope === "workspace" && workspaceId ? workspaceId : undefined;
+    chatScope === "workspace" && workspaceId ? workspaceId : undefined
 
   // Stable identity across renders: this is a dep of `useChatTransportConfig`'s
   // internal `useMemo`, so an inline arrow here would rebuild `transportConfig`
   // (and therefore `chatTransport`/`useChat`'s transport) on every ChatPanel
   // render instead of only when one of the other transport inputs changes.
-  const getClientTurnId = useCallback(() => pendingClientTurnIdRef.current, []);
+  const getClientTurnId = useCallback(() => pendingClientTurnIdRef.current, [])
 
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
@@ -1842,12 +1921,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
     getClientTurnId,
-  });
+  })
+  // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
+  const beforeResumeReplayRef = useRef<() => void>(() => {})
   const chatTransport = useMemo(
     () =>
-      transportConfig ? new DefaultChatTransport(transportConfig) : undefined,
-    [transportConfig]
-  );
+      transportConfig
+        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () =>
+            beforeResumeReplayRef.current(),
+          )
+        : undefined,
+    [transportConfig],
+  )
 
   // AI SDK useChat hook.
   //
@@ -1883,7 +1968,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // exception and opens LogBox over the conversation, so retain a visible
       // diagnostic without turning an ordinary retryable failure into a red
       // screen. Sentry still receives the full error immediately below.
-      console.warn("[ChatPanel] Stream error:", err);
+      console.warn("[ChatPanel] Stream error:", err)
 
       // Surface the transport-failure class in Sentry. This path (network
       // resets → "Connection interrupted. Please tap Retry to continue.") used
@@ -1893,6 +1978,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // event so the production_web noise filter keeps it despite the raw
       // "Failed to fetch"-style message. The stall watchdog already owns the
       // separate "stuck with no error" case (`chat_stall_watchdog_tripped`).
+      if (isReactUpdateDepthError(err)) {
+        renderDepthErrorTurnIdRef.current = currentTurnIdRef.current
+      }
       try {
         const report = buildChatStreamErrorReport(err, {
           turnId: currentTurnIdRef.current,
@@ -1901,23 +1989,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
           lastSeq: turnLastSeqRef.current,
           userInitiatedStop: userInitiatedStopRef.current,
           phase: "stream",
-        });
+        })
         if (report) {
           Sentry.captureException(err, {
             level: report.level,
             tags: report.tags,
             extra: report.extra,
             fingerprint: report.fingerprint,
-          });
+          })
         }
       } catch (reportErr) {
         console.warn(
           "[ChatPanel] failed to report stream error to Sentry:",
-          reportErr
-        );
+          reportErr,
+        )
       }
 
-      setMessages((prev) => markStuckToolsInterrupted(prev));
+      setMessages((prev) => markStuckToolsInterrupted(prev))
     },
     onData: async (dataPart) => {
       // Any `data-*` frame (including `data-turn-start`, `data-turn-seq`,
@@ -1926,34 +2014,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // first `text-delta` — so without this bump the watchdog can
       // still trip on a long pre-Anthropic warm-up even after we see
       // bytes. Cheap, safe, and orthogonal to message rendering.
-      bumpChatProgress();
+      bumpChatProgress()
+      lastRuntimeDataAtRef.current = Date.now()
 
-      // The runtime re-issued a model call that dropped mid-generation. Drop
-      // the failed step's partial text/reasoning from the in-progress assistant
-      // message so the regenerated output replaces it instead of rendering
-      // twice. Completed tool calls (and any text committed before them) are
-      // preserved — a failed inference step never executed tools.
-      if (dataPart.type === "data-inference-retry") {
-        setMessages((prev) => {
-          if (prev.length === 0) return prev;
-          const lastIdx = prev.length - 1;
-          const last = prev[lastIdx];
-          if (last.role !== "assistant" || !Array.isArray(last.parts))
-            return prev;
-          const parts = [...last.parts];
-          while (parts.length > 0) {
-            const p = parts[parts.length - 1] as any;
-            if (p?.type === "text" || p?.type === "reasoning") {
-              parts.pop();
-              continue;
-            }
-            break;
-          }
-          if (parts.length === last.parts.length) return prev;
-          return prev.map((m, i) => (i === lastIdx ? { ...m, parts } : m));
-        });
-        return;
-      }
+      // `data-inference-retry` (a dropped model call the runtime re-issued)
+      // stays in `message.parts`; `extractOrderedParts` hides the failed
+      // attempt's text/reasoning at render time.
 
       // The runtime's fast inference-retry budget was exhausted on a still-
       // retryable failure and it couldn't reach the model's upstream health
@@ -1963,80 +2029,80 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // rather than a client-side timer, since the runtime is the one that
       // actually knows whether it's still parked.
       if (dataPart.type === "data-connectivity-wait") {
-        const d = (dataPart as any).data ?? {};
+        const d = (dataPart as any).data ?? {}
         if (d.state === "reconnected") {
-          setConnectivityWait(null);
-          setJustReconnected(true);
-          setTimeout(() => setJustReconnected(false), 3000);
+          setConnectivityWait(null)
+          setJustReconnected(true)
+          setTimeout(() => setJustReconnected(false), 3000)
         } else {
-          setJustReconnected(false);
+          setJustReconnected(false)
           setConnectivityWait({
             attempt: typeof d.attempt === "number" ? d.attempt : 0,
             elapsedMs: typeof d.elapsedMs === "number" ? d.elapsedMs : 0,
             nextProbeInMs:
               typeof d.nextProbeInMs === "number" ? d.nextProbeInMs : 0,
-          });
+          })
         }
-        return;
+        return
       }
 
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
-        const event = (dataPart as any).data as VirtualToolEvent;
+        const event = (dataPart as any).data as VirtualToolEvent
         console.log(
           "[ChatPanel:VirtualTool] Received virtual tool event:",
-          event
-        );
+          event,
+        )
 
         if (event.toolName === "navigate_to_phase") {
-          const targetPhase = event.args?.phase as string;
+          const targetPhase = event.args?.phase as string
           if (targetPhase && onNavigateToPhase) {
             console.log(
               "[ChatPanel:VirtualTool] Navigating to phase:",
-              targetPhase
-            );
-            onNavigateToPhase(targetPhase);
+              targetPhase,
+            )
+            onNavigateToPhase(targetPhase)
           }
         } else if (event.toolName === "open_panel") {
           const panelId =
-            (event.args?.panelId as string) || `panel-${event.toolUseId}`;
+            (event.args?.panelId as string) || `panel-${event.toolUseId}`
           const panelType =
             (event.args?.type as "code" | "schema" | "preview" | "docs") ||
-            "preview";
-          const panelTitle = (event.args?.title as string) || "Panel";
-          const panelContent = event.args?.content as React.ReactNode;
+            "preview"
+          const panelTitle = (event.args?.title as string) || "Panel"
+          const panelContent = event.args?.content as React.ReactNode
 
           if (onOpenPanel) {
             console.log(
               "[ChatPanel:VirtualTool] Opening panel:",
               panelId,
               panelType,
-              panelTitle
-            );
+              panelTitle,
+            )
             onOpenPanel({
               id: panelId,
               type: panelType,
               title: panelTitle,
               content: panelContent,
-            });
+            })
           }
         } else if (event.toolName === "show_schema") {
-          const schemaName = event.args?.schemaName as string;
-          const defaultTab = (event.args?.defaultTab as string) || "schema";
+          const schemaName = event.args?.schemaName as string
+          const defaultTab = (event.args?.defaultTab as string) || "schema"
 
           if (!schemaName) {
             console.warn(
-              "[ChatPanel:VirtualTool] show_schema called without schemaName"
-            );
-            return;
+              "[ChatPanel:VirtualTool] show_schema called without schemaName",
+            )
+            return
           }
 
           console.log(
             "[ChatPanel:VirtualTool] Showing schema:",
             schemaName,
             "defaultTab:",
-            defaultTab
-          );
+            defaultTab,
+          )
 
           try {
             if (featureId && platformFeatures?.featureSessionCollection) {
@@ -2044,23 +2110,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 featureId,
                 {
                   schemaName: schemaName,
-                }
-              );
+                },
+              )
             }
 
             if (componentBuilder?.compositionCollection) {
               const workspaceComposition =
-                componentBuilder.compositionCollection.findByName?.(
-                  "workspace"
-                );
+                componentBuilder.compositionCollection.findByName?.("workspace")
               if (workspaceComposition) {
                 const currentSlotContent =
-                  workspaceComposition.slotContent || [];
+                  workspaceComposition.slotContent || []
                 const hasDesignSection = currentSlotContent.some?.(
                   (slot: any) =>
                     slot.component === "comp-design-container" ||
-                    slot.sectionRef === "DesignContainerSection"
-                );
+                    slot.sectionRef === "DesignContainerSection",
+                )
 
                 if (!hasDesignSection) {
                   const newSlotContent = [
@@ -2069,11 +2133,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       component: "comp-design-container",
                       config: { defaultTab, expandGraph: true },
                     },
-                  ];
+                  ]
                   await componentBuilder.compositionCollection.updateOne(
                     workspaceComposition.id,
-                    { slotContent: newSlotContent }
-                  );
+                    { slotContent: newSlotContent },
+                  )
                 } else {
                   const updatedSlotContent = currentSlotContent.map?.(
                     (slot: any) => {
@@ -2084,15 +2148,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
                         return {
                           ...slot,
                           config: { ...slot.config, defaultTab },
-                        };
+                        }
                       }
-                      return slot;
-                    }
-                  );
+                      return slot
+                    },
+                  )
                   await componentBuilder.compositionCollection.updateOne(
                     workspaceComposition.id,
-                    { slotContent: updatedSlotContent }
-                  );
+                    { slotContent: updatedSlotContent },
+                  )
                 }
               } else {
                 const newSlotContent = [
@@ -2101,7 +2165,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     component: "comp-design-container",
                     config: { defaultTab, expandGraph: true },
                   },
-                ];
+                ]
                 const newComposition = {
                   id: `composition-workspace-${Date.now()}`,
                   name: "workspace",
@@ -2109,32 +2173,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   slotContent: newSlotContent,
                   dataContext: { context: "workspace" },
                   providerWrapper: "WorkspaceProvider",
-                };
+                }
                 await componentBuilder.compositionCollection.insertOne(
-                  newComposition
-                );
+                  newComposition,
+                )
               }
             }
           } catch (err) {
             console.error(
               "[ChatPanel:VirtualTool] Error handling show_schema:",
-              err
-            );
+              err,
+            )
           }
         } else if (event.toolName === "set_workspace") {
           console.log(
             "[ChatPanel:VirtualTool] Setting workspace state:",
-            event.args
-          );
+            event.args,
+          )
 
           const args = event.args as {
-            layout?: string;
+            layout?: string
             panels?: Array<{
-              slot: string;
-              section: string;
-              config?: Record<string, unknown>;
-            }>;
-          };
+              slot: string
+              section: string
+              config?: Record<string, unknown>
+            }>
+          }
 
           try {
             for (const panel of args.panels ?? []) {
@@ -2143,8 +2207,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   featureId,
                   {
                     schemaName: panel.config.schemaName as string,
-                  }
-                );
+                  },
+                )
               }
             }
 
@@ -2152,27 +2216,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
               slot: panel.slot,
               section: panel.section,
               config: panel.config ?? {},
-            }));
+            }))
 
             if (componentBuilder?.compositionCollection) {
               const workspaceComposition =
-                componentBuilder.compositionCollection.findByName?.(
-                  "workspace"
-                );
+                componentBuilder.compositionCollection.findByName?.("workspace")
               if (workspaceComposition) {
-                const updates: Record<string, unknown> = { slotContent };
+                const updates: Record<string, unknown> = { slotContent }
                 if (args.layout && LAYOUT_TO_TEMPLATE[args.layout]) {
-                  updates.layout = LAYOUT_TO_TEMPLATE[args.layout];
+                  updates.layout = LAYOUT_TO_TEMPLATE[args.layout]
                 }
                 await componentBuilder.compositionCollection.updateOne(
                   workspaceComposition.id,
-                  updates
-                );
+                  updates,
+                )
               } else {
                 const layoutTemplate =
                   args.layout && LAYOUT_TO_TEMPLATE[args.layout]
                     ? LAYOUT_TO_TEMPLATE[args.layout]
-                    : "layout-workspace-flexible";
+                    : "layout-workspace-flexible"
                 const newComposition = {
                   id: `composition-workspace-${Date.now()}`,
                   name: "workspace",
@@ -2180,140 +2242,140 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   slotContent,
                   dataContext: { context: "workspace" },
                   providerWrapper: "WorkspaceProvider",
-                };
+                }
                 await componentBuilder.compositionCollection.insertOne(
-                  newComposition
-                );
+                  newComposition,
+                )
               }
             }
           } catch (err) {
             console.error(
               "[ChatPanel:VirtualTool] Error handling set_workspace:",
-              err
-            );
+              err,
+            )
           }
         } else if (event.toolName === "execute") {
           console.log(
             "[ChatPanel:VirtualTool] Executing operations:",
-            event.args
-          );
+            event.args,
+          )
 
           const args = event.args as {
             operations?: Array<{
-              domain: string;
-              action: "create" | "update" | "delete" | "load";
-              model: string;
-              id?: string;
-              data?: Record<string, unknown>;
-            }>;
-          };
+              domain: string
+              action: "create" | "update" | "delete" | "load"
+              model: string
+              id?: string
+              data?: Record<string, unknown>
+            }>
+          }
 
           const domains: Record<string, any> = {
             "component-builder": componentBuilder,
             "studio-chat": studioChat,
             "platform-features": platformFeatures,
-          };
+          }
 
           for (const op of args.operations ?? []) {
             try {
-              const store = domains[op.domain];
+              const store = domains[op.domain]
               if (!store) {
                 console.warn(
-                  `[ChatPanel:VirtualTool] Unknown domain: ${op.domain}`
-                );
-                continue;
+                  `[ChatPanel:VirtualTool] Unknown domain: ${op.domain}`,
+                )
+                continue
               }
 
               const collectionName = `${op.model
                 .charAt(0)
-                .toLowerCase()}${op.model.slice(1)}Collection`;
-              const collection = store[collectionName];
+                .toLowerCase()}${op.model.slice(1)}Collection`
+              const collection = store[collectionName]
               if (!collection) {
                 console.warn(
-                  `[ChatPanel:VirtualTool] Unknown collection: ${collectionName}`
-                );
-                continue;
+                  `[ChatPanel:VirtualTool] Unknown collection: ${collectionName}`,
+                )
+                continue
               }
 
               switch (op.action) {
                 case "create":
-                  await collection.insertOne(op.data);
-                  break;
+                  await collection.insertOne(op.data)
+                  break
                 case "update":
                   if (op.id) {
-                    await collection.updateOne(op.id, op.data);
+                    await collection.updateOne(op.id, op.data)
                   }
-                  break;
+                  break
                 case "delete":
                   if (op.id) {
-                    await collection.deleteOne(op.id);
+                    await collection.deleteOne(op.id)
                   }
-                  break;
+                  break
                 case "load":
                   if (collection.query) {
-                    await collection.query().toArray();
+                    await collection.query().toArray()
                   }
-                  break;
+                  break
               }
             } catch (err) {
               console.error(
                 `[ChatPanel:VirtualTool] Error executing ${op.action} on ${op.domain}.${op.model}:`,
-                err
-              );
+                err,
+              )
             }
           }
         } else {
           console.warn(
             "[ChatPanel:VirtualTool] Unknown virtual tool:",
-            event.toolName
-          );
+            event.toolName,
+          )
         }
       }
 
       // Handle subagent progress events
       if (dataPart.type === "data-progress") {
-        const event = (dataPart as any).data as SubagentProgressEvent;
+        const event = (dataPart as any).data as SubagentProgressEvent
 
         const eventId =
           event.type === "tool-complete"
             ? `tool:${event.toolUseId}`
-            : `${event.type}:${event.agentId}`;
+            : `${event.type}:${event.agentId}`
 
         if (processedProgressEventsRef.current.has(eventId)) {
-          return;
+          return
         }
-        processedProgressEventsRef.current.add(eventId);
+        processedProgressEventsRef.current.add(eventId)
 
         if (event.type === "subagent-start") {
           setActiveSubagents((prev) => {
-            const next = new Map(prev);
+            const next = new Map(prev)
             next.set(event.agentId, {
               agentId: event.agentId,
               agentType: event.agentType,
               startTime: event.timestamp,
               status: "running",
               toolCount: 0,
-            });
-            return next;
-          });
+            })
+            return next
+          })
         } else if (event.type === "subagent-stop") {
           setActiveSubagents((prev) => {
-            const next = new Map(prev);
-            const existing = next.get(event.agentId);
+            const next = new Map(prev)
+            const existing = next.get(event.agentId)
             if (existing) {
-              next.set(event.agentId, { ...existing, status: "completed" });
+              next.set(event.agentId, { ...existing, status: "completed" })
             }
-            return next;
-          });
+            return next
+          })
         } else if (event.type === "tool-complete") {
           setRecentTools((prev) => {
             const newTool: RecentToolCall = {
               id: event.toolUseId,
               toolName: event.toolName,
               timestamp: event.timestamp,
-            };
-            return [newTool, ...prev].slice(0, MAX_RECENT_TOOLS);
-          });
+            }
+            return [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
+          })
           setAccumulatedSubagentTools((prev) => [
             ...prev,
             {
@@ -2323,28 +2385,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
               state: "success" as const,
               timestamp: event.timestamp,
             },
-          ]);
+          ])
           setActiveSubagents((prev) => {
-            const next = new Map(prev);
+            const next = new Map(prev)
             for (const [id, subagent] of next) {
               if (subagent.status === "running") {
                 next.set(id, {
                   ...subagent,
                   toolCount: subagent.toolCount + 1,
-                });
+                })
               }
             }
-            return next;
-          });
+            return next
+          })
         }
       }
 
       // Live background-process list. The runtime emits the full running list
       // on every change, so we replace state wholesale (no reconciliation).
       if (dataPart.type === "data-process-update") {
-        const procs = (dataPart as any).data?.processes;
+        const procs = (dataPart as any).data?.processes
         if (Array.isArray(procs)) {
-          setRunningProcesses(procs as RunningProcess[]);
+          setRunningProcesses(procs as RunningProcess[])
         }
       }
 
@@ -2353,54 +2415,54 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the latest state here so the UI/idle-watchdog know whether the
       // stream completed cleanly.
       if (dataPart.type === "data-turn-start") {
-        const d = (dataPart as any).data ?? {};
+        const d = (dataPart as any).data ?? {}
         if (d.turnId && d.turnId !== currentTurnIdRef.current) {
-          currentTurnIdRef.current = d.turnId;
-          turnCompletedRef.current = false;
-          turnLastSeqRef.current = 0;
+          currentTurnIdRef.current = d.turnId
+          turnCompletedRef.current = false
+          turnLastSeqRef.current = 0
         }
         // A fresh turn can't already be parked — clear any stale banner from
         // a previous turn (defensive; normally a `reconnected` frame already
         // cleared it before the turn completed).
-        setConnectivityWait(null);
+        setConnectivityWait(null)
       }
       if (dataPart.type === "data-turn-seq") {
-        const seq = (dataPart as any).data?.seq;
+        const seq = (dataPart as any).data?.seq
         if (typeof seq === "number" && seq > turnLastSeqRef.current) {
-          turnLastSeqRef.current = seq;
+          turnLastSeqRef.current = seq
         }
       }
       if (dataPart.type === "data-turn-complete") {
-        turnCompletedRef.current = true;
-        const d = (dataPart as any).data ?? {};
+        turnCompletedRef.current = true
+        const d = (dataPart as any).data ?? {}
         if (
           typeof d.lastSeq === "number" &&
           d.lastSeq > turnLastSeqRef.current
         ) {
-          turnLastSeqRef.current = d.lastSeq;
+          turnLastSeqRef.current = d.lastSeq
         }
         if (d.status && d.status !== "completed") {
           console.warn(
             "[ChatPanel] turn ended with non-completed status:",
             d.status,
-            d.error
-          );
+            d.error,
+          )
         }
       }
 
       // Team coordination events
       if (dataPart.type === "data-team-snapshot") {
-        const d = (dataPart as any).data;
-        if (d) teamStore.hydrate(d);
+        const d = (dataPart as any).data
+        if (d) teamStore.hydrate(d)
       }
       if (dataPart.type === "data-team-created") {
         const { teamId, name, description, leaderId } =
-          (dataPart as any).data ?? {};
-        if (teamId) teamStore.initTeam(teamId, name, description, leaderId);
+          (dataPart as any).data ?? {}
+        if (teamId) teamStore.initTeam(teamId, name, description, leaderId)
       }
       if (dataPart.type === "data-team-deleted") {
-        const { teamId } = (dataPart as any).data ?? {};
-        if (teamId) teamStore.deleteTeam(teamId);
+        const { teamId } = (dataPart as any).data ?? {}
+        if (teamId) teamStore.deleteTeam(teamId)
       }
       if (dataPart.type === "data-team-activity") {
         const {
@@ -2408,14 +2470,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           agentId: aid,
           teamId: tid,
           reason,
-        } = (dataPart as any).data ?? {};
-        if (event === "idle") teamStore.updateMemberStatus(aid, tid, "idle");
+        } = (dataPart as any).data ?? {}
+        if (event === "idle") teamStore.updateMemberStatus(aid, tid, "idle")
         else if (event === "wake")
-          teamStore.updateMemberStatus(aid, tid, "active");
+          teamStore.updateMemberStatus(aid, tid, "active")
         else if (event === "shutdown")
-          teamStore.updateMemberStatus(aid, tid, "shutdown");
+          teamStore.updateMemberStatus(aid, tid, "shutdown")
         else if (event === "member-joined") {
-          const { name: mName, color } = (dataPart as any).data ?? {};
+          const { name: mName, color } = (dataPart as any).data ?? {}
           teamStore.upsertMember(tid, {
             agentId: aid,
             teamId: tid,
@@ -2423,15 +2485,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
             color,
             status: "active",
             joinedAt: Date.now(),
-          });
+          })
         }
       }
       if (dataPart.type === "data-team-task") {
-        const { teamId: tid, task } = (dataPart as any).data ?? {};
-        if (tid && task) teamStore.upsertTask(tid, task);
+        const { teamId: tid, task } = (dataPart as any).data ?? {}
+        if (tid && task) teamStore.upsertTask(tid, task)
       }
       if (dataPart.type === "data-team-message") {
-        const d = (dataPart as any).data;
+        const d = (dataPart as any).data
         if (d?.teamId) {
           teamStore.addMessage(d.teamId, {
             from: d.from,
@@ -2440,7 +2502,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             message: d.message,
             summary: d.summary,
             timestamp: Date.now(),
-          });
+          })
         }
       }
       if (dataPart.type === "data-teammate-text") {
@@ -2450,32 +2512,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
           phase,
           textId,
           delta,
-        } = (dataPart as any).data ?? {};
+        } = (dataPart as any).data ?? {}
         if (phase === "start") {
           teamStore.appendMemberStreamPart(aid, tid, {
             type: "text",
             text: "",
             id: textId,
-          });
+          })
         } else if (phase === "delta" && delta) {
           teamStore.updateMemberStreamPart(aid, tid, textId, (p) =>
-            p.type === "text" ? { ...p, text: p.text + delta } : p
-          );
+            p.type === "text" ? { ...p, text: p.text + delta } : p,
+          )
         } else if (phase === "reasoning-start") {
           teamStore.appendMemberStreamPart(aid, tid, {
             type: "reasoning",
             text: "",
             isStreaming: true,
             id: textId,
-          });
+          })
         } else if (phase === "reasoning-delta" && delta) {
           teamStore.updateMemberStreamPart(aid, tid, textId, (p) =>
-            p.type === "reasoning" ? { ...p, text: p.text + delta } : p
-          );
+            p.type === "reasoning" ? { ...p, text: p.text + delta } : p,
+          )
         } else if (phase === "reasoning-end") {
           teamStore.updateMemberStreamPart(aid, tid, textId, (p) =>
-            p.type === "reasoning" ? { ...p, isStreaming: false } : p
-          );
+            p.type === "reasoning" ? { ...p, isStreaming: false } : p,
+          )
         }
       }
       if (dataPart.type === "data-teammate-tool") {
@@ -2488,7 +2550,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           args,
           result,
           isError,
-        } = (dataPart as any).data ?? {};
+        } = (dataPart as any).data ?? {}
         if (phase === "start") {
           teamStore.appendMemberStreamPart(aid, tid, {
             type: "tool",
@@ -2501,7 +2563,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               category: "other" as any,
               timestamp: Date.now(),
             },
-          });
+          })
         } else if (phase === "output") {
           teamStore.updateMemberStreamPart(aid, tid, toolCallId, (p) =>
             p.type === "tool"
@@ -2513,13 +2575,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     result,
                   },
                 }
-              : p
-          );
+              : p,
+          )
         }
       }
       if (dataPart.type === "data-agent-types") {
-        const { types } = (dataPart as any).data ?? {};
-        if (types) teamStore.setAgentTypes(types);
+        const { types } = (dataPart as any).data ?? {}
+        if (types) teamStore.setAgentTypes(types)
       }
 
       if (dataPart.type === "data-tool-error" && !toolErrorBanner) {
@@ -2527,7 +2589,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           toolkitName,
           error: errText,
           isAuthError: authErr,
-        } = (dataPart as any).data ?? {};
+        } = (dataPart as any).data ?? {}
         setToolErrorBanner({
           toolkitName: toolkitName || "Integration",
           error:
@@ -2535,34 +2597,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
               ? errText
               : JSON.stringify(errText ?? ""),
           isAuthError: !!authErr,
-        });
+        })
       }
 
       if ((dataPart as any).type === "data-plan") {
-        const planData = (dataPart as any).data;
+        const planData = (dataPart as any).data
         if (planData) {
           // A fresh plan event always discards any stale summary belonging
           // to a previous plan; the runtime will re-emit
           // data-plan-summary-* if Dual Plan is enabled for this turn.
-          planStream?.resetSummary();
+          planStream?.resetSummary()
           const normalizedPlan = normalizePlanData({
             ...planData,
             isUpdate: false,
-          });
-          pendingPlanRef.current = normalizedPlan;
-          setPendingPlan(normalizedPlan);
-          planStream?.setStreamingPlan(normalizedPlan);
+          })
+          pendingPlanRef.current = normalizedPlan
+          setPendingPlan(normalizedPlan)
+          planStream?.setStreamingPlan(normalizedPlan)
           if (normalizedPlan.filepath) {
-            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath);
+            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
-          planStream?.notifyPlanCreated();
+          planStream?.notifyPlanCreated()
         }
       }
 
       if ((dataPart as any).type === "data-plan-update") {
-        const planData = (dataPart as any).data;
+        const planData = (dataPart as any).data
         if (planData) {
-          const previousPlan = pendingPlanRef.current;
+          const previousPlan = pendingPlanRef.current
           const normalizedPlan = normalizePlanData({
             name: planData.name ?? previousPlan?.name ?? "Plan",
             overview: planData.overview ?? previousPlan?.overview ?? "",
@@ -2573,15 +2635,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
             isUpdate: true,
             summary: previousPlan?.summary,
             summaryStatus: previousPlan?.summaryStatus,
-          });
-          pendingPlanRef.current = normalizedPlan;
-          setPendingPlan(normalizedPlan);
-          planStream?.setStreamingPlan(normalizedPlan);
+          })
+          pendingPlanRef.current = normalizedPlan
+          setPendingPlan(normalizedPlan)
+          planStream?.setStreamingPlan(normalizedPlan)
           if (normalizedPlan.filepath) {
-            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath);
+            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
         }
-        planStream?.notifyPlanCreated();
+        planStream?.notifyPlanCreated()
       }
 
       // Dual Plan: stakeholder summary lifecycle. The runtime emits these
@@ -2589,67 +2651,67 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the UI can show a "Summary" tab spinner immediately and then swap in
       // the summary markdown when it's ready.
       if ((dataPart as any).type === "data-plan-summary-start") {
-        planStream?.setSummaryStatus("pending");
-        planStream?.setStreamingSummary(null);
-        planStream?.setSummaryError(null);
-        const previousPlan = pendingPlanRef.current;
+        planStream?.setSummaryStatus("pending")
+        planStream?.setStreamingSummary(null)
+        planStream?.setSummaryError(null)
+        const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
             ...previousPlan,
             summary: undefined,
             summaryStatus: "pending",
-          });
-          pendingPlanRef.current = next;
-          setPendingPlan(next);
-          planStream?.setStreamingPlan(next);
+          })
+          pendingPlanRef.current = next
+          setPendingPlan(next)
+          planStream?.setStreamingPlan(next)
         }
       }
 
       if ((dataPart as any).type === "data-plan-summary") {
-        const data = (dataPart as any).data;
-        const summary = typeof data?.summary === "string" ? data.summary : null;
+        const data = (dataPart as any).data
+        const summary = typeof data?.summary === "string" ? data.summary : null
         if (summary) {
-          planStream?.setSummaryStatus("ready");
-          planStream?.setStreamingSummary(summary);
-          planStream?.setSummaryError(null);
-          const previousPlan = pendingPlanRef.current;
+          planStream?.setSummaryStatus("ready")
+          planStream?.setStreamingSummary(summary)
+          planStream?.setSummaryError(null)
+          const previousPlan = pendingPlanRef.current
           if (previousPlan) {
             const next = normalizePlanData({
               ...previousPlan,
               summary,
               summaryStatus: "ready",
-            });
-            pendingPlanRef.current = next;
-            setPendingPlan(next);
-            planStream?.setStreamingPlan(next);
+            })
+            pendingPlanRef.current = next
+            setPendingPlan(next)
+            planStream?.setStreamingPlan(next)
           }
-          planStream?.notifyPlanCreated();
+          planStream?.notifyPlanCreated()
         }
       }
 
       if ((dataPart as any).type === "data-plan-summary-error") {
-        const data = (dataPart as any).data;
+        const data = (dataPart as any).data
         const message =
           typeof data?.message === "string" && data.message
             ? data.message
-            : "Failed to generate summary";
-        planStream?.setSummaryStatus("error");
-        planStream?.setSummaryError(message);
-        const previousPlan = pendingPlanRef.current;
+            : "Failed to generate summary"
+        planStream?.setSummaryStatus("error")
+        planStream?.setSummaryError(message)
+        const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
             ...previousPlan,
             summaryStatus: "error",
-          });
-          pendingPlanRef.current = next;
-          setPendingPlan(next);
-          planStream?.setStreamingPlan(next);
+          })
+          pendingPlanRef.current = next
+          setPendingPlan(next)
+          planStream?.setStreamingPlan(next)
         }
       }
 
       // Handle permission approval requests from the agent runtime
       if ((dataPart as any).type === "data-permission-request") {
-        const req = (dataPart as any).data;
+        const req = (dataPart as any).data
         if (req) {
           setPendingPermissionRequest({
             id: req.id,
@@ -2658,37 +2720,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
             params: req.params ?? {},
             reason: req.reason ?? "",
             timeout: req.timeout ?? 60,
-          });
+          })
         }
       }
 
       if ((dataPart as any).type === "data-context-usage") {
-        const ctx = (dataPart as any).data;
+        const ctx = (dataPart as any).data
         if (ctx?.inputTokens && ctx?.contextWindowTokens) {
           contextUsageThrottleRef.current = {
             inputTokens: ctx.inputTokens,
             contextWindowTokens: ctx.contextWindowTokens,
-          };
+          }
           if (!contextUsageTimerRef.current) {
             contextUsageTimerRef.current = setTimeout(() => {
-              contextUsageTimerRef.current = null;
+              contextUsageTimerRef.current = null
               if (contextUsageThrottleRef.current) {
-                setContextUsage(contextUsageThrottleRef.current);
+                setContextUsage(contextUsageThrottleRef.current)
               }
-            }, 500);
+            }, 500)
           }
         }
       }
 
       if ((dataPart as any).type === "data-usage") {
-        const usage = (dataPart as any).data;
-        const ctxTokens = usage?.estimatedContextTokens || usage?.inputTokens;
-        const ctxWindow = usage?.contextWindowTokens;
+        const usage = (dataPart as any).data
+        const ctxTokens = usage?.estimatedContextTokens || usage?.inputTokens
+        const ctxWindow = usage?.contextWindowTokens
         if (ctxTokens && ctxWindow) {
           setContextUsage({
             inputTokens: ctxTokens,
             contextWindowTokens: ctxWindow,
-          });
+          })
           if (currentSessionId) {
             studioChat.chatSessionCollection
               .update(currentSessionId, {
@@ -2698,17 +2760,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
               .catch((err: any) =>
                 console.warn(
                   "[ChatPanel] Failed to persist context usage:",
-                  err
-                )
-              );
+                  err,
+                ),
+              )
           }
         }
       }
 
       if ((dataPart as any).type === "data-prompt-breakdown") {
-        const bd = (dataPart as any).data;
+        const bd = (dataPart as any).data
         if (bd?.categories) {
-          setContextBreakdown(bd);
+          setContextBreakdown(bd)
         }
       }
     },
@@ -2716,17 +2778,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
       message,
       isAbort,
     }: {
-      message: any;
-      isAbort?: boolean;
+      message: any
+      isAbort?: boolean
     }) => {
       const contentLength =
-        (message as any).content?.length ?? message.parts?.length ?? 0;
+        (message as any).content?.length ?? message.parts?.length ?? 0
 
       // Push a `turn-end` event to the EZ Mode bridge so the translator
       // overlay (voice or text) can summarise the outcome for the user.
       // De-dupe by message id so retries / React strict-mode double-invokes
       // don't fire twice.
-      const msgId = (message as any)?.id as string | undefined;
+      const msgId = (message as any)?.id as string | undefined
       if (
         msgId &&
         msgId !== lastEmittedMessageIdRef.current &&
@@ -2736,43 +2798,51 @@ const ChatPanelContent = observer(function ChatPanelContent({
           .filter((p: any) => p.type === "text" && typeof p.text === "string")
           .map((p: any) => p.text)
           .join("\n")
-          .trim();
-        lastEmittedMessageIdRef.current = msgId;
+          .trim()
+        lastEmittedMessageIdRef.current = msgId
         try {
-          emitTurnEndRef.current(assistantText);
+          emitTurnEndRef.current(assistantText)
         } catch (err) {
-          console.warn("[ChatPanel] bridge.emitTurnEnd threw", err);
+          console.warn("[ChatPanel] bridge.emitTurnEnd threw", err)
         }
       }
 
       const hasTextContent = message.parts?.some(
-        (p: any) => p.type === "text" && p.text?.trim()
-      );
+        (p: any) => p.type === "text" && p.text?.trim(),
+      )
       const hasToolCallsInMessage = message.parts?.some(
-        (p: any) => p.type === "tool-invocation" || p.type === "tool-result"
-      );
+        (p: any) => p.type === "tool-invocation" || p.type === "tool-result",
+      )
       const hasContent = !!(
         hasTextContent ||
         hasToolCallsInMessage ||
         contentLength > 0
-      );
+      )
       const nextError = emptyResponseErrorAfterFinish({
         isAbort: !!(isAbort || userInitiatedStopRef.current),
         userInitiatedStop: userInitiatedStopRef.current,
         stallWatchdogTripped: stallWatchdogTrippedRef.current,
         hasContent,
-      });
+      })
       if (nextError === EMPTY_AGENT_RESPONSE_MESSAGE) {
         console.warn(
-          "[ChatPanel] Agent returned empty response — possible context corruption"
-        );
+          "[ChatPanel] Agent returned empty response — possible context corruption",
+        )
       }
-      userInitiatedStopRef.current = false;
-      stallWatchdogTrippedRef.current = false;
-      setEmptyResponseError(nextError);
+      userInitiatedStopRef.current = false
+      stallWatchdogTrippedRef.current = false
+      setEmptyResponseError(nextError)
 
       if (currentSessionId) {
-        refetchUsageWallet();
+        // The chat's workspace is authoritative for this turn. A legacy
+        // project session can trigger several collection refreshes while it
+        // is upgraded to a workspace session; if one of those refreshes
+        // briefly omits the team, restore the workspace that owns the chat
+        // before the sidebar reconciles its selection.
+        if (workspaceId && getActiveWorkspaceId() !== workspaceId) {
+          setActiveWorkspaceId(workspaceId)
+        }
+        refetchUsageWallet()
 
         // Read-only reconcile (no client writes). The assistant message is
         // persisted server-side by the streaming proxy (trackUsageFromStream),
@@ -2782,15 +2852,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // this just warms the local cache so a reload reflects the server row.
         // We refetch with a short bounded retry until a new assistant row for
         // this session appears, and NEVER POST (the server is the sole writer).
-        const sessionIdForReconcile = currentSessionId;
-        const assistantParts = Array.isArray(message.parts)
-          ? message.parts
-          : [];
+        const sessionIdForReconcile = currentSessionId
+        const assistantParts = Array.isArray(message.parts) ? message.parts : []
         const assistantText = assistantParts
           .filter((p: any) => p?.type === "text" && typeof p.text === "string")
           .map((p: any) => p.text)
           .join("")
-          .trim();
+          .trim()
         const assistantHasContent =
           assistantText.length > 0 ||
           assistantParts.some(
@@ -2798,8 +2866,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               p?.type === "tool-invocation" ||
               p?.type === "tool-result" ||
               p?.type === "dynamic-tool" ||
-              (typeof p?.type === "string" && p.type.startsWith("tool-"))
-          );
+              (typeof p?.type === "string" && p.type.startsWith("tool-")),
+          )
 
         if (assistantHasContent) {
           const priorAssistantIds = new Set(
@@ -2807,167 +2875,124 @@ const ChatPanelContent = observer(function ChatPanelContent({
               .filter(
                 (m: any) =>
                   m.sessionId === sessionIdForReconcile &&
-                  m.role === "assistant"
+                  m.role === "assistant",
               )
-              .map((m: any) => m.id)
-          );
+              .map((m: any) => m.id),
+          )
           void (async () => {
-            const RECONCILE_ATTEMPTS = 5;
-            const RECONCILE_DELAY_MS = 400;
+            const RECONCILE_ATTEMPTS = 5
+            const RECONCILE_DELAY_MS = 400
             for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
               await new Promise((resolve) =>
-                setTimeout(resolve, RECONCILE_DELAY_MS)
-              );
+                setTimeout(resolve, RECONCILE_DELAY_MS),
+              )
               try {
                 await sessionMessages?.loadPage(
                   { sessionId: sessionIdForReconcile, agent: "technical" },
-                  { limit: MESSAGE_PAGE_SIZE, offset: 0 }
-                );
+                  { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+                )
               } catch (err) {
                 console.warn(
                   "[ChatPanel] Assistant reconcile refresh failed:",
-                  err
-                );
-                continue;
+                  err,
+                )
+                continue
               }
               const appeared = (sessionMessages?.all ?? []).some(
                 (m: any) =>
                   m.sessionId === sessionIdForReconcile &&
                   m.role === "assistant" &&
-                  !priorAssistantIds.has(m.id)
-              );
-              if (appeared) return;
+                  !priorAssistantIds.has(m.id),
+              )
+              if (appeared) return
             }
             console.warn(
-              "[ChatPanel] Assistant message not yet persisted after reconcile retries — relying on next full reload"
-            );
-          })();
+              "[ChatPanel] Assistant message not yet persisted after reconcile retries — relying on next full reload",
+            )
+          })()
         }
 
-        const toolCalls = extractToolCalls(message);
+        const toolCalls = extractToolCalls(message)
         if (toolCalls.length > 0) {
-          const platformFeaturesCollections: string[] = [];
-          const componentBuilderCollections: string[] = [];
-          let needsSchemaRefresh = false;
+          const platformFeaturesCollections: string[] = []
+          const componentBuilderCollections: string[] = []
+          let needsSchemaRefresh = false
 
           for (const toolCall of toolCalls) {
             if (toolCall.state !== "output-available") {
-              continue;
+              continue
             }
 
             if (requiresSchemaRefresh(toolCall)) {
-              needsSchemaRefresh = true;
+              needsSchemaRefresh = true
             }
 
-            const target = getRefreshTarget(toolCall);
+            const target = getRefreshTarget(toolCall)
             if (target) {
               if (target.schema === "component-builder") {
-                componentBuilderCollections.push(...target.collections);
+                componentBuilderCollections.push(...target.collections)
               } else {
-                platformFeaturesCollections.push(...target.collections);
+                platformFeaturesCollections.push(...target.collections)
               }
             }
           }
 
           if (needsSchemaRefresh && onSchemaRefresh) {
-            onSchemaRefresh();
+            onSchemaRefresh()
           }
 
           if (platformFeaturesCollections.length > 0) {
             refreshCollections(
               platformFeatures,
               platformFeaturesCollections,
-              "platformFeatures"
+              "platformFeatures",
             ).catch((err) => {
               console.warn(
                 "[ChatPanel] Smart refresh (platformFeatures) failed:",
-                err
-              );
-            });
+                err,
+              )
+            })
           }
           if (componentBuilderCollections.length > 0) {
             refreshCollections(
               componentBuilder,
               componentBuilderCollections,
-              "componentBuilder"
+              "componentBuilder",
             ).catch((err) => {
               console.warn(
                 "[ChatPanel] Smart refresh (componentBuilder) failed:",
-                err
-              );
-            });
+                err,
+              )
+            })
           }
 
           if (onRefresh) {
             onRefresh().catch((err) => {
-              console.warn("[ChatPanel] onRefresh callback failed:", err);
-            });
+              console.warn("[ChatPanel] onRefresh callback failed:", err)
+            })
           }
         }
       }
 
-      fetchQuickActions();
+      fetchQuickActions()
 
-      // Auto-name "Untitled" sessions after the first assistant response
+      // Fallback for messages that bypass sendMessageInternal. Normal user
+      // sends start naming immediately when the first message is submitted.
       if (currentSessionId && !hasTriggeredNamingRef.current) {
-        const session = studioChat.chatSessionCollection.get(currentSessionId);
-        const sessionName =
-          (session as any)?.inferredName || (session as any)?.name;
-        if (!sessionName || sessionName === "Untitled") {
-          const firstUserMsg = messages.find((m: any) => m.role === "user");
-          const userText = firstUserMsg?.parts
-            ?.filter((p: any) => p.type === "text")
-            .map((p: any) => p.text)
-            .join(" ")
-            ?.trim();
-          if (userText) {
-            hasTriggeredNamingRef.current = true;
-            const http = createHttpClient();
-            api
-              .generateProjectName(http, userText, workspaceId, projectId)
-              .then(({ name, description, source }) => {
-                if (source !== "ai" || !name) return;
-                // Guard: the session may have been deleted (or never persisted
-                // server-side) between sending the naming RPC and its
-                // resolution — e.g. the user switched chat tabs and removed
-                // the original session. Calling `updateChatSession` on a
-                // missing id throws "Item not found" inside the MST flow,
-                // which becomes an UnhandledPromiseRejection (the inner
-                // Promise was previously NOT returned from the .then, so the
-                // outer .catch couldn't see it). Check first AND return the
-                // inner Promise so any future error path is funneled through
-                // the outer .catch.
-                if (!studioChat.chatSessionCollection.get(currentSessionId)) {
-                  return;
-                }
-                // Only rename the *project* when it hasn't been named yet —
-                // i.e. this session is the one naming a brand-new project
-                // (e.g. the voice-creation flow, which doesn't call
-                // generateProjectName itself). Additional "New Chat" / debug
-                // threads created later in an already-named project must
-                // only rename themselves; otherwise every extra chat sent in
-                // a project would clobber the project's title.
-                const project = projectId
-                  ? projectCollection.all.find((p: any) => p.id === projectId)
-                  : null;
-                if (project && project.name === "New Project") {
-                  actions.updateProject(projectId, {
-                    name,
-                    ...(description ? { description } : {}),
-                  });
-                }
-                return actions.updateChatSession(currentSessionId, {
-                  inferredName: name,
-                });
-              })
-              .catch((err) => {
-                console.warn("[ChatPanel] AI session naming failed:", err);
-              });
-          }
+        const firstUserMsg = messages.find((m: any) => m.role === "user")
+        const userText = firstUserMsg?.parts
+          ?.filter((p: any) => p.type === "text")
+          .map((p: any) => p.text)
+          .join(" ")
+          ?.trim()
+        if (userText) {
+          maybeAutoNameSession(currentSessionId, userText)
         }
       }
     },
-  });
+  })
+  beforeResumeReplayRef.current = () =>
+    setMessages((prev) => dropUnfinishedAssistantTail(prev))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -2979,14 +3004,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // reuses an already-running resume instead of starting a second one.
   const resumeStreamInFlightRef = useRef<ResumeStreamFlightRef<void>>({
     current: null,
-  });
+  })
   const resumeStreamSingleFlight = useCallback(() => {
     return runResumeStreamSingleFlight(
       resumeStreamInFlightRef.current,
       currentSessionId,
-      resumeStream
-    );
-  }, [currentSessionId, resumeStream]);
+      resumeStream,
+    )
+  }, [currentSessionId, resumeStream])
 
   // Circuit breaker for the *automatic* resume paths (Effect 1's post-load
   // live-turn probe and `attemptStallRecovery`'s stall detector below).
@@ -3008,31 +3033,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // runtime forever. Deliberately generous (a handful of legitimate
   // reattaches — e.g. flaky wifi during a long tool run — shouldn't trip it)
   // but tight enough to kill a tight reconnect loop.
-  const autoResumeTimestampsRef = useRef<number[]>([]);
-  const autoResumeCircuitTrippedRef = useRef(false);
+  const autoResumeTimestampsRef = useRef<number[]>([])
+  const autoResumeCircuitTrippedRef = useRef(false)
   const guardedAutoResumeStream = useCallback(
     (reason: "live-turn-probe" | "stall-recovery") => {
       if (autoResumeCircuitTrippedRef.current) {
-        return;
+        return
       }
       // A second probe can resolve before the first `resumeStream()` updates
       // the AI SDK status. Do not count or start that duplicate attempt.
       if (
         resumeStreamInFlightRef.current.current?.sessionId === currentSessionId
       ) {
-        return;
+        return
       }
       const { timestamps, tripped } = recordAutoResumeAttempt(
         autoResumeTimestampsRef.current,
-        Date.now()
-      );
-      autoResumeTimestampsRef.current = timestamps;
+        Date.now(),
+      )
+      autoResumeTimestampsRef.current = timestamps
       if (tripped) {
-        autoResumeCircuitTrippedRef.current = true;
+        autoResumeCircuitTrippedRef.current = true
         console.error(
           `[ChatPanel] Auto-resume circuit breaker tripped (${timestamps.length} automatic reconnects in the last minute, reason=${reason}); ` +
-            "giving up on auto-recovery and falling back to the manual Retry banner"
-        );
+            "giving up on auto-recovery and falling back to the manual Retry banner",
+        )
         try {
           Sentry.captureMessage("chat_auto_resume_circuit_breaker_tripped", {
             level: "warning",
@@ -3044,55 +3069,54 @@ const ChatPanelContent = observer(function ChatPanelContent({
               lastSeq: turnLastSeqRef.current,
               attemptsInWindow: timestamps.length,
             },
-          });
+          })
         } catch (reportErr) {
           console.warn(
             "[ChatPanel] failed to report circuit breaker trip to Sentry:",
-            reportErr
-          );
+            reportErr,
+          )
         }
-        return;
+        return
       }
-      void resumeStreamSingleFlight();
+      void resumeStreamSingleFlight()
     },
-    [currentSessionId, projectId, resumeStreamSingleFlight]
-  );
+    [currentSessionId, projectId, resumeStreamSingleFlight],
+  )
   // A session switch means the user navigated away from whatever was
   // looping — give the (new) session a clean breaker rather than carrying a
   // trip from an unrelated chat forever.
   useEffect(() => {
-    autoResumeTimestampsRef.current = [];
-    autoResumeCircuitTrippedRef.current = false;
-  }, [currentSessionId]);
+    autoResumeTimestampsRef.current = []
+    autoResumeCircuitTrippedRef.current = false
+  }, [currentSessionId])
 
   const [stoppedMessages, setStoppedMessages] = useState<UIMessage[] | null>(
-    null
-  );
+    null,
+  )
   // Keep the stop control visible while the transport is recovering a turn
   // whose server-side agent may still be running.
-  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false);
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
+  const [streamAutoRecovering, setStreamAutoRecovering] = useState(false)
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
 
   if (isActive && messages.length > 0) {
-    cachedMessagesRef.current = messages;
+    cachedMessagesRef.current = messages
     if (currentSessionId) {
       // Keep the module cache in sync with the latest UI state so a subsequent
       // session switch (or panel remount) can hydrate instantly. This runs on
       // every render while streaming, which is cheap (Map.set by reference).
-      sessionMessageCache.set(currentSessionId, messages);
+      sessionMessageCache.set(currentSessionId, messages)
     }
   }
   if (messages.length > 0) {
-    lastNonEmptyMessagesRef.current = messages;
+    lastNonEmptyMessagesRef.current = messages
   }
 
   const isTransportStreaming =
     (status === "streaming" || status === "submitted") &&
-    stoppedMessages === null;
+    stoppedMessages === null
   const isStreaming =
-    (isTransportStreaming || streamAutoRecovering) &&
-    stoppedMessages === null;
+    (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
   // Watch messages for tool-invocation state transitions during a live
   // turn and emit `tool-activity` events so the EZ Mode overlay can
@@ -3104,17 +3128,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // to read raw tool / file identifiers, so the bridge enforces that at
   // the emission boundary.
   useEffect(() => {
-    const emit = emitToolActivityRef.current;
-    if (!emit) return;
-    const stateMap = toolActivityStateRef.current;
+    const emit = emitToolActivityRef.current
+    if (!emit) return
+    const stateMap = toolActivityStateRef.current
 
     const labelForTool = (toolName: string, args: unknown): string => {
-      const safeName = (toolName || "tool").replace(/_/g, " ");
+      const safeName = (toolName || "tool").replace(/_/g, " ")
       // Extract any obvious file / path hint from the args, but in a
       // humanised form (strip leading slashes, trim long paths).
-      let target = "";
+      let target = ""
       if (args && typeof args === "object") {
-        const a = args as Record<string, unknown>;
+        const a = args as Record<string, unknown>
         const candidate =
           (typeof a.path === "string" && a.path) ||
           (typeof a.file === "string" && a.file) ||
@@ -3122,83 +3146,81 @@ const ChatPanelContent = observer(function ChatPanelContent({
           (typeof a.target === "string" && a.target) ||
           (typeof a.name === "string" && a.name) ||
           (typeof a.query === "string" && a.query) ||
-          "";
+          ""
         if (candidate) {
           const basename =
-            String(candidate).split(/[\\/]/).pop() || String(candidate);
-          target =
-            basename.length > 60 ? basename.slice(0, 60) + "…" : basename;
+            String(candidate).split(/[\\/]/).pop() || String(candidate)
+          target = basename.length > 60 ? basename.slice(0, 60) + "…" : basename
         }
       }
-      return target ? `${safeName}: ${target}` : safeName;
-    };
+      return target ? `${safeName}: ${target}` : safeName
+    }
 
     for (const msg of messages) {
-      if ((msg as any).role !== "assistant") continue;
-      const parts = (msg as any).parts as any[] | undefined;
-      if (!Array.isArray(parts)) continue;
+      if ((msg as any).role !== "assistant") continue
+      const parts = (msg as any).parts as any[] | undefined
+      if (!Array.isArray(parts)) continue
       parts.forEach((part, idx) => {
         if (part.type !== "tool-invocation" && part.type !== "dynamic-tool")
-          return;
-        const inv =
-          part.type === "tool-invocation" ? part.toolInvocation : part;
-        const toolName = (inv?.toolName ?? part.toolName ?? "tool") as string;
+          return
+        const inv = part.type === "tool-invocation" ? part.toolInvocation : part
+        const toolName = (inv?.toolName ?? part.toolName ?? "tool") as string
         const toolCallId = (inv?.toolCallId ??
           part.toolCallId ??
-          `${idx}`) as string;
-        const rawState = (inv?.state ?? part.state ?? "") as string;
+          `${idx}`) as string
+        const rawState = (inv?.state ?? part.state ?? "") as string
         const isEnd =
           rawState === "result" ||
           rawState === "output-available" ||
           rawState === "success" ||
           rawState === "error" ||
-          rawState === "output-error";
+          rawState === "output-error"
         const isStart =
           rawState === "partial-call" ||
           rawState === "call" ||
           rawState === "input-streaming" ||
-          rawState === "input-available";
-        if (!isStart && !isEnd) return;
+          rawState === "input-available"
+        if (!isStart && !isEnd) return
 
-        const key = `${(msg as any).id || "nomsg"}:${toolCallId}`;
-        const last = stateMap.get(key);
+        const key = `${(msg as any).id || "nomsg"}:${toolCallId}`
+        const last = stateMap.get(key)
         if (isStart && last === undefined) {
-          stateMap.set(key, "start");
+          stateMap.set(key, "start")
           try {
             emit({
               toolName,
               phase: "start",
               label: labelForTool(
                 toolName,
-                inv?.args ?? part.input ?? part.args
+                inv?.args ?? part.input ?? part.args,
               ),
-            });
+            })
           } catch (err) {
             console.warn(
               "[ChatPanel] bridge.emitToolActivity(start) threw",
-              err
-            );
+              err,
+            )
           }
         } else if (isEnd && last !== "end") {
-          stateMap.set(key, "end");
-          const ok = rawState !== "error" && rawState !== "output-error";
+          stateMap.set(key, "end")
+          const ok = rawState !== "error" && rawState !== "output-error"
           try {
             emit({
               toolName,
               phase: "end",
               label: labelForTool(
                 toolName,
-                inv?.args ?? part.input ?? part.args
+                inv?.args ?? part.input ?? part.args,
               ),
               ok,
-            });
+            })
           } catch (err) {
-            console.warn("[ChatPanel] bridge.emitToolActivity(end) threw", err);
+            console.warn("[ChatPanel] bridge.emitToolActivity(end) threw", err)
           }
         }
-      });
+      })
     }
-  }, [messages]);
+  }, [messages])
 
   // Publish a snapshot of the technical agent's task / agent_spawn tool
   // calls through the ChatBridge so the EZ Mode overlay can render
@@ -3207,30 +3229,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // dedupes by reference so this is cheap to call on every messages
   // update.
   useEffect(() => {
-    const publish = setSubagentCardsRef.current;
-    if (!publish) return;
+    const publish = setSubagentCardsRef.current
+    if (!publish) return
     try {
-      publish(extractTaskToolsFromMessages(messages));
+      publish(extractTaskToolsFromMessages(messages))
     } catch (err) {
-      console.warn("[ChatPanel] bridge.setSubagentCards threw", err);
+      console.warn("[ChatPanel] bridge.setSubagentCards threw", err)
     }
-  }, [messages]);
+  }, [messages])
 
   // Abort any active stream when this panel unmounts (e.g. tab closed)
-  const stopRef = useRef(stop);
-  stopRef.current = stop;
+  const stopRef = useRef(stop)
+  stopRef.current = stop
   useEffect(() => {
     return () => {
-      stopRef.current();
-    };
-  }, []);
+      stopRef.current()
+    }
+  }, [])
 
   useEffect(() => {
     if (status === "ready" && stoppedMessages !== null) {
-      setMessages(stoppedMessages);
-      setStoppedMessages(null);
+      setMessages(stoppedMessages)
+      setStoppedMessages(null)
     }
-  }, [status, stoppedMessages, setMessages]);
+  }, [status, stoppedMessages, setMessages])
 
   // Propagate messages to parent (for pendingToolInstalls, TerminalPanel, etc.)
   // but skip the flood of per-token updates during streaming. Firing this on
@@ -3243,35 +3265,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   //   2. terminal tool-state transitions (streaming → result/error)
   //   3. the final state when streaming ends
   // so we propagate on those events only.
-  const lastPropagatedRef = useRef<readonly UIMessage[] | null>(null);
-  const lastPropagatedToolSigRef = useRef<string>("");
-  const lastPropagatedIsStreamingRef = useRef<boolean>(false);
+  const lastPropagatedRef = useRef<readonly UIMessage[] | null>(null)
+  const lastPropagatedToolSigRef = useRef<string>("")
+  const lastPropagatedIsStreamingRef = useRef<boolean>(false)
   useEffect(() => {
-    if (!onMessagesChange) return;
+    if (!onMessagesChange) return
     const decision = decideMessagesPropagation({
       prev: lastPropagatedRef.current,
       next: messages,
       isStreaming,
       prevIsStreaming: lastPropagatedIsStreamingRef.current,
       prevToolSig: lastPropagatedToolSigRef.current,
-    });
-    lastPropagatedIsStreamingRef.current = isStreaming;
-    if (!decision.shouldPropagate) return;
-    lastPropagatedRef.current = messages;
-    lastPropagatedToolSigRef.current = decision.toolSig;
-    onMessagesChange(messages);
-  }, [messages, onMessagesChange, isStreaming]);
+    })
+    lastPropagatedIsStreamingRef.current = isStreaming
+    if (!decision.shouldPropagate) return
+    lastPropagatedRef.current = messages
+    lastPropagatedToolSigRef.current = decision.toolSig
+    onMessagesChange(messages)
+  }, [messages, onMessagesChange, isStreaming])
 
   useEffect(() => {
-    onChatError?.(error ?? null);
-  }, [error, onChatError]);
+    onChatError?.(error ?? null)
+  }, [error, onChatError])
 
   const [emptyResponseError, setEmptyResponseError] = useState<string | null>(
-    null
-  );
-  const [errorBannerExpanded, setErrorBannerExpanded] = useState(false);
-  const [errorDismissed, setErrorDismissed] = useState(false);
-  const [tunnelReconnecting, setTunnelReconnecting] = useState(false);
+    null,
+  )
+  const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
+  const [errorDismissed, setErrorDismissed] = useState(false)
+  const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
   // Non-null while the runtime's agent loop is "parked" waiting for internet
   // connectivity to return (see `data-connectivity-wait` handling in
   // `onData` above). Distinct from `streamAutoRecovering`: that one is the
@@ -3282,146 +3304,146 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but they're tracked separately since they have different causes and
   // different user-facing copy.
   const [connectivityWait, setConnectivityWait] = useState<{
-    attempt: number;
-    elapsedMs: number;
-    nextProbeInMs: number;
-  } | null>(null);
+    attempt: number
+    elapsedMs: number
+    nextProbeInMs: number
+  } | null>(null)
   // Briefly true right after a park ends, to show "Back online, resuming…"
   // instead of just silently clearing the banner.
-  const [justReconnected, setJustReconnected] = useState(false);
+  const [justReconnected, setJustReconnected] = useState(false)
 
-  const isRemoteInstance = !!localAgentUrl;
+  const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(
     error &&
     isRemoteInstance &&
     isTunnelDisconnectError(error.message)
-  );
-  const { clearInstance: clearActiveInstance } = useActiveInstance();
+  )
+  const { clearInstance: clearActiveInstance } = useActiveInstance()
 
   const errorBannerText = useMemo(() => {
     if (isTunnelError && tunnelReconnecting)
-      return "Connection to desktop instance lost. Reconnecting\u2026";
+      return "Connection to desktop instance lost. Reconnecting\u2026"
     if (isTunnelError)
-      return "Connection to desktop instance lost. Tap Reconnect to retry.";
+      return "Connection to desktop instance lost. Tap Reconnect to retry."
     if (streamAutoRecovering)
-      return "Connection interrupted. Reconnecting\u2026";
+      return "Connection interrupted. Reconnecting\u2026"
     return (
       (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ""
-    );
+    )
   }, [
     error?.message,
     emptyResponseError,
     isTunnelError,
     tunnelReconnecting,
     streamAutoRecovering,
-  ]);
+  ])
   useEffect(() => {
-    setErrorBannerExpanded(false);
+    setErrorBannerExpanded(false)
     // A new error message after a dismissal should re-surface the banner —
     // otherwise tapping X once would permanently mute future errors.
-    setErrorDismissed(false);
-  }, [errorBannerText]);
+    setErrorDismissed(false)
+  }, [errorBannerText])
 
   useEffect(() => {
     if (!isTunnelError || !localAgentUrl) {
-      setTunnelReconnecting(false);
-      return;
+      setTunnelReconnecting(false)
+      return
     }
-    setTunnelReconnecting(true);
+    setTunnelReconnecting(true)
 
-    let cancelled = false;
-    const RECONNECT_POLL_MS = 3000;
-    const MAX_RECONNECT_POLLS = 20;
+    let cancelled = false
+    const RECONNECT_POLL_MS = 3000
+    const MAX_RECONNECT_POLLS = 20
 
     async function pollForReconnect() {
       for (let i = 0; i < MAX_RECONNECT_POLLS && !cancelled; i++) {
-        await new Promise((r) => setTimeout(r, RECONNECT_POLL_MS));
-        if (cancelled) return;
+        await new Promise((r) => setTimeout(r, RECONNECT_POLL_MS))
+        if (cancelled) return
         try {
-          const fetchFn = expoFetch ?? globalThis.fetch;
+          const fetchFn = expoFetch ?? globalThis.fetch
           const hdrs: Record<string, string> = nativeHeaders
             ? nativeHeaders()
-            : {};
+            : {}
           const res = await fetchFn(`${localAgentUrl}/agent/health`, {
             headers: hdrs,
             credentials: Platform.OS === "web" ? "include" : undefined,
             signal: AbortSignal.timeout(5000),
-          } as any);
+          } as any)
           if (res.ok) {
             if (!cancelled) {
-              setTunnelReconnecting(false);
-              handleRetryRef.current?.();
+              setTunnelReconnecting(false)
+              handleRetryRef.current?.()
             }
-            return;
+            return
           }
         } catch {}
       }
-      if (!cancelled) setTunnelReconnecting(false);
+      if (!cancelled) setTunnelReconnecting(false)
     }
-    pollForReconnect();
+    pollForReconnect()
     return () => {
-      cancelled = true;
-    };
-  }, [isTunnelError, localAgentUrl]);
+      cancelled = true
+    }
+  }, [isTunnelError, localAgentUrl])
 
   const errorBannerNeedsReadMore =
-    errorBannerText.split(/\n/).length > 2 || errorBannerText.length > 140;
+    errorBannerText.split(/\n/).length > 2 || errorBannerText.length > 140
 
   const connectivityWaitElapsedLabel = useMemo(() => {
-    if (!connectivityWait) return "";
-    const totalSec = Math.max(0, Math.floor(connectivityWait.elapsedMs / 1000));
-    const mins = Math.floor(totalSec / 60);
-    const secs = totalSec % 60;
-    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-  }, [connectivityWait]);
+    if (!connectivityWait) return ""
+    const totalSec = Math.max(0, Math.floor(connectivityWait.elapsedMs / 1000))
+    const mins = Math.floor(totalSec / 60)
+    const secs = totalSec % 60
+    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+  }, [connectivityWait])
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<
     string | null
-  >(null);
+  >(null)
   const [optimisticUserInput, setOptimisticUserInput] =
-    useState<OptimisticUserInput | null>(null);
+    useState<OptimisticUserInput | null>(null)
 
   // Permission approval state (local mode security)
   const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
-    id: string;
-    toolName: string;
-    category: string;
-    params: Record<string, any>;
-    reason: string;
-    timeout: number;
-  } | null>(null);
+    id: string
+    toolName: string
+    category: string
+    params: Record<string, any>
+    reason: string
+    timeout: number
+  } | null>(null)
 
-  const initialMessageRef = useRef<string | undefined>(undefined);
+  const initialMessageRef = useRef<string | undefined>(undefined)
   if (initialMessage != null && initialMessage.trim() !== "") {
-    initialMessageRef.current = initialMessage;
+    initialMessageRef.current = initialMessage
   }
 
   useEffect(() => {
     if (messages.length > 0 && pendingInitialMessage !== null) {
-      setPendingInitialMessage(null);
+      setPendingInitialMessage(null)
     }
-  }, [messages.length, pendingInitialMessage]);
+  }, [messages.length, pendingInitialMessage])
 
   useEffect(() => {
-    if (!optimisticUserInput) return;
+    if (!optimisticUserInput) return
     if (optimisticUserInput.sessionId !== currentSessionId) {
-      setOptimisticUserInput(null);
-      return;
+      setOptimisticUserInput(null)
+      return
     }
     if (hasMatchingUserMessage(messages, optimisticUserInput)) {
-      setOptimisticUserInput(null);
+      setOptimisticUserInput(null)
     }
-  }, [currentSessionId, messages, optimisticUserInput]);
+  }, [currentSessionId, messages, optimisticUserInput])
 
   const displayMessages = useMemo((): UIMessage[] => {
-    const effectiveMessages = stoppedMessages ?? messages;
+    const effectiveMessages = stoppedMessages ?? messages
     const currentOptimisticInput =
       optimisticUserInput?.sessionId === currentSessionId
         ? optimisticUserInput
-        : null;
+        : null
     const shouldPrependOptimisticUser =
       currentOptimisticInput &&
-      !hasMatchingUserMessage(effectiveMessages, currentOptimisticInput);
+      !hasMatchingUserMessage(effectiveMessages, currentOptimisticInput)
 
     if (effectiveMessages.length > 0) {
       return shouldPrependOptimisticUser
@@ -3429,28 +3451,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
             buildOptimisticUserMessage(currentOptimisticInput),
             ...effectiveMessages,
           ]
-        : effectiveMessages;
+        : effectiveMessages
     }
 
     if (isStreaming || isSendingMessageRef.current) {
       // While streaming/sending, show the last known messages (plus an optimistic
       // user bubble) so the conversation doesn't vanish during the brief gap
       // before the AI SDK populates its internal state.
-      const fallback = lastNonEmptyMessagesRef.current;
+      const fallback = lastNonEmptyMessagesRef.current
       const lastInput =
         currentOptimisticInput ??
         (currentSessionId && lastUserInputRef.current
           ? { sessionId: currentSessionId, ...lastUserInputRef.current }
-          : null);
-      const lastFallbackMsg = fallback[fallback.length - 1];
+          : null)
+      const lastFallbackMsg = fallback[fallback.length - 1]
       const needsOptimisticUser =
         lastInput?.content &&
-        (!lastFallbackMsg || lastFallbackMsg.role !== "user");
+        (!lastFallbackMsg || lastFallbackMsg.role !== "user")
 
       if (needsOptimisticUser) {
-        return [...fallback, buildOptimisticUserMessage(lastInput)];
+        return [...fallback, buildOptimisticUserMessage(lastInput)]
       }
-      return fallback;
+      return fallback
     }
 
     const text = (
@@ -3458,7 +3480,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       initialMessage ??
       initialMessageRef.current ??
       ""
-    ).trim();
+    ).trim()
     if (text !== "") {
       return [
         {
@@ -3466,9 +3488,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           role: "user",
           parts: [{ type: "text", text }],
         } as unknown as UIMessage,
-      ];
+      ]
     }
-    return [];
+    return []
   }, [
     currentSessionId,
     messages,
@@ -3477,7 +3499,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     initialMessage,
     optimisticUserInput,
     isStreaming,
-  ]);
+  ])
 
   // Stable references for memo'd downstream components (TurnList / SubagentPanel).
   // Previously these were `Array.from(Map.values())` inline, which allocated on
@@ -3485,17 +3507,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // 700ms tab-switch re-render cascade.
   const activeSubagentsList = useMemo(
     () => Array.from(activeSubagents.values()) as SubagentProgressType[],
-    [activeSubagents]
-  );
+    [activeSubagents],
+  )
   const recentToolsList = useMemo(
     () => recentTools as RecentToolType[],
-    [recentTools]
-  );
+    [recentTools],
+  )
 
-  const isStreamingRef = useRef(false);
-  const isTransportStreamingRef = useRef(false);
-  isStreamingRef.current = isStreaming;
-  isTransportStreamingRef.current = isTransportStreaming;
+  const isStreamingRef = useRef(false)
+  const isTransportStreamingRef = useRef(false)
+  isStreamingRef.current = isStreaming
+  isTransportStreamingRef.current = isTransportStreaming
 
   // A task started from the Tasks tab runs its turn on the server before this
   // screen mounts. The first history-load probe can therefore legitimately
@@ -3505,17 +3527,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // the project.
   const delegatedTaskPromptIndex = useMemo(
     () => latestDelegatedTaskPromptIndex(messages),
-    [messages]
-  );
+    [messages],
+  )
   const delegatedTaskHasResponse = useMemo(
     () =>
       delegatedTaskPromptIndex >= 0 &&
       messages.some(
         (message: any, index) =>
-          index > delegatedTaskPromptIndex && message.role === "assistant"
+          index > delegatedTaskPromptIndex && message.role === "assistant",
       ),
-    [delegatedTaskPromptIndex, messages]
-  );
+    [delegatedTaskPromptIndex, messages],
+  )
 
   useEffect(() => {
     if (
@@ -3526,33 +3548,33 @@ const ChatPanelContent = observer(function ChatPanelContent({
       delegatedTaskHasResponse ||
       isStreaming
     )
-      return;
+      return
 
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const startedAt = Date.now();
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const startedAt = Date.now()
 
     const refreshPersistedTaskResponse = async () => {
-      if (cancelled || isStreamingRef.current) return;
+      if (cancelled || isStreamingRef.current) return
       await sessionMessages.loadPage(
         { sessionId: currentSessionId, agent: "technical" },
-        { limit: MESSAGE_PAGE_SIZE, offset: 0 }
-      );
-      if (cancelled || isStreamingRef.current) return;
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (cancelled || isStreamingRef.current) return
 
       const loaded = [...sessionMessages.all].sort(
         (a: any, b: any) =>
-          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt)
-      );
-      const promptIndex = latestDelegatedTaskPromptIndex(loaded);
+          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
+      )
+      const promptIndex = latestDelegatedTaskPromptIndex(loaded)
       if (
         promptIndex < 0 ||
         !loaded.some(
           (message: any, index) =>
-            index > promptIndex && message.role === "assistant"
+            index > promptIndex && message.role === "assistant",
         )
       )
-        return;
+        return
 
       const aiMessages = loaded.map((message: any) => {
         const next: any = {
@@ -3560,54 +3582,54 @@ const ChatPanelContent = observer(function ChatPanelContent({
           role: message.role as "user" | "assistant",
           content: message.content ?? extractTextContent(message),
           createdAt: message.createdAt,
-        };
+        }
         if (message.parts) {
           try {
-            next.parts = JSON.parse(message.parts);
+            next.parts = JSON.parse(message.parts)
           } catch {
             // Keep the text content when an older message has malformed parts.
           }
         }
-        return next;
-      });
-      cachedMessagesRef.current = aiMessages;
-      sessionMessageCache.set(currentSessionId, aiMessages);
-      setMessages(aiMessages);
-    };
+        return next
+      })
+      cachedMessagesRef.current = aiMessages
+      sessionMessageCache.set(currentSessionId, aiMessages)
+      setMessages(aiMessages)
+    }
 
     const poll = async () => {
-      if (cancelled || isStreamingRef.current) return;
+      if (cancelled || isStreamingRef.current) return
       try {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
           localAgentUrl,
           currentSessionId,
-          chatWorkspaceId
-        );
+          chatWorkspaceId,
+        )
         const turnStatus = await probeChatTurnStatus({
           url: turnUrl,
           fetch: expoFetch,
           headers: nativeHeaders ? nativeHeaders() : undefined,
           credentials: Platform.OS === "web" ? "include" : undefined,
-        });
-        if (cancelled || isStreamingRef.current) return;
+        })
+        if (cancelled || isStreamingRef.current) return
 
         if (shouldAttachLiveStream(turnStatus)) {
-          guardedAutoResumeStream("live-turn-probe");
-          return;
+          guardedAutoResumeStream("live-turn-probe")
+          return
         }
 
         // The worker may have completed between probes. Reconcile persisted
         // history as well as the live turn status so a fast response is still
         // shown without navigating away and back.
-        await refreshPersistedTaskResponse();
+        await refreshPersistedTaskResponse()
       } catch (error) {
         if (!cancelled) {
           console.warn(
             "[ChatPanel] delegated task reconciliation failed",
-            error
-          );
+            error,
+          )
         }
       }
       if (
@@ -3615,15 +3637,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
         Date.now() - startedAt < DELEGATED_TASK_MAX_WAIT_MS &&
         !isStreamingRef.current
       ) {
-        timer = setTimeout(() => void poll(), DELEGATED_TASK_POLL_INTERVAL_MS);
+        timer = setTimeout(() => void poll(), DELEGATED_TASK_POLL_INTERVAL_MS)
       }
-    };
+    }
 
-    void poll();
+    void poll()
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
   }, [
     isActive,
     currentSessionId,
@@ -3638,21 +3660,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
     nativeHeaders,
     guardedAutoResumeStream,
     setMessages,
-  ]);
+  ])
 
   // Detect when the AI SDK stream ends but we never observed a
   // `data-turn-complete` marker. The fetch wrapper auto-resumes through
   // transient disconnects, so reaching this state means it gave up after
   // exhausting its retry budget — the turn may still be running on the
   // server while the UI looks "done".
-  const prevIsStreamingForTurnRef = useRef(false);
-  const turnStalledRef = useRef(false);
+  const prevIsStreamingForTurnRef = useRef(false)
+  const turnStalledRef = useRef(false)
   useEffect(() => {
-    const wasStreaming = prevIsStreamingForTurnRef.current;
-    prevIsStreamingForTurnRef.current = isStreaming;
+    const wasStreaming = prevIsStreamingForTurnRef.current
+    prevIsStreamingForTurnRef.current = isStreaming
     if (isStreaming && !wasStreaming) {
-      turnStalledRef.current = false;
-      return;
+      turnStalledRef.current = false
+      renderDepthErrorTurnIdRef.current = null
+      return
     }
     if (wasStreaming && !isStreaming) {
       if (currentTurnIdRef.current && !turnCompletedRef.current) {
@@ -3661,9 +3684,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentTurnIdRef.current +
             ", lastSeq=" +
             turnLastSeqRef.current +
-            "); turn may still be running on the server"
-        );
-        turnStalledRef.current = true;
+            "); turn may still be running on the server",
+        )
+        turnStalledRef.current = true
 
         // Auto-recover: the agent is likely still running and buffering frames
         // server-side. Rather than stranding the user on a static "tap Retry"
@@ -3671,28 +3694,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // stream if it's still active. Skip when the user explicitly stopped
         // (that's an intentional terminal state, not a dropped connection),
         // and fire at most once per turn so we never loop.
-        const stalledTurnId = currentTurnIdRef.current;
+        const stalledTurnId = currentTurnIdRef.current
         if (
-          !userInitiatedStopRef.current &&
-          recoveredTurnIdRef.current !== stalledTurnId
+          shouldAutoRecoverStalledTurn({
+            stalledTurnId,
+            recoveredTurnId: recoveredTurnIdRef.current,
+            renderDepthErrorTurnId: renderDepthErrorTurnIdRef.current,
+            userInitiatedStop: userInitiatedStopRef.current,
+          })
         ) {
-          recoveredTurnIdRef.current = stalledTurnId;
-          stallRecoveryRef.current?.();
+          recoveredTurnIdRef.current = stalledTurnId
+          stallRecoveryRef.current?.()
         }
       }
     }
-  }, [isStreaming]);
+  }, [isStreaming])
 
   const handleStop = useCallback(() => {
-    userInitiatedStopRef.current = true;
+    userInitiatedStopRef.current = true
     // Clear any pre-existing empty-response banner immediately so that a
     // stale banner from an earlier turn dismisses the moment the user taps
     // Stop — they shouldn't have to send a new message to get rid of it.
-    setEmptyResponseError(null);
-    setConnectivityWait(null);
-    setJustReconnected(false);
-    setStoppedMessages([...messagesRef.current]);
-    stop();
+    setEmptyResponseError(null)
+    setConnectivityWait(null)
+    setJustReconnected(false)
+    setStoppedMessages([...messagesRef.current])
+    stop()
 
     const req = buildStopRequest({
       localAgentUrl,
@@ -3702,12 +3729,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       platform: Platform.OS,
       getCookie: () => authClient.getCookie(),
       chatSessionId: currentSessionId,
-    });
+    })
     if (req) {
-      const fetchFn = expoFetch || fetch;
+      const fetchFn = expoFetch || fetch
       fetchFn(req.url, req.init).catch((err) => {
-        console.warn("[ChatPanel] Failed to send stop signal to backend:", err);
-      });
+        console.warn("[ChatPanel] Failed to send stop signal to backend:", err)
+      })
     }
   }, [
     stop,
@@ -3716,7 +3743,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     localAgentUrl,
     expoFetch,
     currentSessionId,
-  ]);
+  ])
 
   // Keep the shared subagent-stop helper pointed at the current API/runtime
   // so SubagentCard (chat) and AgentEntry (agents panel) can cancel without
@@ -3729,11 +3756,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       platform: Platform.OS,
       getCookie: () => authClient.getCookie(),
       fetchFn: expoFetch || undefined,
-    });
+    })
     return () => {
-      configureSubagentStop(null);
-    };
-  }, [localAgentUrl, projectId, expoFetch]);
+      configureSubagentStop(null)
+    }
+  }, [localAgentUrl, projectId, expoFetch])
 
   // Idle timeout to force-complete hung streams.
   //
@@ -3751,95 +3778,108 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // reset on each effect run anyway. With long histories that stringify cost
   // O(history bytes × tokens) of main-thread freeze per stream chunk, which
   // is exactly the sort of cost that doesn't show up in the React Profiler.
-  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const IDLE_TIMEOUT_MS = 1_800_000;
+  // Transient heartbeats don't swap `messages`, so when the timer fires it
+  // re-arms for the remainder of the window if a runtime data frame arrived
+  // since (`lastRuntimeDataAtRef`).
+  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const IDLE_TIMEOUT_MS = 1_800_000
 
   useEffect(() => {
     if (idleTimeoutRef.current) {
-      clearTimeout(idleTimeoutRef.current);
-      idleTimeoutRef.current = null;
+      clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = null
     }
 
-    if (!isStreaming) return;
+    if (!isStreaming) return
 
-    idleTimeoutRef.current = setTimeout(() => {
-      console.warn("[ChatPanel] Stream idle timeout - forcing stop()");
-      handleStop();
-    }, IDLE_TIMEOUT_MS);
+    const armedAt = Date.now()
+    const arm = (delayMs: number) => {
+      idleTimeoutRef.current = setTimeout(() => {
+        const idleMs =
+          Date.now() - Math.max(armedAt, lastRuntimeDataAtRef.current)
+        if (idleMs < IDLE_TIMEOUT_MS) {
+          arm(IDLE_TIMEOUT_MS - idleMs)
+          return
+        }
+        console.warn("[ChatPanel] Stream idle timeout - forcing stop()")
+        handleStop()
+      }, delayMs)
+    }
+    arm(IDLE_TIMEOUT_MS)
 
     return () => {
       if (idleTimeoutRef.current) {
-        clearTimeout(idleTimeoutRef.current);
-        idleTimeoutRef.current = null;
+        clearTimeout(idleTimeoutRef.current)
+        idleTimeoutRef.current = null
       }
-    };
-  }, [isStreaming, messages, handleStop]);
+    }
+  }, [isStreaming, messages, handleStop])
 
   // Clear the tool-error banner at the start of each new turn.
-  const prevStreamingForScanRef = useRef(false);
+  const prevStreamingForScanRef = useRef(false)
   useEffect(() => {
-    const wasStreaming = prevStreamingForScanRef.current;
-    prevStreamingForScanRef.current = isStreaming;
+    const wasStreaming = prevStreamingForScanRef.current
+    prevStreamingForScanRef.current = isStreaming
 
     if (isStreaming && !wasStreaming) {
-      setToolErrorBanner(null);
+      setToolErrorBanner(null)
     }
-  }, [isStreaming]);
+  }, [isStreaming])
 
   // Process progress events from message parts
   useEffect(() => {
-    const latestMessage = messages[messages.length - 1];
-    if (!latestMessage || latestMessage.role !== "assistant") return;
+    const latestMessage = messages[messages.length - 1]
+    if (!latestMessage || latestMessage.role !== "assistant") return
 
-    const parts = (latestMessage as any).parts as any[] | undefined;
+    const parts = (latestMessage as any).parts as any[] | undefined
     if (!parts) {
-      return;
+      return
     }
 
     parts.forEach((part) => {
       if (part.type === "data-progress") {
-        const event = part.data as SubagentProgressEvent;
+        const event = part.data as SubagentProgressEvent
 
         const eventId =
           event.type === "tool-complete"
             ? `tool:${event.toolUseId}`
-            : `${event.type}:${event.agentId}`;
+            : `${event.type}:${event.agentId}`
 
         if (processedProgressEventsRef.current.has(eventId)) {
-          return;
+          return
         }
-        processedProgressEventsRef.current.add(eventId);
+        processedProgressEventsRef.current.add(eventId)
 
         if (event.type === "subagent-start") {
           setActiveSubagents((prev) => {
-            const next = new Map(prev);
+            const next = new Map(prev)
             next.set(event.agentId, {
               agentId: event.agentId,
               agentType: event.agentType,
               startTime: event.timestamp,
               status: "running",
               toolCount: 0,
-            });
-            return next;
-          });
+            })
+            return next
+          })
         } else if (event.type === "subagent-stop") {
           setActiveSubagents((prev) => {
-            const next = new Map(prev);
-            const existing = next.get(event.agentId);
+            const next = new Map(prev)
+            const existing = next.get(event.agentId)
             if (existing) {
-              next.set(event.agentId, { ...existing, status: "completed" });
+              next.set(event.agentId, { ...existing, status: "completed" })
             }
-            return next;
-          });
+            return next
+          })
         } else if (event.type === "tool-complete") {
           setRecentTools((prev) => {
             const newTool: RecentToolCall = {
               id: event.toolUseId,
               toolName: event.toolName,
               timestamp: event.timestamp,
-            };
-            return [newTool, ...prev].slice(0, MAX_RECENT_TOOLS);
-          });
+            }
+            return [newTool, ...prev].slice(0, MAX_RECENT_TOOLS)
+          })
           setAccumulatedSubagentTools((prev) => [
             ...prev,
             {
@@ -3849,118 +3889,117 @@ const ChatPanelContent = observer(function ChatPanelContent({
               state: "success" as const,
               timestamp: event.timestamp,
             },
-          ]);
+          ])
           setActiveSubagents((prev) => {
-            const next = new Map(prev);
+            const next = new Map(prev)
             for (const [id, subagent] of next) {
               if (subagent.status === "running") {
                 next.set(id, {
                   ...subagent,
                   toolCount: subagent.toolCount + 1,
-                });
+                })
               }
             }
-            return next;
-          });
+            return next
+          })
         }
       }
-    });
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, currentSessionId]);
+  }, [messages, currentSessionId])
 
   // Delayed cleanup of completed subagents
-  const SUBAGENT_LINGER_MS = 2500;
-  const scheduledCleanupRef = useRef<Set<string>>(new Set());
-  const toolsCleanupScheduledRef = useRef<boolean>(false);
+  const SUBAGENT_LINGER_MS = 2500
+  const scheduledCleanupRef = useRef<Set<string>>(new Set())
+  const toolsCleanupScheduledRef = useRef<boolean>(false)
 
   useEffect(() => {
     if (!isStreaming) {
-      const timeoutIds: ReturnType<typeof setTimeout>[] = [];
+      const timeoutIds: ReturnType<typeof setTimeout>[] = []
 
       activeSubagents.forEach((subagent, id) => {
         if (
           subagent.status === "completed" &&
           !scheduledCleanupRef.current.has(id)
         ) {
-          scheduledCleanupRef.current.add(id);
+          scheduledCleanupRef.current.add(id)
           const timeoutId = setTimeout(() => {
-            scheduledCleanupRef.current.delete(id);
+            scheduledCleanupRef.current.delete(id)
             setActiveSubagents((prev) => {
-              const next = new Map(prev);
-              next.delete(id);
-              return next;
-            });
-          }, SUBAGENT_LINGER_MS);
-          timeoutIds.push(timeoutId);
+              const next = new Map(prev)
+              next.delete(id)
+              return next
+            })
+          }, SUBAGENT_LINGER_MS)
+          timeoutIds.push(timeoutId)
         }
-      });
+      })
 
       if (!toolsCleanupScheduledRef.current && recentTools.length > 0) {
-        toolsCleanupScheduledRef.current = true;
+        toolsCleanupScheduledRef.current = true
         const toolsTimeoutId = setTimeout(() => {
-          toolsCleanupScheduledRef.current = false;
-          setRecentTools([]);
-        }, SUBAGENT_LINGER_MS);
-        timeoutIds.push(toolsTimeoutId);
+          toolsCleanupScheduledRef.current = false
+          setRecentTools([])
+        }, SUBAGENT_LINGER_MS)
+        timeoutIds.push(toolsTimeoutId)
       }
 
       return () => {
-        timeoutIds.forEach((id) => clearTimeout(id));
-      };
+        timeoutIds.forEach((id) => clearTimeout(id))
+      }
     } else {
-      scheduledCleanupRef.current.clear();
-      toolsCleanupScheduledRef.current = false;
+      scheduledCleanupRef.current.clear()
+      toolsCleanupScheduledRef.current = false
     }
-  }, [isStreaming, activeSubagents, recentTools.length]);
+  }, [isStreaming, activeSubagents, recentTools.length])
 
   // Clear accumulated tools and sub-agent store when a new stream starts
-  const prevIsStreamingRef = useRef(false);
+  const prevIsStreamingRef = useRef(false)
   useEffect(() => {
     if (isStreaming && !prevIsStreamingRef.current) {
-      setAccumulatedSubagentTools([]);
-      teamStore.clear();
+      setAccumulatedSubagentTools([])
+      teamStore.clear()
     }
-    prevIsStreamingRef.current = isStreaming;
-  }, [isStreaming]);
+    prevIsStreamingRef.current = isStreaming
+  }, [isStreaming])
 
   // Detect template_copy tool invocation and notify parent
-  const prevActiveTemplateCopyRef = useRef<string | null>(null);
+  const prevActiveTemplateCopyRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!onActiveToolCall) return;
+    if (!onActiveToolCall) return
 
-    const latestMessage = messages[messages.length - 1];
+    const latestMessage = messages[messages.length - 1]
     if (!latestMessage || latestMessage.role !== "assistant") {
       if (prevActiveTemplateCopyRef.current !== null) {
-        onActiveToolCall(null);
-        prevActiveTemplateCopyRef.current = null;
+        onActiveToolCall(null)
+        prevActiveTemplateCopyRef.current = null
       }
-      return;
+      return
     }
 
-    const toolCalls = extractToolCalls(latestMessage);
+    const toolCalls = extractToolCalls(latestMessage)
 
     const activeTemplateCopy = toolCalls.find((tc) => {
       const normalizedName = tc.toolName.includes("__")
         ? tc.toolName.split("__").pop()
-        : tc.toolName;
+        : tc.toolName
       const isTemplateTool =
-        normalizedName === "template_copy" ||
-        normalizedName === "template.copy";
+        normalizedName === "template_copy" || normalizedName === "template.copy"
       const isRunning =
-        tc.state === "input-streaming" || tc.state === "input-available";
-      return isTemplateTool && isRunning;
-    });
+        tc.state === "input-streaming" || tc.state === "input-available"
+      return isTemplateTool && isRunning
+    })
 
     if (activeTemplateCopy) {
       if (prevActiveTemplateCopyRef.current !== activeTemplateCopy.toolName) {
-        onActiveToolCall(activeTemplateCopy.toolName);
-        prevActiveTemplateCopyRef.current = activeTemplateCopy.toolName;
+        onActiveToolCall(activeTemplateCopy.toolName)
+        prevActiveTemplateCopyRef.current = activeTemplateCopy.toolName
       }
     } else if (prevActiveTemplateCopyRef.current !== null) {
-      onActiveToolCall(null);
-      prevActiveTemplateCopyRef.current = null;
+      onActiveToolCall(null)
+      prevActiveTemplateCopyRef.current = null
     }
-  }, [messages, onActiveToolCall]);
+  }, [messages, onActiveToolCall])
 
   // Effect 1: Load chat messages with stale-while-revalidate.
   // On tab activate: show cached messages instantly (if available), then fetch
@@ -3970,14 +4009,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // GET /messages request never gets queued behind the active streaming SSE.
   // That was causing the "stuck on skip: already loading" wedge.
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive) return
     if (!currentSessionId) {
-      setIsInitialLoadComplete(true);
-      return;
+      setIsInitialLoadComplete(true)
+      return
     }
 
     const hasCached =
-      cachedMessagesRef.current && cachedMessagesRef.current.length > 0;
+      cachedMessagesRef.current && cachedMessagesRef.current.length > 0
 
     // Fix E.1: never kick off a /messages fetch while streaming — the streaming
     // response IS the authoritative source, and a queued GET stalls behind the
@@ -3997,19 +4036,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
         cachedMessagesRef.current!.length > 0 &&
         cachedMessagesRef.current !== messagesRef.current
       ) {
-        setMessages(cachedMessagesRef.current!);
+        setMessages(cachedMessagesRef.current!)
       }
-      if (hasCached) setIsInitialLoadComplete(true);
+      if (hasCached) setIsInitialLoadComplete(true)
       // Clear any zombie flag from a prior non-streaming attempt so we don't
       // stay stuck after streaming completes.
       if (isLoadingMessagesRef.current) {
-        isLoadingMessagesRef.current = false;
-        if (isLoadingMessages) setIsLoadingMessages(false);
+        isLoadingMessagesRef.current = false
+        if (isLoadingMessages) setIsLoadingMessages(false)
       }
-      return;
+      return
     }
 
-    if (isLoadingMessagesRef.current) return;
+    if (isLoadingMessagesRef.current) return
 
     // Fix E.2: skip redundant refetch if cache was refreshed <5s ago. Without
     // this, promoting the loading flag to state (so it can retrigger the
@@ -4032,53 +4071,53 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // resumeStream → orphan `[AgentChat] Stream reconnect ... snapshot=none`)
     // but never calling loadPage, leaving the chat blank.
     // See chat-load-decision.test.ts for the regression repro.
-    const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId);
+    const refreshedAt = cacheRefreshedAtRef.current.get(currentSessionId)
     if (refreshedAt !== undefined && performance.now() - refreshedAt < 5000) {
       if (hasCached && messagesRef.current !== cachedMessagesRef.current) {
-        setMessages(cachedMessagesRef.current!);
+        setMessages(cachedMessagesRef.current!)
       }
-      setIsInitialLoadComplete(true);
-      return;
+      setIsInitialLoadComplete(true)
+      return
     }
 
     if (hasCached) {
       if (messagesRef.current !== cachedMessagesRef.current) {
-        setMessages(cachedMessagesRef.current!);
+        setMessages(cachedMessagesRef.current!)
       }
-      setIsInitialLoadComplete(true);
+      setIsInitialLoadComplete(true)
     }
 
-    isLoadingMessagesRef.current = true;
-    setIsLoadingMessages(true);
-    if (!hasCached) setIsInitialLoadComplete(false);
+    isLoadingMessagesRef.current = true
+    setIsLoadingMessages(true)
+    if (!hasCached) setIsInitialLoadComplete(false)
 
     if (!sessionMessages) {
-      isLoadingMessagesRef.current = false;
-      setIsLoadingMessages(false);
-      setIsInitialLoadComplete(true);
-      return;
+      isLoadingMessagesRef.current = false
+      setIsLoadingMessages(false)
+      setIsInitialLoadComplete(true)
+      return
     }
 
     // Generation token: lets the async .then()/.finally() callbacks below
     // detect that a session switch / tab close happened mid-load and bail
     // without writing to stale state. Bumped on every Effect 1 run.
-    const myGeneration = ++loadGenerationRef.current;
-    const loadSessionId = currentSessionId;
+    const myGeneration = ++loadGenerationRef.current
+    const loadSessionId = currentSessionId
 
     sessionMessages
       .loadPage(
         { sessionId: currentSessionId, agent: "technical" },
-        { limit: MESSAGE_PAGE_SIZE, offset: 0 }
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
       )
       .then((_result: any) => {
-        if (myGeneration !== loadGenerationRef.current) return;
-        if (isStreamingRef.current || isSendingMessageRef.current) return;
+        if (myGeneration !== loadGenerationRef.current) return
+        if (isStreamingRef.current || isSendingMessageRef.current) return
 
         const loaded = [...sessionMessages.all].sort(
-          (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0)
-        );
+          (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+        )
 
-        if (loaded.length === 0) return;
+        if (loaded.length === 0) return
 
         const aiMessages = loaded.map((msg: any) => {
           const baseMessage: any = {
@@ -4090,36 +4129,36 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // real timestamp for historical (pre-`data-turn-timing`)
             // messages loaded from the server.
             createdAt: msg.createdAt,
-          };
+          }
           if (msg.parts) {
             try {
-              baseMessage.parts = JSON.parse(msg.parts);
+              baseMessage.parts = JSON.parse(msg.parts)
             } catch (err) {
-              console.warn("[ChatPanel] Failed to parse message parts:", err);
+              console.warn("[ChatPanel] Failed to parse message parts:", err)
             }
           }
-          return baseMessage;
-        });
+          return baseMessage
+        })
 
-        const cached = cachedMessagesRef.current;
+        const cached = cachedMessagesRef.current
         const changed =
           !cached ||
           cached.length !== aiMessages.length ||
           cached[cached.length - 1]?.id !==
-            aiMessages[aiMessages.length - 1]?.id;
+            aiMessages[aiMessages.length - 1]?.id
 
         if (changed) {
-          cachedMessagesRef.current = aiMessages;
-          sessionMessageCache.set(loadSessionId, aiMessages);
-          setMessages(aiMessages);
+          cachedMessagesRef.current = aiMessages
+          sessionMessageCache.set(loadSessionId, aiMessages)
+          setMessages(aiMessages)
         } else {
           // Same shape as cache — still refresh the module cache entry so any
           // later in-flight mutations (status flips, etc.) don't drift.
-          sessionMessageCache.set(loadSessionId, aiMessages);
+          sessionMessageCache.set(loadSessionId, aiMessages)
         }
       })
       .catch((err: any) =>
-        console.error("[ChatPanel] Failed to load messages:", err)
+        console.error("[ChatPanel] Failed to load messages:", err),
       )
       .finally(() => {
         // Stamp the cache freshness on every completion path (empty results,
@@ -4133,11 +4172,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // flickering "Loading conversation..." indicator). Now that
         // `useChat({ resume: false })` no longer auto-attaches we still
         // need the stamp for the dedup-the-fetch reason.
-        cacheRefreshedAtRef.current.set(loadSessionId, performance.now());
+        cacheRefreshedAtRef.current.set(loadSessionId, performance.now())
         if (myGeneration === loadGenerationRef.current) {
-          isLoadingMessagesRef.current = false;
-          setIsLoadingMessages(false);
-          setIsInitialLoadComplete(true);
+          isLoadingMessagesRef.current = false
+          setIsLoadingMessages(false)
+          setIsInitialLoadComplete(true)
         }
 
         // Now that the history is in place, ask the runtime if there's a
@@ -4148,26 +4187,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // a stale session's stream and corrupt the active panel's
         // message list (the original "I see the same message twice"
         // shape, just from a different angle).
-        if (myGeneration !== loadGenerationRef.current) return;
+        if (myGeneration !== loadGenerationRef.current) return
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
           localAgentUrl,
           loadSessionId,
-          chatWorkspaceId
-        );
+          chatWorkspaceId,
+        )
         void probeChatTurnStatus({
           url: turnUrl,
           fetch: expoFetch,
           headers: nativeHeaders ? nativeHeaders() : undefined,
           credentials: Platform.OS === "web" ? "include" : undefined,
         }).then((turnStatus) => {
-          if (myGeneration !== loadGenerationRef.current) return;
+          if (myGeneration !== loadGenerationRef.current) return
           if (shouldAttachLiveStream(turnStatus)) {
-            guardedAutoResumeStream("live-turn-probe");
+            guardedAutoResumeStream("live-turn-probe")
           }
-        });
-      });
+        })
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isActive,
@@ -4176,24 +4215,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
     setMessages,
     isLoadingMessages,
     isStreaming,
-  ]);
+  ])
 
   // This chat's last-used model: the most recent loaded message carrying a
   // `model` value (assistant rows are stamped server-side). MST `.all` is
   // observed here, so this recomputes when the session's messages settle.
   const lastSessionModel: string | null = (() => {
-    const all = sessionMessages?.all as any[] | undefined;
-    if (!all || all.length === 0) return null;
-    let latest: { createdAt: number; model: string } | null = null;
+    const all = sessionMessages?.all as any[] | undefined
+    if (!all || all.length === 0) return null
+    let latest: { createdAt: number; model: string } | null = null
     for (const m of all) {
-      const mdl = typeof m.model === "string" ? m.model.trim() : "";
-      if (!mdl) continue;
-      const createdAt = (m.createdAt as number) || 0;
+      const mdl = typeof m.model === "string" ? m.model.trim() : ""
+      if (!mdl) continue
+      const createdAt = (m.createdAt as number) || 0
       if (!latest || createdAt >= latest.createdAt)
-        latest = { createdAt, model: mdl };
+        latest = { createdAt, model: mdl }
     }
-    return latest ? latest.model : null;
-  })();
+    return latest ? latest.model : null
+  })()
 
   // Report the active chat's last-used model up to the parent so it can default
   // the shared picker when switching chats. Fires `null` for empty chats so the
@@ -4201,15 +4240,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // re-emits) when this panel becomes active, so switching back to a chat
   // restores its model even if the value itself is unchanged.
   useEffect(() => {
-    if (!isActive || !isInitialLoadComplete || !onResolveSessionModel) return;
-    onResolveSessionModel(lastSessionModel);
+    if (!isActive || !isInitialLoadComplete || !onResolveSessionModel) return
+    onResolveSessionModel(lastSessionModel)
   }, [
     isActive,
     isInitialLoadComplete,
     currentSessionId,
     lastSessionModel,
     onResolveSessionModel,
-  ]);
+  ])
 
   // Post-stream settle: when streaming ends, the AI SDK messages ARE the
   // authoritative fresh state — `cachedMessagesRef.current` is already kept in
@@ -4222,19 +4261,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // cleared defensively.
   useEffect(() => {
     if (!isActive || !currentSessionId) {
-      wasStreamingRef.current = isStreaming;
-      return;
+      wasStreamingRef.current = isStreaming
+      return
     }
     if (wasStreamingRef.current && !isStreaming) {
-      cacheRefreshedAtRef.current.set(currentSessionId, performance.now());
+      cacheRefreshedAtRef.current.set(currentSessionId, performance.now())
       if (isLoadingMessagesRef.current) {
-        isLoadingMessagesRef.current = false;
-        setIsLoadingMessages(false);
+        isLoadingMessagesRef.current = false
+        setIsLoadingMessages(false)
       }
     }
-    wasStreamingRef.current = isStreaming;
+    wasStreamingRef.current = isStreaming
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, isStreaming, currentSessionId]);
+  }, [isActive, isStreaming, currentSessionId])
 
   // Surface a system notification when a turn finishes streaming while the
   // user is not currently active in the app (desktop window unfocused,
@@ -4242,28 +4281,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // dispatches through the platform-split chat-notifier module.
   const chatSessionForNotify = currentSessionId
     ? (studioChat.chatSessionCollection.get(currentSessionId) as any)
-    : null;
+    : null
   const notifyTitle =
     chatSessionForNotify?.inferredName ||
     chatSessionForNotify?.name ||
     featureName ||
-    "Shogo";
+    "Shogo"
   const notifyPreview = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      const m: any = messages[i];
-      if (m?.role !== "assistant") continue;
-      const parts = m?.parts as any[] | undefined;
-      if (!parts) continue;
+      const m: any = messages[i]
+      if (m?.role !== "assistant") continue
+      const parts = m?.parts as any[] | undefined
+      if (!parts) continue
       const text = parts
         .filter((p: any) => p?.type === "text" && typeof p.text === "string")
         .map((p: any) => p.text as string)
         .join(" ")
-        .trim();
-      if (text) return text;
-      break;
+        .trim()
+      if (text) return text
+      break
     }
-    return "Reply is ready.";
-  }, [messages]);
+    return "Reply is ready."
+  }, [messages])
   useNotifyOnTurnComplete({
     isStreaming,
     isActiveTab: isActive,
@@ -4272,7 +4311,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     projectId: projectId ?? null,
     title: notifyTitle,
     preview: notifyPreview,
-  });
+  })
 
   // Load older messages when user scrolls to top.
   // isLoadingOlderRef stays true until onContentSizeChange adjusts scroll position,
@@ -4286,21 +4325,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
       sessionMessages.isLoadingMore ||
       isStreamingRef.current
     )
-      return;
+      return
 
-    isLoadingOlderRef.current = true;
+    isLoadingOlderRef.current = true
 
-    const currentCount = sessionMessages.all.length;
+    const currentCount = sessionMessages.all.length
 
     try {
       await sessionMessages.loadPage(
         { sessionId: currentSessionId, agent: "technical" },
-        { limit: MESSAGE_PAGE_SIZE, offset: currentCount }
-      );
+        { limit: MESSAGE_PAGE_SIZE, offset: currentCount },
+      )
 
       const allLoaded = [...sessionMessages.all].sort(
-        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0)
-      );
+        (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+      )
 
       const aiMessages = allLoaded.map((msg: any) => {
         const baseMessage: any = {
@@ -4308,37 +4347,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
           role: msg.role as "user" | "assistant",
           content: msg.content,
           createdAt: msg.createdAt,
-        };
+        }
         if (msg.parts) {
           try {
-            baseMessage.parts = JSON.parse(msg.parts);
+            baseMessage.parts = JSON.parse(msg.parts)
           } catch (err) {
-            console.warn("[ChatPanel] Failed to parse message parts:", err);
+            console.warn("[ChatPanel] Failed to parse message parts:", err)
           }
         }
-        return baseMessage;
-      });
+        return baseMessage
+      })
 
-      cachedMessagesRef.current = aiMessages;
-      sessionMessageCache.set(currentSessionId, aiMessages);
-      setMessages(aiMessages);
+      cachedMessagesRef.current = aiMessages
+      sessionMessageCache.set(currentSessionId, aiMessages)
+      setMessages(aiMessages)
       // NOTE: isLoadingOlderRef is intentionally NOT reset here.
       // It is reset in onContentSizeChange after scroll position is adjusted,
       // so the onScroll handler doesn't immediately re-trigger loading.
     } catch (err) {
-      console.error("[ChatPanel] Failed to load older messages:", err);
-      isLoadingOlderRef.current = false;
+      console.error("[ChatPanel] Failed to load older messages:", err)
+      isLoadingOlderRef.current = false
     }
-  }, [currentSessionId, sessionMessages, setMessages]);
+  }, [currentSessionId, sessionMessages, setMessages])
 
   /** Native: load older only when scroll settles near the top — not on every onScroll frame. */
   const tryLoadOlderNearTopOnScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (e.nativeEvent.contentOffset.y >= LOAD_OLDER_SCROLL_EDGE_PX) return;
-      handleLoadOlderMessages();
+      if (e.nativeEvent.contentOffset.y >= LOAD_OLDER_SCROLL_EDGE_PX) return
+      handleLoadOlderMessages()
     },
-    [handleLoadOlderMessages]
-  );
+    [handleLoadOlderMessages],
+  )
 
   /**
    * Web: track bottom for follow-scroll + debounced load-older near top.
@@ -4346,45 +4385,45 @@ const ChatPanelContent = observer(function ChatPanelContent({
    */
   const handleMessagesScrollWeb = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (Date.now() < programmaticScrollUntilRef.current) return;
+      if (Date.now() < programmaticScrollUntilRef.current) return
 
-      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-      const overflows = contentSize.height > layoutMeasurement.height + 1;
+      const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent
+      const overflows = contentSize.height > layoutMeasurement.height + 1
       setHasScrollableTranscript((current) =>
-        current === overflows ? current : overflows
-      );
+        current === overflows ? current : overflows,
+      )
       const isAtBottom =
         contentSize.height - contentOffset.y - layoutMeasurement.height <
-        SCROLL_NEAR_BOTTOM_PX;
+        SCROLL_NEAR_BOTTOM_PX
       if (isAtBottom !== isUserAtBottomRef.current) {
-        isUserAtBottomRef.current = isAtBottom;
-        setIsFollowing(isAtBottom);
+        isUserAtBottomRef.current = isAtBottom
+        setIsFollowing(isAtBottom)
       }
 
       if (contentOffset.y < LOAD_OLDER_SCROLL_EDGE_PX) {
         if (loadOlderWebDebounceRef.current) {
-          clearTimeout(loadOlderWebDebounceRef.current);
+          clearTimeout(loadOlderWebDebounceRef.current)
         }
         loadOlderWebDebounceRef.current = setTimeout(() => {
-          loadOlderWebDebounceRef.current = null;
-          handleLoadOlderMessages();
-        }, LOAD_OLDER_WEB_DEBOUNCE_MS);
+          loadOlderWebDebounceRef.current = null
+          handleLoadOlderMessages()
+        }, LOAD_OLDER_WEB_DEBOUNCE_MS)
       } else if (loadOlderWebDebounceRef.current) {
-        clearTimeout(loadOlderWebDebounceRef.current);
-        loadOlderWebDebounceRef.current = null;
+        clearTimeout(loadOlderWebDebounceRef.current)
+        loadOlderWebDebounceRef.current = null
       }
     },
-    [handleLoadOlderMessages]
-  );
+    [handleLoadOlderMessages],
+  )
 
   // Re-hydrate pendingPlan from persisted messages on session restore
   useEffect(() => {
-    if (!isInitialLoadComplete || isStreaming || pendingPlan) return;
-    if (messages.length === 0) return;
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role !== "assistant") return;
-    const parts = (lastMsg as any).parts as any[] | undefined;
-    if (!parts) return;
+    if (!isInitialLoadComplete || isStreaming || pendingPlan) return
+    if (messages.length === 0) return
+    const lastMsg = messages[messages.length - 1]
+    if (lastMsg.role !== "assistant") return
+    const parts = (lastMsg as any).parts as any[] | undefined
+    if (!parts) return
     const planTool = parts.find(
       (p: any) =>
         (p.type === "tool-invocation" &&
@@ -4392,14 +4431,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           p.toolInvocation?.state === "result") ||
         (p.type === "dynamic-tool" &&
           p.toolName === "create_plan" &&
-          (p.state === "output-available" || p.state === "result"))
-    );
-    if (!planTool) return;
+          (p.state === "output-available" || p.state === "result")),
+    )
+    if (!planTool) return
     const args =
       planTool.type === "tool-invocation"
         ? planTool.toolInvocation?.args
-        : planTool.input ?? planTool.args;
-    if (!args) return;
+        : (planTool.input ?? planTool.args)
+    if (!args) return
     const restoredPlan = normalizePlanData({
       name: args.name ?? "Plan",
       overview: args.overview ?? "",
@@ -4408,10 +4447,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
       filepath: args.filepath,
       toolCallId: planTool.id ?? planTool.toolCallId,
       isUpdate: false,
-    });
-    pendingPlanRef.current = restoredPlan;
-    setPendingPlan(restoredPlan);
-  }, [isInitialLoadComplete, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    })
+    pendingPlanRef.current = restoredPlan
+    setPendingPlan(restoredPlan)
+  }, [isInitialLoadComplete, messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // (Removed) Effect 2: MobX → AI SDK setMessages sync.
   //
@@ -4430,30 +4469,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // *inside* Effect 1) so there is still only one setMessages caller.
 
   useEffect(() => {
-    onStreamingChange?.(isStreaming);
-  }, [isStreaming, onStreamingChange]);
+    onStreamingChange?.(isStreaming)
+  }, [isStreaming, onStreamingChange])
 
   // Only the active panel (the one feeding onMessagesChange) drives the shared plan-stream context.
   // Background panels must not fight over setIsPlanStreaming.
-  const isActivePanel = onMessagesChange != null;
+  const isActivePanel = onMessagesChange != null
 
   // Read `planStream` from a ref inside the publishing effects below so that
   // changes to the context value's identity do NOT re-run the effects (and
   // therefore can't cascade back into setState on the same context). The
   // setters on the context value are stable `useState` setters, so reading
   // them through the ref is safe.
-  const planStreamRef = useRef(planStream);
-  planStreamRef.current = planStream;
+  const planStreamRef = useRef(planStream)
+  planStreamRef.current = planStream
 
   useEffect(() => {
-    if (!isActivePanel) return;
-    const next = isStreaming && interactionMode === "plan";
-    const ctx = planStreamRef.current;
-    if (!ctx) return;
-    if (ctx.isPlanStreaming === next) return;
-    ctx.setIsPlanStreaming(next);
+    if (!isActivePanel) return
+    const next = isStreaming && interactionMode === "plan"
+    const ctx = planStreamRef.current
+    if (!ctx) return
+    if (ctx.isPlanStreaming === next) return
+    ctx.setIsPlanStreaming(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStreaming, interactionMode, isActivePanel]);
+  }, [isStreaming, interactionMode, isActivePanel])
 
   // Track the last plan we published so we can return the SAME object
   // identity when nothing about the create_plan args has changed. Without
@@ -4461,29 +4500,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // object, which in turn forced `setStreamingPlan` to fire (new identity →
   // React doesn't bail out) and stormed every `usePlanStream()` consumer.
   const lastDerivedPlanRef = useRef<{
-    sig: string;
-    plan: PlanData | null;
-  }>({ sig: "", plan: null });
+    sig: string
+    plan: PlanData | null
+  }>({ sig: "", plan: null })
 
   const derivedStreamingPlan = useMemo<PlanData | null>(() => {
     const computeFresh = (): PlanData | null => {
-      if (!isStreaming) return null;
-      const lastMsg = messages[messages.length - 1];
-      if (!lastMsg || lastMsg.role !== "assistant") return null;
-      const parts = (lastMsg as any).parts as any[] | undefined;
-      if (!parts) return null;
+      if (!isStreaming) return null
+      const lastMsg = messages[messages.length - 1]
+      if (!lastMsg || lastMsg.role !== "assistant") return null
+      const parts = (lastMsg as any).parts as any[] | undefined
+      if (!parts) return null
       const planPart = parts.find(
         (p: any) =>
           (p.type === "tool-invocation" &&
             p.toolInvocation?.toolName === "create_plan") ||
-          (p.type === "dynamic-tool" && p.toolName === "create_plan")
-      );
-      if (!planPart) return null;
+          (p.type === "dynamic-tool" && p.toolName === "create_plan"),
+      )
+      if (!planPart) return null
       const args =
         planPart.type === "tool-invocation"
           ? planPart.toolInvocation?.args
-          : planPart.input ?? planPart.args;
-      if (!args?.name) return null;
+          : (planPart.input ?? planPart.args)
+      if (!args?.name) return null
       return normalizePlanData({
         name: args.name,
         overview: args.overview ?? "",
@@ -4492,9 +4531,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         filepath: args.filepath,
         toolCallId: planPart.id ?? planPart.toolCallId,
         isUpdate: false,
-      });
-    };
-    const fresh = computeFresh();
+      })
+    }
+    const fresh = computeFresh()
     // Cheap structural signature: avoid `JSON.stringify` on every chunk
     // (O(plan body × tokens) of main-thread work) and instead compare
     // the field sizes and identifiers that actually distinguish a
@@ -4505,28 +4544,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // `todos: [{ id: "t1" }]` (no `content` yet) or `overview: {}`
     // mid-key — that would otherwise throw inside this memo and trip
     // the chat's error boundary.
-    let sig = "";
+    let sig = ""
     if (fresh) {
       const overviewLen =
-        typeof fresh.overview === "string" ? fresh.overview.length : 0;
-      const planLen = typeof fresh.plan === "string" ? fresh.plan.length : 0;
-      const todosArr = Array.isArray(fresh.todos) ? fresh.todos : [];
+        typeof fresh.overview === "string" ? fresh.overview.length : 0
+      const planLen = typeof fresh.plan === "string" ? fresh.plan.length : 0
+      const todosArr = Array.isArray(fresh.todos) ? fresh.todos : []
       const lastTodo =
-        todosArr.length > 0 ? (todosArr[todosArr.length - 1] as any) : null;
+        todosArr.length > 0 ? (todosArr[todosArr.length - 1] as any) : null
       const lastTodoLen =
-        typeof lastTodo?.content === "string" ? lastTodo.content.length : 0;
+        typeof lastTodo?.content === "string" ? lastTodo.content.length : 0
       sig =
         `${fresh.name}|${overviewLen}|${planLen}|` +
         `${todosArr.length}|${lastTodoLen}|${fresh.filepath ?? ""}|${
           fresh.toolCallId ?? ""
-        }`;
+        }`
     }
     if (sig === lastDerivedPlanRef.current.sig) {
-      return lastDerivedPlanRef.current.plan;
+      return lastDerivedPlanRef.current.plan
     }
-    lastDerivedPlanRef.current = { sig, plan: fresh };
-    return fresh;
-  }, [isStreaming, messages]);
+    lastDerivedPlanRef.current = { sig, plan: fresh }
+    return fresh
+  }, [isStreaming, messages])
 
   // Throttle the publish to the shared `PlanStreamContext` so a long
   // `create_plan` stream doesn't notify every `usePlanStream()` consumer
@@ -4535,128 +4574,125 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // storm that triggers `Maximum update depth exceeded` in long chats.
   // We publish immediately when the plan transitions to/from null
   // (start, end) and coalesce the in-between updates.
-  const PLAN_PUBLISH_THROTTLE_MS = 150;
-  const lastPlanPublishAtRef = useRef(0);
-  const planPublishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+  const PLAN_PUBLISH_THROTTLE_MS = 150
+  const lastPlanPublishAtRef = useRef(0)
+  const planPublishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingPlanPublishRef = useRef<{
-    plan: PlanData | null;
-    filepath: string | null;
-  } | null>(null);
+    plan: PlanData | null
+    filepath: string | null
+  } | null>(null)
   useEffect(() => {
     return () => {
       if (planPublishTimerRef.current) {
-        clearTimeout(planPublishTimerRef.current);
-        planPublishTimerRef.current = null;
+        clearTimeout(planPublishTimerRef.current)
+        planPublishTimerRef.current = null
       }
-    };
-  }, []);
+    }
+  }, [])
   // While tokens stream, pendingPlan identity changes every chunk. Fold it
   // away so this effect only re-runs when the idle snapshot actually changes.
-  const idlePlan = isStreaming ? null : pendingPlan ?? confirmedPlan;
+  const idlePlan = isStreaming ? null : (pendingPlan ?? confirmedPlan)
   useEffect(() => {
-    const ctx = planStreamRef.current;
-    if (!ctx) return;
+    const ctx = planStreamRef.current
+    if (!ctx) return
 
     const planToPublish = planToPublishToStream({
       derivedStreamingPlan,
       isStreaming,
       pendingPlan: idlePlan,
       confirmedPlan: null,
-    });
-    const nextFilepath = planToPublish?.filepath ?? null;
+    })
+    const nextFilepath = planToPublish?.filepath ?? null
 
-    const planChanged = ctx.streamingPlan !== planToPublish;
-    const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath;
-    if (!planChanged && !filepathChanged) return;
+    const planChanged = ctx.streamingPlan !== planToPublish
+    const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath
+    if (!planChanged && !filepathChanged) return
 
     const publish = () => {
-      const c = planStreamRef.current;
-      if (!c) return;
-      const pending = pendingPlanPublishRef.current;
-      if (!pending) return;
-      pendingPlanPublishRef.current = null;
-      lastPlanPublishAtRef.current = Date.now();
-      if (c.streamingPlan !== pending.plan) c.setStreamingPlan(pending.plan);
+      const c = planStreamRef.current
+      if (!c) return
+      const pending = pendingPlanPublishRef.current
+      if (!pending) return
+      pendingPlanPublishRef.current = null
+      lastPlanPublishAtRef.current = Date.now()
+      if (c.streamingPlan !== pending.plan) c.setStreamingPlan(pending.plan)
       if (c.streamingPlanFilepath !== pending.filepath) {
-        c.setStreamingPlanFilepath(pending.filepath);
+        c.setStreamingPlanFilepath(pending.filepath)
       }
-    };
+    }
 
     pendingPlanPublishRef.current = {
       plan: planToPublish,
       filepath: nextFilepath,
-    };
+    }
 
     // Edge events (plan first appears, or the shared snapshot is cleared)
     // bypass the throttle so Plans/dock react immediately.
-    const isEdge = planToPublish === null || ctx.streamingPlan === null;
+    const isEdge = planToPublish === null || ctx.streamingPlan === null
     if (isEdge) {
       if (planPublishTimerRef.current) {
-        clearTimeout(planPublishTimerRef.current);
-        planPublishTimerRef.current = null;
+        clearTimeout(planPublishTimerRef.current)
+        planPublishTimerRef.current = null
       }
-      publish();
-      return;
+      publish()
+      return
     }
 
-    if (planPublishTimerRef.current) return;
-    const elapsed = Date.now() - lastPlanPublishAtRef.current;
+    if (planPublishTimerRef.current) return
+    const elapsed = Date.now() - lastPlanPublishAtRef.current
     const wait =
       elapsed >= PLAN_PUBLISH_THROTTLE_MS
         ? 0
-        : PLAN_PUBLISH_THROTTLE_MS - elapsed;
+        : PLAN_PUBLISH_THROTTLE_MS - elapsed
     planPublishTimerRef.current = setTimeout(() => {
-      planPublishTimerRef.current = null;
-      publish();
-    }, wait);
+      planPublishTimerRef.current = null
+      publish()
+    }, wait)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedStreamingPlan, isStreaming, idlePlan]);
+  }, [derivedStreamingPlan, isStreaming, idlePlan])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
   // so this effect only fires for discrete events (new message added, first load).
   // On web, messages ref changes are still used for follow (existing behaviour).
-  const isFirstLoadRef = useRef(true);
+  const isFirstLoadRef = useRef(true)
 
   useEffect(() => {
-    isFirstLoadRef.current = true;
-    isUserAtBottomRef.current = true;
-    stickToBottomRef.current = true;
-    setIsFollowing(true);
-    prevDisplayLengthRef.current = 0;
-  }, [currentSessionId]);
+    isFirstLoadRef.current = true
+    isUserAtBottomRef.current = true
+    stickToBottomRef.current = true
+    setIsFollowing(true)
+    prevDisplayLengthRef.current = 0
+  }, [currentSessionId])
 
   useEffect(() => {
-    if (displayMessages.length === 0) return;
+    if (displayMessages.length === 0) return
 
-    const isNewMessage =
-      displayMessages.length !== prevDisplayLengthRef.current;
-    prevDisplayLengthRef.current = displayMessages.length;
+    const isNewMessage = displayMessages.length !== prevDisplayLengthRef.current
+    prevDisplayLengthRef.current = displayMessages.length
 
     // On native, skip streaming-token updates — onContentSizeChange handles follow
     if (isNative && !isNewMessage && !isFirstLoadRef.current) {
-      return;
+      return
     }
 
     if (
       displayMessages.length === 1 &&
       (isFirstLoadRef.current || shouldFollowBottom())
     ) {
-      markProgrammaticScroll();
-      scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-      isFirstLoadRef.current = false;
-      return;
+      markProgrammaticScroll()
+      scrollViewRef.current?.scrollTo({ y: 0, animated: false })
+      isFirstLoadRef.current = false
+      return
     }
 
     const shouldScroll =
       displayMessages.length > 1 &&
-      (isFirstLoadRef.current || shouldFollowBottom());
+      (isFirstLoadRef.current || shouldFollowBottom())
 
     if (shouldScroll) {
-      scrollToBottomIfFollowing(!isFirstLoadRef.current);
-      isFirstLoadRef.current = false;
+      scrollToBottomIfFollowing(!isFirstLoadRef.current)
+      isFirstLoadRef.current = false
     }
   }, [
     displayMessages.length,
@@ -4666,33 +4702,33 @@ const ChatPanelContent = observer(function ChatPanelContent({
     shouldFollowBottom,
     scrollToBottomIfFollowing,
     markProgrammaticScroll,
-  ]);
+  ])
 
   // Detect a pending ask_user tool call in the last assistant message and
   // surface its tool data so the interactive question UI can be attached
   // above the chat input (instead of rendered inline in the stream).
   const pendingQuestion = useMemo(
     () => derivePendingQuestion(messages),
-    [messages]
-  );
+    [messages],
+  )
 
-  const hasPendingQuestion = pendingQuestion != null;
-  const questionPresentation = askUserQuestionPresentation(isNativePhoneLayout);
-  const [questionSheetOpen, setQuestionSheetOpen] = useState(false);
+  const hasPendingQuestion = pendingQuestion != null
+  const questionPresentation = askUserQuestionPresentation(isNativePhoneLayout)
+  const [questionSheetOpen, setQuestionSheetOpen] = useState(false)
 
   useEffect(() => {
-    if (questionPresentation !== "sheet") return;
+    if (questionPresentation !== "sheet") return
     if (!pendingQuestion) {
-      setQuestionSheetOpen(false);
-      return;
+      setQuestionSheetOpen(false)
+      return
     }
-    setQuestionSheetOpen(true);
-  }, [pendingQuestion?.tool.id, questionPresentation]);
+    setQuestionSheetOpen(true)
+  }, [pendingQuestion?.tool.id, questionPresentation])
 
   const extractMediaType = useCallback((dataUrl: string): string => {
-    const match = dataUrl.match(/^data:([^;]+);/);
-    return match?.[1] || "application/octet-stream";
-  }, []);
+    const match = dataUrl.match(/^data:([^;]+);/)
+    return match?.[1] || "application/octet-stream"
+  }, [])
 
   // Internal function that actually sends a message (used by queue processor)
   // Isolated "actually put it on the wire" step, factored out of
@@ -4706,37 +4742,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const deliverMessage = useCallback(
     async (
       messagePayload: {
-        text: string;
+        text: string
         files?: Array<{
-          type: "file";
-          mediaType: string;
-          url: string;
-          name?: string;
-        }>;
+          type: "file"
+          mediaType: string
+          url: string
+          name?: string
+        }>
       },
       bodyExtra: Record<string, unknown>,
-      opts?: { queuedId?: string }
+      opts?: { queuedId?: string },
     ) => {
       const clientTurnId =
         typeof bodyExtra.clientTurnId === "string"
           ? bodyExtra.clientTurnId
-          : undefined;
-      pendingClientTurnIdRef.current = clientTurnId;
+          : undefined
+      pendingClientTurnIdRef.current = clientTurnId
       try {
-        await sendMessage(messagePayload, { body: bodyExtra });
+        await sendMessage(messagePayload, { body: bodyExtra })
       } catch (err) {
-        if (!isClientNetworkFailure(err)) throw err;
+        if (!isClientNetworkFailure(err)) throw err
 
         console.warn(
           "[ChatPanel] Send failed on a network error — queueing for automatic retry once back online:",
-          err
-        );
+          err,
+        )
         const queuedFiles: FileAttachment[] | undefined =
           messagePayload.files?.map((f) => ({
             dataUrl: f.url,
             type: f.mediaType,
             name: f.name ?? "",
-          }));
+          }))
         const entry: QueuedMessage = {
           id:
             opts?.queuedId ??
@@ -4752,18 +4788,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
             : undefined,
           offline: true,
           offlineRetry: { messagePayload, bodyExtra },
-        };
+        }
         setMessageQueue((queue) => {
           const existingIdx = opts?.queuedId
             ? queue.findIndex((m) => m.id === opts.queuedId)
-            : -1;
+            : -1
           if (existingIdx !== -1) {
-            const copy = [...queue];
-            copy[existingIdx] = entry;
-            return copy;
+            const copy = [...queue]
+            copy[existingIdx] = entry
+            return copy
           }
-          return [...queue, entry];
-        });
+          return [...queue, entry]
+        })
         // Swallowed — the send is handled via the queue now, not a hard
         // failure. The persisted user message + optimistic bubble from
         // `sendMessageInternal` (or the original attempt, on a retry) stay
@@ -4771,8 +4807,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // signal that it hasn't actually gone out yet.
       }
     },
-    [sendMessage]
-  );
+    [sendMessage],
+  )
 
   const sendMessageInternal = useCallback(
     async (
@@ -4780,25 +4816,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
       files?: FileAttachment[],
       perMsgModel?: string,
       extraBody?: Record<string, unknown>,
-      references?: ChatReference[]
+      references?: ChatReference[],
     ) => {
       if (!currentSessionId) {
-        console.warn("[ChatPanel] No session ID - message will be lost!");
-        return;
+        console.warn("[ChatPanel] No session ID - message will be lost!")
+        return
       }
-      setStoppedMessages(null);
-      setEmptyResponseError(null);
-      setErrorDismissed(false);
-      userInitiatedStopRef.current = false;
+      setStoppedMessages(null)
+      setEmptyResponseError(null)
+      setErrorDismissed(false)
+      userInitiatedStopRef.current = false
 
-      const fileArray = files || [];
+      const fileArray = files || []
 
       if (
         !content.trim() &&
         fileArray.length === 0 &&
         (!references || references.length === 0)
       ) {
-        return;
+        return
       }
 
       // App Store 5.1.1(i)/5.1.2(i): on iOS, request explicit one-time consent
@@ -4806,9 +4842,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // Uses the native iOS alert primitive (same UI as camera/location
       // permissions) — no new screen, persisted in expo-secure-store.
       if (Platform.OS === "ios") {
-        const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false);
+        const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
         if (!alreadyAccepted) {
-          const providerNames = AI_PROVIDERS.map((p) => p.name).join(" or ");
+          const providerNames = AI_PROVIDERS.map((p) => p.name).join(" or ")
           const accepted = await new Promise<boolean>((resolve) => {
             Alert.alert(
               "Share your message with the selected AI provider?",
@@ -4821,38 +4857,38 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 },
                 { text: "Allow", onPress: () => resolve(true) },
               ],
-              { cancelable: false }
-            );
-          });
+              { cancelable: false },
+            )
+          })
           if (!accepted) {
-            await revokeAiConsent().catch(() => {});
-            return;
+            await revokeAiConsent().catch(() => {})
+            return
           }
-          await acceptAiConsent().catch(() => {});
+          await acceptAiConsent().catch(() => {})
         }
       }
 
-      const trimmedContent = content.trim();
+      const trimmedContent = content.trim()
       if (Platform.OS !== "web") {
-        stickToBottomRef.current = true;
+        stickToBottomRef.current = true
       } else {
-        isUserAtBottomRef.current = true;
+        isUserAtBottomRef.current = true
       }
-      setIsFollowing(true);
-      lastUserInputRef.current = { content: trimmedContent, files: fileArray };
+      setIsFollowing(true)
+      lastUserInputRef.current = { content: trimmedContent, files: fileArray }
       setOptimisticUserInput({
         sessionId: currentSessionId,
         content: trimmedContent,
         files: fileArray,
-      });
+      })
 
       const parts: Array<
         | { type: "text"; text: string }
         | { type: "file"; mediaType: string; url: string; name?: string }
-      > = [];
+      > = []
 
       if (trimmedContent) {
-        parts.push({ type: "text", text: trimmedContent });
+        parts.push({ type: "text", text: trimmedContent })
       }
 
       fileArray.forEach((file) => {
@@ -4861,17 +4897,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
           mediaType: file.type || extractMediaType(file.dataUrl),
           url: file.dataUrl,
           ...(file.name ? { name: file.name } : {}),
-        });
-      });
+        })
+      })
 
-      isSendingMessageRef.current = true;
+      isSendingMessageRef.current = true
 
       // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
       try {
-        emitTurnStartRef.current?.();
+        emitTurnStartRef.current?.()
       } catch (err) {
-        console.warn("[ChatPanel] bridge.emitTurnStart threw", err);
+        console.warn("[ChatPanel] bridge.emitTurnStart threw", err)
       }
 
       actions
@@ -4879,12 +4915,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
           sessionId: currentSessionId,
           role: "user",
           content: trimmedContent,
-          imageData: fileArray.length > 0 ? fileArray[0].dataUrl : undefined,
           parts: parts.length > 0 ? JSON.stringify(parts) : undefined,
         })
         .catch((err) =>
-          console.warn("[ChatPanel] Failed to persist user message:", err)
-        );
+          console.warn("[ChatPanel] Failed to persist user message:", err),
+        )
+
+      // Start AI naming alongside the agent turn instead of waiting for the
+      // assistant response to finish. The onFinish fallback above covers
+      // messages that bypass this path.
+      maybeAutoNameSession(currentSessionId, trimmedContent)
 
       // Optimistically bump the chat session's lastActiveAt so the
       // history sidebar re-buckets this chat into "Today" immediately
@@ -4893,29 +4933,27 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // update; this MST mutation just keeps the local view in sync.
       try {
         const sessionInstance = studioChat.chatSessionCollection.get(
-          currentSessionId
-        ) as
-          | { update?: (changes: Record<string, unknown>) => void }
-          | undefined;
-        sessionInstance?.update?.({ lastActiveAt: Date.now() });
+          currentSessionId,
+        ) as { update?: (changes: Record<string, unknown>) => void } | undefined
+        sessionInstance?.update?.({ lastActiveAt: Date.now() })
       } catch (err) {
         console.warn(
           "[ChatPanel] Failed to bump local session lastActiveAt:",
-          err
-        );
+          err,
+        )
       }
 
       const messagePayload: {
-        text: string;
+        text: string
         files?: Array<{
-          type: "file";
-          mediaType: string;
-          url: string;
-          name?: string;
-        }>;
+          type: "file"
+          mediaType: string
+          url: string
+          name?: string
+        }>
       } = {
         text: trimmedContent,
-      };
+      }
 
       // Auto context injection: let the host enrich the message with
       // workspace context (terminal output, git status, diagnostics)
@@ -4923,12 +4961,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // already persisted and displayed; only the wire payload changes.
       if (enrichMessage) {
         try {
-          messagePayload.text = await enrichMessage(trimmedContent);
+          messagePayload.text = await enrichMessage(trimmedContent)
         } catch (err) {
           console.warn(
             "[ChatPanel] enrichMessage failed, sending bare message:",
-            err
-          );
+            err,
+          )
         }
       }
 
@@ -4938,7 +4976,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           mediaType: file.type || extractMediaType(file.dataUrl),
           url: file.dataUrl,
           ...(file.name ? { name: file.name } : {}),
-        }));
+        }))
       }
 
       try {
@@ -4950,8 +4988,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const clientTurnId =
           (typeof extraBody?.clientTurnId === "string" &&
             extraBody.clientTurnId) ||
-          generateClientTurnId();
-        pendingClientTurnIdRef.current = clientTurnId;
+          generateClientTurnId()
+        pendingClientTurnIdRef.current = clientTurnId
 
         const bodyExtra: Record<string, unknown> = {
           featureId,
@@ -4977,28 +5015,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
             platform: Platform.OS,
             width: windowWidth,
           }),
-        };
-        const planToSend = confirmedPlanRef.current;
+        }
+        const planToSend = confirmedPlanRef.current
         if (planToSend) {
-          bodyExtra.confirmedPlan = normalizePlanData(planToSend);
-          bodyExtra.interactionMode = "agent";
-          confirmedPlanRef.current = null;
+          bodyExtra.confirmedPlan = normalizePlanData(planToSend)
+          bodyExtra.interactionMode = "agent"
+          confirmedPlanRef.current = null
         }
         if (
           ideMode &&
           (ideBridge.context.activeFile ||
             ideBridge.context.workspaceFolders.length > 0)
         ) {
-          bodyExtra.ideContext = ideBridge.context;
+          bodyExtra.ideContext = ideBridge.context
         }
         if (references && references.length > 0) {
           // The runtime resolves these into real context (file contents +
           // workspace summaries) before the model runs. Passed through the
           // API proxy untouched, so it also works in direct-to-runtime mode.
-          bodyExtra.references = references;
+          bodyExtra.references = references
         }
         if (extraBody) {
-          Object.assign(bodyExtra, extraBody);
+          Object.assign(bodyExtra, extraBody)
         }
         console.log(
           "[ChatPanel][send] bodyExtra — interactionMode:",
@@ -5008,14 +5046,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           "hasConfirmedPlan:",
           !!bodyExtra.confirmedPlan,
           "text:",
-          trimmedContent.slice(0, 80)
-        );
-        await deliverMessage(messagePayload, bodyExtra);
+          trimmedContent.slice(0, 80),
+        )
+        await deliverMessage(messagePayload, bodyExtra)
       } catch (err) {
-        console.error("[ChatPanel] Failed to send message:", err);
-        throw err;
+        console.error("[ChatPanel] Failed to send message:", err)
+        throw err
       } finally {
-        isSendingMessageRef.current = false;
+        isSendingMessageRef.current = false
       }
     },
     [
@@ -5036,8 +5074,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       ideBridge.context,
       isPhoneViewport,
       windowWidth,
-    ]
-  );
+      maybeAutoNameSession,
+    ],
+  )
 
   // Register bridge endpoints so the EZ Mode overlay can send messages
   // and toggle interaction mode on our behalf. The registrar is a no-op
@@ -5045,16 +5084,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // call unconditionally.
   const bridgeSend = useCallback(
     (text: string) => {
-      void sendMessageInternal(text);
+      void sendMessageInternal(text)
     },
-    [sendMessageInternal]
-  );
+    [sendMessageInternal],
+  )
   const bridgeSetMode = useCallback(
     (mode: InteractionMode) => {
-      handleInteractionModeChange(mode);
+      handleInteractionModeChange(mode)
     },
-    [handleInteractionModeChange]
-  );
+    [handleInteractionModeChange],
+  )
   const {
     emitTurnStart: bridgeEmitTurnStart,
     emitToolActivity: bridgeEmitToolActivity,
@@ -5063,40 +5102,40 @@ const ChatPanelContent = observer(function ChatPanelContent({
   } = useChatBridgeRegistrar({
     send: bridgeSend,
     setMode: bridgeSetMode,
-  });
+  })
   useEffect(() => {
-    emitTurnStartRef.current = bridgeEmitTurnStart;
-    emitToolActivityRef.current = bridgeEmitToolActivity;
-    emitTurnEndRef.current = bridgeEmitTurnEnd;
-    setSubagentCardsRef.current = bridgeSetSubagentCards;
+    emitTurnStartRef.current = bridgeEmitTurnStart
+    emitToolActivityRef.current = bridgeEmitToolActivity
+    emitTurnEndRef.current = bridgeEmitTurnEnd
+    setSubagentCardsRef.current = bridgeSetSubagentCards
     return () => {
       if (emitTurnStartRef.current === bridgeEmitTurnStart)
-        emitTurnStartRef.current = null;
+        emitTurnStartRef.current = null
       if (emitToolActivityRef.current === bridgeEmitToolActivity)
-        emitToolActivityRef.current = null;
+        emitToolActivityRef.current = null
       if (emitTurnEndRef.current === bridgeEmitTurnEnd)
-        emitTurnEndRef.current = null;
+        emitTurnEndRef.current = null
       if (setSubagentCardsRef.current === bridgeSetSubagentCards)
-        setSubagentCardsRef.current = null;
-    };
+        setSubagentCardsRef.current = null
+    }
   }, [
     bridgeEmitTurnStart,
     bridgeEmitToolActivity,
     bridgeEmitTurnEnd,
     bridgeSetSubagentCards,
-  ]);
+  ])
 
   // Queue processor: processes messages one at a time
   const processMessageQueue = useCallback(async () => {
-    if (isProcessingQueueRef.current) return;
-    if (isStreaming) return;
-    if (!currentSessionId) return;
-    if (messageQueue.length === 0) return;
+    if (isProcessingQueueRef.current) return
+    if (isStreaming) return
+    if (!currentSessionId) return
+    if (messageQueue.length === 0) return
 
-    isProcessingQueueRef.current = true;
+    isProcessingQueueRef.current = true
 
-    const nextMessage = messageQueue[0];
-    setMessageQueue((queue) => queue.slice(1));
+    const nextMessage = messageQueue[0]
+    setMessageQueue((queue) => queue.slice(1))
 
     try {
       if (nextMessage.offline && nextMessage.offlineRetry) {
@@ -5108,25 +5147,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
         await deliverMessage(
           nextMessage.offlineRetry.messagePayload,
           nextMessage.offlineRetry.bodyExtra,
-          { queuedId: nextMessage.id }
-        );
+          { queuedId: nextMessage.id },
+        )
         // An offline retry that fails again never starts a real stream, so
         // the `isStreaming` falling-edge effect below will never fire for
         // it — reset here so the next online-restored tick can pick the
         // queue back up instead of finding it wedged `true` forever.
-        isProcessingQueueRef.current = false;
+        isProcessingQueueRef.current = false
       } else {
         await sendMessageInternal(
           nextMessage.content,
           nextMessage.files,
           nextMessage.selectedModel,
           undefined,
-          nextMessage.references
-        );
+          nextMessage.references,
+        )
       }
     } catch (err) {
-      console.error("[ChatPanel] Error processing queued message:", err);
-      isProcessingQueueRef.current = false;
+      console.error("[ChatPanel] Error processing queued message:", err)
+      isProcessingQueueRef.current = false
     }
   }, [
     isStreaming,
@@ -5134,21 +5173,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
     deliverMessage,
     currentSessionId,
     messageQueue,
-  ]);
+  ])
 
   // Process queue when streaming completes
-  const queueStreamingRef = useRef(false);
+  const queueStreamingRef = useRef(false)
   useEffect(() => {
-    const wasStreaming = queueStreamingRef.current;
-    queueStreamingRef.current = isStreaming;
+    const wasStreaming = queueStreamingRef.current
+    queueStreamingRef.current = isStreaming
 
     if (wasStreaming && !isStreaming) {
-      isProcessingQueueRef.current = false;
+      isProcessingQueueRef.current = false
       if (messageQueue.length > 0 && currentSessionId) {
-        processMessageQueue();
+        processMessageQueue()
       }
     }
-  }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId]);
+  }, [isStreaming, messageQueue.length, processMessageQueue, currentSessionId])
 
   // Drain offline-queued sends once connectivity looks restored. Unlike the
   // falling-edge effect above (which only fires after a real stream ends),
@@ -5158,44 +5197,44 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // state (a captive portal or LAN-only wifi still fires `online`), so we
   // confirm with the same `/api/ai/upstream-health` probe the server-side
   // park tier uses before actually draining.
-  const hasOfflineQueued = messageQueue.some((m) => m.offline);
+  const hasOfflineQueued = messageQueue.some((m) => m.offline)
   useEffect(() => {
-    if (!hasOfflineQueued || !currentSessionId) return;
+    if (!hasOfflineQueued || !currentSessionId) return
 
-    let cancelled = false;
+    let cancelled = false
     const checkUpstreamReachable = async (): Promise<boolean> => {
       if (typeof navigator !== "undefined" && navigator.onLine === false)
-        return false;
-      if (!API_URL) return true;
+        return false
+      if (!API_URL) return true
       try {
-        const fetchFn = expoFetch ?? globalThis.fetch;
+        const fetchFn = expoFetch ?? globalThis.fetch
         const res = await fetchFn(`${API_URL}/api/ai/upstream-health`, {
           signal: AbortSignal.timeout(4000),
-        } as any);
-        if (!res.ok) return false;
-        const data = await res.json().catch(() => null);
-        return !!data?.reachable;
+        } as any)
+        if (!res.ok) return false
+        const data = await res.json().catch(() => null)
+        return !!data?.reachable
       } catch {
-        return false;
+        return false
       }
-    };
+    }
 
     const tryDrain = async () => {
-      if (cancelled || isStreaming || isProcessingQueueRef.current) return;
-      const reachable = await checkUpstreamReachable();
+      if (cancelled || isStreaming || isProcessingQueueRef.current) return
+      const reachable = await checkUpstreamReachable()
       if (!cancelled && reachable) {
-        processMessageQueue();
+        processMessageQueue()
       }
-    };
+    }
 
     const onOnline = () => {
-      void tryDrain();
-    };
+      void tryDrain()
+    }
     if (
       typeof window !== "undefined" &&
       typeof window.addEventListener === "function"
     ) {
-      window.addEventListener("online", onOnline);
+      window.addEventListener("online", onOnline)
     }
     // Desktop sleep/wake: `online` doesn't reliably fire for a wake with
     // wifi already associated (the OS never dropped the link, it just
@@ -5205,38 +5244,38 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // above and `apps/desktop/src/main.ts`. No-op on mobile/web.
     const bridge = (
       window as unknown as {
-        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void };
+        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void }
       }
-    ).shogoDesktop;
+    ).shogoDesktop
     const unsubscribeResume = bridge?.onSystemResume?.(() => {
-      void tryDrain();
-    });
+      void tryDrain()
+    })
     // Poll as a fallback for the remaining case neither event covers: a
     // captive portal / LAN with a link but no real internet — the
     // upstream-health probe is the actual source of truth.
     const interval = setInterval(() => {
-      void tryDrain();
-    }, 10_000);
-    void tryDrain();
+      void tryDrain()
+    }, 10_000)
+    void tryDrain()
 
     return () => {
-      cancelled = true;
+      cancelled = true
       if (
         typeof window !== "undefined" &&
         typeof window.removeEventListener === "function"
       ) {
-        window.removeEventListener("online", onOnline);
+        window.removeEventListener("online", onOnline)
       }
-      unsubscribeResume?.();
-      clearInterval(interval);
-    };
+      unsubscribeResume?.()
+      clearInterval(interval)
+    }
   }, [
     hasOfflineQueued,
     isStreaming,
     currentSessionId,
     processMessageQueue,
     expoFetch,
-  ]);
+  ])
 
   // Stall watchdog — break a wedged `submitted`/`streaming` status so the
   // queue-drain effect above gets its falling edge.
@@ -5260,8 +5299,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // threshold for the current status, we call `stop()` — the SDK
   // aborts the active response and flips to `ready`.
   useEffect(() => {
-    lastChatProgressAtRef.current = Date.now();
-  }, [messages, status]);
+    lastChatProgressAtRef.current = Date.now()
+  }, [messages, status])
 
   // Restart the stall window whenever the tab returns to the foreground. While
   // hidden, `setInterval` is throttled/suspended and `Date.now()` jumps, so a
@@ -5271,17 +5310,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // ≫ threshold, up to ~2h). Resetting the progress mark on refocus gives the
   // turn a fresh threshold window to show progress / auto-resume reattach.
   useEffect(() => {
-    if (typeof document === "undefined") return;
+    if (typeof document === "undefined") return
     const onVisibility = () => {
       lastChatProgressAtRef.current = resolveProgressAfterVisibilityChange({
         isVisibleNow: document.visibilityState === "visible",
         now: Date.now(),
         lastProgressAt: lastChatProgressAtRef.current,
-      });
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, []);
+      })
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => document.removeEventListener("visibilitychange", onVisibility)
+  }, [])
 
   // Desktop-only: same false-stall-trip problem as the tab-visibility case
   // above, but for a real OS sleep/wake (lid close, `pmset sleepnow`, etc.)
@@ -5292,29 +5331,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     const bridge = (
       window as unknown as {
-        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void };
+        shogoDesktop?: { onSystemResume?: (cb: () => void) => () => void }
       }
-    ).shogoDesktop;
-    if (!bridge?.onSystemResume) return;
+    ).shogoDesktop
+    if (!bridge?.onSystemResume) return
     const unsubscribe = bridge.onSystemResume(() => {
       console.log(
-        "[ChatPanel] System resumed from sleep — resetting stall watchdog and re-checking connectivity"
-      );
-      lastChatProgressAtRef.current = Date.now();
-    });
-    return unsubscribe;
-  }, []);
+        "[ChatPanel] System resumed from sleep — resetting stall watchdog and re-checking connectivity",
+      )
+      lastChatProgressAtRef.current = Date.now()
+    })
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
-    if (!isStreaming) return;
+    if (!isStreaming) return
     const intervalMs = Math.min(
       DEFAULT_SUBMITTED_STALL_MS,
       DEFAULT_STREAMING_STALL_MS,
-      15_000
-    );
+      15_000,
+    )
     const timer = setInterval(() => {
-      const now = Date.now();
-      const lastProgressAt = lastChatProgressAtRef.current;
+      const now = Date.now()
+      const lastProgressAt = lastChatProgressAtRef.current
       if (
         isChatStalled({
           status,
@@ -5325,10 +5364,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
             document.visibilityState === "hidden",
         })
       ) {
-        const elapsedMs = now - lastProgressAt;
+        const elapsedMs = now - lastProgressAt
         console.warn(
-          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress; calling stop() to recover`
-        );
+          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress; calling stop() to recover`,
+        )
         // Surface in Sentry so this class of bug is visible in the
         // dashboard instead of having to be reconstructed from kube
         // logs. `captureMessage` (not `captureException`) because
@@ -5354,23 +5393,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
               lastProgressAt,
               now,
             },
-          });
+          })
         } catch (err) {
           // Sentry init can fail (DSN unset on dev builds, etc.) —
           // never let it break the recovery path.
-          console.warn("[ChatPanel] Sentry.captureMessage threw:", err);
+          console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
         }
         try {
-          stallWatchdogTrippedRef.current = true;
-          setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE);
-          void stop();
+          stallWatchdogTrippedRef.current = true
+          setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+          void stop()
         } catch (err) {
-          console.warn("[ChatPanel] stall watchdog stop() threw:", err);
+          console.warn("[ChatPanel] stall watchdog stop() threw:", err)
         }
       }
-    }, intervalMs);
-    return () => clearInterval(timer);
-  }, [isStreaming, status, stop, projectId, currentSessionId]);
+    }, intervalMs)
+    return () => clearInterval(timer)
+  }, [isStreaming, status, stop, projectId, currentSessionId])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every
@@ -5380,70 +5419,70 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // back to a session restores its pending queue.
   useEffect(() => {
     const cached = currentSessionId
-      ? sessionQueueCache.get(currentSessionId) ?? []
-      : [];
-    setMessageQueue(cached);
-    isProcessingQueueRef.current = false;
-    setOptimisticUserInput(null);
-    lastNonEmptyMessagesRef.current = [];
-  }, [currentSessionId]);
+      ? (sessionQueueCache.get(currentSessionId) ?? [])
+      : []
+    setMessageQueue(cached)
+    isProcessingQueueRef.current = false
+    setOptimisticUserInput(null)
+    lastNonEmptyMessagesRef.current = []
+  }, [currentSessionId])
 
   // Mirror the queue into the per-session cache so it survives remounts.
   useEffect(() => {
-    if (!currentSessionId) return;
+    if (!currentSessionId) return
     if (messageQueue.length === 0) {
-      sessionQueueCache.delete(currentSessionId);
+      sessionQueueCache.delete(currentSessionId)
     } else {
-      sessionQueueCache.set(currentSessionId, messageQueue);
+      sessionQueueCache.set(currentSessionId, messageQueue)
     }
-  }, [currentSessionId, messageQueue]);
+  }, [currentSessionId, messageQueue])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
-    setMessageQueue((queue) => queue.filter((m) => m.id !== messageId));
-  }, []);
+    setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
+  }, [])
 
   const handleReorderQueuedMessage = useCallback(
     (messageId: string, direction: "up" | "down") => {
       setMessageQueue((queue) => {
-        const index = queue.findIndex((m) => m.id === messageId);
-        if (index === -1) return queue;
+        const index = queue.findIndex((m) => m.id === messageId)
+        if (index === -1) return queue
 
-        const newQueue = [...queue];
+        const newQueue = [...queue]
         if (direction === "up" && index > 0) {
-          [newQueue[index - 1], newQueue[index]] = [
+          ;[newQueue[index - 1], newQueue[index]] = [
             newQueue[index],
             newQueue[index - 1],
-          ];
+          ]
         } else if (direction === "down" && index < newQueue.length - 1) {
-          [newQueue[index], newQueue[index + 1]] = [
+          ;[newQueue[index], newQueue[index + 1]] = [
             newQueue[index + 1],
             newQueue[index],
-          ];
+          ]
         }
-        return newQueue;
-      });
+        return newQueue
+      })
     },
-    []
-  );
+    [],
+  )
 
   // Pull a queued message back into the input as a draft so the user can
   // tweak the text/attachments and re-send. We remove the original entry
   // immediately so re-submitting just appends a fresh queue item rather than
   // duplicating the in-flight one.
   const handleEditQueuedMessage = useCallback((messageId: string) => {
-    let target: QueuedMessage | undefined;
+    let target: QueuedMessage | undefined
     setMessageQueue((queue) => {
-      target = queue.find((m) => m.id === messageId);
-      if (!target) return queue;
-      return queue.filter((m) => m.id !== messageId);
-    });
-    if (!target) return;
+      target = queue.find((m) => m.id === messageId)
+      if (!target) return queue
+      return queue.filter((m) => m.id !== messageId)
+    })
+    if (!target) return
     setRestoreDraftRequest({
       nonce: Date.now(),
       content: target.content,
       files: target.files,
-    });
-  }, []);
+    })
+  }, [])
 
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
@@ -5454,25 +5493,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // streaming->ready transitions.
   const handleSendQueuedMessageNow = useCallback(
     (messageId: string) => {
-      let promoted = false;
+      let promoted = false
       setMessageQueue((queue) => {
-        const idx = queue.findIndex((m) => m.id === messageId);
-        if (idx === -1) return queue;
-        promoted = true;
-        if (idx === 0) return queue;
-        const target = queue[idx];
-        const without = queue.filter((m) => m.id !== messageId);
-        return [target, ...without];
-      });
-      if (!promoted) return;
+        const idx = queue.findIndex((m) => m.id === messageId)
+        if (idx === -1) return queue
+        promoted = true
+        if (idx === 0) return queue
+        const target = queue[idx]
+        const without = queue.filter((m) => m.id !== messageId)
+        return [target, ...without]
+      })
+      if (!promoted) return
       if (isStreaming) {
-        handleStop();
+        handleStop()
       } else {
-        void processMessageQueue();
+        void processMessageQueue()
       }
     },
-    [isStreaming, handleStop, processMessageQueue]
-  );
+    [isStreaming, handleStop, processMessageQueue],
+  )
 
   // Handle message submission
   const handleSendMessage = useCallback(
@@ -5480,11 +5519,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       content: string,
       files?: FileAttachment[],
       perMsgModel?: string,
-      references?: ChatReference[]
+      references?: ChatReference[],
     ) => {
       if (!currentSessionId) {
-        console.warn("[ChatPanel] No session ID - message will be lost!");
-        return;
+        console.warn("[ChatPanel] No session ID - message will be lost!")
+        return
       }
 
       if (
@@ -5492,10 +5531,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         (!files || files.length === 0) &&
         (!references || references.length === 0)
       ) {
-        return;
+        return
       }
 
-      const trimmedContent = content.trim();
+      const trimmedContent = content.trim()
 
       if (
         isStreaming ||
@@ -5513,8 +5552,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
             selectedModel: perMsgModel,
             references,
           },
-        ]);
-        return;
+        ])
+        return
       }
 
       await sendMessageInternal(
@@ -5522,11 +5561,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
         files,
         perMsgModel,
         undefined,
-        references
-      );
+        references,
+      )
     },
-    [isStreaming, sendMessageInternal, currentSessionId]
-  );
+    [isStreaming, sendMessageInternal, currentSessionId],
+  )
 
   // Handle form submit from ChatInput
   const handleInputSubmit = useCallback(
@@ -5534,101 +5573,101 @@ const ChatPanelContent = observer(function ChatPanelContent({
       content: string,
       files?: FileAttachment[],
       perMsgModel?: string,
-      references?: ChatReference[]
+      references?: ChatReference[],
     ) => {
-      handleSendMessage(content, files, perMsgModel, references);
+      handleSendMessage(content, files, perMsgModel, references)
     },
-    [handleSendMessage]
-  );
+    [handleSendMessage],
+  )
 
   // Plan confirmation: switch to Agent mode and execute.
   // Keep the PlanCard visible with confirmed state for a few seconds before dismissing.
   const confirmDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+    null,
+  )
   const handleConfirmPlan = useCallback(
     (plan?: PlanData | null, modelId?: string) => {
-      const selectedPlan = plan ?? pendingPlanRef.current;
-      if (!selectedPlan) return;
-      const planToBuild = normalizePlanData(selectedPlan);
-      confirmedPlanRef.current = planToBuild;
-      setConfirmedPlan(planToBuild);
-      pendingPlanRef.current = null;
-      setPendingPlan(null);
+      const selectedPlan = plan ?? pendingPlanRef.current
+      if (!selectedPlan) return
+      const planToBuild = normalizePlanData(selectedPlan)
+      confirmedPlanRef.current = planToBuild
+      setConfirmedPlan(planToBuild)
+      pendingPlanRef.current = null
+      setPendingPlan(null)
       console.log(
         "[ChatPanel][confirm-plan] BEFORE mode change — stateMode:",
         interactionMode,
         "refMode:",
         interactionModeRef.current,
         "selectedModel:",
-        selectedModel
-      );
-      handleInteractionModeChange("agent");
+        selectedModel,
+      )
+      handleInteractionModeChange("agent")
       console.log(
         "[ChatPanel][confirm-plan] AFTER mode change — refMode:",
         interactionModeRef.current,
-        "(state will update on next render)"
-      );
-      handleSendMessage("Execute the confirmed plan.", undefined, modelId);
+        "(state will update on next render)",
+      )
+      handleSendMessage("Execute the confirmed plan.", undefined, modelId)
       if (confirmDismissTimerRef.current)
-        clearTimeout(confirmDismissTimerRef.current);
+        clearTimeout(confirmDismissTimerRef.current)
       confirmDismissTimerRef.current = setTimeout(() => {
-        setConfirmedPlan(null);
-      }, 4000);
+        setConfirmedPlan(null)
+      }, 4000)
     },
-    [handleSendMessage, handleInteractionModeChange]
-  );
+    [handleSendMessage, handleInteractionModeChange],
+  )
 
   // Build from Plans panel: execute a saved plan with selected model
-  const lastBuildNonceRef = useRef<number>(0);
+  const lastBuildNonceRef = useRef<number>(0)
   useEffect(() => {
     if (
       !buildPlanRequest ||
       buildPlanRequest.nonce === lastBuildNonceRef.current
     )
-      return;
-    lastBuildNonceRef.current = buildPlanRequest.nonce;
-    const { plan, modelId: requestedMode } = buildPlanRequest;
-    const planToBuild = normalizePlanData(plan);
-    confirmedPlanRef.current = planToBuild;
-    setConfirmedPlan(planToBuild);
-    pendingPlanRef.current = null;
-    setPendingPlan(null);
-    handleInteractionModeChange("agent");
-    handleSendMessage("Execute the confirmed plan.", undefined, requestedMode);
+      return
+    lastBuildNonceRef.current = buildPlanRequest.nonce
+    const { plan, modelId: requestedMode } = buildPlanRequest
+    const planToBuild = normalizePlanData(plan)
+    confirmedPlanRef.current = planToBuild
+    setConfirmedPlan(planToBuild)
+    pendingPlanRef.current = null
+    setPendingPlan(null)
+    handleInteractionModeChange("agent")
+    handleSendMessage("Execute the confirmed plan.", undefined, requestedMode)
     if (confirmDismissTimerRef.current)
-      clearTimeout(confirmDismissTimerRef.current);
+      clearTimeout(confirmDismissTimerRef.current)
     confirmDismissTimerRef.current = setTimeout(() => {
-      setConfirmedPlan(null);
-    }, 4000);
-    onBuildPlanConsumed?.(buildPlanRequest.nonce);
+      setConfirmedPlan(null)
+    }, 4000)
+    onBuildPlanConsumed?.(buildPlanRequest.nonce)
   }, [
     buildPlanRequest,
     handleInteractionModeChange,
     handleSendMessage,
     onBuildPlanConsumed,
-  ]);
+  ])
 
   useEffect(() => {
     return () => {
       if (confirmDismissTimerRef.current)
-        clearTimeout(confirmDismissTimerRef.current);
-    };
-  }, []);
+        clearTimeout(confirmDismissTimerRef.current)
+    }
+  }, [])
 
   // Homepage transition warm-start: Inject initial message on mount (only for fresh sessions)
   useEffect(() => {
-    if (!initialMessage || !currentSessionId || !isInitialLoadComplete) return;
-    if (hasInjectedInitialMessageRef.current) return;
+    if (!initialMessage || !currentSessionId || !isInitialLoadComplete) return
+    if (hasInjectedInitialMessageRef.current) return
 
     if (messages.length > 0) {
-      hasInjectedInitialMessageRef.current = true;
-      return;
+      hasInjectedInitialMessageRef.current = true
+      return
     }
 
-    hasInjectedInitialMessageRef.current = true;
-    setPendingInitialMessage(initialMessage);
-    handleSendMessage(initialMessage, initialFiles);
+    hasInjectedInitialMessageRef.current = true
+    setPendingInitialMessage(initialMessage)
+    handleSendMessage(initialMessage, initialFiles)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     initialMessage,
@@ -5636,10 +5675,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     currentSessionId,
     isInitialLoadComplete,
     handleSendMessage,
-  ]);
+  ])
 
   // Programmatic message injection
-  const lastInjectedRef = useRef<string | null>(null);
+  const lastInjectedRef = useRef<string | null>(null)
   useEffect(() => {
     if (
       injectMessage &&
@@ -5647,11 +5686,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       currentSessionId &&
       injectMessage !== lastInjectedRef.current
     ) {
-      lastInjectedRef.current = injectMessage;
-      const cleanMessage = injectMessage.replace(/\n\n\[nonce:\d+\]$/, "");
-      handleSendMessage(cleanMessage);
+      lastInjectedRef.current = injectMessage
+      const cleanMessage = injectMessage.replace(/\n\n\[nonce:\d+\]$/, "")
+      handleSendMessage(cleanMessage)
     }
-  }, [injectMessage, currentSessionId, handleSendMessage]);
+  }, [injectMessage, currentSessionId, handleSendMessage])
 
   // ─── "Fix with Shogo" from the IDE ──────────────────────────────────
   // agentFixProvider (inside the Monaco editor) dispatches a window-level
@@ -5660,21 +5699,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // so a single Fix click maps to exactly one message, no matter how many
   // chat tabs are mounted.
   useEffect(() => {
-    if (Platform.OS !== "web") return;
-    if (!isActive) return;
-    if (!currentSessionId) return;
+    if (Platform.OS !== "web") return
+    if (!isActive) return
+    if (!currentSessionId) return
 
     const onFix = (e: Event) => {
-      const detail = (e as CustomEvent<FixInAgentPayload>).detail;
-      if (!detail || !detail.message) return;
-      const prompt = buildFixPrompt(detail);
-      handleSendMessage(prompt);
-    };
+      const detail = (e as CustomEvent<FixInAgentPayload>).detail
+      if (!detail || !detail.message) return
+      const prompt = buildFixPrompt(detail)
+      handleSendMessage(prompt)
+    }
 
-    window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener);
+    window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
     return () =>
-      window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener);
-  }, [isActive, currentSessionId, handleSendMessage]);
+      window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
+  }, [isActive, currentSessionId, handleSendMessage])
 
   // ─── Terminal context → Chat ─────────────────────────────────────────
   // Desktop-only: when the user right-clicks a failing command in the
@@ -5682,44 +5721,44 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // pre-rendered markdown report via IPC. We listen for it here and
   // inject it as the next user message so the AI can help debug.
   useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const desktop = (globalThis as any).shogoDesktop;
-    if (!desktop?.onChatWithContext) return;
+    if (Platform.OS !== "web") return
+    const desktop = (globalThis as any).shogoDesktop
+    if (!desktop?.onChatWithContext) return
 
     const unsub = desktop.onChatWithContext((data: { markdown: string }) => {
-      if (!data?.markdown || !currentSessionId) return;
-      handleSendMessage(data.markdown);
-    });
-    return unsub;
-  }, [currentSessionId, handleSendMessage]);
+      if (!data?.markdown || !currentSessionId) return
+      handleSendMessage(data.markdown)
+    })
+    return unsub
+  }, [currentSessionId, handleSendMessage])
 
   // Terminal "Add to Chat" (⌘L) — inserts captured selection into the chat input.
   useEffect(() => {
-    if (Platform.OS !== "web" || !isActive) return;
+    if (Platform.OS !== "web" || !isActive) return
     const onAddToChat = (e: Event) => {
-      const text = (e as CustomEvent<{ text?: string }>).detail?.text?.trim();
-      if (!text) return;
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text?.trim()
+      if (!text) return
       setRestoreDraftRequest({
         nonce: Date.now(),
         content: text,
-      });
-    };
-    window.addEventListener("shogo:add-to-chat", onAddToChat as EventListener);
+      })
+    }
+    window.addEventListener("shogo:add-to-chat", onAddToChat as EventListener)
     return () =>
       window.removeEventListener(
         "shogo:add-to-chat",
-        onAddToChat as EventListener
-      );
-  }, [isActive]);
+        onAddToChat as EventListener,
+      )
+  }, [isActive])
 
   // Collapse toggle — persist to AsyncStorage only when using internal state
   const handleToggleCollapse = useCallback(() => {
-    const newCollapsed = !isCollapsed;
-    setIsCollapsed(newCollapsed);
+    const newCollapsed = !isCollapsed
+    setIsCollapsed(newCollapsed)
     if (!onCollapsedChange) {
-      setStoredCollapsed(newCollapsed);
+      setStoredCollapsed(newCollapsed)
     }
-  }, [isCollapsed, setIsCollapsed, onCollapsedChange]);
+  }, [isCollapsed, setIsCollapsed, onCollapsedChange])
 
   // Error retry handler.
   //
@@ -5735,31 +5774,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
   //   - nothing resumable -> re-send the original user message (last resort),
   //     still WITHOUT truncating any rendered work.
   const handleRetry = useCallback(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0) return
 
-    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")
     // Extract the original content/files up front for the resend fallback.
-    const parts = ((lastUserMsg as any)?.parts ?? []) as any[];
-    const textPart = parts.find((p: any) => p.type === "text");
-    const content = textPart?.text || "";
-    const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url);
-    const cachedFiles = lastUserInputRef.current?.files;
+    const parts = ((lastUserMsg as any)?.parts ?? []) as any[]
+    const textPart = parts.find((p: any) => p.type === "text")
+    const content = textPart?.text || ""
+    const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
+    const cachedFiles = lastUserInputRef.current?.files
     const filesFromParts: FileAttachment[] = fileParts.map((p: any) => ({
       dataUrl: p.url,
       name: p.name ?? p.filename ?? "file",
       type: p.mediaType ?? extractMediaType(p.url),
-    }));
+    }))
     const files: FileAttachment[] | undefined =
       cachedFiles && cachedFiles.length > 0
         ? cachedFiles
         : filesFromParts.length > 0
-        ? filesFromParts
-        : undefined;
+          ? filesFromParts
+          : undefined
 
     void (async () => {
       // Probe whether the turn is still running on the server. Any failure mode
       // collapses to 'unknown' (never throws), so this is safe to await.
-      let turnStatus: ChatTurnStatus = "unknown";
+      let turnStatus: ChatTurnStatus = "unknown"
       if (currentSessionId && API_URL) {
         try {
           const turnUrl = buildChatTurnUrl(
@@ -5767,29 +5806,29 @@ const ChatPanelContent = observer(function ChatPanelContent({
             projectId,
             localAgentUrl,
             currentSessionId,
-            chatWorkspaceId
-          );
+            chatWorkspaceId,
+          )
           turnStatus = await probeChatTurnStatus({
             url: turnUrl,
             fetch: expoFetch,
             headers: nativeHeaders ? nativeHeaders() : undefined,
             credentials: Platform.OS === "web" ? "include" : undefined,
-          });
+          })
         } catch {
-          turnStatus = "unknown";
+          turnStatus = "unknown"
         }
       }
 
       const action = decideRetryAction({
         turnStatus,
         hasResumableTurn: lastAssistantHasResumableWork(messages as any),
-      });
+      })
 
       if (action === "reconnect") {
         // Agent is still running and buffering frames — reattach. The rendered
         // messages (including completed tool calls) stay exactly as they are.
-        void resumeStreamSingleFlight();
-        return;
+        void resumeStreamSingleFlight()
+        return
       }
 
       if (action === "continue") {
@@ -5799,19 +5838,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
         sendMessageInternal("Continue", undefined, undefined, {
           continue: true,
         }).catch((err) =>
-          console.error("[ChatPanel] Retry continue failed:", err)
-        );
-        return;
+          console.error("[ChatPanel] Retry continue failed:", err),
+        )
+        return
       }
 
       // resend: nothing to resume/continue. Re-send the original message — but
       // do NOT truncate any already-rendered work.
       if (content || (files && files.length > 0)) {
         sendMessageInternal(content, files).catch((err) =>
-          console.error("[ChatPanel] Retry resend failed:", err)
-        );
+          console.error("[ChatPanel] Retry resend failed:", err),
+        )
       }
-    })();
+    })()
   }, [
     messages,
     sendMessageInternal,
@@ -5823,10 +5862,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     expoFetch,
     nativeHeaders,
     extractMediaType,
-  ]);
+  ])
 
-  const handleRetryRef = useRef<(() => void) | null>(null);
-  handleRetryRef.current = handleRetry;
+  const handleRetryRef = useRef<(() => void) | null>(null)
+  handleRetryRef.current = handleRetry
 
   // Automatic stall recovery — invoked by the falling-edge effect the instant
   // a turn ends without `data-turn-complete`. This is the non-interactive twin
@@ -5836,13 +5875,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // where the runtime hasn't re-published the buffer yet (warm-pool / pod
   // transition), and any session switch / new turn / user-stop cancels it.
   const attemptStallRecovery = useCallback(() => {
-    if (!currentSessionId || !API_URL) return;
-    const recoverySessionId = currentSessionId;
-    const recoveryTurnId = currentTurnIdRef.current;
-    const fromSeqAtStall = turnLastSeqRef.current;
-    const MAX_ATTEMPTS = 4;
+    if (!currentSessionId || !API_URL) return
+    const recoverySessionId = currentSessionId
+    const recoveryTurnId = currentTurnIdRef.current
+    const fromSeqAtStall = turnLastSeqRef.current
+    const MAX_ATTEMPTS = 4
 
-    setStreamAutoRecovering(true);
+    setStreamAutoRecovering(true)
     void (async () => {
       try {
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -5853,26 +5892,26 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentSessionIdRef.current !== recoverySessionId ||
             isTransportStreamingRef.current
           ) {
-            return;
+            return
           }
 
-          let turnStatus: ChatTurnStatus = "unknown";
+          let turnStatus: ChatTurnStatus = "unknown"
           try {
             const turnUrl = buildChatTurnUrl(
               API_URL,
               projectId,
               localAgentUrl,
               recoverySessionId,
-              chatWorkspaceId
-            );
+              chatWorkspaceId,
+            )
             turnStatus = await probeChatTurnStatus({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
               credentials: Platform.OS === "web" ? "include" : undefined,
-            });
+            })
           } catch {
-            turnStatus = "unknown";
+            turnStatus = "unknown"
           }
 
           // Re-check liveness after the await — the world may have changed.
@@ -5880,20 +5919,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentSessionIdRef.current !== recoverySessionId ||
             isTransportStreamingRef.current
           ) {
-            return;
+            return
           }
 
           const effects = getStallRecoveryEffects({
             turnStatus,
             attempt,
             maxAttempts: MAX_ATTEMPTS,
-          });
+          })
           if (effects.action === "reconnect") {
             console.log(
-              `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`
-            );
-            guardedAutoResumeStream("stall-recovery");
-            return;
+              `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`,
+            )
+            guardedAutoResumeStream("stall-recovery")
+            return
           }
           if (effects.interruptStuckTools) {
             // Terminal or persistently-unknown: close the UI-side tool
@@ -5902,22 +5941,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // leaving permanent spinners with no Stop button.
             setMessages((prev) =>
               markStuckToolsInterrupted(prev, "Connection interrupted"),
-            );
+            )
             if (effects.showRetryBanner) {
-              setErrorDismissed(false);
-              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE);
+              setErrorDismissed(false)
+              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
             }
-            return;
+            return
           }
           // retry-later: brief backoff, then probe again.
           await new Promise<void>((r) =>
-            setTimeout(r, computeRecoveryBackoff(attempt))
-          );
+            setTimeout(r, computeRecoveryBackoff(attempt)),
+          )
         }
       } finally {
-        setStreamAutoRecovering(false);
+        setStreamAutoRecovering(false)
       }
-    })();
+    })()
   }, [
     currentSessionId,
     projectId,
@@ -5926,8 +5965,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     expoFetch,
     nativeHeaders,
     guardedAutoResumeStream,
-  ]);
-  stallRecoveryRef.current = attemptStallRecovery;
+  ])
+  stallRecoveryRef.current = attemptStallRecovery
 
   // ─── Edit / Retry from arbitrary user message ────────────────────────────
   //
@@ -5962,30 +6001,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
       messageId: string,
       newContent: string,
       newFiles: FileAttachment[] | undefined,
-      options: MessageEditOptions | undefined
+      options: MessageEditOptions | undefined,
     ) => {
       if (!sessionMessages) {
-        console.warn("[ChatPanel] truncateAndResend without sessionMessages");
-        return;
+        console.warn("[ChatPanel] truncateAndResend without sessionMessages")
+        return
       }
-      const current = messagesRef.current;
-      const idx = current.findIndex((m) => m.id === messageId);
+      const current = messagesRef.current
+      const idx = current.findIndex((m) => m.id === messageId)
       if (idx === -1) {
         console.warn(
           "[ChatPanel] truncateAndResend: message not found locally",
-          messageId
-        );
-        return;
+          messageId,
+        )
+        return
       }
 
       // Step 1: chat truncation. This is the source of truth — if it
       // fails we abort the whole rewind. The local MST cache is
       // mirrored inside truncateMessagesFrom.
       try {
-        await truncateMessagesFrom(sessionMessages, messageId);
+        await truncateMessagesFrom(sessionMessages, messageId)
       } catch (err) {
-        console.error("[ChatPanel] truncate-from failed:", err);
-        throw err;
+        console.error("[ChatPanel] truncate-from failed:", err)
+        throw err
       }
 
       // Step 2: optional file rollback. Runs BETWEEN the chat
@@ -6010,25 +6049,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // to false so we don't surprise users with DB rollbacks
             // triggered from a chat edit.
             includeDatabase: false,
-          });
+          })
         } catch (err) {
-          console.error("[ChatPanel] checkpoint rollback failed:", err);
-          throw err;
+          console.error("[ChatPanel] checkpoint rollback failed:", err)
+          throw err
         }
       }
 
-      setMessages(current.slice(0, idx));
-      await sendMessageInternal(newContent, newFiles);
+      setMessages(current.slice(0, idx))
+      await sendMessageInternal(newContent, newFiles)
     },
-    [sessionMessages, setMessages, sendMessageInternal]
-  );
+    [sessionMessages, setMessages, sendMessageInternal],
+  )
 
   const handleEditMessage = useCallback(
     async (
       messageId: string,
       newContent: string,
       newFiles: FileAttachment[] | undefined,
-      options?: MessageEditOptions
+      options?: MessageEditOptions,
     ) => {
       // `newFiles` is the authoritative attachment set chosen by
       // the user in the in-place ChatInput (which is pre-filled
@@ -6038,20 +6077,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // screenshot before re-sending should get a clean resend
       // WITHOUT it. The "no-touch edit" case still round-trips the
       // originals because the ChatInput hands them back unchanged.
-      await truncateAndResend(messageId, newContent, newFiles, options);
+      await truncateAndResend(messageId, newContent, newFiles, options)
     },
-    [truncateAndResend]
-  );
+    [truncateAndResend],
+  )
 
   const handleRetryFromMessage = useCallback(
     async (messageId: string, options?: MessageEditOptions) => {
-      const current = messagesRef.current;
-      const msg = current.find((m) => m.id === messageId);
-      if (!msg) return;
-      const parts = ((msg as any).parts ?? []) as any[];
-      const textPart = parts.find((p: any) => p?.type === "text");
-      const content = textPart?.text || extractTextContent(msg) || "";
-      const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url);
+      const current = messagesRef.current
+      const msg = current.find((m) => m.id === messageId)
+      if (!msg) return
+      const parts = ((msg as any).parts ?? []) as any[]
+      const textPart = parts.find((p: any) => p?.type === "text")
+      const content = textPart?.text || extractTextContent(msg) || ""
+      const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
       const files: FileAttachment[] | undefined =
         fileParts.length > 0
           ? fileParts.map((p: any) => ({
@@ -6059,12 +6098,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
               name: p.name ?? p.filename ?? "file",
               type: p.mediaType ?? extractMediaType(p.url),
             }))
-          : undefined;
-      if (!content && !files) return;
-      await truncateAndResend(messageId, content, files, options);
+          : undefined
+      if (!content && !files) return
+      await truncateAndResend(messageId, content, files, options)
     },
-    [truncateAndResend, extractMediaType]
-  );
+    [truncateAndResend, extractMediaType],
+  )
 
   // Used by the EditConfirmDialog to decide whether to render the
   // "Also revert project files" checkbox. We resolve through the
@@ -6078,30 +6117,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleGetPrecedingCheckpoint = useCallback(
     async (messageId: string): Promise<PrecedingCheckpointResult> => {
       if (!sessionMessages) {
-        return { ok: true, checkpoint: null, reason: "no_checkpoint" };
+        return { ok: true, checkpoint: null, reason: "no_checkpoint" }
       }
-      return getPrecedingCheckpoint(sessionMessages, messageId);
+      return getPrecedingCheckpoint(sessionMessages, messageId)
     },
-    [sessionMessages]
-  );
+    [sessionMessages],
+  )
 
   const countMessagesAfter = useCallback((messageId: string) => {
-    const current = messagesRef.current;
-    const idx = current.findIndex((m) => m.id === messageId);
-    if (idx === -1) return 0;
-    return Math.max(0, current.length - idx - 1);
-  }, []);
+    const current = messagesRef.current
+    const idx = current.findIndex((m) => m.id === messageId)
+    if (idx === -1) return 0
+    return Math.max(0, current.length - idx - 1)
+  }, [])
 
   const canEditMessage = useCallback((message: UIMessage) => {
-    if (message.role !== "user") return false;
-    const id = message.id;
-    if (!id) return false;
+    if (message.role !== "user") return false
+    const id = message.id
+    if (!id) return false
     // Optimistic / not-yet-persisted ids — see buildOptimisticUserMessage
     // and the `temp-` prefix from chatMessageCollection.create.
-    if (id.startsWith("temp-")) return false;
-    if (id.startsWith("optimistic-")) return false;
-    return true;
-  }, []);
+    if (id.startsWith("temp-")) return false
+    if (id.startsWith("optimistic-")) return false
+    return true
+  }, [])
 
   // Stable shape forwarded to the in-place ChatInput inside
   // EditableUserMessage. Mirrors the props the bottom composer
@@ -6121,8 +6160,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleModelChange,
       hasAdvancedModelAccess,
       handleUpgradeClick,
-    ]
-  );
+    ],
+  )
 
   const messageEditValue = useMemo(
     () => ({
@@ -6142,61 +6181,61 @@ const ChatPanelContent = observer(function ChatPanelContent({
       canEditMessage,
       handleGetPrecedingCheckpoint,
       messageEditComposerProps,
-    ]
-  );
+    ],
+  )
 
   // Same optimistic-id guard as `canEditMessage` above — a message that
   // hasn't round-tripped to the server yet has no row for
   // `MessageFeedback`/`fork` to act on.
   const canActOnTurnMessage = useCallback((messageId: string) => {
-    if (!messageId) return false;
-    if (messageId.startsWith("temp-")) return false;
-    if (messageId.startsWith("optimistic-")) return false;
-    return true;
-  }, []);
+    if (!messageId) return false
+    if (messageId.startsWith("temp-")) return false
+    if (messageId.startsWith("optimistic-")) return false
+    return true
+  }, [])
 
   const handleSetFeedback = useCallback(
     async (messageId: string, thumbs: MessageFeedbackThumbs) => {
-      if (!sessionMessages) return;
-      const previous = feedbackMap[messageId];
-      setFeedbackMap((prev) => ({ ...prev, [messageId]: thumbs }));
+      if (!sessionMessages) return
+      const previous = feedbackMap[messageId]
+      setFeedbackMap((prev) => ({ ...prev, [messageId]: thumbs }))
       try {
-        await setMessageFeedback(sessionMessages, messageId, thumbs);
+        await setMessageFeedback(sessionMessages, messageId, thumbs)
       } catch (err) {
-        console.error("[ChatPanel] Failed to set message feedback:", err);
+        console.error("[ChatPanel] Failed to set message feedback:", err)
         setFeedbackMap((prev) => {
-          const next = { ...prev };
-          if (previous) next[messageId] = previous;
-          else delete next[messageId];
-          return next;
-        });
-        throw err;
+          const next = { ...prev }
+          if (previous) next[messageId] = previous
+          else delete next[messageId]
+          return next
+        })
+        throw err
       }
     },
-    [sessionMessages, feedbackMap]
-  );
+    [sessionMessages, feedbackMap],
+  )
 
   const handleClearFeedback = useCallback(
     async (messageId: string) => {
-      if (!sessionMessages) return;
-      const previous = feedbackMap[messageId];
+      if (!sessionMessages) return
+      const previous = feedbackMap[messageId]
       setFeedbackMap((prev) => {
-        const next = { ...prev };
-        delete next[messageId];
-        return next;
-      });
+        const next = { ...prev }
+        delete next[messageId]
+        return next
+      })
       try {
-        await clearMessageFeedback(sessionMessages, messageId);
+        await clearMessageFeedback(sessionMessages, messageId)
       } catch (err) {
-        console.error("[ChatPanel] Failed to clear message feedback:", err);
+        console.error("[ChatPanel] Failed to clear message feedback:", err)
         if (previous) {
-          setFeedbackMap((prev) => ({ ...prev, [messageId]: previous }));
+          setFeedbackMap((prev) => ({ ...prev, [messageId]: previous }))
         }
-        throw err;
+        throw err
       }
     },
-    [sessionMessages, feedbackMap]
-  );
+    [sessionMessages, feedbackMap],
+  )
 
   // Fork the current session at `messageId` into a brand-new session, then
   // hand control to the parent (`onChatSessionChange`, e.g. the project
@@ -6207,23 +6246,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // emit-after-create pattern this mirrors.
   const handleForkFromMessage = useCallback(
     async (messageId: string) => {
-      if (!currentSessionId) return;
+      if (!currentSessionId) return
       const result = await forkChatSession(
         studioChat.chatSessionCollection,
         currentSessionId,
-        messageId
-      );
+        messageId,
+      )
       if (projectId) {
         chatSessionEvents.emit({
           projectId,
           activeSessionId: result.sessionId,
           refresh: true,
-        });
+        })
       }
-      onChatSessionChange?.(result.sessionId);
+      onChatSessionChange?.(result.sessionId)
     },
-    [currentSessionId, studioChat, projectId, onChatSessionChange]
-  );
+    [currentSessionId, studioChat, projectId, onChatSessionChange],
+  )
 
   const turnFooterValue = useMemo(
     () => ({
@@ -6239,8 +6278,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleClearFeedback,
       handleForkFromMessage,
       canActOnTurnMessage,
-    ]
-  );
+    ],
+  )
 
   // Project-less workspace chats (the free personal-companion chat has no
   // Project row at all) fall back to the workspace-scoped agent-proxy
@@ -6255,8 +6294,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     (projectId
       ? `${API_URL}/api/projects/${projectId}/agent-proxy`
       : chatWorkspaceId
-      ? `${API_URL}/api/workspaces/${chatWorkspaceId}/agent-proxy`
-      : null);
+        ? `${API_URL}/api/workspaces/${chatWorkspaceId}/agent-proxy`
+        : null)
 
   // Generate a stakeholder summary for a plan that doesn't have one yet.
   // Mutates the local pending/streaming plan as soon as the summary comes
@@ -6265,111 +6304,111 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleGenerateSummary = useCallback(
     async (filepath: string): Promise<string> => {
       if (!resolvedAgentUrl) {
-        throw new Error("Agent URL is not available");
+        throw new Error("Agent URL is not available")
       }
-      const filename = filepath.split("/").pop();
+      const filename = filepath.split("/").pop()
       if (!filename || !filename.endsWith(".plan.md")) {
-        throw new Error("Invalid plan filepath");
+        throw new Error("Invalid plan filepath")
       }
-      const previousPlan = pendingPlanRef.current;
+      const previousPlan = pendingPlanRef.current
       if (previousPlan?.filepath === `.shogo/plans/${filename}`) {
         const pendingNext = normalizePlanData({
           ...previousPlan,
           summaryStatus: "pending",
           summary: undefined,
-        });
-        pendingPlanRef.current = pendingNext;
-        setPendingPlan(pendingNext);
-        planStream?.setSummaryStatus("pending");
+        })
+        pendingPlanRef.current = pendingNext
+        setPendingPlan(pendingNext)
+        planStream?.setSummaryStatus("pending")
       }
       try {
         const client = new AgentClient({
           baseUrl: resolvedAgentUrl.replace(/\/$/, ""),
           fetch: agentFetch,
-        });
-        const result = await client.summarizePlan(filename);
-        const summary = result.summary;
-        const refreshed = pendingPlanRef.current;
+        })
+        const result = await client.summarizePlan(filename)
+        const summary = result.summary
+        const refreshed = pendingPlanRef.current
         if (refreshed?.filepath === `.shogo/plans/${filename}`) {
           const readyNext = normalizePlanData({
             ...refreshed,
             summary,
             summaryStatus: "ready",
-          });
-          pendingPlanRef.current = readyNext;
-          setPendingPlan(readyNext);
-          planStream?.setStreamingPlan(readyNext);
+          })
+          pendingPlanRef.current = readyNext
+          setPendingPlan(readyNext)
+          planStream?.setStreamingPlan(readyNext)
         }
-        planStream?.setStreamingSummary(summary);
-        planStream?.setSummaryStatus("ready");
-        planStream?.notifyPlanCreated();
-        return summary;
+        planStream?.setStreamingSummary(summary)
+        planStream?.setSummaryStatus("ready")
+        planStream?.notifyPlanCreated()
+        return summary
       } catch (err) {
-        const refreshed = pendingPlanRef.current;
+        const refreshed = pendingPlanRef.current
         if (refreshed?.filepath === `.shogo/plans/${filename}`) {
           const errNext = normalizePlanData({
             ...refreshed,
             summaryStatus: "error",
-          });
-          pendingPlanRef.current = errNext;
-          setPendingPlan(errNext);
+          })
+          pendingPlanRef.current = errNext
+          setPendingPlan(errNext)
         }
-        planStream?.setSummaryStatus("error");
-        throw err;
+        planStream?.setSummaryStatus("error")
+        throw err
       }
     },
-    [resolvedAgentUrl, planStream]
-  );
+    [resolvedAgentUrl, planStream],
+  )
 
   const handleSaveToolOutput = useCallback(
     (params: { messageId: string; toolCallId: string; output: string }) => {
-      const { messageId, toolCallId, output } = params;
+      const { messageId, toolCallId, output } = params
 
       setMessages((prev) =>
         prev.map((msg) => {
-          if (msg.id !== messageId) return msg;
-          const parts = (msg as any).parts as any[] | undefined;
-          if (!parts) return msg;
+          if (msg.id !== messageId) return msg
+          const parts = (msg as any).parts as any[] | undefined
+          if (!parts) return msg
           return {
             ...msg,
             parts: parts.map((p: any) => {
               if (p.type === "dynamic-tool" && p.toolCallId === toolCallId) {
-                return { ...p, output, state: "output-available" };
+                return { ...p, output, state: "output-available" }
               }
-              return p;
+              return p
             }),
-          };
-        })
-      );
+          }
+        }),
+      )
 
-      const dbMsg = sessionMessages?.all.find((m: any) => m.id === messageId);
+      const dbMsg = sessionMessages?.all.find((m: any) => m.id === messageId)
       if (dbMsg?.parts && sessionMessages) {
         try {
-          const parsed = JSON.parse(dbMsg.parts);
+          const parsed = JSON.parse(dbMsg.parts)
           const updated = parsed.map((p: any) => {
             if (p.type === "dynamic-tool" && p.toolCallId === toolCallId) {
-              return { ...p, output, state: "output-available" };
+              return { ...p, output, state: "output-available" }
             }
-            return p;
-          });
+            return p
+          })
           sessionMessages
             .update(messageId, { parts: JSON.stringify(updated) })
             .catch((err: any) =>
               console.error(
                 "[ChatPanel] Failed to persist ask_user output:",
-                err
-              )
-            );
+                err,
+              ),
+            )
         } catch (err) {
           console.error(
             "[ChatPanel] Failed to parse parts for ask_user persist:",
-            err
-          );
+            err,
+          )
         }
       }
     },
-    [setMessages, sessionMessages]
-  );
+    [setMessages, sessionMessages],
+  )
 
   // Submit handler for the input-attached question widget. Mirrors the
   // inline ask_user handler: send the formatted response as a user message
@@ -6377,16 +6416,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // clears `pendingQuestion`, unmounting the attached widget).
   const handleSubmitQuestionResponse = useCallback(
     (response: string) => {
-      if (!pendingQuestion) return;
-      handleSendMessage(response);
+      if (!pendingQuestion) return
+      handleSendMessage(response)
       handleSaveToolOutput({
         messageId: pendingQuestion.messageId,
         toolCallId: pendingQuestion.tool.id,
         output: response,
-      });
+      })
     },
-    [pendingQuestion, handleSendMessage, handleSaveToolOutput]
-  );
+    [pendingQuestion, handleSendMessage, handleSaveToolOutput],
+  )
 
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.
@@ -6395,8 +6434,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       currentSession
         ? { id: currentSession.id, name: currentSession.name }
         : null,
-    [currentSession?.id, currentSession?.name]
-  );
+    [currentSession?.id, currentSession?.name],
+  )
 
   // Wrap the AI SDK's addToolOutput so we hand a stable reference to
   // context consumers — without this every render produced a fresh
@@ -6404,13 +6443,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const stableAddToolOutput = useCallback(
     (params: { toolCallId: string; output: string }) =>
       addToolOutput(params as any),
-    [addToolOutput]
-  );
+    [addToolOutput],
+  )
 
-  const errorMessage = error?.message ?? null;
+  const errorMessage = error?.message ?? null
   const nativePhoneColumnWidth = isPhoneViewport
     ? Math.max(0, windowWidth)
-    : undefined;
+    : undefined
 
   // Memoizing the context value is the single biggest win for streaming
   // re-renders. Previously this was a fresh object literal on every
@@ -6426,9 +6465,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // delta), defeating every downstream memo. Components that genuinely
   // need the message list receive it as a prop instead.
   const openPendingQuestion = useCallback(() => {
-    if (questionPresentation === "sheet") setQuestionSheetOpen(true);
-    jumpToLatest();
-  }, [jumpToLatest, questionPresentation]);
+    if (questionPresentation === "sheet") setQuestionSheetOpen(true)
+    jumpToLatest()
+  }, [jumpToLatest, questionPresentation])
+
+  const openFile = useCallback(
+    (path: string) => {
+      const resolved = resolveChatFilePath(
+        path,
+        projectId ?? focusedProjectId ?? null,
+      )
+      if (!resolved?.projectId || !resolved.relPath) return
+      if (onOpenFile) {
+        onOpenFile(resolved.projectId, resolved.relPath)
+        return
+      }
+      router.push({
+        pathname: "/(app)/projects/[id]",
+        params: {
+          id: resolved.projectId,
+          tab: Platform.OS === "web" ? "ide" : "files",
+          file: resolved.relPath,
+          tabNonce: String(Date.now()),
+          ...(chatSessionId ? { chatSessionId, chatScope } : {}),
+        },
+      } as any)
+    },
+    [chatScope, chatSessionId, focusedProjectId, onOpenFile, projectId, router],
+  )
 
   const contextValue = useMemo<ChatContextValue>(
     () => ({
@@ -6447,6 +6511,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       pendingPlan,
       confirmedPlan,
       openPlan: onOpenPlan,
+      openFile,
       generateSummary: handleGenerateSummary,
       selectedModel,
       isPro: hasAdvancedModelAccess,
@@ -6465,23 +6530,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleConfirmPlan,
       confirmedPlan,
       onOpenPlan,
+      openFile,
       handleGenerateSummary,
       selectedModel,
       hasAdvancedModelAccess,
-    ]
-  );
+    ],
+  )
 
   const handleCompactSubmit = useCallback(
     (prompt: string, files?: FileAttachment[]) => {
-      onCompactSubmit?.(prompt, files);
+      onCompactSubmit?.(prompt, files)
     },
-    [onCompactSubmit]
-  );
+    [onCompactSubmit],
+  )
 
   const handleQuickActionClick = useCallback(
     (prompt: string) => handleSendMessage(prompt),
-    [handleSendMessage]
-  );
+    [handleSendMessage],
+  )
 
   // Re-render when the dock's registered panels / expand state / measured
   // height change so `dockHeight` (used to pad the message list) and the
@@ -6489,12 +6555,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useSyncExternalStore(
     chatDockStore.subscribe,
     chatDockStore.getVersion,
-    chatDockStore.getVersion
-  );
-  const dockHeight = chatDockStore.getHeight();
+    chatDockStore.getVersion,
+  )
+  const dockHeight = chatDockStore.getHeight()
   // Measured height of the scrollable message area, used to cap the dock's
   // status zone at ~45% of the space actually available above the composer.
-  const [messagesAreaHeight, setMessagesAreaHeight] = useState(0);
+  const [messagesAreaHeight, setMessagesAreaHeight] = useState(0)
 
   // ---------------------------------------------------------------------
   // Chat dock: blocking panels (permission approval / pending question /
@@ -6515,7 +6581,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // ---------------------------------------------------------------------
 
   const permissionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!pendingPermissionRequest) return null;
+    if (!pendingPermissionRequest) return null
     return {
       id: "permission",
       kind: "blocking",
@@ -6526,31 +6592,33 @@ const ChatPanelContent = observer(function ChatPanelContent({
         <PermissionApprovalDialog
           request={pendingPermissionRequest}
           onRespond={async (response) => {
-            setPendingPermissionRequest(null);
+            setPendingPermissionRequest(null)
             try {
               if (projectId) {
-                const http = createHttpClient();
-                await api.sendPermissionResponse(http, projectId, response);
+                const http = createHttpClient()
+                await api.sendPermissionResponse(http, projectId, response)
               }
             } catch (err) {
               console.error(
                 "[ChatPanel] Failed to send permission response:",
-                err
-              );
+                err,
+              )
             }
           }}
         />
       ),
-    };
-  }, [pendingPermissionRequest, projectId]);
-  useDockPanel(permissionDockDescriptor, chatDockStore);
+    }
+  }, [pendingPermissionRequest, projectId])
+  useDockPanel(permissionDockDescriptor, chatDockStore)
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!pendingQuestion) return null;
-    if (questionPresentation === "sheet") return null;
+    if (!pendingQuestion) return null
+    if (questionPresentation === "sheet") return null
     return {
       id: "question",
       kind: "blocking",
+      collapsible: true,
+      defaultExpanded: true,
       order: 1,
       title: "Question",
       icon: MessageCircleQuestion,
@@ -6564,13 +6632,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
           bodyMaxHeight={bodyMaxHeight}
         />
       ),
-    };
-  }, [handleSubmitQuestionResponse, pendingQuestion, questionPresentation]);
-  useDockPanel(questionDockDescriptor, chatDockStore);
+    }
+  }, [handleSubmitQuestionResponse, pendingQuestion, questionPresentation])
+  useDockPanel(questionDockDescriptor, chatDockStore)
 
   const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!((connectivityWait || justReconnected) && !errorDismissed))
-      return null;
+    if (!((connectivityWait || justReconnected) && !errorDismissed)) return null
     return {
       id: "connectivity",
       kind: "blocking",
@@ -6614,18 +6681,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
           </Text>
         </View>
       ),
-    };
+    }
   }, [
     connectivityWait,
     justReconnected,
     errorDismissed,
     connectivityWaitElapsedLabel,
     handleStop,
-  ]);
-  useDockPanel(connectivityDockDescriptor, chatDockStore);
+  ])
+  useDockPanel(connectivityDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!toolErrorBanner) return null;
+    if (!toolErrorBanner) return null
     return {
       id: "tool-error",
       kind: "status",
@@ -6641,48 +6708,48 @@ const ChatPanelContent = observer(function ChatPanelContent({
         toolErrorBanner.isAuthError && projectId ? (
           <Pressable
             onPress={async () => {
-              const toolkit = toolErrorBanner.toolkitName.toLowerCase();
-              setReconnecting(true);
+              const toolkit = toolErrorBanner.toolkitName.toLowerCase()
+              setReconnecting(true)
               const preWindow =
-                Platform.OS === "web" ? preCreateAuthWindow() : null;
-              console.info("[ChatPanel] Reconnecting", toolkit);
+                Platform.OS === "web" ? preCreateAuthWindow() : null
+              console.info("[ChatPanel] Reconnecting", toolkit)
               try {
-                const http = createHttpClient();
-                const isNativePlatform = Platform.OS !== "web";
-                let redirect: string | undefined;
+                const http = createHttpClient()
+                const isNativePlatform = Platform.OS !== "web"
+                let redirect: string | undefined
                 if (isNativePlatform) {
-                  redirect = ExpoLinking.createURL("integrations-callback");
+                  redirect = ExpoLinking.createURL("integrations-callback")
                 } else {
-                  const returnUrl = new URL(window.location.href);
-                  returnUrl.searchParams.set("fromOAuth", "1");
-                  redirect = returnUrl.toString();
+                  const returnUrl = new URL(window.location.href)
+                  returnUrl.searchParams.set("fromOAuth", "1")
+                  redirect = returnUrl.toString()
                 }
                 const callbackUrl = redirect
                   ? `${API_URL}/api/integrations/callback?redirect=${encodeURIComponent(
-                      redirect
+                      redirect,
                     )}`
-                  : `${API_URL}/api/integrations/callback`;
+                  : `${API_URL}/api/integrations/callback`
                 const data = await api.connectIntegration(
                   http,
                   toolkit,
                   projectId,
-                  callbackUrl
-                );
-                const redirectUrl = data.data?.redirectUrl;
+                  callbackUrl,
+                )
+                const redirectUrl = data.data?.redirectUrl
                 if (redirectUrl) {
                   await openAuthFlow(redirectUrl, {
                     preCreatedWindow: preWindow,
-                  });
-                  setToolErrorBanner(null);
+                  })
+                  setToolErrorBanner(null)
                 }
               } catch (err) {
-                console.error("[ChatPanel] Reconnect error:", err);
+                console.error("[ChatPanel] Reconnect error:", err)
               } finally {
-                setReconnecting(false);
+                setReconnecting(false)
                 try {
                   if (preWindow && !preWindow.closed) {
-                    const loc = preWindow.location.href;
-                    if (loc === "about:blank" || loc === "") preWindow.close();
+                    const loc = preWindow.location.href
+                    if (loc === "about:blank" || loc === "") preWindow.close()
                   }
                 } catch {
                   /* COOP */
@@ -6692,7 +6759,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             disabled={reconnecting}
             className={cn(
               "flex-row items-center gap-1.5 rounded-md border border-orange-400/50 bg-orange-100 dark:bg-orange-800/30 px-1.5 py-1 active:opacity-70",
-              reconnecting && "opacity-50"
+              reconnecting && "opacity-50",
             )}
           >
             {reconnecting ? (
@@ -6713,19 +6780,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
           {toolErrorBanner.error}
         </Text>
       ),
-    };
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolErrorBanner, projectId, reconnecting]);
-  useDockPanel(toolErrorDockDescriptor, chatDockStore);
+  }, [toolErrorBanner, projectId, reconnecting])
+  useDockPanel(toolErrorDockDescriptor, chatDockStore)
 
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (
-      !(
-        ((error || emptyResponseError) && !errorDismissed) ||
-        streamAutoRecovering
-      )
-    )
-      return null;
+    if (!(
+      ((error || emptyResponseError) && !errorDismissed) ||
+      streamAutoRecovering
+    ))
+      return null
     return {
       id: "error",
       kind: "status",
@@ -6735,8 +6800,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       accent: "warning",
       defaultExpanded: true,
       onDismiss: () => {
-        setEmptyResponseError(null);
-        setErrorDismissed(true);
+        setEmptyResponseError(null)
+        setErrorDismissed(true)
       },
       headerActions:
         tunnelReconnecting || streamAutoRecovering ? (
@@ -6745,7 +6810,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               "text-xs font-medium",
               isTunnelError
                 ? "text-orange-600 dark:text-orange-400"
-                : "text-destructive"
+                : "text-destructive",
             )}
           >
             Reconnecting…
@@ -6755,8 +6820,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
             {isTunnelError && (
               <Pressable
                 onPress={() => {
-                  clearActiveInstance();
-                  setTimeout(() => handleRetry(), 0);
+                  clearActiveInstance()
+                  setTimeout(() => handleRetry(), 0)
                 }}
                 accessibilityRole="button"
                 accessibilityLabel="Continue this conversation in the cloud sandbox"
@@ -6771,7 +6836,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
               onPress={handleRetry}
               className={cn(
                 "rounded-md border px-2 py-1",
-                isTunnelError ? "border-orange-400/30" : "border-destructive/30"
+                isTunnelError
+                  ? "border-orange-400/30"
+                  : "border-destructive/30",
               )}
             >
               <Text
@@ -6779,7 +6846,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   "text-xs font-medium",
                   isTunnelError
                     ? "text-orange-600 dark:text-orange-400"
-                    : "text-destructive"
+                    : "text-destructive",
                 )}
               >
                 {isTunnelError ? "Reconnect" : "Retry"}
@@ -6800,7 +6867,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   "text-xs",
                   isTunnelError
                     ? "text-orange-700 dark:text-orange-300"
-                    : "text-destructive"
+                    : "text-destructive",
                 )}
                 selectable
               >
@@ -6813,7 +6880,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 "text-xs",
                 isTunnelError
                   ? "text-orange-700 dark:text-orange-300"
-                  : "text-destructive"
+                  : "text-destructive",
               )}
               numberOfLines={2}
               selectable
@@ -6837,7 +6904,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   "text-[11px] font-semibold",
                   isTunnelError
                     ? "text-orange-700 dark:text-orange-300"
-                    : "text-destructive"
+                    : "text-destructive",
                 )}
               >
                 {errorBannerExpanded ? "Show less" : "Read more"}
@@ -6846,7 +6913,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           )}
         </View>
       ),
-    };
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     error,
@@ -6860,8 +6927,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     errorBannerNeedsReadMore,
     handleRetry,
     clearActiveInstance,
-  ]);
-  useDockPanel(errorDockDescriptor, chatDockStore);
+  ])
+  useDockPanel(errorDockDescriptor, chatDockStore)
 
   // Render compact mode (homepage)
   if (mode === "compact") {
@@ -6874,7 +6941,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         onChange={onCompactValueChange}
         className={className}
       />
-    );
+    )
   }
 
   // Render collapsed state
@@ -6893,10 +6960,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )}
         <ExpandTab onExpand={handleToggleCollapse} />
       </View>
-    );
+    )
   }
 
-  const ChatSurface = isNativePhoneLayout ? View : KeyboardAvoidingView;
+  const ChatSurface = isNativePhoneLayout ? View : KeyboardAvoidingView
 
   return (
     <TodoStateStoreContext.Provider value={todoStateStore}>
@@ -6916,7 +6983,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
             confirmedPlan={confirmedPlan}
             onBuild={pendingPlan ? handleConfirmPlan : null}
             onOpenPlan={onOpenPlan}
-            onGenerateSummary={handleGenerateSummary}
             selectedModel={selectedModel}
             isPro={hasAdvancedModelAccess}
           />
@@ -6940,7 +7006,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             className={cn(
               isNativePhoneLayout ? "flex-col flex-1" : "flex-row flex-1",
               presentation === "agent" && "agent-chat-surface",
-              className
+              className,
             )}
             style={{ flex: 1, minHeight: 0 }}
           >
@@ -6954,7 +7020,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               behavior={Platform.OS === "ios" ? "padding" : "height"}
               className={cn(
                 "flex-1 flex-col bg-background",
-                presentation === "agent" && "bg-transparent"
+                presentation === "agent" && "bg-transparent",
               )}
               style={{ flex: 1, minHeight: 0 }}
               keyboardVerticalOffset={
@@ -6965,10 +7031,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               <View
                 className="flex-1"
                 onLayout={(e) => {
-                  const next = Math.round(e.nativeEvent.layout.height);
-                  setMessagesAreaHeight((prev) =>
-                    prev === next ? prev : next
-                  );
+                  const next = Math.round(e.nativeEvent.layout.height)
+                  setMessagesAreaHeight((prev) => (prev === next ? prev : next))
                 }}
               >
                 <ScrollView
@@ -6981,11 +7045,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                         ? "px-4 pt-32 pb-36"
                         : "px-4 pt-16 pb-36"
                       : presentation === "agent"
-                      ? "px-6 pt-8 pb-[48px]"
-                      : "p-2 pb-[40px]",
+                        ? "px-6 pt-8 pb-[48px]"
+                        : "p-2 pb-[40px]",
                     presentation === "agent"
                       ? "max-w-[760px] w-full self-center"
-                      : "max-w-2xl w-full self-center"
+                      : "max-w-2xl w-full self-center",
                   )}
                   contentContainerStyle={
                     nativePhoneColumnWidth
@@ -7006,59 +7070,59 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     isNative && nativeInlineEditing ? "always" : "handled"
                   }
                   onTouchStart={(e) => {
-                    if (Platform.OS === "web") return;
-                    const { pageX, pageY } = e.nativeEvent;
-                    nativeEditTapStartRef.current = { x: pageX, y: pageY };
+                    if (Platform.OS === "web") return
+                    const { pageX, pageY } = e.nativeEvent
+                    nativeEditTapStartRef.current = { x: pageX, y: pageY }
                   }}
                   onTouchEnd={(e) => {
-                    if (Platform.OS === "web") return;
-                    const start = nativeEditTapStartRef.current;
-                    nativeEditTapStartRef.current = null;
-                    if (!start) return;
-                    const { pageX, pageY } = e.nativeEvent;
+                    if (Platform.OS === "web") return
+                    const start = nativeEditTapStartRef.current
+                    nativeEditTapStartRef.current = null
+                    if (!start) return
+                    const { pageX, pageY } = e.nativeEvent
                     if (Math.hypot(pageX - start.x, pageY - start.y) > 12)
-                      return;
-                    dispatchNativeInlineEditTap(pageX, pageY);
+                      return
+                    dispatchNativeInlineEditTap(pageX, pageY)
                   }}
                   onTouchCancel={() => {
-                    nativeEditTapStartRef.current = null;
+                    nativeEditTapStartRef.current = null
                   }}
                   onScroll={isNative ? undefined : handleMessagesScrollWeb}
                   onScrollBeginDrag={() => {
                     if (isNative) {
-                      nativeEditTapStartRef.current = null;
-                      stickToBottomRef.current = false;
-                      setIsFollowing(false);
+                      nativeEditTapStartRef.current = null
+                      stickToBottomRef.current = false
+                      setIsFollowing(false)
                     }
                   }}
                   onScrollEndDrag={(e) => {
                     if (isNative) {
-                      syncStickFromNativeEvent(e);
-                      tryLoadOlderNearTopOnScrollEnd(e);
+                      syncStickFromNativeEvent(e)
+                      tryLoadOlderNearTopOnScrollEnd(e)
                     }
                   }}
                   onMomentumScrollEnd={(e) => {
                     if (isNative) {
-                      syncStickFromNativeEvent(e);
-                      tryLoadOlderNearTopOnScrollEnd(e);
+                      syncStickFromNativeEvent(e)
+                      tryLoadOlderNearTopOnScrollEnd(e)
                     }
                   }}
                   onContentSizeChange={(_w, h) => {
-                    setHasScrollableTranscript(h > messagesAreaHeight + 1);
+                    setHasScrollableTranscript(h > messagesAreaHeight + 1)
                     if (isLoadingOlderRef.current) {
-                      const delta = h - contentHeightBeforeLoadRef.current;
+                      const delta = h - contentHeightBeforeLoadRef.current
                       if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
-                        markProgrammaticScroll();
+                        markProgrammaticScroll()
                         scrollViewRef.current?.scrollTo({
                           y: delta,
                           animated: false,
-                        });
+                        })
                       }
                       // Reset after a frame so the scroll offset takes effect
                       // before onScroll can re-trigger loading
                       requestAnimationFrame(() => {
-                        isLoadingOlderRef.current = false;
-                      });
+                        isLoadingOlderRef.current = false
+                      })
                     } else if (
                       isNative &&
                       stickToBottomRef.current &&
@@ -7075,12 +7139,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       // above sub-pixel jitter (≤3px) but well below a single
                       // line of new text (~16-20px) or a fresh tool widget
                       // appearing, so token streaming still follows.
-                      const delta = h - contentHeightBeforeLoadRef.current;
+                      const delta = h - contentHeightBeforeLoadRef.current
                       if (delta >= AUTOSCROLL_MIN_DELTA_PX) {
-                        setTimeout(() => throttledScrollToEnd(), 200);
+                        setTimeout(() => throttledScrollToEnd(), 200)
                       }
                     }
-                    contentHeightBeforeLoadRef.current = h;
+                    contentHeightBeforeLoadRef.current = h
                   }}
                   scrollEventThrottle={32}
                 >
@@ -7157,13 +7221,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     colors={
                       isDark
                         ? [
-                            "rgba(16,16,16,0.94)",
-                            "rgba(16,16,16,0.62)",
+                            "rgba(16,16,16,0.76)",
+                            "rgba(16,16,16,0.42)",
                             "rgba(16,16,16,0)",
                           ]
                         : [
-                            "rgba(255,255,255,0.94)",
-                            "rgba(255,255,255,0.62)",
+                            "rgba(255,255,255,0.76)",
+                            "rgba(255,255,255,0.42)",
                             "rgba(255,255,255,0)",
                           ]
                     }
@@ -7185,6 +7249,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               chat input). */}
                 {hasScrollableTranscript &&
                   !isFollowing &&
+                  !nativeKeyboardOpen &&
                   displayMessages.length > 0 && (
                     <View
                       pointerEvents="box-none"
@@ -7246,14 +7311,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       !featureId
                         ? "Message"
                         : hasPendingQuestion
-                        ? questionPresentation === "sheet"
-                          ? "Respond to the question, or type a message..."
-                          : "Respond to the question below, or type a message..."
-                        : interactionMode === "plan"
-                        ? "Describe what you want to plan..."
-                        : interactionMode === "ask"
-                        ? "Ask a question..."
-                        : "Ask Shogo..."
+                          ? questionPresentation === "sheet"
+                            ? "Respond to the question, or type a message..."
+                            : "Respond to the question below, or type a message..."
+                          : interactionMode === "plan"
+                            ? "Describe what you want to plan..."
+                            : interactionMode === "ask"
+                              ? "Ask a question..."
+                              : "Ask Shogo..."
                     }
                     isStreaming={isStreaming}
                     onStop={handleStop}
@@ -7297,7 +7362,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       ? {
                           paddingBottom: Math.max(
                             insets.bottom,
-                            NATIVE_COMPOSER_KEYBOARD_GAP
+                            NATIVE_COMPOSER_KEYBOARD_GAP,
                           ),
                           minHeight: 28,
                         }
@@ -7310,15 +7375,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
         </ChatContextProvider>
       </FileChangeStoreContext.Provider>
     </TodoStateStoreContext.Provider>
-  );
-});
+  )
+})
 
 export function ChatPanel(props: ChatPanelProps) {
-  const chatDockStore = useMemo(() => createChatDockStore(), []);
+  const chatDockStore = useMemo(() => createChatDockStore(), [])
 
   return (
     <ChatDockStoreContext.Provider value={chatDockStore}>
       <ChatPanelContent {...props} />
     </ChatDockStoreContext.Provider>
-  );
+  )
 }

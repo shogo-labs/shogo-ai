@@ -86,6 +86,38 @@ export function adminMarketplaceRoutes() {
     return c.json({ ok: true, data: rows })
   })
 
+  // Support-assisted workaround for a user auto-provisioned onto a 'US'
+  // Stripe Express account before country selection existed (or who was
+  // otherwise stuck on the wrong country). Detaches the unfinished account
+  // so the next onboarding call creates a fresh one with the right country.
+  // Refuses when the existing account has any real activity — see
+  // `resetConnectAccountForCountryChange` for the exact guard.
+  app.post('/payouts/stripe-connect/reset', async (c) => {
+    let body: { userId?: unknown }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'invalid_json', message: 'Invalid JSON body' } }, 400)
+    }
+    if (typeof body.userId !== 'string' || !body.userId) {
+      return c.json({ error: { code: 'invalid_body', message: 'userId is required' } }, 400)
+    }
+    try {
+      const result = await stripeConnect.resetConnectAccountForCountryChange(body.userId)
+      if (!result.reset) {
+        const message =
+          result.reason === 'account_has_activity'
+            ? 'This account has already submitted details or received payouts and cannot be reset automatically — contact Stripe support or migrate manually.'
+            : 'No Stripe Connect account found for this user.'
+        return c.json({ ok: false, error: { code: result.reason, message } }, 409)
+      }
+      return c.json({ ok: true })
+    } catch (err: any) {
+      console.error('[admin-marketplace] stripe-connect reset failed', err)
+      return c.json({ error: { code: 'server_error', message: err?.message } }, 500)
+    }
+  })
+
   app.post('/payouts/release', requireMarketplaceFeature, async (c) => {
     let body: { creatorIds?: unknown; amountInCents?: unknown }
     try {

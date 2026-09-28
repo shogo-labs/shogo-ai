@@ -55,6 +55,12 @@ export interface RuntimeTrust {
    * with `attachMode='readonly'`). Reads pass; writes/exec are denied.
    */
   readonlyRoots: string[]
+  /**
+   * Workspace runtimes: user-owned mounts whose owning project is
+   * `restricted`. Write / exec under these is denied as if the whole
+   * runtime were restricted; the Shogo-owned merged root is unaffected.
+   */
+  restrictedRoots: string[]
 }
 
 /**
@@ -114,7 +120,20 @@ export function getRuntimeTrust(): RuntimeTrust {
   }
   const linkedFolders = parseFolderEnv(process.env.LINKED_FOLDERS)
   const readonlyRoots = parseFolderEnv(process.env.READONLY_ROOTS)
-  return { workingMode, trustLevel, workspaceDir, linkedFolders, readonlyRoots }
+  return { workingMode, trustLevel, workspaceDir, linkedFolders, readonlyRoots, restrictedRoots: [] }
+}
+
+function realpathRoots(roots: readonly string[]): string[] {
+  return roots
+    .filter((p) => typeof p === 'string' && p.length > 0)
+    .map((p) => {
+      const resolved = resolve(p)
+      try {
+        return realpathSync(resolved)
+      } catch {
+        return resolved
+      }
+    })
 }
 
 /** Allowed roots = [workspaceDir, ...linkedFolders], deduplicated. */
@@ -231,7 +250,16 @@ export function assertAllowedPath(targetPath: string, mode: PathMode): PathCheck
     }
   }
 
-  if (trust.trustLevel === 'restricted') {
+  // A shell started anywhere in the merged root can `cd` into a mounted
+  // folder, so a restricted mount disables exec for the whole runtime (as a
+  // restricted single-project external runtime always did). Writes are
+  // denied only when they resolve into a restricted mount.
+  const hasRestrictedMounts = (trust.restrictedRoots?.length ?? 0) > 0
+  const restricted =
+    trust.trustLevel === 'restricted' ||
+    (mode === 'exec' && hasRestrictedMounts) ||
+    (mode === 'write' && hasRestrictedMounts && isWithinAnyRoot(realpathRoots(trust.restrictedRoots), real))
+  if (restricted) {
     if (mode === 'write') {
       return {
         ok: false,

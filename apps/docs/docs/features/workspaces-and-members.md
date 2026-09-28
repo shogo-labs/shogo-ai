@@ -26,6 +26,10 @@ When you sign up for Shogo, you'll create your first workspace. To create additi
 3. Enter a name for your workspace.
 4. Click **Create**.
 
+Business and Enterprise workspace owners and admins can create unlimited
+additional child workspaces at no extra cost. Child workspaces share the
+parent workspace's usage, billing, and seats.
+
 ## Switching between workspaces
 
 If you belong to multiple workspaces:

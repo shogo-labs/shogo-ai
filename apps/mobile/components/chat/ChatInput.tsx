@@ -36,9 +36,11 @@ import {
 import { cn } from "@shogo/shared-ui/primitives";
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
+  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
+import { CHAT_TRANSCRIPT_MAX_WIDTH } from "../../lib/native-composer-keyboard";
 import {
   Popover,
   PopoverBackdrop,
@@ -46,11 +48,12 @@ import {
 } from "@/components/ui/popover";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
+import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { AttachSourceSheet } from "./AttachSourceSheet";
 import { ContextTracker } from "./ContextTracker";
 import type { ContextBreakdownData } from "./ContextBreakdownPanel";
 import { resolveShortName, resolveTier } from "../../lib/visible-models";
-import { ComposerModelPicker } from "./ModelPickerMenu";
+import { ComposerModelPicker, ModelPickerMenu } from "./ModelPickerMenu";
 import { WebTooltip } from "./WebTooltip";
 import { DockChip } from "./dock/DockChip";
 import { QueueDockPanel } from "./dock/panels/QueueDockPanel";
@@ -72,6 +75,7 @@ import {
   FileText,
   FolderGit2,
   Bot,
+  Cpu,
   ClipboardList,
   MessageCircleQuestion,
   Check,
@@ -109,7 +113,6 @@ import {
   PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
-  nextProminentComposerHeight,
 } from "./useProminentComposerExpansion";
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext";
 import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent";
@@ -564,12 +567,18 @@ function ChatInputImpl({
   const liquidGlass = useProminentComposer && supportsLiquidGlass();
   const sendChrome = composerSendChrome(isNative || useProminentComposer);
   const mobileChatText = usesMobileWorkspaceChrome || useProminentComposer;
+  const isPersonalWorkspace = useWorkspaceExperience().kind === "personal";
+  // Personal workspaces never pick a model, including mobile project chats.
+  // Phone chrome moves the picker into the + menu instead of an inline pill.
   const showModelPicker =
-    composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId);
+    !isPersonalWorkspace &&
+    (composer.showModelPicker || (usesMobileWorkspaceChrome && !!projectId));
   const showInlineMobileModelPicker =
-    showModelPicker && (useProminentComposer || usesMobileWorkspaceChrome);
-  const composerFontSize = mobileChatText ? 16 : 14;
-  const composerLineHeight = mobileChatText ? 24 : 20;
+    showModelPicker &&
+    !useProminentComposer &&
+    !usesMobileWorkspaceChrome;
+  const composerFontSize = mobileChatText ? 16 : 13;
+  const composerLineHeight = mobileChatText ? 24 : 19;
   const inputMinHeight = sizes.inputMinHeight;
   const inputMaxHeight = sizes.inputMaxHeight;
   const bridge = useChatBridgeOptional();
@@ -1277,6 +1286,7 @@ function ChatInputImpl({
     text: composerDisplayValue,
     inputHeight,
     minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+    maxHeight: inputMaxHeight,
     lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
     paddingTop: PROMINENT_COMPOSER_PADDING_TOP,
     paddingHorizontal: PROMINENT_COMPOSER_PADDING_HORIZONTAL,
@@ -1530,16 +1540,23 @@ function ChatInputImpl({
         flush
           ? "pb-3"
           : useProminentComposer
-          ? isNative
-            ? "pt-0"
-            : "px-3 pb-2 pt-0"
+          ? "w-full self-center pb-2 pt-0"
+          : presentation === "agent"
+          ? "w-full self-center px-6 pb-4 pt-0"
           : isNative
           ? "px-2 pb-4 pt-0"
-          : "p-3 pt-0",
-        presentation === "agent" &&
-          !flush &&
-          "w-full self-center px-6 pb-4 pt-0"
+          : "p-3 pt-0"
       )}
+      style={
+        useProminentComposer && !flush
+          ? {
+              width: "100%",
+              maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+              alignSelf: "center",
+              paddingHorizontal: NATIVE_PHONE_GUTTER,
+            }
+          : undefined
+      }
     >
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1922,10 +1939,9 @@ function ChatInputImpl({
                   borderRadius: isNative
                     ? PROMINENT_COMPOSER_NATIVE_RADIUS
                     : PROMINENT_COMPOSER_RADIUS,
-                  borderWidth: 1,
-                  borderColor: liquidGlass
-                    ? "rgba(255,255,255,0.25)"
-                    : chatgptComposer.border,
+                  minHeight: isNative
+                    ? NATIVE_PHONE_COMPOSER_PILL_HEIGHT
+                    : undefined,
                   backgroundColor: liquidGlass
                     ? "transparent"
                     : chatgptComposer.fill,
@@ -2278,7 +2294,7 @@ function ChatInputImpl({
                   "bg-transparent",
                   mobileChatText
                     ? "px-4 pt-3 text-base leading-6 text-foreground"
-                    : "px-4 pt-3 text-sm leading-5 text-foreground",
+                    : "px-4 pt-3 text-[13px] leading-[19px] text-foreground",
                   disabled && dimWhenDisabled && "opacity-50",
                   Platform.OS === "web" && "outline-none no-focus-ring"
                 )}
@@ -2306,7 +2322,7 @@ function ChatInputImpl({
             style={
               useProminentComposer
                 ? {
-                    zIndex: PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
+                    zIndex: PROMINENT_COMPOSER_CHROME_Z_INDEX,
                     ...(isNative
                       ? { height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT }
                       : {}),
@@ -2354,6 +2370,25 @@ function ChatInputImpl({
                     onAttach={handlePlusAttach}
                     attachDisabled={pendingFiles.length >= MAX_FILES}
                   >
+                    {showModelPicker ? (
+                      <ComposerPlusSection
+                        id="model"
+                        label="Model"
+                        value={compactNativeModelLabel(currentModelId)}
+                        Icon={Cpu}
+                      >
+                        <ModelPickerMenu
+                          currentModelId={currentModelId}
+                          effectiveIsPro={effectiveIsPro}
+                          presentation="sheet"
+                          onSelect={(modelId) => {
+                            handleModelChange(modelId);
+                            closePlusMenu();
+                          }}
+                          onDismiss={closePlusMenu}
+                        />
+                      </ComposerPlusSection>
+                    ) : null}
                     {composer.showInteractionModes ? (
                       <ComposerPlusSection
                         id="mode"
@@ -2811,6 +2846,7 @@ function ChatInputImpl({
               {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
               {showModelPicker &&
               presentation !== "agent" &&
+              !useProminentComposer &&
               !showInlineMobileModelPicker ? (
                 <ComposerModelPicker
                   {...composerModelPickerProps({
@@ -3118,24 +3154,12 @@ function ChatInputImpl({
                 );
               }}
               onSubmitEditing={handleSubmitEditing}
-              scrollEnabled={
-                prominentExpansion.stacked &&
-                inputHeight > PROMINENT_COMPOSER_MIN_HEIGHT
-              }
+              scrollEnabled={inputHeight >= inputMaxHeight}
               onContentSizeChange={(e) => {
                 const currentText =
                   pendingTextChangeRef.current?.text ?? inputValueRef.current;
                 const h = e.nativeEvent.contentSize.height;
-                prominentExpansion.reportContentHeight(h);
-                const next = nextProminentComposerHeight(h, {
-                  empty: !currentText.trim(),
-                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                  maxHeight: inputMaxHeight,
-                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-                });
-                if (next !== inputHeightRef.current) {
-                  setInputHeightTarget(next);
-                }
+                prominentExpansion.reportContentSize(h, !currentText.trim());
               }}
             />
           ) : null}

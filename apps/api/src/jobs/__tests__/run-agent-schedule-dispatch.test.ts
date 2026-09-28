@@ -140,6 +140,60 @@ describe('agent schedule dispatcher', () => {
     })
   })
 
+  function sseResponse(frames: unknown[]): Response {
+    const body = frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')
+    const bytes = new TextEncoder().encode(body)
+    // Split mid-frame so the parser has to reassemble lines across chunks.
+    const cut = Math.floor(bytes.length / 2)
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, cut))
+        controller.enqueue(bytes.slice(cut))
+        controller.close()
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  }
+
+  test('persists failed when the runtime stopped the turn with the loop detector', async () => {
+    assistantMessage.mockImplementation(async () => ({ content: 'Paging through the inbox now.' }))
+    chatFetch.mockImplementation(async () => sseResponse([
+      { type: 'text-delta', id: 't1', delta: 'Paging through the inbox now.' },
+      {
+        type: 'data-usage',
+        data: {
+          inputTokens: 100,
+          outputTokens: 20,
+          loopDetected: true,
+          loopPattern: '5 consecutive tool calls failed with no progress toward the goal',
+        },
+      },
+      { type: 'data-turn-complete', data: { status: 'completed' } },
+    ]))
+    await dispatchAndWait()
+
+    const update = resultUpdate()
+    expect(update?.data).toMatchObject({
+      lastRunStatus: 'failed',
+      lastRunSummary: null,
+      consecutiveFailures: 1,
+      runningAt: null,
+    })
+    expect(update?.data.lastError).toContain('stopped early by the loop detector')
+    expect(update?.data.lastError).toContain('5 consecutive tool calls failed')
+  })
+
+  test('persists ok for a streamed turn without a loop break', async () => {
+    assistantMessage.mockImplementation(async () => ({ content: 'Digest sent.' }))
+    chatFetch.mockImplementation(async () => sseResponse([
+      { type: 'text-delta', id: 't1', delta: 'Digest sent.' },
+      { type: 'data-usage', data: { inputTokens: 100, outputTokens: 20, loopDetected: false } },
+      { type: 'data-turn-complete', data: { status: 'completed' } },
+    ]))
+    await dispatchAndWait()
+
+    expect(resultUpdate()?.data).toMatchObject({ lastRunStatus: 'ok', lastRunSummary: 'Digest sent.' })
+  })
+
   test('persists failed with the error and increments the failure count', async () => {
     chatFetch.mockImplementation(async () =>
       Response.json({ error: { message: 'Runtime unavailable' } }, { status: 503 }))

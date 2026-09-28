@@ -7,15 +7,13 @@
 # for the build. EAS Update is still used for OTA JS-only updates.
 #
 # Environments:
-#   production — push to main branch or push v* (unified release tag, e.g.
-#                v1.13.34) / ios-v* (iOS-only), or manual dispatch with
-#                environment=production. Main uses the current production tag.
+#   production — push v* (unified release tag, e.g. v1.13.34) / ios-v*
+#                (iOS-only), or manual dispatch with environment=production.
 #   staging    — manual dispatch only (OTA or full build)
 #   Marketing version is taken from the git tag (same as desktop-release-*),
 #   not from the placeholder in apps/mobile/app.json.
 #
 # Decision matrix:
-#   - Main branch push → always full production build + TestFlight submit
 #   - Tag push (v* or ios-v*) → always full build + submit
 #   - Cache hit on fingerprint → OTA update only
 #   - mode=ota dispatch → OTA only
@@ -29,6 +27,10 @@
 #   APPLE_CERTIFICATE_BASE64            - Base64 of the iOS Distribution .p12
 #   APPLE_CERTIFICATE_PASSWORD          - Password for the .p12
 #   APPLE_PROVISIONING_PROFILE_BASE64   - Base64 of the App Store .mobileprovision
+#   ASC_APP_ID                         - App Store Connect numeric app ID
+#   ASC_KEY_ID                         - App Store Connect API key ID
+#   ASC_ISSUER_ID                      - App Store Connect API issuer UUID
+#   ASC_PRIVATE_KEY                    - App Store Connect API .p8 private key
 #   EXPO_PUBLIC_SENTRY_DSN_IOS          - (optional) Sentry DSN for the iOS
 #                                          binary's runtime, sourced into the
 #                                          JS bundle by Metro. Should match
@@ -48,15 +50,12 @@ name: iOS Build & Update
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'ios-v*'
       - 'v[0-9]*'
     # No `paths` filter: GitHub ANDs tags with paths, so a unified `v*` tag
     # whose commit did not touch apps/mobile would skip this workflow and
     # ship App Store as the app.json placeholder instead of the tag.
-    # Main-branch path filtering lives in the `gate` job.
   workflow_dispatch:
     inputs:
       mode:
@@ -83,9 +82,7 @@ on:
 
 jobs:
   # ===========================================================================
-  # Main-branch pushes always continue so every merge builds and uploads to
-  # TestFlight. Tags and workflow_dispatch always continue; non-main pushes keep
-  # using path gating.
+  # Tags and workflow_dispatch always continue; other pushes use path gating.
   # ===========================================================================
   gate:
     name: Gate
@@ -103,12 +100,7 @@ jobs:
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" = "main" ]; then
-            echo "Main branch push → running iOS build/TestFlight pipeline"
-            echo "skipped=false" >> "$GITHUB_OUTPUT"
-          else
-            bash scripts/ci/mobile-workflow-should-run.sh ios.yml
-          fi
+          bash scripts/ci/mobile-workflow-should-run.sh ios.yml
 
   # ===========================================================================
   # Check if native code changed
@@ -131,8 +123,6 @@ jobs:
           if [ -n "${{ github.event.inputs.environment }}" ]; then
             ENV="${{ github.event.inputs.environment }}"
           elif [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
-            ENV="production"
-          elif [ "${{ github.ref_name }}" = "main" ]; then
             ENV="production"
           else
             ENV="staging"
@@ -190,9 +180,6 @@ jobs:
         run: |
           if [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
             echo "Tag push (${{ github.ref_name }}) → release event, forcing full build + submit"
-            echo "needs_build=true" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" = "main" ]; then
-            echo "Main branch push → forcing full build + TestFlight submit"
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"
@@ -909,6 +896,12 @@ jobs:
       APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
 
     steps:
+      - name: Checkout TestFlight distribution script
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .github/scripts/testflight-distribute.rb
+          sparse-checkout-cone-mode: false
+
       - name: Download IPA
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -940,6 +933,21 @@ jobs:
             fi
             exit $STATUS
           fi
+
+      - name: Wait for Apple processing and assign TestFlight groups
+        # Uploading the IPA only starts Apple's asynchronous processing. Once
+        # the build is VALID, make it visible to the configured internal and
+        # external tester groups through the App Store Connect API.
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          TESTFLIGHT_GROUP_IDS: 56865043-fc4a-40f8-ab20-ec2a8ebdd76c,98287cb2-a201-484d-9371-4619b9858daa
+        run: |
+          set -euo pipefail
+          TESTFLIGHT_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 100)) \
+            ruby "$GITHUB_WORKSPACE/.github/scripts/testflight-distribute.rb"
 
       - name: Summary
         run: |

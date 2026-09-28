@@ -27,6 +27,8 @@ export interface OpenFile {
   pinned?: boolean;
   loading?: boolean;
   error?: string;
+  /** Markdown files open in preview until the user switches to the editor. */
+  mdMode?: "preview" | "edit";
   extensionDetail?: InstalledExtension | ExtensionSearchResult;
 }
 

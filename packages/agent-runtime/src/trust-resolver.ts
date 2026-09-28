@@ -63,9 +63,28 @@ export interface ResolvedTrust {
    * for reads. Enforced in `assertAllowedPath` (runtime-trust.ts).
    */
   readonlyRoots: string[]
+  /**
+   * Workspace runtimes only: user-owned roots (a folder-linked project's own
+   * folder, extra linked host folders) whose owning project is currently
+   * `restricted`. Write / exec under these is denied even though the merged
+   * root itself — Shogo-owned scaffolding — stays trusted.
+   */
+  restrictedRoots: string[]
 }
 
-interface ResolverState extends ResolvedTrust {
+/** A set of user-owned roots whose trust follows one project's trust level. */
+export interface TrustRootGroup {
+  projectId: string
+  /** Folder-linked project: fail closed (`restricted`) until the API answers. */
+  external: boolean
+  roots: string[]
+}
+
+interface TrustRootGroupState extends TrustRootGroup {
+  trustLevel: TrustLevel
+}
+
+interface ResolverState extends Omit<ResolvedTrust, 'restrictedRoots'> {
   /** Has at least one successful refresh() landed? */
   initialized: boolean
   /** Project id used for the /internal/projects/:id/trust read. */
@@ -78,6 +97,13 @@ interface ResolverState extends ResolvedTrust {
    * `ws:<id>` PROJECT_ID 401s there).
    */
   isWorkspaceRuntime: boolean
+  /**
+   * Workspace runtimes: per-project trust for user-owned mounts. The merged
+   * root is Shogo's own directory and stays statically trusted, but a
+   * folder-linked project mounted into it is the user's repo and keeps the
+   * same opt-in trust gate a single-project external runtime has.
+   */
+  rootGroups: TrustRootGroupState[]
   /**
    * Wall-clock ms of the last successful refresh. Exposed for
    * diagnostics / future TTL eviction; not used as a staleness gate
@@ -103,6 +129,7 @@ const state: ResolverState = {
   initialized: false,
   projectId: null,
   isWorkspaceRuntime: false,
+  rootGroups: [],
   lastRefreshAt: null,
   inFlight: null,
 }
@@ -114,8 +141,10 @@ export interface InitArgs {
   linkedFolders: string[]
   /** Read-only subset of the allowed roots (write/exec denied). */
   readonlyRoots?: string[]
-  /** Workspace (merged-root) runtime — statically trusted, no API trust read. */
+  /** Workspace (merged-root) runtime — the merged root itself is statically trusted. */
   isWorkspaceRuntime?: boolean
+  /** Workspace runtimes: user-owned mounts, grouped by the project whose trust governs them. */
+  rootGroups?: TrustRootGroup[]
 }
 
 /**
@@ -133,10 +162,16 @@ export function initTrustResolver(args: InitArgs): void {
   state.linkedFolders = args.linkedFolders.slice()
   state.readonlyRoots = (args.readonlyRoots ?? []).slice()
   state.isWorkspaceRuntime = args.isWorkspaceRuntime ?? false
-  // Workspace runtimes are always trusted (sandboxed, multi-project);
-  // there is no per-project trust to reconcile, so mark initialized.
+  state.rootGroups = state.isWorkspaceRuntime
+    ? (args.rootGroups ?? [])
+        .filter((g) => g.projectId && g.roots.length > 0)
+        .map((g) => ({ ...g, roots: g.roots.slice(), trustLevel: g.external ? 'restricted' : 'trusted' }))
+    : []
+  // The merged root of a workspace runtime is Shogo's own directory and is
+  // always trusted. User-owned mounts inside it are gated per project via
+  // `rootGroups`; with none, there is nothing to reconcile.
   state.trustLevel = state.isWorkspaceRuntime ? 'trusted' : defaultTrustFor(args.workingMode)
-  state.initialized = state.isWorkspaceRuntime
+  state.initialized = state.isWorkspaceRuntime && state.rootGroups.length === 0
   state.lastRefreshAt = null
   state.inFlight = null
 }
@@ -149,6 +184,7 @@ export function getResolvedTrust(): ResolvedTrust {
     workspaceDir: state.workspaceDir,
     linkedFolders: state.linkedFolders.slice(),
     readonlyRoots: state.readonlyRoots.slice(),
+    restrictedRoots: state.rootGroups.filter((g) => g.trustLevel === 'restricted').flatMap((g) => g.roots),
   }
 }
 
@@ -195,13 +231,42 @@ export function isTrustResolverInitialized(): boolean {
 export async function refreshTrust(): Promise<void> {
   if (state.inFlight) return state.inFlight
 
-  // Workspace (merged-root) runtimes are statically trusted and have no
-  // single project to read trust for. Short-circuit so we never hit
-  // /internal/projects/ws:<id>/trust (which 401s on the synthetic id).
+  // Workspace (merged-root) runtimes: the merged root is statically trusted
+  // and there is no single runtime project to read trust for (the synthetic
+  // `ws:<id>` PROJECT_ID 401s). Only user-owned mounts are reconciled, each
+  // against its owning project's trust.
   if (state.isWorkspaceRuntime) {
     state.trustLevel = 'trusted'
-    state.initialized = true
-    return
+    if (state.rootGroups.length === 0) {
+      state.initialized = true
+      return
+    }
+    const apiUrl = deriveApiUrl()
+    if (!apiUrl) return
+    const groups = state.rootGroups
+    const promise = (async () => {
+      try {
+        await Promise.all(
+          groups.map(async (group) => {
+            const body = await fetchProjectTrust(apiUrl, group.projectId)
+            if (!body || state.rootGroups !== groups) return
+            const next: TrustLevel = body.trustLevel === 'restricted' ? 'restricted' : 'trusted'
+            if (next !== group.trustLevel) {
+              console.log(`[trust-resolver] trustLevel resolved to "${next}" for project ${group.projectId}`)
+            }
+            group.trustLevel = next
+          }),
+        )
+        if (state.rootGroups === groups) {
+          state.initialized = true
+          state.lastRefreshAt = Date.now()
+        }
+      } finally {
+        state.inFlight = null
+      }
+    })()
+    state.inFlight = promise
+    return promise
   }
 
   const projectId = state.projectId
@@ -293,6 +358,28 @@ export async function refreshTrust(): Promise<void> {
   return promise
 }
 
+async function fetchProjectTrust(
+  apiUrl: string,
+  projectId: string,
+): Promise<Partial<{ trustLevel: string; workingMode: string; linkedFolders: unknown }> | null> {
+  const url = `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/trust`
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!res.ok) {
+      console.warn(`[trust-resolver] refresh failed: HTTP ${res.status} from ${url} — keeping last known trust`)
+      return null
+    }
+    return (await res.json()) as Partial<{ trustLevel: string; workingMode: string; linkedFolders: unknown }>
+  } catch (err: any) {
+    console.warn(`[trust-resolver] refresh threw: ${err?.message ?? err} — keeping last known trust`)
+    return null
+  }
+}
+
 /**
  * Test-only seam. Lets unit tests override the resolved trust without
  * needing a live API. Production code must go through `refreshTrust()`.
@@ -316,6 +403,7 @@ export function __resetTrustForTests(): void {
   state.initialized = false
   state.projectId = null
   state.isWorkspaceRuntime = false
+  state.rootGroups = []
   state.lastRefreshAt = null
   state.inFlight = null
 }

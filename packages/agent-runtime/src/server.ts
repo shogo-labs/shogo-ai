@@ -18,6 +18,8 @@ import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
+import { getStreamFinishReason } from './stream-finish'
+import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
   readFileSync,
@@ -35,6 +37,21 @@ import {
   appendFileSync,
 } from 'fs'
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
+import {
+  resolveMemberTechStackId,
+  seedEmptyWorkspaceMember,
+  shouldSeedAnchorMember,
+} from './workspace-member-seed'
+import {
+  POOL_DIST_BASE_PLACEHOLDER,
+  adoptPoolPreseedIntoMember,
+  discardPoolPreseed,
+  discardPoolPreseedArtifacts,
+  listRootEntries,
+  poolDistDir,
+  removePoolTemplateDist,
+  writePoolPreseedManifest,
+} from './workspace-pool-adopt'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -63,6 +80,7 @@ import {
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
+  adoptHydratedRepo,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
   ensureLfsRepoSetup,
@@ -72,7 +90,10 @@ import {
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
   extractTarFastNonBlocking,
+  applyGitSafeDirectoryEnv,
+  checkGitUsable,
   type CloudSyncMode,
+  wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
@@ -103,12 +124,6 @@ import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
 import { staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
-import {
-  walkFilesTree,
-  WORKSPACE_TREE_HIDDEN_DIRS,
-  WORKSPACE_TREE_LAZY_DIRS,
-  WORKSPACE_TREE_HIDDEN_FILES,
-} from './fs-tree-walker'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
@@ -137,7 +152,17 @@ import {
   buildWorkspacePreviewPath,
   parseWorkspacePreviewUrls,
   isAttachedProjectId,
+  parseWorkspaceMounts,
+  shouldAutoStartAnchorPreview,
+  userOwnedTrustGroups,
 } from './workspace-runtime-mode'
+import {
+  workspaceFileRoutes,
+  resolveWithinRoot,
+  projectScopeRoot as projectScopeRootFor,
+  workspaceRelativePath,
+  scopeCanvasEvent,
+} from './workspace-file-routes'
 import {
   initWorkspaceMembers,
   mountWorkspaceMember,
@@ -183,6 +208,9 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // =============================================================================
 
 let WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
+if (applyGitSafeDirectoryEnv()) {
+  console.log('[agent-runtime] running as root: exported safe.directory=* for git child processes')
+}
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
 const POOL_STATE_ROOT = process.env.SHOGO_POOL_STATE_DIR || join(tmpdir(), 'shogo-local')
@@ -211,6 +239,10 @@ const WORKING_MODE: 'managed' | 'external' =
  */
 let IS_WORKSPACE_RUNTIME = isWorkspaceRuntimeMode()
 let WORKSPACE_RUNTIME_PROJECT_IDS = workspaceAttachedProjectIds()
+
+/** Settles once an unassigned pool VM finished pre-seeding (and wrote its manifest). */
+let poolPreseedDone: Promise<void> | null = null
+const POOL_PRESEED_WAIT_MS = 15_000
 
 /**
  * Server-backed published mode. When `SHOGO_PUBLISHED_MODE=true` this pod is
@@ -268,6 +300,7 @@ initTrustResolver({
   linkedFolders: LINKED_FOLDERS,
   readonlyRoots: READONLY_ROOTS,
   isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
+  rootGroups: userOwnedTrustGroups(parseWorkspaceMounts()),
 })
 refreshTrust().catch(() => {
   // Best-effort at boot; per-turn refresh in gateway.ts is the
@@ -815,7 +848,13 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams, repoHeadSha: cachedRepoHeadSha }
+    return {
+      activeSessions: stats.length,
+      lastActivityAt: lastSessionActivity,
+      activeStreams,
+      repoHeadSha: cachedRepoHeadSha,
+      previewHealth: safePreviewHealth(),
+    }
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,
@@ -966,13 +1005,17 @@ function safeMoveSync(src: string, dest: string): void {
 function writeWorkspaceManifest(workspaceDir: string): void {
   try {
     const projects = workspaceProjectsManifest()
+    const mounts = parseWorkspaceMounts()
     const workspaceId = process.env.WORKSPACE_ID || ''
-    writeFileSync(join(workspaceDir, 'WORKSPACE.md'), renderWorkspaceManifestMarkdown(workspaceId, projects))
+    writeFileSync(
+      join(workspaceDir, 'WORKSPACE.md'),
+      renderWorkspaceManifestMarkdown(workspaceId, projects, mounts, process.env.WORKSPACE_ANCHOR_PROJECT_ID),
+    )
     const shogoDir = join(workspaceDir, '.shogo')
     mkdirSync(shogoDir, { recursive: true })
     writeFileSync(
       join(shogoDir, 'workspace.json'),
-      JSON.stringify({ workspaceId, projects }, null, 2),
+      JSON.stringify({ workspaceId, projects, mounts }, null, 2),
     )
     console.log(`[agent-runtime] Workspace catalog written (${projects.length} projects)`)
   } catch (err: any) {
@@ -1214,46 +1257,6 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 // =============================================================================
 
 const streamBufferStore = new StreamBufferStore()
-
-// =============================================================================
-// Stream Keep-Alive Utility
-// =============================================================================
-
-function wrapStreamWithKeepalive(
-  stream: ReadableStream<Uint8Array>,
-  intervalMs: number = 15_000
-): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  const keepAliveMsg = encoder.encode(': keep-alive\n\n')
-  let timer: ReturnType<typeof setInterval> | null = null
-  let ctrl: ReadableStreamDefaultController<Uint8Array> | null = null
-  let closed = false
-  const reader = stream.getReader()
-
-  function cleanup() {
-    if (timer) { clearInterval(timer); timer = null }
-  }
-
-  return new ReadableStream({
-    start(c) {
-      ctrl = c
-      timer = setInterval(() => {
-        if (closed || !ctrl) { cleanup(); return }
-        try { ctrl.enqueue(keepAliveMsg) } catch { closed = true; cleanup() }
-      }, intervalMs)
-    },
-    async pull(c) {
-      try {
-        const { done, value } = await reader.read()
-        if (done) { closed = true; cleanup(); c.close(); return }
-        c.enqueue(value)
-      } catch (err) {
-        closed = true; cleanup(); c.error(err)
-      }
-    },
-    cancel() { closed = true; cleanup(); reader.cancel() },
-  })
-}
 
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
@@ -1909,7 +1912,8 @@ app.post('/agent/chat', async (c) => {
       // Periodic seq heartbeat. The client uses this to know how many
       // buffered chunks it has already received so it can resume with
       // `?fromSeq=N` on a premature disconnect without re-rendering text
-      // it has already seen.
+      // it has already seen. Transient: the AI SDK would otherwise append
+      // a message part every 250ms for the whole turn.
       const seqHeartbeat = setInterval(() => {
         const seq = bufWriter.lastSeq
         if (seq <= 0) return
@@ -1917,6 +1921,7 @@ app.post('/agent/chat', async (c) => {
           writer.write({
             type: 'data-turn-seq',
             data: { turnId, seq },
+            transient: true,
           } as any)
         } catch {
           clearInterval(seqHeartbeat)
@@ -1982,7 +1987,7 @@ app.post('/agent/chat', async (c) => {
           },
         } as any)
         terminalFrameWritten = true
-        writer.write({ type: 'finish', finishReason: usage?.wasAborted ? 'abort' : 'stop' })
+        writer.write({ type: 'finish', finishReason: getStreamFinishReason(!!usage?.wasAborted) })
         turnSucceeded = true
 
         // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
@@ -2102,7 +2107,7 @@ app.post('/agent/chat', async (c) => {
     // If this client disconnects, only the replay subscriber is removed;
     // the background reader + agent keep running.
     const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
-    const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+    const wrappedStream = wrapSseStreamWithKeepalive(replayStream, 15_000)
     const responseHeaders = new Headers(response.headers)
     responseHeaders.set('X-Turn-Id', turnId)
     responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
@@ -2149,7 +2154,7 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
     return new Response(null, { status: 204 })
   }
 
-  const wrappedStream = wrapStreamWithKeepalive(replayStream, 15_000)
+  const wrappedStream = wrapSseStreamWithKeepalive(replayStream, 15_000)
   return new Response(wrappedStream, {
     headers: {
       'Content-Type': 'text/x-ai-sdk-ui-stream',
@@ -2541,6 +2546,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 
 import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
 import { cleanupStagingOutput } from './build-output-commit'
+import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -2765,6 +2771,9 @@ function getCanvasFileWatcher(): any {
   if (!_canvasFileWatcher) {
     const { CanvasFileWatcher } = require('./canvas-file-watcher')
     _canvasFileWatcher = CanvasFileWatcher.getInstance(WORKSPACE_DIR)
+    for (const mount of parseWorkspaceMounts()) {
+      void _canvasFileWatcher.addMountRoot(mount.path, mount.mount)
+    }
   }
   return _canvasFileWatcher
 }
@@ -2933,6 +2942,9 @@ function finishHydrate(entries: string[], destinationDir = WORKSPACE_DIR): void 
   // `/preview/start`.
   const anchorId = getAnchorProjectId()
   const isAnchorDir = anchorId != null && destinationDir === join(WORKSPACE_DIR, anchorId)
+  if (removePoolTemplateDist(destinationDir)) {
+    console.log(`[pool/hydrate] dropped pre-built template dist/ in ${destinationDir}`)
+  }
   if (destinationDir === WORKSPACE_DIR || isAnchorDir) scheduleHydrateRebuild()
 }
 
@@ -3027,6 +3039,34 @@ app.post('/pool/hydrate', async (c) => {
   }
 })
 
+/** Upper bound on the pre-export commit so a wedged git never blocks a host export. */
+const EXPORT_FLUSH_TIMEOUT_MS = 20_000
+
+/**
+ * Commit the live working tree before the host packs it, so the exported
+ * `.git` (and source) include every edit made since the last turn-complete.
+ * Without this the 2-minute host repo export only carries whatever the last
+ * turn happened to commit. Best-effort and bounded.
+ */
+async function flushGitBeforeExport(dir: string): Promise<void> {
+  if (!gitSyncInstance || dir !== WORKSPACE_DIR) return
+  // Mid-turn edits are committed at turn-complete; committing here would
+  // create a checkpoint for each tool call during a host-driven export.
+  if (!shouldFlushGitBeforeExport(activeStreams)) return
+  const sync = gitSyncInstance
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      gitLayerReady.then(() => sync.flush()),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, EXPORT_FLUSH_TIMEOUT_MS) }),
+    ])
+  } catch (err: any) {
+    console.warn('[pool/export] pre-export git flush failed:', err?.message ?? err)
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 // Metal write-side backup (host-driven). On stop/suspend the metal-agent calls
 // this to pull the project's LATEST source, then uploads it to the durable S3
 // backup ITSELF — the metal guest deliberately holds no S3 credentials. This is
@@ -3052,6 +3092,7 @@ app.post('/pool/export', async (c) => {
         suppressProjectArchive: true,
       })
     if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
+    await flushGitBeforeExport(destinationDir)
     const packed = await sync.packProjectArchive(tmp)
     if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
     const size = statSync(tmp).size
@@ -3095,6 +3136,7 @@ app.post('/pool/export-repo', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}))
     const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+    await flushGitBeforeExport(destinationDir)
     let excludeLfsObjects = false
     if (isLfsActive()) {
       const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
@@ -3116,6 +3158,53 @@ app.post('/pool/export-repo', async (c) => {
         unlinkSync(tmp)
       } catch {}
     }
+  }
+})
+
+// Metal cold-boot counterpart of `/pool/export-repo`. The host extracts the
+// durable `.git` into a staging dir (not over the live `.git`: a fresh guest
+// may have seeded one from the template) and then calls this to swap it in
+// and rebuild the working tree from its HEAD. See `adoptHydratedRepo`.
+//
+// A host that predates this endpoint never stages, so the legacy overlay
+// hydrate keeps working; a guest that predates it answers 404 and the host
+// re-applies the archive the legacy way.
+app.post('/pool/repo-hydrated', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  // Capability probe: the host asks before staging so an old guest never
+  // ends up with a stray `.git` inside its working tree.
+  if (body?.probe === true) return c.json({ ok: true, supported: true })
+  let stagingDir: string
+  try {
+    stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
+  }
+  if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
+
+  await gitLayerReady.catch(() => {})
+  const sync = gitSyncInstance
+  await sync?.pause()
+  try {
+    const res = await adoptHydratedRepo(WORKSPACE_DIR, stagingDir, { logger: console })
+    if (res.headSha) cachedRepoHeadSha = res.headSha
+    if (res.reset && isLfsActive()) {
+      // Smudge is skipped on checkout, so files the reset rewrote may be LFS
+      // pointers until their bytes are pulled.
+      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      if (lfsCfg) {
+        await lfsPull(lfsCfg).catch((err: any) =>
+          console.warn('[pool/repo-hydrated] git lfs pull failed:', err?.message ?? err),
+        )
+      }
+    }
+    if (res.reset) scheduleHydrateRebuild()
+    return c.json({ ok: true, ...res })
+  } catch (err: any) {
+    console.error('[pool/repo-hydrated] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'repo adopt failed' }, 500)
+  } finally {
+    sync?.resume()
   }
 })
 
@@ -3210,11 +3299,48 @@ app.post('/pool/export-data', async (c) => {
   }
 })
 
+/**
+ * Every PreviewManager this runtime has built, keyed by project id. The root
+ * manager is included (it runs the sidecar outside workspace mode).
+ */
+function allPreviewManagers(): Map<string, PreviewManager> {
+  const out = new Map<string, PreviewManager>(workspacePreviewManagers)
+  if (previewManager) {
+    const id = process.env.PROJECT_ID || 'root'
+    out.set(out.has(id) ? `${id}#root` : id, previewManager)
+  }
+  return out
+}
+
+/** Sidecar health for `/pool/activity`; undefined if polled before module init finishes. */
+function safePreviewHealth(): ReturnType<typeof sidecarHealth> | undefined {
+  try {
+    return sidecarHealth(allPreviewManagers())
+  } catch {
+    return undefined
+  }
+}
+
+// Metal suspend/resume hooks — see pool-lifecycle-hooks.ts.
+app.post('/pool/quiesce', async (c) => {
+  const projects = await quiesceSidecars(allPreviewManagers())
+  console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
+  return c.json({ ok: true, projects })
+})
+
+app.post('/pool/rehydrate', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
+  console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
+  return c.json({ ok: true, projects })
+})
+
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template
 // scripts call `/preview/rebuild`; without this they hit the SPA catch-all
 // and 404. Keep it a thin alias so existing callers just work.
 app.post('/preview/rebuild', async (c) => {
-  const pm = getPreviewManager()
+  const pm = getRootPreviewManager()
   const result = await pm.restart()
   return c.json(result)
 })
@@ -3839,9 +3965,12 @@ function getIndexEngine(): IndexEngine {
 const FILES_DIR = join(WORKSPACE_DIR, 'files')
 
 function resolveFilesPath(subPath: string): string | null {
-  const resolved = resolve(FILES_DIR, subPath)
-  if (!resolved.startsWith(resolve(FILES_DIR))) return null
-  return resolved
+  return resolveWithinRoot(FILES_DIR, subPath)
+}
+
+/** Root of the `?scope=project` path space — see workspace-file-routes.ts. */
+function projectScopeRoot(): string {
+  return projectScopeRootFor(WORKSPACE_DIR, getAnchorProjectId())
 }
 
 const MIME_EXTENSIONS: Record<string, string> = {
@@ -3940,192 +4069,15 @@ app.get('/agent/workspace/bundle', (c) => {
   return c.json({ files })
 })
 
-function resolveWorkspacePath(subPath: string): string | null {
-  const resolved = resolve(WORKSPACE_DIR, subPath)
-  if (!resolved.startsWith(resolve(WORKSPACE_DIR))) return null
-  return resolved
-}
-
-// Recursive file tree for the file browser UI.
-//
-// Without `?path=`, walks from the workspace root. With `?path=<rel>`, walks
-// just that subtree — used by the IDE to lazy-load `node_modules/`, `dist/`,
-// and friends only when the user expands them. The same three exclusion sets
-// apply at every depth, so a `node_modules/foo/node_modules` nested dep still
-// comes back as a `lazy: true` entry rather than recursing.
-app.get('/agent/workspace/tree', async (c) => {
-  const subPath = c.req.query('path') ?? ''
-  const rootResolved = resolve(WORKSPACE_DIR)
-  let startDir = WORKSPACE_DIR
-  if (subPath) {
-    const resolved = resolveWorkspacePath(subPath)
-    if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-    if (!existsSync(resolved)) return c.json({ error: 'Path not found' }, 404)
-    if (!statSync(resolved).isDirectory()) {
-      return c.json({ error: 'Path is not a directory' }, 400)
-    }
-    startDir = resolved
-  }
-  // `eagerDepth: 1` keeps first-paint cheap on big repos — the walker
-  // returns the requested dir's children plus one level of descent, with
-  // anything deeper marked `lazy: true`. The IDE fetches deeper subtrees
-  // on demand by hitting this same route with `?path=…`, which is exactly
-  // how lazy expansion already works for `node_modules` etc. See
-  // `apps/mobile/components/project/panels/ide/workspace/desktopFs.ts`
-  // and `sdkFs.ts` for the IDE-side handling.
-  // `signal: c.req.raw.signal` wires Hono's per-request abort straight
-  // into the walker. If the IDE navigates away mid-walk (close folder,
-  // panel-resize re-render, ⌘W during cold open) the underlying Fetch
-  // Request's signal fires, the walker's `withinBudget` flips on its
-  // next iteration, and we stop reading directories. Pre-2026-05-25 the
-  // walk ran to completion regardless and the client discarded the
-  // result, which on a 95k repo wasted ~3s of fs handles + event-loop
-  // budget per superseded request.
-  const tree = await walkFilesTree(startDir, rootResolved, {
-    hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
-    lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
-    hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
-    eagerDepth: 1,
-    signal: c.req.raw.signal,
-  })
-  return c.json({ tree })
-})
-
-// `isBinaryFilePath` / `BINARY_FILE_EXTENSIONS` are the canonical "should
-// this file be wire-encoded as base64?" predicate, imported above from
-// `@shogo/shared-runtime` (which re-exports `@shogo-ai/core/file-types`).
-// One source of truth across agent-runtime, IDE Workbench, live-edit
-// sync, and the local FS layer.
-
-// Read a file from the workspace. Text files come back as `content`
-// (utf-8 string); binary files come back as `contentBase64` (base64-
-// encoded raw bytes) — see `isBinaryFilePath` (canonical extension list
-// in `@shogo-ai/core/file-types`). Callers must branch on the `encoding`
-// field; the SDK's `readFile()` does this for you and throws if asked to
-// text-read a binary file.
-app.get('/agent/workspace/files/*', (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/files/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-
-  let target = resolved
-  if (!existsSync(resolved)) {
-    const fallback = resolveFilesPath(subPath)
-    if (!fallback || !existsSync(fallback)) {
-      return c.json({ error: 'File not found' }, 404)
-    }
-    target = fallback
-  }
-
-  const buf = readFileSync(target)
-  if (isBinaryFilePath(target) || isBinaryBuffer(buf)) {
-    return c.json({
-      path: subPath,
-      contentBase64: buf.toString('base64'),
-      encoding: 'base64',
-      bytes: buf.length,
-    })
-  }
-
-  const content = buf.toString('utf-8')
-  return c.json({ path: subPath, content, encoding: 'utf-8', bytes: content.length })
-})
-
-// Write/create a file in the workspace. Accepts either:
-//   { content: "<utf-8 string>" }                — text files
-//   { contentBase64: "<base64-encoded bytes>" } — binary files
-//
-// To prevent the read-as-utf-8 / write-as-utf-8 corruption round-trip
-// that previously bloated `.mp4` / `.zip` / etc. by ~2×, this endpoint
-// refuses to accept utf-8 `content` for any path that `isBinaryFilePath`
-// flags (see `@shogo-ai/core/file-types` for the canonical extension
-// list) — callers MUST send `contentBase64` for those. The SDK's
-// `writeFile()` covers this seamlessly for SDK users; raw HTTP callers
-// get a 400 with an explicit error.
-app.put('/agent/workspace/files/*', async (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/files/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-
-  const body = (await c.req.json()) as { content?: unknown; contentBase64?: unknown }
-  const dir = dirname(resolved)
-  mkdirSync(dir, { recursive: true })
-
-  if (typeof body.contentBase64 === 'string') {
-    let buf: Buffer
-    try {
-      buf = Buffer.from(body.contentBase64, 'base64')
-    } catch {
-      return c.json({ error: 'Invalid base64 in contentBase64' }, 400)
-    }
-    writeFileSync(resolved, buf)
-    notifyCanvasWorkspaceWrite(subPath, resolved)
-    return c.json({
-      ok: true,
-      path: subPath,
-      bytes: buf.length,
-      encoding: 'base64',
-    })
-  }
-
-  if (typeof body.content !== 'string') {
-    return c.json(
-      { error: 'Missing content (utf-8 string) or contentBase64' },
-      400,
-    )
-  }
-
-  const existingBytes = existsSync(resolved) ? readFileSync(resolved) : null
-  if (isBinaryFilePath(resolved) || (existingBytes && isBinaryBuffer(existingBytes))) {
-    return c.json(
-      {
-        error:
-          'Refusing to write a binary file path with utf-8 string content — use contentBase64 to avoid corruption',
-        path: subPath,
-      },
-      400,
-    )
-  }
-
-  writeFileSync(resolved, body.content, 'utf-8')
-  notifyCanvasWorkspaceWrite(subPath, resolved)
-  return c.json({
-    ok: true,
-    path: subPath,
-    bytes: body.content.length,
-    encoding: 'utf-8',
-  })
-})
-
-// Delete a file from the workspace
-app.delete('/agent/workspace/files/*', (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/files/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-  if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
-
-  unlinkSync(resolved)
-  notifyCanvasWorkspaceDelete(subPath)
-  return c.json({ ok: true, deleted: subPath })
-})
-
-// Create a directory
-app.post('/agent/workspace/mkdir', async (c) => {
-  const { path: dirPath } = await c.req.json() as { path: string }
-  if (!dirPath) return c.json({ error: 'Path required' }, 400)
-
-  const resolved = resolveFilesPath(dirPath)
-  if (!resolved) return c.json({ error: 'Path outside files directory' }, 400)
-
-  mkdirSync(resolved, { recursive: true })
-  return c.json({ ok: true, path: dirPath })
-})
+// Tree / read / write / delete / mkdir / download — see workspace-file-routes.ts
+// for the default vs `?scope=project` path spaces.
+app.route('/', workspaceFileRoutes({
+  workspaceDir: WORKSPACE_DIR,
+  filesDir: FILES_DIR,
+  getProjectRoot: projectScopeRoot,
+  onFileWritten: notifyCanvasWorkspaceWrite,
+  onFileDeleted: notifyCanvasWorkspaceDelete,
+}))
 
 // Upload files (multipart/form-data)
 app.post('/agent/workspace/upload', async (c) => {
@@ -4157,56 +4109,6 @@ app.post('/agent/workspace/upload', async (c) => {
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
   }
-})
-
-// Download a file
-const DOWNLOAD_MIME_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.pdf': 'application/pdf',
-  '.json': 'application/json',
-  '.txt': 'text/plain',
-  '.csv': 'text/csv',
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'application/javascript',
-}
-
-app.get('/agent/workspace/download/*', (c) => {
-  const subPath = c.req.path.replace('/agent/workspace/download/', '')
-  if (!subPath) return c.json({ error: 'Path required' }, 400)
-
-  let resolved = resolveWorkspacePath(subPath)
-  if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
-
-  if (!existsSync(resolved)) {
-    const fallback = resolveFilesPath(subPath)
-    if (fallback && existsSync(fallback)) {
-      resolved = fallback
-    } else {
-      return c.json({ error: 'File not found' }, 404)
-    }
-  }
-
-  const content = readFileSync(resolved)
-  const fileName = subPath.split('/').pop() || 'download'
-  const ext = extname(fileName).toLowerCase()
-  const contentType = DOWNLOAD_MIME_TYPES[ext] || 'application/octet-stream'
-  const isInline = contentType.startsWith('image/') || contentType === 'application/pdf'
-
-  return new Response(content, {
-    headers: {
-      'Content-Type': contentType,
-      'Content-Disposition': `${isInline ? 'inline' : 'attachment'}; filename="${fileName}"`,
-      'Content-Length': String(content.length),
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Access-Control-Allow-Origin': '*',
-    },
-  })
 })
 
 // Search files via RAG engine
@@ -4982,7 +4884,9 @@ const API_PROXY_STARTUP_PHASES: ReadonlySet<string> = new Set([
 ])
 
 app.all('/api/*', async (c) => {
-  const pm = getPreviewManager()
+  // Must match `/preview/status` and the root static serve: in workspace mode
+  // the anchor's manager owns the sidecar; the root-rooted one never starts.
+  const pm = getRootPreviewManager()
 
   // Short grace window for the spawn → bind gap. Without it, the SPA's
   // first `/api/*` fetch on a fresh project lands during cold-start (or
@@ -5231,6 +5135,12 @@ const STATIC_MIME: Record<string, string> = {
 
 app.get('/agent/canvas/stream', (c) => {
   const watcher = getCanvasFileWatcher()
+  // `?scope=project`: the IDE subscribes in the project's path space. Watcher
+  // events are merged-root-relative; keep only those under the project root
+  // and strip that prefix, so event paths match the scoped tree / file API.
+  const scopePrefix = c.req.query('scope') === 'project'
+    ? workspaceRelativePath(WORKSPACE_DIR, resolve(projectScopeRoot()))
+    : ''
 
   const stream = new ReadableStream({
     start(controller) {
@@ -5246,7 +5156,8 @@ app.get('/agent/canvas/stream', (c) => {
 
       // Subscribe to live updates
       const handler = (event: import('./canvas-file-watcher').CanvasEvent) => {
-        send(JSON.stringify(event))
+        const out = scopeCanvasEvent(event, scopePrefix)
+        if (out) send(JSON.stringify(out))
       }
       watcher.subscribe(handler)
 
@@ -5429,6 +5340,7 @@ app.route('/', runtimeDiagnosticsRoutes({
 app.route('/', runtimeLspRoutes({
   workspaceDir: WORKSPACE_DIR,
   getLspManager: () => agentGateway?.getLspManager?.() ?? null,
+  getProjectRoot: projectScopeRoot,
 }))
 
 // =============================================================================
@@ -6044,7 +5956,12 @@ async function initializeEssentials(): Promise<void> {
     console.log(`[agent-runtime] cloudSyncMode=${cloudSyncMode} (wantS3Layer2=${wantS3Layer2}, wantGit=${wantGitSync})`)
   }
 
-  if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+  let workspaceNewProjectIds: string[] = []
+  if (IS_WORKSPACE_RUNTIME && isHostMediatedDurability()) {
+    // Metal guests hold no object-store credentials; the host hydrates each
+    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict.
+    logTiming('Workspace S3 hydration skipped: host-mediated durability')
+  } else if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     // Workspace runtime: each attached project is stored under its own S3
     // prefix and lives in its own `<WORKSPACE_DIR>/<id>/` subfolder. A single
     // workspace-rooted `initializeS3Sync` (prefix = PROJECT_ID) would download
@@ -6055,7 +5972,7 @@ async function initializeEssentials(): Promise<void> {
     try {
       const interval = parseInt(process.env.S3_SYNC_INTERVAL || '30000', 10)
       const watchEnabled = process.env.S3_WATCH_ENABLED !== 'false'
-      const { hydrated, skipped, failed, syncs } = await hydrateWorkspaceMembers(
+      const { hydrated, skipped, failed, newProjects, syncs } = await hydrateWorkspaceMembers(
         WORKSPACE_DIR,
         WORKSPACE_RUNTIME_PROJECT_IDS,
         {
@@ -6067,6 +5984,7 @@ async function initializeEssentials(): Promise<void> {
             }),
         },
       )
+      workspaceNewProjectIds = newProjects
       workspaceMemberSyncs = syncs as Map<string, import('@shogo/shared-runtime').S3Sync>
       for (const sync of workspaceMemberSyncs.values()) {
         sync.startPeriodicSync()
@@ -6111,6 +6029,66 @@ async function initializeEssentials(): Promise<void> {
     } catch (error: any) {
       console.error('[agent-runtime] S3 sync init failed:', error.message)
     }
+  }
+
+  // A brand-new anchor project has no archive, so its member folder is empty
+  // and the anchor preview would have nothing to build. Give it the starter a
+  // single-project runtime would have seeded at boot.
+  //
+  // A warm pool VM already pre-seeded (and pre-built) that starter in the
+  // root; move it into the anchor instead of rebuilding it, and never leave
+  // it in the root, where the agent's relative paths would edit it.
+  let seededAnchorDir: string | null = null
+  if (IS_WORKSPACE_RUNTIME) {
+    const preseedSettled = poolPreseedDone
+      ? await Promise.race([
+          poolPreseedDone.then(() => true),
+          new Promise<boolean>((r) => setTimeout(() => r(false), POOL_PRESEED_WAIT_MS)),
+        ])
+      : true
+    const anchorId = process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    if (
+      anchorId &&
+      shouldSeedAnchorMember({
+        anchorProjectId: anchorId,
+        memberProjectIds: WORKSPACE_RUNTIME_PROJECT_IDS,
+        hostMediatedDurability: isHostMediatedDurability(),
+        newProjectIds: workspaceNewProjectIds,
+      })
+    ) {
+      const anchorDir = join(WORKSPACE_DIR, anchorId)
+      const techStackId = resolveMemberTechStackId(anchorId)
+      try {
+        const adoption = preseedSettled
+          ? adoptPoolPreseedIntoMember(WORKSPACE_DIR, anchorDir, {
+              basePath: buildWorkspacePreviewPath(anchorId),
+              techStackId,
+            })
+          : null
+        if (adoption?.adopted) {
+          seededAnchorDir = anchorDir
+          logTiming(
+            `Workspace runtime: adopted pool pre-seed into anchor ${anchorId} (${adoption.moved.length} entries, dist=${adoption.distReady ? 'prebuilt' : 'none'})`,
+          )
+        } else {
+          const { seeded } = seedEmptyWorkspaceMember(anchorDir, techStackId)
+          if (seeded) {
+            seededAnchorDir = anchorDir
+            logTiming(`Workspace runtime: seeded starter into empty anchor ${anchorId} (stack=${techStackId ?? 'default'})`)
+          }
+        }
+      } catch (error: any) {
+        console.error(`[agent-runtime] Seeding anchor ${anchorId} failed:`, error.message)
+      }
+    }
+    const discardRootPreseed = () => {
+      const removed = discardPoolPreseed(WORKSPACE_DIR)
+      if (removed.length) logTiming(`Workspace runtime: removed pool pre-seed from workspace root (${removed.join(', ')})`)
+    }
+    if (preseedSettled) discardRootPreseed()
+    else poolPreseedDone?.then(discardRootPreseed).catch(() => {})
+  } else if (poolPreseedDone) {
+    poolPreseedDone.then(() => discardPoolPreseedArtifacts(WORKSPACE_DIR)).catch(() => {})
   }
 
   // Instantiate GitWorkspaceSync in dual_shadow / git_only mode. The
@@ -6195,6 +6173,15 @@ async function initializeEssentials(): Promise<void> {
       } catch (error: any) {
         console.error('[agent-runtime] git repo bootstrap failed (falling back to S3 durability):', error.message)
       }
+      if (existsSync(join(WORKSPACE_DIR, '.git'))) {
+        const usable = await checkGitUsable(WORKSPACE_DIR)
+        if (!usable.ok) {
+          console.error(
+            `[agent-runtime] GIT_UNUSABLE workspace=${WORKSPACE_DIR} dubiousOwnership=${usable.dubiousOwnership} ` +
+              `uid=${process.getuid?.() ?? '?'} — per-turn commits will fail and nothing reaches durable history: ${usable.stderr}`,
+          )
+        }
+      }
       try {
         const sha = await getHeadSha(WORKSPACE_DIR)
         if (sha) cachedRepoHeadSha = sha
@@ -6212,7 +6199,10 @@ async function initializeEssentials(): Promise<void> {
           if (sha) cachedRepoHeadSha = sha
         })
         .catch(() => { /* logged by the helper */ })
-      const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+      // A host-mediated guest holds no S3 credentials, so the SDK's provider
+      // chain can only fail — and on metal it takes minutes to do so, holding
+      // up `gitLayerReady` and with it the host's repo hydrate.
+      const lfCfg = isHostMediatedDurability() ? null : largeFileSyncConfigFromEnv(WORKSPACE_DIR)
       if (lfCfg) {
         try {
           await restoreLargeFiles(lfCfg)
@@ -6253,6 +6243,7 @@ async function initializeEssentials(): Promise<void> {
         beforeStage: isLfsActive()
           ? async () => { await autoTrackLargeFiles(WORKSPACE_DIR) }
           : undefined,
+        stageExcludes: ['.shogo/local'],
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,
@@ -6370,11 +6361,23 @@ async function initializeEssentials(): Promise<void> {
     // `/p/:projectId/*` static route. `start()` is idempotent.
     const anchorId =
       process.env.WORKSPACE_ANCHOR_PROJECT_ID || WORKSPACE_RUNTIME_PROJECT_IDS[0]
-    const wpm = anchorId ? getWorkspacePreviewManager(anchorId) : null
+    const autoStartAnchor = shouldAutoStartAnchorPreview(anchorId)
+    const wpm = autoStartAnchor && anchorId ? getWorkspacePreviewManager(anchorId) : null
+    if (anchorId && !autoStartAnchor) {
+      logTiming(`Workspace runtime: anchor ${anchorId} is a folder-linked project without runtime enabled — preview not auto-started`)
+    }
     if (wpm && wpm.phase === 'idle') {
       logTiming(`Workspace runtime: auto-starting preview for anchor ${anchorId}`)
+      // A freshly seeded anchor takes the template's prebuilt node_modules
+      // (a local copy) rather than a network `bun install` inside start().
+      const anchorDepsDir = seededAnchorDir
       setTimeout(() => {
-        wpm.start().catch((err: any) =>
+        const depsReady = anchorDepsDir
+          ? ensureWorkspaceDeps(anchorDepsDir).catch((err: any) =>
+              console.error(`[agent-runtime] Anchor deps install failed for ${anchorId}:`, err.message),
+            )
+          : Promise.resolve()
+        depsReady.then(() => wpm.start()).catch((err: any) =>
           console.error(
             `[agent-runtime] Auto-start workspace preview failed for ${anchorId}:`,
             err.message,
@@ -6507,9 +6510,10 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // Gate the gateway's deps-dependent work (the LSP) on the background install
   // kicked off above / in essentials, instead of blocking the whole start.
   agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)
-  // Wire the runtime's API-server-owning PreviewManager into the gateway
-  // so prompt builders and tools can query/sync the project's backend.
-  agentGateway.attachApiServer(getPreviewManager())
+  // Wire the runtime's root-serving PreviewManager into the gateway so prompt
+  // builders/tools query the active backend, and vite-watch build completion
+  // emits canvas reload events for the preview the user is actually viewing.
+  agentGateway.attachApiServer(getRootPreviewManager())
   agentGateway.setLogCallback((line: string) => {
     appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {
@@ -6826,8 +6830,11 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
   logTiming('Pool mode: host pool, workspace prepared by the API at assign (pre-seed skipped)')
 } else if (state.isPoolMode && !state.poolAssigned) {
   logTiming('Pool mode: pre-seeding workspace with runtime template...')
+  const rootEntriesBeforePreseed = listRootEntries(WORKSPACE_DIR)
   ensureWorkspaceFiles()
-  ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
+  const poolTechStackId = resolveWorkspaceTechStackId(WORKSPACE_DIR) || null
+  let poolDistBuilt = false
+  poolPreseedDone = ensureWorkspaceDeps(WORKSPACE_DIR).then(async () => {
     workspaceStatus.depsInstalled = true
     logTiming('Pool mode: workspace deps pre-seeded')
 
@@ -6846,8 +6853,30 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
         console.error('[agent-runtime] Pool preview pre-warm failed:', err?.message ?? err)
       }
     }
+
+    // Only a workspace anchor consumes the pre-built dist (see
+    // workspace-pool-adopt.ts); skip it once a single-project assign landed.
+    if (!state.poolAssigned || IS_WORKSPACE_RUNTIME) {
+      poolDistBuilt = await getPreviewManager()
+        .buildPoolDist(poolDistDir(WORKSPACE_DIR), POOL_DIST_BASE_PLACEHOLDER)
+        .catch(() => false)
+      if (poolDistBuilt) logTiming('Pool mode: template dist pre-built')
+    }
   }).catch(err => {
     console.error('[agent-runtime] Pool pre-seed deps failed:', err.message)
+  }).finally(() => {
+    try {
+      writePoolPreseedManifest(WORKSPACE_DIR, {
+        entriesBefore: rootEntriesBeforePreseed,
+        techStackId: poolTechStackId,
+        distBuilt: poolDistBuilt,
+        exclude: IS_WORKSPACE_RUNTIME
+          ? [...WORKSPACE_RUNTIME_PROJECT_IDS, ...parseWorkspaceMounts().map((m) => m.mount)]
+          : [],
+      })
+    } catch (err: any) {
+      console.error('[agent-runtime] Pool pre-seed manifest failed:', err?.message ?? err)
+    }
   })
 
   // Pre-warm the skill-server's node_modules in parallel with the workspace

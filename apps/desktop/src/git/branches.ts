@@ -34,7 +34,10 @@ type ListResult = { ok: true; branches: BranchInfo[] } | { ok: false; error: str
  * are invalid in branch names so they can't collide.
  */
 export async function listBranches(root: string): Promise<ListResult> {
-  const FIELD_SEP = "\x00";
+  // `%00` asks git to emit a NUL without putting a NUL in the argv string.
+  // Node rejects literal NUL bytes in child-process arguments.
+  const FIELD_SEP = "%00";
+  const OUTPUT_FIELD_SEP = "\x00";
   const REC_SEP = "\x0c"; // form feed
   const fmt = [
     "%(refname)",
@@ -55,7 +58,7 @@ export async function listBranches(root: string): Promise<ListResult> {
   const branches: BranchInfo[] = [];
   for (const rec of res.stdout.split(REC_SEP)) {
     if (!rec.trim()) continue;
-    const parts = rec.split(FIELD_SEP);
+    const parts = rec.split(OUTPUT_FIELD_SEP);
     if (parts.length < 6) continue;
     const [refname, short, head, upstream, subject, committedAt] = parts;
     branches.push({

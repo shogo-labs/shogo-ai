@@ -31,6 +31,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, CardContent, Button, Badge } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { affiliateApi, buildReferralLink, type AffiliateSummary } from '../../../lib/affiliate-api'
+import {
+  ConnectCountryPicker,
+  type ConnectCountryCode,
+} from '../../../components/marketplace/ConnectCountryPicker'
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -405,8 +409,10 @@ function PayoutSetupCard({
 }: { summary: AffiliateSummary; onChanged: () => void | Promise<void> }) {
   const http = useDomainHttp()
   const [working, setWorking] = useState(false)
+  const [country, setCountry] = useState<ConnectCountryCode>('US')
   const verified = summary.affiliate.payoutStatus === 'verified'
   const status = summary.affiliate.payoutStatus ?? 'unverified'
+  const hasAccount = !!summary.affiliate.stripeCustomAccountId
 
   const onboard = useCallback(async () => {
     // Open the tab synchronously inside the click handler so popup blockers
@@ -417,7 +423,7 @@ function PayoutSetupCard({
         : null
     setWorking(true)
     try {
-      const res = await affiliateApi.onboardStripeConnect(http)
+      const res = await affiliateApi.onboardStripeConnect(http, hasAccount ? undefined : country)
       if (!res.onboardUrl) {
         if (popup) popup.close()
         return
@@ -437,7 +443,7 @@ function PayoutSetupCard({
     } finally {
       setWorking(false)
     }
-  }, [http, onChanged])
+  }, [http, onChanged, hasAccount, country])
 
   return (
     <Card>
@@ -452,10 +458,13 @@ function PayoutSetupCard({
           Referral and content earnings are paid to a Stripe-connected bank
           account.
         </Text>
+        {!verified && !hasAccount && (
+          <ConnectCountryPicker value={country} onChange={setCountry} disabled={working} />
+        )}
         {!verified && (
           <Button variant="secondary" onPress={onboard} disabled={working}>
             <Text className="text-foreground text-sm">
-              {working ? 'Loading…' : summary.affiliate.stripeCustomAccountId ? 'Resume payout setup' : 'Connect bank account'}
+              {working ? 'Loading…' : hasAccount ? 'Resume payout setup' : 'Connect bank account'}
             </Text>
           </Button>
         )}

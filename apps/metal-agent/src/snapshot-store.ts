@@ -84,6 +84,11 @@ export interface SnapshotMeta {
    */
   dataEtag?: string
   /**
+   * Workspace runtimes: `{memberId}/project-data.tar.gz` ETag per member, the
+   * per-member counterpart of `dataEtag`. Carried into AssignedVm.memberData.
+   */
+  memberDataEtags?: Record<string, string>
+  /**
    * ETag of the durable `.git` archive (`{projectId}/repo.git.tar.gz`) current
    * when this snapshot was taken. Carried back into AssignedVm.repoParentEtag
    * on resume.

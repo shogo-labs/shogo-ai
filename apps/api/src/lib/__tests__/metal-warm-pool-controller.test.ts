@@ -2,7 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { MetalWarmPoolController, NoMetalHostError, isAssignTimeout } from '../metal-warm-pool-controller'
+import {
+  MetalWarmPoolController,
+  NoMetalHostError,
+  isAssignTimeout,
+  workspaceRuntimeKey,
+} from '../metal-warm-pool-controller'
 import {
   MetalPlacementRegistry,
   _setMetalPlacementRegistry,
@@ -48,6 +53,12 @@ describe('MetalWarmPoolController', () => {
   })
   afterEach(() => {
     _setMetalPlacementRegistry(null)
+  })
+
+  it('isolates anchored project canvases within the same workspace', () => {
+    expect(workspaceRuntimeKey('workspace-1', 'project-a')).toBe('ws:proj:project-a')
+    expect(workspaceRuntimeKey('workspace-1', 'project-b')).toBe('ws:proj:project-b')
+    expect(workspaceRuntimeKey('workspace-1')).toBe('ws:workspace-1')
   })
 
   it('throws NoMetalHostError when no host has registered', async () => {
@@ -163,6 +174,64 @@ describe('MetalWarmPoolController', () => {
     await c.stopProject('p1') // stop (calls=2) — drops the cache
     await c.getMetalProjectUrl('p1') // must re-assign (calls=3), not serve stale
     expect(calls).toBe(3)
+  })
+
+  describe('recycleRuntime', () => {
+    it('asks the owning host to recycle with the open env, and drops the cached URL', async () => {
+      const posts: Array<{ path: string; body: any }> = []
+      const fetchImpl = (async (url: string, init: any) => {
+        const p = new URL(url).pathname
+        posts.push({ path: p, body: init?.body ? JSON.parse(init.body) : null })
+        if (p === '/recycle') {
+          return new Response(
+            JSON.stringify({ ok: true, aborted: false, steps: [{ step: 'destroy', ok: true }] }),
+            { status: 200 },
+          )
+        }
+        return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+      }) as any
+      const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+      c.registerHost(REG)
+      await c.getMetalProjectUrl('p1')
+
+      const r = await c.recycleRuntime('p1', {
+        reason: 'support ticket',
+        buildEnv: async () => ({ RUNTIME_AUTH_SECRET: 'tok' }),
+      })
+      expect(r).toMatchObject({ found: true, ok: true, hostId: 'ash-1' })
+      expect(posts.at(-1)).toEqual({
+        path: '/recycle',
+        body: { projectId: 'p1', force: false, reason: 'support ticket', env: { RUNTIME_AUTH_SECRET: 'tok' } },
+      })
+
+      // The next open must go back to the host (cold boot), not a cached URL.
+      await c.getMetalProjectUrl('p1')
+      expect(posts.at(-1)?.path).toBe('/assign')
+    })
+
+    it('reports an aborted recycle (409) as not ok, with the step report', async () => {
+      const fetchImpl = (async (url: string) => {
+        if (new URL(url).pathname === '/recycle') {
+          return new Response(
+            JSON.stringify({ ok: false, aborted: true, steps: [{ step: 'data', ok: false, detail: 'S3 503' }] }),
+            { status: 409 },
+          )
+        }
+        return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+      }) as any
+      const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+      c.registerHost(REG)
+      await c.getMetalProjectUrl('p1')
+
+      const r = await c.recycleRuntime('p1')
+      expect(r.ok).toBe(false)
+      expect(r.report?.steps).toEqual([{ step: 'data', ok: false, detail: 'S3 503' }])
+    })
+
+    it('reports not found when no host holds the runtime', async () => {
+      const c = new MetalWarmPoolController(fakeEnv(), (async () => new Response()) as any)
+      expect(await c.recycleRuntime('nowhere')).toEqual({ found: false, ok: false })
+    })
   })
 
   it('cordon drains: a cordoned host takes no new placements', async () => {
@@ -572,6 +641,7 @@ describe('control-plane auth headers', () => {
     await c.touch('p1')
     await c.getProjectStatus('p1').catch(() => {})
     await c.stopProject('p1').catch(() => {})
+    await c.recycleRuntime('p1').catch(() => {})
     await c.listProjects().catch(() => {})
 
     expect(captured.length).toBeGreaterThan(1)

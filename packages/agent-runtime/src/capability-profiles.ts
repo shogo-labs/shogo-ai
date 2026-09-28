@@ -78,12 +78,12 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
   // Standard file/web/messaging/etc. tools every profile keeps; broken out
   // so the classification test can verify 100% coverage without lumping
   // everything into CORE_TOOL_NAMES.
-  files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'search'],
+  files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'search', 'share_file'],
   web: ['web', 'browser'],
   memory: ['memory_read', 'memory_search'],
-  messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
+  messaging: ['send_message', 'notify_user', 'channel_connect', 'channel_disconnect', 'channel_list'],
   heartbeat: ['heartbeat_configure', 'heartbeat_status'],
-  integrations: ['search_integrations', 'connect', 'disconnect'],
+  integrations: ['search_integrations', 'connect', 'disconnect', 'github_create_pr'],
   audio: ['transcribe_audio'],
   planning: ['todo_write'],
 }

@@ -19,17 +19,26 @@ export function NativePhoneBottomFade({
   isDark,
   height,
   canvasHex,
+  endOpacity,
   style,
 }: {
   isDark: boolean
   height: number
   canvasHex?: string
+  /** Use 1 for docks that must fully obscure transcript text. */
+  endOpacity?: number
   style?: StyleProp<ViewStyle>
 }) {
   return (
     <LinearGradient
       pointerEvents="none"
-      colors={[...nativePhoneDockFadeColors(isDark, canvasHex ?? nativePhoneCanvas(isDark))]}
+      colors={[
+        ...nativePhoneDockFadeColors(
+          isDark,
+          canvasHex ?? nativePhoneCanvas(isDark),
+          endOpacity,
+        ),
+      ]}
       locations={[...NATIVE_PHONE_DOCK_FADE_LOCATIONS]}
       style={[{ height }, style]}
     />

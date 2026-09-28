@@ -371,6 +371,69 @@ function parseParallel(argv: string[]): { parallel: number; rest: string[] } {
   return { parallel, rest }
 }
 
+interface Shard {
+  index: number
+  total: number
+}
+
+function parseShard(argv: string[]): { shard: Shard | null; rest: string[] } {
+  const rest: string[] = []
+  let shard: Shard | null = null
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    const raw = arg === '--shard' ? argv[++i] : arg.startsWith('--shard=') ? arg.slice(8) : null
+    if (raw === null) {
+      rest.push(arg)
+      continue
+    }
+
+    const match = raw?.match(/^(\d+)\/(\d+)$/)
+    const index = Number(match?.[1])
+    const total = Number(match?.[2])
+    if (!match || !Number.isInteger(index) || !Number.isInteger(total) || index < 1 || index > total) {
+      console.error(`invalid --shard value: ${raw ?? '<missing>'} (expected INDEX/TOTAL, e.g. 1/3)`)
+      process.exit(2)
+    }
+    shard = { index, total }
+  }
+
+  return { shard, rest }
+}
+
+/**
+ * Assign larger files first to the currently lightest bucket. File size is a
+ * stable proxy for test cost and gives substantially better buckets than
+ * round-robin when one suite contains a few large integration files.
+ */
+function selectShard(files: string[], shard: Shard | null): string[] {
+  if (!shard) return files
+
+  const buckets = Array.from({ length: shard.total }, () => ({
+    files: [] as string[],
+    weight: 0,
+  }))
+  const weighted = files
+    .map((file) => {
+      try {
+        return { file, weight: statSync(file).size }
+      } catch {
+        return { file, weight: 1 }
+      }
+    })
+    .sort((a, b) => b.weight - a.weight || a.file.localeCompare(b.file))
+
+  for (const entry of weighted) {
+    const bucket = buckets.reduce((lightest, current) =>
+      current.weight < lightest.weight ? current : lightest,
+    )
+    bucket.files.push(entry.file)
+    bucket.weight += entry.weight
+  }
+
+  return buckets[shard.index - 1].files.sort()
+}
+
 /**
  * Resolve the `--roots a,b,c` flag from argv. Each entry is a directory
  * (relative to the package dir) to scan for test files.
@@ -412,7 +475,8 @@ async function main() {
   const wantCoverage = positionalRaw.includes('--coverage')
   const filteredRaw = positionalRaw.filter((a) => a !== '--coverage')
   const { roots: explicitRoots, rest: afterRoots } = parseRoots(filteredRaw)
-  const { parallel: parallelFlag, rest: positional } = parseParallel(afterRoots)
+  const { shard, rest: afterShard } = parseShard(afterRoots)
+  const { parallel: parallelFlag, rest: positional } = parseParallel(afterShard)
   // Coverage forces serial — Bun writes lcov.info relative to cwd.
   const effectiveParallel = wantCoverage ? 1 : parallelFlag
 
@@ -447,10 +511,11 @@ async function main() {
     : candidates.length
       ? candidates
       : [root]
-  const allFiles = searchRoots.flatMap(findTestFiles)
+  const discoveredFiles = searchRoots.flatMap(findTestFiles)
+  const allFiles = selectShard(discoveredFiles, shard)
 
   if (!allFiles.length) {
-    console.error(`no test files found under ${target}`)
+    console.error(`no test files found under ${target}${shard ? ` for shard ${shard.index}/${shard.total}` : ''}`)
     process.exit(1)
   }
 
@@ -459,7 +524,8 @@ async function main() {
     : effectiveParallel > 1
       ? ` (parallel ×${effectiveParallel})`
       : ''
-  console.log(`running ${allFiles.length} test files isolated under ${target}${modeNote}...`)
+  const shardNote = shard ? ` shard ${shard.index}/${shard.total}` : ''
+  console.log(`running ${allFiles.length} test files isolated under ${target}${shardNote}${modeNote}...`)
   console.log()
 
   let results: FileResult[]

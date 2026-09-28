@@ -16,6 +16,22 @@ export default function Root({ children }: PropsWithChildren) {
           content="width=device-width, initial-scale=1, shrink-to-fit=no"
         />
         <link rel="icon" href={`/favicon.ico?v=${encodeURIComponent(buildHash)}`} />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (() => {
+                try {
+                  const preference = window.localStorage.getItem('theme-preference')
+                  const isDark =
+                    preference === 'dark' ||
+                    (preference !== 'light' &&
+                      window.matchMedia('(prefers-color-scheme: dark)').matches)
+                  if (isDark) document.documentElement.classList.add('dark')
+                } catch {}
+              })()
+            `,
+          }}
+        />
 
         {/* Analytics scripts (Rewardful, GA4, FB Pixel) are injected post-export
             by scripts/inject-analytics.js — Expo "single" mode strips <script>

@@ -11,6 +11,18 @@ export {
 } from './s3-sync'
 
 export {
+  DEFAULT_SHOGO_AGENT_EMAIL,
+  DEFAULT_SHOGO_AGENT_NAME,
+  SHOGO_PR_FOOTER_MARKER,
+  getShogoAgentEmail,
+  getShogoAgentName,
+  shogoCoAuthorTrailer,
+  shogoPrFooter,
+  withShogoCommitTrailer,
+  withShogoPrFooter,
+} from './agent-attribution'
+
+export {
   PublishedDataSync,
   createPublishedDataSyncFromEnv,
   type PublishedDataSyncConfig,
@@ -26,10 +38,19 @@ export {
 } from './git-sync'
 
 export {
+  applyGitSafeDirectoryEnv,
+  checkGitUsable,
+  DUBIOUS_OWNERSHIP_RE,
+  type GitUsability,
+} from './git-safe-dir'
+
+export {
   ensureWorkspaceRepo,
   type EnsureWorkspaceRepoConfig,
   type EnsureWorkspaceRepoResult,
 } from './git-bootstrap'
+
+export { wrapSseStreamWithKeepalive } from './sse-keepalive'
 
 export {
   WorktreeManager,
@@ -53,8 +74,10 @@ export {
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
+  adoptHydratedRepo,
   repoExistsInStore,
   repoStoreConfigFromEnv,
+  type AdoptRepoResult,
   type RepoStoreConfig,
 } from './repo-store'
 

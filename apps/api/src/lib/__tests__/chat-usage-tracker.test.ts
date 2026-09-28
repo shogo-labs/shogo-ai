@@ -291,6 +291,67 @@ describe('teeChatStreamForBilling — proxy keepalive (line 194)', () => {
       globalThis.setInterval = origSetInterval
     }
   })
+
+  it('does not splice a proxy keepalive into an in-progress SSE frame', async () => {
+    const origSetInterval = globalThis.setInterval
+    let keepalive: (() => void) | null = null
+    globalThis.setInterval = ((fn: any) => {
+      keepalive = fn
+      return 1 as any
+    }) as any
+
+    const enc = new TextEncoder()
+    let pulls = 0
+    const upstream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++
+        if (pulls === 1) {
+          // Simulate a large tool-output JSON frame split across upstream
+          // chunks. The first chunk has not reached the SSE delimiter yet.
+          controller.enqueue(
+            enc.encode('data: {"type":"tool-output-available","output":{"text":"prefix'),
+          )
+          return
+        }
+        if (pulls === 2) {
+          // The old implementation enqueued this blind timer heartbeat before
+          // forwarding the remainder, producing the exact malformed payload
+          // from Sentry JAVASCRIPT-REACT-4F.
+          keepalive?.()
+          controller.enqueue(enc.encode(' suffix"}}\n\n'))
+          controller.close()
+        }
+      },
+    })
+
+    try {
+      const client = teeChatStreamForBilling(upstream, 'p-keepalive-splice')
+      const reader = client.getReader()
+      let text = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) text += new TextDecoder().decode(value)
+      }
+
+      const invalidPayloads: string[] = []
+      for (const frame of text.split('\n\n')) {
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          const payload = line.slice(5).trim()
+          if (!payload || payload === '[DONE]') continue
+          try {
+            JSON.parse(payload)
+          } catch {
+            invalidPayloads.push(payload)
+          }
+        }
+      }
+      expect(invalidPayloads).toEqual([])
+    } finally {
+      globalThis.setInterval = origSetInterval
+    }
+  })
 })
 
 describe('teeChatStreamForBilling — background reader error (lines 214-215)', () => {

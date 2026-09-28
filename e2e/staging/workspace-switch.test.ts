@@ -38,6 +38,9 @@ import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
  *      in apps/mobile/components/layout/sidebar/AppSidebar.tsx). This is
  *      faster and far less flaky than a *second paid* workspace, which
  *      requires hosted Stripe Checkout (apps/mobile/app/(app)/new-workspace.tsx).
+ *      The test account stays on the Free plan: Business/Enterprise admins
+ *      get a different flow (free child workspaces pooled under their plan;
+ *      see `usePooledWorkspaceCreation` in apps/mobile/hooks/).
  *
  * Run:
  *   npx playwright test --config e2e/playwright.config.ts workspace-switch
@@ -133,10 +136,12 @@ async function switchWorkspaceNarrow(page: Page, fromName: string, toName: strin
 /**
  * Creates the account's free `kind: 'team'` workspace via the sidebar's
  * "Create new workspace" flow. Assumes a wide (>=768px) viewport is active
- * and the account currently only owns `currentWorkspaceName` — the button
- * only opens the free `CreateWorkspaceModal` (rather than routing to paid
- * Stripe checkout) while `hasTeamWorkspace` is false, i.e. before this
- * runs. See `handleCreateWorkspace` in
+ * and the account currently only owns `currentWorkspaceName` — for a
+ * Free-plan account the button only opens the free `CreateWorkspaceModal`
+ * (rather than routing to paid Stripe checkout) while `hasTeamWorkspace` is
+ * false, i.e. before this runs. (Business/Enterprise admins always get the
+ * modal, which creates a pooled child workspace instead.) See
+ * `handleCreateWorkspace` in
  * apps/mobile/components/layout/sidebar/AppSidebar.tsx.
  */
 async function createFreeTeamWorkspace(

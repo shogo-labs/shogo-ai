@@ -61,6 +61,13 @@ class TestPool extends MetalWarmPool {
     return !this.muteIds.has(handle.id)
   }
 
+  /** Rescue is covered in pool-rescue.test.ts; here only the teardown matters. */
+  rescued: string[] = []
+  protected override async rescueWorkspace(a: AssignedVm, why: string): Promise<void> {
+    this.rescued.push(`${a.projectId}:${why}`)
+    await (this as any).mgr.stopVM(a.handle)
+  }
+
   /** A snapshot resume is never in play here — force the cold-boot/assign path. */
   override async canResume(): Promise<boolean> {
     return false

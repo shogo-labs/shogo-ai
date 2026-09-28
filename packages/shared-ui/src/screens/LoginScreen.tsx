@@ -362,6 +362,18 @@ function getPasswordStrength(password: string): { score: number; label: string; 
   return { score, ...levels[score] }
 }
 
+function authFieldStyles(darkSurface: boolean) {
+  return {
+    labelClassName: darkSurface
+      ? 'text-sm font-medium text-zinc-200'
+      : 'text-sm font-medium text-foreground',
+    inputClassName: darkSurface
+      ? 'border-zinc-700 bg-zinc-900 text-zinc-100'
+      : undefined,
+    placeholderTextColor: darkSurface ? '#A1A1AA' : undefined,
+  }
+}
+
 function SignInForm({
   onSignIn,
   onForgotPassword,
@@ -369,12 +381,21 @@ function SignInForm({
   error,
   onClearError,
   onScrollToBottom,
-}: Pick<LoginScreenProps, 'onSignIn' | 'onForgotPassword' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
+  darkSurface = false,
+}: Pick<LoginScreenProps, 'onSignIn' | 'onForgotPassword' | 'isLoading' | 'error' | 'onClearError'> & {
+  onScrollToBottom?: () => void
+  darkSurface?: boolean
+}) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [forgotSending, setForgotSending] = useState(false)
   const passwordRef = useRef<TextInput>(null)
+  const {
+    labelClassName,
+    inputClassName,
+    placeholderTextColor,
+  } = authFieldStyles(darkSurface)
 
   const focusPassword = () => {
     passwordRef.current?.focus()
@@ -404,7 +425,7 @@ function SignInForm({
   return (
     <View className="gap-4">
       <View className="gap-1.5">
-        <Text className="text-sm font-medium text-foreground">Email</Text>
+        <Text className={labelClassName}>Email</Text>
         <Input
           placeholder="you@example.com"
           keyboardType="email-address"
@@ -416,12 +437,14 @@ function SignInForm({
           returnKeyType="next"
           blurOnSubmit={false}
           onSubmitEditing={focusPassword}
+          className={inputClassName}
+          placeholderTextColor={placeholderTextColor}
         />
       </View>
 
       <View className="gap-1.5">
         <View className="flex-row justify-between items-center">
-          <Text className="text-sm font-medium text-foreground">Password</Text>
+          <Text className={labelClassName}>Password</Text>
           <Pressable
             onPress={handleForgotPassword}
             disabled={!onForgotPassword || forgotSending || isLoading}
@@ -450,6 +473,8 @@ function SignInForm({
             onSubmitEditing={handleSubmit}
             returnKeyType="go"
             onFocus={onScrollToBottom}
+            className={inputClassName}
+            placeholderTextColor={placeholderTextColor}
           />
           <PasswordVisibilityToggle
             showPassword={showPassword}
@@ -472,7 +497,17 @@ function SignInForm({
   )
 }
 
-function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom }: Pick<LoginScreenProps, 'onSignUp' | 'isLoading' | 'error' | 'onClearError'> & { onScrollToBottom?: () => void }) {
+function SignUpForm({
+  onSignUp,
+  isLoading,
+  error,
+  onClearError,
+  onScrollToBottom,
+  darkSurface = false,
+}: Pick<LoginScreenProps, 'onSignUp' | 'isLoading' | 'error' | 'onClearError'> & {
+  onScrollToBottom?: () => void
+  darkSurface?: boolean
+}) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -480,6 +515,11 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   const [showPassword, setShowPassword] = useState(false)
   const emailRef = useRef<TextInput>(null)
   const passwordRef = useRef<TextInput>(null)
+  const {
+    labelClassName,
+    inputClassName,
+    placeholderTextColor,
+  } = authFieldStyles(darkSurface)
 
   const isEmailValid = useMemo(() => isValidEmail(email), [email])
   const showEmailError = emailTouched && email.length > 0 && !isEmailValid
@@ -499,7 +539,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
   return (
     <View className="gap-4">
       <View className="gap-1.5">
-        <Text className="text-sm font-medium text-foreground">Name</Text>
+        <Text className={labelClassName}>Name</Text>
         <Input
           placeholder="Enter your name"
           autoCapitalize="words"
@@ -509,11 +549,13 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
           returnKeyType="next"
           blurOnSubmit={false}
           onSubmitEditing={() => emailRef.current?.focus()}
+          className={inputClassName}
+          placeholderTextColor={placeholderTextColor}
         />
       </View>
 
       <View className="gap-1.5">
-        <Text className="text-sm font-medium text-foreground">Email</Text>
+        <Text className={labelClassName}>Email</Text>
         <View className="relative">
           <Input
             ref={emailRef}
@@ -528,6 +570,8 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
             returnKeyType="next"
             blurOnSubmit={false}
             onSubmitEditing={focusPassword}
+            className={inputClassName}
+            placeholderTextColor={placeholderTextColor}
           />
           {emailTouched && email.length > 0 ? (
             <View className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -543,7 +587,7 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
       </View>
 
       <View className="gap-1.5">
-        <Text className="text-sm font-medium text-foreground">Password</Text>
+        <Text className={labelClassName}>Password</Text>
         <View className="relative">
           <Input
             ref={passwordRef}
@@ -555,6 +599,8 @@ function SignUpForm({ onSignUp, isLoading, error, onClearError, onScrollToBottom
             onSubmitEditing={handleSubmit}
             returnKeyType="go"
             onFocus={onScrollToBottom}
+            className={inputClassName}
+            placeholderTextColor={placeholderTextColor}
           />
           <PasswordVisibilityToggle
             showPassword={showPassword}
@@ -990,7 +1036,10 @@ function NativeMobileLoginPanel({
             {activeTab === 'signin' ? 'Log in to keep building.' : 'Start turning your ideas into software.'}
           </Text>
 
-          <View className="flex-row bg-secondary rounded-xl p-1 mb-5" role="tablist">
+          <View
+            className="mb-5 flex-row rounded-xl bg-zinc-800 p-1"
+            role="tablist"
+          >
             {(['signin', 'signup'] as Tab[]).map((tab) => (
               <Pressable
                 key={tab}
@@ -998,9 +1047,17 @@ function NativeMobileLoginPanel({
                 role="tab"
                 accessibilityState={{ selected: activeTab === tab }}
                 accessibilityLabel={tab === 'signin' ? 'Log in' : 'Sign up'}
-                className={cn('flex-1 py-3 rounded-lg items-center', activeTab === tab ? 'bg-card' : '')}
+                className={cn(
+                  'flex-1 items-center rounded-lg py-3',
+                  activeTab === tab && 'bg-zinc-900',
+                )}
               >
-                <Text className={cn('text-base font-medium', activeTab === tab ? 'text-foreground' : 'text-muted-foreground')}>
+                <Text
+                  className={cn(
+                    'text-base font-medium',
+                    activeTab === tab ? 'text-zinc-50' : 'text-zinc-400',
+                  )}
+                >
                   {tab === 'signin' ? 'Log in' : 'Sign up'}
                 </Text>
               </Pressable>
@@ -1015,6 +1072,7 @@ function NativeMobileLoginPanel({
               error={displayError}
               onClearError={dismissError}
               onScrollToBottom={scrollToBottom}
+              darkSurface
             />
           ) : (
             <SignUpForm
@@ -1023,6 +1081,7 @@ function NativeMobileLoginPanel({
               error={displayError}
               onClearError={dismissError}
               onScrollToBottom={scrollToBottom}
+              darkSurface
             />
           )}
 

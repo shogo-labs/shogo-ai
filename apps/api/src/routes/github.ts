@@ -468,7 +468,7 @@ export function githubRoutes(config: GitHubRoutesConfig) {
       const payload = await c.req.text();
 
       // Verify webhook signature
-      if (signature && !githubService.verifyWebhookSignature(payload, signature)) {
+      if (!signature || !githubService.verifyWebhookSignature(payload, signature)) {
         console.warn('[GitHub] Invalid webhook signature');
         return c.json({ error: 'Invalid signature' }, 401);
       }

@@ -50,7 +50,7 @@
 
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
-import { conditionalPutObject, type S3Target } from './s3-conditional'
+import { conditionalPutObject, copyObject, type S3Target } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
 /** A durable writable-state archive plus the ETag that anchors its lineage. */
@@ -110,6 +110,44 @@ export type DataWriteOutcome =
 /** Durable key for a project's writable-state archive. */
 export function dataArchiveKey(projectId: string): string {
   return `${projectId}/project-data.tar.gz`
+}
+
+/**
+ * End-of-day restore point: `project-data.tar.gz` as it stood when `date`
+ * (UTC, `YYYY-MM-DD`) ended. A lifecycle rule expires these after 30 days.
+ */
+export function dataDailyKey(projectId: string, date: string): string {
+  return `${projectId}/project-data/daily/${date}.tar.gz`
+}
+
+/** `YYYY-MM-DD` of `ms` in UTC. */
+export function utcDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10)
+}
+
+export type DailyCopyResult = 'copied' | 'exists' | 'no-source' | 'skipped'
+
+/**
+ * Server-side copy the current archive to the `date` restore point, unless
+ * that restore point already exists. Must run BEFORE the first overwrite of a
+ * new day so the copy holds the previous day's final state. "Exists" wins over
+ * copying because a later copy would hold today's data under yesterday's name.
+ * Errors propagate; the caller retries next cycle.
+ */
+export async function copyProjectDataToDaily(
+  projectId: string,
+  date: string,
+  cfg: MetalConfig,
+): Promise<DailyCopyResult> {
+  const s3 = workspaceS3(cfg)
+  const target = dataS3Target(cfg)
+  if (!s3 || !target) return 'skipped'
+  const destKey = dataDailyKey(projectId, date)
+  if (await s3.client.file(destKey).exists()) return 'exists'
+  const sourceKey = dataArchiveKey(projectId)
+  if (!(await s3.client.file(sourceKey).exists())) return 'no-source'
+  await copyObject({ target, sourceKey, destKey, timeoutMs: 120_000 })
+  return 'copied'
 }
 
 /**

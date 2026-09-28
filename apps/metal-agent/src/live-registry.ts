@@ -29,6 +29,19 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { join } from 'path'
 import type { VmNet } from './net'
 
+/**
+ * Writable-state lineage for one member of a merged-root workspace runtime —
+ * the per-member counterpart of AssignedVm.dataParentEtag / dataUntrustedReason
+ * plus the cadence bookkeeping used by the periodic exporter.
+ */
+export interface MemberDataState {
+  parentEtag?: string
+  untrustedReason?: string
+  lastUploadAt?: number
+  lastBytes?: number
+  lastDailyCopyDate?: string
+}
+
 export interface LiveVmEntry {
   projectId: string
   /** firecracker --id (the handle id). */
@@ -53,6 +66,8 @@ export interface LiveVmEntry {
   lastTouchedAt: number
   /** Snapshot files this VM was restored from (protected from orphan reclaim). */
   restoredFrom?: { vmstate: string; mem: string }
+  /** Golden-rootfs identity the guest booted from. See AssignedVm.bootRootfsIdentity. */
+  bootRootfsIdentity?: string
   /** Always-on (paid tier): reaper never idle-suspends; persisted for adopt. */
   alwaysOn?: boolean
   /** Guest RUNTIME_AUTH_SECRET — lets suspend call the guest `/pool/export`. */
@@ -81,6 +96,8 @@ export interface LiveVmEntry {
    * allowed to seed an archive. See AssignedVm.dataUntrustedReason.
    */
   dataUntrustedReason?: string
+  /** Per-member writable-state lineage for workspace runtimes. See AssignedVm.memberData. */
+  memberData?: Record<string, MemberDataState>
   /**
    * ETag of the durable `.git` archive this VM's repo descends from. Same
    * adopt-on-restart role as `dataParentEtag`.
@@ -88,6 +105,10 @@ export interface LiveVmEntry {
   repoParentEtag?: string
   /** Sticky: repo hydrate failed. Must survive adopt so we never launder it. */
   repoUntrustedReason?: string
+  /** See AssignedVm.stateSince. */
+  stateSince?: number
+  /** See AssignedVm.repoLinked. */
+  repoLinked?: boolean
   v: 1
 }
 

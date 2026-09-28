@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, it } from 'bun:test'
+import { join } from 'path'
 import {
   isWorkspaceRuntimeMode,
   workspaceKind,
@@ -17,7 +18,73 @@ import {
   isAttachedProjectId,
   parseWorkspacePreviewUrls,
   resolveRuntimeIdentity,
+  parseWorkspaceMounts,
+  workspaceExternalProjectIds,
+  shouldAutoStartAnchorPreview,
+  userOwnedTrustGroups,
+  defaultShellCwd,
+  type WorkspaceMount,
 } from '../workspace-runtime-mode'
+
+const MOUNTS: WorkspaceMount[] = [
+  { mount: 'anchor', path: '/home/u/repo', projectId: 'anchor', kind: 'external', runtimeEnabled: false },
+  { mount: 'lib', path: '/home/u/lib', projectId: 'anchor', kind: 'folder' },
+  { mount: 'managed-1', path: '/data/workspaces/managed-1', projectId: 'managed-1', kind: 'managed' },
+]
+const WS_ENV = { WORKSPACE_RUNTIME: 'true', WORKSPACE_MOUNTS: JSON.stringify(MOUNTS) } as any
+
+describe('workspace mounts', () => {
+  it('parses WORKSPACE_MOUNTS on workspace runtimes only', () => {
+    expect(parseWorkspaceMounts(WS_ENV)).toEqual(MOUNTS)
+    expect(parseWorkspaceMounts({ WORKSPACE_MOUNTS: JSON.stringify(MOUNTS) } as any)).toEqual([])
+  })
+
+  it('drops malformed entries and malformed JSON', () => {
+    const env = {
+      WORKSPACE_RUNTIME: 'true',
+      WORKSPACE_MOUNTS: JSON.stringify([...MOUNTS, { mount: '', path: '/x', projectId: 'p', kind: 'managed' }, { kind: 'bogus' }]),
+    } as any
+    expect(parseWorkspaceMounts(env)).toEqual(MOUNTS)
+    expect(parseWorkspaceMounts({ WORKSPACE_RUNTIME: 'true', WORKSPACE_MOUNTS: '{nope' } as any)).toEqual([])
+  })
+
+  it('identifies folder-linked members', () => {
+    expect([...workspaceExternalProjectIds(WS_ENV)]).toEqual(['anchor'])
+  })
+
+  it('does not auto-start preview for a folder-linked anchor unless runtime is enabled', () => {
+    expect(shouldAutoStartAnchorPreview('anchor', WS_ENV)).toBe(false)
+    expect(shouldAutoStartAnchorPreview('anchor', { ...WS_ENV, RUNTIME_ENABLED: 'true' })).toBe(true)
+    expect(shouldAutoStartAnchorPreview('managed-1', WS_ENV)).toBe(true)
+    expect(shouldAutoStartAnchorPreview(undefined, WS_ENV)).toBe(false)
+  })
+
+  it('groups user-owned mounts by the project whose trust governs them', () => {
+    expect(userOwnedTrustGroups(MOUNTS)).toEqual([
+      { projectId: 'anchor', external: true, roots: ['/home/u/repo', '/home/u/lib'] },
+    ])
+  })
+})
+
+describe('renderWorkspaceManifestMarkdown with mounts', () => {
+  it("marks the folder-linked project as the user's own folder and lists linked folders", () => {
+    const md = renderWorkspaceManifestMarkdown(
+      'ws-1',
+      [{ id: 'anchor', name: 'alignment-project-server' }, { id: 'managed-1', name: 'App' }],
+      MOUNTS,
+    )
+    expect(md).toContain("- `anchor/` — **alignment-project-server** (the user's own folder `/home/u/repo`)")
+    expect(md).toContain('- `managed-1/` — **App**\n')
+    expect(md).toContain('## Linked folders')
+    expect(md).toContain('- `lib/` — `/home/u/lib`')
+  })
+
+  it('renders no mount sections without user-owned mounts', () => {
+    const md = renderWorkspaceManifestMarkdown('ws-1', [{ id: 'managed-1', name: 'App' }], [MOUNTS[2]!])
+    expect(md).not.toContain('## Linked folders')
+    expect(md).not.toContain("user's own folder")
+  })
+})
 
 describe('resolveRuntimeIdentity', () => {
   it('resolves a workspace-mode personal identity', () => {
@@ -123,6 +190,16 @@ describe('renderWorkspaceManifestMarkdown', () => {
   })
   it('handles the empty case', () => {
     expect(renderWorkspaceManifestMarkdown('ws-1', [])).toContain('_No projects attached._')
+  })
+  it('names the open project folder so relative paths land in it', () => {
+    const md = renderWorkspaceManifestMarkdown('ws-1', [{ id: 'p1', name: 'alpha-api' }], [], 'p1')
+    expect(md).toContain('## Current project')
+    expect(md).toContain('`p1/` (**alpha-api**) open')
+    expect(md).toContain('`p1/src/App.tsx`')
+    // "clone this repo" is new work, not "this project"; it still belongs in the project folder.
+    expect(md).toContain('New work also goes inside `p1/`')
+    expect(md).toContain('clone repositories')
+    expect(renderWorkspaceManifestMarkdown('ws-1', [{ id: 'p1', name: 'alpha-api' }])).not.toContain('## Current project')
   })
 })
 
@@ -241,5 +318,38 @@ describe('parseWorkspacePreviewUrls', () => {
     expect(parseWorkspacePreviewUrls({ WORKSPACE_PREVIEW_URLS: '{}' } as any)).toEqual({})
     expect(parseWorkspacePreviewUrls({ WORKSPACE_RUNTIME: 'true', WORKSPACE_PREVIEW_URLS: '{bad' } as any)).toEqual({})
     expect(parseWorkspacePreviewUrls({ WORKSPACE_RUNTIME: 'true' } as any)).toEqual({})
+  })
+})
+
+describe('defaultShellCwd', () => {
+  const root = '/ws/.workspace-roots/proj-anchor'
+  const anchorEnv = (mounts: WorkspaceMount[]) => ({
+    WORKSPACE_RUNTIME: 'true',
+    WORKSPACE_ANCHOR_PROJECT_ID: 'anchor',
+    WORKSPACE_MOUNTS: JSON.stringify(mounts),
+  })
+  const everything = () => true
+
+  it('starts a merged-root shell in the anchor project mount', () => {
+    const env = anchorEnv([{ mount: 'anchor', path: '/ws/anchor', projectId: 'anchor', kind: 'managed' }])
+    expect(defaultShellCwd(root, env, everything)).toBe(join(root, 'anchor'))
+  })
+
+  it('uses the anchor mount, not an extra folder linked to the anchor', () => {
+    const env = anchorEnv([
+      { mount: 'repo', path: '/home/me/repo', projectId: 'anchor', kind: 'folder' },
+      { mount: 'anchor', path: '/home/me/app', projectId: 'anchor', kind: 'external' },
+    ])
+    expect(defaultShellCwd(root, env, everything)).toBe(join(root, 'anchor'))
+  })
+
+  it('falls back to the workspace root when the anchor mount is missing on disk', () => {
+    const env = anchorEnv([{ mount: 'anchor', path: '/ws/anchor', projectId: 'anchor', kind: 'managed' }])
+    expect(defaultShellCwd(root, env, () => false)).toBe(root)
+  })
+
+  it('leaves single-project runtimes and anchorless workspace runtimes alone', () => {
+    expect(defaultShellCwd('/ws/p1', {}, everything)).toBe('/ws/p1')
+    expect(defaultShellCwd(root, { WORKSPACE_RUNTIME: 'true' }, everything)).toBe(root)
   })
 })
