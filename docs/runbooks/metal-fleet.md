@@ -334,3 +334,80 @@ inflates p95). Cordon a saturated host.
 Fleet (partly) down. Check admin panel live-vs-desired; agent `register`
 warnings; that not every host is cordoned; `systemctl status metal-agent` on the
 hosts.
+
+### A user's runtime is stuck (API 502/503, `EADDRINUSE` on 3101)
+Symptom: the project's API returns 502/503 and the runtime log shows the API
+server crash-looping on `EADDRINUSE`. The usual cause is a process that was
+wedged when the VM was suspended: stop means suspend-to-snapshot, so every
+resume brings the wedged process back and it keeps holding the port. Stopping
+or reopening the project does not help. Guests with `/pool/quiesce` stop their
+API servers before each snapshot, which prevents most new cases.
+
+Do not use `DELETE /api/admin/pods/:projectId`. That is project-deletion
+teardown and does nothing for a metal runtime. Recycle instead. It backs up
+source, git, database and uploads from the live guest (resuming it first if only
+a snapshot exists), then stops it without a snapshot, so the next open
+cold-boots from the backups. Nothing in the user's code, schema or data changes.
+
+```bash
+curl -X POST https://studio.shogo.ai/api/admin/runtimes/recycle \
+  -H 'Content-Type: application/json' --cookie "$SUPER_ADMIN_SESSION" \
+  -d '{"projectId":"<projectId>","reason":"EADDRINUSE loop, ticket #123"}'
+```
+
+- `200`: recycled. `coldBoot.apiReady` says whether the API came back within
+  two minutes. `results[].report.steps` lists every backup step.
+- `409`: aborted, and nothing was removed. A step failed (S3 error, a
+  quarantined backup, an untrusted database, an agent turn in flight). The
+  report names the step. Fix the cause and retry. Only pass `"force": true` once
+  you have accepted losing whatever that step failed to save.
+- `404`: no host holds the runtime. It already cold-boots on next open.
+
+`workspaceId` targets a workspace-session runtime (`ws:<workspaceId>`) instead.
+Every call is logged as an `[admin-audit]` line with the actor, reason and step
+report.
+
+On a single host, the equivalent is `POST localhost:9900/recycle` with
+`{"projectId":"ws:proj:<id>","env":{...}}` and the control-plane bearer. Without
+the open `env`, a suspended workspace runtime cannot learn its members and the
+recycle aborts.
+
+#### API health watchdog (`METAL_API_WATCHDOG`)
+Each host also recycles on its own. Guests report every project's API server
+phase in `/pool/activity`. A runtime whose API server stays unhealthy (crashed,
+or stuck starting/restarting) for `METAL_API_UNHEALTHY_RECYCLE_MS` (default 10
+minutes), with no agent turn in flight, is recycled exactly as above, at most
+once an hour and twice a day per runtime. It runs in the idle-suspend scan, so
+it is inactive on a host with `METAL_IDLE_SUSPEND_MS=0`.
+
+- `observe` (default): logs `watchdog (observe): would recycle …` and counts
+  `metal_auto_recycle_observed_total`. Nothing is recycled.
+- `enforce`: recycles. Watch `metal_auto_recycle_ok_total`,
+  `metal_auto_recycle_aborted_total` (a backup failed, nothing removed) and
+  `metal_auto_recycle_rate_limited_total`.
+- `off`: disabled.
+
+`metal_api_unhealthy` is the number of live runtimes currently unhealthy, and
+`/vms` shows `apiUnhealthyMs` and `apiUnhealthyProjects` per VM. Run `observe`
+for a while and check that what it would have recycled matches real incidents
+before switching a host to `enforce`. A project that is broken in its own code
+stays unhealthy after a recycle, and the rate limit is what stops a loop.
+
+### Restoring a project's database from an earlier point
+Writable state (SQLite database + uploads) lives at
+`{projectId}/project-data.tar.gz` in `shogo-workspaces-<env>`, uploaded every 2
+minutes while it changes. Large databases (over
+`METAL_PROJECT_DATA_LARGE_BYTES`, default 100 MB) upload at most every
+`METAL_PROJECT_DATA_LARGE_MIN_INTERVAL_MS` (15 minutes); suspend and recycle
+always upload. Recovery points:
+
+- Last 24 hours: previous object versions of `project-data.tar.gz` (a
+  lifecycle rule reaps them after a day).
+  `oci os object list-object-versions -bn shogo-workspaces-production --prefix <projectId>/project-data.tar.gz`
+- Last 30 days: `{projectId}/project-data/daily/<YYYY-MM-DD>.tar.gz`, each the
+  state at the end of that UTC day.
+
+To restore, stop the project first (its final backup lands), then copy the
+chosen version over `project-data.tar.gz`. The copy gives the archive a new
+ETag, so the suspended snapshot counts as behind storage and the next open
+cold-boots and hydrates the restored archive instead of resuming.

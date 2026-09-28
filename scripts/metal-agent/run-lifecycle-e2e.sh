@@ -10,11 +10,16 @@
 #   - snapshot is pushed to the durable store, the hot local copy is evicted,
 #     and resume PULLS from the store (source=store) — cross-host mobility,
 #   - the rootfs-identity staleness guard rejects a mismatched snapshot.
+# With E2E=recycle it runs src/e2e-recycle.ts instead: recycle of a suspended
+# runtime, the in-flight-turn refusal, and the API watchdog (observe, enforce,
+# rate limit).
 #
 # Usage:
 #   SSH_TARGET=root@<host> bash scripts/metal-agent/run-lifecycle-e2e.sh
+#   SSH_TARGET=root@<host> E2E=recycle bash scripts/metal-agent/run-lifecycle-e2e.sh
 # Env:
 #   SSH_TARGET (required)  user@host
+#   E2E                    lifecycle (default) | recycle
 #   SSH_KEY                identity file
 #   WORK                   host artifact dir (default /opt/fc-spike)
 #   MEM_MIB                microVM memory (default 1024)
@@ -25,6 +30,8 @@ set -euo pipefail
 SSH_KEY="${SSH_KEY:-}"
 WORK="${WORK:-/opt/fc-spike}"
 MEM_MIB="${MEM_MIB:-1024}"
+E2E="${E2E:-lifecycle}"
+case "$E2E" in lifecycle|recycle) ;; *) echo "! E2E must be lifecycle or recycle"; exit 2 ;; esac
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="${OUT_DIR:-benchmarks}"
 STORE_DIR="${STORE_DIR:-$WORK/durable-snapshots}"
@@ -73,19 +80,21 @@ umount "\$MNT"
 echo "injected pool-agent + pool-init.sh into rootfs"
 EOF
 
-echo "== Run lifecycle e2e (durable store = fs @ $STORE_DIR) =="
+echo "== Run $E2E e2e (durable store = fs @ $STORE_DIR) =="
+rc=0
 ssh_ "rm -rf $STORE_DIR; cd ~/metal-agent && \
   METAL_WORK=$WORK METAL_GUEST_INIT=/usr/local/bin/pool-init.sh METAL_POOL_SIZE=1 METAL_MEM_MIB=$MEM_MIB \
   METAL_SNAP_STORE=fs METAL_SNAP_STORE_DIR=$STORE_DIR \
-  ~/.bun/bin/bun run src/e2e-lifecycle.ts"
+  ~/.bun/bin/bun run src/e2e-$E2E.ts" || rc=$?
 
 echo "== Copy results =="
 mkdir -p "$OUT_DIR"
-latest="$(ssh_ "ls -1t $WORK/e2e-lifecycle-results-*.json 2>/dev/null | head -1" || true)"
+latest="$(ssh_ "ls -1t $WORK/e2e-$E2E-results-*.json 2>/dev/null | head -1" || true)"
 if [[ -n "$latest" ]]; then
   scp_ "$SSH_TARGET:$latest" "$OUT_DIR/metal-$(basename "$latest")"
   echo "wrote $OUT_DIR/metal-$(basename "$latest")"
 else
-  echo "! no e2e-lifecycle-results json found on host"
+  echo "! no e2e-$E2E-results json found on host"
 fi
+[[ $rc -eq 0 ]] || { echo "! $E2E e2e failed (exit $rc)"; exit "$rc"; }
 echo "== Done =="

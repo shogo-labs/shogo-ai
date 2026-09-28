@@ -29,6 +29,19 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { join } from 'path'
 import type { VmNet } from './net'
 
+/**
+ * Writable-state lineage for one member of a merged-root workspace runtime —
+ * the per-member counterpart of AssignedVm.dataParentEtag / dataUntrustedReason
+ * plus the cadence bookkeeping used by the periodic exporter.
+ */
+export interface MemberDataState {
+  parentEtag?: string
+  untrustedReason?: string
+  lastUploadAt?: number
+  lastBytes?: number
+  lastDailyCopyDate?: string
+}
+
 export interface LiveVmEntry {
   projectId: string
   /** firecracker --id (the handle id). */
@@ -81,6 +94,8 @@ export interface LiveVmEntry {
    * allowed to seed an archive. See AssignedVm.dataUntrustedReason.
    */
   dataUntrustedReason?: string
+  /** Per-member writable-state lineage for workspace runtimes. See AssignedVm.memberData. */
+  memberData?: Record<string, MemberDataState>
   /**
    * ETag of the durable `.git` archive this VM's repo descends from. Same
    * adopt-on-restart role as `dataParentEtag`.

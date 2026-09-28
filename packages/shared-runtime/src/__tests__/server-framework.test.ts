@@ -244,6 +244,18 @@ describe('/pool/activity', () => {
     expect(body.idleSeconds).toBe(0)
     expect(body.lastSessionActivityAt).toBe(fixed)
     expect(body.repoHeadSha).toBeNull()
+    expect(body.previewHealth).toBeUndefined()
+  })
+
+  test('passes per-project sidecar health through for the metal watchdog', async () => {
+    const previewHealth = [{ projectId: 'p1', apiPhase: 'crashed', apiReady: false }]
+    const { app } = await buildApp({
+      config: {
+        getActivityStats: () => ({ activeSessions: 0, lastActivityAt: null, previewHealth }),
+      },
+    })
+    const body = await (await app.request('/pool/activity')).json()
+    expect(body.previewHealth).toEqual(previewHealth)
   })
 
   test('idleSeconds reflects elapsed time when no streams', async () => {

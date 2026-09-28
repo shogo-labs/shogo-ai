@@ -848,7 +848,13 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams, repoHeadSha: cachedRepoHeadSha }
+    return {
+      activeSessions: stats.length,
+      lastActivityAt: lastSessionActivity,
+      activeStreams,
+      repoHeadSha: cachedRepoHeadSha,
+      previewHealth: safePreviewHealth(),
+    }
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,
@@ -2539,6 +2545,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager } from './preview-manager'
+import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -3289,6 +3296,43 @@ app.post('/pool/export-data', async (c) => {
   } finally {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
+})
+
+/**
+ * Every PreviewManager this runtime has built, keyed by project id. The root
+ * manager is included (it runs the sidecar outside workspace mode).
+ */
+function allPreviewManagers(): Map<string, PreviewManager> {
+  const out = new Map<string, PreviewManager>(workspacePreviewManagers)
+  if (previewManager) {
+    const id = process.env.PROJECT_ID || 'root'
+    out.set(out.has(id) ? `${id}#root` : id, previewManager)
+  }
+  return out
+}
+
+/** Sidecar health for `/pool/activity`; undefined if polled before module init finishes. */
+function safePreviewHealth(): ReturnType<typeof sidecarHealth> | undefined {
+  try {
+    return sidecarHealth(allPreviewManagers())
+  } catch {
+    return undefined
+  }
+}
+
+// Metal suspend/resume hooks — see pool-lifecycle-hooks.ts.
+app.post('/pool/quiesce', async (c) => {
+  const projects = await quiesceSidecars(allPreviewManagers())
+  console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
+  return c.json({ ok: true, projects })
+})
+
+app.post('/pool/rehydrate', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
+  console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
+  return c.json({ ok: true, projects })
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template

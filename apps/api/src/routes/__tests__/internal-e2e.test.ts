@@ -430,3 +430,22 @@ describe('GET /subscription-state', () => {
     expect(body.wallet).toBeNull()
   })
 })
+
+describe('POST /recycle-runtime — gating', () => {
+  it('returns 503 in production without the override flag', async () => {
+    setEnv({ NODE_ENV: 'production', SHOGO_E2E_BOOTSTRAP_ENABLED: undefined })
+    const res = await app.fetch(jsonReq('/recycle-runtime', { projectId: 'p1' }, { secret: 'test-secret' }))
+    expect(res.status).toBe(503)
+  })
+
+  it('returns 401 without the shared secret', async () => {
+    const res = await app.fetch(jsonReq('/recycle-runtime', { projectId: 'p1' }, { secret: 'wrong' }))
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 400 without a projectId', async () => {
+    const res = await app.fetch(jsonReq('/recycle-runtime', {}, { secret: 'test-secret' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('projectId_required')
+  })
+})

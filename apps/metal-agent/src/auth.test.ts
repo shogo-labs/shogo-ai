@@ -56,6 +56,7 @@ describe('bucketPath (an internet-facing metric label must be bounded)', () => {
   test('known control paths label as themselves', () => {
     expect(bucketPath('/assign')).toBe('/assign')
     expect(bucketPath('/destroy')).toBe('/destroy')
+    expect(bucketPath('/recycle')).toBe('/recycle')
     expect(bucketPath('/vms')).toBe('/vms')
   })
 
@@ -148,7 +149,7 @@ describe('isAuthExempt', () => {
   })
 
   test('nothing else is exempt', () => {
-    for (const p of ['/assign', '/destroy', '/suspend', '/vms', '/metrics', '/touch', '/']) {
+    for (const p of ['/assign', '/destroy', '/recycle', '/suspend', '/vms', '/metrics', '/touch', '/']) {
       expect(isAuthExempt(p)).toBe(false)
     }
   })
@@ -238,7 +239,7 @@ describe('decideControlAuth: the internet does not', () => {
   })
 
   test('every mutating route is covered, not just the ones we remembered', () => {
-    for (const path of ['/assign', '/gc', '/suspend', '/resume', '/touch', '/status', '/stop', '/destroy', '/resize', '/vms', '/metrics']) {
+    for (const path of ['/assign', '/gc', '/suspend', '/resume', '/touch', '/status', '/stop', '/destroy', '/recycle', '/resize', '/vms', '/metrics']) {
       const r = decideControlAuth({ mode: 'enforce', path, expectedToken: TOKEN, peerIp: '203.0.113.9' })
       expect({ path, allow: r.allow }).toEqual({ path, allow: false })
     }

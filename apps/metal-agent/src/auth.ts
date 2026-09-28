@@ -69,6 +69,7 @@ const KNOWN_PATHS = new Set([
   '/status',
   '/stop',
   '/destroy',
+  '/recycle',
   '/resize',
 ])
 

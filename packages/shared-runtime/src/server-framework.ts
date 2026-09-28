@@ -57,6 +57,8 @@ export interface RuntimeAppConfig {
     activeStreams?: number
     /** Current git HEAD; metal host uses a change to trigger repo.git.tar.gz export. */
     repoHeadSha?: string | null
+    /** Per-project API sidecar state; the metal host recycles a runtime stuck unhealthy. */
+    previewHealth?: Array<{ projectId: string; apiPhase: string; apiReady: boolean }>
   }
   /**
    * Extra data to include in the /health response.
@@ -675,6 +677,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       lastAgentRequestAt: state.lastAgentRequestAt || null,
       poolAssigned: state.poolAssigned,
       repoHeadSha: activityStats.repoHeadSha ?? null,
+      ...(activityStats.previewHealth ? { previewHealth: activityStats.previewHealth } : {}),
     })
   })
 
