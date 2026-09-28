@@ -3532,7 +3532,21 @@ export class MetalWarmPool {
    * the placement as gone. Driven by the reaper timer in server.ts.
    */
   async reapDeadAssigned(): Promise<string[]> {
-    const dead = [...this.assigned.values()].filter((a) => !this.mgr.isRunning(a.handle))
+    // A suspend stops the Firecracker process at the snapshot, before it drops
+    // the entry from `assigned`; reaping in that window quarantined the disk
+    // the suspend was about to upload. Whoever holds the flight owns the VM.
+    const dead = [...this.assigned.values()].filter((a) => {
+      if (this.mgr.isRunning(a.handle)) return false
+      const busy = this.openFlight.has(a.projectId)
+        ? 'open'
+        : this.suspendFlight.has(a.projectId)
+          ? 'suspend'
+          : this.recycleFlight.has(a.projectId)
+            ? 'recycle'
+            : null
+      if (busy) console.log(`[pool] dead-VM sweep: leaving ${a.projectId} to its in-flight ${busy}`)
+      return !busy
+    })
     const reaped: string[] = []
     for (const a of dead) {
       console.warn(`[pool] reaping dead assigned VM ${a.handle.id} for ${a.projectId} (fc process gone)`)
