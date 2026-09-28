@@ -149,6 +149,7 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ steps.reg.outputs.registry }}/shogo/shogo-runtime-base:mx-${{ github.sha }}-${{ matrix.arch }}
             WORKSPACE_DEPS=${{ steps.reg.outputs.registry }}/shogo/shogo-workspace-deps:mx-${{ github.sha }}-${{ matrix.arch }}
+            SHOGO_RUNTIME_REVISION=${{ github.sha }}
           # Push by digest only; the merge job assembles the shared tag into a
           # manifest list from the two per-arch digests.
           outputs: type=image,name=${{ steps.reg.outputs.registry }}/shogo/shogo-runtime,push-by-digest=true,name-canonical=true,push=true
@@ -177,6 +178,8 @@ jobs:
     needs: [build]
     environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.manifest.outputs.image }}
     steps:
       - name: Download digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -196,6 +199,7 @@ jobs:
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Create + push multi-arch manifest
+        id: manifest
         env:
           REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
           PREFIX: ${{ inputs.environment || 'staging' }}
@@ -213,6 +217,7 @@ jobs:
             -t "${REPO}:${PREFIX}-multiarch-latest" \
             "${REPO}@${AMD64}" \
             "${REPO}@${ARM64}"
+          echo "image=${REPO}:${PREFIX}-multiarch-${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Verify manifest platforms
         env:
@@ -261,6 +266,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref_name }}
+          # The immutable tag this run just pushed, so hosts bake exactly this
+          # build and verify its revision instead of pulling `-multiarch-latest`.
+          RUNTIME_IMAGE: ${{ needs.merge.outputs.image }}
         run: |
           set -euo pipefail
           # One agent release per production control plane (each region is its own
@@ -278,5 +286,6 @@ jobs:
               --ref "$REF" \
               -f environment="$envn" \
               -f channel=stable \
-              -f rebuild_rootfs=true
+              -f rebuild_rootfs=true \
+              -f runtime_image="$RUNTIME_IMAGE"
           done

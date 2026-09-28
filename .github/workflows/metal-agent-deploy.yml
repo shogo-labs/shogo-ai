@@ -36,9 +36,17 @@
 #                              NODE_TLS_REJECT_UNAUTHORIZED=0 posture; the bearer
 #                              token is the security boundary. Leave unset for the
 #                              Cloudflare-fronted us/staging domains.
+#     METAL_RUNTIME_REGISTRY   registry hosts pull the runtime image from (optional;
+#                              default `<OCI_REGION>.ocir.io/<OCI_TENANCY_NAMESPACE>`).
+#                              Only used for a rebuild dispatched without
+#                              `runtime_image`. Every host pulls from us-ashburn-1,
+#                              so production-eu's own OCI_REGION is not it.
+#     OCI_REGION / OCI_TENANCY_NAMESPACE   used with the secrets below to confirm
+#                              a pinned runtime image exists before publishing
 #   Secrets:
 #     METAL_S3_ACCESS_KEY_ID / METAL_S3_SECRET_ACCESS_KEY   OCI customer S3 keys
 #     METAL_REGISTER_TOKEN     bearer for /api/internal/metal/* (same token hosts use)
+#     OCI_USERNAME / OCI_AUTH_TOKEN   OCIR login for the pinned-image check
 # =============================================================================
 
 name: Metal node-agent release
@@ -93,6 +101,11 @@ on:
         required: false
         default: false
         type: boolean
+      runtime_image:
+        description: "Immutable runtime image a rebuild bakes, e.g. <registry>/shogo/shogo-runtime:production-multiarch-<sha>. Blank = <env>-multiarch-<this commit> in METAL_RUNTIME_REGISTRY (or this environment's OCIR)."
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   # One release per environment+channel at a time; never cancel a mid-flight publish.
@@ -224,6 +237,44 @@ jobs:
           echo "bundle_url=s3://$BUCKET/$KEY" >> "$GITHUB_OUTPUT"
           echo "Published bundle: s3://$BUCKET/$KEY"
 
+      # A rebuild release names the exact image to bake. Hosts used to pull the
+      # moving `-multiarch-latest` tag, so a rebuild that ran before the new
+      # image finished publishing baked the previous guest code while stamping
+      # the new release (2026-09-23). With a pinned tag the host's pull fails
+      # until the image exists, and it checks the revision stamped inside the
+      # image before swapping it in. Checking here too turns a wrong or missing
+      # tag into a failed job instead of a fleet retrying a pull every heartbeat.
+      - name: Resolve and verify the pinned runtime image
+        id: pin
+        if: ${{ inputs.rebuild_rootfs || github.event_name == 'workflow_run' }}
+        env:
+          IMAGE_INPUT: ${{ inputs.runtime_image }}
+          REGISTRY: ${{ vars.METAL_RUNTIME_REGISTRY || format('{0}.ocir.io/{1}', vars.OCI_REGION, vars.OCI_TENANCY_NAMESPACE) }}
+          PREFIX: ${{ (inputs.environment || 'staging') == 'staging' && 'staging' || 'production' }}
+          OCI_NS: ${{ vars.OCI_TENANCY_NAMESPACE }}
+          OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
+          OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$IMAGE_INPUT" ]]; then
+            IMAGE="$IMAGE_INPUT"
+          else
+            IMAGE="${REGISTRY%/}/shogo/shogo-runtime:${PREFIX}-multiarch-$(git rev-parse HEAD)"
+          fi
+          REVISION=""
+          if [[ "${IMAGE##*:}" =~ -multiarch-([0-9a-f]{7,40})$ ]]; then
+            REVISION="${BASH_REMATCH[1]}"
+          else
+            echo "::warning::$IMAGE is not a <env>-multiarch-<sha> tag; hosts will bake it without checking its revision"
+          fi
+          echo "$OCI_AUTH_TOKEN" | docker login "${IMAGE%%/*}" -u "$OCI_NS/$OCI_USERNAME" --password-stdin >/dev/null
+          if ! docker buildx imagetools inspect "$IMAGE" >/dev/null; then
+            echo "::error::Pinned runtime image $IMAGE is not published. Publish it first (runtime-multiarch.yml) or pass runtime_image."
+            exit 1
+          fi
+          { echo "image=$IMAGE"; echo "revision=$REVISION"; } >> "$GITHUB_OUTPUT"
+          echo "::notice::Rebuild pinned to $IMAGE (revision ${REVISION:-unchecked})"
+
       - name: Flip channel pointer (POST /release)
         env:
           CP_URL: ${{ vars.METAL_CONTROL_PLANE_URL }}
@@ -239,6 +290,8 @@ jobs:
           # that's exactly the "guest code changed" signal.
           REBUILD: ${{ (inputs.rebuild_rootfs || github.event_name == 'workflow_run') && 'true' || 'false' }}
           INSECURE_TLS: ${{ vars.METAL_RELEASE_INSECURE_TLS }}
+          RUNTIME_IMAGE: ${{ steps.pin.outputs.image }}
+          RUNTIME_REVISION: ${{ steps.pin.outputs.revision }}
         run: |
           set -euo pipefail
           REGION="${REGION_INPUT:-$REGION_DEFAULT}"
@@ -247,7 +300,11 @@ jobs:
             --arg region "$REGION" --arg channel "$CHANNEL" \
             --arg version "$VERSION" --arg url "$BUNDLE_URL" --arg sha "$SHA256" \
             --argjson rebuild "$REBUILD" \
-            '{region:$region, channel:$channel, release:({version:$version, bundleUrl:$url, sha256:$sha} + (if $rebuild then {rebuildRootfs:true} else {} end))}')
+            --arg image "$RUNTIME_IMAGE" --arg revision "$RUNTIME_REVISION" \
+            '{region:$region, channel:$channel, release:({version:$version, bundleUrl:$url, sha256:$sha}
+              + (if $rebuild then {rebuildRootfs:true} else {} end)
+              + (if $rebuild and $image != "" then {runtimeImage:$image} else {} end)
+              + (if $rebuild and $revision != "" then {runtimeRevision:$revision} else {} end))}')
           echo "Publishing release: $BODY"
           # Regional control planes with no publicly-trusted cert (eu sslip origin)
           # opt into -k; the fleet itself runs NODE_TLS_REJECT_UNAUTHORIZED=0 and the
