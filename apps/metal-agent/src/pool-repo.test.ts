@@ -266,14 +266,14 @@ describe('pool host-mediated repo persist', () => {
       expect(a.workspaceOrigin).toBe('backup')
     })
 
-    test('stays template-origin when the repo hydrate fails', async () => {
+    test('fails closed when workspace repo hydrate fails instead of serving a stale template runtime', async () => {
       const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
       ;(pool as any).hydrateRepo = async () => {
         throw new Error('The operation timed out.')
       }
-      const a = await run
-      expect(a.repoUntrustedReason).toBeDefined()
-      expect(a.workspaceOrigin).toBe('template')
+
+      await expect(run).rejects.toThrow('The operation timed out.')
+      expect((pool as any).assigned.has('ws:proj:p1')).toBe(false)
     })
 
     test('stays create-only when no durable repo exists yet', async () => {

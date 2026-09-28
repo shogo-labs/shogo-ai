@@ -1320,6 +1320,17 @@ export class MetalWarmPool {
     } catch (err: any) {
       const reason = `repo hydrate failed at assign (${err?.message ?? err})`
       this.distrustRepo(a, reason)
+      if (projectId.startsWith('ws:')) {
+        console.error(
+          `[pool] repo hydrate failed for ${projectId} — failing closed instead of serving an ` +
+            `untrusted workspace runtime:`,
+          err?.message ?? err,
+        )
+        this.assigned.delete(projectId)
+        this.live.remove(projectId)
+        await this.mgr.stopVM(vm.handle).catch(() => {})
+        throw err
+      }
       console.error(
         `[pool] repo hydrate failed for ${projectId} — booting with the source's ` +
           `.git. This VM is marked UNTRUSTED for repo.git.tar.gz and will NOT overwrite it:`,
