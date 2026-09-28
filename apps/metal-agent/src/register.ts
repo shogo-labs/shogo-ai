@@ -20,7 +20,7 @@
 import { config } from './config'
 import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
-import { getRootfsSha, maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
+import { getRootfsRevision, getRootfsSha, maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
 
 function payload(pool: MetalWarmPool) {
   const s = pool.status()
@@ -40,6 +40,10 @@ function payload(pool: MetalWarmPool) {
     // one and stale on the other — reporting both is what makes that skew
     // visible without SSHing in to cat ROOTFS_SHA.
     rootfsSha: getRootfsSha() ?? undefined,
+    // The commit stamped inside the image itself. rootfsSha records which
+    // release asked for the rebuild, not what the pull returned; the release
+    // gate (scripts/ci/metal-rootfs-gate.sh) reads this one.
+    rootfsRevision: getRootfsRevision() ?? undefined,
     capacity: { poolSize: config.poolSize, memMiB: config.memMiB, vcpus: config.vcpus },
     // Per-VM-class capacity (Phase 1 docker project class). `classes` is the
     // ONLY place a host declares it can run a non-standard class — the control
