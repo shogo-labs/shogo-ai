@@ -388,6 +388,7 @@ a project during the job get a normal cold boot, and the job skips that project.
 | `METAL_REWARM_SETTLE_MS` | 2 minutes | How long the new sha must hold before a job starts |
 | `METAL_REWARM_MAX_HOST_UTIL_PCT` | `75` | Wait while a host is busier than this |
 | `METAL_PLACEMENT_TTL_S` | 7 days | How long the API remembers which host holds a runtime |
+| `METAL_STOP_TIMEOUT_MS` | 90 seconds | How long the API waits for a host to suspend a runtime |
 
 The placement TTL matters here. If the API forgets where a suspended runtime
 lives, the next open goes to a different host and cold-boots, which wastes the

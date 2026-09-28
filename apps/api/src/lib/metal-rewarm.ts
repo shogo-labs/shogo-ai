@@ -140,6 +140,7 @@ const MAX_CONCURRENCY = 12
 const IN_USE_IDLE_MS = 10 * 60_000
 const BOOT_DEADLINE_MS = 180_000
 const POLL_MS = 3_000
+const SUSPEND_SETTLE_MS = 120_000
 const CAPACITY_POLL_MS = 15_000
 const PAUSE_POLL_MS = 10_000
 const RECENT_ITEMS = 50
@@ -296,7 +297,18 @@ export async function runRewarm(
 
     const stopped = await deps.stop(c.key)
     if (stopped.busy) return { outcome: 'busy', hostId: after?.hostId }
-    if (!stopped.suspended) return { outcome: 'suspend-failed', hostId: after?.hostId }
+    if (!stopped.suspended) {
+      // The host keeps suspending after the control plane stops waiting.
+      const stopWaitStart = deps.now()
+      let settled = await deps.runtimeStatus(c.key).catch(() => null)
+      while (settled?.state === 'assigned' && deps.now() - stopWaitStart < SUSPEND_SETTLE_MS) {
+        await deps.sleep(POLL_MS)
+        settled = await deps.runtimeStatus(c.key).catch(() => null)
+      }
+      if (settled?.state !== 'suspended' || settled.rootfsFresh !== true) {
+        return { outcome: 'suspend-failed', hostId: after?.hostId }
+      }
+    }
     return {
       outcome: ready ? 'warmed' : 'warmed-api-not-ready',
       hostId: after?.hostId,

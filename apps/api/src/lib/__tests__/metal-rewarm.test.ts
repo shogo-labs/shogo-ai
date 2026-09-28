@@ -239,6 +239,24 @@ describe('runRewarm per-key flow', () => {
     expect(s.counts).toEqual({ busy: 1, 'suspend-failed': 1 })
   })
 
+  test('a stop that timed out counts once the host finishes suspending', async () => {
+    const h = harness()
+    h.deps.stop = async (key) => {
+      h.stopped.push(key)
+      return { suspended: false, busy: false }
+    }
+    const pollsAfterStop = new Map<string, number>()
+    h.deps.runtimeStatus = async (key) => {
+      if (!h.booted.includes(key)) return null
+      if (!h.stopped.includes(key) || key === 'ws:proj:stuck') return assigned({ rootfsFresh: true })
+      const n = (pollsAfterStop.get(key) ?? 0) + 1
+      pollsAfterStop.set(key, n)
+      return n < 3 ? assigned({ rootfsFresh: true }) : { hostId: 'h1', region: 'us', state: 'suspended', rootfsFresh: true }
+    }
+    const s = await runRewarm(opts, h.deps, [cand('slow'), cand('stuck')], cfg)
+    expect(s.counts).toEqual({ warmed: 1, 'suspend-failed': 1 })
+  })
+
   test('retries a boot that is still coming up, then gives up at the deadline', async () => {
     let calls = 0
     const h = harness({
