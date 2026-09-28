@@ -148,6 +148,7 @@ node_modules/
 dist/
 dist.staging/
 dist.canvas.staging/
+dist.publish.staging/
 dist.prev/
 build/
 .output/
@@ -263,8 +264,9 @@ const REQUIRED_IGNORE_ENTRIES = [
   // PreviewManager owns `dist.staging/`; CanvasBuildManager owns
   // `dist.canvas.staging/` (separate name so their concurrent
   // cleanups can't race — see canvas-build-manager.ts docstring).
-  // All four are regenerated on every build and should never be
-  // checkpointed: leaving them tracked bloats every commit, slows
+  // `dist.publish.staging/` is the root-based one-shot artifact used only
+  // while publishing. All five are regenerated build output and should never
+  // be checkpointed: leaving them tracked bloats every commit, slows
   // rollbacks, lets a rollback restore stale build artifacts that no
   // longer match source, and — most acutely — races `git add -A`
   // against the bundler renaming files mid-walk, leaving a stale
@@ -273,6 +275,7 @@ const REQUIRED_IGNORE_ENTRIES = [
   'dist/',
   'dist.staging/',
   'dist.canvas.staging/',
+  'dist.publish.staging/',
   'dist.prev/',
   'build/',
   '.output/',
@@ -309,6 +312,7 @@ const UNTRACK_IF_TRACKED: readonly string[] = [
   'dist',
   'dist.staging',
   'dist.canvas.staging',
+  'dist.publish.staging',
   'dist.prev',
   'build',
   '.output',

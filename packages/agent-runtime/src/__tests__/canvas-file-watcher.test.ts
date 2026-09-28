@@ -415,7 +415,9 @@ describe('buildIgnoreGlobs (.gitignore feed → chokidar globs)', () => {
     // And the baseline contains every hard-coded prefix, root-anchored.
     expect(explicit).toContain(`${tmpDir}/node_modules`)
     expect(explicit).toContain(`${tmpDir}/.git`)
+    expect(explicit).toContain(`${tmpDir}/dist.publish.staging`)
     expect(explicit).toContain('**/node_modules')
+    expect(explicit).toContain('**/dist.publish.staging')
   })
 
   test('multiple gitignored dirs each get the 4-glob expansion', () => {

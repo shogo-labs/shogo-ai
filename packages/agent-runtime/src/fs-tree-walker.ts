@@ -66,7 +66,7 @@ export const WORKSPACE_TREE_HIDDEN_DIRS: ReadonlySet<string> = new Set([
 export const WORKSPACE_TREE_LAZY_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   'dist', 'build',
-  'dist.canvas.staging', 'dist.staging', 'dist.prev',
+  'dist.canvas.staging', 'dist.staging', 'dist.publish.staging', 'dist.prev',
   '.next', '.cache', '.turbo', '.parcel-cache',
   'coverage', '.nyc_output',
   '__pycache__', '.venv', 'venv',

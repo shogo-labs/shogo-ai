@@ -112,10 +112,11 @@ const IGNORED_PATH_PREFIXES = [
   // even after the full retry budget. POSIX doesn't care, but the cost
   // of watching these dirs is zero either way — they contain build
   // artefacts, never source files anyone wants live-edit events for.
-  // Keep in sync with the staging names in build-output-commit.ts and
-  // canvas-build-manager.ts.
+  // Keep in sync with the staging names in build-output-commit.ts,
+  // canvas-build-manager.ts, and preview-manager.ts.
   'dist.canvas.staging',
   'dist.staging',
+  'dist.publish.staging',
   'dist.prev',
   'build',
   '.next',
@@ -243,6 +244,7 @@ function buildIgnoreGlobs(
     'dist',
     'dist.canvas.staging',
     'dist.staging',
+    'dist.publish.staging',
     'dist.prev',
     'build',
     '.next',

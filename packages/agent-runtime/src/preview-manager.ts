@@ -41,6 +41,9 @@ import {
  */
 const FORWARD_RUNTIME_LOGS_TO_SIGNOZ = process.env.OTEL_SERVICE_NAME === 'shogo-desktop-runtime'
 
+/** Separate artifact directory used by publish builds in workspace runtimes. */
+export const PUBLISH_STAGING_DIR = 'dist.publish.staging'
+
 /**
  * Matches the "disk is full" build failure mode (09-21 prod pain point:
  * a workspace `emptyDir` reported "14GB/14GB"). vite/esbuild/bun all
@@ -819,6 +822,20 @@ export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'r
 /** Shared return shape for {@link PreviewManager.start} and {@link PreviewManager.restart}. */
 export type PreviewStartResult = { mode: string; port: number | null; timings: Record<string, number> }
 
+type PublishBuildResult = {
+  ok: boolean
+  error?: string
+}
+
+type OneShotBuildOptions = {
+  /** Public base for the generated bundle. Published apps always use `/`. */
+  basePath?: string | null
+  /** Staging directory to write without replacing the live preview build. */
+  stagingDir?: string
+  /** Promote the staging directory into the live preview `dist/`. */
+  promote?: boolean
+}
+
 /**
  * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
  * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
@@ -977,6 +994,14 @@ export class PreviewManager {
    */
   private lifecycleInFlight: Promise<PreviewStartResult> | null = null
   private lifecyclePending = false
+  /**
+   * A publish build writes a root-based artifact to `dist.publish.staging`.
+   * Coalesce overlapping requests for the same project so two publishing
+   * workers cannot delete or overwrite that temporary directory midway through
+   * an upload. This is deliberately separate from the Canvas lifecycle: its
+   * output directory is separate, so a publish never replaces `dist/`.
+   */
+  private publishBuildInFlight: Promise<PublishBuildResult> | null = null
   /**
    * Reentrancy guard for `runExpoExportWeb`. Without it, the staging-pod
    * boot path can spawn `expo export --platform web` twice in parallel:
@@ -1169,6 +1194,15 @@ export class PreviewManager {
     } catch {
       return 'vite'
     }
+  }
+
+  /** Resolve the platform-specific Vite shim for one-shot builds. */
+  private resolveViteBin(cwd: string): string | undefined {
+    const binDir = join(cwd, 'node_modules', '.bin')
+    const candidates = process.platform === 'win32'
+      ? [join(binDir, 'vite.CMD'), join(binDir, 'vite.cmd'), join(binDir, 'vite.exe')]
+      : [join(binDir, 'vite')]
+    return candidates.find((p) => existsSync(p))
   }
 
   /**
@@ -1942,6 +1976,73 @@ export class PreviewManager {
    */
   async restart(): Promise<PreviewStartResult> {
     return this.runLifecycle('restart')
+  }
+
+  /**
+   * Build a publishable artifact without changing the live canvas preview.
+   *
+   * Workspace previews intentionally compile with `/p/<projectId>/` so their
+   * assets resolve through the multiplexed runtime. Published apps are
+   * uploaded to the root of their own hostname, so reusing that preview build
+   * produces a bundle whose script/style/API URLs can never resolve there.
+   * Keep the two build products separate: the canvas stays path-prefixed while
+   * the publisher receives a root-based artifact from `dist.publish.staging`.
+   */
+  async buildForPublish(): Promise<PublishBuildResult> {
+    if (this.publishBuildInFlight) {
+      console.log(`[${LOG_PREFIX}] publish build already running — awaiting in-flight build`)
+      return this.publishBuildInFlight
+    }
+    this.publishBuildInFlight = this._buildForPublish().finally(() => {
+      this.publishBuildInFlight = null
+    })
+    return this.publishBuildInFlight
+  }
+
+  private async _buildForPublish(): Promise<PublishBuildResult> {
+    const cwd = this.bundlerCwd
+    if (!existsSync(join(cwd, 'package.json'))) {
+      return { ok: false, error: `No package.json found in ${cwd}` }
+    }
+
+    const timings: Record<string, number> = {}
+    try {
+      await this.installDepsIfNeeded(timings, cwd)
+      await this.runPrismaIfNeeded(timings)
+
+      const devServer = this.resolveDevServer()
+      if (devServer === 'vite') {
+        const viteBin = this.resolveViteBin(cwd)
+        if (!viteBin) return { ok: false, error: 'Vite is not installed in the project' }
+        const buildLogPath = previewBuildLogPath(this.workspaceDir)
+        const isWindows = process.platform === 'win32'
+        const ok = await this.runViteOneShotBuild(viteBin, cwd, buildLogPath, isWindows, {
+          basePath: '/',
+          stagingDir: PUBLISH_STAGING_DIR,
+          promote: false,
+        })
+        return ok
+          ? { ok: true }
+          : { ok: false, error: 'Vite publish build failed; inspect the runtime build log' }
+      }
+
+      if (devServer === 'metro') {
+        await this.runExpoExportWeb(timings, cwd, {
+          stagingDir: PUBLISH_STAGING_DIR,
+          promote: false,
+        })
+        return existsSync(join(cwd, PUBLISH_STAGING_DIR, 'index.html'))
+          ? { ok: true }
+          : { ok: false, error: 'Expo publish build did not produce dist/index.html' }
+      }
+
+      return {
+        ok: false,
+        error: `Cannot create a publish artifact for devServer=${devServer}`,
+      }
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? String(err) }
+    }
   }
 
   /**
@@ -2822,8 +2923,8 @@ export class PreviewManager {
    * for a workspace project served under its path prefix so the emitted
    * `<script src>` / `<link href>` are prefixed too.
    */
-  private viteBaseArgs(): string[] {
-    return this.basePath ? ['--base', this.basePath] : []
+  private viteBaseArgs(basePath = this.basePath): string[] {
+    return basePath ? ['--base', basePath] : []
   }
 
   /**
@@ -2867,8 +2968,12 @@ export class PreviewManager {
     cwd: string,
     buildLogPath: string,
     isWindows: boolean,
-  ): Promise<void> {
-    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    options: OneShotBuildOptions = {},
+  ): Promise<boolean> {
+    const stagingDir = options.stagingDir ?? DEFAULT_STAGING_DIR
+    const promote = options.promote ?? true
+    const basePath = options.basePath === undefined ? this.basePath : options.basePath
+    cleanupStagingOutput(cwd, stagingDir)
     console.log(`[${LOG_PREFIX}] Seeding dist/ via one-shot vite build (staging)...`)
     // Route through bundled `bun` when system node is missing — otherwise
     // the shim's `#!/usr/bin/env node` shebang fails with code 127. See
@@ -2883,7 +2988,7 @@ export class PreviewManager {
       try {
         proc = spawn(
           isWindows ? `"${invocation.cmd}"` : invocation.cmd,
-          [...invocation.argsPrefix, 'build', '--outDir', DEFAULT_STAGING_DIR, '--emptyOutDir', ...this.viteBaseArgs()],
+          [...invocation.argsPrefix, 'build', '--outDir', stagingDir, '--emptyOutDir', ...this.viteBaseArgs(basePath ?? undefined)],
           {
             cwd,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -2918,15 +3023,19 @@ export class PreviewManager {
     })
 
     if (exitCode === 0) {
-      const committed = await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR)
-      if (!committed) {
-        console.warn(
-          `[${LOG_PREFIX}] One-shot vite build succeeded but commit into dist/ failed`,
-        )
+      if (promote) {
+        const committed = await commitBuildOutputAsync(cwd, stagingDir)
+        if (!committed) {
+          console.warn(
+            `[${LOG_PREFIX}] One-shot vite build succeeded but commit into dist/ failed`,
+          )
+          return false
+        }
       }
+      return true
     } else {
       console.warn(`[${LOG_PREFIX}] One-shot vite build failed (code=${exitCode})`)
-      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+      cleanupStagingOutput(cwd, stagingDir)
 
       let message = `Build failed (vite exited with code ${exitCode}).${stderrTail ? ` ${stderrTail.trim().slice(-500)}` : ''}`
       if (ENOSPC_PATTERN.test(stderrTail)) {
@@ -2941,7 +3050,8 @@ export class PreviewManager {
       // the preview would keep silently serving the stale prebuilt dist
       // forever while reporting itself healthy. Force the transition so
       // `errors.setup` (and the "failed" phase/overlay) become visible.
-      this.markSetupFailed(new Error(message), { force: true })
+      if (promote) this.markSetupFailed(new Error(message), { force: true })
+      return false
     }
   }
 
@@ -3790,25 +3900,35 @@ export class PreviewManager {
    *
    * Re-run on demand via `restart()`.
    */
-  private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
+  private async runExpoExportWeb(
+    timings: Record<string, number>,
+    cwd: string,
+    options: { stagingDir?: string; promote?: boolean } = {},
+  ): Promise<void> {
     // Reentrancy guard — see `expoExportInFlight` field doc.
     if (this.expoExportInFlight) {
       console.log(`[${LOG_PREFIX}] expo export already running — awaiting in-flight build`)
       return this.expoExportInFlight
     }
-    this.expoExportInFlight = this._runExpoExportWebImpl(timings, cwd).finally(() => {
+    this.expoExportInFlight = this._runExpoExportWebImpl(timings, cwd, options).finally(() => {
       this.expoExportInFlight = null
     })
     return this.expoExportInFlight
   }
 
-  private async _runExpoExportWebImpl(timings: Record<string, number>, cwd: string): Promise<void> {
+  private async _runExpoExportWebImpl(
+    timings: Record<string, number>,
+    cwd: string,
+    options: { stagingDir?: string; promote?: boolean } = {},
+  ): Promise<void> {
     const expoBin = this.resolveExpoBin(cwd)
     if (!expoBin) {
       console.log(`[${LOG_PREFIX}] expo CLI not found in node_modules — skipping web export`)
       return
     }
     const isWindows = process.platform === 'win32'
+    const stagingDir = options.stagingDir ?? DEFAULT_STAGING_DIR
+    const promote = options.promote ?? true
 
     // Build log always lives at `<workspace>/.shogo/logs/build.log` —
     // outside the bundler cwd, so Rollup's chokidar parent-dir watcher
@@ -3820,14 +3940,14 @@ export class PreviewManager {
     // A leftover staging dir from a prior crashed build would confuse
     // expo export (it expects a clean output dir or none). Drop it
     // before spawning.
-    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    cleanupStagingOutput(cwd, stagingDir)
 
     const t0 = Date.now()
     console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
     const exitCode = await new Promise<number | null>((resolveExport) => {
       let proc: ChildProcess
       try {
-        proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', DEFAULT_STAGING_DIR], {
+        proc = spawn(isWindows ? `"${expoBin}"` : expoBin, ['export', '--platform', 'web', '--output-dir', stagingDir], {
           cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           // `.CMD` shims must go through cmd.exe on Windows.
@@ -3887,22 +4007,24 @@ export class PreviewManager {
       // preview goes from "stale but working" to "404 on /".
       //
       // Refuse to swap unless staging actually contains `index.html`.
-      const stagingIndex = join(cwd, DEFAULT_STAGING_DIR, 'index.html')
+      const stagingIndex = join(cwd, stagingDir, 'index.html')
       if (!existsSync(stagingIndex)) {
         console.error(
-          `[${LOG_PREFIX}] expo export exited 0 but ${DEFAULT_STAGING_DIR}/index.html ` +
+          `[${LOG_PREFIX}] expo export exited 0 but ${stagingDir}/index.html ` +
             `is missing — refusing to swap. Previous build (if any) stays live. ` +
             `Inspect ${buildLogPath} for the real error.`,
         )
-        cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+        cleanupStagingOutput(cwd, stagingDir)
       } else {
-        const committed = await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR)
+        const committed = promote
+          ? await commitBuildOutputAsync(cwd, stagingDir)
+          : true
         if (!committed) {
           console.warn(
             `[${LOG_PREFIX}] expo export succeeded but commit into dist/ failed — ` +
               `previous build (if any) remains live`,
           )
-        } else if (this.onBuildComplete) {
+        } else if (promote && this.onBuildComplete) {
           // Cloud Expo has no HMR. `/preview/restart` and the boot-time
           // seed both land here; fire the same reload toast CBM uses so
           // the canvas iframe picks up the new hashed `entry-*.js`.
@@ -3916,7 +4038,7 @@ export class PreviewManager {
     } else {
       // Failed build: drop the partial staging output so it can't poison
       // the next swap.
-      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+      cleanupStagingOutput(cwd, stagingDir)
     }
 
     timings.expoExport = Date.now() - t0

@@ -2539,7 +2539,8 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // Preview Manager (app mode — lazy init)
 // ---------------------------------------------------------------------------
 
-import { PreviewManager } from './preview-manager'
+import { PreviewManager, PUBLISH_STAGING_DIR } from './preview-manager'
+import { cleanupStagingOutput } from './build-output-commit'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -5443,6 +5444,23 @@ function getDistDir(): string {
   return join(WORKSPACE_DIR, 'dist')
 }
 
+/** Resolve a project directory for runtime-owned publish endpoints. */
+function getProjectWorkspaceDir(projectId?: string): string | null {
+  if (!IS_WORKSPACE_RUNTIME) return WORKSPACE_DIR
+  const resolvedId = projectId || getAnchorProjectId()
+  if (!resolvedId || !isAttachedProjectId(resolvedId, effectiveWorkspaceProjectIds())) return null
+  return join(WORKSPACE_DIR, resolvedId)
+}
+
+/** Resolve the PreviewManager that owns a publish build. */
+function getProjectPreviewManager(projectId?: string): PreviewManager | null {
+  if (IS_WORKSPACE_RUNTIME) {
+    const resolvedId = projectId || getAnchorProjectId()
+    return resolvedId ? getWorkspacePreviewManager(resolvedId) : null
+  }
+  return getPreviewManager()
+}
+
 // Recursively collect every file under `dist/` as `{ path, content (base64) }`.
 // Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
 // the build output to the published-apps S3 bucket.
@@ -5486,7 +5504,13 @@ function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: st
 }
 
 app.get('/agent/dist-files', (c) => {
-  const distDir = getDistDir()
+  const projectId = c.req.query('projectId')
+  const publishBuild = c.req.query('publish') === 'true'
+  const projectDir = getProjectWorkspaceDir(projectId)
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+  const distDir = join(projectDir, publishBuild ? PUBLISH_STAGING_DIR : 'dist')
   if (!existsSync(distDir)) {
     return c.json(
       { error: 'dist_not_found', message: 'No dist/ directory — run a build first' },
@@ -5494,7 +5518,26 @@ app.get('/agent/dist-files', (c) => {
     )
   }
   const files = collectPublishDistFiles(distDir, distDir)
+  if (publishBuild) {
+    cleanupStagingOutput(projectDir, PUBLISH_STAGING_DIR)
+  }
   return c.json(files)
+})
+
+/**
+ * Build the requested project for publishing. Workspace previews need a
+ * `/p/<projectId>/` Vite base, but published artifacts are served from the
+ * root of their own hostname. The PreviewManager keeps this root-based
+ * artifact separate from the live canvas `dist/`.
+ */
+app.post('/agent/publish-build', async (c) => {
+  const projectId = c.req.query('projectId')
+  const pm = getProjectPreviewManager(projectId)
+  if (!pm) {
+    return c.json({ ok: false, error: 'project_not_attached' }, 404)
+  }
+  const result = await pm.buildForPublish()
+  return c.json(result, result.ok ? 200 : 500)
 })
 
 /**
@@ -5510,7 +5553,11 @@ app.get('/agent/dist-files', (c) => {
  * `x-runtime-token`), same as `/agent/dist-files`.
  */
 app.get('/agent/published-data-archive', async (c) => {
-  const present = WRITABLE_STATE_PATHS.filter((p) => existsSync(join(WORKSPACE_DIR, p)))
+  const projectDir = getProjectWorkspaceDir(c.req.query('projectId'))
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+  const present = WRITABLE_STATE_PATHS.filter((p) => existsSync(join(projectDir, p)))
   if (present.length === 0) {
     return c.json(
       { error: 'no_writable_state', message: 'No prisma/dev.db or upload dirs to archive' },
@@ -5524,7 +5571,7 @@ app.get('/agent/published-data-archive', async (c) => {
   const archivePath = join(tmpDir, 'data.tar.gz')
   try {
     await tar.create(
-      { gzip: true, file: archivePath, cwd: WORKSPACE_DIR, portable: true },
+      { gzip: true, file: archivePath, cwd: projectDir, portable: true },
       present,
     )
     const buf = await fsp.readFile(archivePath)
@@ -5568,7 +5615,11 @@ app.post('/agent/published-data/suspend', (c) => {
  * schema (a purely-static app). Runtime-owned `/agent/*` route.
  */
 app.get('/agent/schema-fingerprint', (c) => {
-  const schemaPath = join(WORKSPACE_DIR, 'prisma', 'schema.prisma')
+  const projectDir = getProjectWorkspaceDir(c.req.query('projectId'))
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+  const schemaPath = join(projectDir, 'prisma', 'schema.prisma')
   if (!existsSync(schemaPath)) return c.json({ hash: null })
   try {
     const { createHash } = require('crypto') as typeof import('crypto')
@@ -5595,9 +5646,13 @@ app.get('/agent/schema-fingerprint', (c) => {
  * purely-static app (no models, no custom routes) stays on the static path.
  */
 app.get('/agent/server-info', (c) => {
+  const projectDir = getProjectWorkspaceDir(c.req.query('projectId'))
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
   const readIfExists = (rel: string): string | null => {
     try {
-      const p = join(WORKSPACE_DIR, rel)
+      const p = join(projectDir, rel)
       return existsSync(p) ? readFileSync(p, 'utf-8') : null
     } catch {
       return null
@@ -5606,7 +5661,7 @@ app.get('/agent/server-info', (c) => {
   const result = evaluateServerBacked({
     schemaSource: readIfExists(join('prisma', 'schema.prisma')),
     customRoutesSource: readIfExists('custom-routes.ts'),
-    hasServerFile: existsSync(join(WORKSPACE_DIR, 'server.tsx')),
+    hasServerFile: existsSync(join(projectDir, 'server.tsx')),
   })
   return c.json(result)
 })
