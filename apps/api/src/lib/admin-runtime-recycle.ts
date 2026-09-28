@@ -87,7 +87,7 @@ export async function defaultRecycleDeps(auditTag: string): Promise<RecycleDeps>
   }
 }
 
-const POST_BOOT_WAIT_MS = 120_000
+const POST_BOOT_WAIT_MS = 180_000
 const POST_BOOT_POLL_MS = 3_000
 
 export async function recycleRuntimes(
@@ -180,11 +180,20 @@ async function bootAndWait(
   deps: RecycleDeps,
 ): Promise<Record<string, unknown>> {
   const started = deps.now()
-  let url: string
-  try {
-    url = await deps.coldBoot(projectId)
-  } catch (err: any) {
-    return { ok: false, error: `cold boot failed: ${err?.message ?? err}` }
+  // A cold boot outlasts a single open call (it gives up after ~30s while the
+  // host keeps booting), so keep asking, as the UI does, until the deadline.
+  let url: string | undefined
+  let bootError = ''
+  while (url === undefined && deps.now() - started < POST_BOOT_WAIT_MS) {
+    try {
+      url = await deps.coldBoot(projectId)
+    } catch (err: any) {
+      bootError = err?.message ?? String(err)
+      await deps.sleep(POST_BOOT_POLL_MS)
+    }
+  }
+  if (url === undefined) {
+    return { ok: false, error: `cold boot failed: ${bootError}`, waitedMs: deps.now() - started }
   }
   let last: RecyclePreviewStatus | null = null
   while (deps.now() - started < POST_BOOT_WAIT_MS) {
