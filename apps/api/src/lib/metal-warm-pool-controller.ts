@@ -285,9 +285,9 @@ interface HostEntry extends MetalHostRegistration {
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
 /**
- * A suspend saves the source, repo and workspace-member backups before it
- * snapshots, which can take about a minute. Kept under the ~100s edge proxy
- * limit because the user stop route waits on it.
+ * Upper bound on a host's /stop reply, which includes the durable snapshot
+ * upload. Kept under the ~100s edge proxy limit because the user stop route
+ * waits on it.
  */
 const STOP_TIMEOUT_MS = parseInt(process.env.METAL_STOP_TIMEOUT_MS || '90000', 10)
 
@@ -968,6 +968,29 @@ export class MetalWarmPoolController {
     this.urlCache.delete(projectId)
     const host = await this.hostForProject(projectId)
     if (!host) return { suspended: false, busy: false }
+    // The host replies to /stop only after uploading the durable snapshot, but
+    // the runtime is suspended (and reports so on /status) before that upload.
+    const pollMs = parseInt(process.env.METAL_STOP_CONFIRM_POLL_MS || '3000', 10)
+    return new Promise<StopResult>((resolve) => {
+      let done = false
+      const finish = (r: StopResult) => {
+        if (done) return
+        done = true
+        resolve(r)
+      }
+      void this.requestStop(host, projectId).then(finish)
+      void (async () => {
+        while (!done) {
+          await new Promise<void>((r) => setTimeout(r, pollMs).unref?.())
+          if (done) return
+          const st = await this.getRuntimeHostStatus(projectId)
+          if (st?.state === 'suspended') finish({ suspended: true, busy: false })
+        }
+      })()
+    })
+  }
+
+  private async requestStop(host: HostEntry, projectId: string): Promise<StopResult> {
     try {
       const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
         method: 'POST',

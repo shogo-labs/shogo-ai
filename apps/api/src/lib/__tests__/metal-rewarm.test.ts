@@ -8,6 +8,8 @@ let projectSessions: Array<{ contextId: string; lastActiveAt: Date }> = []
 let workspaceSessions: Array<{ id: string; workspaceId: string; lastActiveAt: Date }> = []
 let projectRows: Array<{ id: string; workspaceId: string; runtimeEnabled: boolean; workingMode: string }> = []
 let ineligible = new Set<string>()
+let workspaceHome = new Map<string, string | null>()
+let homeWhere: { homeRegion: string } | { OR: Array<{ homeRegion: string | null }> } | null = null
 
 mock.module('../prisma', () => ({
   prisma: {
@@ -23,7 +25,19 @@ mock.module('../prisma', () => ({
     chatSession: {
       findMany: async (args: any) => (args.where.contextId === null ? workspaceSessions : projectSessions),
     },
+    workspace: {
+      findMany: async (args: any) => {
+        const ids: string[] = args.where.id.in
+        const allowed: Array<string | null> = args.where.OR
+          ? args.where.OR.map((o: any) => o.homeRegion)
+          : [args.where.homeRegion]
+        return ids.filter((id) => allowed.includes(workspaceHome.get(id) ?? null)).map((id) => ({ id }))
+      },
+    },
   },
+}))
+mock.module('../region', () => ({
+  homeRegionWorkspaceWhere: () => homeWhere,
 }))
 mock.module('../metal-eligibility', () => ({
   isMetalEligibleProject: (id: string) => !ineligible.has(id),
@@ -491,6 +505,34 @@ describe('listRewarmCandidatesFromDb', () => {
   beforeEach(() => {
     ineligible = new Set()
     projectRows = []
+    workspaceHome = new Map()
+    homeWhere = null
+  })
+
+  test('keeps only workspaces whose home region is this one', async () => {
+    const at = (n: number) => new Date(n * 1000)
+    projectsByMessage = []
+    projectSessions = [
+      { contextId: 'p-us', lastActiveAt: at(30) },
+      { contextId: 'p-eu', lastActiveAt: at(20) },
+      { contextId: 'p-legacy', lastActiveAt: at(10) },
+    ]
+    workspaceSessions = [
+      { id: 's-us', workspaceId: 'w-us', lastActiveAt: at(25) },
+      { id: 's-eu', workspaceId: 'w-eu', lastActiveAt: at(15) },
+    ]
+    projectRows = [
+      { id: 'p-us', workspaceId: 'w-us', runtimeEnabled: true, workingMode: 'managed' },
+      { id: 'p-eu', workspaceId: 'w-eu', runtimeEnabled: true, workingMode: 'managed' },
+      { id: 'p-legacy', workspaceId: 'w-legacy', runtimeEnabled: true, workingMode: 'managed' },
+    ]
+    workspaceHome = new Map([['w-us', 'us-ashburn-1'], ['w-eu', 'eu-frankfurt-1'], ['w-legacy', null]])
+
+    homeWhere = { OR: [{ homeRegion: 'us-ashburn-1' }, { homeRegion: null }] }
+    expect((await listRewarmCandidatesFromDb(0, 100)).map((c) => c.key)).toEqual(['ws:proj:p-us', 'ws:w-us', 'ws:proj:p-legacy'])
+
+    homeWhere = { homeRegion: 'eu-frankfurt-1' }
+    expect((await listRewarmCandidatesFromDb(0, 100)).map((c) => c.key)).toEqual(['ws:proj:p-eu', 'ws:w-eu'])
   })
 
   test('merges project and workspace activity, filters, and orders newest first', async () => {
