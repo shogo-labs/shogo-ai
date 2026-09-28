@@ -260,11 +260,28 @@ describe('pool host-mediated repo persist', () => {
       expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'descends', etag: '"ws-r1"' })
     })
 
+    test('a hydrated merged-root repo lets the workspace push its durable snapshot', async () => {
+      const { run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
+      const a = await run
+      expect(a.workspaceOrigin).toBe('backup')
+    })
+
+    test('stays template-origin when the repo hydrate fails', async () => {
+      const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
+      ;(pool as any).hydrateRepo = async () => {
+        throw new Error('The operation timed out.')
+      }
+      const a = await run
+      expect(a.repoUntrustedReason).toBeDefined()
+      expect(a.workspaceOrigin).toBe('template')
+    })
+
     test('stays create-only when no durable repo exists yet', async () => {
       const { pool, seen, run } = assignWorkspace(null)
       const a = await run
       expect(seen).not.toContain('/pool/repo-hydrated')
       expect(a.repoParentEtag).toBeUndefined()
+      expect(a.workspaceOrigin).toBe('template')
 
       await pool.saveRepoToStore(a)
       expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })

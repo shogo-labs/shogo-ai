@@ -6144,7 +6144,10 @@ async function initializeEssentials(): Promise<void> {
           if (sha) cachedRepoHeadSha = sha
         })
         .catch(() => { /* logged by the helper */ })
-      const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+      // A host-mediated guest holds no S3 credentials, so the SDK's provider
+      // chain can only fail — and on metal it takes minutes to do so, holding
+      // up `gitLayerReady` and with it the host's repo hydrate.
+      const lfCfg = isHostMediatedDurability() ? null : largeFileSyncConfigFromEnv(WORKSPACE_DIR)
       if (lfCfg) {
         try {
           await restoreLargeFiles(lfCfg)
