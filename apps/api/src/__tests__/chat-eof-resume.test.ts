@@ -348,6 +348,49 @@ describe('trackUsageFromStream — auto-resume + partial-persist', () => {
     expect(consumeUsageCalls[0].actionMetadata.requestCount).toBe(1)
   })
 
+  test('EOF without turn-complete + resume returns a newer turn keeps the original parts', async () => {
+    // The user sent another message while this turn was still running. The
+    // runtime replaced the session's buffer with the new turn, so this turn's
+    // stream EOFs without a terminal frame and the resume endpoint now serves
+    // the NEW turn. Replaying it would overwrite this row with the next turn.
+    const projectId = 'proj-turn-replaced'
+    const chatSessionId = 'sess-turn-replaced'
+    await openSession(projectId, 'ws-tr', 'user-tr')
+    await accumulateUsage(projectId, 'claude-sonnet-4-5', 100, 30)
+
+    const originalStream = makeSseStream([
+      dataFrame({ type: 'data-turn-start', data: { turnId: 'turn-a', startedAt: 1 } }),
+      dataFrame({ type: 'text-delta', delta: 'long turn A' }),
+      dataFrame({ type: 'tool-input-available', toolCallId: 'tc-a1', toolName: 'exec', input: { command: 'ls' } }),
+      dataFrame({ type: 'tool-output-available', toolCallId: 'tc-a1', output: { stdout: 'ok' } }),
+      dataFrame({ type: 'tool-input-available', toolCallId: 'tc-a2', toolName: 'read_file', input: { path: 'a.ts' } }),
+      dataFrame({ type: 'tool-output-available', toolCallId: 'tc-a2', output: { content: 'x' } }),
+    ])
+
+    const newerTurnBody = makeSseStream([
+      dataFrame({ type: 'data-turn-start', data: { turnId: 'turn-b', startedAt: 2 } }),
+      dataFrame({ type: 'text-delta', delta: 'turn B' }),
+    ])
+    let resumeCalls = 0
+    const resumeFn = async () => {
+      resumeCalls++
+      return new Response(newerTurnBody, { status: 200, headers: { 'X-Turn-Id': 'turn-b' } })
+    }
+
+    await trackUsageFromStream(
+      originalStream,
+      { chatSessionId, agentMode: 'sonnet' },
+      { id: projectId, workspaceId: 'ws-tr' },
+      { resume: resumeFn },
+    )
+
+    expect(resumeCalls).toBe(1)
+    expect(persistedMessages.length).toBe(1)
+    expect(persistedMessages[0].content).toBe('long turn A')
+    const parts = JSON.parse(persistedMessages[0].parts!)
+    expect(parts.filter((p: any) => p.type === 'dynamic-tool').map((p: any) => p.toolCallId)).toEqual(['tc-a1', 'tc-a2'])
+  })
+
   test('EOF without turn-complete + resume(204) persists partial (pod crash case)', async () => {
     const projectId = 'proj-crash'
     const chatSessionId = 'sess-crash'
