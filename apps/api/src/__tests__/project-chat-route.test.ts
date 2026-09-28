@@ -125,6 +125,17 @@ mock.module('../lib/resolve-pod-url', () => ({
   },
 }))
 
+const metalInvalidated: string[] = []
+const metalDestroyed: string[] = []
+mock.module('../lib/metal-warm-pool-controller', () => ({
+  workspaceRuntimeKey: (workspaceId: string, anchorProjectId?: string) =>
+    anchorProjectId ? `ws:proj:${anchorProjectId}` : `ws:${workspaceId}`,
+  getMetalWarmPoolController: () => ({
+    invalidateUrlCache: (key: string) => { metalInvalidated.push(key) },
+  }),
+  destroyMetalProject: async (key: string) => { metalDestroyed.push(key) },
+}))
+
 mock.module('../lib/project-runtime-token', () => ({
   deriveProjectRuntimeToken: () => 'tok-1',
 }))
@@ -266,6 +277,36 @@ describe('POST /projects/:projectId/chat', () => {
     expect(res.status).toBe(503)
     const body = await res.json() as any
     expect(body.error.retryable).toBe(true)
+  })
+
+  // Regression: a metal upstream timeout used to fire destroyMetalProject. It
+  // only avoided wiping runtimes because it passed the bare id; with the real
+  // `ws:proj:<id>` key it would discard the snapshot on every slow turn.
+  test('metal upstream timeout invalidates the cached ws:proj URL and never destroys', async () => {
+    metalInvalidated.length = 0
+    metalDestroyed.length = 0
+    const prevK8s = process.env.KUBERNETES_SERVICE_HOST
+    const prevAll = process.env.SHOGO_METAL_ALL_PROJECTS
+    process.env.KUBERNETES_SERVICE_HOST = 'k8s.test'
+    process.env.SHOGO_METAL_ALL_PROJECTS = 'true'
+    nextFetchResponse = () => {
+      throw new DOMException('The operation timed out.', 'TimeoutError')
+    }
+    try {
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+        method: 'POST',
+        body: JSON.stringify({ chatSessionId: 's-1' }),
+      }))
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(metalInvalidated).toContain('ws:proj:p-1')
+      expect(metalDestroyed).toEqual([])
+    } finally {
+      if (prevK8s === undefined) delete process.env.KUBERNETES_SERVICE_HOST
+      else process.env.KUBERNETES_SERVICE_HOST = prevK8s
+      if (prevAll === undefined) delete process.env.SHOGO_METAL_ALL_PROJECTS
+      else process.env.SHOGO_METAL_ALL_PROJECTS = prevAll
+    }
   })
 
   test('streams a successful runtime response with trusted billing user and model downgrade', async () => {

@@ -376,27 +376,42 @@ export async function bootstrapProSubscriptionViaApi(
  * open exercises the real reopen/resume path — a plain reload re-attaches to
  * the still-warm VM and would never catch a reopen/hydration regression.
  *
- * Returns `true` if the backdoor handled it, `false` when the secret isn't set
- * or the endpoint is disabled/5xx — callers should `test.skip` in that case.
+ * Without the secret it falls back to the user's own
+ * `POST /api/projects/:id/runtime/stop`, authenticated by the page session.
+ *
+ * Returns `true` only when the runtime was actually suspended. A metal host
+ * refuses while an agent turn is still in flight (`busy`), so that is retried
+ * for up to a minute. Returns `false` when neither path works — callers should
+ * `test.skip` in that case.
  */
 export async function suspendRuntimeViaApi(page: Page, projectId: string): Promise<boolean> {
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
-  if (!secret) return false
-
   const base = bootstrapApiBase()
-  const res = await page.request
-    .post(`${base}/api/internal/e2e/suspend-runtime`, {
-      headers: {
-        "x-e2e-bootstrap-secret": secret,
-        "content-type": "application/json",
-      },
-      data: { projectId },
-    })
-    .catch(() => null)
-  if (!res) return false
-  if (!res.ok()) return false
-  const body = await res.json().catch(() => ({ ok: false }))
-  return body?.ok === true
+  const deadline = Date.now() + 60_000
+
+  while (true) {
+    const res = secret
+      ? await page.request
+          .post(`${base}/api/internal/e2e/suspend-runtime`, {
+            headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+            data: { projectId },
+          })
+          .catch(() => null)
+      : await page.request
+          .post(`${base}/api/projects/${projectId}/runtime/stop`, {
+            headers: { Origin: base, "content-type": "application/json" },
+            data: {},
+          })
+          .catch(() => null)
+    if (!res || !res.ok()) return false
+    const body = await res.json().catch(() => ({}))
+    if (secret ? body?.ok !== true : body?.success !== true) return false
+    // Knative replies carry no suspend result; the stop itself is the signal.
+    if (body?.suspended === undefined && body?.substrate !== "metal") return true
+    if (body?.suspended === true) return true
+    if (body?.busy !== true || Date.now() > deadline) return false
+    await page.waitForTimeout(5_000)
+  }
 }
 
 export interface RecycleViaApiResult {

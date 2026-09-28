@@ -1749,20 +1749,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             (fetchError.name === 'AbortError' && fetchSignal.aborted && !clientSignal?.aborted)
 
           if (process.env.SHOGO_LOCAL_MODE !== 'true' && isUpstreamTimeout && metalChat) {
-            // Invalidate + destroy so the next client retry cold-boots. Do
-            // not await destroy in a way a later 499 can cancel — fire and
-            // forget after cache invalidation.
+            // Only drop the cached URL so the retry re-resolves. Never destroy
+            // here: a slow turn is not a dead runtime, and destroy discards
+            // the snapshot. Wedged runtimes are handled by the watchdog/recycle.
             console.warn(
-              `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating placement`,
+              `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating cached URL`,
             )
             try {
-              const { getMetalWarmPoolController, destroyMetalProject } = await import(
+              const { getMetalWarmPoolController, workspaceRuntimeKey } = await import(
                 '../lib/metal-warm-pool-controller'
               )
-              getMetalWarmPoolController().invalidateUrlCache(projectId)
-              void destroyMetalProject(projectId).catch((err: any) =>
-                console.error(`[ProjectChat] destroy after timeout failed for ${projectId}:`, err),
-              )
+              getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
             } catch (err: any) {
               console.error(`[ProjectChat] failed to invalidate metal placement:`, err?.message ?? err)
             }

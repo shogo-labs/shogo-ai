@@ -263,13 +263,18 @@ app.post('/suspend-runtime', async (c) => {
   try {
     const { getProjectSubstrate } = await import('../lib/substrate')
     const substrate = await getProjectSubstrate(projectId)
-    await substrate.stop(projectId)
+    let result: { suspended: boolean; busy: boolean } | undefined
+    if (substrate.kind === 'metal') {
+      result = await (substrate as import('../lib/substrate/metal-substrate').MetalSubstrate).suspend(projectId)
+    } else {
+      await substrate.stop(projectId)
+    }
     // eslint-disable-next-line no-console
     console.info(
       '[e2e-bootstrap] suspended runtime',
-      JSON.stringify({ projectId, substrate: substrate.kind }),
+      JSON.stringify({ projectId, substrate: substrate.kind, ...result }),
     )
-    return c.json({ ok: true, projectId, substrate: substrate.kind })
+    return c.json({ ok: true, projectId, substrate: substrate.kind, ...result })
   } catch (err: any) {
     // eslint-disable-next-line no-console
     console.error('[e2e-bootstrap] suspend-runtime failed', err)
