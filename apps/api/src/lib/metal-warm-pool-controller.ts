@@ -284,6 +284,12 @@ interface HostEntry extends MetalHostRegistration {
 /** A host is considered live if it heartbeat within this window. */
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
+/**
+ * A suspend saves the source, repo and workspace-member backups before it
+ * snapshots, which can take about a minute. Kept under the ~100s edge proxy
+ * limit because the user stop route waits on it.
+ */
+const STOP_TIMEOUT_MS = parseInt(process.env.METAL_STOP_TIMEOUT_MS || '90000', 10)
 
 /**
  * Did this assign fail because we stopped waiting, rather than because the host
@@ -967,7 +973,7 @@ export class MetalWarmPoolController {
         method: 'POST',
         headers: this.agentHeaders(),
         body: JSON.stringify({ projectId }),
-        signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+        signal: AbortSignal.timeout(STOP_TIMEOUT_MS),
       })
       const body: any = await res.json().catch(() => ({}))
       const busy = body?.busy === true

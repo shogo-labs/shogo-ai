@@ -384,6 +384,9 @@ export async function bootstrapProSubscriptionViaApi(
  * for up to a minute. Returns `false` when neither path works — callers should
  * `test.skip` in that case.
  */
+/** A metal suspend quiesces the guest and writes a snapshot before replying. */
+const SUSPEND_REQUEST_TIMEOUT_MS = 120_000
+
 export async function suspendRuntimeViaApi(page: Page, projectId: string): Promise<boolean> {
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
   const base = bootstrapApiBase()
@@ -395,12 +398,14 @@ export async function suspendRuntimeViaApi(page: Page, projectId: string): Promi
           .post(`${base}/api/internal/e2e/suspend-runtime`, {
             headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
             data: { projectId },
+            timeout: SUSPEND_REQUEST_TIMEOUT_MS,
           })
           .catch(() => null)
       : await page.request
           .post(`${base}/api/projects/${projectId}/runtime/stop`, {
             headers: { Origin: base, "content-type": "application/json" },
             data: {},
+            timeout: SUSPEND_REQUEST_TIMEOUT_MS,
           })
           .catch(() => null)
     if (!res || !res.ok()) return false
