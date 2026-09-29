@@ -2,7 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from "bun:test"
-import { planToPublishToStream, shouldListInMemoryPlan } from "../plan-stream-publish"
+import {
+  planToPublishToStream,
+  shouldListInMemoryPlan,
+  shouldPublishPlanToStream,
+} from "../plan-stream-publish"
 
 describe("planToPublishToStream", () => {
   test("keeps the dock plan after streaming ends so Plans is not empty", () => {
@@ -44,5 +48,44 @@ describe("shouldListInMemoryPlan", () => {
 
   test("still lists a plan whose path is not a saved .plan.md file", () => {
     expect(shouldListInMemoryPlan({ filepath: "not-a-plan" }, ["solo.plan.md"])).toBe(true)
+  })
+})
+
+describe("shouldPublishPlanToStream", () => {
+  test("does not let a background panel overwrite the shared plan", () => {
+    expect(
+      shouldPublishPlanToStream({
+        isActivePanel: false,
+        currentPlan: { name: "active" },
+        nextPlan: { name: "background" },
+        currentFilepath: ".shogo/plans/active.plan.md",
+        nextFilepath: ".shogo/plans/background.plan.md",
+      }),
+    ).toBe(false)
+  })
+
+  test("publishes an active panel's changed plan", () => {
+    expect(
+      shouldPublishPlanToStream({
+        isActivePanel: true,
+        currentPlan: { name: "old" },
+        nextPlan: { name: "new" },
+        currentFilepath: null,
+        nextFilepath: null,
+      }),
+    ).toBe(true)
+  })
+
+  test("skips an unchanged active plan", () => {
+    const plan = { name: "same" }
+    expect(
+      shouldPublishPlanToStream({
+        isActivePanel: true,
+        currentPlan: plan,
+        nextPlan: plan,
+        currentFilepath: ".shogo/plans/same.plan.md",
+        nextFilepath: ".shogo/plans/same.plan.md",
+      }),
+    ).toBe(false)
   })
 })

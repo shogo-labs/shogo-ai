@@ -251,7 +251,10 @@ import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
-import { planToPublishToStream } from "../../lib/plan-stream-publish"
+import {
+  planToPublishToStream,
+  shouldPublishPlanToStream,
+} from "../../lib/plan-stream-publish"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
@@ -1593,6 +1596,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const pendingPlanRef = useRef<PlanData | null>(null)
 
   const planStream = usePlanStreamSafe()
+  const isActivePanel = onMessagesChange != null
+  const isActivePanelRef = useRef(isActivePanel)
+  isActivePanelRef.current = isActivePanel
 
   // Per-panel TodoWrite store. Each open chat tab gets its own
   // instance so descendants (AssistantContent, TodoRow) read
@@ -2039,6 +2045,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setMessages((prev) => markStuckToolsInterrupted(prev))
     },
     onData: async (dataPart) => {
+      const activePlanStream = isActivePanelRef.current ? planStream : null
+
       // Any `data-*` frame (including `data-turn-start`, `data-turn-seq`,
       // and `data-usage`) is wire-level forward progress. The AI SDK
       // doesn't flip `status` → `'streaming'` on these — only on the
@@ -2637,16 +2645,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
           // A fresh plan event always discards any stale summary belonging
           // to a previous plan; the runtime will re-emit
           // data-plan-summary-* if Dual Plan is enabled for this turn.
-          planStream?.resetSummary()
+          activePlanStream?.resetSummary()
           const normalizedPlan = normalizePlanData({
             ...planData,
             isUpdate: false,
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
-          planStream?.setStreamingPlan(normalizedPlan)
+          activePlanStream?.setStreamingPlan(normalizedPlan)
           if (normalizedPlan.filepath) {
-            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
+            activePlanStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
           planStream?.notifyPlanCreated()
         }
@@ -2669,9 +2677,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
-          planStream?.setStreamingPlan(normalizedPlan)
+          activePlanStream?.setStreamingPlan(normalizedPlan)
           if (normalizedPlan.filepath) {
-            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
+            activePlanStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
         }
         planStream?.notifyPlanCreated()
@@ -2682,9 +2690,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the UI can show a "Summary" tab spinner immediately and then swap in
       // the summary markdown when it's ready.
       if ((dataPart as any).type === "data-plan-summary-start") {
-        planStream?.setSummaryStatus("pending")
-        planStream?.setStreamingSummary(null)
-        planStream?.setSummaryError(null)
+        activePlanStream?.setSummaryStatus("pending")
+        activePlanStream?.setStreamingSummary(null)
+        activePlanStream?.setSummaryError(null)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
@@ -2694,7 +2702,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
-          planStream?.setStreamingPlan(next)
+          activePlanStream?.setStreamingPlan(next)
         }
       }
 
@@ -2702,9 +2710,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const data = (dataPart as any).data
         const summary = typeof data?.summary === "string" ? data.summary : null
         if (summary) {
-          planStream?.setSummaryStatus("ready")
-          planStream?.setStreamingSummary(summary)
-          planStream?.setSummaryError(null)
+          activePlanStream?.setSummaryStatus("ready")
+          activePlanStream?.setStreamingSummary(summary)
+          activePlanStream?.setSummaryError(null)
           const previousPlan = pendingPlanRef.current
           if (previousPlan) {
             const next = normalizePlanData({
@@ -2714,7 +2722,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             })
             pendingPlanRef.current = next
             setPendingPlan(next)
-            planStream?.setStreamingPlan(next)
+            activePlanStream?.setStreamingPlan(next)
           }
           planStream?.notifyPlanCreated()
         }
@@ -2726,8 +2734,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
           typeof data?.message === "string" && data.message
             ? data.message
             : "Failed to generate summary"
-        planStream?.setSummaryStatus("error")
-        planStream?.setSummaryError(message)
+        activePlanStream?.setSummaryStatus("error")
+        activePlanStream?.setSummaryError(message)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
@@ -2736,7 +2744,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
-          planStream?.setStreamingPlan(next)
+          activePlanStream?.setStreamingPlan(next)
         }
       }
 
@@ -4515,10 +4523,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
 
-  // Only the active panel (the one feeding onMessagesChange) drives the shared plan-stream context.
-  // Background panels must not fight over setIsPlanStreaming.
-  const isActivePanel = onMessagesChange != null
-
   // Read `planStream` from a ref inside the publishing effects below so that
   // changes to the context value's identity do NOT re-run the effects (and
   // therefore can't cascade back into setState on the same context). The
@@ -4624,18 +4628,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
     plan: PlanData | null
     filepath: string | null
   } | null>(null)
+  const wasActivePanelRef = useRef(false)
   useEffect(() => {
     return () => {
       if (planPublishTimerRef.current) {
         clearTimeout(planPublishTimerRef.current)
         planPublishTimerRef.current = null
       }
+      pendingPlanPublishRef.current = null
     }
   }, [])
   // While tokens stream, pendingPlan identity changes every chunk. Fold it
   // away so this effect only re-runs when the idle snapshot actually changes.
   const idlePlan = isStreaming ? null : (pendingPlan ?? confirmedPlan)
   useEffect(() => {
+    if (!isActivePanel) {
+      wasActivePanelRef.current = false
+      pendingPlanPublishRef.current = null
+      if (planPublishTimerRef.current) {
+        clearTimeout(planPublishTimerRef.current)
+        planPublishTimerRef.current = null
+      }
+      return
+    }
+
+    const activated = !wasActivePanelRef.current
+    wasActivePanelRef.current = true
     const ctx = planStreamRef.current
     if (!ctx) return
 
@@ -4647,9 +4665,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     })
     const nextFilepath = planToPublish?.filepath ?? null
 
-    const planChanged = ctx.streamingPlan !== planToPublish
-    const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath
-    if (!planChanged && !filepathChanged) return
+    if (
+      !shouldPublishPlanToStream({
+        isActivePanel,
+        currentPlan: ctx.streamingPlan,
+        nextPlan: planToPublish,
+        currentFilepath: ctx.streamingPlanFilepath,
+        nextFilepath,
+      })
+    ) {
+      return
+    }
 
     const publish = () => {
       const c = planStreamRef.current
@@ -4671,7 +4697,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     // Edge events (plan first appears, or the shared snapshot is cleared)
     // bypass the throttle so Plans/dock react immediately.
-    const isEdge = planToPublish === null || ctx.streamingPlan === null
+    const isEdge =
+      activated || planToPublish === null || ctx.streamingPlan === null
     if (isEdge) {
       if (planPublishTimerRef.current) {
         clearTimeout(planPublishTimerRef.current)
@@ -4692,7 +4719,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
       publish()
     }, wait)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedStreamingPlan, isStreaming, idlePlan])
+  }, [derivedStreamingPlan, isStreaming, idlePlan, isActivePanel])
+
+  // The summary lifecycle is shared by all chat tabs, so restore the active
+  // tab's summary when ownership moves between panels. Background panels keep
+  // their own summary in pendingPlanRef until they become active.
+  useEffect(() => {
+    if (!isActivePanel) return
+    const ctx = planStreamRef.current
+    if (!ctx) return
+
+    const plan = pendingPlanRef.current
+    const summaryStatus =
+      plan?.summaryStatus ?? (plan?.summary ? "ready" : "idle")
+    if (summaryStatus === "idle") {
+      ctx.resetSummary()
+      return
+    }
+
+    ctx.setSummaryStatus(summaryStatus)
+    ctx.setStreamingSummary(plan?.summary ?? null)
+    ctx.setSummaryError(null)
+  }, [isActivePanel])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
@@ -6485,7 +6533,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
         pendingPlanRef.current = pendingNext
         setPendingPlan(pendingNext)
-        planStream?.setSummaryStatus("pending")
+        if (isActivePanelRef.current) {
+          planStream?.setSummaryStatus("pending")
+        }
       }
       try {
         const client = new AgentClient({
@@ -6503,10 +6553,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = readyNext
           setPendingPlan(readyNext)
-          planStream?.setStreamingPlan(readyNext)
+          if (isActivePanelRef.current) {
+            planStream?.setStreamingPlan(readyNext)
+          }
         }
-        planStream?.setStreamingSummary(summary)
-        planStream?.setSummaryStatus("ready")
+        if (isActivePanelRef.current) {
+          planStream?.setStreamingSummary(summary)
+          planStream?.setSummaryStatus("ready")
+        }
         planStream?.notifyPlanCreated()
         return summary
       } catch (err) {
@@ -6519,7 +6573,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           pendingPlanRef.current = errNext
           setPendingPlan(errNext)
         }
-        planStream?.setSummaryStatus("error")
+        if (isActivePanelRef.current) {
+          planStream?.setSummaryStatus("error")
+        }
         throw err
       }
     },
