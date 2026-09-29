@@ -36,6 +36,7 @@ import { chatQueuedMessageActionsRoutes } from '../routes/chat-queued-message-ac
 import { toolsProxyRoutes } from '../routes/tools-proxy'
 import { techStackRoutes } from '../routes/tech-stacks'
 import { apiKeyRoutes } from '../routes/api-keys'
+import { integrationRoutes } from '../routes/integrations'
 import { projectAuthConfigRoutes } from '../routes/project-auth-config'
 import { localAuthRoutes } from '../routes/local-auth'
 import { localUserRoutes } from '../routes/local-user'
@@ -132,6 +133,9 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', toolsProxyRoutes())
   app.route('/api', techStackRoutes())
   app.route('/api', apiKeyRoutes())
+  // Settings > Integrations is shown on desktop; the routes forward to cloud
+  // when SHOGO_API_KEY is set.
+  app.route('/api', integrationRoutes())
   // `marketplaceRoutes()` already branches on `SHOGO_LOCAL_MODE` internally
   // (reads served from the local DB, writes proxied to Shogo Cloud when a
   // key is connected) — it just wasn't mounted here, so every

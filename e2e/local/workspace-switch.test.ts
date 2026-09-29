@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type Locator } from "@playwright/test"
+import { LOCAL_API_BASE } from "./helpers"
 
 /**
  * Workspace switching — local/desktop E2E test.
@@ -185,23 +186,30 @@ async function switchWorkspaceWide(page: Page, toName: string) {
   await expect(accountTrigger(page, toName)).toBeVisible({ timeout: 30_000 })
 }
 
+/** Name of the workspace the client currently treats as active. */
+async function activeWorkspaceName(page: Page): Promise<string | undefined> {
+  return page.evaluate(async (apiBase) => {
+    const id = localStorage.getItem("shogo:active-workspace-id")
+    const res = await fetch(`${apiBase}/api/workspaces`, { credentials: "include" }).catch(() => null)
+    const body = res ? await res.json().catch(() => null) : null
+    const items = (body?.items ?? body?.data?.items ?? []) as Array<{ id: string; name: string }>
+    return items.find((w) => w.id === id)?.name
+  }, LOCAL_API_BASE)
+}
+
 /**
- * Narrow web (<768px): the same trigger instead navigates to a full-page
- * `/account` screen ("Workspaces" section, same underlying
- * `WorkspaceMenuSection` rows) rather than opening the popover — mirrors
- * `switchWorkspaceNarrow` in the staging suite.
+ * Narrow web (<768px): account and workspace switching live on the full-page
+ * `/account` screen ("Workspaces" section, same `WorkspaceMenuSection` rows).
+ * The personal shell's phone chrome has no account trigger (its menu button
+ * opens chat sessions), so go to the screen directly.
  */
 async function switchWorkspaceNarrow(page: Page, toName: string) {
-  const trigger = await goHome(page)
-  if (await accountTrigger(page, toName).isVisible().catch(() => false)) return
-
-  await trigger.click()
-  await page.waitForURL(/\/account/, { timeout: 15_000 })
-  await page.getByText("Workspaces", { exact: true }).waitFor({ state: "visible", timeout: 10_000 })
+  await page.goto("/account")
+  await page.getByText("Workspaces", { exact: true }).waitFor({ state: "visible", timeout: 15_000 })
+  if ((await activeWorkspaceName(page)) === toName) return
 
   await clickAndWaitForReload(page, page.getByText(toName, { exact: true }).first())
-  await goHome(page)
-  await expect(accountTrigger(page, toName)).toBeVisible({ timeout: 30_000 })
+  await expect.poll(() => activeWorkspaceName(page), { timeout: 30_000 }).toBe(toName)
 }
 
 test.describe("Workspace switching (local mode)", () => {

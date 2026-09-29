@@ -39,6 +39,9 @@ const localEnv = {
   EXPO_PUBLIC_API_URL: "http://localhost:8002",
   // A developer's apps/mobile/.env.local otherwise wins over the values above.
   EXPO_NO_DOTENV: "1",
+  // Every spec shares one local user and IP, so the suite trips the default
+  // 600/min global limit partway through.
+  RATE_LIMIT_GLOBAL_MAX: "100000",
   BROWSER: "none",
   ...(process.env.CI ? { CI: "true" } : {}),
 }

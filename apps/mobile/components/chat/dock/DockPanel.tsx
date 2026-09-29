@@ -92,6 +92,9 @@ export function DockPanel({
     () => (expanded ? ROTATE_OPEN : ROTATE_CLOSED),
     [expanded],
   )
+  // A disabled Pressable marks its subtree aria-disabled on web, which would
+  // disable the header's own action buttons for assistive tech.
+  const Header = collapsible ? Pressable : View
 
   return (
     <View
@@ -100,12 +103,10 @@ export function DockPanel({
         !isFirst && "border-t border-border/50",
       )}
     >
-      <Pressable
-        onPress={collapsible ? onToggle : undefined}
-        disabled={!collapsible}
-        className="flex-row items-center gap-2 px-3 py-2"
-        role={collapsible ? "button" : undefined}
+      <Header
+        {...(collapsible ? { onPress: onToggle, role: "button" as const } : {})}
         accessibilityLabel={title}
+        className="flex-row items-center gap-2 px-3 py-2"
       >
         <View
           className={cn("h-1.5 w-1.5 rounded-full", ACCENT_DOT_CLASS[accent])}
@@ -137,7 +138,7 @@ export function DockPanel({
             <ChevronDown size={12} className="text-muted-foreground/70" />
           </Motion.View>
         )}
-      </Pressable>
+      </Header>
 
       <AnimatePresence>
         {expanded && (
