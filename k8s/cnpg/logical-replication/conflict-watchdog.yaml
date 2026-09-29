@@ -13,6 +13,10 @@
 #     insert_exists / update_exists / multiple_unique_conflicts. Any other
 #     disable reason is NOT skipped — the job exits non-zero so the
 #     ReplicationMonitorFailing / job-failed alert pages a human.
+#   * A disable caused by schema skew ("is missing replicated column", the
+#     peer region migrated first) is re-enabled without a skip and without
+#     paging: the apply worker retries the transaction once the local
+#     migration lands, so no data is dropped.
 #   * SKIP_BUDGET caps skips per run. Hitting the budget (a conflict storm or a
 #     genuine bug producing endless distinct conflicts) stops auto-skipping and
 #     exits non-zero to page — so "auto-skip" can never silently become
@@ -162,6 +166,25 @@ spec:
                     REL=${LINE#*|}
 
                     if [ -z "$LSN" ]; then
+                      # Schema skew: the peer region ran a migration that added
+                      # columns before this region did (US migrates before EU on
+                      # every deploy). Nothing is lost; the apply worker retries the
+                      # same transaction once the local migration lands, so re-enable
+                      # without skipping and without paging.
+                      SKEW=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
+                        | grep -F 'missing replicated column' \
+                        | jq -rc --arg o "$ORIGIN" '
+                            .record as $r
+                            | select(($r.message // "") | test("is missing replicated column"))
+                            | select((($r.context // "") == "") or (($r.context // "") | test("\"" + $o + "\"")))
+                            | (($r.message // "") | (capture("relation \"(?<t>[^\"]+)\"").t) // "?")
+                          ' 2>/dev/null | tail -1)
+                      if [ -n "$SKEW" ]; then
+                        echo "WATCHDOG_SCHEMA_SKEW sub=$SUB relation=$SKEW — peer migrated first; re-enabling (no skip)"
+                        psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
+                        continue
+                      fi
+
                       # Disabled, but no known-safe conflict in the window. Do NOT
                       # blind-skip an unknown cause. Try a plain re-enable (covers
                       # transient disables); if it stays down the monitor pages.
