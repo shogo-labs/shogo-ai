@@ -53,6 +53,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
+import { buildAccountContextPrompt, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import { CanvasTypecheckGate } from './canvas-typecheck'
@@ -519,6 +520,7 @@ export class AgentGateway {
   private userTimezone: string | null = null
   /** Last Studio viewer (phone vs desktop) from the chat body. */
   private viewerContextPrompt: string | null = null
+  private accountContextPrompt: string | null = null
   /** Permission engine for local-mode security guardrails */
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
@@ -756,6 +758,11 @@ export class AgentGateway {
   setViewerContext(raw: unknown): void {
     const viewer = parseCanvasViewer(raw)
     this.viewerContextPrompt = viewer ? buildViewerContextPrompt(viewer) : null
+  }
+
+  /** Replaced on every chat request, like setViewerContext. */
+  setAccountContext(ctx: AccountContext): void {
+    this.accountContextPrompt = buildAccountContextPrompt(ctx)
   }
 
   /** Set an eval label for log tracing (used by eval runner) */
@@ -4149,6 +4156,9 @@ export class AgentGateway {
     pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
     if (this.viewerContextPrompt) {
       pushDynamic('viewer-context', this.viewerContextPrompt)
+    }
+    if (this.accountContextPrompt) {
+      pushDynamic('account-context', this.accountContextPrompt)
     }
 
     // 10. Dynamic workspace context (changes as files are added/removed)

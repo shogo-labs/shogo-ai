@@ -1888,6 +1888,7 @@ app.post('/agent/chat', async (c) => {
   // Always replace: the gateway is a process singleton, so a missing
   // `viewer` must clear the previous request's phone/desktop hint.
   agentGateway!.setViewerContext(body.viewer)
+  agentGateway!.setAccountContext(parseAccountContext(body))
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
 
@@ -4189,6 +4190,7 @@ app.post('/agent/workspace/reindex', async (c) => {
 // Tool catalog and search — powers the "Tools" tab in the web UI
 import { MCP_CATALOG, MCP_CATEGORIES, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
 import { isComposioEnabled, findComposioToolkit, initComposioSession, registerToolkitProxyTools } from './composio'
+import { parseAccountContext } from './account-context'
 
 app.get('/agent/mcp-catalog', (c) => {
   return c.json({ catalog: MCP_CATALOG, categories: MCP_CATEGORIES })

@@ -13,7 +13,7 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 
 // Mutable mock registry, keyed by canonical id (UUIDs pass through resolveModelId).
-let ENTRIES: Record<string, { provider?: string }> = {}
+let ENTRIES: Record<string, { provider?: string; displayName?: string }> = {}
 
 mock.module('../../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) => ENTRIES[id],
@@ -26,7 +26,7 @@ const GPT_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 beforeEach(() => {
   ENTRIES = {
-    [OPUS_UUID]: { provider: 'anthropic' },
+    [OPUS_UUID]: { provider: 'anthropic', displayName: 'Claude Opus 5' },
     [GPT_UUID]: { provider: 'openai' },
   }
 })
@@ -60,5 +60,17 @@ describe('stampModelProvider', () => {
     const body: any = { agentMode: 123 }
     stampModelProvider(body)
     expect('modelProvider' in body).toBe(false)
+  })
+
+  test('stamps the user-facing display name alongside the provider', () => {
+    const body: any = { agentMode: OPUS_UUID }
+    stampModelProvider(body)
+    expect(body.modelDisplayName).toBe('Claude Opus 5')
+  })
+
+  test('clears a stale display name when the registry has none', () => {
+    const body: any = { agentMode: GPT_UUID, modelDisplayName: 'Old Model' }
+    stampModelProvider(body)
+    expect('modelDisplayName' in body).toBe(false)
   })
 })
