@@ -1843,17 +1843,28 @@ export const api = {
     return res.data
   },
 
-  /** Short alias for callers that refer to the picker action as a folder create. */
-  async createRemoteFolder(
+  /** Edit a saved host. `null` clears the optional port / identity file. */
+  async updateRemoteHost(
     http: HttpClient,
+    hostId: string,
     body: {
-      workspaceId?: string
-      remoteHostId: string
-      path: string
-      name?: string
+      label?: string
+      sshTarget?: string
+      port?: number | null
+      identityFile?: string | null
     },
-  ) {
-    return this.createRemoteFolderProject(http, body)
+  ): Promise<RemoteHost> {
+    const res = await http.patch<{ host?: RemoteHost }>(
+      `/api/local/remote-hosts/${encodeURIComponent(hostId)}`,
+      body,
+    )
+    if (!res.data?.host) throw new Error('updateRemoteHost: no host returned')
+    return res.data.host
+  },
+
+  /** Remove a saved host. The API refuses (409) while projects still use it. */
+  async deleteRemoteHost(http: HttpClient, hostId: string): Promise<void> {
+    await http.delete(`/api/local/remote-hosts/${encodeURIComponent(hostId)}`)
   },
 
   /**

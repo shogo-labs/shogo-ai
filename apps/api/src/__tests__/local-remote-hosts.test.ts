@@ -44,10 +44,18 @@ const prisma = {
       hosts.set(host.id, host)
       return host
     }),
+    delete: mock(async ({ where }: any) => {
+      const host = hosts.get(where.id)
+      hosts.delete(where.id)
+      return host
+    }),
   },
   project: {
     findMany: mock(async () => projects),
     findUnique: mock(async ({ where }: any) => projects.find((project) => project.id === where.id) ?? null),
+    count: mock(async ({ where }: any) =>
+      projects.filter((project) => project.remoteHostId === where.remoteHostId).length,
+    ),
   },
   workspace: {
     findFirst: mock(async () => ({ id: 'workspace-1', kind: 'team' })),
@@ -68,9 +76,12 @@ const prisma = {
 
 mock.module('../lib/prisma', () => ({ prisma }))
 
-const { localRemoteHostsRoutes, parseSshConfigAliases } = await import(
+const { localRemoteHostsRoutes, parseSshConfigAliases, readSshConfigWithIncludes } = await import(
   '../routes/local-remote-hosts'
 )
+
+let connectionRequests = 0
+const resetHosts: string[] = []
 
 function app() {
   const app = new Hono()
@@ -80,16 +91,23 @@ function app() {
   })
   app.route('/', localRemoteHostsRoutes({
     prisma,
-    connectionForHost: () => connection,
     detectPlatform: async () => ({
       os: 'linux',
       arch: 'x64',
       target: 'linux-x64',
     }),
     runtimeManager: {
+      getRemoteConnection: () => {
+        connectionRequests++
+        return connection
+      },
+      getExistingRemoteConnection: () => connection,
       getRemoteAskpassPrompt: () => askpassPrompt,
       respondRemoteAskpass: (_hostId: string, answer: string) => {
         askpassAnswer = answer
+      },
+      resetRemoteHost: async (hostId: string) => {
+        resetHosts.push(hostId)
       },
     },
     readSshConfig: async () => [
@@ -110,14 +128,28 @@ beforeEach(() => {
   projects.length = 0
   askpassPrompt = null
   askpassAnswer = null
+  connectionRequests = 0
+  resetHosts.length = 0
+  hosts.set('host-1', {
+    id: 'host-1',
+    label: 'Build host',
+    sshTarget: 'alice@example.com',
+    port: 2222,
+    identityFile: '~/.ssh/id_ed25519',
+    platform: null,
+    lastConnectedAt: null,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  })
   connection = {
     connect: mock(async () => {}),
     status: mock(async () => ({ connected: true, state: 'connected' })),
     exec: mock(async (command: string) => {
-      if (command.includes('uname')) return { stdout: 'Linux\nx86_64\n', exitCode: 0 }
-      if (command.includes('for child')) return { stdout: '/home/deploy/a\0/home/deploy/b\0', exitCode: 0 }
-      if (command.includes('test -d')) return { stdout: '', exitCode: 0 }
-      return { stdout: '', exitCode: 0 }
+      if (command.includes('uname')) return { stdout: 'Linux\nx86_64\n', stderr: '', exitCode: 0 }
+      if (command.includes('for child')) {
+        return { stdout: '/home/deploy/a\0/home/deploy/b\0', stderr: '', exitCode: 0 }
+      }
+      return { stdout: '', stderr: '', exitCode: 0 }
     }),
   }
 })
@@ -126,6 +158,95 @@ describe('local Remote-SSH routes', () => {
   test('parses explicit ssh config aliases without wildcard blocks', () => {
     expect(parseSshConfigAliases('Host *\n  User root\nHost build\n  Port 2201'))
       .toEqual([{ alias: 'build', port: 2201 }])
+  })
+
+  test('does not attribute Match block options to the preceding Host', () => {
+    const text = [
+      'Host build',
+      '  User=deploy',
+      'Match host build exec "true"',
+      '  Port 2299',
+      '  IdentityFile ~/.ssh/other',
+    ].join('\n')
+    expect(parseSshConfigAliases(text)).toEqual([{ alias: 'build', user: 'deploy' }])
+  })
+
+  test('inlines Include directives relative to the ssh directory', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const sshDir = mkdtempSync(join(tmpdir(), 'shogo-ssh-config-'))
+    mkdirSync(join(sshDir, 'config.d'))
+    writeFileSync(join(sshDir, 'config'), 'Include config.d/*.conf\nHost main\n  Port 2001\n')
+    writeFileSync(join(sshDir, 'config.d', 'a.conf'), 'Host alpha\n  Port 2002\n')
+    writeFileSync(join(sshDir, 'config.d', 'b.conf'), 'Host beta\n  Port 2003\n')
+    writeFileSync(join(sshDir, 'config.d', 'ignored.txt'), 'Host nope\n')
+
+    const text = await readSshConfigWithIncludes(join(sshDir, 'config'), 0, sshDir)
+
+    expect(parseSshConfigAliases(text ?? '').map((alias) => alias.alias)).toEqual([
+      'alpha',
+      'beta',
+      'main',
+    ])
+  })
+
+  test('updates a host and resets its connection only when connection settings change', async () => {
+    const renamed = await app().request('/remote-hosts/host-1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'Renamed' }),
+    })
+    expect(renamed.status).toBe(200)
+    expect(resetHosts).toEqual([])
+
+    hosts.get('host-1').platform = 'linux-x64'
+    const moved = await app().request('/remote-hosts/host-1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sshTarget: 'bob@other.example.com', port: null }),
+    })
+    expect(moved.status).toBe(200)
+    expect(resetHosts).toEqual(['host-1'])
+    expect(hosts.get('host-1')).toMatchObject({
+      label: 'Renamed',
+      sshTarget: 'bob@other.example.com',
+      port: null,
+      platform: null,
+    })
+
+    const invalid = await app().request('/remote-hosts/host-1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sshTarget: 'two words' }),
+    })
+    expect(invalid.status).toBe(400)
+  })
+
+  test('refuses to delete a host that still has projects', async () => {
+    projects.push({ id: 'project-x', remoteHostId: 'host-1' })
+    const blocked = await app().request('/remote-hosts/host-1', { method: 'DELETE' })
+    expect(blocked.status).toBe(409)
+    expect(await blocked.json()).toMatchObject({ error: 'remote_host_in_use', projectCount: 1 })
+    expect(hosts.has('host-1')).toBe(true)
+
+    projects.length = 0
+    const deleted = await app().request('/remote-hosts/host-1', { method: 'DELETE' })
+    expect(deleted.status).toBe(200)
+    expect(hosts.has('host-1')).toBe(false)
+    expect(resetHosts).toEqual(['host-1'])
+  })
+
+  test('reports the SSH error message when connecting fails', async () => {
+    connection.connect = mock(async () => {
+      throw new Error('connect failed: Permission denied (publickey).')
+    })
+    const response = await app().request('/remote-hosts/host-1/connect', { method: 'POST' })
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({
+      error: 'remote_host_connect_failed',
+      message: 'connect failed: Permission denied (publickey).',
+    })
   })
 
   test('lists saved hosts and safe ssh config alias fields', async () => {
@@ -173,6 +294,7 @@ describe('local Remote-SSH routes', () => {
       }),
     })
     expect(created.status).toBe(201)
+    expect(connectionRequests).toBeGreaterThan(0)
     expect((await created.json() as any).project).toMatchObject({
       name: 'Remote App',
       workspaceId: 'workspace-1',

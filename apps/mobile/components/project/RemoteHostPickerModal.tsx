@@ -14,6 +14,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Trash2,
 } from "lucide-react-native";
 import {
   Modal,
@@ -263,6 +264,29 @@ export function RemoteHostPickerModal({
     [busy, http],
   );
 
+  const removeHost = useCallback(
+    async (host: RemoteHost & { id: string }) => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await api.deleteRemoteHost(http, host.id);
+        setHosts((current) =>
+          current ? current.filter((entry) => entry.id !== host.id) : current,
+        );
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(
+          `Could not remove ${remoteHostTitle(host)}: ${message || "request failed"}. ` +
+            "Hosts that still have projects cannot be removed.",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, http],
+  );
+
   const handleAddHost = useCallback(async () => {
     const cleanLabel = label.trim();
     const cleanTarget = sshTarget.trim();
@@ -382,6 +406,11 @@ export function RemoteHostPickerModal({
                           host={host}
                           disabled={busy}
                           onPress={() => void connectHost(host)}
+                          onRemove={
+                            isSavedHost(host)
+                              ? () => void removeHost(host)
+                              : undefined
+                          }
                         />
                       ))}
                     </View>
@@ -657,10 +686,12 @@ function HostRow({
   host,
   disabled,
   onPress,
+  onRemove,
 }: {
   host: RemoteHost;
   disabled: boolean;
   onPress: () => void;
+  onRemove?: () => void;
 }) {
   return (
     <Pressable
@@ -685,6 +716,16 @@ function HostRow({
           {remoteHostSubtitle(host)}
         </Text>
       </View>
+      {onRemove && !disabled && (
+        <Pressable
+          onPress={onRemove}
+          accessibilityLabel={`Remove ${remoteHostTitle(host)}`}
+          hitSlop={8}
+          className="rounded-md p-1.5 active:bg-background-200"
+        >
+          <Trash2 size={14} className="text-typography-400" />
+        </Pressable>
+      )}
       {disabled ? (
         <ActivityIndicator size="small" />
       ) : (

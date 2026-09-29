@@ -393,20 +393,6 @@ function validatePath(raw: string): ValidatedPath {
   return { ok: true, path: resolved }
 }
 
-function validateRemotePath(raw: unknown): { ok: boolean; path?: string; error?: string } {
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return { ok: false, error: 'Remote folder path is required' }
-  }
-  if (raw.includes('\u0000')) {
-    return { ok: false, error: 'Remote folder path cannot contain NUL bytes' }
-  }
-  // Remote paths are never resolved, stat'ed, realpath'ed, or required to be
-  // absolute here: `~` and host-specific relative conventions are valid
-  // inputs for the SSH runtime. The remote shell boundary performs its own
-  // quoting and the runtime host owns filesystem policy.
-  return { ok: true, path: raw.trim() }
-}
-
 // =============================================================================
 // Git-root walk-up
 // =============================================================================
@@ -437,13 +423,8 @@ interface CreateFromFoldersBody {
   name?: string
   workspaceId?: string
   paths?: string[]
-  /**
-   * Remote-SSH project creation supplies the saved host plus a path that is
-   * interpreted on that host. It intentionally does not go through the
-   * local folder validation gauntlet below.
-   */
-  remoteHostId?: string
-  remotePath?: string
+  /** Rejected: Remote-SSH projects are created via /projects/from-remote-folder. */
+  remoteHostId?: unknown
   /**
    * When the picked path is inside a git repo, the first call returns
    * `409 needsGitRootChoice`. The UI then re-calls with the user's
@@ -616,91 +597,13 @@ export function localProjectsRoutes(): Hono {
       return c.json({ error: 'invalid_json' }, 400)
     }
 
-    // Remote-SSH records are metadata-only on this machine. Do not run the
-    // local `validatePath` gauntlet, walk a git root, read `.shogo`, or write
-    // bootstrap files for them: all of those paths belong to the SSH host.
+    // Remote paths belong to the SSH host and must never reach the local
+    // validatePath / git-root / .shogo bootstrap flow below.
     if (body.remoteHostId !== undefined) {
-      if (typeof body.remoteHostId !== 'string' || !body.remoteHostId.trim()) {
-        return c.json({ error: 'remote_host_id_required' }, 400)
-      }
-      const remotePathInput =
-        body.remotePath ?? (Array.isArray(body.paths) && body.paths.length === 1 ? body.paths[0] : undefined)
-      const remotePath = validateRemotePath(remotePathInput)
-      if (!remotePath.ok || !remotePath.path) {
-        return c.json({ error: remotePath.error ?? 'remote_path_required' }, 400)
-      }
-      const remoteFolderPath = remotePath.path
-      if (Array.isArray(body.paths) && body.paths.length > 1) {
-        return c.json({
-          error: 'remote_project_single_folder_only',
-          message: 'Remote-SSH projects support exactly one remote folder.',
-        }, 400)
-      }
-
-      const remoteHostModel = (prisma as any).remoteHost
-      let remoteHost: unknown
-      try {
-        remoteHost = remoteHostModel?.findUnique
-          ? await remoteHostModel.findUnique({ where: { id: body.remoteHostId.trim() } })
-          : null
-      } catch (error) {
-        console.warn('[local-projects] Remote host lookup failed:', error)
-        return c.json({ error: 'remote_host_lookup_failed' }, 503)
-      }
-      if (!remoteHost) return c.json({ error: 'remote_host_not_found' }, 404)
-
-      const target = await resolveFolderProjectWorkspace(userId, body.workspaceId)
-      if (!target) return c.json({ error: 'no_workspace_for_user' }, 400)
-      const workspaceId = target.workspaceId
-      const name = (body.name && body.name.trim()) || folderDisplayName(remoteFolderPath)
-
-      let project
-      try {
-        project = await prisma.$transaction(async (tx) => {
-          const created = await (tx.project as any).create({
-            data: {
-              name,
-              workspaceId,
-              createdBy: userId,
-              workingMode: 'external',
-              runtimeEnabled: true,
-              trustLevel: 'restricted',
-              status: 'active',
-              tier: 'starter',
-              accessLevel: 'private',
-              remoteHostId: body.remoteHostId!.trim(),
-              settings: jsonField({
-                workingMode: 'external',
-                canvasEnabled: false,
-                activeMode: 'none',
-              }),
-            },
-          })
-          await tx.projectFolder.create({
-            data: {
-              projectId: created.id,
-              path: remoteFolderPath,
-              isPrimary: true,
-              lastOpenedAt: new Date(),
-            },
-          })
-          return created
-        })
-      } catch (err: any) {
-        console.error('[local-projects] Failed to create Remote-SSH project row:', err)
-        return c.json({ error: 'create_failed', message: err.message }, 500)
-      }
-
-      const reloaded = await prisma.project.findUnique({
-        where: { id: project.id },
-        include: { projectFolders: true },
-      })
-      prewarmRuntimeBackground(project.id, 'new-remote-project')
       return c.json({
-        project: reloaded,
-        rebound: false,
-        ...(target.redirectedFromWorkspaceId && { redirectedFromWorkspaceId: target.redirectedFromWorkspaceId }),
-      }, 201)
+        error: 'use_remote_folder_endpoint',
+        message: 'Create Remote-SSH projects with POST /api/local/projects/from-remote-folder.',
+      }, 400)
     }
 
     const rawPaths = Array.isArray(body.paths) ? body.paths : []

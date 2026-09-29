@@ -132,11 +132,6 @@ const prisma = {
       return row
     }),
   },
-  remoteHost: {
-    findUnique: mock(async ({ where }: any) =>
-      where?.id === 'ssh-1' ? { id: 'ssh-1', label: 'Build host' } : null,
-    ),
-  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma }))
@@ -309,25 +304,19 @@ describe('localProjectsRoutes from folders', () => {
     expect([...folders.values()]).toHaveLength(2)
   })
 
-  test('creates Remote-SSH records without validating or writing local paths', async () => {
-    const remotePath = '~/projects/remote-app'
+  test('routes Remote-SSH creation to the remote endpoint without touching local paths', async () => {
     const res = await appWithAuth().request('http://api.test/from-folders', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         name: 'Remote App',
         remoteHostId: 'ssh-1',
-        remotePath,
+        paths: [rootDir],
       }),
     })
-    const body = await json(res)
 
-    expect(res.status).toBe(201)
-    expect(body.project).toMatchObject({
-      remoteHostId: 'ssh-1',
-      runtimeEnabled: true,
-      projectFolders: [{ path: remotePath, isPrimary: true }],
-    })
+    expect(res.status).toBe(400)
+    expect(await json(res)).toMatchObject({ error: 'use_remote_folder_endpoint' })
     expect(existsSync(join(rootDir, '.shogo'))).toBe(false)
   })
 

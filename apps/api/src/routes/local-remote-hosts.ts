@@ -10,17 +10,17 @@
  */
 
 import { Hono } from 'hono'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { prisma } from '../lib/prisma'
-import {
-  createSSHConnection,
-  quoteRemoteShellArgument,
-  type SSHCommandResult,
-} from '../lib/remote-ssh/connection'
 import { detectRemotePlatform, type RemotePlatform } from '../lib/remote-ssh/bootstrap'
-import { resolveFolderProjectWorkspace } from './local-projects'
+import {
+  commandSucceeded,
+  remotePathExpression,
+  type RemoteCommandRunner,
+} from '../lib/remote-ssh/shell'
+import { folderDisplayName, resolveFolderProjectWorkspace } from './local-projects'
 
 const REMOTE_HOST_SELECT = {
   id: true,
@@ -38,6 +38,7 @@ const MAX_LABEL_LENGTH = 200
 const MAX_SSH_TARGET_LENGTH = 512
 const MAX_IDENTITY_FILE_LENGTH = 4096
 const MAX_BROWSE_ENTRIES = 2_000
+const MAX_SSH_CONFIG_INCLUDE_DEPTH = 5
 
 export interface RemoteHostRouteHost {
   id?: string
@@ -51,54 +52,25 @@ export interface RemoteHostRouteHost {
   updatedAt?: Date | string | null
 }
 
-export interface RemoteHostConnection {
+export interface RemoteHostConnection extends RemoteCommandRunner {
   connect(): Promise<void>
-  exec(command: string): Promise<SSHCommandResult | {
-    stdout: string
-    stderr?: string
-    exitCode?: number | null
-    code?: number
-    status?: number
-  }>
-  status?: () => Promise<{
-    connected: boolean
-    state?: string
-    host?: string
-    controlPath?: string
-  }>
+  status?(): Promise<{ connected: boolean; state?: string }>
+}
+
+/** The RuntimeManager surface these routes use; it owns every SSH connection. */
+export interface RemoteHostsRuntime {
+  getRemoteConnection(remoteHostId: string, host: RemoteHostRouteHost): RemoteHostConnection
+  getExistingRemoteConnection(remoteHostId: string): RemoteHostConnection | null
+  getRemoteAskpassPrompt(remoteHostId: string): { prompt: string; createdAt: number } | null
+  respondRemoteAskpass(remoteHostId: string, answer: string): void
+  resetRemoteHost(remoteHostId: string): Promise<void>
+  status?(projectId: string): unknown
+  start?(projectId: string): Promise<unknown>
 }
 
 export interface LocalRemoteHostsRouteDependencies {
-  /**
-   * RuntimeManager's public connection seam. Tests and embedders can inject
-   * this instead of starting a real SSH process.
-   */
-  runtimeManager?: {
-    getRemoteConnection?: (
-      remoteHostId: string,
-      host: RemoteHostRouteHost,
-    ) => RemoteHostConnection
-    getExistingRemoteConnection?: (remoteHostId: string) => RemoteHostConnection | null
-    getRemoteConnectionStatus?: (remoteHostId: string) => Promise<{
-      connected: boolean
-      state?: string
-      host?: string
-      controlPath?: string
-    } | null>
-    getRemoteAskpassPrompt?: (remoteHostId: string) => {
-      prompt: string
-      createdAt: number
-    } | null
-    respondRemoteAskpass?: (remoteHostId: string, answer: string) => void
-    status?: (projectId: string) => unknown
-    start?: (projectId: string) => Promise<unknown>
-  }
-  /** Alternate seam for route-level tests and host-specific integrations. */
-  connectionForHost?: (
-    remoteHostId: string,
-    host: RemoteHostRouteHost,
-  ) => RemoteHostConnection
-  detectPlatform?: (connection: RemoteHostConnection) => Promise<RemotePlatform>
+  runtimeManager: RemoteHostsRuntime
+  detectPlatform?: (connection: RemoteCommandRunner) => Promise<RemotePlatform>
   readSshConfig?: () => Promise<string | null>
   prewarmRuntime?: (projectId: string) => Promise<unknown>
   prisma?: any
@@ -106,8 +78,11 @@ export interface LocalRemoteHostsRouteDependencies {
 
 type RemoteHostRow = RemoteHostRouteHost & { id: string }
 
-function modelFor(deps: LocalRemoteHostsRouteDependencies): any {
-  return (deps.prisma ?? prisma) as any
+interface RemoteHostInput {
+  label?: string
+  sshTarget?: string
+  port?: number | null
+  identityFile?: string | null
 }
 
 function authUserId(c: any): string | null {
@@ -123,11 +98,62 @@ function containsUnsafeControl(value: string): boolean {
   return value.includes('\u0000') || /[\r\n]/.test(value)
 }
 
-function validPort(value: unknown): value is number | undefined {
-  return (
-    value === undefined ||
-    (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65_535)
-  )
+/**
+ * Validate a create (`partial: false`) or update (`partial: true`) body.
+ * On update, `null` clears the optional `port` / `identityFile` fields.
+ */
+function parseRemoteHostInput(
+  body: Record<string, unknown>,
+  partial: boolean,
+): { ok: true; value: RemoteHostInput } | { ok: false; error: string } {
+  const value: RemoteHostInput = {}
+
+  if (body.label !== undefined || !partial) {
+    if (!isNonEmptyString(body.label, MAX_LABEL_LENGTH) || containsUnsafeControl(body.label)) {
+      return { ok: false, error: 'invalid_label' }
+    }
+    value.label = body.label.trim()
+  }
+  if (body.sshTarget !== undefined || !partial) {
+    if (
+      !isNonEmptyString(body.sshTarget, MAX_SSH_TARGET_LENGTH) ||
+      containsUnsafeControl(body.sshTarget) ||
+      /\s/.test(body.sshTarget.trim())
+    ) {
+      return { ok: false, error: 'invalid_ssh_target' }
+    }
+    value.sshTarget = body.sshTarget.trim()
+  }
+  if (body.port !== undefined) {
+    if (body.port === null && partial) {
+      value.port = null
+    } else if (
+      typeof body.port === 'number' &&
+      Number.isInteger(body.port) &&
+      body.port >= 1 &&
+      body.port <= 65_535
+    ) {
+      value.port = body.port
+    } else {
+      return { ok: false, error: 'invalid_port' }
+    }
+  }
+  if (body.identityFile !== undefined) {
+    if (body.identityFile === null && partial) {
+      value.identityFile = null
+    } else if (
+      typeof body.identityFile !== 'string' ||
+      !body.identityFile.trim() ||
+      body.identityFile.length > MAX_IDENTITY_FILE_LENGTH ||
+      containsUnsafeControl(body.identityFile) ||
+      /-----BEGIN .*PRIVATE KEY-----/.test(body.identityFile)
+    ) {
+      return { ok: false, error: 'invalid_identity_file' }
+    } else {
+      value.identityFile = body.identityFile.trim()
+    }
+  }
+  return { ok: true, value }
 }
 
 function safeDate(value: unknown): string | null | undefined {
@@ -161,50 +187,22 @@ function safeHost(
   }
 }
 
-function resultExitCode(result: { exitCode?: number | null; code?: number; status?: number }): number | undefined {
-  return result.exitCode ?? result.code ?? result.status
-}
-
-function commandSucceeded(result: { exitCode?: number | null; code?: number; status?: number }): boolean {
-  const code = resultExitCode(result)
-  return code === undefined || code === 0
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/**
- * Convert the two useful home-directory spellings into shell expressions.
- * Everything else remains one quoted literal, including `$HOME`, globs, and
- * semicolons supplied by a caller.
- */
-function remotePathExpression(remotePath: string): string {
-  if (remotePath === '~') return '"$HOME"'
-  if (remotePath.startsWith('~/')) {
-    return `"$HOME/"${quoteRemoteShellArgument(remotePath.slice(2))}`
-  }
-  return quoteRemoteShellArgument(remotePath)
-}
-
 function testRemoteDirectoryCommand(remotePath: string): string {
-  const expression = remotePathExpression(remotePath)
-  return [
-    'set -eu',
-    `remote_path=${expression}`,
-    'test -d "$remote_path"',
-  ].join('\n')
+  return ['set -eu', `remote_path=${remotePathExpression(remotePath)}`, 'test -d "$remote_path"'].join('\n')
 }
 
 function listRemoteDirectoriesCommand(remotePath: string): string {
-  const expression = remotePathExpression(remotePath)
   // Shell globs are expanded by the remote shell after the base path has
   // already been safely assigned. The directory test prevents files and
   // unmatched glob literals from entering the response. NUL framing keeps
   // names containing whitespace/newlines unambiguous.
   return [
     'set -eu',
-    `base=${expression}`,
+    `base=${remotePathExpression(remotePath)}`,
     'test -d "$base"',
     'for child in "$base"/* "$base"/.[!.]* "$base"/..?*; do',
     '  if test -d "$child"; then printf "%s\\0" "$child"; fi',
@@ -235,8 +233,9 @@ interface ParsedSshAlias {
 
 /**
  * Parse only explicit Host aliases and the connection options useful to the
- * picker. Wildcard/default blocks are intentionally ignored; they often
- * contain policy directives rather than a connectable host.
+ * picker. Wildcard/default blocks and `Match` blocks are intentionally
+ * ignored; they often contain policy directives rather than a connectable
+ * host. `Include` must already be expanded (see readSshConfigWithIncludes).
  */
 export function parseSshConfigAliases(text: string): ParsedSshAlias[] {
   const aliases: ParsedSshAlias[] = []
@@ -261,7 +260,7 @@ export function parseSshConfigAliases(text: string): ParsedSshAlias[] {
     const line = rawLine.trim()
     if (!line || line.startsWith('#')) continue
     const withoutComment = line.replace(/\s+#.*$/, '')
-    const match = /^(\S+)\s+(.*?)\s*$/.exec(withoutComment)
+    const match = /^(\S+?)(?:\s*=\s*|\s+)(.*?)\s*$/.exec(withoutComment)
     if (!match) continue
     const key = match[1]!.toLowerCase()
     const value = match[2]!.trim().replace(/^(['"])(.*)\1$/, '$2')
@@ -272,6 +271,12 @@ export function parseSshConfigAliases(text: string): ParsedSshAlias[] {
         .split(/\s+/)
         .filter((alias) => alias && !/[*?!]/.test(alias))
         .map((alias) => ({ alias }))
+      continue
+    }
+    if (key === 'match') {
+      // Options under Match apply conditionally; never attribute them to
+      // the preceding Host block.
+      flush()
       continue
     }
     if (current.length === 0) continue
@@ -290,12 +295,60 @@ export function parseSshConfigAliases(text: string): ParsedSshAlias[] {
   return aliases
 }
 
-async function defaultReadSshConfig(): Promise<string | null> {
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
+  return new RegExp(`^${escaped}$`)
+}
+
+async function expandIncludePattern(pattern: string, sshDir: string): Promise<string[]> {
+  const expanded = pattern.startsWith('~/') ? join(homedir(), pattern.slice(2)) : pattern
+  const absolute = isAbsolute(expanded) ? expanded : join(sshDir, expanded)
+  const name = basename(absolute)
+  if (!/[*?]/.test(name)) return [absolute]
   try {
-    return await readFile(join(homedir(), '.ssh', 'config'), 'utf8')
+    const matcher = globToRegExp(name)
+    const entries = await readdir(dirname(absolute))
+    return entries
+      .filter((entry) => matcher.test(entry))
+      .sort()
+      .map((entry) => join(dirname(absolute), entry))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Read an ssh_config file, inlining `Include` directives the way OpenSSH
+ * resolves them (relative paths are relative to ~/.ssh, globs are sorted).
+ */
+export async function readSshConfigWithIncludes(
+  path: string,
+  depth = 0,
+  sshDir = join(homedir(), '.ssh'),
+): Promise<string | null> {
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
   } catch {
     return null
   }
+  if (depth >= MAX_SSH_CONFIG_INCLUDE_DEPTH) return text
+
+  const lines: string[] = []
+  for (const rawLine of text.split(/\r?\n/)) {
+    const include = /^\s*include(?:\s*=\s*|\s+)(.+?)\s*$/i.exec(rawLine)
+    if (!include) {
+      lines.push(rawLine)
+      continue
+    }
+    for (const pattern of include[1]!.split(/\s+/).filter(Boolean)) {
+      for (const file of await expandIncludePattern(pattern, sshDir)) {
+        const included = await readSshConfigWithIncludes(file, depth + 1, sshDir)
+        if (included) lines.push(included)
+      }
+    }
+  }
+  return lines.join('\n')
 }
 
 function aliasHost(alias: ParsedSshAlias): Record<string, unknown> {
@@ -317,17 +370,6 @@ function aliasHost(alias: ParsedSshAlias): Record<string, unknown> {
   )
 }
 
-async function readRemoteHost(
-  remoteHostModel: any,
-  id: string,
-): Promise<RemoteHostRow | null> {
-  if (!remoteHostModel?.findUnique) return null
-  return remoteHostModel.findUnique({
-    where: { id },
-    select: REMOTE_HOST_SELECT,
-  })
-}
-
 function normalizeHostForConnection(row: RemoteHostRow): RemoteHostRouteHost {
   return {
     id: row.id,
@@ -339,100 +381,61 @@ function normalizeHostForConnection(row: RemoteHostRow): RemoteHostRouteHost {
   }
 }
 
-export function localRemoteHostsRoutes(
-  dependencies: LocalRemoteHostsRouteDependencies = {},
-): Hono {
-  const router = new Hono()
-  const remoteHostModel = modelFor(dependencies).remoteHost
-  const localConnections = new Map<string, RemoteHostConnection>()
-  const detectPlatform = dependencies.detectPlatform ?? (detectRemotePlatform as any)
-  const readConfig = dependencies.readSshConfig ?? defaultReadSshConfig
-
-  const getConnection = (
-    host: RemoteHostRow,
-  ): RemoteHostConnection => {
-    const id = host.id
-    const cached = localConnections.get(id)
-    if (cached) return cached
-
-    const normalized = normalizeHostForConnection(host)
-    const connection =
-      dependencies.connectionForHost?.(id, normalized) ??
-      dependencies.runtimeManager?.getRemoteConnection?.(id, normalized) ??
-      createSSHConnection({
-        host: normalized.sshTarget,
-        ...(normalized.port == null ? {} : { port: normalized.port }),
-        ...(normalized.identityFile ? { identityFile: normalized.identityFile } : {}),
-      })
-    localConnections.set(id, connection)
-    return connection
-  }
-
-  const getExistingConnection = async (
-    id: string,
-  ): Promise<RemoteHostConnection | null> => {
-    const cached = localConnections.get(id)
-    if (cached) return cached
-    const managerConnection = dependencies.runtimeManager?.getExistingRemoteConnection?.(id)
-    if (managerConnection) {
-      localConnections.set(id, managerConnection)
-      return managerConnection
-    }
+async function readJsonObject(c: any): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await c.req.json()
+    return body && typeof body === 'object' && !Array.isArray(body) ? body : null
+  } catch {
     return null
   }
+}
 
-  const updateConnectionMetadata = async (
-    host: RemoteHostRow,
-    platform: RemotePlatform,
-  ): Promise<RemoteHostRow> => {
-    const data = { platform: platform.target, lastConnectedAt: new Date() }
-    if (!remoteHostModel?.update) return { ...host, ...data }
-    return remoteHostModel.update({
-      where: { id: host.id },
-      data,
-      select: REMOTE_HOST_SELECT,
-    })
+export function localRemoteHostsRoutes(dependencies: LocalRemoteHostsRouteDependencies): Hono {
+  const router = new Hono()
+  const db = (dependencies.prisma ?? prisma) as any
+  const remoteHostModel = db.remoteHost
+  const runtime = dependencies.runtimeManager
+  const detectPlatform = dependencies.detectPlatform ?? detectRemotePlatform
+  const readConfig =
+    dependencies.readSshConfig ?? (() => readSshConfigWithIncludes(join(homedir(), '.ssh', 'config')))
+
+  const readRemoteHost = async (id: string): Promise<RemoteHostRow | null> => {
+    if (!remoteHostModel?.findUnique) return null
+    return remoteHostModel.findUnique({ where: { id }, select: REMOTE_HOST_SELECT })
   }
 
   const ensureConnected = async (
     host: RemoteHostRow,
-    updateMetadata = true,
-  ): Promise<{ connection: RemoteHostConnection; platform?: RemotePlatform; connected: boolean }> => {
-    const connection = getConnection(host)
+    updateMetadata: boolean,
+  ): Promise<{ connection: RemoteHostConnection; platform?: RemotePlatform }> => {
+    const connection = runtime.getRemoteConnection(host.id, normalizeHostForConnection(host))
     await connection.connect()
     let platform: RemotePlatform | undefined
-    // Detecting on every first use also repairs rows created from an SSH
-    // config alias whose platform has not yet been saved.
+    // Detecting on every first use also repairs rows whose platform has not
+    // yet been saved.
     if (updateMetadata || !host.platform) {
       platform = await detectPlatform(connection)
-      if (updateMetadata && platform) await updateConnectionMetadata(host, platform)
+      if (updateMetadata && remoteHostModel?.update) {
+        await remoteHostModel.update({
+          where: { id: host.id },
+          data: { platform: platform.target, lastConnectedAt: new Date() },
+          select: REMOTE_HOST_SELECT,
+        })
+      }
     }
-    const status = connection.status ? await connection.status() : undefined
-    return {
-      connection,
-      platform,
-      connected: status?.connected ?? true,
-    }
+    return { connection, platform }
   }
 
   router.get('/remote-hosts', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
     try {
       const savedRows: RemoteHostRow[] = remoteHostModel?.findMany
-        ? await remoteHostModel.findMany({
-            orderBy: { label: 'asc' },
-            select: REMOTE_HOST_SELECT,
-          })
+        ? await remoteHostModel.findMany({ orderBy: { label: 'asc' }, select: REMOTE_HOST_SELECT })
         : []
       const configText = await readConfig()
-      const aliases = configText
-        ? parseSshConfigAliases(configText).map(aliasHost)
-        : []
+      const aliases = configText ? parseSshConfigAliases(configText).map(aliasHost) : []
       return c.json({
-        hosts: [
-          ...savedRows.map((row) => safeHost(row, { source: 'saved' })),
-          ...aliases,
-        ],
+        hosts: [...savedRows.map((row) => safeHost(row, { source: 'saved' })), ...aliases],
       })
     } catch (error) {
       console.error('[local-remote-hosts] list failed:', error)
@@ -442,92 +445,108 @@ export function localRemoteHostsRoutes(
 
   router.post('/remote-hosts', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
-    let body: {
-      label?: unknown
-      sshTarget?: unknown
-      port?: unknown
-      identityFile?: unknown
-    }
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'invalid_json' }, 400)
-    }
-
-    if (!isNonEmptyString(body.label, MAX_LABEL_LENGTH) || containsUnsafeControl(body.label)) {
-      return c.json({ error: 'invalid_label' }, 400)
-    }
-    if (
-      !isNonEmptyString(body.sshTarget, MAX_SSH_TARGET_LENGTH) ||
-      containsUnsafeControl(body.sshTarget) ||
-      /\s/.test(body.sshTarget.trim())
-    ) {
-      return c.json({ error: 'invalid_ssh_target' }, 400)
-    }
-    if (!validPort(body.port)) return c.json({ error: 'invalid_port' }, 400)
-    if (body.identityFile !== undefined) {
-      if (
-        typeof body.identityFile !== 'string' ||
-        !body.identityFile.trim() ||
-        body.identityFile.length > MAX_IDENTITY_FILE_LENGTH ||
-        containsUnsafeControl(body.identityFile) ||
-        /-----BEGIN .*PRIVATE KEY-----/.test(body.identityFile)
-      ) {
-        return c.json({ error: 'invalid_identity_file' }, 400)
-      }
-    }
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'invalid_json' }, 400)
+    const input = parseRemoteHostInput(body, false)
+    if (!input.ok) return c.json({ error: input.error }, 400)
     if (!remoteHostModel?.create) return c.json({ error: 'remote_hosts_unavailable' }, 503)
 
     try {
-      const created = await remoteHostModel.create({
-        data: {
-          label: body.label.trim(),
-          sshTarget: body.sshTarget.trim(),
-          ...(body.port === undefined ? {} : { port: body.port }),
-          ...(body.identityFile === undefined
-            ? {}
-            : { identityFile: body.identityFile.trim() }),
-        },
-        select: REMOTE_HOST_SELECT,
-      })
+      const created = await remoteHostModel.create({ data: input.value, select: REMOTE_HOST_SELECT })
       return c.json({ host: safeHost(created, { source: 'saved' }) }, 201)
-    } catch (error: any) {
+    } catch (error) {
       console.error('[local-remote-hosts] create failed:', error)
       return c.json({ error: 'remote_host_create_failed', message: errorMessage(error) }, 500)
+    }
+  })
+
+  router.patch('/remote-hosts/:id', async (c) => {
+    if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
+    const id = c.req.param('id')
+    const host = await readRemoteHost(id)
+    if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'invalid_json' }, 400)
+    const input = parseRemoteHostInput(body, true)
+    if (!input.ok) return c.json({ error: input.error }, 400)
+
+    const connectionChanged =
+      (input.value.sshTarget !== undefined && input.value.sshTarget !== host.sshTarget) ||
+      (input.value.port !== undefined && input.value.port !== (host.port ?? null)) ||
+      (input.value.identityFile !== undefined && input.value.identityFile !== (host.identityFile ?? null))
+
+    try {
+      const updated = await remoteHostModel.update({
+        where: { id },
+        // A different machine may have a different architecture.
+        data: connectionChanged ? { ...input.value, platform: null } : input.value,
+        select: REMOTE_HOST_SELECT,
+      })
+      if (connectionChanged) await runtime.resetRemoteHost(id)
+      return c.json({ host: safeHost(updated, { source: 'saved' }) })
+    } catch (error) {
+      console.error('[local-remote-hosts] update failed:', error)
+      return c.json({ error: 'remote_host_update_failed', message: errorMessage(error) }, 500)
+    }
+  })
+
+  router.delete('/remote-hosts/:id', async (c) => {
+    if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
+    const id = c.req.param('id')
+    const host = await readRemoteHost(id)
+    if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
+
+    const projectCount: number = await db.project.count({ where: { remoteHostId: id } })
+    if (projectCount > 0) {
+      return c.json({
+        error: 'remote_host_in_use',
+        message: 'Delete or move the projects on this host before removing it.',
+        projectCount,
+      }, 409)
+    }
+    try {
+      await runtime.resetRemoteHost(id)
+      await remoteHostModel.delete({ where: { id } })
+      return c.json({ deleted: true })
+    } catch (error) {
+      // The FK is ON DELETE RESTRICT, so a project created concurrently
+      // lands here instead of being orphaned.
+      console.error('[local-remote-hosts] delete failed:', error)
+      return c.json({ error: 'remote_host_delete_failed', message: errorMessage(error) }, 409)
     }
   })
 
   router.post('/remote-hosts/:id/connect', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
     const id = c.req.param('id')
-    const host = await readRemoteHost(remoteHostModel, id)
+    const host = await readRemoteHost(id)
     if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
 
     try {
       const result = await ensureConnected(host, true)
-      const updated = await readRemoteHost(remoteHostModel, id)
+      const updated = await readRemoteHost(id)
       const status = result.connection.status ? await result.connection.status() : undefined
       return c.json({
         host: safeHost(updated ?? host, { source: 'saved' }),
-        connected: status?.connected ?? result.connected,
+        connected: status?.connected ?? true,
         state: status?.connected === false ? 'disconnected' : (status?.state ?? 'connected'),
         platform: result.platform?.target ?? updated?.platform ?? host.platform ?? null,
       })
     } catch (error) {
       console.warn(`[local-remote-hosts] connect failed for ${id}:`, errorMessage(error))
-      return c.json({ error: 'remote_host_connect_failed' }, 503)
+      return c.json({ error: 'remote_host_connect_failed', message: errorMessage(error) }, 503)
     }
   })
 
   router.get('/remote-hosts/:id/status', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
     const id = c.req.param('id')
-    const host = await readRemoteHost(remoteHostModel, id)
+    const host = await readRemoteHost(id)
     if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
 
     let connected = false
     let state = 'disconnected'
-    const existing = await getExistingConnection(id)
+    const existing = runtime.getExistingRemoteConnection(id)
     if (existing?.status) {
       try {
         const status = await existing.status()
@@ -537,27 +556,16 @@ export function localRemoteHostsRoutes(
         connected = false
         state = 'disconnected'
       }
-    } else if (dependencies.runtimeManager?.getRemoteConnectionStatus) {
-      try {
-        const status = await dependencies.runtimeManager.getRemoteConnectionStatus(id)
-        connected = !!status?.connected
-        state = connected ? (status?.state ?? 'connected') : 'disconnected'
-      } catch {
-        connected = false
-        state = 'disconnected'
-      }
     }
 
-    let runtime: Array<{ projectId: string; name?: string; status: string; agentPort?: number }> = []
+    let runtimes: Array<{ projectId: string; name?: string; status: string; agentPort?: number }> = []
     try {
-      const projects = remoteHostModel
-        ? await modelFor(dependencies).project.findMany({
-            where: { remoteHostId: id },
-            select: { id: true, name: true },
-          })
-        : []
-      runtime = (projects ?? []).map((project: { id: string; name?: string }) => {
-        const current = dependencies.runtimeManager?.status?.(project.id) as
+      const projects = await db.project.findMany({
+        where: { remoteHostId: id },
+        select: { id: true, name: true },
+      })
+      runtimes = (projects ?? []).map((project: { id: string; name?: string }) => {
+        const current = runtime.status?.(project.id) as
           | { status?: string; agentPort?: number }
           | null
           | undefined
@@ -578,16 +586,16 @@ export function localRemoteHostsRoutes(
       connected,
       state,
       platform: host.platform ?? null,
-      runtime,
+      runtime: runtimes,
     })
   })
 
   router.get('/remote-hosts/:id/askpass', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
     const id = c.req.param('id')
-    const host = await readRemoteHost(remoteHostModel, id)
+    const host = await readRemoteHost(id)
     if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
-    const prompt = dependencies.runtimeManager?.getRemoteAskpassPrompt?.(id) ?? null
+    const prompt = runtime.getRemoteAskpassPrompt(id)
     return c.json({
       pending: !!prompt,
       ...(prompt ? { prompt: prompt.prompt, createdAt: prompt.createdAt } : {}),
@@ -597,17 +605,10 @@ export function localRemoteHostsRoutes(
   router.post('/remote-hosts/:id/askpass', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
     const id = c.req.param('id')
-    const host = await readRemoteHost(remoteHostModel, id)
+    const host = await readRemoteHost(id)
     if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
-    if (!dependencies.runtimeManager?.respondRemoteAskpass) {
-      return c.json({ error: 'remote_askpass_unavailable' }, 503)
-    }
-    let body: { answer?: unknown }
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'invalid_json' }, 400)
-    }
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'invalid_json' }, 400)
     if (
       typeof body.answer !== 'string' ||
       body.answer.length > 8_192 ||
@@ -617,7 +618,7 @@ export function localRemoteHostsRoutes(
       return c.json({ error: 'invalid_askpass_response' }, 400)
     }
     try {
-      dependencies.runtimeManager.respondRemoteAskpass(id, body.answer)
+      runtime.respondRemoteAskpass(id, body.answer)
       return c.json({ accepted: true })
     } catch (error) {
       return c.json({ error: 'remote_askpass_unavailable', message: errorMessage(error) }, 409)
@@ -627,7 +628,7 @@ export function localRemoteHostsRoutes(
   router.get('/remote-hosts/:id/browse', async (c) => {
     if (!authUserId(c)) return c.json({ error: 'unauthenticated' }, 401)
     const id = c.req.param('id')
-    const host = await readRemoteHost(remoteHostModel, id)
+    const host = await readRemoteHost(id)
     if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
     const requested = c.req.query('path')
     const path = requested === undefined || requested === '' ? '~' : requested
@@ -639,10 +640,7 @@ export function localRemoteHostsRoutes(
       if (!commandSucceeded(result)) {
         return c.json({ error: 'remote_directory_unavailable' }, 400)
       }
-      return c.json({
-        path,
-        entries: parseNulSeparatedDirectories(result.stdout),
-      })
+      return c.json({ path, entries: parseNulSeparatedDirectories(result.stdout) })
     } catch (error) {
       console.warn(`[local-remote-hosts] browse failed for ${id}:`, errorMessage(error))
       return c.json({ error: 'remote_browse_failed' }, 503)
@@ -653,24 +651,11 @@ export function localRemoteHostsRoutes(
     const userId = authUserId(c)
     if (!userId) return c.json({ error: 'unauthenticated' }, 401)
 
-    let body: {
-      workspaceId?: unknown
-      remoteHostId?: unknown
-      path?: unknown
-      name?: unknown
-      paths?: unknown
-      localPath?: unknown
-      remotePath?: unknown
-    }
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'invalid_json' }, 400)
-    }
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'invalid_json' }, 400)
 
-    // This endpoint has a deliberately separate body shape from the local
-    // folder route. Rejecting aliases such as `paths`/`remotePath` prevents
-    // callers from accidentally mixing local and remote project semantics.
+    // Local folder fields are rejected so callers cannot accidentally mix
+    // local and remote project semantics.
     if (body.paths !== undefined || body.localPath !== undefined || body.remotePath !== undefined) {
       return c.json({ error: 'local_remote_path_mixing' }, 400)
     }
@@ -696,7 +681,7 @@ export function localRemoteHostsRoutes(
 
     const remoteHostId = body.remoteHostId.trim()
     const remotePath = body.path.trim()
-    const host = await readRemoteHost(remoteHostModel, remoteHostId)
+    const host = await readRemoteHost(remoteHostId)
     if (!host) return c.json({ error: 'remote_host_not_found' }, 404)
 
     try {
@@ -717,13 +702,11 @@ export function localRemoteHostsRoutes(
     if (!target) return c.json({ error: 'no_workspace_for_user' }, 400)
 
     const name =
-      typeof body.name === 'string' && body.name.trim()
-        ? body.name.trim()
-        : remotePath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'New Project'
+      typeof body.name === 'string' && body.name.trim() ? body.name.trim() : folderDisplayName(remotePath)
 
     let project: any
     try {
-      project = await modelFor(dependencies).$transaction(async (tx: any) => {
+      project = await db.$transaction(async (tx: any) => {
         const created = await tx.project.create({
           data: {
             name,
@@ -753,25 +736,19 @@ export function localRemoteHostsRoutes(
         })
         return created
       })
-    } catch (error: any) {
+    } catch (error) {
       console.error('[local-remote-hosts] project create failed:', error)
       return c.json({ error: 'create_failed', message: errorMessage(error) }, 500)
     }
 
-    const reloaded = modelFor(dependencies).project?.findUnique
-      ? await modelFor(dependencies).project.findUnique({
-          where: { id: project.id },
-          include: { projectFolders: true },
-        })
+    const reloaded = db.project?.findUnique
+      ? await db.project.findUnique({ where: { id: project.id }, include: { projectFolders: true } })
       : project
 
-    const prewarm = dependencies.prewarmRuntime ?? dependencies.runtimeManager?.start
+    const prewarm = dependencies.prewarmRuntime ?? runtime.start?.bind(runtime)
     if (prewarm) {
       void Promise.resolve().then(() => prewarm(project.id)).catch((error) => {
-        console.warn(
-          `[local-remote-hosts] prewarm failed for ${project.id}:`,
-          errorMessage(error),
-        )
+        console.warn(`[local-remote-hosts] prewarm failed for ${project.id}:`, errorMessage(error))
       })
     }
 

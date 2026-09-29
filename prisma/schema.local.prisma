@@ -395,7 +395,9 @@ model Project {
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
   preferredInstance      Instance?                    @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
-  remoteHost             RemoteHost?                  @relation(fields: [remoteHostId], references: [id], onDelete: SetNull)
+  // Restrict: clearing remoteHostId would silently turn a remote project into
+  // a local folder project whose path is resolved on this machine.
+  remoteHost             RemoteHost?                  @relation(fields: [remoteHostId], references: [id], onDelete: Restrict)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
