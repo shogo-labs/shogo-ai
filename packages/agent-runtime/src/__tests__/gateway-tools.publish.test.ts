@@ -240,6 +240,63 @@ describe('publish tool', () => {
   })
 })
 
+describe('publish verification checks the page assets load', () => {
+  const PAGE = `<!doctype html><html><head>
+    <link rel="stylesheet" href="/assets/index-abc.css">
+    <link rel="modulepreload" href="./assets/vendor-1.js">
+    <link rel="icon" href="/favicon.ico">
+    <script type="module" src="/assets/index-abc.js"></script>
+    <script src="https://cdn.example.com/lib.js"></script>
+  </head><body><div id="root"></div></body></html>`
+
+  function serveSite(assets: Record<string, { status?: number; type?: string }>) {
+    const requested: string[] = []
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input)
+      requested.push(url)
+      if (url === 'https://site.shogo.one' || url === 'https://site.shogo.one/') {
+        return new Response(PAGE, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+      }
+      const asset = assets[new URL(url).pathname]
+      if (!asset) return new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } })
+      return new Response('x', { status: asset.status ?? 200, headers: { 'content-type': asset.type ?? 'text/javascript' } })
+    }) as any
+    return requested
+  }
+
+  test('verified when every same-origin script and stylesheet loads; ignores icons and other origins', async () => {
+    const requested = serveSite({
+      '/assets/index-abc.css': { type: 'text/css' },
+      '/assets/vendor-1.js': {},
+      '/assets/index-abc.js': {},
+    })
+    const details = await run(baseCtx(), { subdomain: 'site' })
+    expect(details.verified).toBe(true)
+    expect(details.brokenAssets).toBeUndefined()
+    expect(requested.some((u) => u.includes('cdn.example.com'))).toBe(false)
+    expect(requested.some((u) => u.endsWith('/favicon.ico'))).toBe(false)
+  })
+
+  test('reports a blank-page publish when the bundle 404s or falls back to index.html', async () => {
+    serveSite({
+      '/assets/index-abc.css': { type: 'text/css' },
+      '/assets/vendor-1.js': { status: 404 },
+      // index-abc.js is missing, so the SPA fallback serves HTML for it
+    })
+    const details = await run(baseCtx(), { subdomain: 'site' })
+    expect(details.ok).toBe(true)
+    expect(details.verified).toBe(false)
+    expect(details.brokenAssets).toHaveLength(2)
+    expect(details.brokenAssets).toEqual(expect.arrayContaining([
+      { url: 'https://site.shogo.one/assets/vendor-1.js', problem: 'HTTP 404' },
+      { url: 'https://site.shogo.one/assets/index-abc.js', problem: 'served HTML instead of the asset' },
+    ]))
+    expect(details.note).toMatch(/render BLANK/)
+    expect(details.note).toMatch(/Do NOT tell the user the site is working/)
+    expect(details.note).not.toMatch(/hard refresh|clear (your )?cache/i)
+  }, 15000)
+})
+
 // ---------------------------------------------------------------------------
 // Repro for two of the "latest issues" production pain points (AI Insights
 // digest, 2026-09-15..21): "hard refresh" advice appearing daily (148
