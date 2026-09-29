@@ -3,7 +3,6 @@
 
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
-import { getRuntimeManager } from '../lib/runtime'
 
 const ACTIVE_TURN_STALE_AFTER_MS = 5 * 60 * 1000
 
@@ -166,6 +165,11 @@ async function dispatchRow(row: QueueRow): Promise<void> {
     'X-Billing-User-Id': row.userId,
     'X-Queue-User-Id': row.userId,
   }
+  // Keep the runtime manager out of the module-load graph. This dispatcher is
+  // imported by both chat routers, including isolated tests that intentionally
+  // mock the runtime boundary. The manager is only needed when a row is
+  // actually dispatched.
+  const { getRuntimeManager } = await import('../lib/runtime')
   const runtimeManager = getRuntimeManager()
 
   let response: Response
