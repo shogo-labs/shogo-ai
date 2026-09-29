@@ -20,6 +20,37 @@
 # =============================================================================
 set -euo pipefail
 
+log() { echo "[build-rootfs] $*"; }
+
+# Invariants every guest depends on, each of which has taken the fleet down
+# when it went missing. Checked against the staged image before it replaces
+# the live one; VERIFY_ROOTFS_ONLY=<dir> runs just this against a tree.
+verify_rootfs() {
+  local root="$1" bad=0
+  fail() { log "CONTRACT: $*"; bad=1; }
+  [ -x "$root/entrypoint.sh" ] || fail "/entrypoint.sh missing or not executable"
+  [ -x "$root/usr/local/bin/bun" ] || fail "/usr/local/bin/bun missing"
+  [ -x "$root/usr/bin/git" ] || fail "/usr/bin/git missing"
+  grep -Eq '^[[:space:]]*directory[[:space:]]*=[[:space:]]*\*' "$root/etc/gitconfig" 2>/dev/null ||
+    fail "/etc/gitconfig lacks safe.directory = * (git refuses workspaces owned by another uid)"
+  local init="$root/usr/local/bin/fc-init"
+  if [ -x "$init" ]; then
+    grep -q 'ulimit -n 1048576' "$init" || fail "fc-init no longer raises RLIMIT_NOFILE (spawns fail with EMFILE)"
+    grep -q '127.0.0.1\\tlocalhost' "$init" || fail "fc-init no longer writes /etc/hosts (in-guest localhost is refused)"
+    grep -q '> /etc/resolv.conf' "$init" || fail "fc-init no longer writes /etc/resolv.conf"
+    grep -q '^exec /entrypoint.sh' "$init" || fail "fc-init does not exec /entrypoint.sh"
+  else
+    fail "/usr/local/bin/fc-init missing or not executable"
+  fi
+  [ -s "$root/etc/shogo-runtime-revision" ] || log "WARNING: /etc/shogo-runtime-revision missing; the release gate cannot pin this image"
+  return "$bad"
+}
+
+if [ -n "${VERIFY_ROOTFS_ONLY:-}" ]; then
+  verify_rootfs "$VERIFY_ROOTFS_ONLY"
+  exit $?
+fi
+
 : "${RUNTIME_IMAGE:?set RUNTIME_IMAGE=<registry>/shogo-runtime:<tag>}"
 OUT="${OUT:-/opt/fc-spike/img/runtime.ext4}"
 DOCKER_CONFIG="${DOCKER_CONFIG:-/root/.docker}"
@@ -29,8 +60,6 @@ export DOCKER_CONFIG
 PULL="${PULL:-true}"
 WORKDIR="${WORKDIR:-/opt/fc-spike/build}"
 POOL_ENV_EXTRA="${POOL_ENV_EXTRA:-}"   # optional extra KEY=VAL lines for fc-init
-
-log() { echo "[build-rootfs] $*"; }
 
 mkdir -p "$WORKDIR" "$(dirname "$OUT")"
 
@@ -179,6 +208,8 @@ chmod 0755 "$MNT/usr/local/bin/fc-init"
 
 # Some minimal images lack these dirs pre-created; entrypoint/bun expect them.
 mkdir -p "$MNT/app/workspace" "$MNT/proc" "$MNT/sys" "$MNT/dev" "$MNT/tmp"
+
+verify_rootfs "$MNT" || { log "ERROR: rootfs contract failed; keeping the current $OUT"; exit 5; }
 
 sync
 umount "$MNT"

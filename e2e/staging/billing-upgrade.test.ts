@@ -72,7 +72,8 @@ test.describe("Billing & Upgrade Flow", () => {
     await signUpAndOnboard(page, TEST_USER)
 
     await expect(page.getByText(/What are we building/)).toBeVisible()
-    await expect(page.getByText(/Personal/)).toBeVisible()
+    // Destination-first onboarding lands in the seeded team workspace.
+    await expect(page.getByText(/This is a Team workspace/)).toBeVisible()
   })
 
   // ── Phase 2: Free Plan State ─────────────────────────────────────

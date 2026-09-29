@@ -68,9 +68,11 @@ describe('buildModelList (flat, admin-ordered)', () => {
   })
 })
 
-describe('reconcileModelSelection (stale pre-UUID selection -> default)', () => {
+describe('reconcileModelSelection (stale pre-UUID selection)', () => {
   // A catalog keyed by UUIDs (post slug->UUID migration) plus a slug-keyed
-  // default that is itself visible, and one OpenRouter extra.
+  // default that is itself visible, and one OpenRouter extra. The test module
+  // has not loaded server metadata, so the slug fallback is intentionally not
+  // considered safe to persist.
   const snapshot = {
     catalogIds: null,
     catalogModels: [
@@ -91,13 +93,17 @@ describe('reconcileModelSelection (stale pre-UUID selection -> default)', () => 
     openrouterModels: [],
   } as any
 
-  test('stale slug + default visible → resets to the default', () => {
-    expect(reconcileModelSelection('mimo-v2.5', 'claude-sonnet-4-6', snapshot)).toBe('claude-sonnet-4-6')
-    expect(reconcileModelSelection('claude-opus-4-8', 'claude-sonnet-4-6', snapshot)).toBe('claude-sonnet-4-6')
+  test('stale slug + default visible but metadata absent → resets to Auto', () => {
+    expect(reconcileModelSelection('mimo-v2.5', 'claude-sonnet-4-6', snapshot)).toBe('auto')
+    expect(reconcileModelSelection('claude-opus-4-8', 'claude-sonnet-4-6', snapshot)).toBe('auto')
   })
 
   test('stale slug + default NOT visible → resets to Auto (never another raw slug)', () => {
     expect(reconcileModelSelection('mimo-v2.5', 'claude-sonnet-4-6', snapshotNoDefault)).toBe('auto')
+  })
+
+  test('fallback present in the snapshot but absent from server metadata → Auto', () => {
+    expect(reconcileModelSelection('legacy-model', 'claude-sonnet-4-6', snapshot)).toBe('auto')
   })
 
   test('known catalog/OpenRouter id → no reset (null)', () => {

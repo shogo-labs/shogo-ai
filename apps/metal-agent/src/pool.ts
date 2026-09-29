@@ -105,13 +105,18 @@ export class RepoHydrateRefusedError extends Error {
 export class RepoAdoptUncertainError extends Error {}
 
 /**
- * The top-level paths whose durable source is newer than the durable repo.
+ * The top-level paths whose durable source is not older than the durable repo.
  * When the repo's age is unknown, nothing is kept (the legacy full reset).
+ *
+ * A tie keeps the source: S3 `Last-Modified` has one-second resolution, and
+ * the disk rescue writes the repo and then the source within the same second.
+ * The source may hold edits that were never committed (a dead VM cannot flush
+ * git), while keeping it still lands on top of the repo's full history.
  */
 export function repoKeepPaths(sourceTimes: Record<string, number | null>, repoLastModified: number | null): string[] {
   if (repoLastModified === null) return []
   return Object.entries(sourceTimes)
-    .filter(([, t]) => t !== null && t > repoLastModified)
+    .filter(([, t]) => t !== null && t >= repoLastModified)
     .map(([path]) => path)
     .sort()
 }

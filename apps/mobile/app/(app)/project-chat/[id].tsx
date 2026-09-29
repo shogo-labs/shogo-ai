@@ -13,6 +13,7 @@ import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
 import { ChatPanel } from "../../../components/chat/ChatPanel";
 import type { InteractionMode } from "../../../components/chat/ChatInput";
 import { consumePendingFiles } from "../../../lib/pending-image-store";
+import { resolveChatScope } from "../../../lib/chat-scope";
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -39,8 +40,10 @@ export default observer(function ProjectChatScreen() {
   const projectId = firstParam(params.id);
   const requestedSessionId = firstParam(params.chatSessionId);
   const newChatNonce = firstParam(params.newChatNonce);
-  const requestedChatScope =
-    firstParam(params.chatScope) === "workspace" ? "workspace" : "project";
+  const requestedChatScope = resolveChatScope({
+    surface: "project-chat",
+    requestedScope: firstParam(params.chatScope) === "workspace" ? "workspace" : "project",
+  });
   const { user } = useAuth();
   const workspace = useActiveWorkspace();
   const experience = useWorkspaceExperience();

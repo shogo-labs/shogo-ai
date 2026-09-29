@@ -158,6 +158,12 @@ export const config = {
   region: env('METAL_REGION', 'us'),
   /** Re-announce interval (also serves as a liveness heartbeat). */
   registerIntervalMs: parseInt(env('METAL_REGISTER_INTERVAL_MS', '30000'), 10),
+  /**
+   * Enables `POST /e2e/fault` (kill a VM's Firecracker process, drop a
+   * suspended project's snapshot) for the staging durability e2e. Never set on
+   * production hosts.
+   */
+  e2eFaults: env('METAL_E2E_FAULTS', '') === '1',
 
   /**
    * Public per-VM port-forwarding (the pre-mesh data path). When the control

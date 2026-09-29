@@ -77,6 +77,16 @@ config.resolver.blockList = [
   new RegExp(escapePathForRegex(path.resolve(__dirname)) + '.*\\.(test|spec)\\.(js|jsx|ts|tsx)$'),
 ]
 
+// Expo 54's dev-mode client env shim (`expo/virtual/env`) require.context()s the
+// project's .env* files and spreads them over process.env, ignoring
+// EXPO_NO_DOTENV. Hiding the files from Metro makes that flag hold for the
+// client bundle too (e2e stacks rely on it to pin EXPO_PUBLIC_API_URL).
+if (/^(1|true)$/i.test(process.env.EXPO_NO_DOTENV ?? '')) {
+  config.resolver.blockList.push(
+    new RegExp(escapePathForRegex(path.resolve(__dirname)) + '[/\\\\]\\.env(\\.[a-z.]+)?$'),
+  )
+}
+
 const SINGLETON_PACKAGES = [
   'react',
   'react-dom',

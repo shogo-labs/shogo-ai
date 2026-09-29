@@ -25,6 +25,7 @@
 
 import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './auth'
 import { config } from './config'
+import { injectE2eFault } from './e2e-faults'
 import { ControlFirewall } from './control-firewall'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
@@ -262,6 +263,15 @@ const server = Bun.serve({
           reportPlacement('cold', projectId)
         }
         return Response.json({ ok: !r.aborted, ...r }, { status: r.aborted ? 409 : 200 })
+      }
+
+      if (path === '/e2e/fault' && req.method === 'POST') {
+        if (!config.e2eFaults) return Response.json({ error: 'e2e faults disabled' }, { status: 404 })
+        const { projectId, action } = await json(req)
+        if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        const r = await injectE2eFault(pool, projectId, action)
+        if (r.ok && action === 'drop-snapshot') reportPlacement('cold', projectId)
+        return Response.json(r, { status: r.ok ? 200 : 409 })
       }
 
       if (path === '/resize' && req.method === 'POST') {

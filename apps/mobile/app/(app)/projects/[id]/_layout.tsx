@@ -70,6 +70,7 @@ import {
   isProjectWorkspaceRuntimeEnabled,
   usePlatformConfig,
 } from "../../../../lib/platform-config";
+import { resolveChatScope } from "../../../../lib/chat-scope";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -3461,13 +3462,11 @@ export default observer(function ProjectLayout() {
                 userId={user?.id}
                 projectId={projectId}
                 projectType="unified"
-                chatScope={
-                  workspaceRuntimeEnabled
-                    ? "workspace"
-                    : isInitialSession
-                    ? capturedChatScope
-                    : "project"
-                }
+                chatScope={resolveChatScope({
+                  surface: "project-tab",
+                  isInitialSession,
+                  requestedScope: capturedChatScope,
+                })}
                 isActive={isActive}
                 localAgentUrl={remoteProjectAgentBaseUrl ?? undefined}
                 initialMessage={

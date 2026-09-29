@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { defineConfig, devices } from "@playwright/test"
+import { criticalPathTestMatch } from "./staging/critical-path"
+import { quarantineGrepInvert } from "./staging/quarantine"
 
 /**
  * Playwright E2E config for hosted-environment tests.
@@ -22,6 +24,8 @@ import { defineConfig, devices } from "@playwright/test"
  */
 export default defineConfig({
   testDir: "./staging",
+  ...(process.env.E2E_SUITE === "critical" ? { testMatch: criticalPathTestMatch() } : {}),
+  grepInvert: process.env.E2E_INCLUDE_QUARANTINED === "1" ? undefined : quarantineGrepInvert(),
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,

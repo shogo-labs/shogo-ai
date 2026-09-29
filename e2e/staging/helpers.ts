@@ -158,13 +158,8 @@ export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" |
   await trigger.click()
   await page.waitForTimeout(600)
 
-  const descriptions: Record<string, string> = {
-    Agent: "Full autonomous mode",
-    Plan: "Research and create a plan",
-    Ask: "Just answer questions",
-  }
-
-  let popoverVisible = await page.getByText(descriptions[mode]).isVisible().catch(() => false)
+  const option = interactionModeOption(page, mode)
+  let popoverVisible = await option.isVisible().catch(() => false)
 
   if (!popoverVisible) {
     // Fallback: dispatch pointer events directly on the DOM element
@@ -172,7 +167,7 @@ export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" |
     await page.waitForTimeout(100)
     await trigger.dispatchEvent("pointerup")
     await page.waitForTimeout(600)
-    popoverVisible = await page.getByText(descriptions[mode]).isVisible().catch(() => false)
+    popoverVisible = await option.isVisible().catch(() => false)
   }
 
   if (!popoverVisible) {
@@ -181,10 +176,21 @@ export async function selectInteractionMode(page: Page, mode: "Agent" | "Plan" |
     await page.waitForTimeout(600)
   }
 
-  const desc = page.getByText(descriptions[mode])
-  await desc.waitFor({ state: "visible", timeout: 10_000 })
-  await desc.locator("..").locator("..").click()
+  await option.waitFor({ state: "visible", timeout: 10_000 })
+  await option.click()
   await page.waitForTimeout(300)
+}
+
+/**
+ * A row in the composer's interaction-mode popover. Rows carry
+ * `interaction-mode-option-<id>`; the exact-label fallback covers builds that
+ * predate that testID.
+ */
+export function interactionModeOption(page: Page, mode: "Agent" | "Plan" | "Ask") {
+  return page
+    .getByTestId(`interaction-mode-option-${mode.toLowerCase()}`)
+    .or(page.getByText(mode, { exact: true }).filter({ visible: true }).last())
+    .first()
 }
 
 /**
@@ -208,8 +214,19 @@ export function homeComposerInput(page: Page) {
   )
 }
 
+/**
+ * The in-project composer. Its placeholder changes with the interaction mode
+ * ("Ask a question...", "Describe what to plan...") so target the testID.
+ */
+export function projectComposerInput(page: Page) {
+  return page.getByTestId("project-composer-input")
+}
+
 export async function sendChatMessage(page: Page, text: string) {
-  const chatInput = homeComposerInput(page)
+  const chatInput = projectComposerInput(page)
+    .or(homeComposerInput(page))
+    .filter({ visible: true })
+    .first()
   await chatInput.click()
   await chatInput.fill(text)
   await page.waitForTimeout(300)
@@ -235,6 +252,7 @@ export const AGENT_STOP_SELECTOR = '[data-testid="stop-streaming"], [aria-label=
  * failed trying to send a follow-up (no "Send message" button while streaming).
  */
 export async function waitForAgentResponse(page: Page, timeoutMs = 240_000) {
+  extendTestTimeout(timeoutMs + 20_000)
   // First wait for the stop button to appear (agent starts streaming). Give it
   // a bit longer than before — on a cold runtime the first token can lag.
   try {
@@ -256,12 +274,14 @@ export async function waitForAgentResponse(page: Page, timeoutMs = 240_000) {
  * never be typed/sent while the previous turn is still streaming).
  */
 export async function waitForAgentIdle(page: Page, timeoutMs = 240_000) {
+  extendTestTimeout(timeoutMs)
   await page
     .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: timeoutMs })
     .catch(() => {})
 }
 
 export async function createProjectAndWait(page: Page, prompt: string) {
+  extendTestTimeout(90_000)
   await page.goto("/")
   await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 
@@ -272,19 +292,22 @@ export async function createProjectAndWait(page: Page, prompt: string) {
   await page.keyboard.press("Enter")
 
   await page.waitForURL(/\/projects\//, { timeout: 60_000 })
+  await waitForAgentResponse(page)
+}
 
-  const stopSel = '[data-testid="stop-streaming"], [aria-label="Stop"]'
-  // Wait for streaming to start
+/**
+ * Agent turns on staging routinely outlast the suite's default 120s test
+ * timeout (cold runtime + multi-file build). Every helper that waits on the
+ * agent grows the current test's budget by its own wait instead, so the
+ * helper's timeout — not an unrelated global — decides when a turn is stuck.
+ */
+export function extendTestTimeout(ms: number) {
   try {
-    await page.waitForSelector(stopSel, { state: "attached", timeout: 15_000 })
+    const info = test.info()
+    if (info.timeout > 0) info.setTimeout(info.timeout + ms)
   } catch {
-    // Agent may not have started streaming yet — that's fine
+    // Called outside a test (e.g. a global setup script).
   }
-  // Wait for streaming to finish
-  await page
-    .waitForSelector(stopSel, { state: "detached", timeout: 90_000 })
-    .catch(() => {})
-  await page.waitForTimeout(1000)
 }
 
 /**
@@ -320,7 +343,7 @@ export function isLiveStripeEnv(): boolean {
  * `/api/internal/e2e/*` should target the same API host used elsewhere
  * (`E2E_API_URL` → `STAGING_API_URL` → `E2E_TARGET_URL` → …).
  */
-function bootstrapApiBase(): string {
+export function bootstrapApiBase(): string {
   return (
     process.env.E2E_API_URL ||
     process.env.STAGING_API_URL ||
@@ -386,6 +409,32 @@ export async function bootstrapProSubscriptionViaApi(
  */
 /** A metal suspend quiesces the guest and writes a snapshot before replying. */
 const SUSPEND_REQUEST_TIMEOUT_MS = 120_000
+
+/**
+ * Inject a metal runtime fault through the e2e backdoor
+ * (`/api/internal/e2e/runtime-fault`): `crash` kills the VM and leaves its
+ * disk, `drop-snapshot` removes a suspended runtime's snapshot so the next
+ * open cold-boots from backups. Returns null when faults are unavailable (no
+ * backdoor secret, the host lacks METAL_E2E_FAULTS=1, or not on metal).
+ */
+export async function runtimeFaultViaApi(
+  page: Page,
+  projectId: string,
+  action: "crash" | "drop-snapshot",
+): Promise<{ ok: boolean; body: any } | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/runtime-fault`, {
+      headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+      data: { projectId, action },
+      timeout: 120_000,
+    })
+    .catch(() => null)
+  if (!res || [401, 404, 503].includes(res.status())) return null
+  const body = await res.json().catch(() => ({}))
+  return { ok: res.ok() && body?.ok === true, body }
+}
 
 export async function suspendRuntimeViaApi(page: Page, projectId: string): Promise<boolean> {
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
@@ -529,7 +578,17 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
   // Wait for navigation to Stripe hosted checkout (window.location.href redirect)
   await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 })
 
-  await page.getByPlaceholder("1234 1234 1234 1234").pressSequentially(STRIPE_CARDS.success)
+  // When the account has several payment methods enabled (Cash App, Klarna,
+  // Bank…), hosted Checkout collapses them into an accordion and the card
+  // fields only mount after "Card" is selected.
+  const cardNumber = page.getByPlaceholder("1234 1234 1234 1234")
+  const cardOption = page.getByRole("radio", { name: /^Card/ })
+  await cardNumber.or(cardOption).first().waitFor({ state: "visible", timeout: 20_000 })
+  if (!(await cardNumber.isVisible()) && (await cardOption.isVisible())) {
+    await cardOption.check({ force: true })
+  }
+
+  await cardNumber.pressSequentially(STRIPE_CARDS.success)
   await page.getByPlaceholder("MM / YY").pressSequentially("1228")
   await page.getByPlaceholder("CVC").pressSequentially("123")
   await page.getByPlaceholder("Full name on card").fill(user.name)

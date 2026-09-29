@@ -6173,6 +6173,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
             setMessages((prev) =>
               markStuckToolsInterrupted(prev, "Connection interrupted"),
             )
+            // The stall watchdog reports its own trips; this give-up path
+            // (stream ended without turn-complete and could not be
+            // reattached) shows the same banner, so report it separately.
+            try {
+              Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                level: "warning",
+                tags: {
+                  projectId: projectId ?? "(none)",
+                  chatSessionId: recoverySessionId,
+                  turnStatus,
+                },
+                extra: {
+                  attempt,
+                  maxAttempts: MAX_ATTEMPTS,
+                  turnId: recoveryTurnId,
+                  fromSeq: fromSeqAtStall,
+                  isLocalAgent: !!localAgentUrl,
+                },
+              })
+            } catch (err) {
+              console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+            }
             if (effects.showRetryBanner) {
               setErrorDismissed(false)
               setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)

@@ -1,0 +1,20 @@
+appId: ${APP_ID}
+name: native-smoke-sign-in
+---
+- tapOn: "you@example.com"
+- inputText: ${EMAIL}
+- tapOn: "Enter your password"
+- inputText: ${PASSWORD}
+- hideKeyboard
+- tapOn: "Sign In"
+- extendedWaitUntil:
+    visible:
+      id: "home-composer-input"
+    timeout: 90000
+- takeScreenshot: ${SHOT_PREFIX || 'smoke'}-03-home
+- tapOn:
+    id: "home-composer-input"
+- inputText: "native smoke"
+- assertVisible: "native smoke"
+- hideKeyboard
+- takeScreenshot: ${SHOT_PREFIX || 'smoke'}-04-composer

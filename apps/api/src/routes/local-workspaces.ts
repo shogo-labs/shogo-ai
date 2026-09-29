@@ -5,7 +5,7 @@ import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import * as workspaceService from '../services/workspace.service'
 import * as workspaceModelsService from '../services/workspace-models.service'
-import { resolvePlatformVisibleModels } from '../services/visible-models.service'
+import { resolvePlatformVisibleModelsForRequest } from '../services/visible-models.service'
 
 function authUserId(c: any): string | null {
   const auth = c.get('auth') as { userId?: string; isAuthenticated?: boolean } | undefined
@@ -32,7 +32,7 @@ export function localWorkspaceRoutes(): Hono {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
     try {
-      const platform = await resolvePlatformVisibleModels()
+      const platform = await resolvePlatformVisibleModelsForRequest()
       const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
       if (allowed === null) return c.json({ ...platform, allowedModelIds: null })
       const narrowed = workspaceModelsService.filterToAllowlist(platform, allowed)
@@ -71,7 +71,7 @@ export function localWorkspaceRoutes(): Hono {
       return c.json({ ok: true, allowedModelIds: null })
     }
 
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const invalid = workspaceModelsService.modelsOutsidePlatform(rawIds, platform)
     if (invalid.length > 0) {
       return c.json({

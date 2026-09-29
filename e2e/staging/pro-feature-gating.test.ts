@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
-import { homeComposerInput, makeTestUser, signUpAndUpgradeToPro } from "./helpers"
+import { homeComposerInput, makeTestUser, signUpAndUpgradeToPro, waitForAgentResponse } from "./helpers"
 
 /**
  * Pro Feature Gating E2E Tests
@@ -43,7 +43,9 @@ test.describe("Pro Feature Gating", () => {
 
     await expect(page.getByText("You're on Pro Plan")).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
-    await expect(page.getByText(/\$[\d.]+ of \$[\d.]+/)).toBeVisible()
+    // Paid plans show rolling usage windows, not a depleting USD pool.
+    await expect(page.getByText("Usage limits", { exact: true })).toBeVisible()
+    await expect(page.getByText("5-hour window", { exact: true }).first()).toBeVisible()
   })
 
   // ── Sidebar Gating ───────────────────────────────────────────────
@@ -71,20 +73,20 @@ test.describe("Pro Feature Gating", () => {
     await page.waitForURL(/\/projects\//, { timeout: 60_000 })
 
     // Wait for agent to finish streaming — model selector is disabled while streaming
-    await page.waitForSelector('[aria-label="Stop"], [aria-label="stop"]', { state: "detached", timeout: 60_000 }).catch(() => {})
-    await page.waitForTimeout(500)
+    await waitForAgentResponse(page)
 
-    // Model selector button shows current model ("Basic" or "Advanced" for Pro users)
-    const modelBtn = page.getByText("Basic", { exact: true }).or(page.getByText("Advanced", { exact: true }).last())
+    // ModelPickerMenu labels non-economy rows "…, requires Pro" for Free users.
+    const modelBtn = page.getByRole("button", { name: "Choose model" }).filter({ visible: true }).last()
     await expect(modelBtn).toBeVisible({ timeout: 15_000 })
-    await modelBtn.last().click()
+    await modelBtn.click()
 
-    // Verify Advanced tier is available (not locked) for Pro users
-    await expect(page.getByText("Advanced")).toBeVisible()
-    await expect(page.getByText("Upgrade to unlock")).not.toBeVisible()
+    const options = page.locator('[data-testid^="model-option-"]').filter({ visible: true })
+    await expect(options.first()).toBeVisible({ timeout: 10_000 })
+    expect(await options.count()).toBeGreaterThan(1)
+    await expect(page.getByRole("button", { name: /, requires Pro$/ })).toHaveCount(0)
 
-    await page.getByText("Advanced").last().click()
-    await page.waitForTimeout(1_000)
+    await options.last().click()
+    await expect(options.first()).toBeHidden({ timeout: 5_000 })
     expect(page.url()).not.toContain("/billing")
   })
 

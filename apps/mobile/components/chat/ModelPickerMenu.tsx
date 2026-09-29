@@ -149,6 +149,10 @@ export function ModelPickerMenu({
       <View key={model.id}>
         <Pressable
           onPress={() => onSelect(model.id)}
+          testID={`model-option-${model.id}`}
+          accessibilityRole="button"
+          accessibilityLabel={`${model.shortDisplayName ?? model.displayName}${isLocked ? ", requires Pro" : ""}`}
+          accessibilityState={{ selected: isSelected }}
           onHoverIn={isWeb ? () => setHoveredId(model.id) : undefined}
           onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}
           className={cn(

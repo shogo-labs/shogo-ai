@@ -57,7 +57,7 @@ import { appInstallRoutes } from './routes/app-installs'
 import { syncRoutes } from './routes/sync'
 import internalRoutes from './routes/internal'
 import internalE2eRoutes from './routes/internal-e2e'
-import { metalRoutes } from './routes/metal'
+import { metalRoutes, metalE2eRoutes } from './routes/metal'
 import { externalPreviewRoutes } from './routes/external-preview'
 import { createAdminRoutes } from './generated/admin-routes'
 import { adminModelCatalogRoutes } from './routes/admin-model-catalog'
@@ -130,6 +130,7 @@ export {
   internalRoutes,
   internalE2eRoutes,
   metalRoutes,
+  metalE2eRoutes,
   externalPreviewRoutes,
   createAdminRoutes,
   adminModelCatalogRoutes,

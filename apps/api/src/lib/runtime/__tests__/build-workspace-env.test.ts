@@ -257,4 +257,84 @@ describe('buildWorkspaceEnv', () => {
       expect(env.WORKSPACE_DATABASE_URLS).toBeUndefined()
     })
   })
+
+  // Contract between this builder and the guest: the runtime only rewrites
+  // localhost links / serves public preview URLs when these vars are present,
+  // and its own tests set them by hand — so the producer side must be pinned
+  // here against the real consumers (staging e2e agent-localhost-publish).
+  describe('public preview URLs (cloud anchored runtime)', () => {
+    const previewSeams = {
+      ...seams,
+      _getPreviewUrl: (id: string) => `https://${id}.preview.staging.shogo.ai`,
+    }
+    let savedNs: string | undefined
+
+    beforeEach(() => {
+      savedNs = process.env.SYSTEM_NAMESPACE
+      process.env.SYSTEM_NAMESPACE = 'shogo-staging-system'
+    })
+    afterEach(() => {
+      if (savedNs === undefined) delete process.env.SYSTEM_NAMESPACE
+      else process.env.SYSTEM_NAMESPACE = savedNs
+    })
+
+    it('sets PUBLIC_PREVIEW_URL to the anchor preview origin and maps every member under /p/<id>/', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['anchor', 'p2'], {
+        ...previewSeams,
+        forMetal: true,
+        anchorProjectId: 'anchor',
+      } as any)
+      expect(env.PUBLIC_PREVIEW_URL).toBe('https://anchor.preview.staging.shogo.ai')
+      expect(JSON.parse(env.WORKSPACE_PREVIEW_URLS)).toEqual({
+        anchor: 'https://anchor.preview.staging.shogo.ai/p/anchor/',
+        p2: 'https://anchor.preview.staging.shogo.ai/p/p2/',
+      })
+    })
+
+    it('includes the anchor even when the caller omits it from the member list', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p2'], {
+        ...previewSeams,
+        anchorProjectId: 'anchor',
+      } as any)
+      expect(Object.keys(JSON.parse(env.WORKSPACE_PREVIEW_URLS))).toEqual(['anchor', 'p2'])
+    })
+
+    it('is consumed by the guest: the runtime parses the map and rewrites a leaked localhost link', async () => {
+      const { parseWorkspacePreviewUrls } = await import(
+        '../../../../../../packages/agent-runtime/src/workspace-runtime-mode'
+      )
+      const { rewriteLocalhostLinks } = await import(
+        '../../../../../../packages/agent-runtime/src/preview-link-rewrite'
+      )
+      const env = await buildWorkspaceEnv('ws-1', ['anchor'], {
+        ...previewSeams,
+        forMetal: true,
+        anchorProjectId: 'anchor',
+      } as any)
+
+      expect(parseWorkspacePreviewUrls(env as any)).toEqual({
+        anchor: 'https://anchor.preview.staging.shogo.ai/p/anchor/',
+      })
+      const leaked = 'Preview URL: http://localhost:8080/p/anchor/'
+      expect(rewriteLocalhostLinks(leaked, env.PUBLIC_PREVIEW_URL)).toBe(
+        'Preview URL: https://anchor.preview.staging.shogo.ai/p/anchor/',
+      )
+    })
+
+    it('leaves both unset off-cluster (desktop: localhost is the real URL)', async () => {
+      delete process.env.SYSTEM_NAMESPACE
+      const env = await buildWorkspaceEnv('ws-1', ['anchor'], {
+        ...previewSeams,
+        anchorProjectId: 'anchor',
+      } as any)
+      expect(env.PUBLIC_PREVIEW_URL).toBeUndefined()
+      expect(env.WORKSPACE_PREVIEW_URLS).toBeUndefined()
+    })
+
+    it('leaves both unset for a workspace-session runtime with no anchor', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], previewSeams as any)
+      expect(env.PUBLIC_PREVIEW_URL).toBeUndefined()
+      expect(env.WORKSPACE_PREVIEW_URLS).toBeUndefined()
+    })
+  })
 })
