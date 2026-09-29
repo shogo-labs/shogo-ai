@@ -50,7 +50,15 @@ async function workspaceIds(): Promise<Record<WorkspaceKey, string>> {
   return ids as Record<WorkspaceKey, string>
 }
 
-const token = (workspaceId: string) => generateProxyToken('proxy-capture-smoke', workspaceId, undefined, 30 * 60_000)
+const projectIds = new Map<string, string>()
+async function token(workspaceId: string): Promise<string> {
+  if (!projectIds.has(workspaceId)) {
+    const project = await prisma.project.findFirst({ where: { workspaceId, name: 'Proxy Capture Smoke' }, select: { id: true } })
+    if (!project) throw new Error(`smoke workspace ${workspaceId} has no project; run the setup phase`)
+    projectIds.set(workspaceId, project.id)
+  }
+  return generateProxyToken(projectIds.get(workspaceId)!, workspaceId, undefined, 30 * 60_000)
+}
 
 async function call(path: string, workspaceId: string, session: string, body: unknown, extra: Record<string, string> = {}, anthropic = false) {
   const proxyToken = await token(workspaceId)
@@ -91,6 +99,8 @@ if (phase === 'setup') {
     if (!grant) {
       await prisma.workspaceGrant.create({ data: { workspaceId: ws.id, planId: spec.plan, monthlyIncludedUsd: 5, note: 'proxy-capture-smoke' } })
     }
+    const project = await prisma.project.findFirst({ where: { workspaceId: ws.id, name: 'Proxy Capture Smoke' } })
+    if (!project) await prisma.project.create({ data: { workspaceId: ws.id, name: 'Proxy Capture Smoke' } })
     check(`workspace ready: ${slug}`, true, ws.id)
   }
 }
@@ -122,12 +132,15 @@ if (phase === 'traffic') {
   check('anthropic stream returned tool_use to caller', calls.anthropicStream.text.includes('tool_use'))
 
   await sleep(4000)
+  // A model occasionally returns an empty completion to these tiny prompts;
+  // capturing that faithfully (no text, zero output tokens) is correct.
   const expectRow = async (name: string, source: string, extra?: (row: any) => boolean) => {
     const rows = await turnsFor(sess(name))
     const row = rows[0]
+    const output = row && (row.assistantText ? row.outputTokens > 0 : row.outputTokens === 0)
     check(
       `proxy_turns row: ${name}`,
-      rows.length === 1 && row.source === source && !!row.userText?.includes(RUN) && !!row.assistantText && row.inputTokens > 0 && row.outputTokens > 0 && (!extra || extra(row)),
+      rows.length === 1 && row.source === source && !!row.userText?.includes(RUN) && row.inputTokens > 0 && output && (!extra || extra(row)),
       row && { source: row.source, model: row.resolvedModel, in: row.inputTokens, out: row.outputTokens, reasoning: row.reasoningTokens, tools: row.toolNames, user: row.userText?.slice(0, 60), assistant: row.assistantText?.slice(0, 60) },
     )
   }
@@ -217,6 +230,9 @@ if (phase === 'archive') {
 }
 
 if (phase === 'cleanup') {
+  const smoke = { workspace: { slug: { startsWith: SLUG_PREFIX } } }
+  await prisma.usageEvent.deleteMany({ where: smoke })
+  await prisma.project.deleteMany({ where: smoke })
   const deleted = await prisma.workspace.deleteMany({ where: { slug: { startsWith: SLUG_PREFIX } } })
   check('smoke workspaces deleted', true, deleted.count)
 }

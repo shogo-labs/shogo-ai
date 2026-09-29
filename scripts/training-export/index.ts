@@ -144,6 +144,13 @@ function normalizeMessages(request: any): any[] {
       : request.system
     if (system) normalized.push({ role: 'system', content: contentText(system) || system })
   }
+  if (typeof request?.instructions === 'string' && request.instructions) {
+    normalized.push({ role: 'system', content: request.instructions })
+  }
+  if (typeof messages === 'string' && messages) {
+    normalized.push({ role: 'user', content: messages })
+    return normalized
+  }
   if (!Array.isArray(messages)) return normalized
   normalized.push(...messages.flatMap((message) => {
     const normalized = normalizeMessage(message)
@@ -182,7 +189,14 @@ export function toTrainingExample(
   if (!record.request || !record.response) return null
   const request = resolveReferences(record.request, blobs)
   const requestMessages = normalizeMessages(request)
-  const response = record.response
+  const chatMessage = Array.isArray(record.response.choices) ? record.response.choices[0]?.message : null
+  const response = chatMessage
+    ? {
+        content: typeof chatMessage.content === 'string' ? chatMessage.content : undefined,
+        reasoning_content: chatMessage.reasoning_content,
+        tool_calls: chatMessage.tool_calls,
+      }
+    : record.response
   const responseOutput = Array.isArray(response.output) ? response.output : []
   const responseOutputText = responseOutput
     .filter((item: any) => item?.type === 'message')
@@ -253,6 +267,7 @@ export function toTrainingExample(
     }))
     if (!assistant.tool_calls.every((call: any) => isJsonObjectString(call.function?.arguments))) return null
   }
+  if (!assistant.content && !assistant.tool_calls) return null
   const scrubbed = scrubValue({
     messages: [...requestMessages, assistant],
     tools: request.tools,
@@ -424,25 +439,49 @@ async function readS3Files(uri: string): Promise<Array<{ key: string; bytes: Uin
   }))
 }
 
-async function loadSignals(): Promise<Map<string, any>> {
-  const { prisma } = await import('../../apps/api/src/lib/prisma')
-  const rows = await (prisma as any).proxyTurn.findMany({
-    select: { turnKey: true, feedback: true, revertedAt: true, hadError: true, truncated: true },
-  })
-  return new Map(rows.map((row: any) => [row.turnKey, row]))
+const LOOKUP_CHUNK = 1000
+
+function chunks<T>(values: T[], size = LOOKUP_CHUNK): T[][] {
+  const out: T[][] = []
+  for (let index = 0; index < values.length; index += size) out.push(values.slice(index, index + size))
+  return out
 }
 
-async function loadConsent(): Promise<Map<string, boolean>> {
+async function loadSignals(records: ArchiveRecord[]): Promise<Map<string, any>> {
+  const { prisma } = await import('../../apps/api/src/lib/prisma')
+  const result = new Map<string, any>()
+  const byWorkspace = new Map<string, Set<string>>()
+  for (const record of records) {
+    const keys = byWorkspace.get(record.workspaceId) || new Set<string>()
+    keys.add(record.turnKey)
+    byWorkspace.set(record.workspaceId, keys)
+  }
+  for (const [workspaceId, keys] of byWorkspace) {
+    for (const turnKeys of chunks([...keys])) {
+      const rows = await (prisma as any).proxyTurn.findMany({
+        where: { workspaceId, turnKey: { in: turnKeys } },
+        select: { turnKey: true, feedback: true, revertedAt: true, hadError: true, truncated: true },
+      })
+      for (const row of rows) result.set(row.turnKey, row)
+    }
+  }
+  return result
+}
+
+async function loadConsent(records: ArchiveRecord[]): Promise<Map<string, boolean>> {
   const { prisma } = await import('../../apps/api/src/lib/prisma')
   const { getEffectivePlanId } = await import('../../apps/api/src/services/billing.service')
-  const workspaces = await (prisma as any).workspace.findMany({
-    select: { id: true, trainingDataMode: true },
-  })
   const result = new Map<string, boolean>()
-  for (const workspace of workspaces) {
-    const plan = await getEffectivePlanId(workspace.id)
-    result.set(workspace.id, workspace.trainingDataMode === 'enabled' ||
-      (workspace.trainingDataMode === 'default' && plan !== 'enterprise'))
+  for (const ids of chunks([...new Set(records.map((record) => record.workspaceId))])) {
+    const workspaces = await (prisma as any).workspace.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, trainingDataMode: true },
+    })
+    for (const workspace of workspaces) {
+      const enabled = workspace.trainingDataMode === 'enabled' ||
+        (workspace.trainingDataMode === 'default' && (await getEffectivePlanId(workspace.id)) !== 'enterprise')
+      result.set(workspace.id, enabled)
+    }
   }
   return result
 }
@@ -455,8 +494,8 @@ async function main(): Promise<void> {
   await mkdir(output, { recursive: true })
   const archive = await readArchiveFiles(input)
   const records = archive.records
-  const consent = await loadConsent()
-  const signals = await loadSignals()
+  const consent = await loadConsent(records)
+  const signals = await loadSignals(records)
   const latest = new Map<string, ArchiveRecord>()
   for (const record of records) {
     if (!consent.get(record.workspaceId)) continue
@@ -474,10 +513,7 @@ async function main(): Promise<void> {
     if (args.model && record.resolvedModel !== args.model) continue
     const example = toTrainingExample(record, signal, archive.blobs, maxChars)
     if (!example) continue
-    const dedupKey = stableHash({
-      user: example.messages.find((message) => message.role === 'user')?.content,
-      tools: example.tools,
-    })
+    const dedupKey = stableHash({ messages: example.messages, tools: example.tools })
     if (seen.has(dedupKey)) continue
     seen.add(dedupKey)
     examples.push(example)
