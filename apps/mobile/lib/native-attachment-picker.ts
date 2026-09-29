@@ -14,6 +14,7 @@
 import { buildDataUrlFromBase64 } from "@shogo-ai/sdk"
 import { EncodingType, readAsStringAsync } from "expo-file-system/legacy"
 import * as ImagePicker from "expo-image-picker";
+import { Platform } from "react-native"
 import { isComposerArchive } from "./composer-attachments"
 
 export interface NativePickedAttachment {
@@ -85,10 +86,14 @@ export function executeNativeAttachAction(
   }
 
   const pickLibrary = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
-    if (!perm.granted) {
-      onError("Allow photo access in Settings to attach images.")
-      return
+    // Android uses Expo ImagePicker's system Photo Picker, which grants a
+    // URI for the selected image without broad READ_MEDIA_* permissions.
+    if (Platform.OS !== "android") {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
+      if (!perm.granted) {
+        onError("Allow photo access in Settings to attach images.")
+        return
+      }
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
