@@ -98,6 +98,9 @@ k8s/**/secrets.yaml
 
 # Generated code (regenerated during build)
 **/src/generated/
+!apps/api/src/generated/
+apps/api/src/generated/*
+!apps/api/src/generated/chat-queued-message.hooks.ts
 
 # Internal operations docs
 docs/production-access.md

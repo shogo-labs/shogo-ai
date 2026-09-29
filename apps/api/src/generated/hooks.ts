@@ -22,6 +22,7 @@ import {
   workspaceGrantHooks,
   chatSessionHooks,
   chatMessageHooks,
+  chatQueuedMessageHooks,
   toolCallLogHooks,
   featureSessionHooks
 } from './index'
@@ -42,6 +43,7 @@ export const routeHooks = {
   workspaceGrant: workspaceGrantHooks,
   chatSession: chatSessionHooks,
   chatMessage: chatMessageHooks,
+  chatQueuedMessage: chatQueuedMessageHooks,
   toolCallLog: toolCallLogHooks,
   featureSession: featureSessionHooks
 }

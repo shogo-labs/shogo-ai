@@ -18,6 +18,7 @@ import {
   Pencil,
   Trash2,
   WifiOff,
+  TriangleAlert,
   Image as ImageIcon,
   ListOrdered,
 } from "lucide-react-native"
@@ -61,7 +62,9 @@ function QueueBody({
               Platform.OS === "web" && "hover:bg-muted/40",
             )}
           >
-            {msg.offline ? (
+            {msg.status === "failed" ? (
+              <TriangleAlert size={11} className="text-destructive flex-shrink-0" />
+            ) : msg.offline ? (
               <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
             ) : (
               <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
@@ -74,9 +77,14 @@ function QueueBody({
               />
             )}
             <View className="flex-1 min-w-0">
-              <Text className="text-xs text-foreground" numberOfLines={1}>
+              <Text className={cn("text-xs", msg.status === "failed" ? "text-destructive" : "text-foreground")} numberOfLines={1}>
                 {primaryText}
               </Text>
+              {msg.error && (
+                <Text className="text-[10px] text-destructive" numberOfLines={1}>
+                  {msg.error}
+                </Text>
+              )}
               {trimmedContent && files.length > 0 && (
                 <View className="flex-row items-center gap-1 mt-0.5">
                   <ImageIcon className="h-3 w-3 text-muted-foreground" size={10} />

@@ -24,6 +24,7 @@ export * from "./workspace-grant.types"
 export * from "./chat-session.types"
 export * from "./chat-session-project.types"
 export * from "./chat-message.types"
+export * from "./chat-queued-message.types"
 export * from "./tool-call-log.types"
 export * from "./feature-session.types"
 

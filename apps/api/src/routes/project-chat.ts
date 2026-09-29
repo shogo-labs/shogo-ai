@@ -42,6 +42,7 @@ import {
   markTurnStarted,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
+import { dispatchNext } from "../services/chat-queue-dispatcher.service"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1706,11 +1707,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             console.error("[ProjectChat] Usage tracking error:", err)
           ).finally(() => {
             stopTurnHeartbeat?.()
-            if (turnId) {
-              markTurnEnded(incomingChatSessionId, turnId).catch((error) =>
-                console.warn(`[ProjectChat] Failed to clear active chat ${incomingChatSessionId}:`, error),
+            const ended = turnId
+              ? markTurnEnded(incomingChatSessionId, turnId)
+              : Promise.resolve()
+            void ended
+              .then(() => dispatchNext(incomingChatSessionId))
+              .catch((error) =>
+                console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
               )
-            }
           })
 
           chatSpan.setAttribute("chat.status", response.status)
@@ -1880,11 +1884,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
-          if (activityTurnId) {
-            markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
-              console.warn(`[ProjectChat] Failed to clear abandoned active chat ${incomingChatSessionId}:`, error),
+          const ended = activityTurnId
+            ? markTurnEnded(incomingChatSessionId, activityTurnId)
+            : Promise.resolve()
+          void ended
+            .then(() => dispatchNext(incomingChatSessionId))
+            .catch((error) =>
+              console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
             )
-          }
         }
       }
     } catch (error: any) {

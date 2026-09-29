@@ -29,6 +29,7 @@ import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -54,6 +55,7 @@ import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
+import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import {
   generateTitleCompletion,
@@ -1641,6 +1643,7 @@ app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() })
 startAgentTaskWorker(getRuntimeManager())
 // Fire due agent-owned recurring schedules in the workspace runtime.
 startAgentScheduleWorker(getRuntimeManager())
+startChatQueueWorker()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -9037,6 +9040,7 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // more specific `/:id/truncate-from` here instead of falling through
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
+app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
 
 // Turn feedback (thumbs up/down) — PUT/DELETE /:id/feedback on a message,
 // GET /:id/feedback on a session (the caller's own reactions, keyed by
@@ -9135,6 +9139,7 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true
   stopAgentTaskWorker()
   stopAgentScheduleWorker()
+  stopChatQueueWorker()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain

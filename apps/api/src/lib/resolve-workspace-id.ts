@@ -114,6 +114,10 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
     const msg = await db.chatMessage.findUnique({ where: { id }, select: { sessionId: true } })
     return msg?.sessionId ? chatSessionWorkspace(msg.sessionId) : null
   },
+  'chat-queued-messages': async (id) => {
+    const queued = await db.chatQueuedMessage.findUnique({ where: { id }, select: { sessionId: true } })
+    return queued?.sessionId ? chatSessionWorkspace(queued.sessionId) : null
+  },
   'tool-call-logs': async (id) => {
     const log = await db.toolCallLog.findUnique({ where: { id }, select: { chatSessionId: true } })
     return log?.chatSessionId ? chatSessionWorkspace(log.chatSessionId) : null
@@ -129,7 +133,7 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
 
 // Custom chain lookups above resolve these models without going through
 // `directWs`/`viaProject`, so record them explicitly for the coverage guard.
-for (const m of ['chatSession', 'chatMessage', 'toolCallLog']) {
+for (const m of ['chatSession', 'chatMessage', 'chatQueuedMessage', 'toolCallLog']) {
   workspaceResolvedModels.add(m)
 }
 
