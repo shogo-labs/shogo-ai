@@ -76,15 +76,19 @@ export function useServerMessageQueue({
   const previousIdsRef = useRef<string[]>([])
   const userRemovedIdsRef = useRef(new Set<string>())
 
-  const rows = useMemo(
-    () =>
-      enabled && sessionId
-        ? collection.all
-            .filter((row) => row.sessionId === sessionId)
-            .sort((a, b) => a.position - b.position || a.createdAt - b.createdAt)
-        : [],
-    [collection, sessionId, enabled],
-  )
+  // `collection.all` mutates in place, so it must be read on every render for
+  // the observer to see new rows; the signature keeps `rows` stable otherwise.
+  const liveRows =
+    enabled && sessionId
+      ? collection.all
+          .filter((row) => row.sessionId === sessionId)
+          .sort((a, b) => a.position - b.position || a.createdAt - b.createdAt)
+      : []
+  const rowsSignature = liveRows
+    .map((row) => `${row.id}:${row.position}:${row.status}:${row.updatedAt}:${row.error ?? ""}:${row.content}`)
+    .join("\n")
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => liveRows, [rowsSignature])
   const queuedMessages = useMemo(() => rows.map(toQueuedMessage), [rows])
 
   useEffect(() => {
