@@ -209,7 +209,7 @@ export async function purchaseSubscription(args: {
   const appAccountToken = normalizeAccountToken(args.workspaceId)
 
   try {
-    const products = await RNIap.getSubscriptions({ skus: [productId] })
+    const products = await RNIap.fetchProducts({ skus: [productId], type: 'subs' })
     if (!Array.isArray(products) || products.length === 0) {
       throw new IapError(
         'product_not_available',
@@ -217,10 +217,41 @@ export async function purchaseSubscription(args: {
       )
     }
 
-    const purchase = await RNIap.requestSubscription({
-      sku: productId,
-      appAccountToken,
+    // react-native-iap v14 uses an event-based purchase API. Register the
+    // one-shot listeners before opening the StoreKit purchase sheet so the
+    // wrapper can preserve its existing promise-based contract for callers.
+    const purchasePromise = new Promise<any>((resolve, reject) => {
+      let settled = false
+      let purchaseSub: { remove: () => void } | null = null
+      let errorSub: { remove: () => void } | null = null
+      const cleanup = () => {
+        purchaseSub?.remove()
+        errorSub?.remove()
+        purchaseSub = null
+        errorSub = null
+      }
+      const settle = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        fn()
+      }
+
+      purchaseSub = RNIap.purchaseUpdatedListener((p: any) => {
+        if (p?.productId !== productId) return
+        settle(() => resolve(p))
+      })
+      errorSub = RNIap.purchaseErrorListener((err: any) => {
+        settle(() => reject(err))
+      })
+
+      RNIap.requestPurchase({
+        request: { ios: { sku: productId, appAccountToken } },
+        type: 'subs',
+      }).catch((err: unknown) => settle(() => reject(err)))
     })
+
+    const purchase = await purchasePromise
 
     const p = Array.isArray(purchase) ? purchase[0] : purchase
     if (!p) {
@@ -250,7 +281,7 @@ export async function purchaseSubscription(args: {
  *
  * Accepts the normalized purchase shape returned by this module. It must
  * include the receipt-bearing transaction object, not just a transaction id,
- * so react-native-iap v12 can finish the non-consumable subscription correctly.
+ * so react-native-iap can finish the non-consumable subscription correctly.
  */
 export async function finishPurchase(purchase: IapPurchaseResult): Promise<void> {
   if (Platform.OS !== 'ios') return
@@ -258,8 +289,19 @@ export async function finishPurchase(purchase: IapPurchaseResult): Promise<void>
   if (!RNIap) return
   try {
     if (typeof RNIap.finishTransaction === 'function') {
-      // v12+ API
-      await RNIap.finishTransaction({ purchase, isConsumable: false })
+      // v14 requires the native purchase id. Reconstruct the minimal native
+      // purchase shape from our normalized result before acknowledging it.
+      await RNIap.finishTransaction({
+        purchase: {
+          id: purchase.transactionId,
+          productId: purchase.productId,
+          transactionId: purchase.transactionId,
+          transactionDate: Date.now(),
+          transactionReceipt: purchase.transactionReceipt,
+          platform: 'ios',
+        },
+        isConsumable: false,
+      })
     } else if (typeof RNIap.finishTransactionIOS === 'function') {
       // v11- fallback
       await RNIap.finishTransactionIOS(purchase.transactionId)
