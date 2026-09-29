@@ -132,7 +132,10 @@ export class IslandWindow {
     this.window = window
     window.setAlwaysOnTop(true, 'screen-saver')
     window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-    window.setIgnoreMouseEvents(true, { forward: true })
+    // The hidden/collapsed window is the pointer hot zone. Making it
+    // click-through here prevents macOS from ever delivering the mouse event
+    // that should expand the island, especially when it overlaps the menu bar.
+    window.setIgnoreMouseEvents(false)
     window.on('closed', () => {
       if (this.window === window) this.window = null
     })
@@ -185,9 +188,9 @@ export class IslandWindow {
       window.focus()
     } else {
       window.setFocusable(false)
-      // The renderer turns hit-testing back on while the pointer is over a
-      // visible surface, so transparent regions never swallow clicks.
-      window.setIgnoreMouseEvents(true, { forward: true })
+      // Keep the hot zone hit-testable. The window is only the small
+      // top-center island bounds, and file drops also require hit testing.
+      window.setIgnoreMouseEvents(false)
       window.showInactive()
     }
     this.positionWindow()
@@ -339,7 +342,10 @@ export class IslandWindow {
 
   private onInteractive = (event: IpcMainEvent, interactive: unknown): void => {
     if (!this.isIslandSender(event.sender) || this.mode === 'compose') return
-    this.window?.setIgnoreMouseEvents(interactive !== true, { forward: true })
+    // Do not switch the hot zone back to click-through. The renderer sends
+    // `false` while the pointer is outside the surface, but that state still
+    // needs to receive the next mouse movement/drop on macOS.
+    if (interactive === true) this.window?.setIgnoreMouseEvents(false)
   }
 
   private registerIpc(): void {
