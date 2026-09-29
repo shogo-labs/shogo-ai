@@ -13,10 +13,6 @@ mock.module('../../prisma', () => ({
   },
 }))
 
-mock.module('../../../services/billing.service', () => ({
-  getEffectivePlanId: async () => state.plan,
-}))
-
 class PutObjectCommand {
   constructor(public input: any) {}
 }

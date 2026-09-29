@@ -19,10 +19,6 @@ mock.module('../../prisma', () => ({
   },
 }))
 
-mock.module('../../../services/billing.service', () => ({
-  getEffectivePlanId: async () => state.plan,
-}))
-
 const { clearConsentCache, shouldCapture } = await import('../consent')
 
 const token = {
@@ -43,13 +39,8 @@ beforeEach(() => {
 })
 
 describe('proxy capture consent', () => {
-  test('enables the default mode for non-enterprise workspaces', async () => {
+  test('enables the default mode for every plan, including enterprise', async () => {
     expect(await shouldCapture(token)).toBe(true)
-  })
-
-  test('disables the default mode for enterprise workspaces', async () => {
-    state.plan = 'enterprise'
-    expect(await shouldCapture(token)).toBe(false)
   })
 
   test('honors explicit workspace choices and caches them briefly', async () => {

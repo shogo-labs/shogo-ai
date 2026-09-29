@@ -922,7 +922,7 @@ async function ensureAiConsentForMessage(): Promise<boolean> {
   const accepted = await new Promise<boolean>((resolve) => {
     Alert.alert(
       "Share your message with the selected AI provider?",
-      `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
+      `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers. Shogo also stores prompts and responses for up to 3 years to improve and train its models; workspace admins can turn this off in Settings.`,
       [
         {
           text: "Don\u2019t allow",

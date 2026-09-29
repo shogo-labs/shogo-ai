@@ -471,7 +471,6 @@ async function loadSignals(records: ArchiveRecord[]): Promise<Map<string, any>> 
 
 async function loadConsent(records: ArchiveRecord[]): Promise<Map<string, boolean>> {
   const { prisma } = await import('../../apps/api/src/lib/prisma')
-  const { getEffectivePlanId } = await import('../../apps/api/src/services/billing.service')
   const result = new Map<string, boolean>()
   for (const ids of chunks([...new Set(records.map((record) => record.workspaceId))])) {
     const workspaces = await (prisma as any).workspace.findMany({
@@ -479,9 +478,7 @@ async function loadConsent(records: ArchiveRecord[]): Promise<Map<string, boolea
       select: { id: true, trainingDataMode: true },
     })
     for (const workspace of workspaces) {
-      const enabled = workspace.trainingDataMode === 'enabled' ||
-        (workspace.trainingDataMode === 'default' && (await getEffectivePlanId(workspace.id)) !== 'enterprise')
-      result.set(workspace.id, enabled)
+      result.set(workspace.id, workspace.trainingDataMode !== 'disabled')
     }
   }
   return result

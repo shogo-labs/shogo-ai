@@ -18,6 +18,6 @@ describe('proxy turn retention', () => {
     expect(calls[0].where.lastAt.lt).toBeInstanceOf(Date)
     expect(calls[0].where.workspace).toBeUndefined()
     const ageDays = (Date.now() - calls[0].where.lastAt.lt.getTime()) / 86_400_000
-    expect(Math.round(ageDays)).toBe(90)
+    expect(Math.round(ageDays)).toBe(1095)
   })
 })

@@ -88,9 +88,9 @@ variable "lifecycle_service_policy_scope" {
 }
 
 variable "llm_capture_retention_days" {
-  description = "Number of days to retain raw LLM proxy captures."
+  description = "Number of days to retain raw LLM proxy captures (3 years by default). Keep in sync with PROXY_CAPTURE_RETENTION_DAYS in the api, which prunes proxy_turns."
   type        = number
-  default     = 90
+  default     = 1095
 }
 
 data "oci_objectstorage_namespace" "current" {

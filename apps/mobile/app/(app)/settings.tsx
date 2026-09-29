@@ -698,13 +698,10 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const members = useMemberCollection();
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
-  const { subscription } = useBillingData(currentWorkspace?.id);
-  const isEnterprisePlan = subscription?.planId?.toLowerCase?.().startsWith("enterprise") ?? false;
 
   const [name, setName] = useState(currentWorkspace?.name || "");
   const [trainingDataEnabled, setTrainingDataEnabled] = useState(
-    currentWorkspace?.trainingDataMode === "enabled" ||
-      (currentWorkspace?.trainingDataMode !== "disabled" && !isEnterprisePlan)
+    currentWorkspace?.trainingDataMode !== "disabled"
   );
   const [trainingDataSaveStatus, setTrainingDataSaveStatus] = useState<
     "idle" | "saved" | "error"
@@ -749,12 +746,9 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   useEffect(() => {
     setName(currentWorkspace?.name || "");
     setSaveStatus("idle");
-    setTrainingDataEnabled(
-      currentWorkspace?.trainingDataMode === "enabled" ||
-        (currentWorkspace?.trainingDataMode !== "disabled" && !isEnterprisePlan)
-    );
+    setTrainingDataEnabled(currentWorkspace?.trainingDataMode !== "disabled");
     setTrainingDataSaveStatus("idle");
-  }, [currentWorkspace?.name, currentWorkspace?.trainingDataMode, isEnterprisePlan]);
+  }, [currentWorkspace?.name, currentWorkspace?.trainingDataMode]);
 
   useEffect(() => {
     if (currentWorkspace?.id) {
@@ -922,7 +916,9 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               </Text>
               <Text className="text-sm text-muted-foreground mt-0.5">
                 When enabled, prompts and responses sent through Shogo&apos;s AI
-                service may be stored and used for analysis and training.
+                service are stored for up to 3 years and used for analysis and
+                to train Shogo&apos;s models. Turn this off to stop collection
+                for this workspace.
               </Text>
               {trainingDataSaveStatus === "saved" && (
                 <Text className="text-xs text-green-600 mt-1">

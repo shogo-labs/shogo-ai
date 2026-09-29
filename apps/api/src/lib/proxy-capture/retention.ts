@@ -1,6 +1,6 @@
 import type { PrismaClient } from '../prisma'
 
-const RETENTION_DAYS = Number(process.env.PROXY_CAPTURE_RETENTION_DAYS || 90)
+const RETENTION_DAYS = Number(process.env.PROXY_CAPTURE_RETENTION_DAYS || 1095)
 const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 let timer: ReturnType<typeof setInterval> | null = null
