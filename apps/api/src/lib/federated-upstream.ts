@@ -209,7 +209,8 @@ export function getUpstreamOrigin(): string {
 
 // ─── 401 observer (wires into the existing cloudKeyRejected banner) ─────────
 
-type RejectionHandler = (reason: string) => void
+/** `key` is the credential the rejected request was sent with. */
+type RejectionHandler = (reason: string, key: string | null) => void
 const rejectionHandlers = new Set<RejectionHandler>()
 
 export function onUpstreamRejection(handler: RejectionHandler): () => void {
@@ -217,9 +218,9 @@ export function onUpstreamRejection(handler: RejectionHandler): () => void {
   return () => rejectionHandlers.delete(handler)
 }
 
-function notifyRejection(reason: string): void {
+function notifyRejection(reason: string, key: string | null): void {
   for (const handler of rejectionHandlers) {
-    try { handler(reason) } catch { /* observer threw; ignore */ }
+    try { handler(reason, key) } catch { /* observer threw; ignore */ }
   }
 }
 
@@ -298,13 +299,6 @@ function isAllowedHeader(name: string): boolean {
   return HEADER_PREFIX_ALLOWLIST.some((p) => lower.startsWith(p))
 }
 
-/** Build the upstream Authorization header from `process.env.SHOGO_API_KEY`. */
-async function buildAuthHeader(): Promise<Record<string, string>> {
-  const key = await getUpstreamCredential()
-  if (!key) return {}
-  return { Authorization: `Bearer ${key}` }
-}
-
 function buildUpstreamUrl(path: string, search: string): string {
   const base = getShogoCloudUrl()
   const cleanPath = path.startsWith('/') ? path : `/${path}`
@@ -316,12 +310,12 @@ export async function fetchUpstream(
   init: RequestInit & { search?: string } = {},
 ): Promise<Response> {
   const url = buildUpstreamUrl(path, init.search ?? '')
-  const auth = await buildAuthHeader()
+  const key = await getUpstreamCredential()
   const headers = new Headers(init.headers ?? undefined)
-  for (const [k, v] of Object.entries(auth)) headers.set(k, v)
+  if (key) headers.set('Authorization', `Bearer ${key}`)
   const resp = await fetch(url, { ...init, headers })
   if (resp.status === 401) {
-    notifyRejection(`upstream ${path} returned 401`)
+    notifyRejection(`upstream ${path} returned 401`, key)
   }
   return resp
 }

@@ -102,7 +102,8 @@ import {
   resolvePlatformVisibleModels,
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
-import { localAuthRoutes, resetCloudKeyState } from './routes/local-auth'
+import { localAuthRoutes } from './routes/local-auth'
+import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { meetingRoutes } from './routes/meetings'

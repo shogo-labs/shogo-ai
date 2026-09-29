@@ -6,14 +6,12 @@
  */
 
 import { prisma } from './prisma'
-import { getShogoCloudUrl } from './cloud-urls'
+import { checkCloudKey } from './cloud-key-state'
 
 const DEDUP_WINDOW_MS = 5_000
-const VERIFY_TIMEOUT_MS = 5_000
 
 let lastWipeAt = 0
 let inFlight: Promise<void> | null = null
-let verifying: Promise<WipeResult> | null = null
 
 export interface WipeResult {
   /** True when this call performed the wipe; false if no-op or coalesced. */
@@ -69,49 +67,24 @@ export async function wipeCloudKey(reason: string): Promise<WipeResult> {
 /**
  * Wipe only after Shogo Cloud confirms the key itself is dead.
  *
- * A 401 relayed from a proxied request is ambiguous: the cloud's AI proxy
- * passes upstream provider 401s straight through (e.g. "Incorrect API key
- * provided: sk-ant-…"), which look identical to a revoked Shogo key. Signing
- * the user out on those forces a needless re-login, so ask
- * `/api/api-keys/validate` and wipe only on an explicit `valid: false`.
- * Network errors, timeouts, and non-JSON responses keep the key.
+ * A 401 relayed from a proxied request is ambiguous: older clouds pass
+ * upstream provider 401s straight through, which look identical to a revoked
+ * Shogo key. Wipe only when `/api/api-keys/validate` says `valid: false`;
+ * keep the key when it says valid or can't be reached.
  */
 export async function wipeCloudKeyIfRejected(reason: string): Promise<WipeResult> {
   const key = process.env.SHOGO_API_KEY
   if (!key) return { wiped: false }
   if (inFlight) { await inFlight; return { wiped: false } }
   if (Date.now() - lastWipeAt < DEDUP_WINDOW_MS) return { wiped: false }
-  if (verifying) { await verifying; return { wiped: false } }
 
-  verifying = verifyThenWipe(key, reason)
-  try {
-    return await verifying
-  } finally {
-    verifying = null
-  }
-}
-
-async function verifyThenWipe(key: string, reason: string): Promise<WipeResult> {
-  let valid: unknown
-  try {
-    const resp = await fetch(`${getShogoCloudUrl()}/api/api-keys/validate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }),
-      signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
-    })
-    const data = (await resp.json().catch(() => null)) as { valid?: unknown } | null
-    valid = data?.valid
-  } catch (err) {
-    console.warn(`[CloudKeyWipe] Could not verify key after ${reason}; keeping it:`, err)
+  const status = await checkCloudKey(key)
+  if (status === 'valid') {
+    console.warn(`[CloudKeyWipe] Ignoring ${reason} — Shogo Cloud reports the key as valid.`)
     return { wiped: false }
   }
-
-  if (valid !== false) {
-    console.warn(
-      `[CloudKeyWipe] Ignoring ${reason} — Shogo Cloud still reports the key as valid ` +
-        `(the 401 came from an upstream provider, not key revocation).`,
-    )
+  if (status === 'unknown') {
+    console.warn(`[CloudKeyWipe] Could not verify key after ${reason}; keeping it.`)
     return { wiped: false }
   }
   // The user may have re-signed-in with a different key while we were verifying.
@@ -124,6 +97,5 @@ export const _testing = {
   reset() {
     lastWipeAt = 0
     inFlight = null
-    verifying = null
   },
 }

@@ -16,7 +16,7 @@ import {
   _resetAgentModelDefaultsCache,
   _resetUpstreamCredentialCache,
 } from '../lib/federated-upstream'
-import { resetCloudKeyState } from './local-auth'
+import { resetCloudKeyState } from '../lib/cloud-key-state'
 
 const PROVIDER_KEYS = [
   { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
