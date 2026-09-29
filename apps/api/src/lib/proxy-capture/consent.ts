@@ -27,10 +27,7 @@ export async function shouldCapture(tokenPayload: ProxyTokenPayload): Promise<bo
     })
     if (!workspace) return false
 
-    const mode = workspace.trainingDataMode
-    const { getEffectivePlanId } = await import('../../services/billing.service')
-    const plan = await getEffectivePlanId(tokenPayload.workspaceId)
-    const enabled = mode === 'enabled' || (mode === 'default' && plan !== 'enterprise')
+    const enabled = workspace.trainingDataMode !== 'disabled'
     consentCache.set(tokenPayload.workspaceId, { expiresAt: Date.now() + CACHE_TTL_MS, enabled })
     return enabled
   } catch (error) {

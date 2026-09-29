@@ -1,6 +1,5 @@
 export interface ProxyCaptureTestState {
   workspace: { trainingDataMode: string } | null
-  plan: string
   upserts: any[]
   updates: any[]
   sends: any[]
@@ -9,7 +8,6 @@ export interface ProxyCaptureTestState {
 
 export const state: ProxyCaptureTestState = ((globalThis as any).__proxyCaptureTestState ||= {
   workspace: { trainingDataMode: 'default' },
-  plan: 'pro',
   upserts: [],
   updates: [],
   sends: [],
@@ -18,7 +16,6 @@ export const state: ProxyCaptureTestState = ((globalThis as any).__proxyCaptureT
 
 export function resetState(): void {
   state.workspace = { trainingDataMode: 'default' }
-  state.plan = 'pro'
   state.upserts.length = 0
   state.updates.length = 0
   state.sends.length = 0
