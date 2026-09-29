@@ -177,6 +177,8 @@ function CloudModelSettingsPage() {
 
         <PersonalCompanionModelCard platform={platform} />
 
+        <SummarizerModelCard platform={platform} />
+
         <CustomProvidersCard platform={platform} />
       </View>
     </ScrollView>
@@ -472,6 +474,8 @@ function LocalSettingsPage() {
                 <TitleGenerationModelCard platform={platform} />
 
                 <PersonalCompanionModelCard platform={platform} />
+
+                <SummarizerModelCard platform={platform} />
               </>
             ) : (
               <>
@@ -491,6 +495,8 @@ function LocalSettingsPage() {
                 <TitleGenerationModelCard platform={platform} />
 
                 <PersonalCompanionModelCard platform={platform} />
+
+                <SummarizerModelCard platform={platform} />
 
                 <CustomProvidersCard platform={platform} />
               </>
@@ -517,6 +523,8 @@ function LocalSettingsPage() {
             <TitleGenerationModelCard platform={platform} />
 
             <PersonalCompanionModelCard platform={platform} />
+
+            <SummarizerModelCard platform={platform} />
 
             <CustomProvidersCard platform={platform} />
           </>
@@ -819,11 +827,55 @@ function TitleGenerationModelCard({ platform }: { platform: PlatformApi }) {
 // Personal Companion Model Card — super-admin selectable model powering the
 // personal companion's interactive chat. Its picker is hidden from end users
 // (one companion per person, not a per-conversation pick), so this is the
-// only way to change what model it runs on. Self-contained: loads and saves
-// its own value via the PlatformApi, same pattern as TitleGenerationModelCard.
+// only way to change what model it runs on.
 // =============================================================================
 
 function PersonalCompanionModelCard({ platform }: { platform: PlatformApi }) {
+  const load = useCallback(() => platform.getPersonalCompanionModel(), [platform])
+  const persist = useCallback((model: string | null) => platform.putPersonalCompanionModel(model), [platform])
+  return (
+    <PlatformModelSettingCard
+      title="Personal Companion Model"
+      description="The model that powers everyone's personal companion. Its picker is hidden from users, so this is platform-wide. Defaults to Hoshi 2.0."
+      load={load}
+      persist={persist}
+    />
+  )
+}
+
+// =============================================================================
+// Summarizer Model Card — super-admin selectable model agent runtimes use to
+// summarize older history during context compaction. Runtimes read it at
+// spawn, so a change applies as runtimes restart.
+// =============================================================================
+
+function SummarizerModelCard({ platform }: { platform: PlatformApi }) {
+  const load = useCallback(() => platform.getSummarizerModel(), [platform])
+  const persist = useCallback((model: string | null) => platform.putSummarizerModel(model), [platform])
+  return (
+    <PlatformModelSettingCard
+      title="Summarizer Model"
+      description="The model agents use to summarize older conversation history when a chat nears its context limit. Applies to agent runtimes as they restart. Defaults to Hoshi 2.0."
+      load={load}
+      persist={persist}
+    />
+  )
+}
+
+// Self-contained single-model picker backed by one admin PlatformSetting: loads
+// and saves its own value, with an empty selection meaning the Hoshi 2.0
+// platform default.
+function PlatformModelSettingCard({
+  title,
+  description,
+  load,
+  persist,
+}: {
+  title: string
+  description: string
+  load: () => Promise<{ model: string | null }>
+  persist: (model: string | null) => Promise<void>
+}) {
   const models = useModelPickerList()
   const [selected, setSelected] = useState('')
   const [showDropdown, setShowDropdown] = useState(false)
@@ -832,26 +884,26 @@ function PersonalCompanionModelCard({ platform }: { platform: PlatformApi }) {
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    platform.getPersonalCompanionModel()
+    load()
       .then((data) => setSelected(data.model || ''))
       .catch(() => {})
       .finally(() => setIsLoading(false))
     return () => { if (statusTimerRef.current) clearTimeout(statusTimerRef.current) }
-  }, [platform])
+  }, [load])
 
   const save = useCallback(async (value: string) => {
     setSelected(value)
     setShowDropdown(false)
     setSaveStatus('saving')
     try {
-      await platform.putPersonalCompanionModel(value || null)
+      await persist(value || null)
       setSaveStatus('saved')
     } catch {
       setSaveStatus('error')
     }
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
     statusTimerRef.current = setTimeout(() => setSaveStatus('idle'), 2000)
-  }, [platform])
+  }, [persist])
 
   const selectedLabel = selected
     ? (models.find((m) => m.id === selected)?.displayName || selected)
@@ -866,14 +918,11 @@ function PersonalCompanionModelCard({ platform }: { platform: PlatformApi }) {
         <View className="flex-row items-center justify-between mb-1">
           <View className="flex-row items-center gap-2.5">
             <Pencil size={16} className="text-foreground" />
-            <Text className="text-base font-semibold text-foreground">Personal Companion Model</Text>
+            <Text className="text-base font-semibold text-foreground">{title}</Text>
           </View>
           <AutoSaveIndicator status={saveStatus} />
         </View>
-        <Text className="text-xs text-muted-foreground">
-          The model that powers everyone's personal companion. Its picker is hidden from
-          users, so this is platform-wide. Defaults to Hoshi 2.0.
-        </Text>
+        <Text className="text-xs text-muted-foreground">{description}</Text>
       </View>
       <View className="px-5 py-4" style={{ zIndex: 10 }}>
         <View style={{ position: 'relative', zIndex: showDropdown ? 100 : 1 }}>

@@ -43,8 +43,9 @@ const CLOUD_BODY = {
   hasAdvancedModelAccess: true,
 }
 const HARDCODED_2_0_FALLBACK = 'claude-haiku-4-5-20251001'
+const CLOUD_SUMMARIZER = { id: 'deepseek-flash', provider: 'custom', upstream: 'deepseek' }
 
-type FetchMode = 'ok' | 'throw' | 'http500' | 'malformed'
+type FetchMode = 'ok' | 'throw' | 'http500' | 'malformed' | 'with-summarizer' | 'bad-summarizer'
 let fetchMode: FetchMode = 'ok'
 let fetchCalls = 0
 
@@ -55,7 +56,11 @@ globalThis.fetch = (async () => {
   if (fetchMode === 'http500') return new Response('nope', { status: 500 })
   const body = fetchMode === 'malformed'
     ? { ...CLOUD_BODY, autoTiers: { economy: {}, standard: {}, premium: {} } }
-    : CLOUD_BODY
+    : fetchMode === 'with-summarizer'
+      ? { ...CLOUD_BODY, summarizer: CLOUD_SUMMARIZER }
+      : fetchMode === 'bad-summarizer'
+        ? { ...CLOUD_BODY, summarizer: { provider: 'custom' } }
+        : CLOUD_BODY
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }) as any
 
@@ -120,7 +125,21 @@ describe('local-mode agent model env (desktop)', () => {
     const env = await resolveAgentModelEnv('local-workspace')
     expect(env.AGENT_BASIC_MODEL).toBe('qwen3:8b')
     expect(JSON.parse(env.AGENT_AUTO_TIER_MAP).economy).toEqual({ id: 'qwen3:8b', provider: 'local' })
+    expect(JSON.parse(env.AGENT_SUMMARIZER_MODEL!)).toEqual({ id: 'qwen3:8b', provider: 'local' })
     expect(fetchCalls).toBe(0)
+  })
+
+  test('passes the cloud-configured summarizer through to the runtime env', async () => {
+    fetchMode = 'with-summarizer'
+    const env = await resolveAgentModelEnv('local-workspace')
+    expect(JSON.parse(env.AGENT_SUMMARIZER_MODEL!)).toEqual(CLOUD_SUMMARIZER)
+  })
+
+  test('omits the summarizer when the cloud predates it or sends a malformed entry', async () => {
+    expect((await resolveAgentModelEnv('local-workspace')).AGENT_SUMMARIZER_MODEL).toBeUndefined()
+    _resetAgentModelDefaultsCache()
+    fetchMode = 'bad-summarizer'
+    expect((await resolveAgentModelEnv('local-workspace')).AGENT_SUMMARIZER_MODEL).toBeUndefined()
   })
 
   test('falls back to the local resolver (not one hardcoded id) when the cloud rejects the read', async () => {

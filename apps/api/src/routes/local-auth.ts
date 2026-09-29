@@ -34,36 +34,21 @@ import { toErrorMessage } from '@shogo-ai/sdk'
 import { prisma } from '../lib/prisma'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { onUpstreamRejection } from '../lib/federated-upstream'
+import {
+  claimCredentialMismatchLog,
+  getHeartbeatStatus,
+  isCloudKeyRejected,
+  markCloudKeyRejected,
+  markCloudKeyRejectedIfConfirmed,
+  recordHeartbeat,
+  resetCloudKeyState,
+} from '../lib/cloud-key-state'
 
-/** Tracks whether the cloud has rejected our key so the UI can show a
- * degraded-connection banner without wiping credentials. Only an explicit
- * user-initiated sign-out deletes the stored key. */
-let cloudKeyRejected = false
-let lastHeartbeatOk: boolean | null = null
-let lastHeartbeatAt: number | null = null
-let lastHeartbeatError: string | null = null
-let credentialMismatchLogged = false
-
-/**
- * Set the cloudKeyRejected flag from outside this module. Used by the
- * federated-upstream proxy when a forwarded request returns 401 — same
- * UX as the heartbeat path detecting a revoked key, just driven by
- * actual user traffic instead of the periodic ping.
- */
-export function markCloudKeyRejected(reason?: string): void {
-  if (!cloudKeyRejected) {
-    console.warn(
-      `[CloudLogin] Cloud rejected API key${reason ? ` (${reason})` : ''} — key may be revoked or expired. User must re-sign-in.`,
-    )
-  }
-  cloudKeyRejected = true
-}
-
-// Wire the federated-upstream observer once at module load so any 401
-// surfaced from a federated proxy call flips the same flag the
-// heartbeat path uses. The `/local/cloud-login/status` endpoint and the
-// sign-out flow are the single source of truth for clearing it.
-onUpstreamRejection((reason) => markCloudKeyRejected(reason))
+// A 401 from any federated proxy call raises the same banner as a heartbeat
+// 401, once Shogo Cloud confirms the key itself is rejected.
+onUpstreamRejection((reason, key) => {
+  void markCloudKeyRejectedIfConfirmed(reason, key)
+})
 
 async function readStoredKey(localDb: any): Promise<string | null> {
   const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_API_KEY' } }).catch(() => null)
@@ -96,11 +81,7 @@ export function localAuthRoutes() {
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
     ])
     delete process.env.SHOGO_API_KEY
-    cloudKeyRejected = false
-    lastHeartbeatOk = null
-    lastHeartbeatAt = null
-    lastHeartbeatError = null
-    credentialMismatchLogged = false
+    resetCloudKeyState()
 
     import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
       stopInstanceTunnel()
@@ -115,11 +96,10 @@ export function localAuthRoutes() {
     const envKey = process.env.SHOGO_API_KEY || null
     const key = envKey || storedKey
     if (envKey && storedKey && envKey !== storedKey) {
-      if (!credentialMismatchLogged) {
+      if (claimCredentialMismatchLog()) {
         console.warn(
           '[CloudLogin] Environment SHOGO_API_KEY differs from localConfig; using the environment key and re-syncing localConfig.',
         )
-        credentialMismatchLogged = true
       }
       const upsert = localDb.localConfig.upsert
       if (typeof upsert === 'function') {
@@ -131,9 +111,7 @@ export function localAuthRoutes() {
       }
     }
     if (!key) {
-      lastHeartbeatOk = false
-      lastHeartbeatAt = Date.now()
-      lastHeartbeatError = 'Not signed in'
+      recordHeartbeat(false, 'Not signed in')
       return c.json({ ok: false, error: 'Not signed in' }, 401)
     }
     const cloudUrl = getShogoCloudUrl()
@@ -164,9 +142,7 @@ export function localAuthRoutes() {
           // this for the federated-upstream path).
           markCloudKeyRejected('heartbeat 401')
         }
-        lastHeartbeatOk = false
-        lastHeartbeatAt = Date.now()
-        lastHeartbeatError = errorMessage
+        recordHeartbeat(false, errorMessage)
         return c.json({
           ok: false,
           error: errorMessage,
@@ -174,16 +150,11 @@ export function localAuthRoutes() {
           ...(res.status === 401 ? { keyPrefix: key.slice(0, 16) } : {}),
         }, res.status as any)
       }
-      cloudKeyRejected = false
-      lastHeartbeatOk = true
-      lastHeartbeatAt = Date.now()
-      lastHeartbeatError = null
+      recordHeartbeat(true)
       return c.json({ ok: true })
     } catch (err: unknown) {
       const errorMessage = toErrorMessage(err, 'Heartbeat failed')
-      lastHeartbeatOk = false
-      lastHeartbeatAt = Date.now()
-      lastHeartbeatError = errorMessage
+      recordHeartbeat(false, errorMessage)
       return c.json({ ok: false, error: errorMessage }, 502)
     }
   })
@@ -196,9 +167,7 @@ export function localAuthRoutes() {
       return c.json({
         signedIn: false,
         cloudUrl: getShogoCloudUrl(),
-        lastHeartbeatOk,
-        lastHeartbeatAt,
-        lastHeartbeatError,
+        ...getHeartbeatStatus(),
       })
     }
     const info = await readStoredKeyInfo(localDb)
@@ -209,10 +178,8 @@ export function localAuthRoutes() {
       workspace: info?.workspace || null,
       deviceId: info?.deviceId || null,
       keyPrefix: effectiveKey.slice(0, 16),
-      cloudKeyRejected,
-      lastHeartbeatOk,
-      lastHeartbeatAt,
-      lastHeartbeatError,
+      cloudKeyRejected: isCloudKeyRejected(),
+      ...getHeartbeatStatus(),
     })
   })
 

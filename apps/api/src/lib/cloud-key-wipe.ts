@@ -6,6 +6,7 @@
  */
 
 import { prisma } from './prisma'
+import { checkCloudKey } from './cloud-key-state'
 
 const DEDUP_WINDOW_MS = 5_000
 
@@ -61,6 +62,34 @@ export async function wipeCloudKey(reason: string): Promise<WipeResult> {
 
   await inFlight
   return { wiped: true }
+}
+
+/**
+ * Wipe only after Shogo Cloud confirms the key itself is dead.
+ *
+ * A 401 relayed from a proxied request is ambiguous: older clouds pass
+ * upstream provider 401s straight through, which look identical to a revoked
+ * Shogo key. Wipe only when `/api/api-keys/validate` says `valid: false`;
+ * keep the key when it says valid or can't be reached.
+ */
+export async function wipeCloudKeyIfRejected(reason: string): Promise<WipeResult> {
+  const key = process.env.SHOGO_API_KEY
+  if (!key) return { wiped: false }
+  if (inFlight) { await inFlight; return { wiped: false } }
+  if (Date.now() - lastWipeAt < DEDUP_WINDOW_MS) return { wiped: false }
+
+  const status = await checkCloudKey(key)
+  if (status === 'valid') {
+    console.warn(`[CloudKeyWipe] Ignoring ${reason} — Shogo Cloud reports the key as valid.`)
+    return { wiped: false }
+  }
+  if (status === 'unknown') {
+    console.warn(`[CloudKeyWipe] Could not verify key after ${reason}; keeping it.`)
+    return { wiped: false }
+  }
+  // The user may have re-signed-in with a different key while we were verifying.
+  if (process.env.SHOGO_API_KEY !== key) return { wiped: false }
+  return wipeCloudKey(`${reason} (confirmed by /api/api-keys/validate)`)
 }
 
 /** Test-only reset of the dedup state. */

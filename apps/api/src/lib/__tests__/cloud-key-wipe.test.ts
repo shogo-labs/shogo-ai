@@ -22,7 +22,7 @@ mock.module('../../lib/instance-tunnel', () => ({
   stopInstanceTunnel: () => stopTunnelImpl(),
 }))
 
-const { wipeCloudKey, _testing } = await import('../cloud-key-wipe')
+const { wipeCloudKey, wipeCloudKeyIfRejected, _testing } = await import('../cloud-key-wipe')
 
 const ORIG_KEY = process.env.SHOGO_API_KEY
 
@@ -118,5 +118,81 @@ describe('wipeCloudKey', () => {
     } finally {
       console.error = origError
     }
+  })
+})
+
+describe('wipeCloudKeyIfRejected', () => {
+  const origFetch = globalThis.fetch
+  const origWarn = console.warn
+  let validateCalls: Array<{ url: string; body: any }> = []
+  let validateImpl: () => Promise<Response> = async () => Response.json({ valid: false })
+
+  beforeEach(() => {
+    validateCalls = []
+    globalThis.fetch = (async (url: any, init?: any) => {
+      validateCalls.push({ url: String(url), body: JSON.parse(init?.body ?? '{}') })
+      return validateImpl()
+    }) as typeof fetch
+    console.warn = () => {}
+  })
+  afterEach(() => {
+    globalThis.fetch = origFetch
+    console.warn = origWarn
+  })
+
+  it('keeps the key when cloud still reports it valid (upstream-provider 401)', async () => {
+    validateImpl = async () => Response.json({ valid: true })
+    const r = await wipeCloudKeyIfRejected('responses 401')
+    expect(r).toEqual({ wiped: false })
+    expect(process.env.SHOGO_API_KEY).toBe('shogo_sk_abc')
+    expect(deleteManyCalls).toHaveLength(0)
+    expect(validateCalls).toHaveLength(1)
+    expect(validateCalls[0].url).toEndWith('/api/api-keys/validate')
+    expect(validateCalls[0].body).toEqual({ key: 'shogo_sk_abc' })
+  })
+
+  it('wipes when cloud confirms the key is rejected', async () => {
+    validateImpl = async () => Response.json({ valid: false, error: 'Key has been revoked' })
+    const r = await wipeCloudKeyIfRejected('chat 401')
+    expect(r).toEqual({ wiped: true })
+    expect(process.env.SHOGO_API_KEY).toBeUndefined()
+    expect(deleteManyCalls).toHaveLength(2)
+  })
+
+  it('keeps the key when the validate call fails or returns non-JSON', async () => {
+    validateImpl = async () => { throw new Error('offline') }
+    expect(await wipeCloudKeyIfRejected('offline')).toEqual({ wiped: false })
+    validateImpl = async () => new Response('<html>bad gateway</html>', { status: 502 })
+    expect(await wipeCloudKeyIfRejected('502')).toEqual({ wiped: false })
+    expect(process.env.SHOGO_API_KEY).toBe('shogo_sk_abc')
+    expect(deleteManyCalls).toHaveLength(0)
+  })
+
+  it('does not wipe a key the user swapped in while verification was pending', async () => {
+    validateImpl = async () => {
+      process.env.SHOGO_API_KEY = 'shogo_sk_fresh'
+      return Response.json({ valid: false })
+    }
+    const r = await wipeCloudKeyIfRejected('race')
+    expect(r).toEqual({ wiped: false })
+    expect(process.env.SHOGO_API_KEY).toBe('shogo_sk_fresh')
+    expect(deleteManyCalls).toHaveLength(0)
+  })
+
+  it('coalesces concurrent 401s into one validate call', async () => {
+    validateImpl = async () => Response.json({ valid: true })
+    const results = await Promise.all([
+      wipeCloudKeyIfRejected('a'),
+      wipeCloudKeyIfRejected('b'),
+      wipeCloudKeyIfRejected('c'),
+    ])
+    expect(results.every((r) => !r.wiped)).toBe(true)
+    expect(validateCalls).toHaveLength(1)
+  })
+
+  it('is a no-op without a key', async () => {
+    delete process.env.SHOGO_API_KEY
+    expect(await wipeCloudKeyIfRejected('none')).toEqual({ wiped: false })
+    expect(validateCalls).toHaveLength(0)
   })
 })

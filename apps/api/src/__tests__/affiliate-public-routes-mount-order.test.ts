@@ -14,7 +14,7 @@ process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET || 'test-secret-ai-pro
  * actually registered in that sub-router. That meant any unauthenticated
  * /api/* endpoint mounted **after** those routers (e.g.
  * `/api/affiliates/lookup`, `/api/affiliates/click`) was rejected with 401
- * even though server.ts's own publicPrefixes allowlist explicitly bypassed
+ * even though the global /api/* gate's allowlist explicitly bypassed
  * requireAuth for them.
  *
  * The fix in both routers was to scope `router.use(...)` to the actual
@@ -30,29 +30,13 @@ import { Hono } from 'hono'
 // where someone re-introduces `router.use('*', ...)`.
 const { userAttributionRoute } = await import('../routes/admin')
 const { licenseKeyRoutes } = await import('../routes/license-keys')
+const { apiAuthGate } = await import('../middleware/api-auth-gate')
 
 // Tiny stand-ins so we don't pull in the global rate limiter / csrf / etc.
 async function fakeAuthMiddleware(c: any, next: any) {
   c.set('auth', { isAuthenticated: false })
   await next()
 }
-async function fakeRequireAuth(c: any, next: any) {
-  if (!c.get('auth')?.isAuthenticated) {
-    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-  }
-  await next()
-}
-
-// Mimic the publicPrefixes branch from server.ts.
-function publicPrefixGate() {
-  return async (c: any, next: any) => {
-    const path = new URL(c.req.url).pathname
-    const allowed = ['/api/affiliates/lookup', '/api/affiliates/click', '/api/health']
-    if (allowed.some((p) => path.startsWith(p))) return next()
-    return fakeRequireAuth(c, next)
-  }
-}
-
 // Mock the public-but-secret-gated affiliate routes the same way
 // server.ts mounts them: at /api after the polluters.
 function affiliateStub(): Hono {
@@ -68,7 +52,7 @@ describe('public /api/* routes survive sub-router middleware mount order', () =>
   beforeAll(() => {
     app = new Hono()
     app.use('/api/*', fakeAuthMiddleware)
-    app.use('/api/*', publicPrefixGate())
+    app.use('/api/*', apiAuthGate)
     // SAME mount order as server.ts:
     //   licenseKeyRoutes()        (line 6294)
     //   userAttributionRoute()    (line 6297)
