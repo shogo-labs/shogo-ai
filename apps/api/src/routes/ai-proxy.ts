@@ -44,7 +44,7 @@ import {
   resolveVisibleModelsForWorkspace,
   isModelProviderConfigured,
 } from '../services/visible-models.service'
-import { wipeCloudKey } from '../lib/cloud-key-wipe'
+import { wipeCloudKeyIfRejected } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
@@ -2841,7 +2841,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy chat-completions got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy chat-completions got 401 from Shogo Cloud')
     }
 
     if (request.stream) {
@@ -2890,7 +2890,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy responses got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy responses got 401 from Shogo Cloud')
     }
 
     if (request?.stream) {
@@ -2946,7 +2946,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy Anthropic messages got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy Anthropic messages got 401 from Shogo Cloud')
     }
 
     // Hard errors (billing, auth, invalid request, etc.) come back from Shogo
@@ -3379,6 +3379,22 @@ export function aiProxyRoutes() {
           {
             error: {
               message: `Model '${requestedModel}' is a Live Sessions model. Use /ai/v1/live/sessions instead of the Responses API.`,
+              type: 'invalid_request_error',
+              code: 'model_not_supported_on_endpoint',
+            },
+          },
+          400,
+        )
+      }
+
+      // This handler only forwards to OpenAI. Sending another provider's model
+      // there pairs it with that provider's key, and OpenAI's resulting 401 is
+      // indistinguishable (to a desktop) from its Shogo key being revoked.
+      if (modelConfig.provider !== 'openai') {
+        return c.json(
+          {
+            error: {
+              message: `Model '${requestedModel}' (provider '${modelConfig.provider}') is not supported on the Responses API. Use /ai/v1/chat/completions or /ai/anthropic/v1/messages.`,
               type: 'invalid_request_error',
               code: 'model_not_supported_on_endpoint',
             },
@@ -4141,7 +4157,7 @@ export function aiProxyRoutes() {
       )
       // Self-heal on revoked / superseded device key.
       if (response.status === 401) {
-        void wipeCloudKey('AI proxy count_tokens got 401 from Shogo Cloud')
+        void wipeCloudKeyIfRejected('AI proxy count_tokens got 401 from Shogo Cloud')
       }
       const responseBody = await response.text()
       return new Response(responseBody, {

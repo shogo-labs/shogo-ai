@@ -304,6 +304,10 @@ const PUBLIC_PREFIXES = [
   '/api/v1/',
   '/api/tools/',
   '/api/api-keys/validate',
+  // Device-key heartbeat — the key in the body is the credential (verified in
+  // `./routes/api-keys.ts`). Omitting it 401'd every desktop heartbeat, which
+  // the app surfaced as "key revoked, sign in again".
+  '/api/api-keys/heartbeat',
   // Cloud-side device-code login entry. The CLI worker and the desktop
   // app both POST `/api/cli/login/start` (anonymous — registering a new
   // pending-state nonce) and GET `/api/cli/login/poll` / `/api/cli/login/state`

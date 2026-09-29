@@ -67,6 +67,10 @@ import {
   PERSONAL_COMPANION_MODEL_SETTING_KEY,
 } from './lib/personal-companion-model'
 import {
+  setSummarizerModelId,
+  SUMMARIZER_MODEL_SETTING_KEY,
+} from './lib/summarizer-model'
+import {
   fallbackGenerateProjectName,
   parseTitleResponse,
   shouldPersistGeneratedProjectName,
@@ -98,7 +102,7 @@ import {
   resolvePlatformVisibleModels,
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
-import { localAuthRoutes } from './routes/local-auth'
+import { localAuthRoutes, resetCloudKeyState } from './routes/local-auth'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { meetingRoutes } from './routes/meetings'
@@ -797,6 +801,10 @@ app.use(
       // (verified in routes/shared-files.ts).
       '/api/f/',
       '/api/api-keys/validate',
+      // Device-key heartbeat: the key in the body is the credential (verified
+      // in routes/api-keys.ts). Without this entry every desktop heartbeat
+      // 401s here and the app tells the user their key was revoked.
+      '/api/api-keys/heartbeat',
       '/api/marketplace',
       '/api/tech-stacks',
       '/api/instances/heartbeat',
@@ -1496,6 +1504,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       ])
 
       process.env.SHOGO_API_KEY = body.key
+      resetCloudKeyState()
       _resetUpstreamCredentialCache()
       _resetAgentModelDefaultsCache()
 
@@ -6642,6 +6651,49 @@ app.put('/api/admin/settings/personal-companion-model', async (c) => {
 })
 
 // =============================================================================
+// Summarizer Model — super-admin selectable model agent runtimes use to
+// summarize history during context compaction. Stored as a single
+// PlatformSetting row; null/empty resets to the platform default (Hoshi 2.0).
+// Runtimes pick up changes on their next spawn. See lib/summarizer-model.ts.
+// =============================================================================
+
+// GET /api/admin/settings/summarizer-model
+app.get('/api/admin/settings/summarizer-model', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: SUMMARIZER_MODEL_SETTING_KEY } })
+    return c.json({ model: row?.value ?? null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/summarizer-model
+app.put('/api/admin/settings/summarizer-model', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const value = typeof body?.model === 'string' ? body.model.trim() : ''
+
+    if (value.length === 0) {
+      await prisma.platformSetting.deleteMany({ where: { key: SUMMARIZER_MODEL_SETTING_KEY } })
+      setSummarizerModelId(null)
+      return c.json({ ok: true, model: null })
+    }
+
+    await prisma.platformSetting.upsert({
+      where: { key: SUMMARIZER_MODEL_SETTING_KEY },
+      create: { key: SUMMARIZER_MODEL_SETTING_KEY, value, updatedBy: userId },
+      update: { value, updatedBy: userId },
+    })
+    setSummarizerModelId(value)
+    return c.json({ ok: true, model: value })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// =============================================================================
 // Visible Models Config — admin-curated model allowlist for the user picker.
 // =============================================================================
 //
@@ -9427,6 +9479,20 @@ await (async () => {
     }
   } catch (err: any) {
     console.log('[PersonalCompanionModel] No override loaded, defaulting to Hoshi 2.0 (non-fatal):', err.message)
+  }
+})()
+
+// Load the admin-configured context-compaction summarizer model so runtime
+// env resolution doesn't need a DB round-trip. Unset falls back to Hoshi 2.0.
+await (async () => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: SUMMARIZER_MODEL_SETTING_KEY } })
+    if (row?.value) {
+      setSummarizerModelId(row.value)
+      console.log('[SummarizerModel] Loaded admin override:', row.value)
+    }
+  } catch (err: any) {
+    console.log('[SummarizerModel] No override loaded, defaulting to Hoshi 2.0 (non-fatal):', err.message)
   }
 })()
 

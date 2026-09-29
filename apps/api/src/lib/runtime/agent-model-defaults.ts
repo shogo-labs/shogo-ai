@@ -23,6 +23,7 @@ import { resolvePublicModelSync } from '../../services/public-models.service'
 import { getMergedModelEntrySync } from '../../services/model-registry.service'
 import { prisma } from '../prisma'
 import { fetchCloudAgentModelDefaults } from '../federated-upstream'
+import { getSummarizerModelId } from '../summarizer-model'
 
 export type AgentModelTier = 'economy' | 'standard' | 'premium'
 
@@ -37,6 +38,8 @@ export interface AgentModelDefaults {
   advanced: string
   defaultMode: string | null
   autoTiers: Record<AgentModelTier, AgentModelEntry>
+  /** Model used for context-compaction summaries (admin `summarizer.model`). */
+  summarizer: AgentModelEntry
   hasAdvancedModelAccess: boolean
   deepseekModelIds: string[]
 }
@@ -46,6 +49,7 @@ export interface AgentModelEnv {
   AGENT_ADVANCED_MODEL: string
   AGENT_AUTO_TIER_MAP: string
   AGENT_DEEPSEEK_MODEL_IDS?: string
+  AGENT_SUMMARIZER_MODEL?: string
 }
 
 const AUTO_TIERS: AgentModelTier[] = ['economy', 'standard', 'premium']
@@ -166,17 +170,23 @@ export async function resolveEffectiveAgentModelDefaults(
   const advanced = (await isModelAccessibleForWorkspace(workspaceId, configuredAdvanced.id))
     ? configuredAdvanced
     : fallback
+  const configuredSummarizer = resolveModelEntry(getSummarizerModelId())
+  const summarizer = (await isModelAccessibleForWorkspace(workspaceId, configuredSummarizer.id))
+    ? configuredSummarizer
+    : fallback
 
   return {
     basic: basic.id,
     advanced: advanced.id,
     defaultMode: await readDefaultMode(),
     autoTiers,
+    summarizer,
     hasAdvancedModelAccess: await billingService.hasAdvancedModelAccess(workspaceId),
     deepseekModelIds: [
       basic,
       advanced,
       ...Object.values(autoTiers),
+      summarizer,
     ]
       .filter((entry) => entry.upstream === 'deepseek')
       .map((entry) => entry.id),
@@ -216,6 +226,15 @@ export function serializeAutoTierMapEnv(
   return Object.keys(out).length > 0 ? JSON.stringify(out) : undefined
 }
 
+export function serializeModelEntryEnv(entry: AgentModelEntry | undefined): string | undefined {
+  if (!entry?.id?.trim()) return undefined
+  return JSON.stringify({
+    id: entry.id.trim(),
+    ...(entry.provider ? { provider: entry.provider } : {}),
+    ...(entry.upstream ? { upstream: entry.upstream } : {}),
+  })
+}
+
 /**
  * Resolve the env for a newly spawned runtime.
  *
@@ -240,6 +259,7 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
       AGENT_BASIC_MODEL: localModel,
       AGENT_ADVANCED_MODEL: advancedModel,
       AGENT_AUTO_TIER_MAP: autoTiers as string,
+      AGENT_SUMMARIZER_MODEL: serializeModelEntryEnv({ id: localModel, provider: 'local' }),
     }
   }
 
@@ -247,6 +267,7 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
   if (cloudDefaults) {
     const autoTierMap = serializeAutoTierMapEnv(cloudDefaults.autoTiers)
     if (autoTierMap) {
+      const summarizer = serializeModelEntryEnv(cloudDefaults.summarizer)
       return {
         AGENT_BASIC_MODEL: cloudDefaults.basic,
         AGENT_ADVANCED_MODEL: cloudDefaults.advanced,
@@ -254,11 +275,13 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
         ...(cloudDefaults.deepseekModelIds?.length
           ? { AGENT_DEEPSEEK_MODEL_IDS: cloudDefaults.deepseekModelIds.join(',') }
           : {}),
+        ...(summarizer ? { AGENT_SUMMARIZER_MODEL: summarizer } : {}),
       }
     }
   }
 
   const localDefaults = await resolveEffectiveAgentModelDefaults(workspaceId)
+  const summarizer = serializeModelEntryEnv(localDefaults.summarizer)
   return {
     AGENT_BASIC_MODEL: localDefaults.basic,
     AGENT_ADVANCED_MODEL: localDefaults.advanced,
@@ -266,5 +289,6 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
     ...(localDefaults.deepseekModelIds.length
       ? { AGENT_DEEPSEEK_MODEL_IDS: localDefaults.deepseekModelIds.join(',') }
       : {}),
+    ...(summarizer ? { AGENT_SUMMARIZER_MODEL: summarizer } : {}),
   }
 }

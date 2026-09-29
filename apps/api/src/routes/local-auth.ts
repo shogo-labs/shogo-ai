@@ -59,6 +59,19 @@ export function markCloudKeyRejected(reason?: string): void {
   cloudKeyRejected = true
 }
 
+/**
+ * Forget the previous key's rejected/heartbeat state. Call when a new key is
+ * saved: until the next heartbeat succeeds, the stale flag would otherwise
+ * keep the UI showing "re-sign-in" for a freshly-issued key.
+ */
+export function resetCloudKeyState(): void {
+  cloudKeyRejected = false
+  lastHeartbeatOk = null
+  lastHeartbeatAt = null
+  lastHeartbeatError = null
+  credentialMismatchLogged = false
+}
+
 // Wire the federated-upstream observer once at module load so any 401
 // surfaced from a federated proxy call flips the same flag the
 // heartbeat path uses. The `/local/cloud-login/status` endpoint and the
@@ -96,11 +109,7 @@ export function localAuthRoutes() {
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
     ])
     delete process.env.SHOGO_API_KEY
-    cloudKeyRejected = false
-    lastHeartbeatOk = null
-    lastHeartbeatAt = null
-    lastHeartbeatError = null
-    credentialMismatchLogged = false
+    resetCloudKeyState()
 
     import('../lib/instance-tunnel').then(({ stopInstanceTunnel }) => {
       stopInstanceTunnel()

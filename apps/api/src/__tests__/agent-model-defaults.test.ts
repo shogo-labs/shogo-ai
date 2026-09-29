@@ -37,7 +37,9 @@ const {
   resolveAgentModelEnv,
   isModelAccessibleForWorkspace,
   serializeAutoTierMapEnv,
+  serializeModelEntryEnv,
 } = await import('../lib/runtime/agent-model-defaults')
+const { setSummarizerModelId } = await import('../lib/summarizer-model')
 const {
   setAgentModeOverrides,
   setAutoTierOverrides,
@@ -45,6 +47,7 @@ const {
 
 beforeEach(() => {
   advancedAccess = false
+  setSummarizerModelId(null)
   setAgentModeOverrides({
     basic: 'claude-haiku-4-5-20251001',
     advanced: 'claude-sonnet-4-6',
@@ -108,5 +111,28 @@ describe('agent model defaults', () => {
       id: 'gpt-5.4-nano',
       provider: 'openai',
     })
+  })
+
+  test('resolves the admin summarizer through public aliases for an entitled workspace', async () => {
+    advancedAccess = true
+    setSummarizerModelId('hoshi-1.0')
+    const defaults = await resolveEffectiveAgentModelDefaults('ws-pro')
+    expect(defaults.summarizer).toEqual({ id: 'mimo-v2.5', provider: 'custom' })
+
+    const env = await resolveAgentModelEnv('ws-pro')
+    expect(JSON.parse(env.AGENT_SUMMARIZER_MODEL!)).toEqual({ id: 'mimo-v2.5', provider: 'custom' })
+  })
+
+  test('caps an inaccessible summarizer to the economy fallback', async () => {
+    setSummarizerModelId('hoshi-1.0')
+    const defaults = await resolveEffectiveAgentModelDefaults('ws-free')
+    expect(defaults.summarizer.id).toBe('gpt-5.4-nano')
+  })
+
+  test('serializes a single model entry, omitting absent fields', () => {
+    expect(serializeModelEntryEnv(undefined)).toBeUndefined()
+    expect(serializeModelEntryEnv({ id: 'gpt-5.4-nano' })).toBe(JSON.stringify({ id: 'gpt-5.4-nano' }))
+    expect(serializeModelEntryEnv({ id: 'mimo-v2.5', provider: 'custom', upstream: 'openrouter' }))
+      .toBe(JSON.stringify({ id: 'mimo-v2.5', provider: 'custom', upstream: 'openrouter' }))
   })
 })

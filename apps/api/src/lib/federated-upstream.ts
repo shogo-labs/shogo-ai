@@ -472,6 +472,8 @@ export interface CloudAgentModelDefaults {
     standard: CloudAgentModelEntry
     premium: CloudAgentModelEntry
   }
+  /** Absent when the connected cloud predates the summarizer setting. */
+  summarizer?: CloudAgentModelEntry
   hasAdvancedModelAccess: boolean
   deepseekModelIds?: string[]
 }
@@ -610,6 +612,7 @@ export async function fetchCloudAgentModelDefaults(): Promise<CloudAgentModelDef
               standard: tiers.standard,
               premium: tiers.premium,
             },
+            ...(validEntry(body.summarizer) ? { summarizer: body.summarizer } : {}),
             hasAdvancedModelAccess: body.hasAdvancedModelAccess === true,
           }
         }

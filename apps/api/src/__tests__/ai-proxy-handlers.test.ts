@@ -204,6 +204,19 @@ describe('POST /ai/v1/responses', () => {
     expect(data.error.message).toMatch(/not supported/i)
   })
 
+  test('rejects a non-OpenAI model instead of forwarding it to OpenAI (400)', async () => {
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ model: 'claude-haiku-4-5', input: 'hi' }),
+    }))
+    expect(res.status).toBe(400)
+    const data = await res.json() as any
+    expect(data.error.code).toBe('model_not_supported_on_endpoint')
+    expect(lastFetchUrl).toBeNull()
+  })
+
   test('forwards a non-streaming request and records usage on success', async () => {
     nextFetchResponses.push(() => new Response(JSON.stringify({
       id: 'resp_1',

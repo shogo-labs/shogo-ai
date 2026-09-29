@@ -373,6 +373,9 @@ describe('requireAuth', () => {
       '/api/ai/proxy',
       '/api/tools/list',
       '/api/api-keys/validate',
+      // Heartbeat carries the key in its body, never a bearer header; gating
+      // it made every desktop heartbeat 401 and flag its key as rejected.
+      '/api/api-keys/heartbeat',
       '/api/cli/login/start',
     ]
     for (const p of prefixes) {

@@ -16,6 +16,7 @@ import {
   _resetAgentModelDefaultsCache,
   _resetUpstreamCredentialCache,
 } from '../lib/federated-upstream'
+import { resetCloudKeyState } from './local-auth'
 
 const PROVIDER_KEYS = [
   { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
@@ -248,6 +249,7 @@ export function localSystemRoutes(): Hono {
         }),
       ])
       process.env.SHOGO_API_KEY = body.key
+      resetCloudKeyState()
       _resetUpstreamCredentialCache()
       _resetAgentModelDefaultsCache()
       return c.json({ ok: true, workspace: data.workspace, cloudUrl })

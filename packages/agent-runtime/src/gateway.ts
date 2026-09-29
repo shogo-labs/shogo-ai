@@ -201,6 +201,29 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
+
+/**
+ * Parse the admin-injected `AGENT_SUMMARIZER_MODEL` env var (`{ id, provider }`
+ * JSON, resolved by the API server from the `summarizer.model` setting).
+ * Falls back to Haiku on Anthropic when unset or malformed — e.g. a desktop
+ * connected to a cloud that predates the setting.
+ */
+export function resolveSummarizerModel(raw: string | undefined): { id: string; provider: string } {
+  if (!raw) return FALLBACK_SUMMARIZER_MODEL
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const id = typeof parsed?.id === 'string' ? parsed.id.trim() : ''
+    if (!id) return FALLBACK_SUMMARIZER_MODEL
+    const provider = typeof parsed.provider === 'string' && parsed.provider.trim()
+      ? parsed.provider.trim()
+      : inferProviderFromModel(id, 'anthropic')
+    return { id, provider }
+  } catch {
+    return FALLBACK_SUMMARIZER_MODEL
+  }
+}
+
 type AutoTierCeiling = 'economy' | 'standard' | 'premium'
 
 const AUTO_TIER_ORDER: AutoTierCeiling[] = ['economy', 'standard', 'premium']
@@ -1102,12 +1125,18 @@ export class AgentGateway {
       })
     })
 
-    // Wire up LLM-powered summarization for context compaction
+    // Wire up LLM-powered summarization for context compaction. The model is
+    // the admin-selected summarizer (Hoshi 2.0 by default), injected with its
+    // own provider. It must never borrow the session's provider: pairing an
+    // Anthropic id with an OpenAI session routes it to OpenAI's Responses API,
+    // whose 401 made desktops wipe their Shogo Cloud key.
+    const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
+    console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
     this.sessionManager.setSummarizeFn(async (messages) => {
       const { resolveModel: rm, resolveApiKey: rak } = await import('./pi-adapter')
       const { runAgentLoop: summarizeLoop } = await import('./agent-loop')
-      const provider = this.config.model.provider
-      const apiKey = rak(provider)
+      const provider = summarizerModel.provider
+      const apiKey = rak(rm(provider, summarizerModel.id).provider)
       if (!apiKey) throw new Error('No API key for summarization')
 
       const messageTexts = messages.map(m => {
@@ -1128,7 +1157,7 @@ export class AgentGateway {
 
       const result = await summarizeLoop({
         provider,
-        model: 'claude-haiku-4-5',
+        model: summarizerModel.id,
         system: 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.',
         history: [],
         prompt: messageTexts.substring(0, 12000),
