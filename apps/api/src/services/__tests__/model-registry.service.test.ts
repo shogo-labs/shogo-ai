@@ -242,6 +242,90 @@ describe('model-registry.service', () => {
     expect(routing!.apiKey).toBe(MIMO_KEY) // decrypted in-memory
   })
 
+  test('resolves a capability fallback onto a different provider', async () => {
+    const fallbackKey = 'sk-deepseek-fallback-key'
+    PROVIDERS.push({
+      id: 'prov-deepseek',
+      label: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      protocol: 'openai',
+      authStyle: 'bearer',
+      encryptedApiKey: encryptSecret(fallbackKey),
+      enabled: true,
+    })
+    MODELS.push({
+      id: 'hoshi-openrouter',
+      provider: 'custom',
+      providerId: 'prov-1',
+      apiModel: 'deepseek/deepseek-v4.1-flash',
+      displayName: 'Hoshi 2.0',
+      shortDisplayName: 'Hoshi 2.0',
+      tier: 'standard',
+      family: 'other',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 2,
+      aliases: ['hoshi-2-0'],
+      capabilities: {
+        upstream: 'deepseek',
+        openrouterProvider: { order: ['DeepSeek'], allow_fallbacks: false },
+        fallback: { providerId: 'prov-deepseek', apiModel: 'deepseek-flash' },
+      },
+      inputPerMillion: 0.15,
+      cachedInputPerMillion: 0,
+      cacheWritePerMillion: 0,
+      outputPerMillion: 0.3,
+    })
+    await invalidateModelRegistry()
+    const routing = getDbRoutingConfigSync('hoshi-2-0')
+    expect(routing?.upstream).toBe('deepseek')
+    expect(routing?.openrouterProvider).toEqual({ order: ['DeepSeek'], allow_fallbacks: false })
+    expect(routing?.fallback).toEqual({
+      apiModel: 'deepseek-flash',
+      baseUrl: 'https://api.deepseek.com/v1',
+      authStyle: 'bearer',
+      apiKey: fallbackKey,
+    })
+  })
+
+  test('a disabled fallback provider is omitted from routing', async () => {
+    PROVIDERS.push({
+      id: 'prov-deepseek',
+      label: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      protocol: 'openai',
+      authStyle: 'bearer',
+      encryptedApiKey: encryptSecret('sk-unused'),
+      enabled: false,
+    })
+    MODELS.push({
+      id: 'hoshi-openrouter',
+      provider: 'custom',
+      providerId: 'prov-1',
+      apiModel: 'deepseek/deepseek-v4.1-flash',
+      displayName: 'Hoshi 2.0',
+      shortDisplayName: 'Hoshi 2.0',
+      tier: 'standard',
+      family: 'other',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 2,
+      aliases: [],
+      capabilities: {
+        upstream: 'deepseek',
+        fallback: { providerId: 'prov-deepseek', apiModel: 'deepseek-flash' },
+      },
+      inputPerMillion: 0,
+      cachedInputPerMillion: 0,
+      cacheWritePerMillion: 0,
+      outputPerMillion: 0,
+    })
+    await invalidateModelRegistry()
+    expect(getDbRoutingConfigSync('hoshi-openrouter')?.fallback).toBeUndefined()
+  })
+
   test('native DB model routing carries no baseUrl/apiKey', () => {
     const routing = getDbRoutingConfigSync('claude-opus-4-8')
     expect(routing!.provider).toBe('anthropic')
