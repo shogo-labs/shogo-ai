@@ -188,6 +188,8 @@ spec:
               value: "shogo-workspaces-production"
             - name: S3_LLM_CAPTURES_BUCKET
               value: "shogo-llm-captures-production"
+            - name: PROXY_CAPTURE_ENABLED
+              value: "true"
             # Raw LLM captures contain user prompts and must stay in the EU,
             # unlike the shared Ashburn endpoint above that the workspaces
             # bucket uses. Read only by getLlmCaptureS3Client().

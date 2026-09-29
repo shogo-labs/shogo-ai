@@ -10,7 +10,8 @@
  *               default+enterprise) with plan grants
  *   traffic     real provider calls through the local proxy for every
  *               captured endpoint; asserts caller responses, proxy_turns,
- *               ai_analysis_turns and consent-by-plan
+ *               ai_analysis_turns, and that default mode captures on every
+ *               plan (including enterprise)
  *   killswitch  flips the enabled workspace to disabled, waits out the
  *               consent cache, asserts no capture, then restores it
  *   archive     reads today's archive partition and asserts records,
@@ -150,14 +151,13 @@ if (phase === 'traffic') {
   await expectRow('anthropic-stream', 'cloud_runtime', (row) => row.toolNames.includes('lookup_weather') && row.assistantText.includes('[tool call: lookup_weather]'))
   await expectRow('desktop', 'desktop_proxy')
   await expectRow('default-pro', 'cloud_runtime')
-  const enterprise = await turnsFor(sess('default-ent'))
-  check('enterprise default mode NOT captured', enterprise.length === 0, enterprise.length)
+  await expectRow('default-ent', 'cloud_runtime')
 
   const view: any[] = await prisma.$queryRawUnsafe(
     `select source, "workspaceId", model, "llmCalls" from ai_analysis_turns where "chatSessionId" like $1`,
     `pc-smoke-${RUN}-%`,
   )
-  check('ai_analysis_turns exposes proxy rows', view.length === 6 && view.every((row) => row.source !== 'cloud_chat'), view.length)
+  check('ai_analysis_turns exposes proxy rows', view.length === 7 && view.every((row) => row.source !== 'cloud_chat'), view.length)
   console.log(`RUN=${RUN}`)
 }
 
@@ -217,8 +217,8 @@ if (phase === 'archive') {
     }
   }
   const summary = records.map((record) => `${record.chatSessionId.slice(`pc-smoke-${RUN}-`.length)}:${record.endpoint}:${record.source}:${record.httpStatus}`)
-  check('archive has one record per captured call (6)', records.length === 6, summary)
-  check('archive excludes enterprise + disabled sessions', !records.some((record) => /default-ent|disabled/.test(record.chatSessionId)))
+  check('archive has one record per captured call (7)', records.length === 7, summary)
+  check('archive excludes the disabled session', !records.some((record) => /disabled/.test(record.chatSessionId)))
   check('archive records carry request + response bodies', records.length > 0 && records.every((record) => record.request && record.response))
   check('system prompts/tools deduped and every referenced blob exists', blobRefs.size > 0 && missingBlobs.length === 0, { refs: blobRefs.size, missingBlobs })
   const toolCalls = records.flatMap((record) => record.response?.tool_calls || [])
