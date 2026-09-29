@@ -27,8 +27,9 @@ import {
   MessageCircleQuestion,
   ArrowDown,
 } from "lucide-react-native"
-import { type ToolCallData, type AskUserQuestionItem } from "../tools/types"
+import { type ToolCallData } from "../tools/types"
 import { useAskUserQuestionDraft } from "./useAskUserQuestionDraft"
+import { formatResponse, parseQuestions } from "./askUserAnswers"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useChatContextSafe } from "../ChatContext"
 import { buildAgentWorkspaceUrl } from "../../../lib/agent-workspace-url"
@@ -51,84 +52,6 @@ export interface AskUserQuestionWidgetProps {
   /** Scrollable option-list cap. Prompt and Submit stay pinned. */
   bodyMaxHeight?: number
   onQuestionProgress?: (progress: { index: number; total: number }) => void
-}
-
-function isValidQuestionItem(item: unknown): item is AskUserQuestionItem {
-  if (!item || typeof item !== "object") return false
-  const q = item as Record<string, unknown>
-  return (
-    typeof q.question === "string" &&
-    typeof q.header === "string" &&
-    Array.isArray(q.options) &&
-    (q.multiSelect === undefined || typeof q.multiSelect === "boolean")
-  )
-}
-
-function isValidOption(
-  opt: unknown,
-): opt is { label: string; description: string } {
-  if (!opt || typeof opt !== "object") return false
-  const o = opt as Record<string, unknown>
-  return typeof o.label === "string" && typeof o.description === "string"
-}
-
-function normalizeQuestionItem(item: AskUserQuestionItem): AskUserQuestionItem {
-  return {
-    ...item,
-    options: Array.isArray(item.options)
-      ? item.options.filter(isValidOption)
-      : [],
-    multiSelect: item.multiSelect ?? false,
-  }
-}
-
-function parseQuestions(args?: Record<string, unknown>): AskUserQuestionItem[] {
-  if (!args?.questions || !Array.isArray(args.questions)) {
-    return []
-  }
-
-  return args.questions.filter(isValidQuestionItem).map(normalizeQuestionItem)
-}
-
-function formatResponse(
-  questions: AskUserQuestionItem[],
-  selections: Map<number, string[]>,
-  otherTexts: Map<number, string>,
-): string {
-  const lines: string[] = []
-
-  questions.forEach((q, index) => {
-    const selected = selections.get(index) || []
-    const otherText = otherTexts.get(index)
-
-    const hasOther = selected.includes("__other__")
-    const regularSelections = selected.filter((s) => s !== "__other__")
-
-    let responseLine = ""
-
-    if (questions.length > 1) {
-      responseLine = `${q.header}: `
-    }
-
-    if (hasOther && otherText?.trim()) {
-      if (regularSelections.length > 0) {
-        responseLine += `${regularSelections.join(", ")}, Other: ${otherText.trim()}`
-      } else {
-        responseLine += `Other: ${otherText.trim()}`
-      }
-    } else if (regularSelections.length > 0) {
-      responseLine += regularSelections.join(", ")
-    }
-
-    if (
-      responseLine &&
-      (regularSelections.length > 0 || (hasOther && otherText?.trim()))
-    ) {
-      lines.push(responseLine)
-    }
-  })
-
-  return lines.join("\n")
 }
 
 /**
@@ -632,8 +555,8 @@ export function AskUserQuestionWidget({
     return true
   })()
   const nextDisabled = !currentAnswered
-  const hasImageOptions = (currentQuestion.options ?? []).some(
-    (option) => Boolean(option.imagePath),
+  const hasImageOptions = (currentQuestion.options ?? []).some((option) =>
+    Boolean(option.imagePath),
   )
 
   const pagination = showPagination ? (
@@ -928,6 +851,38 @@ export function AskUserQuestionBar({
 
       <ArrowDown className="w-3 h-3 text-primary" />
     </Pressable>
+  )
+}
+
+export interface AskUserAskedRowProps {
+  tool: ToolCallData
+  className?: string
+}
+
+/** Compact historical row for an ask_user call whose answer is in the user turn. */
+export function AskUserAskedRow({ tool, className }: AskUserAskedRowProps) {
+  const count = parseQuestions(tool.args).length
+  const questionLabel =
+    count === 1
+      ? "Asked 1 question"
+      : count > 1
+        ? `Asked ${count} questions`
+        : "Asked questions"
+
+  return (
+    <View
+      accessibilityLabel={questionLabel}
+      className={cn(
+        "w-full flex-row items-center gap-1.5 rounded-md border border-border/40 bg-muted/20 px-2 py-1.5",
+        className,
+      )}
+    >
+      <MessageCircleQuestion className="h-3 w-3 text-muted-foreground" />
+      <Text className="flex-1 font-mono text-[10px] font-medium text-muted-foreground">
+        {questionLabel}
+      </Text>
+      <CheckCircle2 className="h-3 w-3 text-green-500" />
+    </View>
   )
 }
 

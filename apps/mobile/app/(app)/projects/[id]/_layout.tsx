@@ -71,6 +71,7 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
+import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -2564,7 +2565,7 @@ export default observer(function ProjectLayout() {
               .sort(
                 (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0)
               );
-            const preview = msgs[0]?.content?.trim();
+            const preview = stripAskUserAnswerMarker(msgs[0]?.content?.trim() ?? "").trim();
             names[s.id] = preview
               ? preview.length > 40
                 ? preview.slice(0, 40) + "…"

@@ -39,14 +39,7 @@
  *     display with no actions.
  */
 
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   View,
   Pressable,
@@ -78,9 +71,13 @@ import {
 } from "../ChatInput"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
+import { AskUserAnswerCard } from "./AskUserAnswerCard"
+import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import type { AnsweredQuestion } from "./types"
 
 function showNativeUserMessageActions(opts: {
-  canMutate: boolean
+  canEdit: boolean
+  canRetry: boolean
   onCopy: () => void
   onEdit: () => void
   onRetry: () => void
@@ -88,9 +85,15 @@ function showNativeUserMessageActions(opts: {
   const rows: { label: string; run: () => void; destructive?: boolean }[] = [
     { label: "Copy", run: opts.onCopy },
   ]
-  if (opts.canMutate) {
+  if (opts.canEdit) {
     rows.push({ label: "Edit", run: opts.onEdit })
-    rows.push({ label: "Retry from here", run: opts.onRetry, destructive: true })
+  }
+  if (opts.canRetry) {
+    rows.push({
+      label: "Retry from here",
+      run: opts.onRetry,
+      destructive: true,
+    })
   }
 
   if (Platform.OS === "ios") {
@@ -100,7 +103,8 @@ function showNativeUserMessageActions(opts: {
       {
         options,
         cancelButtonIndex: options.length - 1,
-        destructiveButtonIndex: destructiveIndex >= 0 ? destructiveIndex : undefined,
+        destructiveButtonIndex:
+          destructiveIndex >= 0 ? destructiveIndex : undefined,
       },
       (index) => {
         if (index == null || index >= rows.length) return
@@ -114,7 +118,8 @@ function showNativeUserMessageActions(opts: {
     ...rows.map((r) => ({
       text: r.label,
       onPress: r.run,
-      style: (r.destructive ? "destructive" : "default") as "destructive" | "default",
+      style: (r.destructive ? "destructive" : "default") as
+        "destructive" | "default",
     })),
     { text: "Cancel", style: "cancel" as const },
   ])
@@ -122,6 +127,7 @@ function showNativeUserMessageActions(opts: {
 
 export interface EditableUserMessageProps {
   message: UIMessage
+  answeredQuestion?: AnsweredQuestion
   className?: string
 }
 
@@ -156,6 +162,7 @@ function extractFileAttachments(
 
 export const EditableUserMessage = memo(function EditableUserMessage({
   message,
+  answeredQuestion,
   className,
 }: EditableUserMessageProps) {
   const ctx = useMessageEditContext()
@@ -183,18 +190,28 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   // DOM APIs without dragging in DOM types in the public surface.
   const containerRef = useRef<View>(null)
 
-  const originalText = useMemo(() => extractTextContent(message), [message])
-  const originalFiles = useMemo(() => extractFileAttachments(message), [message])
+  const originalText = useMemo(
+    () => stripAskUserAnswerMarker(extractTextContent(message)),
+    [message],
+  )
+  const originalFiles = useMemo(
+    () => extractFileAttachments(message),
+    [message],
+  )
 
   const editable = ctx ? ctx.canEditMessage(message) : false
-  const interactive = Boolean(ctx && editable && !ctx.isStreaming && !busy)
+  const canEdit = Boolean(
+    ctx && editable && !ctx.isStreaming && !busy && !answeredQuestion,
+  )
+  const canRetry = Boolean(ctx && editable && !ctx.isStreaming && !busy)
+  const interactive = canEdit
 
   // Retry icon on the right of the bubble. Web: hover-revealed to
   // keep historical turns visually quiet. Native (no hover): always
   // visible — same convention as the queued-message row in
   // ChatInput.tsx (~774).
   const showRetryIcon = Boolean(
-    interactive && !isEditing && (Platform.OS !== "web" || hovered),
+    canRetry && !isEditing && (Platform.OS !== "web" || hovered),
   )
 
   const handleStartEdit = useCallback(() => {
@@ -358,7 +375,11 @@ export const EditableUserMessage = memo(function EditableUserMessage({
       if (!ctx || busy) return
       const discardCount = ctx.countMessagesAfter(message.id)
       const checkpoint = await resolveCheckpoint(discardCount)
-      const result = await requestEditConfirmation(kind, discardCount, checkpoint)
+      const result = await requestEditConfirmation(
+        kind,
+        discardCount,
+        checkpoint,
+      )
       if (!result.confirmed) return
       setBusy(true)
       try {
@@ -438,7 +459,8 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     if (busy) return
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {})
     showNativeUserMessageActions({
-      canMutate: interactive,
+      canEdit,
+      canRetry,
       onCopy: () => {
         void handleCopy()
       },
@@ -447,7 +469,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
         void handleRetry()
       },
     })
-  }, [busy, interactive, handleCopy, handleStartEdit, handleRetry])
+  }, [busy, canEdit, canRetry, handleCopy, handleStartEdit, handleRetry])
 
   // ─── EDIT MODE ────────────────────────────────────────────────
   // Just ChatInput rendered inline, with `highlighted` toggled on
@@ -513,10 +535,18 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     return (
       <View className={cn("w-full items-end px-1", className)}>
         <Pressable
-          onPress={nativePhone ? undefined : handleStartEdit}
+          onPress={
+            nativePhone || answeredQuestion ? undefined : handleStartEdit
+          }
           onLongPress={nativePhone ? handleNativeLongPress : undefined}
           delayLongPress={nativePhone ? 400 : undefined}
-          disabled={nativePhone ? busy : !interactive}
+          disabled={
+            nativePhone
+              ? busy
+              : answeredQuestion
+                ? !canRetry
+                : !interactive
+          }
           accessibilityRole="button"
           accessibilityLabel={
             nativePhone
@@ -529,12 +559,19 @@ export const EditableUserMessage = memo(function EditableUserMessage({
               : "Activates an inline composer pre-filled with this message."
           }
           className={cn(
-            "max-w-[85%]",
+            answeredQuestion ? "max-w-full" : "max-w-[85%]",
             Platform.OS === "web" && interactive && "cursor-text",
             busy && "opacity-60",
           )}
         >
-          <MessageContent message={message} variant="userBubble" />
+          {answeredQuestion ? (
+            <AskUserAnswerCard
+              answeredQuestion={answeredQuestion}
+              variant="bubble"
+            />
+          ) : (
+            <MessageContent message={message} variant="userBubble" />
+          )}
         </Pressable>
         {busy ? (
           <View className="mt-1 pr-2">
@@ -547,10 +584,10 @@ export const EditableUserMessage = memo(function EditableUserMessage({
 
   return (
     <Pressable
-      onPress={handleStartEdit}
+      onPress={answeredQuestion ? undefined : handleStartEdit}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
-      disabled={!interactive}
+      disabled={answeredQuestion ? !canRetry : !interactive}
       accessibilityRole={interactive ? "button" : undefined}
       accessibilityLabel={
         interactive ? "Edit this message and re-run from here" : undefined
@@ -575,7 +612,14 @@ export const EditableUserMessage = memo(function EditableUserMessage({
       )}
     >
       <View className="flex-1 min-w-0">
-        <MessageContent message={message} />
+        {answeredQuestion ? (
+          <AskUserAnswerCard
+            answeredQuestion={answeredQuestion}
+            variant="row"
+          />
+        ) : (
+          <MessageContent message={message} />
+        )}
       </View>
       {showRetryIcon && (
         <Pressable

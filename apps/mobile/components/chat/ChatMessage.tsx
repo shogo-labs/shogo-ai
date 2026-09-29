@@ -13,6 +13,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { MarkdownText } from "./MarkdownText"
 import { analyzeContent } from "./long-text-utils"
 import { LongTextPreviewCard } from "./LongTextPreviewCard"
+import { stripAskUserAnswerMarker } from "./turns/askUserAnswers"
 
 export interface ChatMessageProps {
   message: {
@@ -23,15 +24,21 @@ export interface ChatMessageProps {
   isStreaming?: boolean
 }
 
-export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) {
+export function ChatMessage({
+  message,
+  isStreaming = false,
+}: ChatMessageProps) {
   const isUser = message.role === "user"
-  const isLongText = isUser && message.content ? analyzeContent(message.content).isLong : false
+  const content = isUser
+    ? stripAskUserAnswerMarker(message.content)
+    : message.content
+  const isLongText = isUser && content ? analyzeContent(content).isLong : false
 
   return (
     <View
       className={cn(
         "flex-row w-full",
-        isUser ? "justify-end" : "justify-start"
+        isUser ? "justify-end" : "justify-start",
       )}
     >
       <View
@@ -39,21 +46,14 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
           "max-w-[80%] rounded-lg px-4 py-2",
           isUser
             ? "bg-secondary dark:bg-secondary ml-auto"
-            : "bg-gray-100 dark:bg-gray-800 mr-auto"
+            : "bg-gray-100 dark:bg-gray-800 mr-auto",
         )}
       >
         {isUser ? (
           isLongText && !isStreaming ? (
-            <LongTextPreviewCard
-              text={message.content}
-              title="Your Message"
-            />
+            <LongTextPreviewCard text={content} title="Your Message" />
           ) : (
-            <Text
-              className={cn("text-sm text-foreground")}
-            >
-              {message.content}
-            </Text>
+            <Text className={cn("text-sm text-foreground")}>{content}</Text>
           )
         ) : (
           <MarkdownText

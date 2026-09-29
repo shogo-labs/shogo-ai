@@ -11,8 +11,14 @@ export { TurnList, type TurnListProps } from "./TurnList"
 export { TurnGroup, type TurnGroupProps } from "./TurnGroup"
 export { TurnHeader, type TurnHeaderProps } from "./TurnHeader"
 export { MessageContent, type MessageContentProps } from "./MessageContent"
-export { AssistantContent, type AssistantContentProps } from "./AssistantContent"
-export { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
+export {
+  AssistantContent,
+  type AssistantContentProps,
+} from "./AssistantContent"
+export {
+  InlineToolWidget,
+  type InlineToolWidgetProps,
+} from "./InlineToolWidget"
 export { ExecWidget, type ExecWidgetProps } from "./ExecWidget"
 export { ToolCallGroup, type ToolCallGroupProps } from "./ToolCallGroup"
 export { WorkGroup, type WorkGroupProps } from "./WorkGroup"
@@ -28,8 +34,20 @@ export {
   type AskUserQuestionWidgetProps,
   AskUserQuestionBar,
   type AskUserQuestionBarProps,
+  AskUserAskedRow,
+  type AskUserAskedRowProps,
 } from "./AskUserQuestionWidget"
-export { type ConversationTurn, type TurnBoundary, type MessagePart, type GroupedMessagePart } from "./types"
+export {
+  type AnsweredQuestion,
+  type ConversationTurn,
+  type TurnBoundary,
+  type MessagePart,
+  type GroupedMessagePart,
+} from "./types"
+export {
+  AskUserAnswerCard,
+  type AskUserAnswerCardProps,
+} from "./AskUserAnswerCard"
 export {
   groupWorkParts,
   partitionTurn,
@@ -40,10 +58,7 @@ export {
   type TurnPartition,
   type TurnTiming,
 } from "./turnShaping"
-export {
-  TurnFooter,
-  type TurnFooterProps,
-} from "./TurnFooter"
+export { TurnFooter, type TurnFooterProps } from "./TurnFooter"
 export {
   TurnFooterProvider,
   useTurnFooterContext,

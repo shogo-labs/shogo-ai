@@ -23,8 +23,12 @@ import {
   ListOrdered,
 } from "lucide-react-native"
 import { useDockPanel } from "../useDockPanel"
-import type { DockPanelDescriptor, DockIconComponent } from "../../../../lib/chat-dock-store"
+import type {
+  DockPanelDescriptor,
+  DockIconComponent,
+} from "../../../../lib/chat-dock-store"
 import type { QueuedMessage } from "../../ChatInput"
+import { stripAskUserAnswerMarker } from "../../turns/askUserAnswers"
 
 export interface QueueDockPanelProps {
   queuedMessages: QueuedMessage[]
@@ -81,10 +85,16 @@ function QueueBody({
         const imageFiles = files.filter((f) => f.type?.startsWith("image/"))
         const otherFiles = files.filter((f) => !f.type?.startsWith("image/"))
         const previewImage = imageFiles[0]
-        const trimmedContent = msg.content?.trim() ?? ""
+        const trimmedContent = stripAskUserAnswerMarker(
+          msg.content?.trim() ?? "",
+        ).trim()
         const attachmentLabel =
-          files.length > 0 ? `${files.length} ${files.length === 1 ? "attachment" : "attachments"}` : ""
-        const primaryText = trimmedContent ? trimmedContent : attachmentLabel || "Empty message"
+          files.length > 0
+            ? `${files.length} ${files.length === 1 ? "attachment" : "attachments"}`
+            : ""
+        const primaryText = trimmedContent
+          ? trimmedContent
+          : attachmentLabel || "Empty message"
         return (
           <Pressable
             key={msg.id}
@@ -96,9 +106,15 @@ function QueueBody({
             )}
           >
             {msg.status === "failed" ? (
-              <AlertTriangle size={11} className="text-destructive flex-shrink-0" />
+              <AlertTriangle
+                size={11}
+                className="text-destructive flex-shrink-0"
+              />
             ) : msg.offline ? (
-              <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
+              <WifiOff
+                size={11}
+                className="text-orange-600 dark:text-orange-400 flex-shrink-0"
+              />
             ) : (
               <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
             )}
@@ -110,18 +126,35 @@ function QueueBody({
               />
             )}
             <View className="flex-1 min-w-0 py-1">
-              <Text className={cn("text-xs", msg.status === "failed" ? "text-destructive" : "text-foreground")} numberOfLines={1}>
+              <Text
+                className={cn(
+                  "text-xs",
+                  msg.status === "failed"
+                    ? "text-destructive"
+                    : "text-foreground",
+                )}
+                numberOfLines={1}
+              >
                 {primaryText}
               </Text>
               {msg.error && (
-                <Text className="text-[10px] text-destructive" numberOfLines={1}>
+                <Text
+                  className="text-[10px] text-destructive"
+                  numberOfLines={1}
+                >
                   {msg.error}
                 </Text>
               )}
               {trimmedContent && files.length > 0 && (
                 <View className="flex-row items-center gap-1 mt-0.5">
-                  <ImageIcon className="h-3 w-3 text-muted-foreground" size={10} />
-                  <Text className="text-[10px] text-muted-foreground" numberOfLines={1}>
+                  <ImageIcon
+                    className="h-3 w-3 text-muted-foreground"
+                    size={10}
+                  />
+                  <Text
+                    className="text-[10px] text-muted-foreground"
+                    numberOfLines={1}
+                  >
                     {imageFiles.length > 0 && otherFiles.length > 0
                       ? `${imageFiles.length} image${imageFiles.length === 1 ? "" : "s"} + ${otherFiles.length} file${otherFiles.length === 1 ? "" : "s"}`
                       : imageFiles.length > 0
@@ -137,20 +170,24 @@ function QueueBody({
                 Platform.OS === "web" && "opacity-0 group-hover:opacity-100",
               )}
             >
-              {onReorderQueuedMessage && queuedMessages.length > 1 && index > 0 && (
-                <QueueAction
-                  label="Move queued message up"
-                  icon={ChevronUp}
-                  onPress={() => onReorderQueuedMessage(msg.id, "up")}
-                />
-              )}
-              {onReorderQueuedMessage && queuedMessages.length > 1 && index < queuedMessages.length - 1 && (
-                <QueueAction
-                  label="Move queued message down"
-                  icon={ChevronDown}
-                  onPress={() => onReorderQueuedMessage(msg.id, "down")}
-                />
-              )}
+              {onReorderQueuedMessage &&
+                queuedMessages.length > 1 &&
+                index > 0 && (
+                  <QueueAction
+                    label="Move queued message up"
+                    icon={ChevronUp}
+                    onPress={() => onReorderQueuedMessage(msg.id, "up")}
+                  />
+                )}
+              {onReorderQueuedMessage &&
+                queuedMessages.length > 1 &&
+                index < queuedMessages.length - 1 && (
+                  <QueueAction
+                    label="Move queued message down"
+                    icon={ChevronDown}
+                    onPress={() => onReorderQueuedMessage(msg.id, "down")}
+                  />
+                )}
               {onSendQueuedMessageNow && (
                 <QueueAction
                   label="Send queued message now"

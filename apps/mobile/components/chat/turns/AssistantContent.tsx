@@ -17,10 +17,7 @@ import { SubagentCard } from "./SubagentCard"
 import { TeamCard } from "./TeamCard"
 import { ExecWidget } from "./ExecWidget"
 import { ConnectToolWidget, parseToolInstallResult } from "./ConnectToolWidget"
-import {
-  AskUserQuestionWidget,
-  AskUserQuestionBar,
-} from "./AskUserQuestionWidget"
+import { AskUserQuestionBar, AskUserAskedRow } from "./AskUserQuestionWidget"
 import { askUserStreamVariant } from "./pendingQuestion"
 import { TodoRow } from "./TodoRow"
 import { ToolCallGroup } from "./ToolCallGroup"
@@ -675,27 +672,9 @@ export const AssistantContent = memo(
             )
           }
 
-          // Answered: keep the existing collapsed summary widget in-stream.
-          return (
-            <AskUserQuestionWidget
-              key={part.id}
-              tool={part.tool}
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
-              onSubmitResponse={(response) => {
-                if (chatContext?.sendMessage) {
-                  chatContext.sendMessage(response)
-                }
-                if (chatContext?.saveToolOutput) {
-                  chatContext.saveToolOutput({
-                    messageId: message.id,
-                    toolCallId: part.id,
-                    output: response,
-                  })
-                }
-              }}
-            />
-          )
+          // Answered: the full recap is rendered in the subsequent user
+          // turn. Keep only a compact historical marker here.
+          return <AskUserAskedRow key={part.id} tool={part.tool} />
         }
 
         if (
