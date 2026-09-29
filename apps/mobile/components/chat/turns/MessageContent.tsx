@@ -35,6 +35,7 @@ import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
+import { stripAskUserAnswerMarker } from "./askUserAnswers"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -416,10 +417,12 @@ export function MessageContent({
   const { width: viewportWidth } = useWindowDimensions()
   const usesMobileChatTypography =
     isPhoneLayout || usesMobileWorkspaceChrome || viewportWidth < 640
-  const content = extractTextContent(message)
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"
+  const content = isUser
+    ? stripAskUserAnswerMarker(extractTextContent(message))
+    : extractTextContent(message)
   const userBubble = isUser && variant === "userBubble"
   // Only show the preview card when there's genuinely long typed text and no
   // file attachments. When file chips are present the text body is just the

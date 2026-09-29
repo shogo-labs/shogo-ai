@@ -19,6 +19,7 @@ import type { UIMessage } from "@ai-sdk/react"
 import { groupMessagesIntoTurns } from "../useTurnGrouping"
 import type { ConversationTurn } from "../types"
 import type { ToolCallData } from "../tools/types"
+import { buildAskUserAnswerMessage } from "../askUserAnswers"
 
 type Msg = UIMessage
 
@@ -55,7 +56,12 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     const a2 = assistantMsg("a2", "")
 
     // Initial render: no prevTurns yet.
-    const r0 = groupMessagesIntoTurns([u1, a1, u2, a2], true, undefined, undefined)
+    const r0 = groupMessagesIntoTurns(
+      [u1, a1, u2, a2],
+      true,
+      undefined,
+      undefined,
+    )
     expect(r0).toHaveLength(2)
     expect(r0[0].userMessage).toBe(u1)
     expect(r0[0].assistantMessage).toBe(a1)
@@ -67,7 +73,10 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     let prev: ConversationTurn[] = r0
     const chars = "Hello world"
     for (let i = 1; i <= chars.length; i++) {
-      currentAssistant = cloneAssistantWithText(currentAssistant, chars.slice(0, i))
+      currentAssistant = cloneAssistantWithText(
+        currentAssistant,
+        chars.slice(0, i),
+      )
       const nextMessages = [u1, a1, u2, currentAssistant]
       const next = groupMessagesIntoTurns(nextMessages, true, undefined, prev)
 
@@ -90,8 +99,18 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     const u2 = userMsg("u2", "c")
     const a2 = assistantMsg("a2", "d")
 
-    const first = groupMessagesIntoTurns([u1, a1, u2, a2], false, undefined, undefined)
-    const second = groupMessagesIntoTurns([u1, a1, u2, a2], false, undefined, first)
+    const first = groupMessagesIntoTurns(
+      [u1, a1, u2, a2],
+      false,
+      undefined,
+      undefined,
+    )
+    const second = groupMessagesIntoTurns(
+      [u1, a1, u2, a2],
+      false,
+      undefined,
+      first,
+    )
 
     expect(second).toHaveLength(first.length)
     for (let i = 0; i < first.length; i++) {
@@ -105,10 +124,20 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     const u2 = userMsg("u2", "c")
     const a2 = assistantMsg("a2", "d")
 
-    const first = groupMessagesIntoTurns([u1, a1, u2, a2], false, undefined, undefined)
+    const first = groupMessagesIntoTurns(
+      [u1, a1, u2, a2],
+      false,
+      undefined,
+      undefined,
+    )
 
     const u3 = userMsg("u3", "e")
-    const second = groupMessagesIntoTurns([u1, a1, u2, a2, u3], false, undefined, first)
+    const second = groupMessagesIntoTurns(
+      [u1, a1, u2, a2, u3],
+      false,
+      undefined,
+      first,
+    )
 
     expect(second).toHaveLength(3)
     expect(second[0]).toBe(first[0])
@@ -121,7 +150,12 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     const u1 = userMsg("u1", "hello")
     const a1 = assistantMsg("a1", "streaming response")
 
-    const streaming = groupMessagesIntoTurns([u1, a1], true, undefined, undefined)
+    const streaming = groupMessagesIntoTurns(
+      [u1, a1],
+      true,
+      undefined,
+      undefined,
+    )
     expect(streaming[0].isStreaming).toBe(true)
 
     // Stream ended: same message reference but isStreaming is now false.
@@ -138,7 +172,12 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     const u2 = userMsg("u2", "another")
     const a2 = assistantMsg("a2", "working")
 
-    const base = groupMessagesIntoTurns([u1, a1, u2, a2], true, undefined, undefined)
+    const base = groupMessagesIntoTurns(
+      [u1, a1, u2, a2],
+      true,
+      undefined,
+      undefined,
+    )
 
     const ext: ToolCallData[] = [
       {
@@ -163,6 +202,82 @@ describe("groupMessagesIntoTurns — referential stability during streaming", ()
     // but this only happens when externalToolCalls is non-empty. That's accepted.
     const again = groupMessagesIntoTurns([u1, a1, u2, a2], true, ext, withExt)
     expect(again[0]).toBe(withExt[0])
+  })
+})
+
+describe("groupMessagesIntoTurns — ask_user answer linkage", () => {
+  const questions = [
+    {
+      header: "Style",
+      question: "Which style?",
+      options: [{ label: "Minimal", description: "Clean" }],
+      multiSelect: false,
+    },
+  ]
+
+  function askUserAssistant() {
+    return assistantMsg("a-ask", "", [
+      {
+        type: "dynamic-tool",
+        toolName: "ask_user",
+        toolCallId: "call-ask-1",
+        input: { questions },
+        state: "input-available",
+      },
+    ])
+  }
+
+  test("links a marker message to the matching ask_user part", () => {
+    const assistant = askUserAssistant()
+    const answer = userMsg(
+      "u-answer",
+      buildAskUserAnswerMessage("call-ask-1", "Minimal"),
+    )
+    const turns = groupMessagesIntoTurns(
+      [userMsg("u-initial", "Help me choose"), assistant, answer],
+      false,
+      undefined,
+      undefined,
+    )
+
+    expect(turns[1]?.answeredQuestion).toEqual({
+      toolCallId: "call-ask-1",
+      questions,
+      response: "Minimal",
+    })
+  })
+
+  test("does not link a marker with an unknown tool call id", () => {
+    const turns = groupMessagesIntoTurns(
+      [
+        userMsg("u-initial", "Help me choose"),
+        askUserAssistant(),
+        userMsg(
+          "u-answer",
+          buildAskUserAnswerMessage("call-unknown", "Minimal"),
+        ),
+      ],
+      false,
+      undefined,
+      undefined,
+    )
+
+    expect(turns[1]?.answeredQuestion).toBeUndefined()
+  })
+
+  test("does not link a plain-text answer without a marker", () => {
+    const turns = groupMessagesIntoTurns(
+      [
+        userMsg("u-initial", "Help me choose"),
+        askUserAssistant(),
+        userMsg("u-answer", "Minimal"),
+      ],
+      false,
+      undefined,
+      undefined,
+    )
+
+    expect(turns[1]?.answeredQuestion).toBeUndefined()
   })
 })
 
@@ -192,7 +307,10 @@ describe("groupMessagesIntoTurns — performance (character streaming simulation
     const t0 = performance.now()
 
     for (let i = 1; i <= N; i++) {
-      streamingAssistant = cloneAssistantWithText(streamingAssistant, "x".repeat(i))
+      streamingAssistant = cloneAssistantWithText(
+        streamingAssistant,
+        "x".repeat(i),
+      )
       const next = [...messages.slice(0, -1), streamingAssistant]
       const result = groupMessagesIntoTurns(next, true, undefined, prev)
 

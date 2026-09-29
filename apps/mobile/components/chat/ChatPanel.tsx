@@ -263,6 +263,10 @@ import {
   askUserQuestionPresentation,
 } from "./turns/pendingQuestion"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
+import {
+  buildAskUserAnswerMessage,
+  stripAskUserAnswerMarker,
+} from "./turns/askUserAnswers"
 import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
   FIX_IN_AGENT_EVENT,
@@ -918,7 +922,9 @@ async function ensureAiConsentForMessage(): Promise<boolean> {
   const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
   if (alreadyAccepted) return true
 
-  const providerNames = AI_PROVIDERS.map((provider) => provider.name).join(" or ")
+  const providerNames = AI_PROVIDERS.map((provider) => provider.name).join(
+    " or ",
+  )
   const accepted = await new Promise<boolean>((resolve) => {
     Alert.alert(
       "Share your message with the selected AI provider?",
@@ -1202,8 +1208,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentProjectId,
           ),
         updateProject: (id, changes) => actions.updateProject(id, changes),
-        updateSession: (id, changes) =>
-          actions.updateChatSession(id, changes),
+        updateSession: (id, changes) => actions.updateChatSession(id, changes),
         emitRefresh: ({
           projectId: currentProjectId,
           workspaceId: currentWorkspaceId,
@@ -1215,18 +1220,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             activeSessionId: currentSessionId,
             refresh: true,
           }),
+      }).catch((err) => {
+        console.warn("[ChatPanel] AI session naming failed:", err)
       })
-        .catch((err) => {
-          console.warn("[ChatPanel] AI session naming failed:", err)
-        })
     },
-    [
-      actions,
-      projectCollection,
-      projectId,
-      studioChat,
-      workspaceId,
-    ],
+    [actions, projectCollection, projectId, studioChat, workspaceId],
   )
 
   // Auto-scroll refs
@@ -5519,21 +5517,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [currentSessionId, messageQueue])
 
-  const handleRemoveQueuedMessage = useCallback((messageId: string) => {
-    if (serverQueue.isServerQueued(messageId)) {
-      void serverQueue.remove(messageId).catch((error) => {
-        console.warn("[ChatPanel] Failed to remove server queued message:", error)
-      })
-      return
-    }
-    setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
-  }, [serverQueue])
+  const handleRemoveQueuedMessage = useCallback(
+    (messageId: string) => {
+      if (serverQueue.isServerQueued(messageId)) {
+        void serverQueue.remove(messageId).catch((error) => {
+          console.warn(
+            "[ChatPanel] Failed to remove server queued message:",
+            error,
+          )
+        })
+        return
+      }
+      setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
+    },
+    [serverQueue],
+  )
 
   const handleReorderQueuedMessage = useCallback(
     (messageId: string, direction: "up" | "down") => {
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.reorder(messageId, direction).catch((error) => {
-          console.warn("[ChatPanel] Failed to reorder server queued message:", error)
+          console.warn(
+            "[ChatPanel] Failed to reorder server queued message:",
+            error,
+          )
         })
         return
       }
@@ -5563,32 +5570,40 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // tweak the text/attachments and re-send. We remove the original entry
   // immediately so re-submitting just appends a fresh queue item rather than
   // duplicating the in-flight one.
-  const handleEditQueuedMessage = useCallback((messageId: string) => {
-    const serverTarget = serverQueue.queuedMessages.find((m) => m.id === messageId)
-    if (serverTarget) {
-      void serverQueue.remove(messageId).catch((error) => {
-        console.warn("[ChatPanel] Failed to edit server queued message:", error)
+  const handleEditQueuedMessage = useCallback(
+    (messageId: string) => {
+      const serverTarget = serverQueue.queuedMessages.find(
+        (m) => m.id === messageId,
+      )
+      if (serverTarget) {
+        void serverQueue.remove(messageId).catch((error) => {
+          console.warn(
+            "[ChatPanel] Failed to edit server queued message:",
+            error,
+          )
+        })
+        setRestoreDraftRequest({
+          nonce: Date.now(),
+          content: serverTarget.content,
+          files: serverTarget.files,
+        })
+        return
+      }
+      let target: QueuedMessage | undefined
+      setMessageQueue((queue) => {
+        target = queue.find((m) => m.id === messageId)
+        if (!target) return queue
+        return queue.filter((m) => m.id !== messageId)
       })
+      if (!target) return
       setRestoreDraftRequest({
         nonce: Date.now(),
-        content: serverTarget.content,
-        files: serverTarget.files,
+        content: target.content,
+        files: target.files,
       })
-      return
-    }
-    let target: QueuedMessage | undefined
-    setMessageQueue((queue) => {
-      target = queue.find((m) => m.id === messageId)
-      if (!target) return queue
-      return queue.filter((m) => m.id !== messageId)
-    })
-    if (!target) return
-    setRestoreDraftRequest({
-      nonce: Date.now(),
-      content: target.content,
-      files: target.files,
-    })
-  }, [serverQueue])
+    },
+    [serverQueue],
+  )
 
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
@@ -5601,7 +5616,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     (messageId: string) => {
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.sendNow(messageId).catch((error) => {
-          console.warn("[ChatPanel] Failed to send server queued message now:", error)
+          console.warn(
+            "[ChatPanel] Failed to send server queued message now:",
+            error,
+          )
         })
         return
       }
@@ -5644,7 +5662,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         try {
           wireText = await enrichMessage(trimmedContent)
         } catch (error) {
-          console.warn("[ChatPanel] enrichMessage failed for queued message:", error)
+          console.warn(
+            "[ChatPanel] enrichMessage failed for queued message:",
+            error,
+          )
         }
       }
 
@@ -6345,7 +6366,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!msg) return
       const parts = ((msg as any).parts ?? []) as any[]
       const textPart = parts.find((p: any) => p?.type === "text")
-      const content = textPart?.text || extractTextContent(msg) || ""
+      const content = stripAskUserAnswerMarker(
+        textPart?.text || extractTextContent(msg) || "",
+      )
       const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
       const files: FileAttachment[] | undefined =
         fileParts.length > 0
@@ -6681,7 +6704,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleSubmitQuestionResponse = useCallback(
     (response: string) => {
       if (!pendingQuestion) return
-      handleSendMessage(response)
+      handleSendMessage(
+        buildAskUserAnswerMessage(pendingQuestion.tool.id, response),
+      )
       handleSaveToolOutput({
         messageId: pendingQuestion.messageId,
         toolCallId: pendingQuestion.tool.id,
@@ -7012,7 +7037,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         </Text>
       ),
     }
-  }, [usageLimitNotice, currentSessionId, handleUpgradeClick, handleSendMessage])
+  }, [
+    usageLimitNotice,
+    currentSessionId,
+    handleUpgradeClick,
+    handleSendMessage,
+  ])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
