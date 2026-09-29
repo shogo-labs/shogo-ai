@@ -280,7 +280,9 @@ spec:
 
                   if [ -n "$STALE_SUBS" ]; then
                     echo "CRITICAL: subscription(s) trail the local publication by 1+ tables."
-                    echo "Run: ALTER SUBSCRIPTION <subname> REFRESH PUBLICATION;"
+                    echo "Run: ALTER SUBSCRIPTION <subname> REFRESH PUBLICATION WITH (copy_data = false);"
+                    echo "Only copy data if the peer's rows in the new tables were NOT copied from"
+                    echo "this region, or the copy brings them back and disables the subscription."
                     echo "$STALE_SUBS"
                     EXIT_RC=1
                   fi

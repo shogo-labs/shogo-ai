@@ -2475,7 +2475,10 @@ jobs:
       # would bring them straight back and fail on the primary key, disabling
       # sub_from_eu (the 2026-09-29 incident). It must also run before the EU
       # api rollout below, while the new tables hold no EU-written rows.
+      # Non-blocking: a failure leaves sub_from_eu trailing the publication,
+      # which the replication-monitor staleness check pages on.
       - name: Refresh US subscription for tables published on EU
+        continue-on-error: true
         env:
           US_CLUSTER_OCID: ${{ needs.deploy-us.outputs.oke_cluster_ocid }}
           US_REGION: ${{ needs.deploy-us.outputs.oci_region }}
