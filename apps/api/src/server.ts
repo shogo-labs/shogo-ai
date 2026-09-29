@@ -103,6 +103,7 @@ import {
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
+import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/platform-model-setting'
 import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
@@ -6468,132 +6469,25 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 })
 
 // =============================================================================
-// Title Generation Model — super-admin selectable model for chat/project
-// title generation (`POST /api/generate-project-name`). Stored as a single
-// PlatformSetting row; null/empty resets to the platform default (Haiku).
+// Single-model admin settings, each one PlatformSetting row; an empty value
+// resets to the feature default.
+//   title-generation-model     — chat/project titles (default Haiku)
+//   personal-companion-model   — personal companion chat (default Hoshi 2.0)
+//   summarizer-model           — agent context compaction (default Hoshi 2.0);
+//                                runtimes pick it up on their next spawn
 // =============================================================================
 
-// GET /api/admin/settings/title-generation-model
-app.get('/api/admin/settings/title-generation-model', async (c) => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: TITLE_MODEL_SETTING_KEY } })
-    return c.json({ model: row?.value ?? null })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// PUT /api/admin/settings/title-generation-model
-app.put('/api/admin/settings/title-generation-model', async (c) => {
-  try {
-    const body = await c.req.json()
-    const auth = c.get('auth') as any
-    const userId = auth?.user?.id || 'unknown'
-    const value = typeof body?.model === 'string' ? body.model.trim() : ''
-
-    if (value.length === 0) {
-      await prisma.platformSetting.deleteMany({ where: { key: TITLE_MODEL_SETTING_KEY } })
-      setTitleGenerationModelId(null)
-      return c.json({ ok: true, model: null })
-    }
-
-    await prisma.platformSetting.upsert({
-      where: { key: TITLE_MODEL_SETTING_KEY },
-      create: { key: TITLE_MODEL_SETTING_KEY, value, updatedBy: userId },
-      update: { value, updatedBy: userId },
-    })
-    setTitleGenerationModelId(value)
-    return c.json({ ok: true, model: value })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// =============================================================================
-// Personal Companion Model — super-admin selectable model powering the
-// personal companion's interactive chat (its picker is hidden — one
-// companion per person). Stored as a single PlatformSetting row; null/empty
-// resets to the platform default (Hoshi 2.0). See lib/personal-companion-model.ts.
-// =============================================================================
-
-// GET /api/admin/settings/personal-companion-model
-app.get('/api/admin/settings/personal-companion-model', async (c) => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
-    return c.json({ model: row?.value ?? null })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// PUT /api/admin/settings/personal-companion-model
-app.put('/api/admin/settings/personal-companion-model', async (c) => {
-  try {
-    const body = await c.req.json()
-    const auth = c.get('auth') as any
-    const userId = auth?.user?.id || 'unknown'
-    const value = typeof body?.model === 'string' ? body.model.trim() : ''
-
-    if (value.length === 0) {
-      await prisma.platformSetting.deleteMany({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
-      setPersonalCompanionModelId(null)
-      return c.json({ ok: true, model: null })
-    }
-
-    await prisma.platformSetting.upsert({
-      where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY },
-      create: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY, value, updatedBy: userId },
-      update: { value, updatedBy: userId },
-    })
-    setPersonalCompanionModelId(value)
-    return c.json({ ok: true, model: value })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// =============================================================================
-// Summarizer Model — super-admin selectable model agent runtimes use to
-// summarize history during context compaction. Stored as a single
-// PlatformSetting row; null/empty resets to the platform default (Hoshi 2.0).
-// Runtimes pick up changes on their next spawn. See lib/summarizer-model.ts.
-// =============================================================================
-
-// GET /api/admin/settings/summarizer-model
-app.get('/api/admin/settings/summarizer-model', async (c) => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: SUMMARIZER_MODEL_SETTING_KEY } })
-    return c.json({ model: row?.value ?? null })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// PUT /api/admin/settings/summarizer-model
-app.put('/api/admin/settings/summarizer-model', async (c) => {
-  try {
-    const body = await c.req.json()
-    const auth = c.get('auth') as any
-    const userId = auth?.user?.id || 'unknown'
-    const value = typeof body?.model === 'string' ? body.model.trim() : ''
-
-    if (value.length === 0) {
-      await prisma.platformSetting.deleteMany({ where: { key: SUMMARIZER_MODEL_SETTING_KEY } })
-      setSummarizerModelId(null)
-      return c.json({ ok: true, model: null })
-    }
-
-    await prisma.platformSetting.upsert({
-      where: { key: SUMMARIZER_MODEL_SETTING_KEY },
-      create: { key: SUMMARIZER_MODEL_SETTING_KEY, value, updatedBy: userId },
-      update: { value, updatedBy: userId },
-    })
-    setSummarizerModelId(value)
-    return c.json({ ok: true, model: value })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
+const titleModelSetting = { settingKey: TITLE_MODEL_SETTING_KEY, apply: setTitleGenerationModelId }
+const personalCompanionModelSetting = {
+  settingKey: PERSONAL_COMPANION_MODEL_SETTING_KEY,
+  apply: setPersonalCompanionModelId,
+}
+app.route('/api/admin/settings/title-generation-model', platformModelSettingRoutes(titleModelSetting))
+app.route('/api/admin/settings/personal-companion-model', platformModelSettingRoutes(personalCompanionModelSetting))
+app.route(
+  '/api/admin/settings/summarizer-model',
+  platformModelSettingRoutes({ settingKey: SUMMARIZER_MODEL_SETTING_KEY, apply: setSummarizerModelId }),
+)
 
 // =============================================================================
 // Visible Models Config — admin-curated model allowlist for the user picker.
@@ -9355,48 +9249,10 @@ await (async () => {
   }
 })()
 
-// Load the admin-configured title-generation model from platform_settings into
-// memory so `/api/generate-project-name` resolves it without a DB round-trip.
-await (async () => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: TITLE_MODEL_SETTING_KEY } })
-    if (row?.value) {
-      setTitleGenerationModelId(row.value)
-      console.log('[TitleModel] Loaded admin title-generation model:', row.value)
-    }
-  } catch (err: any) {
-    console.log('[TitleModel] No title model override loaded (non-fatal):', err.message)
-  }
-})()
-
-// Load the admin-configured personal-companion model from platform_settings
-// into memory so `POST /workspaces/:id/chat` resolves it without a DB
-// round-trip. Unset falls back to Hoshi 2.0 (see lib/personal-companion-model.ts).
-await (async () => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
-    if (row?.value) {
-      setPersonalCompanionModelId(row.value)
-      console.log('[PersonalCompanionModel] Loaded admin override:', row.value)
-    }
-  } catch (err: any) {
-    console.log('[PersonalCompanionModel] No override loaded, defaulting to Hoshi 2.0 (non-fatal):', err.message)
-  }
-})()
-
-// Load the admin-configured context-compaction summarizer model so runtime
-// env resolution doesn't need a DB round-trip. Unset falls back to Hoshi 2.0.
-await (async () => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: SUMMARIZER_MODEL_SETTING_KEY } })
-    if (row?.value) {
-      setSummarizerModelId(row.value)
-      console.log('[SummarizerModel] Loaded admin override:', row.value)
-    }
-  } catch (err: any) {
-    console.log('[SummarizerModel] No override loaded, defaulting to Hoshi 2.0 (non-fatal):', err.message)
-  }
-})()
+// Load the admin-configured title-generation and personal-companion models
+// into memory so their request paths resolve them without a DB round-trip.
+await loadPlatformModelSetting(titleModelSetting, 'TitleModel')
+await loadPlatformModelSetting(personalCompanionModelSetting, 'PersonalCompanionModel')
 
 // Prime the DB-defined model registry (custom providers + DB models) so the
 // AI proxy and visible-models endpoint resolve them on the first request

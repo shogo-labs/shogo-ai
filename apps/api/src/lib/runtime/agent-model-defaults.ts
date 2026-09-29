@@ -170,7 +170,7 @@ export async function resolveEffectiveAgentModelDefaults(
   const advanced = (await isModelAccessibleForWorkspace(workspaceId, configuredAdvanced.id))
     ? configuredAdvanced
     : fallback
-  const configuredSummarizer = resolveModelEntry(getSummarizerModelId())
+  const configuredSummarizer = resolveModelEntry(await getSummarizerModelId())
   const summarizer = (await isModelAccessibleForWorkspace(workspaceId, configuredSummarizer.id))
     ? configuredSummarizer
     : fallback
