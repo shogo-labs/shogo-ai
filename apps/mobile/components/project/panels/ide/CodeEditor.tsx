@@ -201,6 +201,34 @@ export function CodeEditor({
   const onCursorRef = useRef(onCursor);
   onCursorRef.current = onCursor;
 
+  // Contents reported through `onChange` that `value` hasn't caught up to
+  // yet. `@monaco-editor/react`'s controlled `value` replaces the whole
+  // model from a passive effect; with Monaco's EditContext input that effect
+  // can run after the next keystroke landed, so a one-keystroke-stale
+  // `value` erased it. We seed models via `defaultValue` and push `value`
+  // into the model ourselves, skipping these echoes of the user's own edits.
+  const pendingEchoesRef = useRef(new Set<string>());
+  const echoPathRef = useRef(pathKey);
+
+  useEffect(() => {
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    if (!ed || !model || model.isDisposed()) return;
+    if (echoPathRef.current !== pathKey) {
+      echoPathRef.current = pathKey;
+      pendingEchoesRef.current.clear();
+    }
+    if (value === model.getValue()) {
+      pendingEchoesRef.current.clear();
+      return;
+    }
+    if (pendingEchoesRef.current.has(value)) return;
+    pendingEchoesRef.current.clear();
+    ed.executeEdits("", [
+      { range: model.getFullModelRange(), text: value, forceMoveMarkers: true },
+    ]);
+    ed.pushUndoStop();
+  }, [value, pathKey]);
 
   // Resolve the effective Monaco theme:
   //   1. Desktop + caller passed a registered custom/builtin theme  → use it.
@@ -278,7 +306,9 @@ export function CodeEditor({
       if (ev.isFlush) return;
       const model = ed.getModel();
       if (!model || model.isDisposed()) return;
-      onChangeRef.current(pathKeyRef.current, model.getValue());
+      const next = model.getValue();
+      pendingEchoesRef.current.add(next);
+      onChangeRef.current(pathKeyRef.current, next);
     });
 
     // Same disposed-model guard for cursor events. Without it, Monaco's
@@ -299,7 +329,7 @@ export function CodeEditor({
       height="100%"
       path={pathKey}
       language={language}
-      value={value}
+      defaultValue={value}
       theme={themeName}
       onMount={handleMount}
       options={{
