@@ -1069,6 +1069,24 @@ export class MetalWarmPoolController {
    * staging: the delete ran, but only Knative teardown fired and the metal
    * snapshot leaked until GC). Also clears routing/placement/lease. Best-effort.
    */
+  /**
+   * Staging durability e2e only: ask the host holding `runtimeKey` to crash its
+   * VM or drop its snapshot (`POST /e2e/fault`, a 404 unless the host runs
+   * with METAL_E2E_FAULTS=1).
+   */
+  async injectE2eFault(runtimeKey: string, action: string): Promise<{ status: number; body: unknown }> {
+    this.urlCache.delete(runtimeKey)
+    const host = await this.hostForProject(runtimeKey)
+    if (!host) return { status: 404, body: { ok: false, error: `no live host holds ${runtimeKey}` } }
+    const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/e2e/fault`, {
+      method: 'POST',
+      headers: this.agentHeaders(),
+      body: JSON.stringify({ projectId: runtimeKey, action }),
+      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+    })
+    return { status: res.status, body: await res.json().catch(() => ({})) }
+  }
+
   async destroyProject(projectId: string): Promise<void> {
     const targets = new Map<string, HostEntry>()
     for (const h of await this.liveHostsShared()) targets.set(h.hostId, h)

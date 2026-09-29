@@ -96,6 +96,7 @@ import {
   readVisibleModelsConfig,
   writeVisibleModelsConfig,
   resolvePlatformVisibleModels,
+  resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { userProfileRoutes } from './routes/local-user'
@@ -7799,7 +7800,7 @@ app.get('/api/workspaces/:id/visible-models', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
 
     if (allowed === null) {
@@ -7850,7 +7851,7 @@ app.put('/api/workspaces/:id/visible-models', async (c) => {
     }
 
     // Subset rule: a workspace can only narrow the platform-visible set.
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const invalid = workspaceModelsService.modelsOutsidePlatform(rawIds, platform)
     if (invalid.length > 0) {
       return c.json(

@@ -43,6 +43,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_staging_e2e_gate:
+        description: 'Production only, emergencies: deploy without a green e2e/staging-critical status for this commit.'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-v2-${{ github.ref_name }}-${{ inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging') }}
@@ -1307,15 +1312,65 @@ jobs:
             exit 1
           fi
 
+  # --- Staging: critical-path e2e against what was just deployed ---
+  # deploy.yml's concurrency group holds the next staging deploy until this
+  # run finishes, so staging is guaranteed to be serving github.sha here.
+  # Publishes the e2e/staging-critical commit status read by
+  # staging-e2e-gate below. To retry a flaky failure, re-run this job
+  # before anything newer lands on main.
+  staging-e2e-critical:
+    name: Staging critical-path e2e
+    needs: [deploy-staging]
+    if: needs.deploy-staging.result == 'success'
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/e2e-hosted.yml
+    with:
+      target: staging
+      suite: critical
+      report_status: true
+    secrets: inherit
+
+  # --- Production: require a green staging critical-path e2e on this SHA ---
+  # A v* tag normally points at a main commit whose staging deploy (and
+  # staging-e2e-critical) may still be running, so wait for it. Fail fast if
+  # no main deploy for this SHA exists (e.g. it was superseded in the deploy
+  # queue): deploy that commit to staging first or tag a commit that was.
+  staging-e2e-gate:
+    name: Staging e2e gate
+    runs-on: ubuntu-latest
+    needs: [setup]
+    if: needs.setup.outputs.is_production == 'true' && needs.setup.outputs.build_only != 'true'
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+      - name: Wait for e2e/staging-critical to pass for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          SKIP: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_staging_e2e_gate == 'true' }}
+        run: bun scripts/ci/wait-for-staging-e2e.ts
+
   # --- Production: Deploy US (primary, runs migrations) ---
   deploy-us:
     name: Deploy to US (primary)
     runs-on: ubuntu-latest
-    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push]
+    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, staging-e2e-gate]
     if: |
       always() &&
       needs.setup.outputs.build_only != 'true' &&
       needs.resolve-config.outputs.is_production == 'true' &&
+      needs.staging-e2e-gate.result == 'success' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&

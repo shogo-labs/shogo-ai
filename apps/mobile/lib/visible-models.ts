@@ -418,8 +418,9 @@ export function useModelPickerList(): PickerModel[] {
  * the id to reset to, or `null` when no reset is needed — i.e. the selection is
  * `Auto`/a known catalog id, or the catalog hasn't loaded yet (so a valid
  * selection is never reset before metadata arrives). If the requested
- * `fallback` itself isn't visible, returns `AUTO_MODEL_ID` so we never swap one
- * unrenderable slug for another.
+ * `fallback` itself isn't visible or isn't present in the active server
+ * metadata index, returns `AUTO_MODEL_ID` so we never swap one unrenderable
+ * slug for another.
  */
 export function reconcileModelSelection(
   selected: string,
@@ -433,7 +434,7 @@ export function reconcileModelSelection(
   ])
   if (known.size === 0) return null
   if (selected === AUTO_MODEL_ID || known.has(selected)) return null
-  return known.has(fallback) ? fallback : AUTO_MODEL_ID
+  return known.has(fallback) && serverModelMeta.has(fallback) ? fallback : AUTO_MODEL_ID
 }
 
 /**

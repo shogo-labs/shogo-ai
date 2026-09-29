@@ -5,6 +5,7 @@ import {
   makeTestUser,
   signUpAndOnboard,
   createProjectAndWait,
+  interactionModeOption,
   selectInteractionMode,
   sendChatMessage,
   waitForAgentResponse,
@@ -51,21 +52,15 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
 
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
     await expect(trigger).toBeVisible({ timeout: 10_000 })
-    await expect(trigger).toContainText("Agent")
+    await expect(trigger).toHaveAttribute("aria-label", "Mode: Agent")
 
     await trigger.click()
     // Popover renders via portal with spring animation — wait for mount
     await page.waitForTimeout(1000)
 
-    await expect(
-      page.getByText("Full autonomous mode")
-    ).toBeVisible({ timeout: 10_000 })
-    await expect(
-      page.getByText("Research and create a plan")
-    ).toBeVisible({ timeout: 5_000 })
-    await expect(
-      page.getByText("Just answer questions")
-    ).toBeVisible({ timeout: 5_000 })
+    await expect(interactionModeOption(page, "Agent")).toBeVisible({ timeout: 10_000 })
+    await expect(interactionModeOption(page, "Plan")).toBeVisible({ timeout: 5_000 })
+    await expect(interactionModeOption(page, "Ask")).toBeVisible({ timeout: 5_000 })
 
     // Close the popover by pressing Escape
     await page.keyboard.press("Escape")
@@ -76,7 +71,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     await selectInteractionMode(page, "Ask")
 
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
-    await expect(trigger).toContainText("Ask", { timeout: 5_000 })
+    await expect(trigger).toHaveAttribute("aria-label", "Mode: Ask", { timeout: 5_000 })
 
     await sendChatMessage(page, "What is 2 + 2? Just reply with the number.")
     await waitForAgentResponse(page)
@@ -89,7 +84,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     await selectInteractionMode(page, "Plan")
 
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
-    await expect(trigger).toContainText("Plan", { timeout: 5_000 })
+    await expect(trigger).toHaveAttribute("aria-label", "Mode: Plan", { timeout: 5_000 })
 
     await sendChatMessage(
       page,
@@ -114,7 +109,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
 
     // The interaction mode should switch back to Agent
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
-    await expect(trigger).toContainText("Agent", { timeout: 10_000 })
+    await expect(trigger).toHaveAttribute("aria-label", "Mode: Agent", { timeout: 10_000 })
     await expect(page.getByText("Execute the confirmed plan.")).toBeVisible({ timeout: 10_000 })
 
     // Wait for the agent to process the built plan
@@ -144,7 +139,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     await selectInteractionMode(page, "Agent")
 
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')
-    await expect(trigger).toContainText("Agent", { timeout: 5_000 })
+    await expect(trigger).toHaveAttribute("aria-label", "Mode: Agent", { timeout: 5_000 })
 
     await sendChatMessage(page, "List the files in the workspace root directory using ls. Just list the filenames.")
     await waitForAgentResponse(page, 120_000)

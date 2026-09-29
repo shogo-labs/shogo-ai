@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "@playwright/test"
-import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
+import {
+  createProjectAndWait,
+  makeTestUser,
+  signUpAndOnboard,
+  waitForAgentIdle,
+  waitForAgentResponse,
+} from "./helpers"
 import * as path from "path"
 import * as fs from "fs"
 import * as os from "os"
@@ -37,44 +43,17 @@ function createTestTextFile(filename: string, content: string): string {
   return filePath
 }
 
-async function createProjectAndWait(page: Page, prompt: string) {
-  await page.goto("/")
-  await page.waitForSelector("text=What are we building", { timeout: 15_000 })
-
-  const input = homeComposerInput(page)
-  await input.click()
-  await input.fill(prompt)
-  await page.waitForTimeout(500)
-  await page.keyboard.press("Enter")
-
-  await page.waitForURL(/\/projects\//, { timeout: 60_000 })
-
-  // Wait for agent to finish its initial response
-  await page
-    .waitForSelector('[aria-label="Stop"], [aria-label="stop"]', {
-      state: "detached",
-      timeout: 90_000,
-    })
-    .catch(() => {})
-  await page.waitForTimeout(1000)
-}
-
+/**
+ * A message sent while the previous turn is still streaming lands in the
+ * server-side queue instead of starting a turn, so always wait for idle first.
+ */
 async function sendChatMessage(page: Page, text: string) {
+  await waitForAgentIdle(page)
   const chatInput = page.getByPlaceholder("Ask Shogo...")
   await chatInput.click()
   await chatInput.fill(text)
   await page.waitForTimeout(300)
   await page.keyboard.press("Enter")
-}
-
-async function waitForAgentResponse(page: Page) {
-  await page
-    .waitForSelector('[aria-label="Stop"], [aria-label="stop"]', {
-      state: "detached",
-      timeout: 90_000,
-    })
-    .catch(() => {})
-  await page.waitForTimeout(1000)
 }
 
 async function uploadFileViaChat(page: Page, filePath: string) {

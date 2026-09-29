@@ -335,6 +335,59 @@ app.post('/recycle-runtime', async (c) => {
 })
 
 /**
+ * POST /api/internal/e2e/runtime-fault
+ *
+ * Body: { projectId: string, action: 'crash' | 'drop-snapshot' }
+ *
+ * Forwards a fault to the metal host holding the project's runtime
+ * (`ws:proj:<id>`): `crash` SIGKILLs its Firecracker process and leaves the
+ * disk; `drop-snapshot` removes a suspended runtime's local and durable
+ * snapshot so the next open cold-boots from backups. The host must run with
+ * METAL_E2E_FAULTS=1 (else 404). Used by the metal durability e2e. Gated by
+ * the same three guardrails as the subscription backdoor.
+ */
+app.post('/runtime-fault', async (c) => {
+  if (!bootstrapEnabled()) {
+    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+  }
+  if (!secretMatches(c.req.header('x-e2e-bootstrap-secret'))) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+
+  let body: { projectId?: string; action?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, error: 'invalid_json' }, 400)
+  }
+  const projectId = body.projectId?.trim()
+  if (!projectId) {
+    return c.json({ ok: false, error: 'projectId_required' }, 400)
+  }
+  if (body.action !== 'crash' && body.action !== 'drop-snapshot') {
+    return c.json({ ok: false, error: 'action must be crash or drop-snapshot' }, 400)
+  }
+
+  try {
+    const { getProjectSubstrate } = await import('../lib/substrate')
+    const substrate = await getProjectSubstrate(projectId)
+    if (substrate.kind !== 'metal') {
+      return c.json({ ok: false, error: 'not_metal', substrate: substrate.kind }, 404)
+    }
+    const { projectRuntimeKey } = await import('../lib/substrate/metal-substrate')
+    const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
+    const r = await getMetalWarmPoolController().injectE2eFault(projectRuntimeKey(projectId), body.action)
+    // eslint-disable-next-line no-console
+    console.info('[e2e-bootstrap] runtime fault', JSON.stringify({ projectId, action: body.action, status: r.status }))
+    return c.json(r.body as Record<string, unknown>, r.status as 200)
+  } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error('[e2e-bootstrap] runtime-fault failed', err)
+    return c.json({ ok: false, error: 'fault_failed', message: err?.message ?? 'unknown' }, 500)
+  }
+})
+
+/**
  * GET /api/internal/e2e/subscription-state
  *
  * Diagnostic endpoint — returns the current subscription + wallet for

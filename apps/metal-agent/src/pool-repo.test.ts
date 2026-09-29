@@ -82,8 +82,12 @@ function makePool(dir: string): TestPool {
 }
 
 describe('repoKeepPaths', () => {
-  test('keeps only the paths whose source backup is strictly newer than the repo', () => {
-    expect(repoKeepPaths({ m2: 3_000, m1: 5_000, m3: 1_000, m4: 2_000 }, 2_000)).toEqual(['m1', 'm2'])
+  test('keeps only the paths whose source backup is not older than the repo', () => {
+    expect(repoKeepPaths({ m2: 3_000, m1: 5_000, m3: 1_000, m4: 1_999 }, 2_000)).toEqual(['m1', 'm2'])
+  })
+
+  test('a same-second tie keeps the source (S3 Last-Modified is second-granular)', () => {
+    expect(repoKeepPaths({ '.': 2_000 }, 2_000)).toEqual(['.'])
   })
 
   test('an unknown age on either side keeps nothing (the full reset)', () => {

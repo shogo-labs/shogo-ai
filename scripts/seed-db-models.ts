@@ -635,7 +635,7 @@ async function seedGptLive1(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-Live 1')
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   await seedOpus48()
   await seedOpus55()
   await seedOpus5()
@@ -654,9 +654,11 @@ async function main(): Promise<void> {
   console.log('[seed-db-models] Done.')
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('[seed-db-models] Failed:', err)
-    process.exit(1)
-  })
+if (import.meta.main) {
+  main()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('[seed-db-models] Failed:', err)
+      process.exit(1)
+    })
+}
