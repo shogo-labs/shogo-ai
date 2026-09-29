@@ -308,6 +308,18 @@ spec:
                   name: custom-domains-config
                   key: CUSTOM_DOMAIN_FALLBACK_ORIGIN
                   optional: true
+            # Hosted e2e backdoor (apps/api/src/routes/internal-e2e.ts). Staging
+            # runs NODE_ENV=staging, so the endpoint is live whenever this
+            # secret exists; absent => every backdoor call 401s and the
+            # runtime-lifecycle e2e specs skip. Create with:
+            #   kubectl -n <ns> create secret generic e2e-bootstrap --from-literal=secret=<value>
+            # and set the same value as the GitHub secret SHOGO_E2E_BOOTSTRAP_SECRET.
+            - name: SHOGO_E2E_BOOTSTRAP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: e2e-bootstrap
+                  key: secret
+                  optional: true
             - name: BETTER_AUTH_URL
               value: "https://studio.staging.shogo.ai"
             - name: SHOGO_PUBLIC_API_URL

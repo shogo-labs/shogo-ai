@@ -32,6 +32,8 @@ const {
   createRuntimeManager,
   getRuntimeManager,
   setRuntimeManager,
+  parsePidTable,
+  selectOrphanedRuntimePids,
   __resetRuntimeManagerInternalsForTests,
 } = await import('../lib/runtime/manager')
 
@@ -129,38 +131,92 @@ describe('RuntimeManager findStalePidsWindows (private)', () => {
   })
 })
 
-describe('RuntimeManager.cleanupStaleProcesses (constructor)', () => {
-  test('POSIX: kill -9 every discovered PID, swallowing failures', () => {
-    setPlatform('linux')
-    // first call = lsof for port range A, second = lsof for port range B
-    // then kill -9 for each PID found in range A, then kill -9 for each in B
-    execPlan = ['11111\n22222\n', '', '', '', '']
-    new RuntimeManager()
-    const killCmds = execCalls.filter((c) => c.startsWith('kill -9'))
-    expect(killCmds).toContain('kill -9 11111 2>/dev/null || true')
-    expect(killCmds).toContain('kill -9 22222 2>/dev/null || true')
+describe('parsePidTable', () => {
+  test('parses pid/ppid rows and skips headers, blanks and garbage', () => {
+    const table = parsePidTable('  PID  PPID\n    1     0\n  420     1\r\n 4242   420\nfoo bar\n\n')
+    expect([...table.entries()]).toEqual([
+      ['1', '0'],
+      ['420', '1'],
+      ['4242', '420'],
+    ])
+  })
+})
+
+describe('selectOrphanedRuntimePids', () => {
+  test('spares a runtime tree whose owning API is alive', () => {
+    // desktop API 2122 -> agent-runtime 32263 -> preview server 32450
+    const parentOf = new Map([
+      ['1737', '1'],
+      ['2122', '1737'],
+      ['32263', '2122'],
+      ['32450', '32263'],
+    ])
+    expect(selectOrphanedRuntimePids(['32263', '32450'], parentOf)).toEqual([])
   })
 
-  test('Windows: taskkill /F /PID for each discovered PID', () => {
+  test('kills a whole tree reparented to init (POSIX)', () => {
+    const parentOf = new Map([
+      ['32263', '1'],
+      ['32450', '32263'],
+    ])
+    expect(selectOrphanedRuntimePids(['32450', '32263'], parentOf).sort()).toEqual(['32263', '32450'])
+  })
+
+  test('kills a tree whose parent PID no longer exists (Windows)', () => {
+    const parentOf = new Map([
+      ['4444', '900'],
+      ['5555', '4444'],
+    ])
+    expect(selectOrphanedRuntimePids(['4444', '5555'], parentOf).sort()).toEqual(['4444', '5555'])
+  })
+
+  test('spares candidates missing from the table and parent cycles', () => {
+    const parentOf = new Map([
+      ['10', '11'],
+      ['11', '10'],
+    ])
+    expect(selectOrphanedRuntimePids(['10', '11', '12'], parentOf)).toEqual([])
+  })
+})
+
+describe('RuntimeManager.cleanupStaleProcesses (constructor)', () => {
+  test('POSIX: kill -9 only orphaned listeners', () => {
+    setPlatform('linux')
+    // lsof range A, lsof range B, ps table, then one kill per orphan.
+    // 11111 is orphaned; 22222 belongs to live API 4242 (e.g. the desktop app).
+    execPlan = ['11111\n22222\n', '', '11111 1\n22222 4242\n4242 1\n', '', '']
+    new RuntimeManager()
+    const killCmds = execCalls.filter((c) => c.startsWith('kill -9'))
+    expect(killCmds).toEqual(['kill -9 11111 2>/dev/null || true'])
+  })
+
+  test('POSIX: kills nothing when the process table cannot be read', () => {
+    setPlatform('linux')
+    execPlan = ['11111\n', '', new Error('ps: not found')]
+    new RuntimeManager()
+    expect(execCalls.some((c) => c.startsWith('kill -9'))).toBe(false)
+  })
+
+  test('Windows: taskkill /F /PID only for listeners whose parent is gone', () => {
     setPlatform('win32')
     const netstat =
       '  TCP    127.0.0.1:37150        0.0.0.0:0              LISTENING       4444\n' +
       '  TCP    127.0.0.1:37160        0.0.0.0:0              LISTENING       5555\n'
-    execPlan = [netstat, '']
+    execPlan = [netstat, '', '4444 900\n5555 700\n700 4\n', '', '']
     new RuntimeManager()
     const taskkill = execCalls.filter((c) => c.startsWith('taskkill'))
-    expect(taskkill).toEqual(expect.arrayContaining(['taskkill /F /PID 4444', 'taskkill /F /PID 5555']))
+    expect(taskkill).toEqual(['taskkill /F /PID 4444'])
   })
 
   test('kill failure is swallowed (process already exited)', () => {
     setPlatform('linux')
-    execPlan = ['12345\n', new Error('No such process'), '']
+    execPlan = ['12345\n', '', '12345 1\n', new Error('No such process')]
     expect(() => new RuntimeManager()).not.toThrow()
   })
 
   test('cleanupStaleProcesses runs only ONCE per process (module guard)', () => {
     setPlatform('linux')
-    execPlan = ['11111\n', '', '']
+    execPlan = ['11111\n', '', '11111 1\n', '']
     new RuntimeManager()
     const callsAfterFirst = execCalls.length
     new RuntimeManager()

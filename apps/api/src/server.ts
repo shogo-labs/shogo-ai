@@ -96,6 +96,7 @@ import {
   readVisibleModelsConfig,
   writeVisibleModelsConfig,
   resolvePlatformVisibleModels,
+  resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { userProfileRoutes } from './routes/local-user'
@@ -206,6 +207,7 @@ const syncRoutes: any = cloud.syncRoutes ?? emptyRouter
 const internalRoutes: any = cloud.internalRoutes ?? new Hono()
 const internalE2eRoutes: any = cloud.internalE2eRoutes ?? new Hono()
 const metalRoutes: any = cloud.metalRoutes ?? emptyRouter
+const metalE2eRoutes: any = cloud.metalE2eRoutes ?? emptyRouter
 const externalPreviewRoutes: any = cloud.externalPreviewRoutes ?? emptyRouter
 const createAdminRoutes: any = cloud.createAdminRoutes ?? emptyRouter
 const adminModelCatalogRoutes: any = cloud.adminModelCatalogRoutes ?? emptyRouter
@@ -7799,7 +7801,7 @@ app.get('/api/workspaces/:id/visible-models', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
 
     if (allowed === null) {
@@ -7850,7 +7852,7 @@ app.put('/api/workspaces/:id/visible-models', async (c) => {
     }
 
     // Subset rule: a workspace can only narrow the platform-visible set.
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const invalid = workspaceModelsService.modelsOutsidePlatform(rawIds, platform)
     if (invalid.length > 0) {
       return c.json(
@@ -8584,6 +8586,7 @@ app.route('/api/internal', internalRoutes)
 // /api/internal/e2e so it inherits the existing auth-skip for
 // /api/internal/* (handlers enforce their own secret-based auth).
 app.route('/api/internal/e2e', internalE2eRoutes)
+app.route('/api/internal/e2e', metalE2eRoutes())
 
 // Metal substrate routes — bare-metal Firecracker node-agents heartbeat here
 // over the WireGuard mesh (register/status). Mounted under /api/internal/metal

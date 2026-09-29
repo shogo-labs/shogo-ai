@@ -2632,6 +2632,7 @@ function ChatInputImpl({
                               return (
                                 <Pressable
                                   key={mode.id}
+                                  testID={`interaction-mode-option-${mode.id}`}
                                   onPress={() => {
                                     handleInteractionModeChange(mode.id);
                                     setInteractionModeOpen(false);

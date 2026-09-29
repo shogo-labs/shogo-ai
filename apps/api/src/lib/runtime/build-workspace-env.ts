@@ -39,6 +39,7 @@ import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
+import { importCloudModule } from '../cloud-import'
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
@@ -106,6 +107,7 @@ export interface BuildWorkspaceEnvOpts {
    * the builder resolves the workspace owner via a DB lookup.
    */
   _getWorkspaceOwnerUserId?: (workspaceId: string) => Promise<string | undefined>
+  _getPreviewUrl?: (projectId: string) => string
 }
 
 /**
@@ -354,6 +356,33 @@ export async function buildWorkspaceEnv(
   // purely from this env (e.g. metal) can reach the tools proxy instead of
   // constructing an invalid `undefined/serper/search` URL.
   env.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
+
+  // Public preview URLs. The anchor's `{id}.preview.{env}.shogo.ai` subdomain
+  // routes to this runtime, which serves every member under `/p/<id>/`. Without
+  // these the guest's PreviewManagers and `preview_project` fall back to
+  // `http://localhost:<port>/p/<id>/`, and the gateway's localhost→preview
+  // rewriter (keyed off PUBLIC_PREVIEW_URL) stays disabled — so the agent hands
+  // cloud users a link they cannot open. Desktop leaves both unset because
+  // there localhost IS the URL the user opens.
+  if (ns && opts.anchorProjectId && process.env.SHOGO_LOCAL_MODE !== 'true') {
+    try {
+      const getPreviewUrl =
+        opts._getPreviewUrl ??
+        (await importCloudModule<typeof import('../knative-project-manager')>(
+          './knative-project-manager',
+        )).getPreviewUrl
+      const anchorUrl = getPreviewUrl(opts.anchorProjectId).replace(/\/+$/, '')
+      env.PUBLIC_PREVIEW_URL = anchorUrl
+      const memberIds = [opts.anchorProjectId, ...attachedProjectIds].filter(
+        (id, i, arr) => !!id && arr.indexOf(id) === i,
+      )
+      env.WORKSPACE_PREVIEW_URLS = JSON.stringify(
+        Object.fromEntries(memberIds.map((id) => [id, `${anchorUrl}/p/${id}/`])),
+      )
+    } catch (err: any) {
+      console.error(`[${prefix}] Failed to derive preview URLs for workspace ${workspaceId}:`, err?.message)
+    }
+  }
 
   // Cloud-connected local runtimes must use the cloud's model configuration;
   // local/offline runtimes use the local settings with entitlement capping.

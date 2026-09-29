@@ -461,12 +461,15 @@ export class RuntimeManager implements IRuntimeManager {
    * and SIGKILL them. The visible symptom of the legacy bug was a
    * 30-second waitForReady timeout against a Vite child that had
    * already been killed by our own cleanup.
+   *
+   * Only ORPHANED listeners are killed (see {@link selectOrphanedRuntimePids}).
+   * Every API on the machine — the installed desktop app, a dev API, an e2e
+   * stack — allocates from this same port range, so a listener whose owning
+   * API is still alive belongs to someone else and must be left running.
    */
   private cleanupStaleProcesses(): void {
     if (cleanupRanAtModuleScope) return
     cleanupRanAtModuleScope = true
-    // Tests that compose the app must not SIGKILL runtimes owned by a dev
-    // API or an installed Shogo app sharing this port range.
     if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
     const rangesToClean = [
@@ -478,30 +481,75 @@ export class RuntimeManager implements IRuntimeManager {
     const selfPid = String(process.pid)
     const parentPid = String(process.ppid)
 
+    const candidates = new Set<string>()
     for (const range of rangesToClean) {
       const pids = isWindows
         ? this.findStalePidsWindows(range.start, range.end, selfPid, parentPid)
         : this.findStalePidsPosix(range.start, range.end, selfPid, parentPid)
+      for (const pid of pids) candidates.add(pid)
+    }
+    if (candidates.size === 0) return
 
-      if (pids.length === 0) continue
+    const parentOf = isWindows ? this.readParentPidsWindows() : this.readParentPidsPosix()
+    if (!parentOf) {
+      console.warn(`[RuntimeManager] Could not read the process table — leaving ${candidates.size} listener(s) on the runtime port range alone`)
+      return
+    }
 
-      console.log(`[RuntimeManager] Cleaning up ${pids.length} stale process(es) on ports ${range.start}-${range.end}: ${pids.join(', ')}`)
-      for (const pid of pids) {
-        try {
-          if (isWindows) {
-            // taskkill is the Windows equivalent of `kill -9`. We
-            // intentionally swallow stderr and stdio to keep the
-            // module-level cleanup quiet on a normal boot where
-            // every PID we found has already exited by the time
-            // we get here.
-            execSync(`taskkill /F /PID ${pid}`, { stdio: ['pipe', 'pipe', 'pipe'] })
-          } else {
-            execSync(`kill -9 ${pid} 2>/dev/null || true`)
-          }
-        } catch {
-          // Process already exited / permission denied — fine.
+    const stale = selectOrphanedRuntimePids([...candidates], parentOf)
+    const spared = candidates.size - stale.length
+    if (spared > 0) {
+      console.log(`[RuntimeManager] Leaving ${spared} runtime listener(s) owned by another live Shogo API alone`)
+    }
+    if (stale.length === 0) return
+
+    console.log(`[RuntimeManager] Cleaning up ${stale.length} orphaned runtime process(es): ${stale.join(', ')}`)
+    for (const pid of stale) {
+      try {
+        if (isWindows) {
+          // taskkill is the Windows equivalent of `kill -9`. We
+          // intentionally swallow stderr and stdio to keep the
+          // module-level cleanup quiet on a normal boot where
+          // every PID we found has already exited by the time
+          // we get here.
+          execSync(`taskkill /F /PID ${pid}`, { stdio: ['pipe', 'pipe', 'pipe'] })
+        } else {
+          execSync(`kill -9 ${pid} 2>/dev/null || true`)
         }
+      } catch {
+        // Process already exited / permission denied — fine.
       }
+    }
+  }
+
+  /** `pid -> ppid` for every process, or `null` when `ps` is unavailable. */
+  private readParentPidsPosix(): Map<string, string> | null {
+    try {
+      const stdout = execSync('ps -A -o pid= -o ppid=', {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const table = parsePidTable(stdout)
+      return table.size > 0 ? table : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Windows never reparents orphans, so a dead owner shows up as a
+   * `ParentProcessId` that is absent from the table.
+   */
+  private readParentPidsWindows(): Map<string, string> | null {
+    try {
+      const stdout = execSync(
+        `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.ParentProcessId }"`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+      const table = parsePidTable(stdout)
+      return table.size > 0 ? table : null
+    } catch {
+      return null
     }
   }
 
@@ -3711,6 +3759,46 @@ export function createRuntimeManager(overrides?: Partial<IRuntimeConfig>): Runti
  * so unit tests can opt into reproducing the legacy behaviour.
  */
 let cleanupRanAtModuleScope = false
+
+/** Parses `"<pid> <ppid>"` lines into a `pid -> ppid` map, skipping malformed rows. */
+export function parsePidTable(stdout: string): Map<string, string> {
+  const table = new Map<string, string>()
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    if (match) table.set(match[1], match[2])
+  }
+  return table
+}
+
+/**
+ * Picks the runtime-port listeners left behind by a dead API.
+ *
+ * A runtime tree is `agent-runtime -> preview server`, and each level may
+ * listen on the range, so we climb past ancestors that are themselves
+ * candidates to reach the tree's owner. The tree is stale only when that
+ * owner is gone: reparented to init (POSIX) or absent from the table
+ * (Windows). A live owner means another API still uses the runtime.
+ * Unknown shapes (missing entries, cycles) are spared.
+ */
+export function selectOrphanedRuntimePids(
+  candidates: string[],
+  parentOf: Map<string, string>,
+): string[] {
+  const candidateSet = new Set(candidates)
+  return candidates.filter((pid) => {
+    let current = pid
+    for (let depth = 0; depth <= candidateSet.size; depth++) {
+      const parent = parentOf.get(current)
+      if (parent === undefined) return false
+      if (candidateSet.has(parent) && parent !== current) {
+        current = parent
+        continue
+      }
+      return parent === '0' || parent === '1' || !parentOf.has(parent)
+    }
+    return false
+  })
+}
 
 /** Default singleton instance (lazy initialized) */
 let defaultManager: RuntimeManager | null = null

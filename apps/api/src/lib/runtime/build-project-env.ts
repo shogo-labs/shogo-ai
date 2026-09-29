@@ -14,6 +14,7 @@ import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
+import { importCloudModule } from '../cloud-import'
 import {
   isDockerTechStack,
   getDeclaredPorts,
@@ -310,7 +311,10 @@ export async function buildProjectEnv(
   // it unset because there localhost IS the URL the user opens.
   if (ns) {
     try {
-      const { getPreviewUrl } = await import('../knative-project-manager')
+      const { getPreviewUrl } =
+        await importCloudModule<typeof import('../knative-project-manager')>(
+          './knative-project-manager',
+        )
       env.PUBLIC_PREVIEW_URL = getPreviewUrl(projectId)
     } catch (err: any) {
       console.error(`[${prefix}] Failed to derive PUBLIC_PREVIEW_URL for ${projectId}:`, err.message)

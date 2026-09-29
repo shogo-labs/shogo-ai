@@ -17,265 +17,25 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import {
-  AdoptDeadlineError,
-  adoptHydratedRepo,
-  adoptHydratedRepoBefore,
-  packRepoArchive,
-  seedRepoIfAbsent,
-} from '../../../packages/shared-runtime/src/repo-store'
 import { config, type MetalConfig } from './config'
 import type { FcVmHandle } from './firecracker-vm-manager'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import type { SnapshotStore } from './snapshot-store'
+import {
+  BUCKET,
+  FakeGuest,
+  FakeS3,
+  git,
+  repoArchiveOf,
+  tarOf,
+  untar,
+  type GuestKind,
+} from './test-harness/fake-metal-host'
 
-const BUCKET = 'test-workspaces'
-const NOOP = { log: () => {}, warn: () => {}, error: () => {} }
 const HOUR = 3_600_000
-
-/** Path-style S3 with ETag / Last-Modified and atomic If-Match / If-None-Match. */
-class FakeS3 {
-  readonly objects = new Map<string, { body: Uint8Array; etag: string; lastModified: number }>()
-  private seq = 0
-  private server = Bun.serve({ port: 0, fetch: (req) => this.handle(req) })
-
-  get endpoint(): string {
-    return `http://127.0.0.1:${this.server.port}`
-  }
-
-  stop(): void {
-    this.server.stop(true)
-  }
-
-  put(key: string, body: Uint8Array, lastModified = Date.now()): string {
-    const etag = `"etag-${++this.seq}"`
-    this.objects.set(key, { body, etag, lastModified })
-    return etag
-  }
-
-  body(key: string): Uint8Array | undefined {
-    return this.objects.get(key)?.body
-  }
-
-  keys(prefix: string): string[] {
-    return [...this.objects.keys()].filter((k) => k.startsWith(prefix))
-  }
-
-  private async handle(req: Request): Promise<Response> {
-    const path = new URL(req.url).pathname
-    const prefix = `/${BUCKET}/`
-    if (!path.startsWith(prefix)) return new Response('no such bucket', { status: 404 })
-    const key = decodeURIComponent(path.slice(prefix.length))
-    const existing = this.objects.get(key)
-    if (req.method === 'HEAD' || req.method === 'GET') {
-      if (!existing) return new Response(null, { status: 404 })
-      return new Response(req.method === 'HEAD' ? null : existing.body, {
-        status: 200,
-        headers: {
-          etag: existing.etag,
-          'content-length': String(existing.body.byteLength),
-          'last-modified': new Date(existing.lastModified).toUTCString(),
-        },
-      })
-    }
-    if (req.method === 'PUT') {
-      const ifMatch = req.headers.get('if-match')
-      const ifNoneMatch = req.headers.get('if-none-match')
-      if (ifNoneMatch === '*' && existing) return new Response(null, { status: 412 })
-      if (ifMatch && (!existing || existing.etag !== ifMatch)) return new Response(null, { status: 412 })
-      const etag = this.put(key, new Uint8Array(await req.arrayBuffer()))
-      return new Response(null, { status: 200, headers: { etag } })
-    }
-    return new Response(null, { status: 405 })
-  }
-}
-
-type GuestKind =
-  /** This change: honours `timeoutMs` and `keepPaths`, advertises `deadline`. */
-  | 'current'
-  /** The guest the incident ran: full reset whenever the git layer is ready, however late. */
-  | 'legacy'
-
-/**
- * The guest's side of the host contract, over a real workspace directory.
- * `gitReady` stands in for the guest's git layer finishing its startup.
- */
-class FakeGuest {
-  readonly ws = mkdtempSync(join(tmpdir(), 'rewind-guest-'))
-  readonly adopts: Array<Promise<unknown>> = []
-  private server: ReturnType<typeof Bun.serve>
-  private settleGit!: () => void
-  readonly gitReady = new Promise<void>((r) => { this.settleGit = r })
-
-  constructor(
-    readonly kind: GuestKind,
-    template: Record<string, string>,
-    opts: { gitReady?: boolean } = {},
-  ) {
-    for (const [rel, body] of Object.entries(template)) write(this.ws, rel, body)
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: this.ws })
-    gitCommitAll(this.ws, 'template seed')
-    if (opts.gitReady !== false) this.settleGit()
-    this.server = Bun.serve({ port: 0, idleTimeout: 0, fetch: (req) => this.handle(req) })
-  }
-
-  get url(): string {
-    return `http://127.0.0.1:${this.server.port}`
-  }
-
-  releaseGitLayer(): void {
-    this.settleGit()
-  }
-
-  read(rel: string): string {
-    return readFileSync(join(this.ws, rel), 'utf-8')
-  }
-
-  head(): string {
-    return git(this.ws, 'rev-parse', 'HEAD')
-  }
-
-  stop(): void {
-    this.server.stop(true)
-    rmSync(this.ws, { recursive: true, force: true })
-  }
-
-  /** Guest paths as the host sends them: absolute `/app/workspace/...` or workspace-relative. */
-  private resolve(dir?: string): string {
-    if (!dir) return this.ws
-    if (dir.startsWith('/app/workspace')) return join(this.ws, dir.slice('/app/workspace'.length))
-    return join(this.ws, dir)
-  }
-
-  private async handle(req: Request): Promise<Response> {
-    const path = new URL(req.url).pathname
-    const body: any = await req.json().catch(() => ({}))
-    switch (path) {
-      case '/pool/hydrate-url': {
-        const res = await fetch(body.url)
-        if (!res.ok) return new Response(`pull failed ${res.status}`, { status: 502 })
-        const dest = this.resolve(body.destDir)
-        mkdirSync(dest, { recursive: true })
-        const archive = join(tmpdir(), `rewind-pull-${Date.now()}-${Math.random().toString(36).slice(2)}.tgz`)
-        writeFileSync(archive, new Uint8Array(await res.arrayBuffer()))
-        execFileSync('tar', ['-xzf', archive, '-C', dest])
-        rmSync(archive, { force: true })
-        return Response.json({ ok: true })
-      }
-      case '/pool/repo-hydrated':
-        return this.repoHydrated(body)
-      case '/pool/export': {
-        const src = this.resolve(body.dir)
-        const out = execFileSync('tar', ['-czf', '-', '--exclude=./.git', '--exclude=./.shogo', '-C', src, '.'])
-        return new Response(new Uint8Array(out), { status: 200 })
-      }
-      case '/pool/export-repo': {
-        const out = join(tmpdir(), `rewind-repo-${Date.now()}-${Math.random().toString(36).slice(2)}.tgz`)
-        await packRepoArchive(this.ws, out)
-        const bytes = new Uint8Array(readFileSync(out))
-        rmSync(out, { force: true })
-        return new Response(bytes, { status: 200 })
-      }
-      case '/pool/export-data':
-        return new Response(null, { status: 204 })
-      default:
-        return Response.json({ ok: true })
-    }
-  }
-
-  private async repoHydrated(body: any): Promise<Response> {
-    if (body.probe === true) {
-      return Response.json(this.kind === 'current' ? { ok: true, supported: true, deadline: true } : { ok: true, supported: true })
-    }
-    const staging = join(this.ws, body.stagingDir)
-    if (this.kind === 'legacy') {
-      const adopt = this.gitReady.then(() => adoptHydratedRepo(this.ws, staging, { logger: NOOP }))
-      this.adopts.push(adopt.catch(() => {}))
-      return Response.json({ ok: true, ...(await adopt) })
-    }
-    const timeoutMs = Number(body.timeoutMs)
-    const adopt = adoptHydratedRepoBefore(this.ws, staging, {
-      deadline: Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null,
-      ready: this.gitReady,
-      keepPaths: body.keepPaths,
-      logger: NOOP,
-    })
-    this.adopts.push(adopt.catch(() => {}))
-    try {
-      return Response.json({ ok: true, ...(await adopt) })
-    } catch (err: any) {
-      if (err instanceof AdoptDeadlineError) return Response.json({ error: err.message, adopted: false }, { status: 504 })
-      return Response.json({ error: err?.message ?? String(err) }, { status: 500 })
-    }
-  }
-}
-
-function git(dir: string, ...args: string[]): string {
-  return execFileSync('git', args, {
-    cwd: dir,
-    encoding: 'utf-8',
-    env: { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@a', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@a' },
-  }).trim()
-}
-
-function gitCommitAll(dir: string, message: string): void {
-  git(dir, 'add', '-A')
-  git(dir, 'commit', '-q', '--allow-empty', '-m', message)
-}
-
-function write(dir: string, rel: string, body: string): void {
-  mkdirSync(join(dir, rel, '..'), { recursive: true })
-  writeFileSync(join(dir, rel), body)
-}
-
-function tarOf(files: Record<string, string>): Uint8Array {
-  const dir = mkdtempSync(join(tmpdir(), 'rewind-src-'))
-  try {
-    for (const [rel, body] of Object.entries(files)) write(dir, rel, body)
-    return new Uint8Array(execFileSync('tar', ['-czf', '-', '-C', dir, '.']))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
-
-/** Files inside a source archive, as the durable store holds it. */
-function untar(bytes: Uint8Array): Record<string, string> {
-  const dir = mkdtempSync(join(tmpdir(), 'rewind-untar-'))
-  try {
-    const archive = join(dir, 'a.tgz')
-    writeFileSync(archive, bytes)
-    const out = join(dir, 'out')
-    mkdirSync(out)
-    execFileSync('tar', ['-xzf', archive, '-C', out])
-    const files = execFileSync('find', ['.', '-type', 'f'], { cwd: out, encoding: 'utf-8' })
-      .split('\n')
-      .filter(Boolean)
-      .map((f) => f.replace(/^\.\//, ''))
-    return Object.fromEntries(files.map((f) => [f, readFileSync(join(out, f), 'utf-8')]))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
-
-/** A durable repo whose HEAD holds `files`. */
-async function repoArchiveOf(files: Record<string, string>): Promise<{ bytes: Uint8Array; sha: string }> {
-  const dir = mkdtempSync(join(tmpdir(), 'rewind-repo-'))
-  try {
-    for (const [rel, body] of Object.entries(files)) write(dir, rel, body)
-    await seedRepoIfAbsent(dir, { logger: NOOP })
-    const out = join(dir, '..', `${Date.now()}-${Math.random().toString(36).slice(2)}-repo.tgz`)
-    await packRepoArchive(dir, out)
-    const bytes = new Uint8Array(readFileSync(out))
-    rmSync(out, { force: true })
-    return { bytes, sha: git(dir, 'rev-parse', 'HEAD') }
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 let s3: FakeS3
 const cleanups: Array<() => void> = []
@@ -376,7 +136,7 @@ function makePool(guest: FakeGuest, opts: { hydrateTimeoutMs?: number; slackMs?:
 }
 
 function newGuest(kind: GuestKind, opts: { gitReady?: boolean } = {}): FakeGuest {
-  const guest = new FakeGuest(kind, { 'src/App.tsx': 'Project Ready (template)\n' }, opts)
+  const guest = new FakeGuest(kind, { template: { 'src/App.tsx': 'Project Ready (template)\n' } }, opts)
   cleanups.push(() => guest.stop())
   return guest
 }

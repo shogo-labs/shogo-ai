@@ -700,8 +700,15 @@ jobs:
     name: Boot smoke test (macOS x64 / Intel)
     needs: build-desktop
     runs-on: macos-15-intel
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
       - name: Download x64 artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -761,7 +768,11 @@ jobs:
           # Exec the Mach-O directly (not `open`) so an unsigned/un-notarized
           # build on a fork doesn't get blocked or path-translocated by
           # Gatekeeper. stdout/stderr are also captured as a fallback signal.
-          "$BIN" > /tmp/shogo-stdout.log 2>&1 &
+          # Launch with the environment Finder gives an app (no Homebrew, no
+          # dev-shell PATH), so anything that only works from a terminal fails
+          # here instead of for users.
+          env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            "$BIN" > /tmp/shogo-stdout.log 2>&1 &
           APP_PID=$!
           echo "Launched Shogo (pid=$APP_PID)"
 
@@ -786,6 +797,13 @@ jobs:
             sleep 2
           done
 
+          # Booting is not enough (#1003 shipped with a healthy server): open a
+          # folder, trust it, spawn its runtime and a terminal.
+          SMOKE=skipped
+          if [ "$RESULT" = "pass" ]; then
+            if bun scripts/ci/desktop-packaged-smoke.ts --log "$LOG"; then SMOKE=pass; else SMOKE=fail; fi
+          fi
+
           echo "=== main.log ==="
           cat "$LOG" 2>/dev/null || true
           echo "=== stdout/stderr ==="
@@ -796,9 +814,13 @@ jobs:
           kill "$APP_PID" 2>/dev/null || true
           pkill -f "$APP/Contents/MacOS/Shogo" 2>/dev/null || true
 
-          if [ "$RESULT" = "pass" ]; then
-            echo "Boot smoke test PASSED — local server reached healthy state on Intel."
+          if [ "$RESULT" = "pass" ] && [ "$SMOKE" = "pass" ]; then
+            echo "Boot smoke test PASSED — local server healthy and a folder project works on Intel."
             exit 0
+          fi
+          if [ "$SMOKE" = "fail" ]; then
+            echo "::error::Packaged smoke FAILED — the app booted but a folder project does not work (see the step output above)."
+            exit 1
           fi
           if [ "$RESULT" = "fail" ]; then
             echo "::error::Boot smoke test FAILED — the packaged x64 app could not start its local server on Intel. See logs above."

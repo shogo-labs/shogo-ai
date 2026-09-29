@@ -50,6 +50,7 @@ import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceCh
 import { workspaceProjectFilter } from '../../lib/project-load'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { usePlatformConfig, isWorkspaceRuntimeEnabled } from '../../lib/platform-config'
+import { resolveChatScope } from '../../lib/chat-scope'
 import { api, getOnboardingMessage } from '../../lib/api'
 import { EVENTS, trackEvent } from '../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../lib/safe-storage'
@@ -504,7 +505,7 @@ export const HomeScreen = observer(function HomeScreen({
    */
   const createHomeDraftSession = useCallback(
     async (projectId: string, workspaceId: string): Promise<HomeDraft> => {
-      if (isWorkspaceRuntimeEnabled()) {
+      if (resolveChatScope({ surface: 'home-draft' }) === 'workspace') {
         // The project page's canvas is served by the project's own runtime, so
         // the handed-off chat must be pinned to the project or its edits land
         // on a different VM than the preview.

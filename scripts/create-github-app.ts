@@ -326,13 +326,9 @@ function savePrivateKey(slug: string, pem: string): string {
   return path
 }
 
-async function main(): Promise<void> {
-  const { environment, org, repo = repositoryFromOrigin() } = parseArgs()
+export function buildManifest(environment: TargetEnvironment, callbackUrl: string): AppManifest {
   const config = targetConfig[environment]
-  const state = randomToken()
-  const registrationUrl = `https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new`
-
-  const code = await waitForManifestCode(registrationUrl, state, (callbackUrl) => ({
+  return {
     name: config.appName,
     url: `https://${config.domain}`,
     redirect_url: callbackUrl,
@@ -358,7 +354,18 @@ async function main(): Promise<void> {
       'pull_request_review',
       'pull_request_review_comment',
     ],
-  }))
+  }
+}
+
+async function main(): Promise<void> {
+  const { environment, org, repo = repositoryFromOrigin() } = parseArgs()
+  const config = targetConfig[environment]
+  const state = randomToken()
+  const registrationUrl = `https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new`
+
+  const code = await waitForManifestCode(registrationUrl, state, (callbackUrl) =>
+    buildManifest(environment, callbackUrl),
+  )
   const app = await convertManifest(code)
   const keyPath = savePrivateKey(app.slug, app.pem)
   console.log(`Saved private key backup: ${keyPath}`)
@@ -383,7 +390,9 @@ async function main(): Promise<void> {
   console.log(`Private key backup: ${keyPath}`)
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error)
-  process.exitCode = 1
-})
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error)
+    process.exitCode = 1
+  })
+}

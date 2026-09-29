@@ -356,13 +356,19 @@ test.describe("API Key Feature — Full E2E", () => {
   // =========================================================================
 
   test("5c — API Keys page shows the created key in the table", async () => {
+    // `loadKeys` renders an empty "(0)" list until the active workspace
+    // resolves, so wait for the real list fetch rather than a loading label.
+    const keysLoaded = page
+      .waitForResponse(
+        (r) => r.url().includes(`/api/api-keys?workspaceId=${workspaceId}`) && r.ok(),
+        { timeout: 20_000 },
+      )
+      .then(() => true)
+      .catch(() => false)
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 
-    const loadingGone = await page.waitForSelector("text=Loading API keys...", {
-      state: "hidden",
-      timeout: 15_000,
-    }).then(() => true).catch(() => false)
+    const loadingGone = await keysLoaded
 
     if (!loadingGone) {
       // Session may have expired — verify via API instead
@@ -377,19 +383,9 @@ test.describe("API Key Feature — Full E2E", () => {
       return
     }
 
-    const keyPrefix = apiKey.slice(0, 17)
-    const prefixVisible = await page
-      .getByText(keyPrefix, { exact: false })
-      .isVisible({ timeout: 5_000 })
-      .catch(() => false)
+    await expandManualApiKeys(page)
 
-    const anyKey = await page
-      .getByText("shogo_sk_")
-      .first()
-      .isVisible({ timeout: 3_000 })
-      .catch(() => false)
-
-    expect(prefixVisible || anyKey).toBeTruthy()
+    await expect(page.getByText(/shogo_sk_/).first()).toBeVisible({ timeout: 10_000 })
   })
 
   // =========================================================================
