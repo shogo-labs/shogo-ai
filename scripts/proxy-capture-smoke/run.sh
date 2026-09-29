@@ -15,7 +15,7 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:?set NAMESPACE, e.g. shogo-staging-system}"
 PHASES=("$@")
 [ ${#PHASES[@]} -eq 0 ] && PHASES=(setup traffic killswitch archive)
-RUN="${RUN:-$(date +%s%3N)}"
+RUN="${RUN:-$(date +%s)$RANDOM}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 echo "context: $(kubectl config current-context)  namespace: $NAMESPACE  run: $RUN"
