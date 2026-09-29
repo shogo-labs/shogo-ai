@@ -61,11 +61,20 @@ function makeFakeMonacoStack() {
   const model = {
     getValue: () => modelValue,
     isDisposed: () => modelDisposed,
+    getFullModelRange: () => ({ startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }),
     uri: { toString: () => "inmemory://A" },
   };
 
+  const executeEdits = mock((_source: string, edits: Array<{ text: string }>) => {
+    modelValue = edits[0].text;
+    contentListener?.({ isFlush: false });
+    return true;
+  });
+
   const ed = {
     getModel: () => model,
+    executeEdits,
+    pushUndoStop: () => true,
     onDidChangeModelContent: (cb: ContentListener) => {
       contentListener = cb;
       return { dispose: () => {} };
@@ -100,7 +109,8 @@ function makeFakeMonacoStack() {
   };
 
   return {
-    ed, monaco, model,
+    ed, monaco, model, executeEdits,
+    getModelValue: () => modelValue,
     fireContent: (ev: { isFlush: boolean }) => contentListener?.(ev),
     fireCursor: (line: number, column: number) => cursorListener?.({ position: { lineNumber: line, column } }),
     setModelValue: (v: string) => { modelValue = v; },
@@ -215,6 +225,49 @@ describe("CodeEditor — BUG-001 content-listener guarantees", () => {
 
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CodeEditor — value sync does not drop keystrokes", () => {
+  const onCursor = () => {};
+
+  test("hands the wrapper defaultValue, never a controlled value", async () => {
+    const props = (await mountEditor({ ...baseProps, onChange: () => {}, onCursor })).props;
+    expect(props.defaultValue).toBe("initial");
+    expect(props.value).toBeUndefined();
+  });
+
+  test("a value one keystroke behind the model does not overwrite it", async () => {
+    const stack = makeFakeMonacoStack();
+    const handle = await mountEditor({ ...baseProps, onChange: () => {}, onCursor });
+    handle.props.onMount(stack.ed, stack.monaco);
+
+    stack.setModelValue("initialA");
+    stack.fireContent({ isFlush: false });
+    stack.setModelValue("initialAB");
+    stack.fireContent({ isFlush: false });
+
+    handle.rerender({ ...baseProps, value: "initialA", onChange: () => {}, onCursor });
+
+    expect(stack.executeEdits).not.toHaveBeenCalled();
+    expect(stack.getModelValue()).toBe("initialAB");
+  });
+
+  test("an external content change is applied to the model", async () => {
+    const stack = makeFakeMonacoStack();
+    const onChange = mock((_id: string, _v: string) => {});
+    const handle = await mountEditor({ ...baseProps, onChange, onCursor });
+    handle.props.onMount(stack.ed, stack.monaco);
+
+    stack.setModelValue("initialA");
+    stack.fireContent({ isFlush: false });
+    handle.rerender({ ...baseProps, value: "initialA", onChange, onCursor });
+
+    handle.rerender({ ...baseProps, value: "reloaded from disk", onChange, onCursor });
+
+    expect(stack.executeEdits).toHaveBeenCalledTimes(1);
+    expect(stack.getModelValue()).toBe("reloaded from disk");
+    expect(onChange).toHaveBeenLastCalledWith("root::src/A.tsx", "reloaded from disk");
   });
 });
 
