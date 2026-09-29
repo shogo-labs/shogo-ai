@@ -57,6 +57,7 @@ import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-i
 import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
 import { createTray, destroyTray } from './tray'
 import { WindowManager } from './window-manager'
+import { IslandWindow } from './island-window'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
   openPreview,
@@ -200,8 +201,16 @@ app.on('second-instance', () => {
 
 const IS_DEV = !app.isPackaged
 
+let islandWindow: IslandWindow | null = null
 const windowManager = new WindowManager({
-  onWindowClosed: (window) => closeAllForWindow(window),
+  onWindowClosed: (window) => {
+    closeAllForWindow(window)
+    if (!windowManager.hasWindows() && process.platform !== 'darwin') {
+      islandWindow?.destroy()
+      islandWindow = null
+      app.quit()
+    }
+  },
 })
 setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
 
@@ -1152,6 +1161,19 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+  ipcMain.handle(
+    'set-island-config',
+    (_event, patch: { enabled?: boolean; autoHide?: boolean; shortcut?: string }) => {
+      const current = readConfig()
+      const island = {
+        ...current.island,
+        ...(patch && typeof patch === 'object' ? patch : {}),
+      }
+      writeConfig({ island })
+      islandWindow?.refreshConfig()
+      return island
+    },
+  )
   ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
     return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
   })
@@ -1751,6 +1773,7 @@ app.whenReady().then(async () => {
     console.log('[Desktop] SHOGO_SKIP_LOCAL_SERVER=true — skipping local API (e2e mode)')
   }
 
+  islandWindow = new IslandWindow(windowManager)
   createWindow()
 
   if (!isCloudMode) {
@@ -1758,6 +1781,7 @@ app.whenReady().then(async () => {
       openMeetings: () => {
         windowManager.focusAndNavigatePrimaryWindow('/meetings')
       },
+      setIslandEnabled: (enabled) => islandWindow?.setEnabled(enabled),
     })
     startMeetingMonitor()
     startCloudLoginHeartbeat()
@@ -1826,6 +1850,8 @@ app.on('before-quit', (event) => {
   // Flush any queued SigNoz log records before exit (best-effort, never blocks).
   void shutdownSignozLogExporter().catch(() => {})
   if (isQuitting) return
+  islandWindow?.destroy()
+  islandWindow = null
   if (isCloudMode) {
     disposeIdeServers()
     return

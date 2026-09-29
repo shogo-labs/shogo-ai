@@ -211,6 +211,11 @@ import {
   type ChatContextValue,
   type ChatMessage,
 } from "./ChatContext"
+import {
+  registerDesktopIslandSession,
+  updateDesktopIslandSession,
+  type IslandPendingRequest,
+} from "../../lib/desktop-island"
 import { resolveChatFilePath } from "./file-links"
 import { useIdeBridge } from "./ideBridge"
 
@@ -6688,6 +6693,169 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [pendingQuestion, handleSendMessage, handleSaveToolOutput],
   )
 
+  const respondToPermission = useCallback(
+    async (response: {
+      id: string
+      decision: "allow_once" | "always_allow" | "deny"
+      pattern?: string
+    }) => {
+      setPendingPermissionRequest(null)
+      try {
+        if (projectId) {
+          const http = createHttpClient()
+          await api.sendPermissionResponse(http, projectId, response)
+        }
+      } catch (err) {
+        console.error(
+          "[ChatPanel] Failed to send permission response:",
+          err,
+        )
+      }
+    },
+    [projectId],
+  )
+
+  const islandPending = useMemo<IslandPendingRequest | undefined>(() => {
+    const rawQuestionArgs =
+      (pendingQuestion?.tool.args as Record<string, unknown> | undefined) ?? {}
+    const firstQuestion =
+      Array.isArray(rawQuestionArgs.questions) &&
+      rawQuestionArgs.questions.length > 0 &&
+      rawQuestionArgs.questions[0] &&
+      typeof rawQuestionArgs.questions[0] === "object"
+        ? (rawQuestionArgs.questions[0] as Record<string, unknown>)
+        : null
+    const questionOptions = Array.isArray(firstQuestion?.options)
+      ? firstQuestion.options
+          .filter(
+            (option): option is Record<string, unknown> =>
+              !!option && typeof option === "object",
+          )
+          .map((option) => ({
+            label: typeof option.label === "string" ? option.label : "",
+            description:
+              typeof option.description === "string"
+                ? option.description
+                : undefined,
+          }))
+          .filter((option) => option.label.length > 0)
+      : []
+
+    if (pendingPermissionRequest) {
+      return {
+        kind: "permission",
+        request: pendingPermissionRequest,
+      }
+    }
+    if (!pendingQuestion) return undefined
+    return {
+      kind: "question",
+      request: {
+        id: pendingQuestion.tool.id,
+        prompt:
+          typeof firstQuestion?.question === "string"
+            ? firstQuestion.question
+            : "Shogo needs your answer",
+        options: questionOptions,
+      },
+    }
+  }, [pendingPermissionRequest, pendingQuestion])
+
+  const islandReplyPreview = useMemo(() => {
+    const reply = messages
+      .slice()
+      .reverse()
+      .find((message) => (message as any).role === "assistant")
+    if (!reply) return ""
+    if (Array.isArray((reply as any).parts)) {
+      return (reply as any).parts
+        .map((part: any) =>
+          typeof part?.text === "string"
+            ? part.text
+            : typeof part?.content === "string"
+              ? part.content
+              : "",
+        )
+        .join("")
+    }
+    return typeof (reply as any).content === "string"
+      ? (reply as any).content
+      : ""
+  }, [messages])
+
+  const islandSendRef = useRef<
+    (text: string, files?: FileAttachment[]) => void | Promise<void>
+  >(() => {})
+  const islandPermissionRef = useRef<
+    (
+      requestId: string,
+      decision: "allow_once" | "always_allow" | "deny",
+      pattern?: string,
+    ) => void | Promise<void>
+  >(() => {})
+  const islandQuestionRef = useRef<
+    (requestId: string, response: string) => void | Promise<void>
+  >(() => {})
+  islandSendRef.current = (text, files) => handleSendMessage(text, files)
+  islandPermissionRef.current = (requestId, decision, pattern) =>
+    respondToPermission({ id: requestId, decision, pattern })
+  islandQuestionRef.current = (requestId, response) => {
+    if (requestId === pendingQuestion?.tool.id) {
+      handleSubmitQuestionResponse(response)
+    }
+  }
+
+  // Register this chat with the desktop island. The registration is a no-op
+  // on web/mobile, but on Electron it lets the overlay reuse the exact same
+  // send, permission and ask-user paths as the in-window composer.
+  useEffect(() => {
+    if (!projectId || !currentSessionId) return
+    const registration = registerDesktopIslandSession({
+      sessionId: currentSessionId,
+      projectId,
+      projectName: featureName,
+      title: currentSession?.name ?? featureName,
+      status: isStreaming ? "running" : "idle",
+      replyPreview: islandReplyPreview,
+      pending: islandPending,
+      sendMessage: (text, files) => islandSendRef.current(text, files),
+      respondPermission: (requestId, decision, pattern) =>
+        islandPermissionRef.current(requestId, decision, pattern),
+      respondQuestion: (requestId, response) =>
+        islandQuestionRef.current(requestId, response),
+    })
+
+    return registration
+  }, [currentSessionId, projectId])
+
+  // A new streaming token or activity transition updates an existing
+  // registration without forcing the session sender to be re-created.
+  useEffect(() => {
+    if (!projectId || !currentSessionId) return
+    updateDesktopIslandSession({
+      sessionId: currentSessionId,
+      projectId,
+      projectName: featureName,
+      title: currentSession?.name ?? featureName,
+      status: isStreaming ? "running" : "idle",
+      replyPreview: islandReplyPreview,
+      pending: islandPending,
+      sendMessage: (text, files) => islandSendRef.current(text, files),
+      respondPermission: (requestId, decision, pattern) =>
+        islandPermissionRef.current(requestId, decision, pattern),
+      respondQuestion: (requestId, response) =>
+        islandQuestionRef.current(requestId, response),
+    })
+  }, [
+    currentSession?.name,
+    currentSessionId,
+    featureName,
+    islandPending,
+    islandReplyPreview,
+    isStreaming,
+    projectId,
+  ])
+
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.
   const sessionSummary = useMemo(
@@ -6852,24 +7020,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       render: () => (
         <PermissionApprovalDialog
           request={pendingPermissionRequest}
-          onRespond={async (response) => {
-            setPendingPermissionRequest(null)
-            try {
-              if (projectId) {
-                const http = createHttpClient()
-                await api.sendPermissionResponse(http, projectId, response)
-              }
-            } catch (err) {
-              console.error(
-                "[ChatPanel] Failed to send permission response:",
-                err,
-              )
-            }
-          }}
+          onRespond={respondToPermission}
         />
       ),
     }
-  }, [pendingPermissionRequest, projectId])
+  }, [pendingPermissionRequest, respondToPermission])
   useDockPanel(permissionDockDescriptor, chatDockStore)
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {

@@ -27,7 +27,7 @@
  * left alone because they don't import workspace packages.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -38,6 +38,8 @@ const ENTRY = path.join(DESKTOP_DIR, 'src', 'main.ts');
 const OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'main.js');
 const FS_IPC_ENTRY = path.join(DESKTOP_DIR, 'src', 'fs-ipc.ts');
 const FS_IPC_OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'fs-ipc.js');
+const ISLAND_HTML_ENTRY = path.join(DESKTOP_DIR, 'src', 'island.html');
+const ISLAND_HTML_OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'island.html');
 
 /**
  * Bun walks upward from the input file looking for
@@ -142,6 +144,11 @@ if (!existsSync(FS_IPC_OUT_FILE)) {
   console.error(`bundle-main: dist/fs-ipc.js not found — did tsc run first?`);
   process.exit(1);
 }
+if (!existsSync(ISLAND_HTML_ENTRY)) {
+  console.error(`bundle-main: island.html not found: ${ISLAND_HTML_ENTRY}`);
+  process.exit(1);
+}
+copyFileSync(ISLAND_HTML_ENTRY, ISLAND_HTML_OUT_FILE);
 
 // Externals: anything that's a real native module Electron ships, plus
 // the desktop's own runtime npm dependencies (node_modules-resolved at

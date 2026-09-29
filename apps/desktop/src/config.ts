@@ -34,6 +34,12 @@ export interface BugReportConfig {
   maxLogLines?: number
 }
 
+export interface IslandConfig {
+  enabled: boolean
+  autoHide: boolean
+  shortcut: string
+}
+
 /** Desktop auto-update channel. `beta` tracks the newest manually published
  * prerelease instead of the latest tagged stable release. See
  * `update-channel.ts` for feed-URL resolution. */
@@ -44,6 +50,7 @@ export interface DesktopConfig {
   hostRuntime: HostRuntimeConfig
   meetings: MeetingConfig
   bugReport?: BugReportConfig
+  island: IslandConfig
   /** Stable per-machine identifier. Generated on first launch and used so
    * Shogo Cloud can dedupe device-session API keys when the same desktop
    * install signs in multiple times. Treated as non-secret metadata — the
@@ -86,10 +93,17 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
   useCloudTranscription: false,
 }
 
+const DEFAULT_ISLAND_CONFIG: IslandConfig = {
+  enabled: true,
+  autoHide: true,
+  shortcut: 'CommandOrControl+Shift+Space',
+}
+
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
   hostRuntime: getDefaultHostRuntimeConfig(),
   meetings: { ...DEFAULT_MEETING_CONFIG },
+  island: { ...DEFAULT_ISLAND_CONFIG },
   updateChannel: 'stable',
 }
 
@@ -129,6 +143,20 @@ export function readConfig(): DesktopConfig {
     bugReport: typeof parsed.bugReport === 'object' && parsed.bugReport !== null
       ? parsed.bugReport
       : undefined,
+    island: {
+      enabled:
+        typeof parsed.island?.enabled === 'boolean'
+          ? parsed.island.enabled
+          : DEFAULT_ISLAND_CONFIG.enabled,
+      autoHide:
+        typeof parsed.island?.autoHide === 'boolean'
+          ? parsed.island.autoHide
+          : DEFAULT_ISLAND_CONFIG.autoHide,
+      shortcut:
+        typeof parsed.island?.shortcut === 'string' && parsed.island.shortcut.trim()
+          ? parsed.island.shortcut
+          : DEFAULT_ISLAND_CONFIG.shortcut,
+    },
     deviceId: existingDeviceId || generateDeviceId(),
     updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
   }

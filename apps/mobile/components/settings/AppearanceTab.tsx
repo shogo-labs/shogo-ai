@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { View, Pressable } from 'react-native'
+import { useEffect, useState } from 'react'
+import { View, Pressable, Platform, Switch, TextInput } from 'react-native'
 import {
   Sun as SunIcon,
   Moon as MoonIcon,
@@ -54,6 +55,13 @@ function AppearanceRow({
 export function AppearanceTab() {
   const { theme, setTheme } = useTheme()
   const { settings: ap, update, reset } = useAppearance()
+  const isDesktop = Platform.OS === 'web' && !!(window as any).shogoDesktop?.isDesktop
+  const [islandConfig, setIslandConfig] = useState<{
+    enabled: boolean
+    autoHide: boolean
+    shortcut: string
+  } | null>(null)
+  const [shortcut, setShortcut] = useState('')
   const { Sun, Moon, Monitor, RotateCcw } = useAccountSheetIcons({
     Sun: SunIcon,
     Moon: MoonIcon,
@@ -61,6 +69,22 @@ export function AppearanceTab() {
     RotateCcw: RotateCcwIcon,
   })
   const themeIconByValue = { light: Sun, dark: Moon, system: Monitor } as const
+
+  useEffect(() => {
+    if (!isDesktop) return
+    void (window as any).shogoDesktop.getAppConfig().then((config: any) => {
+      if (!config?.island) return
+      setIslandConfig(config.island)
+      setShortcut(config.island.shortcut ?? '')
+    })
+  }, [isDesktop])
+
+  const updateIsland = (patch: Partial<NonNullable<typeof islandConfig>>) => {
+    if (!islandConfig) return
+    const next = { ...islandConfig, ...patch }
+    setIslandConfig(next)
+    void (window as any).shogoDesktop.setIslandConfig(patch)
+  }
 
   return (
     <View>
@@ -130,6 +154,43 @@ export function AppearanceTab() {
           </Pressable>
         </View>
       </AppearanceRow>
+
+      {isDesktop && islandConfig ? (
+        <>
+          <AppearanceSection title="Desktop Island" />
+          <AppearanceRow
+            label="Show Shogo Island"
+            description="Keep agent activity and approvals visible above other apps"
+          >
+            <Switch
+              value={islandConfig.enabled}
+              onValueChange={(enabled) => updateIsland({ enabled })}
+            />
+          </AppearanceRow>
+          <AppearanceRow
+            label="Auto-hide when idle"
+            description="Show the island when a session is running or needs attention"
+          >
+            <Switch
+              value={islandConfig.autoHide}
+              onValueChange={(autoHide) => updateIsland({ autoHide })}
+            />
+          </AppearanceRow>
+          <AppearanceRow
+            label="Quick chat shortcut"
+            description="Use a platform shortcut such as CommandOrControl+Shift+Space"
+          >
+            <TextInput
+              value={shortcut}
+              onChangeText={setShortcut}
+              onEndEditing={() => updateIsland({ shortcut })}
+              className="min-w-[180px] rounded border border-border px-2 py-1 text-xs text-foreground"
+              placeholder="CommandOrControl+Shift+Space"
+              placeholderTextColor="#888"
+            />
+          </AppearanceRow>
+        </>
+      ) : null}
 
       <Pressable
         onPress={reset}
