@@ -45,6 +45,14 @@ const REQUIRED_LOCAL_ROUTES = [
   'DELETE /api/integrations/connections/:id',
   // Called by the local agent-runtime; "Trust folder" is dead without it.
   'GET /api/internal/projects/:projectId/trust',
+  'GET /api/local/remote-hosts',
+  'POST /api/local/remote-hosts',
+  'POST /api/local/remote-hosts/:id/connect',
+  'GET /api/local/remote-hosts/:id/status',
+  'GET /api/local/remote-hosts/:id/askpass',
+  'POST /api/local/remote-hosts/:id/askpass',
+  'GET /api/local/remote-hosts/:id/browse',
+  'POST /api/local/projects/from-remote-folder',
 ] as const
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */

@@ -41,6 +41,7 @@ import { projectAuthConfigRoutes } from '../routes/project-auth-config'
 import { localAuthRoutes } from '../routes/local-auth'
 import { localUserRoutes } from '../routes/local-user'
 import { localProjectsRoutes } from '../routes/local-projects'
+import { localRemoteHostsRoutes } from '../routes/local-remote-hosts'
 import { localLogsRoutes } from '../routes/local-logs'
 import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
@@ -100,6 +101,7 @@ export function createLocalApp(): LocalAppBundle {
     }),
   )
   app.route('/api/local', localLogsRoutes())
+  app.route('/api/local', localRemoteHostsRoutes({ runtimeManager }))
   app.route('/api', localAuthRoutes())
   app.route('/api', localUserRoutes())
   app.route('/', meetingRoutes)

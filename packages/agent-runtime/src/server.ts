@@ -215,6 +215,10 @@ if (applyGitSafeDirectoryEnv()) {
 }
 const SCHEMAS_PATH = process.env.SCHEMAS_PATH || '/app/.schemas'
 const PORT = parseInt(process.env.PORT || '8080', 10)
+// Keep Bun's default bind address unless a host is explicitly requested.
+// Remote-SSH sets HOST=127.0.0.1 so the runtime is reachable only through
+// the SSH tunnel.
+const HOST = process.env.HOST?.trim() || undefined
 const POOL_STATE_ROOT = process.env.SHOGO_POOL_STATE_DIR || join(tmpdir(), 'shogo-local')
 const POOL_SENTINEL_PATH = process.env.SHOGO_POOL_SENTINEL ||
   join(tmpdir(), 'shogo-current-project')
@@ -6927,6 +6931,7 @@ if (process.env.SHOGO_PERF_LOG === '1') {
 
 export default {
   port: PORT,
+  hostname: HOST,
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
     // Hot-path bypass for /health: respond directly without going through

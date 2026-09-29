@@ -59,10 +59,15 @@ async function resolveTerminalPodUrl(projectId: string, runtimeManager: IRuntime
 export function localTerminalRoutes(config: {
   runtimeManager: IRuntimeManager
   workspacesDir: string
+  resolvePodUrl?: (projectId: string) => Promise<string>
+  fetchImpl?: typeof fetch
 }): Hono {
   const router = new Hono()
+  const resolvePodUrl = config.resolvePodUrl
+    ?? ((projectId: string) => resolveTerminalPodUrl(projectId, config.runtimeManager))
+  const fetchImpl = config.fetchImpl ?? fetch
   const deps = {
-    resolvePodUrl: (projectId: string) => resolveTerminalPodUrl(projectId, config.runtimeManager),
+    resolvePodUrl,
     deriveRuntimeToken: (projectId: string) => deriveProjectRuntimeToken(projectId),
     isSafeProjectId,
   }
@@ -107,6 +112,48 @@ export function localTerminalRoutes(config: {
       return c.json({ error: { code: 'invalid_project_id', message: 'Invalid project id' } }, 400)
     }
     try {
+      // Folder-linked and Remote-SSH projects do not have a meaningful
+      // `<local workspaces>/<projectId>` directory. Ask their runtime for
+      // the command list instead, just like the terminal session routes.
+      // This lookup must happen before constructing any local path.
+      let project: { workingMode?: string | null; remoteHostId?: string | null } | null = null
+      try {
+        project = await (prisma.project as any).findUnique({
+          where: { id: projectId },
+          select: { workingMode: true, remoteHostId: true },
+        })
+      } catch {
+        // Older databases may not have the Remote-SSH column yet. Keep the
+        // managed-project fallback below in that case.
+      }
+      if (project?.remoteHostId || project?.workingMode === 'external') {
+        try {
+          const podUrl = await resolvePodUrl(projectId)
+          const response = await fetchImpl(`${podUrl.replace(/\/+$/, '')}/terminal/commands`, {
+            headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+          })
+          const headers = new Headers()
+          const contentType = response.headers.get('content-type')
+          if (contentType) headers.set('content-type', contentType)
+          if (response.ok || contentType?.includes('application/json')) {
+            return new Response(response.body, { status: response.status, headers })
+          }
+          return c.json({
+            error: {
+              code: response.status === 503 ? 'service_starting' : 'runtime_unavailable',
+              message: `Project runtime returned HTTP ${response.status}.`,
+            },
+          }, response.status as any)
+        } catch (error: any) {
+          return c.json({
+            error: {
+              code: 'runtime_unavailable',
+              message: error?.message || 'Project runtime is unavailable.',
+            },
+          }, 503)
+        }
+      }
+
       const { buildQuickCommands, groupQuickCommandsByCategory } = await import(
         '@shogo/agent-runtime/src/quick-commands'
       )

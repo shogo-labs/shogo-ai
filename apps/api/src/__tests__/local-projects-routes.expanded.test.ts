@@ -132,6 +132,11 @@ const prisma = {
       return row
     }),
   },
+  remoteHost: {
+    findUnique: mock(async ({ where }: any) =>
+      where?.id === 'ssh-1' ? { id: 'ssh-1', label: 'Build host' } : null,
+    ),
+  },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma }))
@@ -302,6 +307,53 @@ describe('localProjectsRoutes from folders', () => {
     expect(JSON.parse(readFileSync(join(rootDir, '.shogo', 'project.json'), 'utf-8')).projectId).toBe('project-1')
     expect(readFileSync(join(rootDir, '.gitignore'), 'utf-8')).toContain('.shogo/local/')
     expect([...folders.values()]).toHaveLength(2)
+  })
+
+  test('creates Remote-SSH records without validating or writing local paths', async () => {
+    const remotePath = '~/projects/remote-app'
+    const res = await appWithAuth().request('http://api.test/from-folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Remote App',
+        remoteHostId: 'ssh-1',
+        remotePath,
+      }),
+    })
+    const body = await json(res)
+
+    expect(res.status).toBe(201)
+    expect(body.project).toMatchObject({
+      remoteHostId: 'ssh-1',
+      runtimeEnabled: true,
+      projectFolders: [{ path: remotePath, isPrimary: true }],
+    })
+    expect(existsSync(join(rootDir, '.shogo'))).toBe(false)
+  })
+
+  test('rejects local folder management for an existing Remote-SSH project before validation', async () => {
+    projects.set('remote-project', {
+      id: 'remote-project',
+      remoteHostId: 'ssh-1',
+      workingMode: 'external',
+      projectFolders: [],
+    })
+
+    const add = await appWithAuth().request('http://api.test/remote-project/folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: 'not-an-absolute-local-path' }),
+    })
+    expect(add.status).toBe(409)
+    expect(await json(add)).toMatchObject({ error: 'remote_project_local_folder_unsupported' })
+
+    const promote = await appWithAuth().request('http://api.test/remote-project/primary', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ folderId: 'folder-1' }),
+    })
+    expect(promote.status).toBe(409)
+    expect(await json(promote)).toMatchObject({ error: 'remote_project_local_folder_unsupported' })
   })
 
   test('reuses the folder project when project.json was removed', async () => {

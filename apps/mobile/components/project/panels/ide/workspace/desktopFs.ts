@@ -44,7 +44,11 @@ import type {
 // Replicated here as a structural type so this file has no runtime dep on
 // the desktop bundle (and so the web build doesn't try to import Electron).
 export interface DesktopFsBridge {
-  resolveWorkspace(projectId: string): Promise<{
+  resolveWorkspace(projectId: string, context?: {
+    isExternalProject?: boolean | null
+    folderPath?: string | null
+    remoteHostId?: string | null
+  }): Promise<{
     ok: boolean
     root?: string
     reason?: 'not-managed' | 'not-found' | 'invalid-input'
@@ -102,8 +106,11 @@ export function getDesktopFsBridge(): DesktopFsBridge | null {
 export function isFolderLinkedProject(project: {
   isExternalProject?: boolean | null
   folderPath?: string | null
+  remoteHostId?: string | null
 }): boolean {
-  return project.isExternalProject === true || (typeof project.folderPath === 'string' && project.folderPath.length > 0)
+  return project.isExternalProject === true
+    || !!project.remoteHostId
+    || (typeof project.folderPath === 'string' && project.folderPath.length > 0)
 }
 
 const LANG_BY_EXT: Record<string, string> = {

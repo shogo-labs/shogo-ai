@@ -18,6 +18,7 @@ interface IDEPanelProps {
   agentUrl?: string | null
   isExternalProject?: boolean
   folderPath?: string | null
+  remoteHostId?: string | null
   primarySideBarPosition?: IdePrimarySideBarPosition
   /** File to open once the Workbench's file tree is ready. `nonce` re-opens the same path. */
   requestedFile?: { path: string; nonce: number } | null
@@ -43,6 +44,7 @@ export function IDEPanel({
   agentUrl,
   isExternalProject,
   folderPath,
+  remoteHostId,
   primarySideBarPosition = 'left',
   requestedFile = null,
 }: IDEPanelProps) {
@@ -60,7 +62,7 @@ export function IDEPanel({
   // wrap SdkFs in DesktopFs so reads + tree listing skip the loopback HTTP
   // round-trip to agent-runtime. If no (web build, cloud mode, or external
   // folder-bound project), fall through to plain SdkFs.
-  const folderLinked = isFolderLinkedProject({ isExternalProject, folderPath })
+  const folderLinked = isFolderLinkedProject({ isExternalProject, folderPath, remoteHostId })
   const [agentService, setAgentService] = useState<WorkspaceService | null>(sdkService)
   const [desktopWorkspaceRoot, setDesktopWorkspaceRoot] = useState<string | null | undefined>(undefined)
   useEffect(() => {
@@ -76,7 +78,7 @@ export function IDEPanel({
       return
     }
     let cancelled = false
-    void bridge.resolveWorkspace(projectId)
+    void bridge.resolveWorkspace(projectId, { isExternalProject, folderPath, remoteHostId })
       .then((res) => {
         if (cancelled) return
         const root = res.ok && res.root ? res.root : null
@@ -91,7 +93,7 @@ export function IDEPanel({
         if (!cancelled) setDesktopWorkspaceRoot(null)
       })
     return () => { cancelled = true }
-  }, [sdkService, projectId, folderLinked])
+  }, [sdkService, projectId, folderLinked, isExternalProject, folderPath, remoteHostId])
 
   if (Platform.OS !== 'web') {
     if (!visible) return null
@@ -134,6 +136,7 @@ export function IDEPanel({
           fetchImpl={agentFetch}
           isExternalProject={isExternalProject}
           folderPath={folderPath}
+          remoteHostId={remoteHostId}
           primarySideBarPosition={primarySideBarPosition}
           requestedFile={requestedFile}
         />

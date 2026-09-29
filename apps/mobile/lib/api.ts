@@ -449,6 +449,47 @@ export interface CloudSyncStatusDTO {
   updatedAt: number
 }
 
+/** Safe desktop Remote-SSH host metadata. Private key material is never returned. */
+export interface RemoteHost {
+  id?: string
+  label: string
+  sshTarget: string
+  port?: number
+  identityFile?: string
+  platform?: string
+  lastConnectedAt?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  source?: 'saved' | 'ssh-config'
+  alias?: string
+  hostName?: string
+  user?: string
+}
+
+export interface RemoteHostStatus {
+  host: RemoteHost
+  connected: boolean
+  state: 'connected' | 'connecting' | 'disconnected' | string
+  platform: string | null
+  runtime: Array<{
+    projectId: string
+    name?: string
+    status: string
+    agentPort?: number
+  }>
+}
+
+export interface RemoteDirectoryEntry {
+  name: string
+  path: string
+}
+
+export interface RemoteAskpassPrompt {
+  pending: boolean
+  prompt?: string
+  createdAt?: number
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -1698,6 +1739,123 @@ export const api = {
   },
 
   // ─── Local "external folder" projects (Shogo Desktop only) ─────────────
+
+  /** List saved Remote-SSH hosts plus explicit ~/.ssh/config aliases. */
+  async listRemoteHosts(http: HttpClient): Promise<RemoteHost[]> {
+    const res = await http.get<{ hosts?: RemoteHost[] }>('/api/local/remote-hosts')
+    return Array.isArray(res.data?.hosts) ? res.data.hosts : []
+  },
+
+  /** Save a Remote-SSH host without ever sending private key material. */
+  async createRemoteHost(
+    http: HttpClient,
+    body: {
+      label: string
+      sshTarget: string
+      port?: number
+      identityFile?: string
+    },
+  ): Promise<RemoteHost> {
+    const res = await http.post<{ host?: RemoteHost }>('/api/local/remote-hosts', body)
+    if (!res.data?.host) throw new Error('createRemoteHost: no host returned')
+    return res.data.host
+  },
+
+  /** Establish the host connection and detect its remote platform. */
+  async connectRemoteHost(
+    http: HttpClient,
+    hostId: string,
+  ): Promise<{ host: RemoteHost; connected: boolean; state: string; platform: string | null }> {
+    const res = await http.post<{
+      host: RemoteHost
+      connected: boolean
+      state: string
+      platform: string | null
+    }>(`/api/local/remote-hosts/${encodeURIComponent(hostId)}/connect`, {})
+    return res.data
+  },
+
+  /** Return transport-safe connection/runtime status for a saved host. */
+  async getRemoteHostStatus(
+    http: HttpClient,
+    hostId: string,
+  ): Promise<RemoteHostStatus> {
+    const res = await http.get<RemoteHostStatus>(
+      `/api/local/remote-hosts/${encodeURIComponent(hostId)}/status`,
+    )
+    return res.data
+  },
+
+  /** Poll for an SSH passphrase or host-key confirmation prompt. */
+  async getRemoteAskpassPrompt(
+    http: HttpClient,
+    hostId: string,
+  ): Promise<RemoteAskpassPrompt> {
+    const res = await http.get<RemoteAskpassPrompt>(
+      `/api/local/remote-hosts/${encodeURIComponent(hostId)}/askpass`,
+    )
+    return res.data
+  },
+
+  /** Answer the current SSH askpass prompt in the desktop API. */
+  async respondRemoteAskpass(
+    http: HttpClient,
+    hostId: string,
+    answer: string,
+  ): Promise<void> {
+    await http.post(
+      `/api/local/remote-hosts/${encodeURIComponent(hostId)}/askpass`,
+      { answer },
+    )
+  },
+
+  /** List remote directories. Omitting path starts at the remote home. */
+  async browseRemoteHost(
+    http: HttpClient,
+    hostId: string,
+    path?: string,
+  ): Promise<{ path: string; entries: RemoteDirectoryEntry[] }> {
+    const query = path === undefined
+      ? ''
+      : `?path=${encodeURIComponent(path)}`
+    const res = await http.get<{ path: string; entries?: RemoteDirectoryEntry[] }>(
+      `/api/local/remote-hosts/${encodeURIComponent(hostId)}/browse${query}`,
+    )
+    return { path: res.data.path, entries: Array.isArray(res.data.entries) ? res.data.entries : [] }
+  },
+
+  /** Create and prewarm an external project rooted at a remote directory. */
+  async createRemoteFolderProject(
+    http: HttpClient,
+    body: {
+      workspaceId?: string
+      remoteHostId: string
+      path: string
+      name?: string
+    },
+  ): Promise<{ project: any; rebound?: boolean; redirectedFromWorkspaceId?: string }> {
+    const res = await http.post<{
+      project: any
+      rebound?: boolean
+      redirectedFromWorkspaceId?: string
+    }>('/api/local/projects/from-remote-folder', body)
+    if (!res.data?.project) throw new Error('createRemoteFolderProject: no project returned')
+    return res.data
+  },
+
+  /** Short alias for callers that refer to the picker action as a folder create. */
+  async createRemoteFolder(
+    http: HttpClient,
+    body: {
+      workspaceId?: string
+      remoteHostId: string
+      path: string
+      name?: string
+    },
+  ) {
+    return this.createRemoteFolderProject(http, body)
+  },
+
   /**
    * Create an external (VS Code-style) project from a set of host
    * folders. Returns either the new project, an existing project that
