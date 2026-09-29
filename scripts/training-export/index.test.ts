@@ -132,6 +132,48 @@ describe('training export normalization', () => {
     })
   })
 
+  test('normalizes a non-streaming chat.completions response and drops empty completions', () => {
+    const record = (message: Record<string, unknown>) => ({
+      id: 'capture-7',
+      ts: '2026-09-26T05:00:00.000Z',
+      workspaceId: 'workspace-1',
+      turnKey: 'turn-7',
+      request: { messages: [{ role: 'user', content: 'Weather in Paris?' }] },
+      response: { id: 'chatcmpl-1', choices: [{ index: 0, message: { role: 'assistant', ...message }, finish_reason: 'stop' }] },
+    })
+
+    expect(toTrainingExample(record({ content: 'Sunny.' }))?.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Sunny.' })
+    expect(toTrainingExample(record({
+      content: null,
+      tool_calls: [{ id: 'call-7', type: 'function', function: { name: 'lookup_weather', arguments: '{"city":"Paris"}' } }],
+    }))?.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      tool_calls: [{ id: 'call-7', function: { name: 'lookup_weather', arguments: '{"city":"Paris"}' } }],
+    })
+    expect(toTrainingExample(record({ content: null }))).toBeNull()
+  })
+
+  test('normalizes a Responses API request with string input and instructions', () => {
+    const example = toTrainingExample(
+      {
+        id: 'capture-8',
+        ts: '2026-09-26T05:00:00.000Z',
+        workspaceId: 'workspace-1',
+        turnKey: 'turn-8',
+        request: { instructions: { $ref: 'v1/blobs/instructions.json.gz', kind: 'system' }, input: 'What changed?' },
+        response: { content: 'Two files.' },
+      },
+      undefined,
+      new Map([['v1/blobs/instructions.json.gz', 'Be brief.']]),
+    )
+
+    expect(example?.messages).toEqual([
+      { role: 'system', content: 'Be brief.' },
+      { role: 'user', content: 'What changed?' },
+      { role: 'assistant', content: 'Two files.' },
+    ])
+  })
+
   test('drops examples whose tool-call arguments are not a JSON object', () => {
     const record = (args: string) => ({
       id: 'capture-6',
