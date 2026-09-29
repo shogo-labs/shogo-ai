@@ -16,6 +16,7 @@
  */
 
 import { Hono } from "hono"
+import { randomUUID } from "node:crypto"
 import { S3Client, PutObjectCommand, CopyObjectCommand, DeleteObjectsCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
@@ -896,7 +897,7 @@ async function pushPublishedData(
 async function configurePublishedService(
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean },
+  opts?: { alwaysOn?: boolean; sourceTag?: string },
 ): Promise<{ serverBacked: boolean }> {
   const serverBacked = await detectServerBacked(projectId)
 
@@ -916,6 +917,7 @@ async function configurePublishedService(
     subdomain,
     serverBacked,
     alwaysOn: opts?.alwaysOn,
+    sourceTag: opts?.sourceTag,
   })
   console.log(
     `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
@@ -934,7 +936,7 @@ async function configurePublishedService(
 async function flushGitSync(
   projectId: string,
   opts: {
-    tags?: Array<{ name: string; message?: string; force?: boolean }>
+    tags?: Array<{ name: string; message?: string; force?: boolean; ref?: string }>
     deleteTags?: string[]
   } = {},
 ): Promise<{ sha: string | null } | null> {
@@ -968,13 +970,15 @@ async function flushGitSync(
  * the project's history (visible in the commit graph as `tag:` decorations) and
  * the graph/UI can resolve "what's live" git-natively.
  *
- * Two tags are written at HEAD:
+ * The immutable history tag is written at HEAD, and (by default) the stable
+ * pointer is written there too:
  *   - `publish/<subdomain>/<unix-ts>`  immutable, per-deploy history entry
  *   - `published/<subdomain>`          stable moving pointer at the LIVE commit
  *     (force-updated each publish; the graph resolves the live node from this)
  *
- * `deletePointerSubdomains` removes stale `published/<old>` pointers in the same
- * round trip (used when a project changes its subdomain).
+ * `includePointer:false` prepares only the immutable tag so provisioning can
+ * use it without changing the active release. `deletePointerSubdomains`
+ * removes stale pointers when the stable pointer is advanced.
  *
  * Pod-owned model: the pod owns the durable repo, so tags are created AND
  * persisted by the pod inside `/agent/git-flush` (we pass the tag names and
@@ -985,26 +989,58 @@ async function flushGitSync(
 async function tagPublishedCommit(
   projectId: string,
   subdomain: string,
-  opts: { deletePointerSubdomains?: string[] } = {},
+  opts: { deletePointerSubdomains?: string[]; includePointer?: boolean } = {},
 ): Promise<{ sha: string; tag: string; pointerTag: string } | null> {
-  const tag = `publish/${subdomain}/${Math.floor(Date.now() / 1000)}`
+  // The per-project publish lock serializes requests, but two legitimate
+  // republish calls can still land in the same second. Include a short nonce
+  // so every prepared release is immutable and addressable.
+  const tag = `publish/${subdomain}/${Date.now()}-${randomUUID().slice(0, 8)}`
   const pointerTag = `published/${subdomain}`
   const deleteTags = (opts.deletePointerSubdomains ?? [])
     .filter((s) => s && s !== subdomain)
     .map((s) => `published/${s}`)
+  const tags: Array<{ name: string; message?: string; force?: boolean }> = [
+    { name: tag, message: `Published ${subdomain}.${PUBLISH_DOMAIN}` },
+  ]
+  if (opts.includePointer !== false) {
+    tags.push({ name: pointerTag, message: `Live: ${subdomain}.${PUBLISH_DOMAIN}`, force: true })
+  }
   const result = await flushGitSync(projectId, {
-    tags: [
-      { name: tag, message: `Published ${subdomain}.${PUBLISH_DOMAIN}` },
-      { name: pointerTag, message: `Live: ${subdomain}.${PUBLISH_DOMAIN}`, force: true },
-    ],
-    ...(deleteTags.length ? { deleteTags } : {}),
+    tags,
+    ...(deleteTags.length && opts.includePointer !== false ? { deleteTags } : {}),
   })
   if (!result?.sha) {
     console.warn(`[Publish] No HEAD to tag for ${projectId} (pod git sync inactive or repo empty?)`)
     return null
   }
-  console.log(`[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag} + ${pointerTag}`)
+  console.log(
+    `[Publish] Tagged ${projectId} HEAD ${result.sha.slice(0, 8)} as ${tag}` +
+      (opts.includePointer === false ? '' : ` + ${pointerTag}`),
+  )
   return { sha: result.sha, tag, pointerTag }
+}
+
+/** Move the stable live pointer to an already-created immutable source tag. */
+async function advancePublishedPointer(
+  projectId: string,
+  subdomain: string,
+  sourceTag: string,
+  deletePointerSubdomains: string[] = [],
+): Promise<boolean> {
+  const pointerTag = `published/${subdomain}`
+  const deleteTags = deletePointerSubdomains
+    .filter((s) => s && s !== subdomain)
+    .map((s) => `published/${s}`)
+  const result = await flushGitSync(projectId, {
+    tags: [{ name: pointerTag, message: `Live: ${subdomain}.${PUBLISH_DOMAIN}`, force: true, ref: sourceTag }],
+    ...(deleteTags.length ? { deleteTags } : {}),
+  })
+  if (!result?.sha) {
+    console.warn(`[Publish] Could not advance ${pointerTag} to ${sourceTag}`)
+    return false
+  }
+  console.log(`[Publish] Advanced ${pointerTag} to ${sourceTag}`)
+  return true
 }
 
 /**
@@ -1201,15 +1237,6 @@ export async function publishProject(
       }
     }
 
-    // If project already has a different subdomain, clean up old S3 files
-    if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
-      try {
-        await deleteFromS3(project.publishedSubdomain)
-      } catch (err) {
-        console.warn("[Publish] Failed to delete old S3 files:", err)
-      }
-    }
-
     // Resolve the password-gate hash before doing any expensive build work so
     // bad input (missing/short password) fails fast with a 400.
     const sitePassword = resolveSitePasswordHash({
@@ -1238,6 +1265,12 @@ export async function publishProject(
         alwaysOn = false
       }
     }
+
+    const previousSubdomain =
+      project.publishedSubdomain && project.publishedSubdomain !== subdomain
+        ? project.publishedSubdomain
+        : undefined
+    let tagged: { sha: string; tag: string; pointerTag: string } | null = null
 
     // In Kubernetes: Build, download, and upload to S3
     if (isKubernetes()) {
@@ -1283,12 +1316,19 @@ export async function publishProject(
           return { ok: false, status: 500, code, message: err.message || "Failed to upload to S3" }
         }
 
+        // Capture an immutable source tag before provisioning. The stable
+        // pointer remains on the previous release until the candidate works.
+        tagged = await tagPublishedCommit(projectId, subdomain, { includePointer: false })
+
         // Step 4+5: Provision the published service (server-backed pod OR
         // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
         await setPublishStatus(projectId, 'configuring')
         try {
           await withTimeout(
-            configurePublishedService(projectId, subdomain, { alwaysOn }),
+            configurePublishedService(projectId, subdomain, {
+              alwaysOn,
+              sourceTag: tagged?.tag,
+            }),
             PUBLISH_CONFIGURE_TIMEOUT_MS,
             'Publish configure',
           )
@@ -1299,6 +1339,10 @@ export async function publishProject(
           await setPublishStatus(projectId, 'failed', code)
           return { ok: false, status: 500, code, message: err.message || "Failed to configure published service" }
         }
+
+        if (tagged?.tag) {
+          await advancePublishedPointer(projectId, subdomain, tagged.tag, previousSubdomain ? [previousSubdomain] : [])
+        }
       } finally {
         // Always release the lock, even on a thrown error path. The
         // 10-min TTL is a backstop, not the primary release mechanism.
@@ -1307,20 +1351,11 @@ export async function publishProject(
     } else {
       // Local development: Just log and update database
       console.log(`[Publish] Local mode - would publish to ${subdomain}.${PUBLISH_DOMAIN}`)
+      tagged = await tagPublishedCommit(projectId, subdomain, { includePointer: false })
+      if (tagged?.tag) {
+        await advancePublishedPointer(projectId, subdomain, tagged.tag, previousSubdomain ? [previousSubdomain] : [])
+      }
     }
-
-    // Tag the published commit in the durable git repo: a timestamped
-    // history tag plus the stable `published/<subdomain>` pointer the graph
-    // resolves "what's live" from. On a subdomain change we also drop the old
-    // `published/<oldSubdomain>` pointer in the same round trip. Tagging
-    // flushes the pod's git sync and hydrates the durable repo here.
-    const previousSubdomain =
-      project.publishedSubdomain && project.publishedSubdomain !== subdomain
-        ? project.publishedSubdomain
-        : undefined
-    const tagged = await tagPublishedCommit(projectId, subdomain, {
-      deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
-    })
 
     // Update project with publish info
     const publishedAt = new Date()
@@ -1363,6 +1398,17 @@ export async function publishProject(
     // Point any already-active custom domains at the (possibly new)
     // subdomain prefix in the Worker's routing map.
     await syncCustomDomainKv(projectId, subdomain)
+
+    // Retire the old static prefix only after the replacement is configured,
+    // persisted, and edge routing has moved. A failed subdomain change must
+    // leave the previously live site recoverable.
+    if (previousSubdomain) {
+      try {
+        await deleteFromS3(previousSubdomain)
+      } catch (err) {
+        console.warn("[Publish] Failed to delete old S3 files:", err)
+      }
+    }
 
     // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
     setTimeout(() => {
@@ -1684,6 +1730,8 @@ export function publishRoutes() {
         }
       }
 
+      let tagged: { sha: string; tag: string; pointerTag: string } | null = null
+
       if (isKubernetes()) {
         await acquirePublishLock(projectId)
         try {
@@ -1724,6 +1772,11 @@ export function publishRoutes() {
             return c.json({ error: { code, message: err.message || 'Failed to upload to S3' } }, 500)
           }
 
+          // Prepare the immutable source before provisioning. The published
+          // pointer stays on the last known-good release until this candidate
+          // has been configured successfully.
+          tagged = await tagPublishedCommit(projectId, subdomain, { includePointer: false })
+
           // Re-provision the published service. configurePublishedService
           // re-creates the right service type (which bumps the Knative
           // revision / re-syncs content) and handles static<->server-backed
@@ -1733,21 +1786,28 @@ export function publishRoutes() {
           await setPublishStatus(projectId, 'configuring')
           try {
             await withTimeout(
-              configurePublishedService(projectId, subdomain, { alwaysOn }),
+              configurePublishedService(projectId, subdomain, {
+                alwaysOn,
+                sourceTag: tagged?.tag,
+              }),
               PUBLISH_CONFIGURE_TIMEOUT_MS,
               'Publish configure',
             )
           } catch (err: any) {
             console.warn("[Publish] Failed to reconfigure published service:", err.message)
+            throw err
+          }
+
+          if (tagged?.tag) {
+            await advancePublishedPointer(projectId, subdomain, tagged.tag)
           }
         } finally {
           await releasePublishLock(projectId)
         }
+      } else {
+        tagged = await tagPublishedCommit(projectId, subdomain, { includePointer: false })
+        if (tagged?.tag) await advancePublishedPointer(projectId, subdomain, tagged.tag)
       }
-
-      // Tag the republished commit in the durable git repo (replaces the
-      // old WORKSPACES_DIR-based auto-checkpoint — see the publish handler).
-      const tagged = await tagPublishedCommit(projectId, subdomain)
 
       // Update publishedAt timestamp
       const publishedAt = new Date()

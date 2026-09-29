@@ -464,21 +464,26 @@ describe('MetalWarmPoolController', () => {
     const reg = new MetalPlacementRegistry(() => null)
     _setMetalPlacementRegistry(reg)
     // Published env builder is the 5th ctor arg; assert published-mode env flows through.
-    const pubEnv = async (id: string, subdomain: string, opts?: { alwaysOn?: boolean }) => ({
+    const pubEnv = async (id: string, subdomain: string, opts?: { alwaysOn?: boolean; sourceTag?: string }) => ({
       PROJECT_ID: id,
       SHOGO_PUBLISHED_MODE: 'true',
       PUBLISHED_SUBDOMAIN: subdomain,
+      ...(opts?.sourceTag ? { PUBLISHED_SOURCE_TAG: opts.sourceTag } : {}),
       ...(opts?.alwaysOn ? { SHOGO_ALWAYS_ON: '1' } : {}),
     })
     const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, Date.now, reg, pubEnv)
     c.registerHost(REG)
 
-    const res = await c.getMetalPublishedUrl('p1', 'my-site', { alwaysOn: true })
+    const res = await c.getMetalPublishedUrl('p1', 'my-site', {
+      alwaysOn: true,
+      sourceTag: 'publish/my-site/1700000000',
+    })
     expect(res.url).toBe('http://10.8.0.2:8080')
     // The assign carried the published:{id} runtime key + published-mode env.
     expect(assignBodies[0].projectId).toBe('published:p1')
     expect(assignBodies[0].env.SHOGO_PUBLISHED_MODE).toBe('true')
     expect(assignBodies[0].env.SHOGO_ALWAYS_ON).toBe('1')
+    expect(assignBodies[0].env.PUBLISHED_SOURCE_TAG).toBe('publish/my-site/1700000000')
     // Subdomain → placement is published for the edge proxy / wake.
     const placed = await reg.getPublishedPlacement('my-site')
     expect(placed?.projectId).toBe('p1')

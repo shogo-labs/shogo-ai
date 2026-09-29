@@ -33,7 +33,7 @@ export interface MetalBackend {
   resizeProject(projectId: string, resources: { cpu?: string; memory?: string; disk?: string; minScale?: number }): Promise<void>
   listProjects(): Promise<RuntimeSummary[]>
   // --- published site (published:{id} microVM) ---
-  getMetalPublishedUrl(projectId: string, subdomain: string, opts?: { alwaysOn?: boolean }): Promise<{ url: string; hostId?: string; region?: string }>
+  getMetalPublishedUrl(projectId: string, subdomain: string, opts?: { alwaysOn?: boolean; sourceTag?: string }): Promise<{ url: string; hostId?: string; region?: string }>
   destroyPublished(projectId: string, subdomain?: string): Promise<void>
   setPublishedAlwaysOn(projectId: string, subdomain: string, on: boolean): Promise<void>
 }
@@ -116,7 +116,7 @@ export class MetalSubstrate implements ProjectSubstrate {
   // --- publishing surface --------------------------------------------------
 
   async publish(projectId: string, opts: PublishOpts): Promise<PublishResult> {
-    const { subdomain, serverBacked, alwaysOn } = opts
+    const { subdomain, serverBacked, alwaysOn, sourceTag } = opts
     const kv = await this.serverBackedKv()
 
     if (!serverBacked) {
@@ -131,7 +131,7 @@ export class MetalSubstrate implements ProjectSubstrate {
 
     // Server-backed: boot/refresh the always-on published microVM and flag the
     // edge to proxy `/api/*` to the API published endpoint (backend='metal').
-    const { url } = await this.backend.getMetalPublishedUrl(projectId, subdomain, { alwaysOn })
+    const { url } = await this.backend.getMetalPublishedUrl(projectId, subdomain, { alwaysOn, sourceTag })
     await kv.setServerBackedFlag(subdomain, 'metal')
     return { serverBacked: true, substrate: this.kind, url }
   }
@@ -151,7 +151,10 @@ export class MetalSubstrate implements ProjectSubstrate {
     // "always on" for a paid perk after a suspend/resume cycle.
     try {
       const placement = await this.backend
-        .getMetalPublishedUrl(projectId, subdomain, { alwaysOn: opts?.alwaysOn })
+        .getMetalPublishedUrl(projectId, subdomain, {
+          alwaysOn: opts?.alwaysOn,
+          sourceTag: opts?.sourceTag,
+        })
         .catch(() => null)
       if (placement?.url) return { ready: true, url: placement.url }
       return { ready: false }
