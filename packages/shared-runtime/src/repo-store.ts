@@ -73,7 +73,7 @@ function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.Pro
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'] })
     let stderr = ''
-    child.stderr.on('data', (c) => { stderr += String(c) })
+    child.stderr?.on('data', (c) => { stderr += String(c) })
     child.on('error', reject)
     child.on('close', (code) =>
       code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 500)}`)),
@@ -144,7 +144,7 @@ export async function untrackDependencyDirs(
     new Promise<{ code: number; stdout: string }>((resolve, reject) => {
       const child = spawn('git', withShogoCommitTrailer(args, env), { cwd: workspaceDir, env, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
-      child.stdout.on('data', (c) => { stdout += String(c) })
+      child.stdout?.on('data', (c) => { stdout += String(c) })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code: code ?? -1, stdout }))
     })
@@ -213,8 +213,8 @@ export async function seedRepoIfAbsent(
       const child = spawn('git', withShogoCommitTrailer(args, env), { cwd: workspaceDir, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
       let stderr = ''
-      child.stdout.on('data', (c) => { stdout += String(c) })
-      child.stderr.on('data', (c) => { stderr += String(c) })
+      child.stdout?.on('data', (c) => { stdout += String(c) })
+      child.stderr?.on('data', (c) => { stderr += String(c) })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
     })
@@ -267,6 +267,32 @@ export interface AdoptRepoResult {
   reset: boolean
   /** Ref holding tracked working-tree changes that the reset discarded, if any. */
   preservedRef: string | null
+  /** Top-level paths whose hydrated tree was kept instead of reset to HEAD. */
+  keptPaths?: string[]
+}
+
+/**
+ * Validate the host's `keepPaths`: `'.'` (the whole tree) or top-level entry
+ * names. Anything else (nested paths, `..`, absolute paths) is refused, since a
+ * bad path here decides which of the user's files survive the reset.
+ */
+export function normalizeKeepPaths(paths: unknown): string[] {
+  if (paths === undefined || paths === null) return []
+  if (!Array.isArray(paths)) throw new Error('keepPaths must be an array')
+  const out = new Set<string>()
+  for (const p of paths) {
+    if (typeof p !== 'string') throw new Error('keepPaths entries must be strings')
+    const name = p.replace(/\/+$/, '')
+    if (name === '.') {
+      out.add('.')
+      continue
+    }
+    if (!name || name === '..' || name.includes('/') || name.includes('\\') || name === '.git') {
+      throw new Error(`invalid keepPaths entry: ${JSON.stringify(p)}`)
+    }
+    out.add(name)
+  }
+  return [...out]
 }
 
 /**
@@ -286,13 +312,21 @@ export interface AdoptRepoResult {
  * Untracked and ignored files (databases, uploads) are left alone. An unborn
  * HEAD (durable repo with no commits) skips the reset; the next sync commits
  * the hydrated tree as the first commit.
+ *
+ * The repo is not always the newer side. When its exports are refused (an
+ * untrusted VM, a lineage conflict) the source backup keeps advancing while
+ * the repo stands still, and resetting to that HEAD rewinds the user's work
+ * to wherever the repo stopped. `keepPaths` names the top-level paths the host
+ * knows are newer in the hydrated source (`'.'` for the whole tree): those
+ * keep their hydrated contents, committed on top of the durable HEAD.
  */
 export async function adoptHydratedRepo(
   workspaceDir: string,
   stagingDir: string,
-  opts: { logger?: Logger } = {},
+  opts: { logger?: Logger; keepPaths?: string[] } = {},
 ): Promise<AdoptRepoResult> {
   const logger = opts.logger ?? console
+  const keep = normalizeKeepPaths(opts.keepPaths)
   const staged = join(stagingDir, '.git')
   if (!existsSync(staged)) throw new Error(`no staged .git at ${staged}`)
   const target = join(workspaceDir, '.git')
@@ -306,13 +340,25 @@ export async function adoptHydratedRepo(
     return { headSha: null, reset: false, preservedRef: null }
   }
 
+  const authorName = getShogoAgentName()
+  const authorEmail = getShogoAgentEmail()
+  const identity = {
+    GIT_AUTHOR_NAME: authorName,
+    GIT_AUTHOR_EMAIL: authorEmail,
+    GIT_COMMITTER_NAME: authorName,
+    GIT_COMMITTER_EMAIL: authorEmail,
+  }
   const git = (args: string[]) =>
     new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-      const child = spawn('git', args, { cwd: workspaceDir, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn('git', withShogoCommitTrailer(args, identity), {
+        cwd: workspaceDir,
+        env: { ...process.env, ...identity },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
       let stdout = ''
       let stderr = ''
-      child.stdout.on('data', (c) => { stdout += String(c) })
-      child.stderr.on('data', (c) => { stderr += String(c) })
+      child.stdout?.on('data', (c) => { stdout += String(c) })
+      child.stderr?.on('data', (c) => { stderr += String(c) })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }))
     })
@@ -328,15 +374,118 @@ export async function adoptHydratedRepo(
     }
     preservedRef = ref
   }
-  const reset = await git(['reset', '--hard', 'HEAD'])
-  if (reset.code !== 0) {
-    throw new Error(`git reset --hard exited ${reset.code}: ${reset.stderr.trim().slice(0, 300)}`)
+
+  if (keep.length === 0) {
+    const reset = await git(['reset', '--hard', 'HEAD'])
+    if (reset.code !== 0) {
+      throw new Error(`git reset --hard exited ${reset.code}: ${reset.stderr.trim().slice(0, 300)}`)
+    }
+    logger.log(
+      `[repo-store] adopted durable repo @ ${headSha}` +
+        (preservedRef ? ` (differing working tree saved at ${preservedRef})` : ''),
+    )
+    return { headSha, reset: true, preservedRef }
+  }
+
+  // Point the index at HEAD without touching the working tree, then restore
+  // only the paths the repo is authoritative for.
+  const mixed = await git(['reset', '-q', 'HEAD'])
+  if (mixed.code !== 0) {
+    throw new Error(`git reset exited ${mixed.code}: ${mixed.stderr.trim().slice(0, 300)}`)
+  }
+  let restored: string[] = []
+  if (!keep.includes('.')) {
+    const ls = await git(['ls-tree', '-z', '--name-only', 'HEAD'])
+    if (ls.code !== 0) {
+      throw new Error(`git ls-tree exited ${ls.code}: ${ls.stderr.trim().slice(0, 300)}`)
+    }
+    restored = ls.stdout.split('\0').filter((name) => name && !keep.includes(name))
+    if (restored.length) {
+      const co = await git(['checkout', 'HEAD', '--', ...restored])
+      if (co.code !== 0) {
+        throw new Error(`git checkout HEAD exited ${co.code}: ${co.stderr.trim().slice(0, 300)}`)
+      }
+    }
+  }
+  // Commit what was kept before returning. Left uncommitted, every repo export
+  // would carry the stale HEAD under a fresh timestamp, and the next cold boot
+  // would take that repo for the newer side and reset the tree to it.
+  const addPaths = keep.includes('.') ? ['.'] : keep.filter((p) => existsSync(join(workspaceDir, p)))
+  let committedSha = headSha
+  if (addPaths.length) {
+    if (UNTRACK_DIRS.some((d) => existsSync(join(workspaceDir, d)))) ensureWorkspaceGitignore(workspaceDir)
+    const add = await git(['add', '-A', '--', ...addPaths, ':(exclude).shogo/local'])
+    if (add.code !== 0) throw new Error(`git add exited ${add.code}: ${add.stderr.trim().slice(0, 300)}`)
+    const staged = await git(['diff', '--cached', '--quiet'])
+    if (staged.code === 1) {
+      const commit = await git(['commit', '-q', '--no-verify', '-m', 'chore: keep workspace source newer than the durable repo'])
+      if (commit.code !== 0) throw new Error(`git commit exited ${commit.code}: ${commit.stderr.trim().slice(0, 300)}`)
+      committedSha = (await getHeadSha(workspaceDir)) ?? headSha
+    } else if (staged.code !== 0) {
+      throw new Error(`git diff exited ${staged.code}: ${staged.stderr.trim().slice(0, 300)}`)
+    }
   }
   logger.log(
-    `[repo-store] adopted durable repo @ ${headSha}` +
-      (preservedRef ? ` (differing working tree saved at ${preservedRef})` : ''),
+    `[repo-store] adopted durable repo @ ${headSha}, keeping the hydrated tree for ${keep.join(', ')}` +
+      (committedSha !== headSha ? ` (committed as ${committedSha})` : '') +
+      (preservedRef ? ` (pre-adopt working tree saved at ${preservedRef})` : ''),
   )
-  return { headSha, reset: true, preservedRef }
+  return { headSha: committedSha, reset: restored.length > 0, preservedRef, keptPaths: keep }
+}
+
+/** The caller's deadline passed before the adopt could start; nothing was touched. */
+export class AdoptDeadlineError extends Error {}
+
+/**
+ * {@link adoptHydratedRepo}, but only if it can start before `deadline`.
+ *
+ * The host stops waiting at its deadline and from then on treats this VM's
+ * tree as the one it hydrated. An adopt that starts later rewrites that tree
+ * behind the host's back, so past the deadline this throws
+ * {@link AdoptDeadlineError} and removes the staged repo instead. A null
+ * deadline waits for `ready` without limit (the legacy contract).
+ *
+ * `ready` is whatever must settle before `.git` may be swapped (the guest's
+ * git layer); `pause`/`resume` bracket the adopt so no sync commits mid-swap.
+ */
+export async function adoptHydratedRepoBefore(
+  workspaceDir: string,
+  stagingDir: string,
+  opts: {
+    deadline: number | null
+    ready: Promise<unknown>
+    pause?: () => unknown
+    resume?: () => unknown
+    logger?: Logger
+    keepPaths?: string[]
+  },
+): Promise<AdoptRepoResult> {
+  const keepPaths = normalizeKeepPaths(opts.keepPaths)
+  const { deadline } = opts
+  const decline = () => {
+    rmSync(stagingDir, { recursive: true, force: true })
+    return new AdoptDeadlineError('deadline passed before the repo could be adopted')
+  }
+  if (deadline === null) {
+    await opts.ready.catch(() => {})
+  } else {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const ready = await Promise.race([
+      opts.ready.then(() => true, () => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()))
+      }),
+    ])
+    clearTimeout(timer)
+    if (!ready || Date.now() >= deadline) throw decline()
+  }
+  await opts.pause?.()
+  try {
+    if (deadline !== null && Date.now() >= deadline) throw decline()
+    return await adoptHydratedRepo(workspaceDir, stagingDir, { logger: opts.logger, keepPaths })
+  } finally {
+    opts.resume?.()
+  }
 }
 
 /** Resolve the current HEAD sha, or null when HEAD is unborn / not a repo. */
@@ -345,7 +494,7 @@ export async function getHeadSha(workspaceDir: string): Promise<string | null> {
   return new Promise((resolve) => {
     const child = spawn('git', ['rev-parse', 'HEAD'], { cwd: workspaceDir, stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
-    child.stdout.on('data', (c) => { out += String(c) })
+    child.stdout?.on('data', (c) => { out += String(c) })
     child.on('error', () => resolve(null))
     child.on('close', (code) => resolve(code === 0 ? out.trim() || null : null))
   })

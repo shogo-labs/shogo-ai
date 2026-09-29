@@ -150,4 +150,24 @@ describe("PlanCard build model picker", () => {
     fireEvent.click(viewPlan)
     expect(onOpenPlan).toHaveBeenCalledTimes(1)
   })
+
+  test("compact mode shows the summary and actions without plan tabs or tasks", () => {
+    render(
+      <PlanCard
+        plan={{ ...PLAN, summary: "Stakeholder summary", summaryStatus: "ready" }}
+        compact
+        selectedModel="claude-haiku-4-5-20251001"
+        isPro
+        onBuild={() => {}}
+        onOpenPlan={() => {}}
+      />,
+    )
+
+    expect(screen.getByText(PLAN.overview)).toBeTruthy()
+    expect(screen.getByRole("button", { name: "View plan in Plans" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Build plan" })).toBeTruthy()
+    expect(screen.queryByText("Technical")).toBeNull()
+    expect(screen.queryByText("Summary")).toBeNull()
+    expect(screen.queryByText("TASKS (1)")).toBeNull()
+  })
 })

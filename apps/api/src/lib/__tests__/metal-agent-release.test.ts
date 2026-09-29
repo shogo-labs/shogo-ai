@@ -53,4 +53,18 @@ describe('resolveDesiredAgent', () => {
     expect(resolveDesiredAgent('us', 'stable', c)).toMatchObject({ rebuildRootfs: true })
     expect(resolveDesiredAgent('us', 'stable', channels)?.rebuildRootfs).toBeUndefined()
   })
+
+  it('carries the pinned runtime image only on a rebuild release', () => {
+    const pin = { runtimeImage: 'r/shogo-runtime:production-multiarch-abc1234', runtimeRevision: 'abc1234' }
+    const c: FleetChannels = {
+      us: {
+        stable: { version: 's1', bundleUrl: 's3://b/x.tgz', sha256: 'aa', rebuildRootfs: true, ...pin },
+        canary: { version: 'c1', bundleUrl: 's3://b/y.tgz', sha256: 'bb', ...pin },
+      },
+    }
+    expect(resolveDesiredAgent('us', 'stable', c)).toMatchObject(pin)
+    const canary = resolveDesiredAgent('us', 'canary', c)!
+    expect(canary.runtimeImage).toBeUndefined()
+    expect(canary.runtimeRevision).toBeUndefined()
+  })
 })

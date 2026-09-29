@@ -156,6 +156,8 @@ import {
 } from './workspace-defaults'
 
 const LOG_PREFIX = 'preview-manager'
+/** Matches CanvasBuildManager's debounce so an agent's burst of edits coalesces into one export. */
+const WEB_REBUILD_DEBOUNCE_MS = 500
 
 /** Expo's `experiments.baseUrl` is conventionally stored without a trailing slash. */
 export function normalizeExpoBasePath(basePath: string): string {
@@ -983,6 +985,10 @@ export class PreviewManager {
   // EADDRINUSE source). Resumed via resumeWatchers(), which flushes any
   // change that landed while paused.
   private watchersPaused = false
+  // Set by `quiesceApiServer()` so `rehydrateApiServer()` restarts only what
+  // quiesce stopped and resumes only watchers quiesce (not `shogo push`) paused.
+  private quiescedApi = false
+  private quiescePausedWatchers = false
   private lastGenerateError: string | null = null
   // Surfaced via getStatus() so external observers (the API's import
   // bootstrap bridge, debug UIs, etc.) can tell "install/prisma succeeded"
@@ -1062,6 +1068,10 @@ export class PreviewManager {
    * strictly serial — concurrent callers receive the in-flight promise.
    */
   private expoExportInFlight: Promise<void> | null = null
+  /** Debounce timer + trailing-edge state for {@link requestWebRebuild}. */
+  private webRebuildTimer: ReturnType<typeof setTimeout> | null = null
+  private webRebuildRunning = false
+  private webRebuildPending = false
   /**
    * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
    * above. `startApiServer()` is reachable from many independent entry
@@ -2653,6 +2663,10 @@ export class PreviewManager {
       clearTimeout(this.crashRestartTimer)
       this.crashRestartTimer = null
     }
+    if (this.webRebuildTimer) {
+      clearTimeout(this.webRebuildTimer)
+      this.webRebuildTimer = null
+    }
     if (this.apiServerProcess) {
       console.log(`[${LOG_PREFIX}] Stopping API server...`)
       this.apiServerProcess.kill('SIGTERM')
@@ -3564,6 +3578,58 @@ export class PreviewManager {
   }
 
   /**
+   * Stop the API sidecar and free its port ahead of a VM memory snapshot, and
+   * hold watchers so nothing respawns it before the freeze. A snapshot taken
+   * with the sidecar running resumes it mid-flight with dead sockets; a wedged
+   * one keeps the port, so every later start fails with EADDRINUSE. Undone by
+   * {@link rehydrateApiServer}. Returns whether a sidecar was stopped.
+   */
+  async quiesceApiServer(): Promise<boolean> {
+    if (!this.watchersPaused) {
+      this.pauseWatchers()
+      this.quiescePausedWatchers = true
+    }
+    const running =
+      this.hasApiServer === true && this.apiPhase !== 'stopped' && this.apiPhase !== 'idle'
+    if (!running) return false
+    this.quiescedApi = true
+    this.apiPhase = 'stopped'
+    await this.killApiServer()
+    await this.forceKillPort()
+    await this.waitForPortRelease()
+    return true
+  }
+
+  /**
+   * After a snapshot resume: restart a sidecar that {@link quiesceApiServer}
+   * stopped, or one that came back broken (a snapshot taken before quiesce
+   * existed), then release the watchers quiesce held. `restart` resolves when
+   * the new sidecar is healthy or its start gives up.
+   */
+  rehydrateApiServer(): { restarting: boolean; restart: Promise<void> } {
+    const wasQuiesced = this.quiescedApi
+    this.quiescedApi = false
+    const release = () => {
+      if (this.quiescePausedWatchers) {
+        this.quiescePausedWatchers = false
+        this.resumeWatchers()
+      }
+    }
+    const broken = this.hasApiServer === true && this.apiPhase === 'crashed'
+    if (!wasQuiesced && !broken) {
+      const restart =
+        this.hasApiServer === true && this.apiPhase === 'healthy'
+          ? this.isApiHealthy().then((ok) =>
+              ok ? undefined : this.restartApiServerOnly(),
+            )
+          : Promise.resolve()
+      return { restarting: false, restart: restart.finally(release) }
+    }
+    this.crashCount = 0
+    return { restarting: true, restart: this.restartApiServerOnly().finally(release) }
+  }
+
+  /**
    * Watch `custom-routes.ts` (and `.tsx`) at the project root for
    * changes and trigger a fast restart via {@link restartApiServerOnly}.
    * Uses `fs.watch` on the parent directory since the file may not
@@ -3870,6 +3936,46 @@ export class PreviewManager {
    *
    * Re-run on demand via `restart()`.
    */
+  /**
+   * Re-export the Expo web bundle after a source edit, without the sidecar
+   * restart that `restart()` does. Debounced; edits that land while an
+   * export is running queue exactly one more export, because the running
+   * one may already have read the old sources.
+   *
+   * No-op for non-Metro stacks (Vite rebuilds via its own watch process)
+   * and for managers that were never started — their first `start()`
+   * exports the current tree anyway.
+   */
+  requestWebRebuild(): void {
+    if (this.resolveDevServer() !== 'metro') return
+    if (!this.started && !this.expoExportInFlight) return
+    if (this.webRebuildTimer) clearTimeout(this.webRebuildTimer)
+    this.webRebuildTimer = setTimeout(() => {
+      this.webRebuildTimer = null
+      void this.runWebRebuild()
+    }, WEB_REBUILD_DEBOUNCE_MS)
+  }
+
+  private async runWebRebuild(): Promise<void> {
+    if (this.webRebuildRunning) {
+      this.webRebuildPending = true
+      return
+    }
+    this.webRebuildRunning = true
+    try {
+      do {
+        this.webRebuildPending = false
+        if (this.expoExportInFlight) await this.expoExportInFlight.catch(() => {})
+        console.log(`[${LOG_PREFIX}] Source changed — re-exporting Expo web bundle`)
+        await this.runExpoExportWeb({}, this.resolveBundlerCwd())
+      } while (this.webRebuildPending)
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] Expo web rebuild failed: ${err?.message ?? err}`)
+    } finally {
+      this.webRebuildRunning = false
+    }
+  }
+
   private async runExpoExportWeb(timings: Record<string, number>, cwd: string): Promise<void> {
     // Reentrancy guard — see `expoExportInFlight` field doc.
     if (this.expoExportInFlight) {

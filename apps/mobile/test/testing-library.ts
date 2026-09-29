@@ -27,6 +27,14 @@ import { cleanup } from '@testing-library/react'
 import { reactNativeMockBase } from './react-native-mock'
 
 mock.module('react-native', () => reactNativeMockBase)
+// The gesture-handler package imports React Native's native renderer at module
+// load time. These tests run under happy-dom, so passthrough host views cover
+// the gesture wrapper surface without evaluating native code.
+mock.module('react-native-gesture-handler', () => ({
+  PanGestureHandler: reactNativeMockBase.View,
+  PinchGestureHandler: reactNativeMockBase.View,
+  State: { ACTIVE: 4 },
+}))
 
 // `lucide-react-native` pulls in `react-native-svg`, which in turn does
 // real native module resolution that we can't satisfy in happy-dom. The

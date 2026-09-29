@@ -187,6 +187,41 @@ resource "oci_objectstorage_object_lifecycle_policy" "workspaces_lifecycle" {
       inclusion_prefixes = ["conflict/"]
     }
   }
+
+  # Writable-state archives (`<projectId>/project-data.tar.gz`, the SQLite
+  # database + uploads) are overwritten every ~2 minutes while a database is
+  # changing, so the global 30-day rule above would keep thousands of full
+  # copies per project. Keep replaced versions for one day only: that is the
+  # "undo the last few minutes/hours" window. Longer-range recovery comes from
+  # the daily restore points below. When rules overlap, the shorter one wins.
+  rules {
+    name        = "cleanup-project-data-versions"
+    action      = "DELETE"
+    time_amount = 1
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "previous-object-versions"
+
+    object_name_filter {
+      inclusion_patterns = ["*/project-data.tar.gz"]
+    }
+  }
+
+  # End-of-day restore points (`<projectId>/project-data/daily/<date>.tar.gz`),
+  # server-side copied by the metal-agent before the first overwrite of each
+  # UTC day. Keep 30 days of daily history.
+  rules {
+    name        = "cleanup-project-data-daily"
+    action      = "DELETE"
+    time_amount = 30
+    time_unit   = "DAYS"
+    is_enabled  = true
+    target      = "objects"
+
+    object_name_filter {
+      inclusion_patterns = ["*/project-data/daily/*"]
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------

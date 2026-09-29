@@ -37,6 +37,7 @@
  */
 // @ts-ignore Bun resolves this module at test runtime; app tsconfig does not include Bun ambient types.
 import { afterEach, describe, expect, mock, test } from "bun:test"
+import { resolve } from "node:path"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import React from "react"
 import { createReactNativeMock, reactNativeMockBase } from "../../../test/react-native-mock"
@@ -151,6 +152,11 @@ mock.module("react-native", () =>
   }),
 )
 
+mock.module(resolve(import.meta.dir, "../../../lib/auth-client"), () => ({
+  authClient: { getCookie: () => null },
+  autoSignInLocally: async () => {},
+}))
+
 // Icons come from the shared stub that `test/testing-library.ts` preloads.
 // A per-file `mock.module('lucide-react-native', …)` would narrow the module
 // process-wide and strip every icon it omits for later test files.
@@ -242,13 +248,14 @@ function renderChatInput() {
 }
 
 describe("ChatInput — native caret regression guard", () => {
-  test("animates prominent height changes and fades the stable placeholder", () => {
+  test("animates prominent height changes and removes the placeholder while typing", async () => {
     const input = renderChatInput()
     const contentSizeChangeBeforeTyping = latestContentSizeChange
 
-    act(() => {
+    await act(async () => {
       fireEvent.change(input, { target: { value: "hello" } })
       contentSizeChangeBeforeTyping?.({ nativeEvent: { contentSize: { height: 54 } } })
+      await new Promise((resolve) => setTimeout(resolve, 32))
     })
 
     expect(
@@ -260,7 +267,10 @@ describe("ChatInput — native caret regression guard", () => {
       ),
     ).toBe(true)
 
-    expect(screen.getByText("Ask Shogo...")).toBeTruthy()
+    // The placeholder must be removed from the tree as soon as text exists;
+    // fading an overlaid label leaves a visible ghost during native
+    // compositing.
+    expect(screen.queryByText("Ask Shogo...")).toBeNull()
     expect(
       animationConfigs.some(
         (config) =>
@@ -270,9 +280,10 @@ describe("ChatInput — native caret regression guard", () => {
       ),
     ).toBe(true)
 
-    act(() => {
+    await act(async () => {
       fireEvent.change(input, { target: { value: "" } })
       latestContentSizeChange?.({ nativeEvent: { contentSize: { height: 22 } } })
+      await new Promise((resolve) => setTimeout(resolve, 32))
     })
 
     expect(
@@ -291,6 +302,28 @@ describe("ChatInput — native caret regression guard", () => {
           config.useNativeDriver === true,
       ),
     ).toBe(true)
+  })
+
+  test("coalesces repeated content-size measurements to the latest height", async () => {
+    const input = renderChatInput()
+    act(() => {
+      fireEvent.change(input, { target: { value: "hello" } })
+    })
+    const reportContentSize = latestContentSizeChange
+    animationConfigs.length = 0
+
+    act(() => {
+      reportContentSize?.({ nativeEvent: { contentSize: { height: 54 } } })
+      reportContentSize?.({ nativeEvent: { contentSize: { height: 80 } } })
+    })
+
+    expect(animationConfigs.some((config) => config.toValue === 54)).toBe(false)
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 32))
+    })
+
+    expect(animationConfigs.some((config) => config.toValue === 80)).toBe(true)
   })
 
   test("on native, each keystroke commits synchronously (no rAF delay) so the controlled value never lags the native view", async () => {

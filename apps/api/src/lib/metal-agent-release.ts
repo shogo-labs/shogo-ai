@@ -32,6 +32,27 @@ export interface AgentRelease {
   sha256: string
   /** When the golden rootfs (runtime image) changed too, not just agent code. */
   rebuildRootfs?: boolean
+  /**
+   * Immutable runtime image tag the rebuild must bake (`...:<env>-multiarch-<sha>`),
+   * so a rebuild that runs before the image is published fails and retries
+   * instead of baking whatever `-latest` points at. Only kept on rebuild releases.
+   */
+  runtimeImage?: string
+  /** Commit the rebuilt rootfs must report in /etc/shogo-runtime-revision. */
+  runtimeRevision?: string
+}
+
+const REVISION_RE = /^[0-9a-f]{7,64}$/
+
+/** The rebuild fields of a release, normalized. Dropped when it doesn't rebuild. */
+function rootfsFields(rel: Partial<AgentRelease>): Partial<AgentRelease> {
+  if (!rel.rebuildRootfs) return {}
+  const out: Partial<AgentRelease> = { rebuildRootfs: true }
+  if (typeof rel.runtimeImage === 'string' && rel.runtimeImage.trim()) out.runtimeImage = rel.runtimeImage.trim()
+  if (typeof rel.runtimeRevision === 'string' && rel.runtimeRevision.trim()) {
+    out.runtimeRevision = rel.runtimeRevision.trim().toLowerCase()
+  }
+  return out
 }
 
 /** region → channel → release. */
@@ -58,7 +79,7 @@ export function resolveDesiredAgent(region: string, channel: string, channels: F
     version: rel.version,
     bundleUrl: rel.bundleUrl,
     sha256: rel.sha256,
-    ...(rel.rebuildRootfs ? { rebuildRootfs: true } : {}),
+    ...rootfsFields(rel),
     channel: wanted ? channel : 'stable',
   }
 }
@@ -89,6 +110,9 @@ export async function setFleetChannelRelease(
   if (!release?.version || !release?.bundleUrl || !release?.sha256) {
     throw new Error('release requires version, bundleUrl and sha256')
   }
+  if (release.runtimeRevision && !REVISION_RE.test(String(release.runtimeRevision).trim().toLowerCase())) {
+    throw new Error('runtimeRevision must be a hex commit sha')
+  }
   const channels = await getFleetChannels()
   channels[region] = {
     ...(channels[region] ?? {}),
@@ -96,7 +120,7 @@ export async function setFleetChannelRelease(
       version: release.version,
       bundleUrl: release.bundleUrl,
       sha256: release.sha256,
-      ...(release.rebuildRootfs ? { rebuildRootfs: true } : {}),
+      ...rootfsFields(release),
     },
   }
   const value = JSON.stringify(channels)

@@ -43,6 +43,7 @@ import {
   type AttachMode,
 } from '../services/workspace-session.service'
 import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
+import { readWorkspaceSessionRuntimeArgs, type WorkspaceSessionRuntimeArgs } from '../lib/workspace-runtime-args'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
@@ -107,65 +108,15 @@ async function stopAnchorRuntime(anchorProjectId: string, manager?: any): Promis
 }
 
 /**
- * Anchor-aware runtime resolution opts for a session.
- *
- * A workspace session can be PROJECT-PINNED: its `contextId` is the anchor
- * project of an anchor-keyed merged-root runtime (the universal "every
- * project runs on the workspace runtime" path). When pinned we tell the
- * resolver the anchor (so it keys `ws:proj:<anchor>` + adds the anchor's
- * linked folders) and which attached projects are read-only. Home/workspace
- * sessions (no `contextId`) resolve the workspace-keyed runtime as before.
- */
-async function anchorRuntimeOpts(
-  sessionId: string,
-  attached: { projectId: string; attachMode: AttachMode }[],
-): Promise<{ anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] }> {
-  let anchorProjectId: string | undefined
-  try {
-    const session = (await prisma.chatSession.findUnique({
-      where: { id: sessionId },
-      select: { contextId: true } as any,
-    })) as { contextId?: string | null } | null
-    anchorProjectId = session?.contextId ?? undefined
-  } catch {
-    anchorProjectId = undefined
-  }
-  if (!anchorProjectId) return {}
-
-  const readonlyProjectIds = attached
-    .filter((a) => a.attachMode === 'readonly')
-    .map((a) => a.projectId)
-
-  let localFolders: string[] = []
-  try {
-    const folders = (await prisma.projectFolder.findMany({
-      where: { projectId: anchorProjectId },
-      select: { path: true },
-    })) as Array<{ path: string }>
-    localFolders = folders.map((f) => f.path).filter((p) => typeof p === 'string' && p.length > 0)
-  } catch {
-    localFolders = []
-  }
-
-  return { anchorProjectId, localFolders, readonlyProjectIds }
-}
-
-/**
  * Load the runtime resolution inputs for a session: the attached project
  * ids plus the anchor-aware extras (anchor, linked folders, read-only set).
- * One call so every route resolves the same merged-root runtime.
+ * One call so every route resolves the same merged-root runtime. Upgrades a
+ * legacy project session first, so the read sees its final attachments.
  */
-async function loadRuntimeArgs(workspaceId: string, sessionId: string): Promise<{
-  attachedProjectIds: string[]
-  extra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] }
-}> {
+async function loadRuntimeArgs(workspaceId: string, sessionId: string): Promise<WorkspaceSessionRuntimeArgs> {
   const upgradedAnchorId = await upgradeProjectSessionToWorkspace(workspaceId, sessionId)
   if (upgradedAnchorId) await syncPinnedSessionAttachments(upgradedAnchorId, sessionId)
-  await assertWorkspaceSessionInWorkspace(workspaceId, sessionId)
-  const attached = await getAttachedProjects(sessionId)
-  const attachedProjectIds = attached.map((a) => a.projectId)
-  const extra = await anchorRuntimeOpts(sessionId, attached)
-  return { attachedProjectIds, extra }
+  return readWorkspaceSessionRuntimeArgs(workspaceId, sessionId)
 }
 
 export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {

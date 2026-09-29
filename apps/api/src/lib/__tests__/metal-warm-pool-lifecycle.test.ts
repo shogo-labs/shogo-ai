@@ -71,6 +71,31 @@ describe('MetalWarmPoolController lifecycle', () => {
     expect(status).toEqual({ exists: false, ready: false, replicas: 0 })
   })
 
+  it('getRuntimeHostStatus returns the host, region and rootfs/activity fields', async () => {
+    const body = { exists: true, ready: true, replicas: 1, state: 'assigned', rootfsFresh: false, assignedAt: 5, lastRealActivityAt: 7, realIdleMs: 900, activeStreams: 0 }
+    const impl = (async (url: string) => {
+      const path = new URL(url).pathname
+      if (path === '/assign') return new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })
+      return new Response(JSON.stringify(body), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), impl)
+    c.registerHost({ ...REG, rootfsSha: 'abc' })
+    await c.getMetalProjectUrl('ws:proj:p1')
+
+    expect(await c.getRuntimeHostStatus('ws:proj:p1')).toEqual({
+      hostId: 'dal-1',
+      region: 'us',
+      state: 'assigned',
+      rootfsFresh: false,
+      assignedAt: 5,
+      lastRealActivityAt: 7,
+      realIdleMs: 900,
+      activeStreams: 0,
+    })
+    expect(await c.getRuntimeHostStatus('ws:proj:never-opened')).toBeNull()
+    expect((await c.getFleetStatus()).hosts[0].rootfsSha).toBe('abc')
+  })
+
   it('stopProject POSTs /stop to the placed host', async () => {
     const { impl, calls } = recordingFetch()
     const c = new MetalWarmPoolController(fakeEnv(), impl)
@@ -100,7 +125,31 @@ describe('MetalWarmPoolController lifecycle', () => {
     const c = new MetalWarmPoolController(fakeEnv(), impl)
     c.registerHost(REG)
     await c.getMetalProjectUrl('p1')
-    expect(await c.stopProject('p1')).toEqual({ suspended: true, busy: false })
+    expect(await c.stopProject('p1')).toEqual({ suspended: true, busy: false, memBytes: 123 })
+  })
+
+  it('stopProject returns once /status shows the runtime suspended, without waiting for the durable upload', async () => {
+    process.env.METAL_STOP_CONFIRM_POLL_MS = '5'
+    let statusCalls = 0
+    const impl = (async (url: string) => {
+      const path = new URL(url).pathname
+      if (path === '/assign') return new Response(JSON.stringify({ url: 'http://10.8.0.2:8080', mode: 'assigned' }), { status: 200 })
+      if (path === '/stop') return new Promise<Response>(() => {})
+      if (path === '/status') {
+        const state = ++statusCalls < 3 ? 'assigned' : 'suspended'
+        return new Response(JSON.stringify({ exists: true, ready: state === 'assigned', state }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }) as any
+    try {
+      const c = new MetalWarmPoolController(fakeEnv(), impl)
+      c.registerHost(REG)
+      await c.getMetalProjectUrl('p1')
+      expect(await c.stopProject('p1')).toEqual({ suspended: true, busy: false })
+      expect(statusCalls).toBe(3)
+    } finally {
+      delete process.env.METAL_STOP_CONFIRM_POLL_MS
+    }
   })
 
   it('stopProject reports busy (not suspended) when the agent refuses an active-message project', async () => {

@@ -464,6 +464,28 @@ export async function publishProject(
   })
 }
 
+export interface SharedFileResult {
+  url: string
+  expiresAt: string
+  path: string
+}
+
+export interface SharedFileOptions {
+  path: string
+  expiresInDays?: number
+}
+
+export async function createSharedFileLink(
+  projectId: string,
+  opts: SharedFileOptions,
+): Promise<CheckpointCallResult<SharedFileResult>> {
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/shared-files`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    parse: (j) => j as SharedFileResult,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Project lifecycle wrappers — back the `project_*` / `system_apply` tools
 // (project-tools.ts). Routes live in apps/api/src/routes/internal.ts under

@@ -19,6 +19,7 @@ import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { getStreamFinishReason } from './stream-finish'
+import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
   readFileSync,
@@ -79,7 +80,9 @@ import {
   createTagLocal,
   deleteTagLocal,
   getHeadSha,
-  adoptHydratedRepo,
+  adoptHydratedRepoBefore,
+  AdoptDeadlineError,
+  normalizeKeepPaths,
   repoStoreConfigFromEnv,
   gatherCommitMeta,
   ensureLfsRepoSetup,
@@ -847,7 +850,13 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
-    return { activeSessions: stats.length, lastActivityAt: lastSessionActivity, activeStreams, repoHeadSha: cachedRepoHeadSha }
+    return {
+      activeSessions: stats.length,
+      lastActivityAt: lastSessionActivity,
+      activeStreams,
+      repoHeadSha: cachedRepoHeadSha,
+      previewHealth: safePreviewHealth(),
+    }
   },
   getHealthExtra: () => ({
     gateway: agentGateway?.getStatus() ?? null,
@@ -1905,7 +1914,8 @@ app.post('/agent/chat', async (c) => {
       // Periodic seq heartbeat. The client uses this to know how many
       // buffered chunks it has already received so it can resume with
       // `?fromSeq=N` on a premature disconnect without re-rendering text
-      // it has already seen.
+      // it has already seen. Transient: the AI SDK would otherwise append
+      // a message part every 250ms for the whole turn.
       const seqHeartbeat = setInterval(() => {
         const seq = bufWriter.lastSeq
         if (seq <= 0) return
@@ -1913,6 +1923,7 @@ app.post('/agent/chat', async (c) => {
           writer.write({
             type: 'data-turn-seq',
             data: { turnId, seq },
+            transient: true,
           } as any)
         } catch {
           clearInterval(seqHeartbeat)
@@ -2536,6 +2547,7 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager } from './preview-manager'
+import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
 import { previewConsoleLogPath, ensureRuntimeLogDir } from './runtime-log-paths'
 import { scheduleLogWrite, flushAllLogWrites } from './runtime-log-writer'
 
@@ -3039,6 +3051,9 @@ const EXPORT_FLUSH_TIMEOUT_MS = 20_000
  */
 async function flushGitBeforeExport(dir: string): Promise<void> {
   if (!gitSyncInstance || dir !== WORKSPACE_DIR) return
+  // Mid-turn edits are committed at turn-complete; committing here would
+  // create a checkpoint for each tool call during a host-driven export.
+  if (!shouldFlushGitBeforeExport(activeStreams)) return
   const sync = gitSyncInstance
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -3159,7 +3174,9 @@ app.post('/pool/repo-hydrated', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   // Capability probe: the host asks before staging so an old guest never
   // ends up with a stray `.git` inside its working tree.
-  if (body?.probe === true) return c.json({ ok: true, supported: true })
+  // `deadline` tells the host this guest honours `timeoutMs` and `keepPaths`;
+  // an older one resets the whole tree whenever it gets round to it.
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3167,12 +3184,29 @@ app.post('/pool/repo-hydrated', async (c) => {
     return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
   }
   if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
-
-  await gitLayerReady.catch(() => {})
-  const sync = gitSyncInstance
-  await sync?.pause()
+  let keepPaths: string[]
   try {
-    const res = await adoptHydratedRepo(WORKSPACE_DIR, stagingDir, { logger: console })
+    keepPaths = normalizeKeepPaths(body?.keepPaths)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid keepPaths' }, 400)
+  }
+
+  // The host stops waiting after `timeoutMs` and treats this VM's repo as
+  // untrusted. Swapping `.git` and resetting the tree after that point rewrites
+  // the workspace behind the host's back, so past the deadline we decline and
+  // leave the hydrated tree exactly as the host last saw it.
+  const timeoutMs = Number(body?.timeoutMs)
+  const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : null
+  let sync = null as GitWorkspaceSync | null
+  try {
+    const res = await adoptHydratedRepoBefore(WORKSPACE_DIR, stagingDir, {
+      deadline,
+      ready: gitLayerReady,
+      // Resumed below, once the LFS pull is done too.
+      pause: () => (sync = gitSyncInstance)?.pause(),
+      logger: console,
+      keepPaths,
+    })
     if (res.headSha) cachedRepoHeadSha = res.headSha
     if (res.reset && isLfsActive()) {
       // Smudge is skipped on checkout, so files the reset rewrote may be LFS
@@ -3187,6 +3221,10 @@ app.post('/pool/repo-hydrated', async (c) => {
     if (res.reset) scheduleHydrateRebuild()
     return c.json({ ok: true, ...res })
   } catch (err: any) {
+    if (err instanceof AdoptDeadlineError) {
+      console.warn('[pool/repo-hydrated] host deadline passed before the repo could be adopted — declining')
+      return c.json({ error: err.message, adopted: false }, 504)
+    }
     console.error('[pool/repo-hydrated] failed:', err?.message ?? err)
     return c.json({ error: err?.message ?? 'repo adopt failed' }, 500)
   } finally {
@@ -3283,6 +3321,43 @@ app.post('/pool/export-data', async (c) => {
   } finally {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
+})
+
+/**
+ * Every PreviewManager this runtime has built, keyed by project id. The root
+ * manager is included (it runs the sidecar outside workspace mode).
+ */
+function allPreviewManagers(): Map<string, PreviewManager> {
+  const out = new Map<string, PreviewManager>(workspacePreviewManagers)
+  if (previewManager) {
+    const id = process.env.PROJECT_ID || 'root'
+    out.set(out.has(id) ? `${id}#root` : id, previewManager)
+  }
+  return out
+}
+
+/** Sidecar health for `/pool/activity`; undefined if polled before module init finishes. */
+function safePreviewHealth(): ReturnType<typeof sidecarHealth> | undefined {
+  try {
+    return sidecarHealth(allPreviewManagers())
+  } catch {
+    return undefined
+  }
+}
+
+// Metal suspend/resume hooks — see pool-lifecycle-hooks.ts.
+app.post('/pool/quiesce', async (c) => {
+  const projects = await quiesceSidecars(allPreviewManagers())
+  console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
+  return c.json({ ok: true, projects })
+})
+
+app.post('/pool/rehydrate', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const waitMs = Math.min(Math.max(Number(body?.waitMs) || 0, 0), 60_000)
+  const projects = await rehydrateSidecars(allPreviewManagers(), waitMs)
+  console.log(`[pool/rehydrate] ${JSON.stringify(projects)}`)
+  return c.json({ ok: true, projects })
 })
 
 // Alias for `/preview/restart`. The code-agent prompt and older SDK/template
@@ -6094,7 +6169,10 @@ async function initializeEssentials(): Promise<void> {
           if (sha) cachedRepoHeadSha = sha
         })
         .catch(() => { /* logged by the helper */ })
-      const lfCfg = largeFileSyncConfigFromEnv(WORKSPACE_DIR)
+      // A host-mediated guest holds no S3 credentials, so the SDK's provider
+      // chain can only fail — and on metal it takes minutes to do so, holding
+      // up `gitLayerReady` and with it the host's repo hydrate.
+      const lfCfg = isHostMediatedDurability() ? null : largeFileSyncConfigFromEnv(WORKSPACE_DIR)
       if (lfCfg) {
         try {
           await restoreLargeFiles(lfCfg)
@@ -6402,6 +6480,11 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // Gate the gateway's deps-dependent work (the LSP) on the background install
   // kicked off above / in essentials, instead of blocking the whole start.
   agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)
+  if (IS_WORKSPACE_RUNTIME) {
+    agentGateway.setWorkspaceRebuild(effectiveWorkspaceProjectIds, (projectId: string) => {
+      workspacePreviewManagers.get(projectId)?.requestWebRebuild()
+    })
+  }
   // Wire the runtime's root-serving PreviewManager into the gateway so prompt
   // builders/tools query the active backend, and vite-watch build completion
   // emits canvas reload events for the preview the user is actually viewing.

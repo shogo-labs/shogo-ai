@@ -13,7 +13,7 @@
  * build pipeline runs.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdirSync } from 'fs'
+import { mkdirSync, writeFileSync } from 'fs'
 import * as realInternalApi from '../internal-api'
 import type { ToolContext } from '../gateway-tools'
 
@@ -22,6 +22,7 @@ mkdirSync(TEST_DIR, { recursive: true })
 
 let getPublishStateImpl: (projectId: string) => Promise<any>
 let publishProjectImpl: (projectId: string, opts: any) => Promise<any>
+let createSharedFileLinkImpl: (projectId: string, opts: any) => Promise<any>
 let publishCalls: Array<{ projectId: string; opts: any }> = []
 
 mock.module('../internal-api', () => ({
@@ -31,6 +32,7 @@ mock.module('../internal-api', () => ({
     publishCalls.push({ projectId, opts })
     return publishProjectImpl(projectId, opts)
   },
+  createSharedFileLink: (projectId: string, opts: any) => createSharedFileLinkImpl(projectId, opts),
 }))
 
 const { createTools } = await import('../gateway-tools')
@@ -57,8 +59,19 @@ function publishTool(ctx: ToolContext) {
   return t
 }
 
+function shareFileTool(ctx: ToolContext) {
+  const t = createTools(ctx).find((x) => x.name === 'share_file')
+  if (!t) throw new Error('share_file tool not found')
+  return t
+}
+
 async function run(ctx: ToolContext, params: Record<string, any> = {}) {
   const r = await publishTool(ctx).execute('cid', params)
+  return r.details as any
+}
+
+async function runShareFile(ctx: ToolContext, params: Record<string, any>) {
+  const r = await shareFileTool(ctx).execute('cid', params)
   return r.details as any
 }
 
@@ -82,6 +95,15 @@ const origFetch = globalThis.fetch
 beforeEach(() => {
   publishCalls = []
   getPublishStateImpl = async () => STATE_UNPUBLISHED
+  createSharedFileLinkImpl = async (_projectId, _opts) => ({
+    ok: true,
+    status: 200,
+    data: {
+      url: 'https://api.example/f/signed-token',
+      expiresAt: '2026-10-03T00:00:00.000Z',
+      path: 'report.pdf',
+    },
+  })
   publishProjectImpl = async (_p, o) => ({
     ok: true,
     status: 200,
@@ -93,6 +115,23 @@ beforeEach(() => {
     if (fetchThrows) throw new Error('net')
     return new Response('ok', { status: fetchStatus })
   }) as any
+})
+
+test('share_file validates and returns a signed download link', async () => {
+  writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
+  const result = await runShareFile(baseCtx(), { path: 'report.pdf', expires_in_days: 3 })
+  expect(result).toMatchObject({
+    ok: true,
+    url: 'https://api.example/f/signed-token',
+    filename: 'report.pdf',
+    path: 'report.pdf',
+    size: 9,
+  })
+})
+
+test('share_file rejects paths outside the workspace', async () => {
+  const result = await runShareFile(baseCtx(), { path: '../secret.txt' })
+  expect(result.error).toContain('relative workspace path')
 })
 
 afterEach(() => {

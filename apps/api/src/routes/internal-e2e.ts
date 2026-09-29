@@ -263,18 +263,72 @@ app.post('/suspend-runtime', async (c) => {
   try {
     const { getProjectSubstrate } = await import('../lib/substrate')
     const substrate = await getProjectSubstrate(projectId)
-    await substrate.stop(projectId)
+    let result: { suspended: boolean; busy: boolean } | undefined
+    if (substrate.kind === 'metal') {
+      result = await (substrate as import('../lib/substrate/metal-substrate').MetalSubstrate).suspend(projectId)
+    } else {
+      await substrate.stop(projectId)
+    }
     // eslint-disable-next-line no-console
     console.info(
       '[e2e-bootstrap] suspended runtime',
-      JSON.stringify({ projectId, substrate: substrate.kind }),
+      JSON.stringify({ projectId, substrate: substrate.kind, ...result }),
     )
-    return c.json({ ok: true, projectId, substrate: substrate.kind })
+    return c.json({ ok: true, projectId, substrate: substrate.kind, ...result })
   } catch (err: any) {
     // eslint-disable-next-line no-console
     console.error('[e2e-bootstrap] suspend-runtime failed', err)
     return c.json(
       { ok: false, error: 'suspend_failed', message: err?.message ?? 'unknown' },
+      500,
+    )
+  }
+})
+
+/**
+ * POST /api/internal/e2e/recycle-runtime
+ *
+ * Body: { projectId: string, force?: boolean }
+ *
+ * Runs the super-admin runtime recycle (lib/admin-runtime-recycle.ts): back up
+ * everything from the live guest, stop without a snapshot, cold-boot, and wait
+ * for the API server. Replies with the recycle's own status (200 recycled, 404
+ * no metal runtime, 409 a backup failed and nothing was removed) and body.
+ * Used by the runtime-recycle e2e to prove code and data survive. Gated by the
+ * same three guardrails as the subscription backdoor.
+ */
+app.post('/recycle-runtime', async (c) => {
+  if (!bootstrapEnabled()) {
+    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+  }
+  if (!secretMatches(c.req.header('x-e2e-bootstrap-secret'))) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+
+  let body: { projectId?: string; force?: boolean }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, error: 'invalid_json' }, 400)
+  }
+  const projectId = body.projectId?.trim()
+  if (!projectId) {
+    return c.json({ ok: false, error: 'projectId_required' }, 400)
+  }
+
+  try {
+    const { recycleRuntimes, defaultRecycleDeps } = await import('../lib/admin-runtime-recycle')
+    const result = await recycleRuntimes(
+      { projectId, force: body.force === true, reason: 'e2e recycle-runtime' },
+      { id: 'e2e-bootstrap' },
+      await defaultRecycleDeps('e2e-bootstrap'),
+    )
+    return c.json(result.body, result.status as 200)
+  } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error('[e2e-bootstrap] recycle-runtime failed', err)
+    return c.json(
+      { ok: false, error: 'recycle_failed', message: err?.message ?? 'unknown' },
       500,
     )
   }

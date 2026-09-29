@@ -183,6 +183,23 @@ export async function resolveEffectiveAgentModelDefaults(
   }
 }
 
+/**
+ * Resolve one Auto tier to a concrete model for server-initiated surfaces.
+ *
+ * Uses the same Auto tier map agent runtimes get: the connected cloud's when
+ * this is a cloud-forwarding local instance (its ids may be opaque cloud DB
+ * ids, which the in-process proxy forwards unchanged), otherwise this
+ * server's entitlement-capped defaults.
+ */
+export async function resolveAutoTierModel(
+  workspaceId: string,
+  tier: AgentModelTier = 'standard',
+): Promise<AgentModelEntry> {
+  const cloudDefaults = await fetchCloudAgentModelDefaults()
+  if (cloudDefaults) return cloudDefaults.autoTiers[tier]
+  return (await resolveEffectiveAgentModelDefaults(workspaceId)).autoTiers[tier]
+}
+
 export function serializeAutoTierMapEnv(
   autoTiers: Partial<Record<AgentModelTier, AgentModelEntry>>,
 ): string | undefined {

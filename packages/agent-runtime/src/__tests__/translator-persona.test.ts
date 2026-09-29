@@ -5,6 +5,8 @@ import {
   TRANSLATOR_SYSTEM_PROMPT,
   TRANSLATOR_ELEVENLABS_TOOLS,
   TRANSLATOR_AI_SDK_TOOLS,
+  TRANSLATOR_CONTEXT_MARKER,
+  TRANSLATOR_LIVE_CONVERSATION_PROMPT,
   SEND_TO_CHAT_PARAMS,
   SET_MODE_PARAMS,
 } from '../voice-mode/translator-persona'
@@ -35,6 +37,13 @@ describe('translator-persona', () => {
     expect(Object.keys(TRANSLATOR_AI_SDK_TOOLS).sort()).toEqual(
       ['get_recent_activity', 'send_to_chat', 'set_mode'],
     )
+  })
+
+  test('GPT-Live conversation prompt carries the context marker and no tool names', () => {
+    expect(TRANSLATOR_LIVE_CONVERSATION_PROMPT).toContain(TRANSLATOR_CONTEXT_MARKER)
+    for (const name of Object.keys(TRANSLATOR_AI_SDK_TOOLS)) {
+      expect(TRANSLATOR_LIVE_CONVERSATION_PROMPT).not.toContain(name)
+    }
   })
 
   test('Zod schemas reject invalid modes and empty text', () => {

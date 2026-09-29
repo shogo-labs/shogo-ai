@@ -13,7 +13,16 @@
  */
 
 import type { ProjectSubstrate, PublishOpts, PublishResult, Resources, RuntimeStatus, RuntimeSummary, WakeOpts } from './types'
-import { getMetalWarmPoolController, type StopResult } from '../metal-warm-pool-controller'
+import { getMetalWarmPoolController, workspaceRuntimeKey, type StopResult } from '../metal-warm-pool-controller'
+
+/**
+ * A project's live runtime on metal is its anchored workspace runtime
+ * (`ws:proj:<id>`), not the bare project id. Lifecycle calls must address that
+ * key or the host treats the project as absent.
+ */
+export function projectRuntimeKey(projectId: string): string {
+  return workspaceRuntimeKey('', projectId)
+}
 
 /** The slice of MetalWarmPoolController this substrate needs (DI seam for tests). */
 export interface MetalBackend {
@@ -57,7 +66,7 @@ export class MetalSubstrate implements ProjectSubstrate {
   }
 
   async getStatus(projectId: string): Promise<RuntimeStatus> {
-    return this.backend.getProjectStatus(projectId)
+    return this.backend.getProjectStatus(projectRuntimeKey(projectId))
   }
 
   async wake(projectId: string): Promise<{ ready: boolean; url?: string }> {
@@ -72,11 +81,20 @@ export class MetalSubstrate implements ProjectSubstrate {
   }
 
   async stop(projectId: string): Promise<void> {
-    await this.backend.stopProject(projectId)
+    await this.suspend(projectId)
+  }
+
+  /** `stop`, reporting whether the host suspended it or refused (busy turn). */
+  async suspend(projectId: string): Promise<StopResult> {
+    return this.backend.stopProject(projectRuntimeKey(projectId))
   }
 
   async destroy(projectId: string): Promise<void> {
-    await this.backend.destroyProject(projectId)
+    // The bare key covers runtimes booted before the workspace-runtime cutover.
+    await Promise.all([
+      this.backend.destroyProject(projectRuntimeKey(projectId)),
+      this.backend.destroyProject(projectId),
+    ])
   }
 
   async listAll(): Promise<RuntimeSummary[]> {
@@ -87,7 +105,7 @@ export class MetalSubstrate implements ProjectSubstrate {
     // Firecracker can't hot-change vCPU/RAM: the controller pushes the always-on
     // flag live to the owning host and the new size lands on the next cold
     // boot/resume (the assign env, derived from the tier, is re-read then).
-    await this.backend.resizeProject(projectId, {
+    await this.backend.resizeProject(projectRuntimeKey(projectId), {
       cpu: resources.cpu,
       memory: resources.memory,
       disk: resources.disk,

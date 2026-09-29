@@ -34,6 +34,10 @@ const BARE_PATH_RE = new RegExp(
   `(?<![A-Za-z0-9_./:-])(?!https?:\\/\\/|www\\.)(?:${SEGMENT}/)+${SEGMENT}\\.[A-Za-z0-9]{1,12}(?![A-Za-z0-9_/])`,
   "g",
 )
+const BARE_URL_RE =
+  /(?<![<A-Za-z0-9_@./:-])((?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:\/[^\s<>"'`*]*)?)/g
+const PUBLIC_TLD_RE =
+  /^(?:com|org|net|io|ai|co|dev|edu|gov|me|ly|xyz|info|biz|tech|cloud|ca|uk|us|de|fr|in|jp|au)$/i
 
 export function fileHref(path: string): string {
   return `${FILE_HREF_PREFIX}${encodeURIComponent(path)}`
@@ -114,6 +118,78 @@ export function linkifyFilePaths(markdown: string): string {
   text = unmask(text, links, "LINK")
   text = unmask(text, fences, "FENCE")
   return text
+}
+
+function hasUnmatchedOpening(value: string, opening: string, closing: string): boolean {
+  let depth = 0
+  for (const char of value) {
+    if (char === opening) depth += 1
+    if (char === closing) depth = Math.max(0, depth - 1)
+  }
+  return depth > 0
+}
+
+function splitTrailingUrlPunctuation(match: string): {
+  candidate: string
+  trailing: string
+} {
+  let candidate = match
+  let trailing = ""
+
+  while (candidate) {
+    const char = candidate[candidate.length - 1]
+    if (!/[.,!?;:)\]}*_~"'>]/.test(char)) break
+    if (
+      (char === ")" && hasUnmatchedOpening(candidate.slice(0, -1), "(", ")")) ||
+      (char === "]" && hasUnmatchedOpening(candidate.slice(0, -1), "[", "]")) ||
+      (char === "}" && hasUnmatchedOpening(candidate.slice(0, -1), "{", "}"))
+    ) {
+      break
+    }
+    candidate = candidate.slice(0, -1)
+    trailing = char + trailing
+  }
+
+  return { candidate, trailing }
+}
+
+/**
+ * Make the domains people naturally type in chat clickable too. Markdown
+ * already handles explicit links, but bare `example.com` text otherwise
+ * remains plain text. Fences, inline code, existing links, emails, and file
+ * paths are masked so this does not alter code or workspace references.
+ */
+export function linkifyBareUrls(markdown: string): string {
+  const fences: string[] = []
+  const links: string[] = []
+  const inlineCode: string[] = []
+  let text = mask(markdown, FENCE_RE, fences, "FENCE")
+  text = mask(text, EXISTING_LINK_RE, links, "LINK")
+  text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
+
+  text = text.replace(BARE_URL_RE, (match) => {
+    const { candidate, trailing } = splitTrailingUrlPunctuation(match)
+    const host = candidate.split("/")[0]?.split(".").pop() ?? ""
+    const firstSegment = candidate.split("/")[0] ?? ""
+
+    // `src/file.ts` is a file path, not a web address. Keep it available to
+    // the file-path linkifier instead.
+    if (
+      !candidate ||
+      firstSegment.includes("@") ||
+      (candidate.includes("/") && !firstSegment.includes(".")) ||
+      !PUBLIC_TLD_RE.test(host)
+    ) {
+      return match
+    }
+
+    const href = `https://${candidate}`
+    return `[${candidate}](${href})${trailing}`
+  })
+
+  text = unmask(text, inlineCode, "CODE")
+  text = unmask(text, links, "LINK")
+  return unmask(text, fences, "FENCE")
 }
 
 export interface ResolvedChatFile {

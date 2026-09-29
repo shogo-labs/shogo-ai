@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, type Page } from "@playwright/test"
+import { request as playwrightRequest, test, type Page } from "@playwright/test"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -376,27 +376,125 @@ export async function bootstrapProSubscriptionViaApi(
  * open exercises the real reopen/resume path — a plain reload re-attaches to
  * the still-warm VM and would never catch a reopen/hydration regression.
  *
- * Returns `true` if the backdoor handled it, `false` when the secret isn't set
- * or the endpoint is disabled/5xx — callers should `test.skip` in that case.
+ * Without the secret it falls back to the user's own
+ * `POST /api/projects/:id/runtime/stop`, authenticated by the page session.
+ *
+ * Returns `true` only when the runtime was actually suspended. A metal host
+ * refuses while an agent turn is still in flight (`busy`), so that is retried
+ * for up to a minute. Returns `false` when neither path works — callers should
+ * `test.skip` in that case.
  */
+/** A metal suspend quiesces the guest and writes a snapshot before replying. */
+const SUSPEND_REQUEST_TIMEOUT_MS = 120_000
+
 export async function suspendRuntimeViaApi(page: Page, projectId: string): Promise<boolean> {
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
-  if (!secret) return false
-
   const base = bootstrapApiBase()
-  const res = await page.request
-    .post(`${base}/api/internal/e2e/suspend-runtime`, {
-      headers: {
-        "x-e2e-bootstrap-secret": secret,
-        "content-type": "application/json",
-      },
-      data: { projectId },
+  const deadline = Date.now() + 60_000
+
+  while (true) {
+    const res = secret
+      ? await page.request
+          .post(`${base}/api/internal/e2e/suspend-runtime`, {
+            headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+            data: { projectId },
+            timeout: SUSPEND_REQUEST_TIMEOUT_MS,
+          })
+          .catch(() => null)
+      : await page.request
+          .post(`${base}/api/projects/${projectId}/runtime/stop`, {
+            headers: { Origin: base, "content-type": "application/json" },
+            data: {},
+            timeout: SUSPEND_REQUEST_TIMEOUT_MS,
+          })
+          .catch(() => null)
+    if (!res || !res.ok()) return false
+    const body = await res.json().catch(() => ({}))
+    if (secret ? body?.ok !== true : body?.success !== true) return false
+    // Knative replies carry no suspend result; the stop itself is the signal.
+    if (body?.suspended === undefined && body?.substrate !== "metal") return true
+    if (body?.suspended === true) return true
+    if (body?.busy !== true || Date.now() > deadline) return false
+    await page.waitForTimeout(5_000)
+  }
+}
+
+export interface RecycleViaApiResult {
+  status: number
+  body: {
+    ok?: boolean
+    error?: string
+    results?: Array<{
+      key: string
+      found: boolean
+      ok: boolean
+      report?: { aborted: boolean; steps: Array<{ step: string; ok: boolean; detail?: string }> }
+    }>
+    coldBoot?: { ok: boolean; apiReady: boolean; apiServerPhase: string | null; waitedMs: number }
+  }
+}
+
+/** True when `recycleRuntimeViaApi` has credentials to try. */
+export function canRecycleViaApi(): boolean {
+  return (
+    !!process.env.SHOGO_E2E_BOOTSTRAP_SECRET ||
+    (!!process.env.E2E_ADMIN_EMAIL && !!process.env.E2E_ADMIN_PASSWORD)
+  )
+}
+
+/**
+ * Recycle a project's runtime: back up everything, stop without a snapshot,
+ * cold-boot and wait for the API server. The call can take a few minutes.
+ *
+ * Uses the e2e backdoor (apps/api/src/routes/internal-e2e.ts →
+ * POST /recycle-runtime) when `SHOGO_E2E_BOOTSTRAP_SECRET` is set, otherwise
+ * signs in as a super-admin (`E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD`) and calls
+ * POST /api/admin/runtimes/recycle, the route support uses.
+ *
+ * Returns `null` when neither is configured or the backdoor is disabled —
+ * callers should `test.skip` in that case. Otherwise returns the recycle's own
+ * status and body (200 recycled, 404 no metal runtime, 409 aborted).
+ */
+export async function recycleRuntimeViaApi(
+  page: Page,
+  projectId: string,
+): Promise<RecycleViaApiResult | null> {
+  const base = bootstrapApiBase()
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (secret) {
+    const res = await page.request
+      .post(`${base}/api/internal/e2e/recycle-runtime`, {
+        headers: {
+          "x-e2e-bootstrap-secret": secret,
+          "content-type": "application/json",
+        },
+        data: { projectId },
+        timeout: 600_000,
+      })
+      .catch(() => null)
+    if (!res || res.status() === 503 || res.status() === 401) return null
+    return { status: res.status(), body: await res.json().catch(() => ({})) }
+  }
+
+  const email = process.env.E2E_ADMIN_EMAIL
+  const password = process.env.E2E_ADMIN_PASSWORD
+  if (!email || !password) return null
+  const admin = await playwrightRequest.newContext({
+    baseURL: base,
+    extraHTTPHeaders: { Origin: base },
+  })
+  try {
+    const signIn = await admin.post("/api/auth/sign-in/email", { data: { email, password } })
+    if (!signIn.ok()) throw new Error(`E2E_ADMIN sign-in failed: HTTP ${signIn.status()}`)
+    const res = await admin.post("/api/admin/runtimes/recycle", {
+      data: { projectId, reason: "e2e runtime-recycle" },
+      timeout: 600_000,
     })
-    .catch(() => null)
-  if (!res) return false
-  if (!res.ok()) return false
-  const body = await res.json().catch(() => ({ ok: false }))
-  return body?.ok === true
+    if (res.status() === 403) throw new Error(`${email} is not a super_admin`)
+    return { status: res.status(), body: await res.json().catch(() => ({})) }
+  } finally {
+    await admin.dispose()
+  }
 }
 
 export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {

@@ -114,7 +114,7 @@ describe('PlatformApi.getConfig', () => {
       localMode: true,
       features: {
         billing: false, admin: false, oauth: true, analytics: false,
-        publishing: false, marketplace: true, ezMode: false, phoneChannel: false,
+        publishing: false, marketplace: true, ezMode: false, ezModeVoiceProvider: 'elevenlabs', phoneChannel: false,
         personalShell: true, agentShell: false, mobileAgentShell: false,
       },
     }
@@ -491,6 +491,27 @@ describe('PlatformApi.putFeatureFlags', () => {
           marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
       },
     })
+  })
+})
+
+describe('PlatformApi EZ Mode voice provider', () => {
+  test('reads the configured provider', async () => {
+    const { api, http } = mkApi()
+    http.setGet('/api/admin/settings/ez-mode-voice-provider', { provider: 'gpt-live' })
+    expect(await api.getEzModeVoiceProvider()).toEqual({ provider: 'gpt-live' })
+  })
+
+  test('writes the configured provider', async () => {
+    const { api, http } = mkApi()
+    http.setRequest('PUT', '/api/admin/settings/ez-mode-voice-provider', {
+      ok: true,
+      provider: 'elevenlabs',
+    })
+    expect(await api.putEzModeVoiceProvider('elevenlabs')).toEqual({
+      ok: true,
+      provider: 'elevenlabs',
+    })
+    expect(http.calls[0]!.body).toEqual({ provider: 'elevenlabs' })
   })
 })
 

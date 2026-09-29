@@ -18,6 +18,7 @@ export interface PlatformConfig {
     publishing: boolean
     marketplace: boolean
     ezMode: boolean
+    ezModeVoiceProvider: 'gpt-live' | 'elevenlabs'
     phoneChannel: boolean
     /** Companion-shell rollout kill switch — see the API's `/api/config` handler. */
     personalShell: boolean
@@ -39,6 +40,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     publishing: true,
     marketplace: true,
     ezMode: true,
+    ezModeVoiceProvider: 'gpt-live',
     phoneChannel: true,
     personalShell: true,
     agentShell: false,
@@ -57,6 +59,7 @@ const LOCAL_CONFIG: PlatformConfig = {
     publishing: false,
     marketplace: false,
     ezMode: true,
+    ezModeVoiceProvider: 'elevenlabs',
     phoneChannel: false,
     personalShell: true,
     agentShell: true,
@@ -112,6 +115,9 @@ async function fetchConfig(): Promise<PlatformConfig> {
       localMode: data.localMode || isLocalMode(),
       features: {
         ...data.features,
+        ezModeVoiceProvider:
+          data.features?.ezModeVoiceProvider ??
+          (data.localMode || isLocalMode() ? 'elevenlabs' : 'gpt-live'),
         agentShell: data.localMode || isLocalMode() ? true : data.features.agentShell,
         mobileAgentShell: data.localMode || isLocalMode() ? true : data.features.mobileAgentShell,
       },

@@ -234,6 +234,10 @@ export interface MetalHostRegistration {
    * the node-agent. Absent on a host that has never rebuilt, or an agent
    * predating this field. */
   rootfsSha?: string
+  /** Commit stamped inside the host's golden rootfs (/etc/shogo-runtime-revision),
+   * i.e. what the image pull actually returned. The rootfs release gate reads
+   * this. Absent for images built before the stamp existed. */
+  rootfsRevision?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
   /**
    * Per-VM-class capacity (Phase 1 docker project class). Absent on older
@@ -284,6 +288,12 @@ interface HostEntry extends MetalHostRegistration {
 /** A host is considered live if it heartbeat within this window. */
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
+/**
+ * Upper bound on a host's /stop reply, which includes the durable snapshot
+ * upload. Kept under the ~100s edge proxy limit because the user stop route
+ * waits on it.
+ */
+const STOP_TIMEOUT_MS = parseInt(process.env.METAL_STOP_TIMEOUT_MS || '90000', 10)
 
 /**
  * Did this assign fail because we stopped waiting, rather than because the host
@@ -381,6 +391,38 @@ export interface StopResult {
   suspended: boolean
   /** The node-agent refused because the project has an active agent message. */
   busy: boolean
+  /** Size of the memory snapshot a fresh suspend wrote (absent otherwise). */
+  memBytes?: number
+}
+
+/** A runtime's state on the host that holds it (the node-agent `/status` body). */
+export interface RuntimeHostStatus {
+  hostId: string
+  region: string
+  state: 'assigned' | 'suspended' | 'none'
+  /** Running guest / local snapshot is on the host's current rootfs. Absent on older agents. */
+  rootfsFresh?: boolean
+  assignedAt?: number
+  lastRealActivityAt?: number
+  realIdleMs?: number
+  activeStreams?: number
+}
+
+export interface RecycleResult {
+  /** A host holds (or last held) this runtime. */
+  found: boolean
+  /** Backed up and stopped without a snapshot; the next open cold-boots. */
+  ok: boolean
+  hostId?: string
+  /** The host's per-step report (see metal-agent `RecycleReport`). */
+  report?: {
+    aborted?: boolean
+    forced?: boolean
+    resumed?: boolean
+    state?: string
+    steps?: Array<{ step: string; ok: boolean; detail?: string }>
+  }
+  error?: string
 }
 
 type EnvBuilder = (
@@ -434,6 +476,9 @@ export class MetalWarmPoolController {
       agentPort: reg.agentPort,
       region: reg.region,
       arch: reg.arch,
+      agentVersion: reg.agentVersion,
+      rootfsSha: reg.rootfsSha,
+      rootfsRevision: reg.rootfsRevision,
       capacity: reg.capacity,
       load: reg.load,
       disk: reg.disk,
@@ -880,6 +925,39 @@ export class MetalWarmPoolController {
   }
 
   /**
+   * Full host-side state of a runtime key, including rootfs freshness and user
+   * activity. Null when the key isn't placed on any known host, or the host
+   * didn't answer.
+   */
+  async getRuntimeHostStatus(runtimeKey: string): Promise<RuntimeHostStatus | null> {
+    const host = await this.hostForProject(runtimeKey)
+    if (!host) return null
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/status`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId: runtimeKey }),
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return null
+      const b = (await res.json()) as Partial<RuntimeHostStatus> & { exists?: boolean; ready?: boolean }
+      const state = b.state ?? (b.ready ? 'assigned' : b.exists ? 'suspended' : 'none')
+      return {
+        hostId: host.hostId,
+        region: host.region,
+        state,
+        rootfsFresh: b.rootfsFresh,
+        assignedAt: b.assignedAt,
+        lastRealActivityAt: b.lastRealActivityAt,
+        realIdleMs: b.realIdleMs,
+        activeStreams: b.activeStreams,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Stop a project (suspend-to-snapshot, freeing host RAM) — the metal analog of
    * scaling a Knative service to zero. Best-effort and idempotent: no live
    * placement, a down host, or an already-stopped project are all no-ops.
@@ -895,12 +973,35 @@ export class MetalWarmPoolController {
     this.urlCache.delete(projectId)
     const host = await this.hostForProject(projectId)
     if (!host) return { suspended: false, busy: false }
+    // The host replies to /stop only after uploading the durable snapshot, but
+    // the runtime is suspended (and reports so on /status) before that upload.
+    const pollMs = parseInt(process.env.METAL_STOP_CONFIRM_POLL_MS || '3000', 10)
+    return new Promise<StopResult>((resolve) => {
+      let done = false
+      const finish = (r: StopResult) => {
+        if (done) return
+        done = true
+        resolve(r)
+      }
+      void this.requestStop(host, projectId).then(finish)
+      void (async () => {
+        while (!done) {
+          await new Promise<void>((r) => setTimeout(r, pollMs).unref?.())
+          if (done) return
+          const st = await this.getRuntimeHostStatus(projectId)
+          if (st?.state === 'suspended') finish({ suspended: true, busy: false })
+        }
+      })()
+    })
+  }
+
+  private async requestStop(host: HostEntry, projectId: string): Promise<StopResult> {
     try {
       const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
         method: 'POST',
         headers: this.agentHeaders(),
         body: JSON.stringify({ projectId }),
-        signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+        signal: AbortSignal.timeout(STOP_TIMEOUT_MS),
       })
       const body: any = await res.json().catch(() => ({}))
       const busy = body?.busy === true
@@ -910,9 +1011,22 @@ export class MetalWarmPoolController {
       if (busy) {
         console.log(`[MetalPool] stop ${projectId} on ${host.hostId} skipped: busy (active message)`)
       }
-      return { suspended, busy }
+      const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
+      return { suspended, busy, ...(memBytes !== undefined ? { memBytes } : {}) }
     } catch (err) {
-      console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`)
+      // The host answers /stop only once the snapshot is uploaded, which can
+      // outlast the timeout under load; by then the VM is usually suspended.
+      const settled = await this.getRuntimeHostStatus(projectId)
+      if (settled?.state === 'suspended') {
+        console.log(
+          `[MetalPool] stop ${projectId} on ${host.hostId}: /stop outlasted ${STOP_TIMEOUT_MS}ms, host reports it suspended`,
+        )
+        return { suspended: true, busy: false }
+      }
+      console.warn(
+        `[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}` +
+          (settled ? ` (host state: ${settled.state})` : ''),
+      )
       return { suspended: false, busy: false }
     }
   }
@@ -975,6 +1089,53 @@ export class MetalWarmPoolController {
     this.urlCache.delete(projectId)
     await this.registry.clearPlacement(projectId).catch(() => {})
     await this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+  }
+
+  /**
+   * Restart a runtime from a clean cold boot WITHOUT losing anything — the fix
+   * for a VM whose processes are wedged. A stop would suspend to a snapshot and
+   * the next open would resume the same wedged processes; `destroyProject`
+   * would drop the snapshot, which may hold the only copy of recent work.
+   *
+   * The owning host backs up source, git and database from the live guest
+   * (resuming it first if only a snapshot exists) and only then stops it
+   * without a snapshot. `buildEnv` supplies the same env an open would, for
+   * that resume. Without `force`, any failed backup aborts with nothing
+   * removed (`ok: false`, the host's report says which step failed).
+   */
+  async recycleRuntime(
+    runtimeKey: string,
+    opts: { force?: boolean; reason?: string; buildEnv?: () => Promise<Record<string, string>> } = {},
+  ): Promise<RecycleResult> {
+    this.urlCache.delete(runtimeKey)
+    const host = await this.hostForProject(runtimeKey)
+    if (!host) return { found: false, ok: false }
+    let env: Record<string, string> = {}
+    if (opts.buildEnv) {
+      try {
+        env = await opts.buildEnv()
+      } catch (err) {
+        console.warn(`[MetalPool] recycle ${runtimeKey}: env build failed (${(err as any)?.message ?? err}); resuming without env`)
+      }
+    }
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/recycle`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({ projectId: runtimeKey, force: !!opts.force, reason: opts.reason, env }),
+        // Backups of a large project can take minutes.
+        signal: AbortSignal.timeout(10 * 60_000),
+      })
+      const report: any = await res.json().catch(() => ({}))
+      if (res.status === 404) {
+        return { found: true, ok: false, hostId: host.hostId, error: 'host agent predates /recycle' }
+      }
+      return { found: true, ok: res.ok && report?.aborted === false, hostId: host.hostId, report }
+    } catch (err) {
+      return { found: true, ok: false, hostId: host.hostId, error: (err as any)?.message ?? String(err) }
+    } finally {
+      this.urlCache.delete(runtimeKey)
+    }
   }
 
   /**
@@ -1147,6 +1308,7 @@ export class MetalWarmPoolController {
           arch: h.arch,
           agentVersion: h.agentVersion,
           rootfsSha: h.rootfsSha,
+          rootfsRevision: h.rootfsRevision,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,
@@ -1191,6 +1353,7 @@ export class MetalWarmPoolController {
           arch: h.arch,
           agentVersion: h.agentVersion,
           rootfsSha: h.rootfsSha,
+          rootfsRevision: h.rootfsRevision,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,
@@ -1272,6 +1435,14 @@ export async function stopMetalProject(projectId: string): Promise<StopResult> {
 /** Permanently destroy a project's metal runtime fleet-wide (substrate.destroy). */
 export async function destroyMetalProject(projectId: string): Promise<void> {
   return getMetalWarmPoolController().destroyProject(projectId)
+}
+
+/** Back up and cold-restart a runtime without snapshot (admin recycle). */
+export async function recycleMetalRuntime(
+  runtimeKey: string,
+  opts?: { force?: boolean; reason?: string; buildEnv?: () => Promise<Record<string, string>> },
+): Promise<RecycleResult> {
+  return getMetalWarmPoolController().recycleRuntime(runtimeKey, opts)
 }
 
 /** Every project running/cached on the metal fleet (substrate.listAll). */

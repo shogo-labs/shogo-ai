@@ -62,7 +62,7 @@ export function checkGitUsable(workspaceDir: string): Promise<GitUsability> {
       stdio: ['ignore', 'ignore', 'pipe'],
     })
     let stderr = ''
-    child.stderr.on('data', (c) => { stderr += String(c) })
+    child.stderr?.on('data', (c) => { stderr += String(c) })
     child.on('error', (err) => resolve({ ok: false, dubiousOwnership: false, stderr: err.message }))
     child.on('close', (code) =>
       resolve({ ok: code === 0, dubiousOwnership: DUBIOUS_OWNERSHIP_RE.test(stderr), stderr: stderr.slice(0, 500) }),

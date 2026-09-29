@@ -90,9 +90,12 @@ import { Eye, Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
 import {
   OrganicParticles,
   ShogoVoiceProvider,
+  useLiveVoiceConversation,
   useVoiceConversation,
+  type LiveTranscriptTurn,
 } from '@shogo-ai/sdk/voice/react'
 import { API_URL } from '../../lib/api'
+import { usePlatformConfig } from '../../lib/platform-config'
 import { useEzModeInputModePreference } from '../../lib/ez-mode-preference'
 import { MarkdownText } from '../chat/MarkdownText'
 import { useChatBridge, useSubagentCards } from './ChatBridgeContext'
@@ -159,6 +162,11 @@ const SUMMARY_GRACE_AFTER_SPEECH_MS = 1200
  * a slow EL leg it can be 10s+ before the first audio frame.
  */
 const SUMMARY_NO_SPEECH_TIMEOUT_MS = 20_000
+/**
+ * Max model calls per GPT-Live delegation. The translator usually needs
+ * one call, or two when it runs a tool and then confirms.
+ */
+const LIVE_THINKER_MAX_STEPS = 5
 /**
  * After `turn-start` arrives during an active user voice session, this
  * is the maximum time we'll wait for Shogo to *start* speaking the
@@ -237,6 +245,8 @@ export function EzModeChatPanel(props: EzModeChatPanelProps) {
 function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
   const bridge = useChatBridge()
   const chatSessionId = bridge.chatSessionId
+  const { features } = usePlatformConfig()
+  const voiceProvider = features.ezModeVoiceProvider ?? 'elevenlabs'
   // Snapshot of the technical chat's task / agent_spawn tool calls.
   // Rendered as <SubagentCard /> rows so EZ Mode shares the exact
   // same agent card UI (and live browser preview) as the regular chat.
@@ -402,7 +412,7 @@ function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
     ? `${API_URL ?? ''}/api/voice/signed-url?chatSessionId=${encodeURIComponent(chatSessionId)}`
     : `${API_URL ?? ''}/api/voice/signed-url`
 
-  const conversation = useVoiceConversation({
+  const elevenConversation = useVoiceConversation({
     characterName: 'Shogo',
     signedUrlPath,
     // Dev mode serves Metro on 8081 and the API on 8002 — without
@@ -434,6 +444,118 @@ function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
     },
   })
 
+  const mintLiveSession = useCallback(async (sdp: string) => {
+    if (!chatSessionId) throw new Error('A chat session is required for GPT-Live voice')
+    const response = await fetch(
+      `${API_URL ?? ''}/api/voice/live/session/${encodeURIComponent(chatSessionId)}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdp }),
+      },
+    )
+    const body = await response.json().catch(() => ({})) as {
+      sessionId?: string
+      sdp?: string
+      error?: string | { message?: string }
+    }
+    if (!response.ok || !body.sessionId || !body.sdp) {
+      const error =
+        typeof body.error === 'string' ? body.error : body.error?.message
+      throw new Error(error || `GPT-Live session failed (${response.status})`)
+    }
+    return { sessionId: body.sessionId, sdp: body.sdp }
+  }, [chatSessionId])
+
+  // GPT-Live runs the spoken conversation and delegates anything needing
+  // the build subsystem back to us. The translator persona answers on the
+  // server; its tools run here, same as the text modality.
+  const runLiveThinker = useCallback(async (transcript: LiveTranscriptTurn[]) => {
+    if (!chatSessionId) throw new Error('A chat session is required for GPT-Live voice')
+    const url = `${API_URL ?? ''}/api/voice/live/delegate/${encodeURIComponent(chatSessionId)}`
+    let steps: unknown[] = []
+    let toolResults: Array<{ toolCallId: string; toolName: string; output: string }> = []
+    for (let step = 0; step < LIVE_THINKER_MAX_STEPS; step++) {
+      const response = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript, steps, toolResults }),
+      })
+      const body = await response.json().catch(() => ({})) as {
+        text?: string
+        toolCalls?: Array<{ toolCallId: string; toolName: string; input?: Record<string, unknown> }>
+        steps?: unknown[]
+        error?: string
+      }
+      if (!response.ok) {
+        throw new Error(body.error || `GPT-Live delegation failed (${response.status})`)
+      }
+      if (!body.toolCalls?.length) return body.text ?? ''
+      steps = body.steps ?? []
+      toolResults = []
+      for (const call of body.toolCalls) {
+        const tool = (clientTools as Record<string, (params: Record<string, unknown>) => unknown>)[call.toolName]
+        let output: string
+        try {
+          output = tool ? String(await tool(call.input ?? {})) : `Unknown tool: ${call.toolName}`
+        } catch (err) {
+          output = `Tool failed: ${err instanceof Error ? err.message : String(err)}`
+        }
+        toolResults.push({ toolCallId: call.toolCallId, toolName: call.toolName, output })
+      }
+    }
+    throw new Error('GPT-Live delegation did not finish')
+  }, [chatSessionId, clientTools])
+
+  const liveConversation = useLiveVoiceConversation({
+    mintSession: mintLiveSession,
+    onDelegation: ({ transcript }) => runLiveThinker(transcript),
+    onError: (err) => {
+      console.warn('[EzModeChatPanel] GPT-Live voice error', err)
+      setVoiceError(
+        (err as Error)?.message ||
+          'Voice connection failed. Check your microphone and try again.',
+      )
+    },
+    onMessage: ({ source, message }) => {
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.log('[EzModeChatPanel] GPT-Live onMessage', {
+          source,
+          preview: message?.slice(0, 120),
+        })
+      }
+      if (!message?.trim()) return
+      const entrySource: TranscriptEntry['source'] =
+        source === 'user' ? 'user-voice' : 'shogo-voice'
+      appendTranscriptRef.current(entrySource, message)
+    },
+  })
+
+  // GPT-Live would paraphrase a raw summary nudge aloud, so spoken
+  // summaries run the nudge + activity context through the translator
+  // first and send only its reply as commentary.
+  const liveSummaryContextRef = useRef<string[]>([])
+  const sendLiveSummaryContext = useCallback((text: string) => {
+    liveSummaryContextRef.current.push(text)
+  }, [])
+  const sendLiveSummaryNudge = useCallback((nudge: string) => {
+    const context = liveSummaryContextRef.current.splice(0).join('\n\n')
+    const transcript: LiveTranscriptTurn[] = [
+      ...liveConversation.getTranscript(),
+      { role: 'user', text: context ? `${nudge}\n\n${context}` : nudge },
+    ]
+    void runLiveThinker(transcript)
+      .then((text) => {
+        if (text.trim()) liveConversation.sendUserMessage(text)
+      })
+      .catch((err) => console.warn('[EzModeChatPanel] GPT-Live summary failed', err))
+  }, [liveConversation, runLiveThinker])
+
+  const conversation =
+    voiceProvider === 'gpt-live' ? liveConversation : elevenConversation
+
   const voiceActive =
     conversation.status === 'connected' || conversation.status === 'connecting'
 
@@ -441,8 +563,10 @@ function EzModeChatPanelInner({ className }: EzModeChatPanelProps) {
     start: conversation.start,
     end: conversation.end,
     restart: conversation.restart,
-    sendContextualUpdate: conversation.sendContextualUpdate,
-    sendUserMessage: conversation.sendUserMessage,
+    sendContextualUpdate:
+      voiceProvider === 'gpt-live' ? sendLiveSummaryContext : conversation.sendContextualUpdate,
+    sendUserMessage:
+      voiceProvider === 'gpt-live' ? sendLiveSummaryNudge : conversation.sendUserMessage,
     sendUserActivity: conversation.sendUserActivity,
     setMuted: conversation.setMuted,
     isSpeaking: conversation.isSpeaking,

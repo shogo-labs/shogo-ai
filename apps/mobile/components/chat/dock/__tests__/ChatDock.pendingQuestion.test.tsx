@@ -67,12 +67,11 @@ mock.module("@react-native-async-storage/async-storage", () => ({
 // timing (same convention as `CollapsibleToolGroup.test.tsx`).
 mock.module("@legendapp/motion", () => ({
   Motion: {
-    View: React.forwardRef<HTMLElement, Record<string, unknown>>(function MotionView(
-      { children },
-      ref,
-    ) {
-      return React.createElement("div", { ref }, children as React.ReactNode)
-    }),
+    View: React.forwardRef<HTMLElement, Record<string, unknown>>(
+      function MotionView({ children }, ref) {
+        return React.createElement("div", { ref }, children as React.ReactNode)
+      },
+    ),
   },
   AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 }))
@@ -91,10 +90,12 @@ mock.module("@shogo/shared-ui/primitives", () => ({
 // All mocks above MUST be registered before the real modules under test are
 // imported — see `TurnFooter.test.tsx` for why this has to be a dynamic
 // import rather than a static top-level one.
-const { createChatDockStore, ChatDockStoreContext } = await import("../../../../lib/chat-dock-store")
+const { createChatDockStore, ChatDockStoreContext } =
+  await import("../../../../lib/chat-dock-store")
 const { useDockPanel } = await import("../useDockPanel")
 const { ChatDock } = await import("../ChatDock")
-const { AskUserQuestionWidget } = await import("../../turns/AskUserQuestionWidget")
+const { AskUserQuestionWidget } =
+  await import("../../turns/AskUserQuestionWidget")
 const toolTypes = await import("../../tools/types")
 
 // `DockPanelDescriptor.icon` just needs to be a component; no need to pull
@@ -113,6 +114,8 @@ function PendingQuestionHarness() {
     () => ({
       id: "question",
       kind: "blocking" as const,
+      collapsible: true,
+      defaultExpanded: true,
       order: 1,
       title: "Question",
       icon: DummyIcon,
@@ -173,7 +176,9 @@ describe("ChatDock renders a pending ask_user as a blocking panel", () => {
 
     expect(screen.getByText("Question")).toBeTruthy()
     expect(screen.queryByText("Questions")).toBeNull()
-    expect(screen.getByText("Which orb should be the nav trigger?")).toBeTruthy()
+    expect(
+      screen.getByText("Which orb should be the nav trigger?"),
+    ).toBeTruthy()
     // Renders twice (label + description fallback, since our fixture's
     // options have no description) — assert presence, not uniqueness.
     expect(screen.getAllByText("Merged hub orb").length).toBeGreaterThan(0)

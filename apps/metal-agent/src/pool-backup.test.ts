@@ -35,12 +35,12 @@ import type { SnapshotStore } from './snapshot-store'
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
 
 class TestPool extends MetalWarmPool {
-  uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { parentEtag?: string; adoptWhenUnknown?: boolean } }> = []
+  uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { parentEtag?: string; adoptWhenUnknown?: boolean; untrusted?: boolean } }> = []
   outcome: BackupWriteOutcome = { status: 'written', etag: '"new"' }
   protected override uploadBackupGuarded(
     projectId: string,
     bytes: Uint8Array,
-    opts: { parentEtag?: string; adoptWhenUnknown?: boolean },
+    opts: { parentEtag?: string; adoptWhenUnknown?: boolean; untrusted?: boolean },
   ): Promise<BackupWriteOutcome> {
     this.uploads.push({ projectId, bytes, opts })
     return Promise.resolve(this.outcome)
@@ -139,7 +139,7 @@ describe('pool write-side backup (save on stop)', () => {
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
 
     await pool.save('p1', 'tok', { workspaceOrigin: 'backup', backupParentEtag: '"parent"' })
-    expect(pool.uploads[0].opts).toEqual({ parentEtag: '"parent"', adoptWhenUnknown: false })
+    expect(pool.uploads[0].opts).toEqual({ parentEtag: '"parent"', adoptWhenUnknown: false, untrusted: false })
   })
 
   test('allows a legacy snapshot origin (no stamped etag) to adopt on write', async () => {
@@ -147,7 +147,7 @@ describe('pool write-side backup (save on stop)', () => {
     globalThis.fetch = mock(async () => new Response(new Uint8Array([1]), { status: 200 })) as any
 
     await pool.save('p1', 'tok', { workspaceOrigin: 'snapshot' })
-    expect(pool.uploads[0].opts).toEqual({ parentEtag: undefined, adoptWhenUnknown: true })
+    expect(pool.uploads[0].opts).toEqual({ parentEtag: undefined, adoptWhenUnknown: true, untrusted: false })
   })
 
   test('a template origin never adopts (adoptWhenUnknown:false)', async () => {

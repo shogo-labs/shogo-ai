@@ -19,7 +19,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { GitWorkspaceSync } from '../git-sync'
-import { adoptHydratedRepo, getHeadSha, packRepoArchive, seedRepoIfAbsent } from '../repo-store'
+import {
+  AdoptDeadlineError,
+  adoptHydratedRepo,
+  adoptHydratedRepoBefore,
+  getHeadSha,
+  normalizeKeepPaths,
+  packRepoArchive,
+  seedRepoIfAbsent,
+} from '../repo-store'
 import { applyGitSafeDirectoryEnv } from '../git-safe-dir'
 
 const NOOP = { log: () => {}, warn: () => {}, error: () => {} }
@@ -176,6 +184,171 @@ describe('metal git durability across a restart', () => {
       expect(await getHeadSha(ws)).toBe(head)
     } finally {
       rmSync(ws, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
+ * 2026-09-28: a workspace's durable repo stopped advancing (its exports were
+ * refused) while the source backup kept up with the user. Every cold boot then
+ * reset the hydrated tree to the stale HEAD, and the next source backup saved
+ * the rewound tree.
+ */
+describe('a stale durable repo never rewinds newer source', () => {
+  /** Durable repo at `files`, packed as the host would store it. Returns the archive and its HEAD. */
+  async function durableRepoAt(files: Record<string, string>): Promise<{ archive: string; sha: string; dir: string }> {
+    const dir = tmp('dur-stale-')
+    for (const [rel, body] of Object.entries(files)) write(dir, rel, body)
+    await seedRepoIfAbsent(dir, { logger: NOOP })
+    const archive = join(dir, '..', `${Date.now()}-${Math.random().toString(36).slice(2)}-repo.tar.gz`)
+    await packRepoArchive(dir, archive)
+    return { archive, sha: git(dir, 'rev-parse', 'HEAD'), dir }
+  }
+
+  /** A fresh guest: the (newer) source backup hydrated, and a throwaway seeded `.git`. */
+  async function freshGuest(files: Record<string, string>): Promise<string> {
+    const ws = tmp('dur-guest-')
+    for (const [rel, body] of Object.entries(files)) write(ws, rel, body)
+    await seedRepoIfAbsent(ws, { logger: NOOP })
+    return ws
+  }
+
+  test('without keepPaths the reset rewinds tracked files to the stale HEAD (the incident)', async () => {
+    const repo = await durableRepoAt({ 'src/App.tsx': 'v1\n' })
+    const ws = await freshGuest({ 'src/App.tsx': 'v2 — the user kept working\n' })
+    try {
+      await adoptHydratedRepo(ws, stageDurableRepo(repo.archive, ws), { logger: NOOP })
+      expect(readFileSync(join(ws, 'src/App.tsx'), 'utf-8')).toBe('v1\n')
+    } finally {
+      for (const d of [ws, repo.dir]) rmSync(d, { recursive: true, force: true })
+      rmSync(repo.archive, { force: true })
+    }
+  })
+
+  test("keepPaths ['.'] keeps the newer tree on top of the durable history", async () => {
+    const repo = await durableRepoAt({ 'src/App.tsx': 'v1\n', 'src/Old.tsx': 'old\n' })
+    const ws = await freshGuest({ 'src/App.tsx': 'v2 — the user kept working\n', 'src/Login.tsx': 'login\n' })
+    try {
+      const res = await adoptHydratedRepo(ws, stageDurableRepo(repo.archive, ws), { logger: NOOP, keepPaths: ['.'] })
+      expect(res).toMatchObject({ reset: false, keptPaths: ['.'] })
+      expect(readFileSync(join(ws, 'src/App.tsx'), 'utf-8')).toBe('v2 — the user kept working\n')
+      expect(readFileSync(join(ws, 'src/Login.tsx'), 'utf-8')).toBe('login\n')
+      // The newer tree is committed on top of the durable history, so any
+      // repo export from here on carries it rather than the stale HEAD.
+      expect(res.headSha).toBe(git(ws, 'rev-parse', 'HEAD'))
+      expect(git(ws, 'rev-parse', 'HEAD^')).toBe(repo.sha)
+      expect(git(ws, 'show', 'HEAD:src/App.tsx')).toBe('v2 — the user kept working')
+      expect(git(ws, 'show', 'HEAD:src/Login.tsx')).toBe('login')
+      expect(git(ws, 'status', '--porcelain')).toBe('')
+      expect(existsSync(join(ws, STAGING))).toBe(false)
+    } finally {
+      for (const d of [ws, repo.dir]) rmSync(d, { recursive: true, force: true })
+      rmSync(repo.archive, { force: true })
+    }
+  })
+
+  test('a workspace runtime keeps only the members whose source is newer', async () => {
+    const repo = await durableRepoAt({ 'm1/App.tsx': 'm1 v1\n', 'm2/App.tsx': 'm2 v3\n', 'README.md': 'root\n' })
+    const ws = await freshGuest({ 'm1/App.tsx': 'm1 v2\n', 'm2/App.tsx': 'm2 v2 (older than the repo)\n', 'README.md': 'root\n' })
+    try {
+      const res = await adoptHydratedRepo(ws, stageDurableRepo(repo.archive, ws), { logger: NOOP, keepPaths: ['m1'] })
+      expect(res).toMatchObject({ reset: true, keptPaths: ['m1'] })
+      expect(readFileSync(join(ws, 'm1/App.tsx'), 'utf-8')).toBe('m1 v2\n')
+      expect(readFileSync(join(ws, 'm2/App.tsx'), 'utf-8')).toBe('m2 v3\n')
+      expect(git(ws, 'rev-parse', 'HEAD^')).toBe(repo.sha)
+      expect(git(ws, 'diff', '--name-only', 'HEAD^', 'HEAD')).toBe('m1/App.tsx')
+      expect(git(ws, 'status', '--porcelain')).toBe('')
+    } finally {
+      for (const d of [ws, repo.dir]) rmSync(d, { recursive: true, force: true })
+      rmSync(repo.archive, { force: true })
+    }
+  })
+
+  test('keepPaths only accepts the whole tree or top-level names', () => {
+    expect(normalizeKeepPaths(undefined)).toEqual([])
+    expect(normalizeKeepPaths(['.', 'm1/', 'm1', '.github'])).toEqual(['.', 'm1', '.github'])
+    for (const bad of [['a/b'], ['..'], ['.git'], [''], ['a\\b'], [1], 'm1']) {
+      expect(() => normalizeKeepPaths(bad)).toThrow()
+    }
+  })
+})
+
+describe('adoptHydratedRepoBefore (the guest side of the host deadline)', () => {
+  async function setup(): Promise<{ ws: string; archive: string; seedSha: string; cleanup: () => void }> {
+    const src = tmp('dur-dl-src-')
+    write(src, 'a.txt', 'repo\n')
+    await seedRepoIfAbsent(src, { logger: NOOP })
+    const archive = join(src, '..', `${Date.now()}-${Math.random().toString(36).slice(2)}-dl.tar.gz`)
+    await packRepoArchive(src, archive)
+    const ws = tmp('dur-dl-ws-')
+    write(ws, 'a.txt', 'hydrated\n')
+    await seedRepoIfAbsent(ws, { logger: NOOP })
+    const seedSha = git(ws, 'rev-parse', 'HEAD')
+    return {
+      ws,
+      archive,
+      seedSha,
+      cleanup: () => {
+        for (const d of [ws, src]) rmSync(d, { recursive: true, force: true })
+        rmSync(archive, { force: true })
+      },
+    }
+  }
+
+  test('a git layer that is still busy at the deadline gets a decline, and nothing changes after it settles', async () => {
+    const { ws, archive, seedSha, cleanup } = await setup()
+    try {
+      let settle!: () => void
+      const ready = new Promise<void>((r) => { settle = r })
+      const staging = stageDurableRepo(archive, ws)
+      await expect(
+        adoptHydratedRepoBefore(ws, staging, { deadline: Date.now() + 50, ready, logger: NOOP }),
+      ).rejects.toBeInstanceOf(AdoptDeadlineError)
+      settle()
+      await new Promise((r) => setTimeout(r, 50))
+      expect(git(ws, 'rev-parse', 'HEAD')).toBe(seedSha)
+      expect(readFileSync(join(ws, 'a.txt'), 'utf-8')).toBe('hydrated\n')
+      expect(existsSync(staging)).toBe(false)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a deadline that passes while pausing the sync still declines, and the sync is resumed', async () => {
+    const { ws, archive, seedSha, cleanup } = await setup()
+    try {
+      const calls: string[] = []
+      await expect(
+        adoptHydratedRepoBefore(ws, stageDurableRepo(archive, ws), {
+          deadline: Date.now() + 30,
+          ready: Promise.resolve(),
+          pause: async () => {
+            calls.push('pause')
+            await new Promise((r) => setTimeout(r, 60))
+          },
+          resume: () => calls.push('resume'),
+          logger: NOOP,
+        }),
+      ).rejects.toBeInstanceOf(AdoptDeadlineError)
+      expect(calls).toEqual(['pause', 'resume'])
+      expect(git(ws, 'rev-parse', 'HEAD')).toBe(seedSha)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('within the deadline it adopts as before', async () => {
+    const { ws, archive, cleanup } = await setup()
+    try {
+      const res = await adoptHydratedRepoBefore(ws, stageDurableRepo(archive, ws), {
+        deadline: Date.now() + 5_000,
+        ready: Promise.reject(new Error('git layer failed')),
+        logger: NOOP,
+      })
+      expect(res.reset).toBe(true)
+      expect(readFileSync(join(ws, 'a.txt'), 'utf-8')).toBe('repo\n')
+    } finally {
+      cleanup()
     }
   })
 })

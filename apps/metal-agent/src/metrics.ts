@@ -115,6 +115,25 @@ export const M = {
   // expected to be non-zero only while a rollout drains: a value that stays
   // flat and high means projects whose writable state is NOT being persisted.
   dataUnsupported: 'metal_data_unsupported_total',
+  // Successful writable-state uploads, by why they ran.
+  dataUploadPeriodic: 'metal_data_upload_periodic_total',
+  dataUploadFinal: 'metal_data_upload_final_total',
+  dataUploadRecycle: 'metal_data_upload_recycle_total',
+  // Periodic uploads skipped by the large-database cadence limit.
+  dataUploadThrottled: 'metal_data_upload_throttled_total',
+  // End-of-day restore points (`project-data/daily/<date>.tar.gz`).
+  dataDailyCopied: 'metal_data_daily_copy_ok_total',
+  dataDailyCopyFailed: 'metal_data_daily_copy_failed_total',
+  // API health watchdog. `apiUnhealthy` is how many live runtimes currently
+  // report an unhealthy project API sidecar. The auto-recycle counters split
+  // by outcome: `observed` = would have recycled (observe mode), `aborted` = a
+  // backup failed so nothing was removed, `rateLimited` = skipped by the
+  // per-runtime hourly/daily cap.
+  apiUnhealthy: 'metal_api_unhealthy',
+  autoRecycleOk: 'metal_auto_recycle_ok_total',
+  autoRecycleObserved: 'metal_auto_recycle_observed_total',
+  autoRecycleAborted: 'metal_auto_recycle_aborted_total',
+  autoRecycleRateLimited: 'metal_auto_recycle_rate_limited_total',
   diskUsedPct: 'metal_disk_used_pct',
   diskFreeBytes: 'metal_disk_free_bytes',
   // Per-VM dm-snapshot CoW stores (dm rootfs mode). A store that fills is not
@@ -153,6 +172,7 @@ export const M = {
   staleSnapshotSkipped: 'metal_stale_snapshot_skipped_total',
   // Host-mediated `.git` durability (see pool.saveRepoToStore).
   repoConflict: 'metal_repo_conflict_total',
+  repoPromoted: 'metal_repo_unlinked_promoted_total',
   repoRefused: 'metal_repo_refused_untrusted_total',
   repoTooLarge: 'metal_repo_too_large_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.

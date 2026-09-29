@@ -333,6 +333,7 @@ export class CanvasBuildManager {
     }
 
     if (!existsSync(join(this.workspaceDir, 'package.json'))) {
+      console.warn(`${LOG_PREFIX} skip rebuild — no package.json in ${this.workspaceDir}`)
       return
     }
 

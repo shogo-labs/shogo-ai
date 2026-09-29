@@ -22,9 +22,9 @@
  * byte-identical.
  */
 
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { createHash } from 'crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
@@ -35,6 +35,14 @@ export interface DesiredAgent {
   sha256?: string
   channel?: string
   rebuildRootfs?: boolean
+  /**
+   * Immutable runtime image to bake the rootfs from (e.g. `...:production-multiarch-<sha>`).
+   * Unset on releases published before pinning existed; the host then falls
+   * back to the moving `RUNTIME_IMAGE` tag from its env.
+   */
+  runtimeImage?: string
+  /** Commit the pinned image must report in `/etc/shogo-runtime-revision`. */
+  runtimeRevision?: string
 }
 
 let updating = false
@@ -87,6 +95,52 @@ function readRootfsMarker(): string | null {
  */
 export function getRootfsSha(): string | null {
   return readRootfsMarker()
+}
+
+/** Written into the image by packages/agent-runtime/Dockerfile. */
+const REVISION_FILE = '/etc/shogo-runtime-revision'
+const REVISION_RE = /^[0-9a-f]{7,64}$/
+
+/**
+ * The commit the runtime image inside `image` (an ext4 file) was built from,
+ * read straight out of the filesystem with debugfs so nothing is mounted.
+ * `null` when the file is absent (an image built before the stamp existed),
+ * holds the Dockerfile's `unknown` default, or debugfs can't read the image.
+ */
+export function readImageRevision(image: string): string | null {
+  const r = spawnSync('debugfs', ['-R', `cat ${REVISION_FILE}`, image], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  })
+  if (r.error || r.status !== 0) {
+    console.warn(`[self-update] debugfs could not read ${image}:`, r.error?.message ?? r.stderr?.trim())
+    return null
+  }
+  const rev = (r.stdout ?? '').trim().toLowerCase()
+  return REVISION_RE.test(rev) ? rev : null
+}
+
+const revisionCache = new Map<string, { key: string; revision: string | null }>()
+
+/**
+ * The commit the host's golden rootfs was built from, as recorded inside the
+ * image itself. Unlike `getRootfsSha` (the release that asked for the rebuild),
+ * this is what the pull actually returned, so it's what the release gate trusts.
+ * Cached by inode and mtime: a rebuild renames a new file into place.
+ */
+export function getRootfsRevision(image: string = config.baseRootfs): string | null {
+  let key: string
+  try {
+    const st = statSync(image)
+    key = `${st.ino}:${st.mtimeMs}`
+  } catch {
+    return null
+  }
+  const hit = revisionCache.get(image)
+  if (hit?.key === key) return hit.revision
+  const revision = readImageRevision(image)
+  revisionCache.set(image, { key, revision })
+  return revision
 }
 
 function writeRootfsMarker(version: string): void {
@@ -148,8 +202,11 @@ export async function maybeRebuildRootfs(desired?: DesiredAgent | null): Promise
   }
   updating = true
   try {
-    console.log(`[self-update] rebuilding golden rootfs for release ${desired!.version} (version unchanged)`)
-    await rebuildRootfs(config.agentDir)
+    console.log(
+      `[self-update] rebuilding golden rootfs for release ${desired!.version} (version unchanged) ` +
+        `from ${desired!.runtimeImage ?? '$RUNTIME_IMAGE'}`,
+    )
+    await rebuildRootfs(config.agentDir, desired!)
     writeRootfsMarker(desired!.version)
     console.log('[self-update] rootfs rebuilt — restarting metal-agent to re-warm the pool on the new base...')
     spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' }).unref()
@@ -242,7 +299,7 @@ async function applyUpdate(d: DesiredAgent): Promise<void> {
 
     if (d.rebuildRootfs) {
       try {
-        await rebuildRootfs(stage)
+        await rebuildRootfs(stage, d)
         // Stamp the marker so the standalone path (maybeRebuildRootfs) doesn't
         // rebuild again for this same version after the restart.
         writeRootfsMarker(d.version)
@@ -298,14 +355,57 @@ async function downloadS3(url: string): Promise<Buffer> {
  * table keeps the old inode until released); new VMs pick up the new base after
  * the restart the caller performs.
  */
-async function rebuildRootfs(baseDir: string): Promise<void> {
+async function rebuildRootfs(baseDir: string, desired: DesiredAgent): Promise<void> {
   const script = join(baseDir, 'scripts', 'metal-agent', 'build-runtime-rootfs.sh')
   if (!existsSync(script)) throw new Error('build-runtime-rootfs.sh not in bundle')
-  const out = config.baseRootfs
-  const tmp = `${out}.new`
+  await buildRootfsImage({
+    script,
+    out: config.baseRootfs,
+    runtimeImage: desired.runtimeImage,
+    runtimeRevision: desired.runtimeRevision,
+  })
+}
+
+export interface BuildRootfsOptions {
+  script: string
+  out: string
+  runtimeImage?: string
+  runtimeRevision?: string
+}
+
+export interface BuildRootfsDeps {
+  run: (cmd: string, args: string[], cwd?: string, extraEnv?: Record<string, string>) => Promise<void>
+  readRevision: (image: string) => string | null
+}
+
+/**
+ * Build the rootfs into `<out>.new` and rename it over `out` only once it is
+ * proven to hold the requested commit. A pinned image tag that isn't published
+ * yet fails the pull, and a build whose stamped revision differs is discarded;
+ * either way `out` is untouched and the caller leaves the marker unset, so the
+ * next heartbeat retries.
+ */
+export async function buildRootfsImage(
+  opts: BuildRootfsOptions,
+  deps: BuildRootfsDeps = { run, readRevision: readImageRevision },
+): Promise<void> {
+  const tmp = `${opts.out}.new`
+  const env: Record<string, string> = { OUT: tmp }
+  if (opts.runtimeImage) env.RUNTIME_IMAGE = opts.runtimeImage
   try {
-    await run('bash', [script], undefined, { OUT: tmp })
-    renameSync(tmp, out)
+    await deps.run('bash', [opts.script], undefined, env)
+    if (opts.runtimeRevision) {
+      const want = opts.runtimeRevision.toLowerCase()
+      const got = deps.readRevision(tmp)
+      // A pinned tag may carry a short sha; the image always holds the full one.
+      if (!got || !(got.startsWith(want) || want.startsWith(got))) {
+        throw new Error(
+          `rootfs built from ${opts.runtimeImage ?? '$RUNTIME_IMAGE'} holds revision ${got ?? 'none'}, ` +
+            `want ${want}; keeping the current image`,
+        )
+      }
+    }
+    renameSync(tmp, opts.out)
   } catch (err) {
     rmSync(tmp, { force: true })
     throw err

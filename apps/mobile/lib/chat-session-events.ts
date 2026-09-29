@@ -4,11 +4,13 @@
 import { Platform } from 'react-native'
 
 export type ChatSessionChange = {
-  /** Project (context) the change belongs to. */
-  projectId: string
+  /** Project (context) the change belongs to, when project-scoped. */
+  projectId?: string
+  /** Workspace (context) the change belongs to, when workspace-scoped. */
+  workspaceId?: string
   /** The session that should be treated as active after the change, if any. */
   activeSessionId?: string | null
-  /** When true, listeners should re-fetch the project's chat list (a chat was
+  /** When true, listeners should re-fetch the relevant chat list (a chat was
    *  created / renamed / deleted). When false/omitted it's an active-chat
    *  change only — update the highlight without a network round-trip. */
   refresh?: boolean
@@ -83,7 +85,8 @@ function isCrossWindowChatSessionChange(value: unknown): value is CrossWindowCha
   return (
     typeof event.eventId === 'string' &&
     typeof event.sourceId === 'string' &&
-    typeof event.projectId === 'string'
+    (typeof event.projectId === 'string' ||
+      typeof event.workspaceId === 'string')
   )
 }
 
@@ -97,6 +100,7 @@ function receiveCrossWindowChange(value: unknown): void {
   if (!rememberCrossWindowEvent(value.eventId)) return
   notifyLocalListeners({
     projectId: value.projectId,
+    workspaceId: value.workspaceId,
     activeSessionId: value.activeSessionId,
     refresh: value.refresh,
   })
@@ -151,7 +155,7 @@ installCrossWindowListener()
  * permanent home for chats) without coupling them through shared MobX state or
  * the URL.
  *
- *  - `subscribe` / `emit`: workspace -> sidebar. Refresh the project's chat
+ *  - `subscribe` / `emit`: workspace -> sidebar. Refresh the relevant chat
  *    list and/or re-highlight the active chat.
  *  - `subscribeSelect` / `requestSelect`: sidebar -> workspace. Ask the
  *    already-mounted project workspace to switch chats IN PLACE (no

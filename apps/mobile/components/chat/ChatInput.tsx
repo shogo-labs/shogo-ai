@@ -113,7 +113,6 @@ import {
   PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
-  nextProminentComposerHeight,
 } from "./useProminentComposerExpansion";
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext";
 import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent";
@@ -1287,6 +1286,7 @@ function ChatInputImpl({
     text: composerDisplayValue,
     inputHeight,
     minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+    maxHeight: inputMaxHeight,
     lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
     paddingTop: PROMINENT_COMPOSER_PADDING_TOP,
     paddingHorizontal: PROMINENT_COMPOSER_PADDING_HORIZONTAL,
@@ -2846,6 +2846,7 @@ function ChatInputImpl({
               {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
               {showModelPicker &&
               presentation !== "agent" &&
+              !useProminentComposer &&
               !showInlineMobileModelPicker ? (
                 <ComposerModelPicker
                   {...composerModelPickerProps({
@@ -3158,16 +3159,7 @@ function ChatInputImpl({
                 const currentText =
                   pendingTextChangeRef.current?.text ?? inputValueRef.current;
                 const h = e.nativeEvent.contentSize.height;
-                prominentExpansion.reportContentHeight(h);
-                const next = nextProminentComposerHeight(h, {
-                  empty: !currentText.trim(),
-                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                  maxHeight: inputMaxHeight,
-                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-                });
-                if (next !== inputHeightRef.current) {
-                  setInputHeightTarget(next);
-                }
+                prominentExpansion.reportContentSize(h, !currentText.trim());
               }}
             />
           ) : null}

@@ -8,100 +8,113 @@
  * Displays image attachments via RN Image component.
  */
 
-import { useState, useCallback } from "react";
-import { View, Text, Image, Pressable, Linking, Platform } from "react-native";
-import { cn } from "@shogo/shared-ui/primitives";
-import { FileText, Play } from "lucide-react-native";
-import type { UIMessage } from "@ai-sdk/react";
-import { extractTextContent } from "@shogo/shared-app/chat";
-import { MarkdownText } from "../MarkdownText";
-import { analyzeContent } from "../long-text-utils";
-import { LongTextPreviewCard } from "../LongTextPreviewCard";
-import { FileViewerModal } from "../FileViewerModal";
-import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal";
-import { VideoPreviewModal } from "../VideoPreviewModal";
-import { downloadImage, isShogoDesktop } from "../chatImageActions";
-import { usePhoneLayout } from "../../../lib/native-phone-layout";
-import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext";
-import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url";
+import { useState, useCallback } from "react"
+import {
+  View,
+  Text,
+  Image,
+  Pressable,
+  Linking,
+  Platform,
+  useWindowDimensions,
+} from "react-native"
+import { cn } from "@shogo/shared-ui/primitives"
+import { FileText, Play } from "lucide-react-native"
+import type { UIMessage } from "@ai-sdk/react"
+import { extractTextContent } from "@shogo/shared-app/chat"
+import { MarkdownText } from "../MarkdownText"
+import { analyzeContent } from "../long-text-utils"
+import { LongTextPreviewCard } from "../LongTextPreviewCard"
+import { FileViewerModal } from "../FileViewerModal"
+import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
+import { VideoPreviewModal } from "../VideoPreviewModal"
+import { downloadImage, isShogoDesktop } from "../chatImageActions"
+import { usePhoneLayout } from "../../../lib/native-phone-layout"
+import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
+import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
+import { useAgentImageSource } from "../../../lib/agent-image-source"
+import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
+import { useChatImageWidth } from "./use-chat-image-width"
 
 export interface MessageContentProps {
-  message: UIMessage;
-  isStreaming?: boolean;
-  className?: string;
+  message: UIMessage
+  isStreaming?: boolean
+  className?: string
   /**
    * Native ChatGPT-style user bubble: attachments sit above a gray
    * pill, body text is white. Web/desktop keep the default `default`.
    */
-  variant?: "default" | "userBubble";
+  variant?: "default" | "userBubble"
 }
 
 interface ImagePart {
-  url: string;
-  mediaType: string;
+  url: string
+  mediaType: string
 }
 
 interface FilePart {
-  url: string;
-  mediaType: string;
-  name?: string;
+  url: string
+  mediaType: string
+  name?: string
 }
 
 function deriveFileLabel(
   mediaType: string,
-  name?: string
+  name?: string,
 ): {
-  title: string;
-  kindLabel: string;
+  title: string
+  kindLabel: string
 } {
   if (name) {
-    const ext = name.includes(".") ? name.split(".").pop()!.toUpperCase() : "";
+    const ext = name.includes(".") ? name.split(".").pop()!.toUpperCase() : ""
     const kindFromMedia = mediaType.includes("json")
       ? "JSON"
       : mediaType.includes("markdown")
-      ? "Markdown"
-      : mediaType.includes("pdf")
-      ? "PDF"
-      : mediaType.startsWith("text/")
-      ? "Text"
-      : ext || (mediaType.split("/").pop() || "FILE").toUpperCase();
-    return { title: name, kindLabel: kindFromMedia };
+        ? "Markdown"
+        : mediaType.includes("pdf")
+          ? "PDF"
+          : mediaType.startsWith("text/")
+            ? "Text"
+            : ext || (mediaType.split("/").pop() || "FILE").toUpperCase()
+    return { title: name, kindLabel: kindFromMedia }
   }
   if (mediaType.includes("pdf"))
-    return { title: "PDF document", kindLabel: "PDF" };
+    return { title: "PDF document", kindLabel: "PDF" }
   if (mediaType.includes("json"))
-    return { title: "JSON file", kindLabel: "JSON" };
+    return { title: "JSON file", kindLabel: "JSON" }
   if (mediaType.includes("markdown"))
-    return { title: "Markdown", kindLabel: "Markdown" };
+    return { title: "Markdown", kindLabel: "Markdown" }
   if (mediaType.startsWith("text/"))
-    return { title: "Text file", kindLabel: "Text" };
+    return { title: "Text file", kindLabel: "Text" }
   return {
     title: "Attachment",
     kindLabel: (mediaType.split("/").pop() || "FILE").toUpperCase(),
-  };
+  }
 }
 
-export { extractTextContent } from "@shogo/shared-app/chat";
+export { extractTextContent } from "@shogo/shared-app/chat"
 
 function extractImageParts(message: UIMessage): ImagePart[] {
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
-    return [];
+    return []
   }
 
   return ((message as any).parts as any[])
     .filter(
       (part) =>
-        part.type === "file" && part.mediaType?.startsWith("image/") && part.url
+        part.type === "file" &&
+        part.mediaType?.startsWith("image/") &&
+        part.url,
     )
     .map((part) => ({
       url: part.url,
       mediaType: part.mediaType,
-    }));
+    }))
 }
 
 function extractFileParts(message: UIMessage): FilePart[] {
   if (!("parts" in message) || !Array.isArray((message as any).parts)) {
-    return [];
+    return []
   }
 
   return ((message as any).parts as any[])
@@ -109,13 +122,13 @@ function extractFileParts(message: UIMessage): FilePart[] {
       (part) =>
         part.type === "file" &&
         !part.mediaType?.startsWith("image/") &&
-        part.url
+        part.url,
     )
     .map((part) => ({
       url: part.url,
       mediaType: part.mediaType || "application/octet-stream",
       ...(part.name ? { name: part.name } : {}),
-    }));
+    }))
 }
 
 function ImageThumbnail({
@@ -123,37 +136,40 @@ function ImageThumbnail({
   mediaType,
   index,
 }: {
-  url: string;
-  mediaType: string;
-  index: number;
+  url: string
+  mediaType: string
+  index: number
 }) {
-  const [hasError, setHasError] = useState(false);
-  const [showModal, setShowModal] = useState(false);
+  const [hasError, setHasError] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [aspectRatio, setAspectRatio] = useState(DEFAULT_IMAGE_ASPECT)
+  const thumbnailWidth = useChatImageWidth(96, 144)
+  const imageSource = useAgentImageSource(url)
   const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
+    x: number
+    y: number
+  } | null>(null)
 
   const handlePress = useCallback(() => {
-    setShowModal(true);
-  }, []);
+    setShowModal(true)
+  }, [])
 
   const handleContextMenu = useCallback((event: any) => {
     // The custom right-click menu is desktop-only; on web we let the browser
     // show its native context menu.
-    if (!isShogoDesktop()) return;
-    event.preventDefault?.();
-    event.stopPropagation?.();
-    const nativeEvent = event.nativeEvent ?? event;
+    if (!isShogoDesktop()) return
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    const nativeEvent = event.nativeEvent ?? event
     setContextMenu({
       x: nativeEvent.clientX ?? 0,
       y: nativeEvent.clientY ?? 0,
-    });
-  }, []);
+    })
+  }, [])
 
   const handleDownloadImage = useCallback(() => {
-    void downloadImage(url, `image-attachment-${index + 1}`, mediaType);
-  }, [index, mediaType, url]);
+    void downloadImage(url, `image-attachment-${index + 1}`, mediaType)
+  }, [index, mediaType, url])
 
   if (hasError) {
     return (
@@ -165,7 +181,7 @@ function ImageThumbnail({
           Failed to load
         </Text>
       </View>
-    );
+    )
   }
 
   return (
@@ -182,16 +198,24 @@ function ImageThumbnail({
         className={Platform.OS === "web" ? "cursor-zoom-in" : undefined}
       >
         <View
-          className="rounded-lg overflow-hidden border border-border/40"
-          style={{ width: 96, height: 72 }}
+          className="rounded-lg overflow-hidden border border-border/40 bg-muted/30"
+          style={{ width: thumbnailWidth, aspectRatio }}
         >
-          <Image
-            source={{ uri: url }}
-            resizeMode="cover"
-            accessibilityLabel={`Image attachment ${index + 1}`}
-            onError={() => setHasError(true)}
-            style={{ width: 96, height: 72 }}
-          />
+          {imageSource ? (
+            <Image
+              source={imageSource}
+              resizeMode="contain"
+              accessibilityLabel={`Image attachment ${index + 1}`}
+              onError={() => setHasError(true)}
+              onLoad={(event) => {
+                const source = event.nativeEvent?.source
+                if (source?.width && source?.height) {
+                  setAspectRatio(clampAspectRatio(source.width, source.height))
+                }
+              }}
+              style={{ width: "100%", height: "100%" }}
+            />
+          ) : null}
         </View>
       </Pressable>
       <ImagePreviewModal
@@ -211,7 +235,7 @@ function ImageThumbnail({
         />
       ) : null}
     </>
-  );
+  )
 }
 
 function DocumentThumbnail({
@@ -221,68 +245,68 @@ function DocumentThumbnail({
   index,
   onUserBubble = false,
 }: {
-  url: string;
-  mediaType: string;
-  name?: string;
-  index: number;
-  onUserBubble?: boolean;
+  url: string
+  mediaType: string
+  name?: string
+  index: number
+  onUserBubble?: boolean
 }) {
-  const [showModal, setShowModal] = useState(false);
-  const [showVideoModal, setShowVideoModal] = useState(false);
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [showModal, setShowModal] = useState(false)
+  const [showVideoModal, setShowVideoModal] = useState(false)
+  const [fileContent, setFileContent] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
-  const { title, kindLabel: typeLabel } = deriveFileLabel(mediaType, name);
+  const { title, kindLabel: typeLabel } = deriveFileLabel(mediaType, name)
 
-  const isVideo = mediaType.startsWith("video/");
+  const isVideo = mediaType.startsWith("video/")
 
   const isTextLike =
     mediaType.startsWith("text/") ||
     mediaType.includes("json") ||
     mediaType.includes("xml") ||
     mediaType.includes("javascript") ||
-    mediaType.includes("yaml");
+    mediaType.includes("yaml")
 
   const handlePress = useCallback(async () => {
     if (isVideo) {
-      setShowVideoModal(true);
-      return;
+      setShowVideoModal(true)
+      return
     }
     if (!isTextLike) {
-      Linking.openURL(url);
-      return;
+      Linking.openURL(url)
+      return
     }
     if (fileContent !== null) {
-      setShowModal(true);
-      return;
+      setShowModal(true)
+      return
     }
-    setLoading(true);
+    setLoading(true)
     try {
-      const MAX_FILE_BYTES = 1 * 1024 * 1024; // 1 MB
-      const res = await fetch(url);
+      const MAX_FILE_BYTES = 1 * 1024 * 1024 // 1 MB
+      const res = await fetch(url)
       // content-length may be absent for data: URLs — fall through to text check
       const contentLength = parseInt(
         res.headers.get("content-length") || "0",
-        10
-      );
+        10,
+      )
       if (contentLength > MAX_FILE_BYTES) {
-        Linking.openURL(url);
-        return;
+        Linking.openURL(url)
+        return
       }
-      const text = await res.text();
-      const byteSize = new Blob([text]).size;
+      const text = await res.text()
+      const byteSize = new Blob([text]).size
       setFileContent(
         byteSize > MAX_FILE_BYTES
           ? text.slice(0, MAX_FILE_BYTES) + "\n\n…[truncated]"
-          : text
-      );
-      setShowModal(true);
+          : text,
+      )
+      setShowModal(true)
     } catch {
-      Linking.openURL(url);
+      Linking.openURL(url)
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  }, [url, isTextLike, fileContent]);
+  }, [url, isTextLike, fileContent])
 
   return (
     <>
@@ -317,7 +341,7 @@ function DocumentThumbnail({
             "flex-row items-center gap-2 rounded-2xl px-2.5 py-1.5 max-w-[220px]",
             onUserBubble
               ? "bg-[#2a2a2a] border border-white/10"
-              : "border border-border bg-muted/40"
+              : "border border-border bg-muted/40",
           )}
           accessibilityLabel={`File attachment ${index + 1}: ${title}`}
           accessibilityRole="button"
@@ -325,7 +349,7 @@ function DocumentThumbnail({
           <View
             className={cn(
               "h-7 w-7 items-center justify-center rounded-md flex-shrink-0",
-              onUserBubble ? "bg-[#3b82f6]/25" : "bg-primary/15"
+              onUserBubble ? "bg-[#3b82f6]/25" : "bg-primary/15",
             )}
           >
             <FileText
@@ -338,7 +362,7 @@ function DocumentThumbnail({
             <Text
               className={cn(
                 "text-[11px] font-medium",
-                onUserBubble ? "text-white" : "text-foreground"
+                onUserBubble ? "text-white" : "text-foreground",
               )}
               numberOfLines={1}
             >
@@ -347,7 +371,7 @@ function DocumentThumbnail({
             <Text
               className={cn(
                 "text-[10px]",
-                onUserBubble ? "text-white/55" : "text-muted-foreground"
+                onUserBubble ? "text-white/55" : "text-muted-foreground",
               )}
               numberOfLines={1}
             >
@@ -366,8 +390,8 @@ function DocumentThumbnail({
             mediaType.includes("json")
               ? "json"
               : mediaType.includes("markdown")
-              ? "markdown"
-              : "plain"
+                ? "markdown"
+                : "plain"
           }
         />
       )}
@@ -378,7 +402,7 @@ function DocumentThumbnail({
         title={title}
       />
     </>
-  );
+  )
 }
 
 export function MessageContent({
@@ -387,23 +411,24 @@ export function MessageContent({
   className,
   variant = "default",
 }: MessageContentProps) {
-  const isPhoneLayout = usePhoneLayout();
-  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
+  const isPhoneLayout = usePhoneLayout()
+  const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+  const { width: viewportWidth } = useWindowDimensions()
   const usesMobileChatTypography =
-    isPhoneLayout || usesMobileWorkspaceChrome;
-  const content = extractTextContent(message);
-  const images = extractImageParts(message);
-  const files = extractFileParts(message);
-  const isUser = message.role === "user";
-  const userBubble = isUser && variant === "userBubble";
+    isPhoneLayout || usesMobileWorkspaceChrome || viewportWidth < 640
+  const content = extractTextContent(message)
+  const images = extractImageParts(message)
+  const files = extractFileParts(message)
+  const isUser = message.role === "user"
+  const userBubble = isUser && variant === "userBubble"
   // Only show the preview card when there's genuinely long typed text and no
   // file attachments. When file chips are present the text body is just the
   // typed portion (short) so we always render it inline — matching ChatGPT.
-  const hasAttachments = files.length > 0 || images.length > 0;
+  const hasAttachments = files.length > 0 || images.length > 0
   const isLongText =
     isUser && content && !hasAttachments
       ? analyzeContent(content).isLong
-      : false;
+      : false
 
   // For assistants we keep the original "transparent, padded" style.
   // For users we render full-width and let EditableUserMessage own
@@ -415,8 +440,8 @@ export function MessageContent({
     isUser
       ? "w-full bg-transparent"
       : "rounded-md px-3 py-1.5 w-full bg-transparent",
-    className
-  );
+    className,
+  )
 
   if (isUser) {
     const attachmentRow =
@@ -424,7 +449,7 @@ export function MessageContent({
         <View
           className={cn(
             "flex-row flex-wrap gap-2",
-            userBubble && "justify-end"
+            userBubble && "justify-end",
           )}
         >
           {images.map((img, i) => (
@@ -446,20 +471,25 @@ export function MessageContent({
             />
           ))}
         </View>
-      ) : null;
+      ) : null
 
     const body = content ? (
       isLongText ? (
         <LongTextPreviewCard text={content} title="Your Message" />
       ) : (
         <Text
+          style={
+            usesMobileChatTypography
+              ? { fontSize: 16, lineHeight: 24 }
+              : undefined
+          }
           className={
             userBubble
               ? usesMobileChatTypography
-                ? "text-base leading-6 text-white"
+                ? "text-[16px] leading-6 text-white"
                 : "text-sm leading-5 text-white"
               : usesMobileChatTypography
-                ? "text-base leading-6 text-foreground"
+                ? "text-[16px] leading-6 text-foreground"
                 : "text-sm leading-5 text-foreground"
           }
           selectable={!userBubble}
@@ -467,7 +497,7 @@ export function MessageContent({
           {content}
         </Text>
       )
-    ) : null;
+    ) : null
 
     if (userBubble) {
       return (
@@ -488,7 +518,7 @@ export function MessageContent({
             </View>
           ) : null}
         </View>
-      );
+      )
     }
 
     return (
@@ -496,7 +526,7 @@ export function MessageContent({
         {attachmentRow}
         {body}
       </View>
-    );
+    )
   }
 
   return (
@@ -531,7 +561,7 @@ export function MessageContent({
         </View>
       )}
     </View>
-  );
+  )
 }
 
-export default MessageContent;
+export default MessageContent

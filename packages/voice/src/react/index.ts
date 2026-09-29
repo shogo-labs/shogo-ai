@@ -14,6 +14,15 @@ export {
 } from './useVoiceConversation.js'
 
 export {
+  useLiveVoiceConversation,
+  type LiveVoiceSessionResponse,
+  type LiveTranscriptTurn,
+  type LiveDelegationRequest,
+  type UseLiveVoiceConversationOptions,
+  type UseLiveVoiceConversationResult,
+} from './useLiveVoiceConversation.js'
+
+export {
   useShogoVoice,
   type UseShogoVoiceOptions,
 } from './useShogoVoice.js'

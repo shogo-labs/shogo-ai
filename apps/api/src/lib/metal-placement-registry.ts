@@ -39,6 +39,12 @@ export interface HostScalars {
   agentPort: number
   region: string
   arch: string
+  /** Node-agent code version (DEPLOYED_SHA). */
+  agentVersion?: string
+  /** Release the host's golden rootfs was last rebuilt from. Drives rollout re-warm. */
+  rootfsSha?: string
+  /** Commit stamped inside the golden rootfs itself. Read by the rootfs release gate. */
+  rootfsRevision?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
   load: {
     available: number
@@ -92,7 +98,11 @@ export interface BurstHostRecord {
 }
 
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
-const PLACEMENT_TTL_S = parseInt(process.env.METAL_PLACEMENT_TTL_S || '86400', 10) // 24h
+// Routing only prefers the host holding a local snapshot while its placement
+// lives, and snapshots only resume on the host that took them. Keep placements
+// well past the rollout re-warm window (48h) so a warmed project opened days
+// later still lands on its snapshot. Refreshed on every open and suspend.
+const PLACEMENT_TTL_S = parseInt(process.env.METAL_PLACEMENT_TTL_S || `${7 * 24 * 60 * 60}`, 10) // 7d
 const LEASE_TTL_MS = parseInt(process.env.METAL_LEASE_TTL_MS || '60000', 10)
 // How long a per-user "recently opened" entry lingers before it stops counting
 // against the user's open cap (rolling — refreshed on every open). Default 12h:

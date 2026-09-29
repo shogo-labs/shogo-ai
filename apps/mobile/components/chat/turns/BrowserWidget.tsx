@@ -8,13 +8,21 @@
  */
 
 import { useState, useCallback, useMemo } from "react"
-import { View, Text, Image, Pressable, Linking, ActivityIndicator } from "react-native"
+import {
+  View,
+  Text,
+  Image,
+  Pressable,
+  ActivityIndicator,
+} from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { Globe, ImageIcon } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { useChatContextSafe } from "../ChatContext"
 import { InlineToolWidget, type InlineToolWidgetProps } from "./InlineToolWidget"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
+import { ImagePreviewModal } from "../ImagePreviewModal"
+import { useChatImageWidth } from "./use-chat-image-width"
 
 interface BrowserScreenshotDetails {
   ok?: boolean
@@ -79,6 +87,8 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
   const chatContext = useChatContextSafe()
   const [hasError, setHasError] = useState(false)
   const [isLoaded, setIsLoaded] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+  const imageWidth = useChatImageWidth()
 
   const details = useMemo(() => parseScreenshotResult(tool.result), [tool.result])
 
@@ -97,7 +107,7 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
   const pageUrl = details?.url
 
   const handlePress = useCallback(() => {
-    if (imageUrl) Linking.openURL(imageUrl)
+    if (imageUrl) setShowPreview(true)
   }, [imageUrl])
 
   if (tool.state === "streaming") {
@@ -140,12 +150,12 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
     <View>
       <Pressable onPress={handlePress} className="rounded-lg overflow-hidden border border-border/60">
         {!isLoaded && !hasError && (
-          <View style={{ width: 320, aspectRatio: 16 / 10 }} className="bg-muted/50 items-center justify-center">
+          <View style={{ width: imageWidth, aspectRatio: 16 / 10 }} className="bg-muted/50 items-center justify-center">
             <ActivityIndicator size="small" />
           </View>
         )}
         {hasError ? (
-          <View style={{ width: 320, aspectRatio: 16 / 10 }} className="bg-muted/50 items-center justify-center rounded-lg p-4">
+          <View style={{ width: imageWidth, aspectRatio: 16 / 10 }} className="bg-muted/50 items-center justify-center rounded-lg p-4">
             <ImageIcon size={24} className="text-muted-foreground" />
             <Text className="mt-2 text-xs text-muted-foreground">Failed to load screenshot</Text>
           </View>
@@ -157,7 +167,7 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
             onError={() => setHasError(true)}
             onLoad={() => setIsLoaded(true)}
             style={[
-              { width: 320, aspectRatio: 16 / 10 },
+              { width: imageWidth, aspectRatio: 16 / 10 },
               !isLoaded && { height: 0, opacity: 0 },
             ]}
           />
@@ -172,6 +182,14 @@ function BrowserScreenshotView({ tool }: { tool: ToolCallData }) {
           </Text>
         </View>
       )}
+      <ImagePreviewModal
+        visible={showPreview}
+        onClose={() => setShowPreview(false)}
+        url={imageUrl}
+        mediaType="image/png"
+        title="Browser screenshot"
+        alt="Browser screenshot"
+      />
     </View>
   )
 }

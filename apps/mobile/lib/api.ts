@@ -502,7 +502,7 @@ export const api = {
   },
 
   async verifyCheckout(http: HttpClient, sessionId: string) {
-    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string; seats?: number }>('/api/billing/verify-checkout', { sessionId })
+    const res = await http.post<{ ok?: boolean; workspaceId?: string; planId?: string; seats?: number; billingInterval?: 'monthly' | 'annual'; amountPaid?: number; currency?: string }>('/api/billing/verify-checkout', { sessionId })
     return res.data
   },
 

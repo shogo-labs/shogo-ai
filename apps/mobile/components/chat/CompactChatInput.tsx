@@ -43,9 +43,9 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { resolveShortName, resolveTier } from "../../lib/visible-models";
-import { ComposerModelPicker } from "./ModelPickerMenu";
+import { ComposerModelPicker, ModelPickerMenu } from "./ModelPickerMenu";
 import { WebTooltip } from "./WebTooltip";
-import { Plus, X, Mic, Square, Languages, Cloud } from "lucide-react-native";
+import { Plus, X, Mic, Square, Languages, Cloud, Cpu } from "lucide-react-native";
 import {
   executeNativeAttachAction,
   type NativeAttachAction,
@@ -73,7 +73,6 @@ import {
   PROMINENT_COMPOSER_PADDING_TOP,
   PROMINENT_COMPOSER_NATIVE_RADIUS,
   PROMINENT_COMPOSER_RADIUS,
-  nextProminentComposerHeight,
 } from "./useProminentComposerExpansion";
 import { EnvironmentPicker } from "./EnvironmentPicker";
 import {
@@ -423,6 +422,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
       text: composerDisplayValue,
       inputHeight,
       minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
+      maxHeight: inputMaxHeight,
       lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
       paddingTop: PROMINENT_COMPOSER_PADDING_TOP,
       paddingHorizontal: PROMINENT_COMPOSER_PADDING_HORIZONTAL,
@@ -786,6 +786,23 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                   >
                     {plusMenuExtras}
                     <ComposerPlusSection
+                      id="model"
+                      label="Model"
+                      value={compactNativeModelLabel(currentModelId)}
+                      Icon={Cpu}
+                    >
+                      <ModelPickerMenu
+                        currentModelId={currentModelId}
+                        effectiveIsPro={effectiveIsPro}
+                        presentation="sheet"
+                        onSelect={(modelId) => {
+                          handleModelChange(modelId);
+                          closePlusMenu();
+                        }}
+                        onDismiss={closePlusMenu}
+                      />
+                    </ComposerPlusSection>
+                    <ComposerPlusSection
                       id="mode"
                       label="Mode"
                       value={currentInteractionConfig.label}
@@ -962,44 +979,38 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
                 </>
               )}
 
-              {/* Model selector — native phone uses a bottom sheet like the plus menu. */}
-              <ComposerModelPicker
-                {...composerModelPickerProps({
-                  currentModelId,
-                  effectiveIsPro,
-                  disabled,
-                  nativeSheet: isPhoneChrome,
-                  triggerClassName: cn(
-                    useProminentComposer
-                      ? "h-7 shrink-0 flex-row items-center gap-0.5 rounded-full bg-muted px-2.5"
-                      : useCurrentNativeSizing
-                      ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
-                      : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
-                    isPhoneChrome && !useProminentComposer && "min-w-0"
-                  ),
-                  triggerStyle: isPhoneChrome
-                    ? { maxWidth: modelTriggerMaxWidth }
-                    : undefined,
-                  labelClassName: useProminentComposer
-                    ? "text-[12px] text-foreground"
-                    : useCurrentNativeSizing
-                    ? "text-[13px] text-foreground"
-                    : "text-xs text-muted-foreground",
-                  chevronSize: useCurrentNativeSizing ? 10 : 8,
-                  chevronColor: useProminentComposer
-                    ? chatgptComposer.icon
-                    : undefined,
-                  chevronStrokeWidth: useProminentComposer
-                    ? NATIVE_PHONE_ICON_STROKE
-                    : undefined,
-                  hitSlop: useCurrentNativeSizing ? 6 : undefined,
-                  label: isPhoneChrome
-                    ? compactNativeModelLabel(currentModelId)
-                    : resolveShortName(currentModelId),
-                  menuWidth: nativeModelMenuWidth,
-                  onSelect: handleModelChange,
-                })}
-              />
+              {/* On native phones the + menu owns model, mode, and environment
+                  settings. Retain the inline picker for the regular/web
+                  compact composer. */}
+              {!useProminentComposer ? (
+                <ComposerModelPicker
+                  {...composerModelPickerProps({
+                    currentModelId,
+                    effectiveIsPro,
+                    disabled,
+                    nativeSheet: isPhoneChrome,
+                    triggerClassName: cn(
+                      useCurrentNativeSizing
+                        ? "h-8 flex-row items-center gap-1 rounded-lg border border-border/45 bg-muted/30 px-2"
+                        : "h-[22px] flex-row items-center gap-1 rounded-md px-1.5",
+                      isPhoneChrome && "min-w-0"
+                    ),
+                    triggerStyle: isPhoneChrome
+                      ? { maxWidth: modelTriggerMaxWidth }
+                      : undefined,
+                    labelClassName: useCurrentNativeSizing
+                      ? "text-[13px] text-foreground"
+                      : "text-xs text-muted-foreground",
+                    chevronSize: useCurrentNativeSizing ? 10 : 8,
+                    hitSlop: useCurrentNativeSizing ? 6 : undefined,
+                    label: isPhoneChrome
+                      ? compactNativeModelLabel(currentModelId)
+                      : resolveShortName(currentModelId),
+                    menuWidth: nativeModelMenuWidth,
+                    onSelect: handleModelChange,
+                  })}
+                />
+              ) : null}
             </View>
 
             {useProminentComposer ? (
@@ -1280,16 +1291,7 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
               scrollEnabled={inputHeight >= inputMaxHeight}
               onContentSizeChange={(e) => {
                 const h = e.nativeEvent.contentSize.height;
-                prominentExpansion.reportContentHeight(h);
-                const next = nextProminentComposerHeight(h, {
-                  empty: composerEmpty,
-                  minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-                  maxHeight: inputMaxHeight,
-                  lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
-                });
-                if (next !== inputHeight) {
-                  setInputHeight(next);
-                }
+                prominentExpansion.reportContentSize(h);
               }}
             />
           ) : null}

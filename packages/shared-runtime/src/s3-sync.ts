@@ -141,7 +141,7 @@ async function createTarZst(
       },
     )
     let stderr = ''
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.stderr?.on('data', (chunk) => { stderr += chunk.toString() })
     child.once('error', reject)
     child.once('exit', (code) => {
       if (code === 0) {
@@ -156,7 +156,7 @@ async function createTarZst(
         reject(new Error(`tar create (zst) exited with code ${code}: ${stderr.trim()}`))
       }
     })
-    child.stdin.end(filesRelative.join('\n') + '\n')
+    child.stdin?.end(filesRelative.join('\n') + '\n')
   })
 }
 
@@ -213,7 +213,7 @@ export async function extractTarFastNonBlocking(
     )
 
     let stderr = ''
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.stderr?.on('data', (chunk) => { stderr += chunk.toString() })
 
     child.once('error', async (err: NodeJS.ErrnoException) => {
       // ENOENT: no `tar` binary available — fall back to node-tar.
@@ -1532,8 +1532,8 @@ export class S3Sync {
         { cwd: this.config.localDir, stdio: ['ignore', 'pipe', 'pipe'] },
       )
       let stderr = ''
-      child.stderr.setEncoding('utf-8')
-      child.stderr.on('data', (c) => { stderr += c })
+      child.stderr?.setEncoding('utf-8')
+      child.stderr?.on('data', (c) => { stderr += c })
       child.on('error', reject)
       child.on('close', (code) => {
         if (code === 0) resolve()
