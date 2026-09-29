@@ -16,7 +16,9 @@
 #   * A disable caused by schema skew ("is missing replicated column", the
 #     peer region migrated first) is re-enabled without a skip and without
 #     paging: the apply worker retries the transaction once the local
-#     migration lands, so no data is dropped.
+#     migration lands, so no data is dropped. The same goes for a disable
+#     caused by the cross-region stream dropping ("could not receive data
+#     from WAL stream"): the worker resumes from the slot.
 #   * SKIP_BUDGET caps skips per run. Hitting the budget (a conflict storm or a
 #     genuine bug producing endless distinct conflicts) stops auto-skipping and
 #     exits non-zero to page — so "auto-skip" can never silently become
@@ -181,6 +183,28 @@ spec:
                           ' 2>/dev/null | tail -1)
                       if [ -n "$SKEW" ]; then
                         echo "WATCHDOG_SCHEMA_SKEW sub=$SUB relation=$SKEW — peer migrated first; re-enabling (no skip)"
+                        psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
+                        continue
+                      fi
+
+                      # Connection loss: disable_on_error also fires when the
+                      # cross-region stream drops (2026-09-26: "SSL SYSCALL error:
+                      # EOF detected" under a US write burst). The worker resumes
+                      # from the slot's confirmed position, so nothing is lost.
+                      # These errors carry no origin context; the disable notice
+                      # names the subscription instead.
+                      DROPPED=$(kubectl logs -n "$NS" "$PRIMARY" -c postgres --since="$LOG_WINDOW" 2>/dev/null \
+                        | grep -E 'could not receive data from WAL stream|has been disabled because of an error' \
+                        | jq -rc --arg s "$SUB" '
+                            .record as $r
+                            | select(($r.backend_type // "") | test("logical replication"))
+                            | ($r.message // "") as $m
+                            | if ($m | test("could not receive data from WAL stream")) then "drop"
+                              elif ($m | test("subscription \"" + $s + "\" has been disabled")) then "disabled"
+                              else empty end
+                          ' 2>/dev/null | tail -2 | tr '\n' ' ')
+                      if [ "$DROPPED" = "drop disabled " ]; then
+                        echo "WATCHDOG_CONNECTION_LOST sub=$SUB — stream dropped; re-enabling (no skip)"
                         psql_primary -c "ALTER SUBSCRIPTION $SUB ENABLE;" >/dev/null || true
                         continue
                       fi
