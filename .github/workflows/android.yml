@@ -525,7 +525,7 @@ jobs:
 
       - name: Build AAB
         working-directory: apps/mobile/android
-        run: ./gradlew bundleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
+        run: ./gradlew bundleRelease -PRNIap_playBillingSdkVersion=8.0.0 -x lintVitalAnalyzeRelease -x lintVitalRelease
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
