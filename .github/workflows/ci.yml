@@ -366,6 +366,9 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 60
+    # Keep failures visible on PRs, but do not make a failing non-required
+    # check fail the merge-group workflow itself.
+    continue-on-error: ${{ github.event_name == 'merge_group' }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
