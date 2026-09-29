@@ -16,42 +16,29 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  execChecked,
+  quoteRemoteShellArgument,
+  type RemoteCommandRunner,
+} from './shell';
 
 /** The public release base URL used by the worker runtime installer. */
 export const DEFAULT_RELEASES_BASE_URL =
   'https://github.com/shogo-labs/shogo-ai/releases/download';
 
-/** A command result returned by an injected SSH connection. */
-export interface RemoteCommandResult {
-  stdout: string;
-  stderr?: string;
-  /**
-   * Connections that throw for non-zero commands may omit this. An omitted
-   * exit code means the command completed successfully.
-   */
-  exitCode?: number;
-  /** Common aliases used by SSH wrappers; exitCode takes precedence. */
-  code?: number;
-  status?: number;
-}
+const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 
 /**
- * The transport boundary used by this module.
- *
- * `upload` takes a local filesystem path and an absolute remote path. It is
- * intentionally not given credentials, URLs, or shell commands.
+ * The transport boundary used by this module. `upload` takes a local
+ * filesystem path and an absolute remote path; it is never given credentials
+ * or shell commands.
  */
-export interface RemoteSshConnection {
-  exec(command: string): Promise<RemoteCommandResult>;
+export interface RemoteSshConnection extends RemoteCommandRunner {
   upload(localPath: string, remotePath: string): Promise<void>;
 }
 
-/** Compatibility aliases for consumers that use a different SSH acronym style. */
-export type SshConnection = RemoteSshConnection;
-export type SSHConnection = RemoteSshConnection;
-
 export type RemoteTarget = 'linux-x64' | 'linux-arm64';
-export type RemoteDownloadSource = 'remote-download' | 'local-upload';
+export type RemoteRuntimeSource = 'installed' | 'remote-download' | 'local-upload';
 
 export interface RemotePlatform {
   os: 'linux';
@@ -63,18 +50,13 @@ export interface RemoteReleaseUrls {
   assetName: string;
   tarballUrl: string;
   checksumUrl: string;
-  /** Aliases matching the worker installer terminology. */
-  tarball: string;
-  sha256: string;
 }
 
 export interface RemoteRuntimeBootstrapOptions {
   /** Exact app/runtime version, without the release tag's leading `v`. */
   version: string;
-  /** Defaults to DEFAULT_RELEASES_BASE_URL. */
+  /** Defaults to SHOGO_RUNTIME_RELEASES_URL, then DEFAULT_RELEASES_BASE_URL. */
   baseUrl?: string;
-  /** Alias for baseUrl used by release-oriented integrations. */
-  releaseBaseUrl?: string;
   /** Injectable for unit tests and for callers with a custom fetch policy. */
   fetch?: typeof fetch;
   logger?: Pick<Console, 'warn'>;
@@ -83,58 +65,11 @@ export interface RemoteRuntimeBootstrapOptions {
 export interface RemoteRuntimeBootstrapResult {
   version: string;
   target: RemoteTarget;
-  /** Stable remote paths suitable for a later runtime launcher. */
+  /** `~/.shogo-server/<version>/agent-runtime`, expanded by the remote shell. */
   binaryPath: string;
-  sidecarRoot: string;
-  /** Explicit aliases for integrations that prefer remote-prefixed names. */
-  remoteBinaryPath: string;
-  remoteSidecarRoot: string;
-  source: RemoteDownloadSource;
-  /** The verified digest when it was available in command output/local fetch. */
+  source: RemoteRuntimeSource;
+  /** The verified digest when this call installed the binary. */
   sha256?: string;
-}
-
-export class RemoteSshCommandError extends Error {
-  readonly commandName: string;
-  readonly exitCode?: number;
-
-  constructor(commandName: string, exitCode?: number) {
-    super(
-      exitCode === undefined
-        ? `${commandName} failed`
-        : `${commandName} failed with exit code ${exitCode}`,
-    );
-    this.name = 'RemoteSshCommandError';
-    this.commandName = commandName;
-    this.exitCode = exitCode;
-  }
-}
-
-function getExitCode(result: RemoteCommandResult): number | undefined {
-  return result.exitCode ?? result.code ?? result.status;
-}
-
-async function execChecked(
-  connection: RemoteSshConnection,
-  command: string,
-  commandName: string,
-): Promise<RemoteCommandResult> {
-  const result = await connection.exec(command);
-  const exitCode = getExitCode(result);
-  if (exitCode !== undefined && exitCode !== 0) {
-    throw new RemoteSshCommandError(commandName, exitCode);
-  }
-  return result;
-}
-
-/**
- * Quote one value for a POSIX shell command.
- *
- * All values interpolated into remote commands pass through this function,
- * including release URLs and temporary paths.
- */
-export function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function validateVersion(version: string): string {
@@ -156,8 +91,7 @@ function normalizeBaseUrl(baseUrl: string): string {
     throw new Error('Runtime releases base URL must use http or https');
   }
   // Credentials in a release URL would be copied into the remote shell
-  // command. Authenticated release servers should use a transport-level
-  // policy; this bootstrapper does not support credentials in URLs.
+  // command line, where other users on the host can read them.
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error('Runtime releases base URL must not contain credentials or query parameters');
   }
@@ -174,17 +108,9 @@ export function buildRemoteAssetUrls(
   if (target !== 'linux-x64' && target !== 'linux-arm64') {
     throw new Error(`Unsupported remote runtime target '${target}'`);
   }
-  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   const assetName = `shogo-agent-runtime-${target}.tar.gz`;
-  const tarballUrl = `${normalizedBaseUrl}/v${normalizedVersion}/${assetName}`;
-  const checksumUrl = `${tarballUrl}.sha256`;
-  return {
-    assetName,
-    tarballUrl,
-    checksumUrl,
-    tarball: tarballUrl,
-    sha256: checksumUrl,
-  };
+  const tarballUrl = `${normalizeBaseUrl(baseUrl)}/v${normalizedVersion}/${assetName}`;
+  return { assetName, tarballUrl, checksumUrl: `${tarballUrl}.sha256` };
 }
 
 function parseUname(stdout: string): RemotePlatform {
@@ -208,34 +134,31 @@ function parseUname(stdout: string): RemotePlatform {
     throw new Error(`Unsupported remote architecture '${fields[1]}'`);
   }
 
-  return {
-    os: 'linux',
-    arch,
-    target: `linux-${arch}`,
-  };
+  return { os: 'linux', arch, target: `linux-${arch}` };
 }
 
 /** Detect the supported release target using the remote host's uname values. */
 export async function detectRemotePlatform(
-  connection: RemoteSshConnection,
+  connection: RemoteCommandRunner,
 ): Promise<RemotePlatform> {
   const result = await execChecked(connection, 'uname -s && uname -m', 'remote platform detection');
   return parseUname(result.stdout);
 }
 
-export const detectRemoteTarget = detectRemotePlatform;
-
-function remoteSidecarRoot(version: string): string {
-  return `~/.shogo-server/${version}`;
+function remoteInstallRoot(version: string): string {
+  // The version is validated before this is built. Keeping HOME outside the
+  // quoted version lets the remote shell resolve the user's home directory.
+  return `"$HOME/.shogo-server"/${quoteRemoteShellArgument(version)}`;
 }
 
-function remoteDownloadCommand(
-  transferRoot: string,
-  urls: RemoteReleaseUrls,
-): string {
-  const transfer = shellQuote(transferRoot);
-  const url = shellQuote(urls.tarballUrl);
-  const checksumUrl = shellQuote(urls.checksumUrl);
+function installedCheckCommand(version: string): string {
+  return `test -x ${remoteInstallRoot(version)}/agent-runtime`;
+}
+
+function remoteDownloadCommand(transferRoot: string, urls: RemoteReleaseUrls): string {
+  const transfer = quoteRemoteShellArgument(transferRoot);
+  const url = quoteRemoteShellArgument(urls.tarballUrl);
+  const checksumUrl = quoteRemoteShellArgument(urls.checksumUrl);
   return [
     'set -eu',
     `transfer=${transfer}`,
@@ -257,15 +180,10 @@ function remoteDownloadCommand(
 }
 
 function remoteFinalizeCommand(version: string, transferRoot: string): string {
-  // The version is validated before this command is built. Keeping HOME
-  // outside the quoted version lets the remote shell resolve the user's home
-  // directory without requiring an additional SSH round trip.
-  const root = `"$HOME/.shogo-server"/${shellQuote(version)}`;
-  const transfer = shellQuote(transferRoot);
   return [
     'set -eu',
-    `root=${root}`,
-    `transfer=${transfer}`,
+    `root=${remoteInstallRoot(version)}`,
+    `transfer=${quoteRemoteShellArgument(transferRoot)}`,
     'archive="$transfer/agent-runtime.tar.gz"',
     'checksum="$transfer/agent-runtime.tar.gz.sha256"',
     'extract="$transfer/extract"',
@@ -301,21 +219,12 @@ function remoteFinalizeCommand(version: string, transferRoot: string): string {
   ].join('\n');
 }
 
-export const buildRemoteDownloadCommand = remoteDownloadCommand;
-export const buildRemoteFinalizeCommand = remoteFinalizeCommand;
-
 function parseSha256Sidecar(text: string): string {
   const digest = text.trim().split(/\s+/)[0] ?? '';
   if (!/^[0-9a-f]{64}$/i.test(digest)) {
     throw new Error('Release checksum sidecar did not contain a 64-character SHA-256 digest');
   }
   return digest.toLowerCase();
-}
-
-export const parseRemoteSha256Sidecar = parseSha256Sidecar;
-
-function sha256OfBytes(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
 }
 
 async function fetchReleaseBytes(
@@ -331,23 +240,21 @@ async function fetchReleaseBytes(
 }
 
 function digestFromCommandOutput(stdout: string): string | undefined {
-  const candidates = stdout.trim().split(/\s+/).filter(Boolean);
-  const digest = candidates.find((candidate) => /^[0-9a-f]{64}$/i.test(candidate));
+  const digest = stdout
+    .trim()
+    .split(/\s+/)
+    .find((candidate) => /^[0-9a-f]{64}$/i.test(candidate));
   return digest?.toLowerCase();
-}
-
-function makeTransferRoot(): string {
-  return `/tmp/shogo-agent-runtime-${randomBytes(16).toString('hex')}`;
 }
 
 /**
  * Detect, download, verify, and install agent-runtime on a remote Linux host.
  *
- * The remote host is tried first so the API process does not proxy a large
- * release artifact. If curl/wget is absent or the remote download command
- * fails, the artifact is fetched locally and uploaded through the injected
- * connection. In both cases checksum verification and extraction happen on
- * the remote host before the final binary path is returned.
+ * An already-installed binary for this exact version is reused. Otherwise
+ * the remote host downloads the release itself so the API process does not
+ * proxy a large artifact; if curl/wget is absent or fails, the artifact is
+ * fetched and verified locally and streamed over SSH. In both cases checksum
+ * verification and extraction happen on the remote host.
  */
 export async function bootstrapRemoteRuntime(
   connection: RemoteSshConnection,
@@ -355,15 +262,19 @@ export async function bootstrapRemoteRuntime(
 ): Promise<RemoteRuntimeBootstrapResult> {
   const version = validateVersion(options.version);
   const platform = await detectRemotePlatform(connection);
-  const releaseBaseUrl =
-    options.baseUrl ??
-    options.releaseBaseUrl ??
-    process.env.SHOGO_RUNTIME_RELEASES_URL ??
-    DEFAULT_RELEASES_BASE_URL;
-  const urls = buildRemoteAssetUrls(version, platform.target, releaseBaseUrl);
-  const transferRoot = makeTransferRoot();
+  const binaryPath = `~/.shogo-server/${version}/agent-runtime`;
 
-  let source: RemoteDownloadSource = 'remote-download';
+  const installed = await connection.exec(installedCheckCommand(version));
+  if (installed.exitCode === 0) {
+    return { version, target: platform.target, binaryPath, source: 'installed' };
+  }
+
+  const releaseBaseUrl =
+    options.baseUrl ?? process.env.SHOGO_RUNTIME_RELEASES_URL ?? DEFAULT_RELEASES_BASE_URL;
+  const urls = buildRemoteAssetUrls(version, platform.target, releaseBaseUrl);
+  const transferRoot = `/tmp/shogo-agent-runtime-${randomBytes(16).toString('hex')}`;
+
+  let source: RemoteRuntimeSource = 'remote-download';
   let locallyVerifiedSha256: string | undefined;
 
   try {
@@ -371,22 +282,19 @@ export async function bootstrapRemoteRuntime(
       connection,
       remoteDownloadCommand(transferRoot, urls),
       'remote runtime download',
+      { timeoutMs: DOWNLOAD_TIMEOUT_MS },
     );
-  } catch {
+  } catch (error) {
     source = 'local-upload';
     options.logger?.warn(
-      '[remote ssh] Remote runtime download unavailable; uploading the release artifact locally.',
+      `[remote ssh] Remote runtime download unavailable (${error instanceof Error ? error.message : String(error)}); uploading the release artifact locally.`,
     );
 
     const fetchImpl = options.fetch ?? globalThis.fetch;
     const archive = await fetchReleaseBytes(fetchImpl, urls.tarballUrl, urls.assetName);
-    const sidecar = await fetchReleaseBytes(
-      fetchImpl,
-      urls.checksumUrl,
-      `${urls.assetName}.sha256`,
-    );
+    const sidecar = await fetchReleaseBytes(fetchImpl, urls.checksumUrl, `${urls.assetName}.sha256`);
     const expected = parseSha256Sidecar(new TextDecoder().decode(sidecar));
-    const actual = sha256OfBytes(archive);
+    const actual = createHash('sha256').update(archive).digest('hex');
     if (actual !== expected) {
       throw new Error(
         `Release checksum mismatch for ${urls.assetName}: expected ${expected}, got ${actual}`,
@@ -402,7 +310,7 @@ export async function bootstrapRemoteRuntime(
       await writeFile(localChecksum, sidecar);
       await execChecked(
         connection,
-        `mkdir -p ${shellQuote(transferRoot)}`,
+        `mkdir -p ${quoteRemoteShellArgument(transferRoot)}`,
         'remote upload directory setup',
       );
       await connection.upload(localArchive, `${transferRoot}/agent-runtime.tar.gz`);
@@ -417,20 +325,11 @@ export async function bootstrapRemoteRuntime(
     remoteFinalizeCommand(version, transferRoot),
     'remote runtime installation',
   );
-  const remoteSha256 = digestFromCommandOutput(finalizeResult.stdout);
-  const sidecarRoot = remoteSidecarRoot(version);
-  const binaryPath = `${sidecarRoot}/agent-runtime`;
   return {
     version,
     target: platform.target,
     binaryPath,
-    sidecarRoot,
-    remoteBinaryPath: binaryPath,
-    remoteSidecarRoot: sidecarRoot,
     source,
-    sha256: remoteSha256 ?? locallyVerifiedSha256,
+    sha256: digestFromCommandOutput(finalizeResult.stdout) ?? locallyVerifiedSha256,
   };
 }
-
-export const bootstrapRemoteAgentRuntime = bootstrapRemoteRuntime;
-export const bootstrapRemoteSshRuntime = bootstrapRemoteRuntime;
