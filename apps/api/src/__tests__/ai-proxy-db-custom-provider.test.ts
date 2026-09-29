@@ -33,7 +33,9 @@ delete process.env.SHOGO_CLOUD_URL
 
 const MIMO_KEY = 'sk-mimo-staging-routing-key-abcdef'
 const DEEPSEEK_KEY = 'sk-deepseek-staging-routing-key-abcdef'
+const OPENROUTER_KEY = 'sk-or-staging-routing-key-abcdef'
 const DEEPSEEK_UUID = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
+const HOSHI_OPENROUTER_UUID = 'cccccccc-dddd-eeee-ffff-000000000001'
 
 // Opaque UUIDs are how DB models are really addressed in production (the slug
 // lives in `apiModel`/`aliases`, not the id). The prior native-routing
@@ -77,6 +79,15 @@ function seed() {
       encryptedApiKey: encryptSecret(DEEPSEEK_KEY),
       enabled: true,
     },
+    {
+      id: 'prov-openrouter',
+      label: 'OpenRouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      protocol: 'openai',
+      authStyle: 'bearer',
+      encryptedApiKey: encryptSecret(OPENROUTER_KEY),
+      enabled: true,
+    },
   ]
   MODELS = [
     {
@@ -114,6 +125,32 @@ function seed() {
       sortOrder: 2,
       aliases: ['hoshi-2-0'],
       capabilities: { upstream: 'deepseek', supportsAudioInput: false },
+      reasoningEffort: 'high',
+      inputPerMillion: 0.15,
+      cachedInputPerMillion: 0.003,
+      cacheWritePerMillion: 0,
+      outputPerMillion: 0.6,
+    },
+    {
+      id: HOSHI_OPENROUTER_UUID,
+      provider: 'custom',
+      providerId: 'prov-openrouter',
+      apiModel: 'deepseek/deepseek-v4.1-flash',
+      displayName: 'Hoshi 2.0',
+      shortDisplayName: 'Hoshi 2.0',
+      tier: 'standard',
+      family: 'other',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 2,
+      aliases: ['hoshi-2-0-openrouter'],
+      capabilities: {
+        upstream: 'deepseek',
+        supportsAudioInput: false,
+        openrouterProvider: { order: ['DeepSeek'], allow_fallbacks: false, data_collection: 'deny' },
+        fallback: { providerId: 'prov-deepseek', apiModel: 'deepseek-flash' },
+      },
       reasoningEffort: 'high',
       inputPerMillion: 0.15,
       cachedInputPerMillion: 0.003,
@@ -280,12 +317,18 @@ mock.module('../lib/project-user-context', () => ({ getProjectUser: () => 'test-
 const originalFetch = globalThis.fetch
 let lastFetchUrl: string | null = null
 let lastFetchInit: RequestInit | undefined
+let fetchCalls: { url: string; init?: RequestInit }[] = []
+let fetchQueue: Array<Response | Error> = []
 
 beforeAll(() => {
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.url
     lastFetchUrl = url
     lastFetchInit = init
+    fetchCalls.push({ url, init })
+    const scripted = fetchQueue.shift()
+    if (scripted instanceof Error) throw scripted
+    if (scripted) return scripted
     if (url.includes('anthropic')) {
       return new Response(JSON.stringify({
         id: 'msg_1', type: 'message', role: 'assistant',
@@ -325,6 +368,8 @@ beforeAll(async () => {
 beforeEach(async () => {
   lastFetchUrl = null
   lastFetchInit = undefined
+  fetchCalls = []
+  fetchQueue = []
   hasAdvanced = true
   consumedUsageCalls = []
   nextOpenAIUsage = null
@@ -444,6 +489,144 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.thinking).toEqual({ type: 'disabled' })
     expect(body.reasoning_effort).toBeUndefined()
     expect(body.providerOptions).toBeUndefined()
+  })
+
+  function hoshiOpenRouterRequest() {
+    return {
+      model: HOSHI_OPENROUTER_UUID,
+      max_completion_tokens: 42,
+      store: true,
+      messages: [
+        { role: 'developer', content: 'Be concise.' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoning_content: 'look it up',
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{}' },
+          }],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: 'result' },
+        { role: 'user', content: 'Continue.' },
+      ],
+      tools: [{
+        type: 'function',
+        function: { name: 'lookup', description: 'Lookup', parameters: { type: 'object' } },
+      }],
+    }
+  }
+
+  test('translates a DeepSeek model on OpenRouter to reasoning + provider pinning', async () => {
+    const res = await postChatBody(buildApp(), hoshiOpenRouterRequest())
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe('https://openrouter.ai/api/v1/chat/completions')
+    const headers = lastFetchInit?.headers as Record<string, string>
+    expect(headers.Authorization).toBe(`Bearer ${OPENROUTER_KEY}`)
+    expect(headers['HTTP-Referer']).toBe('https://shogo.ai')
+    expect(headers['X-Title']).toBe('Shogo')
+    const body = lastForwardedBody()
+    expect(body.model).toBe('deepseek/deepseek-v4.1-flash')
+    expect(body.max_tokens).toBe(42)
+    expect(body.max_completion_tokens).toBeUndefined()
+    expect(body.store).toBeUndefined()
+    expect(body.thinking).toBeUndefined()
+    expect(body.reasoning_effort).toBeUndefined()
+    expect(body.reasoning).toEqual({ effort: 'high' })
+    expect(body.provider).toEqual({ order: ['DeepSeek'], allow_fallbacks: false, data_collection: 'deny' })
+    expect(body.messages[0].role).toBe('system')
+    expect(body.messages[1].reasoning).toBe('look it up')
+    expect(body.messages[1].reasoning_content).toBeUndefined()
+    expect(body.messages[1].reasoning_details).toEqual([{ type: 'reasoning.text', text: 'look it up' }])
+  })
+
+  test('honors disabled thinking for an OpenRouter-hosted DeepSeek model', async () => {
+    const res = await postChatBody(buildApp(), {
+      model: HOSHI_OPENROUTER_UUID,
+      messages: [{ role: 'user', content: 'Name this project.' }],
+      providerOptions: { shogo: { thinking: { type: 'disabled' } } },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.reasoning).toEqual({ enabled: false })
+    expect(body.thinking).toBeUndefined()
+    expect(body.reasoning_effort).toBeUndefined()
+  })
+
+  test('rewrites OpenRouter reasoning onto reasoning_content', async () => {
+    fetchQueue = [new Response(JSON.stringify({
+      id: 'cmpl_or',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'hi', reasoning: 'thought' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 4, completion_tokens: 2, cost: 0.01 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })]
+    const res = await postChat(buildApp(), HOSHI_OPENROUTER_UUID)
+    expect(res.status).toBe(200)
+    const data = await res.json() as any
+    expect(data.choices[0].message.reasoning_content).toBe('thought')
+    expect(data.choices[0].message.reasoning).toBeUndefined()
+  })
+
+  test('rewrites streamed OpenRouter reasoning deltas', async () => {
+    fetchQueue = [new Response([
+      'data: {"choices":[{"delta":{"reasoning":"plan "}}]}',
+      '',
+      'data: {"choices":[{"delta":{"content":"hello"}}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })]
+    const res = await postChatBody(buildApp(), {
+      model: HOSHI_OPENROUTER_UUID,
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('"reasoning_content":"plan "')
+    expect(text).not.toContain('"reasoning":')
+  })
+
+  test('fails over to DeepSeek direct on OpenRouter 503, 429, and network errors', async () => {
+    const ok = () => new Response(JSON.stringify({
+      id: 'cmpl_fb',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+    for (const failure of [
+      new Response('unavailable', { status: 503 }),
+      new Response('slow down', { status: 429 }),
+      new Error('connect ECONNREFUSED'),
+    ]) {
+      fetchCalls = []
+      fetchQueue = [failure, ok()]
+      const res = await postChat(buildApp(), HOSHI_OPENROUTER_UUID)
+      expect(res.status).toBe(200)
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        'https://openrouter.ai/api/v1/chat/completions',
+        'https://api.deepseek.com/v1/chat/completions',
+      ])
+      const fallbackBody = JSON.parse(String(fetchCalls[1].init?.body))
+      expect(fallbackBody.model).toBe('deepseek-flash')
+      expect(fallbackBody.thinking).toEqual({ type: 'enabled' })
+      expect(fallbackBody.reasoning).toBeUndefined()
+      expect((fetchCalls[1].init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${DEEPSEEK_KEY}`)
+    }
+  })
+
+  test('does not fail over on a 400, or when the model has no distinct fallback', async () => {
+    fetchQueue = [new Response('bad request', { status: 400 })]
+    const rejected = await postChat(buildApp(), HOSHI_OPENROUTER_UUID)
+    expect(rejected.status).not.toBe(200)
+    expect(fetchCalls).toHaveLength(1)
+
+    fetchCalls = []
+    fetchQueue = [new Response('down', { status: 503 })]
+    const direct = await postChat(buildApp(), DEEPSEEK_UUID)
+    expect(direct.status).not.toBe(200)
+    expect(fetchCalls).toHaveLength(1)
+    expect(fetchCalls[0].url).toBe('https://api.deepseek.com/v1/chat/completions')
   })
 
   test('meters DeepSeek cache hits and reasoning tokens from usage details', async () => {
