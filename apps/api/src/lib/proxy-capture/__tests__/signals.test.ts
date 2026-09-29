@@ -24,7 +24,7 @@ class PutObjectCommand {
 mock.module('@aws-sdk/client-s3', () => ({ PutObjectCommand }))
 mock.module('../../s3', () => ({
   getLlmCaptureBucket: () => 'capture-bucket',
-  getS3Client: () => ({
+  getLlmCaptureS3Client: () => ({
     send: async (command: any) => {
       if (state.fail) throw new Error('bucket unavailable')
       state.sends.push(command)

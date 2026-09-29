@@ -412,10 +412,11 @@ async function readS3Files(uri: string): Promise<Array<{ key: string; bytes: Uin
   const parsed = new URL(uri)
   const bucket = parsed.hostname
   const prefix = parsed.pathname.replace(/^\/+/, '')
+  const endpoint = process.env.S3_LLM_CAPTURES_ENDPOINT || process.env.S3_ENDPOINT
   const client = new S3Client({
-    region: process.env.S3_REGION || process.env.AWS_REGION || 'us-east-1',
-    endpoint: process.env.S3_ENDPOINT,
-    forcePathStyle: Boolean(process.env.S3_ENDPOINT),
+    region: process.env.S3_LLM_CAPTURES_REGION || process.env.S3_REGION || process.env.AWS_REGION || 'us-east-1',
+    endpoint,
+    forcePathStyle: Boolean(endpoint),
   })
   const keys: string[] = []
   let continuationToken: string | undefined

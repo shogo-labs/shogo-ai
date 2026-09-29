@@ -140,14 +140,17 @@ mock.module('@aws-sdk/client-s3', () => ({
   PutObjectCommand: FakePutObjectCommand,
 }))
 
+const fakeS3Client = {
+  send: async (command: FakePutObjectCommand) => {
+    objectWrites.push(command.input)
+    return {}
+  },
+}
+
 mock.module('../lib/s3', () => ({
   getLlmCaptureBucket: () => 'llm-captures-test',
-  getS3Client: () => ({
-    send: async (command: FakePutObjectCommand) => {
-      objectWrites.push(command.input)
-      return {}
-    },
-  }),
+  getS3Client: () => fakeS3Client,
+  getLlmCaptureS3Client: () => fakeS3Client,
 }))
 
 let nextFetchResponses: Array<() => Response> = []
