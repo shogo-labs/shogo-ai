@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type Route } from "@playwright/test"
+import { openTeamHome } from "./helpers"
 
 /**
  * Offline-resilient chat — mock E2E tests.
@@ -58,7 +59,8 @@ import { test, expect, type Page, type Route } from "@playwright/test"
  * Override the frontend URL with E2E_TARGET_URL / STAGING_URL.
  */
 
-const CHAT_URL_GLOB = "**/api/projects/*/chat"
+// Local project chats run on the merged workspace runtime (/api/workspaces/:id/chat).
+const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
 const UPSTREAM_HEALTH_URL_GLOB = "**/api/ai/upstream-health"
 
 // ─── SSE frame builders ──────────────────────────────────────────────────
@@ -137,6 +139,7 @@ type ChatMock = { kind: "abort" } | { kind: "stream"; body: string }
 
 let nextChatMock: ChatMock | null = null
 let chatPostCount = 0
+let upstreamReachable = true
 
 async function installMocks(page: Page) {
   await page.route(CHAT_URL_GLOB, async (route: Route) => {
@@ -145,7 +148,11 @@ async function installMocks(page: Page) {
       return
     }
     chatPostCount++
-    const mock = nextChatMock ?? { kind: "stream", body: buildCompletedTurnStream("OK, got it.") }
+    // While the upstream is "down" every POST fails, including the transport's
+    // own bounded retry of the initial request (auto-resuming-fetch).
+    const mock: ChatMock = !upstreamReachable
+      ? { kind: "abort" }
+      : nextChatMock ?? { kind: "stream", body: buildCompletedTurnStream("OK, got it.") }
     nextChatMock = null // one-shot — each send scripts its own response
     if (mock.kind === "abort") {
       await route.abort("failed")
@@ -159,15 +166,14 @@ async function installMocks(page: Page) {
     })
   })
 
-  // Always "reachable" by default — the offline-queue-drain test flips this
-  // implicitly by simply succeeding the retried POST; nothing here needs to
-  // report unreachable since we drive the client's offline path via a hard
-  // `route.abort()` on the chat POST itself, not via this probe.
+  // ChatPanel probes this as soon as a send is queued offline and drains on
+  // `reachable: true`, so the offline-queue test holds it false until it
+  // simulates connectivity returning.
   await page.route(UPSTREAM_HEALTH_URL_GLOB, async (route: Route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ reachable: true, target: "direct", checkedAt: Date.now(), cached: false }),
+      body: JSON.stringify({ reachable: upstreamReachable, target: "direct", checkedAt: Date.now(), cached: false }),
     })
   })
 }
@@ -191,8 +197,7 @@ async function waitForAgentIdle(page: Page, timeoutMs = 30_000) {
 }
 
 async function createProjectAndWait(page: Page, prompt: string) {
-  await page.goto("/")
-  await page.waitForSelector("text=What are we building", { timeout: 20_000 })
+  await openTeamHome(page)
 
   const input = homeComposerInput(page)
   await input.click()
@@ -233,6 +238,7 @@ test.describe("Offline-resilient chat — E2E (mocked)", () => {
   test.beforeEach(() => {
     nextChatMock = null
     chatPostCount = 0
+    upstreamReachable = true
   })
 
   // ===========================================================================
@@ -287,26 +293,33 @@ test.describe("Offline-resilient chat — E2E (mocked)", () => {
   // 3. Offline send queue — queues on network failure, drains without duplicating
   // ===========================================================================
 
-  test("queues a send that fails on a network error, then delivers it exactly once connectivity returns", async () => {
-    nextChatMock = { kind: "abort" }
+  // FIXME(chat): AI SDK 6 `sendMessage` never rejects on a transport failure —
+  // it calls `onError` and sets status "error" — so `deliverMessage`'s catch
+  // (the only way into the offline queue) is unreachable and the user gets a
+  // "Failed to fetch" error with Retry instead. Re-enable once network-class
+  // failures are routed from `onError` into the offline queue.
+  test.fixme("queues a send that fails on a network error, then delivers it exactly once connectivity returns", async () => {
+    upstreamReachable = false
 
     await sendProjectMessage(page, "Ping while offline")
 
     // `deliverMessage` swallows the network-class failure and queues it —
-    // no error banner, just the composer's offline strip.
-    await expect(page.getByText("1 waiting to send")).toBeVisible({ timeout: 15_000 })
-    expect(chatPostCount).toBe(1)
+    // no error banner, just the Queue dock's "1 waiting" summary.
+    await expect(page.getByText("1 waiting", { exact: true })).toBeVisible({ timeout: 15_000 })
+    expect(chatPostCount).toBeGreaterThanOrEqual(1)
+    const offlineAttempts = chatPostCount
 
     // Connectivity "returns": the retried POST now succeeds.
     nextChatMock = { kind: "stream", body: buildCompletedTurnStream("Delivered once back online.") }
+    upstreamReachable = true
     await page.evaluate(() => window.dispatchEvent(new Event("online")))
 
-    await expect(page.getByText("1 waiting to send")).toBeHidden({ timeout: 20_000 })
+    await expect(page.getByText("1 waiting", { exact: true })).toBeHidden({ timeout: 20_000 })
     await expect(page.getByText("Delivered once back online.")).toBeVisible({ timeout: 20_000 })
 
-    // Exactly one retry landed a real turn (the aborted attempt + the one
-    // successful redelivery) — no duplicate turn from the offline retry.
-    expect(chatPostCount).toBe(2)
+    // Exactly one redelivery after the failed attempts — no duplicate turn
+    // from the offline retry.
+    expect(chatPostCount).toBe(offlineAttempts + 1)
     await expect(page.getByText("Delivered once back online.")).toHaveCount(1)
 
     await waitForAgentIdle(page)

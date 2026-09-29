@@ -169,7 +169,6 @@ function AppLayoutInner() {
   useEffect(() => {
     if (
       !localMode ||
-      !isIdeEmbed ||
       isAuthenticated ||
       isLoading ||
       ideAutoSignInAttempted.current
@@ -188,7 +187,7 @@ function AppLayoutInner() {
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
-        console.error("[IDEEmbed] Auto-sign-in failed:", err);
+        console.error("[LocalMode] Auto-sign-in failed:", err);
         setIdeAutoSignInError(message || "auto sign-in failed");
       })
       .finally(() => setIdeAutoSigningIn(false));
@@ -201,15 +200,27 @@ function AppLayoutInner() {
     refreshSession,
   ]);
 
+  // Local mode signs in above instead of redirecting: "/" also resolves to
+  // (app)/index, so replacing to it from here re-renders this layout and
+  // loops until React aborts with "Maximum update depth exceeded" on a cold
+  // signed-out deep link. The latch covers the remaining fallback.
+  const signedOutRedirected = useRef(false);
   useEffect(() => {
-    if (!isLoading && !isAuthenticated && !ideAutoSigningIn) {
-      if (localMode && isIdeEmbed) return;
+    if (isAuthenticated) {
+      signedOutRedirected.current = false;
+      return;
+    }
+    if (!isLoading && !ideAutoSigningIn) {
+      if (localMode && (isIdeEmbed || !ideAutoSignInError)) return;
+      if (signedOutRedirected.current) return;
+      signedOutRedirected.current = true;
       router.replace(localMode ? "/" : "/(auth)/sign-in");
     }
   }, [
     isAuthenticated,
     isIdeEmbed,
     ideAutoSigningIn,
+    ideAutoSignInError,
     isLoading,
     localMode,
     router,

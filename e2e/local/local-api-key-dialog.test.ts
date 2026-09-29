@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test"
+import { openTeamHome } from "./helpers"
 
 /**
  * Local-mode test for API Key dialog accessibility and integrations endpoints.
@@ -20,28 +21,18 @@ test.describe("Local Mode — API Key Dialog & Integrations", () => {
   test.describe.configure({ mode: "serial" })
 
   test("auto-sign-in and navigate to home", async ({ page }) => {
-    await page.goto("/")
-    // Local mode auto-signs in — wait for home or sign-in redirect
-    const signedIn = await page.waitForSelector("text=What are we building", { timeout: 20_000 }).catch(() => null)
-    if (!signedIn) {
-      // May need to trigger auto-sign-in
-      await page.goto("/sign-in")
-      await page.waitForTimeout(3_000)
-      await page.goto("/")
-      await page.waitForSelector("text=What are we building", { timeout: 20_000 })
-    }
+    // Local mode auto-signs in and opens the Personal workspace.
+    await openTeamHome(page)
   })
 
   test("API Keys page loads", async ({ page }) => {
-    await page.goto("/")
-    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
+    await openTeamHome(page)
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
   })
 
   test("Create Key modal has role='dialog'", async ({ page }) => {
-    await page.goto("/")
-    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
+    await openTeamHome(page)
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 
@@ -76,8 +67,7 @@ test.describe("Local Mode — API Key Dialog & Integrations", () => {
   })
 
   test("Create Key modal button is clickable via dialog selector", async ({ page }) => {
-    await page.goto("/")
-    await page.waitForSelector("text=What are we building", { timeout: 15_000 })
+    await openTeamHome(page)
     await page.goto("/api-keys")
     await page.waitForSelector("text=API Keys", { timeout: 15_000 })
 
