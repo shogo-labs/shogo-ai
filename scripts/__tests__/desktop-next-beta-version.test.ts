@@ -154,6 +154,30 @@ describe('resolveVersion', () => {
     expect(result).toEqual({ version: '1.14.10-beta.20260919t233000', channel: 'beta' })
   })
 
+  test('beta dispatch on a stable tag ref resolves to beta, not the stable tag', () => {
+    const result = resolveVersion({
+      eventName: 'workflow_dispatch',
+      ref: 'refs/tags/v1.14.9',
+      dispatchVersion: undefined,
+      dispatchChannel: 'beta',
+      tags,
+      commitDate,
+    })
+    expect(result).toEqual({ version: '1.14.10-beta.20260919t233000', channel: 'beta' })
+  })
+
+  test('stable dispatch on a tag ref still resolves to the tag', () => {
+    const result = resolveVersion({
+      eventName: 'workflow_dispatch',
+      ref: 'refs/tags/v1.14.9',
+      dispatchVersion: undefined,
+      dispatchChannel: 'stable',
+      tags,
+      commitDate,
+    })
+    expect(result).toEqual({ version: '1.14.9', channel: 'stable' })
+  })
+
   test('workflow_dispatch requires a version for a stable build', () => {
     expect(() =>
       resolveVersion({
