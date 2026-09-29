@@ -72,7 +72,7 @@ export function createDomainActions(store: IDomainStore) {
      */
     updateWorkspace: async (
       workspaceId: string,
-      changes: { name?: string; description?: string }
+      changes: { name?: string; description?: string; trainingDataMode?: string }
     ) => {
       return store.workspaceCollection.update(workspaceId, changes)
     },

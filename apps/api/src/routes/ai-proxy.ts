@@ -46,6 +46,7 @@ import {
 import { wipeCloudKey } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
+import { beginCapture } from '../lib/proxy-capture'
 import {
   MODEL_CATALOG,
   MODEL_ALIASES,
@@ -2626,6 +2627,7 @@ export function aiProxyRoutes() {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${shogoKey}`,
+        'x-shogo-client': 'desktop',
       },
       body: JSON.stringify(request),
       signal,
@@ -2674,6 +2676,7 @@ export function aiProxyRoutes() {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${shogoKey}`,
+        'x-shogo-client': 'desktop',
       },
       body: JSON.stringify(request),
       signal,
@@ -2716,6 +2719,7 @@ export function aiProxyRoutes() {
     const forwardHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-api-key': shogoKey,
+      'x-shogo-client': 'desktop',
     }
     for (const [key, value] of Object.entries(headers)) {
       if (key.toLowerCase().startsWith('anthropic-')) {
@@ -2840,6 +2844,7 @@ export function aiProxyRoutes() {
       }
     }
 
+    let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
       const request: ChatCompletionRequest = await c.req.json()
       // Forwarded by the chat-stream entry points (project-chat / agent-proxy
@@ -3005,6 +3010,20 @@ export function aiProxyRoutes() {
         `[AI Proxy] ${tokenPayload.projectId} → ${modelConfig.provider}/${modelConfig.apiModel} (stream: ${!!request.stream})`
       )
 
+      capture = await beginCapture({
+        tokenPayload,
+        endpoint: 'chat.completions',
+        requestBody: request,
+        requestedModel: request.model,
+        resolvedModel: modelConfig.apiModel,
+        provider: modelConfig.provider,
+        stream: Boolean(request.stream),
+        chatSessionId,
+        internal: Boolean(internalUsage),
+        client: c.req.header('x-shogo-client'),
+        requestHeaders: c.req.raw.headers,
+      })
+
       // BYOK paths bypass cloud usage tracking — user pays the provider
       // directly (no Shogo Cloud middleman to bill against).
       const isByokOpenRouter = modelConfig.provider === 'openrouter'
@@ -3012,13 +3031,15 @@ export function aiProxyRoutes() {
       // Route to provider
       if (request.stream) {
         if (modelConfig.provider === 'anthropic') {
-          return await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
+          const upstream = await proxyAnthropicStream(request, apiKey, modelConfig, (inTok, outTok, cachedTok, cacheWriteTok) => {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
           }, c.req.raw.signal)
+          return capture?.wrapStream(upstream, 'openai-chat') || upstream
         } else {
-          return await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok) => {
+          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok) => {
             recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage, reasoningTok)
           }, c.req.raw.signal)
+          return capture?.wrapStream(upstream, 'openai-chat') || upstream
         }
       } else {
         let result: any
@@ -3051,9 +3072,21 @@ export function aiProxyRoutes() {
           )
         }
 
+        capture?.recordResponse({
+          status: 200,
+          body: result,
+          format: 'json',
+          usage: {
+            inputTokens: result.usage?.prompt_tokens ?? result.usage?.input_tokens,
+            outputTokens: result.usage?.completion_tokens ?? result.usage?.output_tokens,
+            cachedInputTokens: result.usage?.prompt_tokens_details?.cached_tokens ?? result.usage?.cache_read_input_tokens,
+            reasoningTokens: result.usage?.completion_tokens_details?.reasoning_tokens ?? result.usage?.reasoning_tokens,
+          },
+        })
         return c.json(result)
       }
     } catch (error: any) {
+      capture?.finish({ errorType: 'proxy_error' })
       console.error('[AI Proxy] Error:', error.message)
 
       // Return OpenAI-compatible error format
@@ -3119,6 +3152,7 @@ export function aiProxyRoutes() {
       }
     }
 
+    let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
       const body = await c.req.json()
       const requestedModel = body.model
@@ -3167,6 +3201,20 @@ export function aiProxyRoutes() {
 
       const isStream = !!body.stream
       console.log(`[AI Proxy] Responses API: ${tokenPayload.projectId} → ${modelConfig.provider}/${modelConfig.apiModel} (stream: ${isStream})`)
+
+      capture = await beginCapture({
+        tokenPayload,
+        endpoint: 'responses',
+        requestBody: body,
+        requestedModel,
+        resolvedModel: modelConfig.apiModel,
+        provider: modelConfig.provider,
+        stream: isStream,
+        chatSessionId,
+        internal: Boolean(internalUsage),
+        client: c.req.header('x-shogo-client'),
+        requestHeaders: c.req.raw.headers,
+      })
 
       const forwardBody = { ...body, model: modelConfig.apiModel }
 
@@ -3237,13 +3285,14 @@ export function aiProxyRoutes() {
           },
         })
 
-        return new Response(readable.pipeThrough(transformStream), {
+        const streamedResponse = new Response(readable.pipeThrough(transformStream), {
           headers: {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
           },
         })
+        return capture?.wrapStream(streamedResponse, 'openai-responses') || streamedResponse
       } else {
         const result = await response.json() as any
         if (result.usage) {
@@ -3267,9 +3316,22 @@ export function aiProxyRoutes() {
               0,
           )
         }
+        capture?.recordResponse({
+          status: 200,
+          body: result,
+          format: 'json',
+          usage: {
+            inputTokens: result.usage?.input_tokens,
+            outputTokens: result.usage?.output_tokens,
+            cachedInputTokens: result.usage?.input_tokens_details?.cached_tokens,
+            reasoningTokens: result.usage?.output_tokens_details?.reasoning_tokens ??
+              result.usage?.completion_tokens_details?.reasoning_tokens,
+          },
+        })
         return c.json(result)
       }
     } catch (error: any) {
+      capture?.finish({ errorType: 'proxy_error' })
       console.error('[AI Proxy] Responses API error:', error.message)
       return c.json({ error: { message: error.message || 'Internal proxy error', type: 'server_error' } }, 500)
     }
@@ -3487,6 +3549,7 @@ export function aiProxyRoutes() {
       }
     }
 
+    let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
       const body = await c.req.text()
       let parsed: any = {}
@@ -3497,6 +3560,7 @@ export function aiProxyRoutes() {
 
       const { resolvedModel, isLocal } = resolveAgentModel(requestModel)
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
+      const resolvedModelConfig = resolveModel(resolvedModel)
 
       // Enforce workspace model visibility (see chat/completions for rationale).
       if (!isLocal && !isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
@@ -3521,6 +3585,20 @@ export function aiProxyRoutes() {
           }
         }
       }
+
+      capture = await beginCapture({
+        tokenPayload,
+        endpoint: 'anthropic.messages',
+        requestBody: parsed,
+        requestedModel: requestModel,
+        resolvedModel: resolvedModelConfig?.apiModel || resolvedModel,
+        provider: isLocal ? 'local' : resolvedModelConfig?.provider || 'anthropic',
+        stream: isStream,
+        chatSessionId,
+        internal: Boolean(internalUsage),
+        client: c.req.header('x-shogo-client'),
+        requestHeaders: c.req.raw.headers,
+      })
 
       // ── Local LLM routing: convert Anthropic → OpenAI format ──
       if (isLocal) {
@@ -3548,6 +3626,7 @@ export function aiProxyRoutes() {
         })
         if (!response.ok) {
           const errorText = await response.text()
+          capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `Local LLM error (${response.status}): ${errorText}` } },
             response.status as any
@@ -3556,7 +3635,7 @@ export function aiProxyRoutes() {
 
         if (isStream) {
           const anthropicStream = convertOpenAIStreamToAnthropicStream(response.body!, resolvedModel)
-          return new Response(anthropicStream, {
+          const streamedResponse = new Response(anthropicStream, {
             headers: {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
@@ -3564,18 +3643,35 @@ export function aiProxyRoutes() {
               'X-Proxy-Model': resolvedModel,
             },
           })
+          return capture?.wrapStream(streamedResponse, 'anthropic') || streamedResponse
         } else {
           const openaiResult = await response.json() as any
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
+          capture?.recordResponse({
+            status: 200,
+            body: anthropicResult,
+            format: 'json',
+            usage: {
+              inputTokens: openaiResult.usage?.prompt_tokens,
+              outputTokens: openaiResult.usage?.completion_tokens,
+              cachedInputTokens: openaiResult.usage?.prompt_tokens_details?.cached_tokens,
+              reasoningTokens: openaiResult.usage?.completion_tokens_details?.reasoning_tokens,
+            },
+          })
           return c.json(anthropicResult)
         }
       }
 
       // ── Cloud routing: OpenAI models (convert Anthropic → OpenAI format) ──
-      const resolvedModelConfig = resolveModel(resolvedModel)
       if (resolvedModelConfig && resolvedModelConfig.provider === 'openai') {
         const openaiApiKey = process.env.OPENAI_API_KEY
         if (!openaiApiKey) {
+          capture?.recordResponse({
+            status: 503,
+            body: { error: 'OpenAI provider is not configured' },
+            format: 'json',
+            errorType: 'provider_not_configured',
+          })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: 'OpenAI provider is not configured on this server.' } },
             503
@@ -3608,6 +3704,7 @@ export function aiProxyRoutes() {
         })
         if (!response.ok) {
           const errorText = await response.text()
+          capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `OpenAI error (${response.status}): ${errorText}` } },
             response.status as any
@@ -3616,7 +3713,7 @@ export function aiProxyRoutes() {
 
         if (isStream) {
           const anthropicStream = convertOpenAIStreamToAnthropicStream(response.body!, resolvedModel)
-          return new Response(anthropicStream, {
+          const streamedResponse = new Response(anthropicStream, {
             headers: {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
@@ -3624,12 +3721,24 @@ export function aiProxyRoutes() {
               'X-Proxy-Model': resolvedModel,
             },
           })
+          return capture?.wrapStream(streamedResponse, 'anthropic') || streamedResponse
         } else {
           const openaiResult = await response.json() as any
           const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
           const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
           recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId, internalUsage)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
+          capture?.recordResponse({
+            status: 200,
+            body: anthropicResult,
+            format: 'json',
+            usage: {
+              inputTokens: oaiTotalPrompt - oaiCachedPrompt,
+              outputTokens: openaiResult.usage?.completion_tokens,
+              cachedInputTokens: oaiCachedPrompt,
+              reasoningTokens: openaiResult.usage?.completion_tokens_details?.reasoning_tokens,
+            },
+          })
           return c.json(anthropicResult)
         }
       }
@@ -3637,6 +3746,12 @@ export function aiProxyRoutes() {
       // ── Cloud routing: forward to Anthropic API ──
       const anthropicApiKey = process.env.ANTHROPIC_API_KEY
       if (!anthropicApiKey) {
+        capture?.recordResponse({
+          status: 503,
+          body: { error: 'Anthropic provider is not configured' },
+          format: 'json',
+          errorType: 'provider_not_configured',
+        })
         return c.json(
           { type: 'error', error: { type: 'api_error', message: 'Anthropic provider is not configured on this server.' } },
           503
@@ -3690,6 +3805,7 @@ export function aiProxyRoutes() {
 
       if (!response.ok) {
         const errorBody = await response.text()
+        capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
         return new Response(errorBody, {
           status: response.status,
           headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
@@ -3703,6 +3819,17 @@ export function aiProxyRoutes() {
         const cachedTok = responseBody.usage?.cache_read_input_tokens || 0
         const outTok = responseBody.usage?.output_tokens || 0
         recordUsage(tokenPayload, resolvedModel, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage)
+        capture?.recordResponse({
+          status: 200,
+          body: responseBody,
+          format: 'json',
+          usage: {
+            inputTokens: inTok,
+            outputTokens: outTok,
+            cachedInputTokens: cachedTok,
+            cacheWriteTokens: cacheWriteTok,
+          },
+        })
         return c.json(responseBody)
       }
 
@@ -3756,16 +3883,17 @@ export function aiProxyRoutes() {
       // (they have none — harmless) but kept in the stream for downstream.
       const wrapped = wrapSseForErrorVisibility(response.body!, 'anthropic')
       const trackedBody = wrapped.pipeThrough(tokenTrackingTransform)
-
-      return new Response(trackedBody, {
+      const streamedResponse = new Response(trackedBody, {
         status: response.status,
         headers: responseHeaders,
       })
+      return capture?.wrapStream(streamedResponse, 'anthropic') || streamedResponse
     } catch (error: any) {
       // Client cancelled — surface 499 silently, don't log as a server error.
       if (error?.name === 'AbortError') {
         return new Response(null, { status: 499 })
       }
+      capture?.finish({ errorType: 'proxy_error' })
       console.error('[AI Proxy] Anthropic pass-through error:', error.message)
       return c.json(
         { type: 'error', error: { type: 'api_error', message: error.message || 'Proxy error' } },
@@ -3798,6 +3926,7 @@ export function aiProxyRoutes() {
             'Content-Type': 'application/json',
             'x-api-key': process.env.SHOGO_API_KEY!,
             'anthropic-version': c.req.header('anthropic-version') || '2023-06-01',
+            'x-shogo-client': 'desktop',
           },
           body,
           signal: c.req.raw.signal,
@@ -3916,6 +4045,7 @@ export function aiProxyRoutes() {
       }
     }
 
+    let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
       const body = await c.req.json() as {
         prompt: string
@@ -3954,6 +4084,19 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎨 Image generation: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel}`)
 
+      capture = await beginCapture({
+        tokenPayload,
+        endpoint: 'images.generations',
+        requestBody: body,
+        requestedModel: model,
+        resolvedModel: imageModel.apiModel,
+        provider: imageModel.provider,
+        stream: false,
+        chatSessionId: c.req.header('x-chat-session-id') || null,
+        client: c.req.header('x-shogo-client'),
+        requestHeaders: c.req.raw.headers,
+      })
+
       const signal = c.req.raw.signal
       let result: ImageGenerationResponse
       if (imageModel.provider === 'openai') {
@@ -3978,8 +4121,10 @@ export function aiProxyRoutes() {
         c.req.header('x-chat-session-id') || null,
       )
 
+      capture?.recordResponse({ status: 200, body: result, format: 'json' })
       return c.json(result)
     } catch (error: any) {
+      capture?.finish({ errorType: 'generation_error' })
       console.error('[AI Proxy] Image generation error:', error.message)
       const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
       return c.json(
@@ -4018,6 +4163,7 @@ export function aiProxyRoutes() {
       }
     }
 
+    let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
@@ -4066,6 +4212,27 @@ export function aiProxyRoutes() {
       if (editQuality) forwardForm.append('quality', editQuality)
       if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
 
+      const imageBytes = Buffer.from(await imageFile.arrayBuffer())
+      capture = await beginCapture({
+        tokenPayload,
+        endpoint: 'images.edits',
+        requestBody: {
+          prompt,
+          model,
+          size,
+          n,
+          quality,
+          image: `data:${imageFile.type || 'application/octet-stream'};base64,${imageBytes.toString('base64')}`,
+        },
+        requestedModel: model,
+        resolvedModel: editModel,
+        provider: 'openai',
+        stream: false,
+        chatSessionId: c.req.header('x-chat-session-id') || null,
+        client: c.req.header('x-shogo-client'),
+        requestHeaders: c.req.raw.headers,
+      })
+
       const response = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${openaiKey}` },
@@ -4082,8 +4249,10 @@ export function aiProxyRoutes() {
 
       recordImageUsage(tokenPayload, model, quality, size, n, c.req.header('x-chat-session-id') || null)
 
+      capture?.recordResponse({ status: 200, body: result, format: 'json' })
       return c.json(result)
     } catch (error: any) {
+      capture?.finish({ errorType: 'edit_error' })
       console.error('[AI Proxy] Image edit error:', error.message)
       const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
       return c.json(
@@ -4133,6 +4302,7 @@ export function aiProxyRoutes() {
       )
     }
 
+    let capture: Awaited<ReturnType<typeof beginCapture>> = null
     try {
       const formData = await c.req.formData()
       const file = formData.get('file') as File | null
@@ -4170,6 +4340,25 @@ export function aiProxyRoutes() {
 
       console.log(`[AI Proxy] 🎙️ Transcription: ${tokenPayload.projectId} → openai/${model}`)
 
+      const fileBytes = Buffer.from(await file.arrayBuffer())
+      capture = await beginCapture({
+        tokenPayload,
+        endpoint: 'audio.transcriptions',
+        requestBody: {
+          model,
+          language,
+          prompt,
+          file: `data:${file.type || 'application/octet-stream'};base64,${fileBytes.toString('base64')}`,
+        },
+        requestedModel: model,
+        resolvedModel: model,
+        provider: 'openai',
+        stream: false,
+        chatSessionId: c.req.header('x-chat-session-id') || null,
+        client: c.req.header('x-shogo-client'),
+        requestHeaders: c.req.raw.headers,
+      })
+
       const forwardForm = new FormData()
       forwardForm.append('file', file, file.name || 'audio')
       forwardForm.append('model', model)
@@ -4198,8 +4387,10 @@ export function aiProxyRoutes() {
 
       recordTranscriptionUsage(tokenPayload, model, result.duration)
 
+      capture?.recordResponse({ status: 200, body: result, format: 'json' })
       return c.json(result)
     } catch (error: any) {
+      capture?.finish({ errorType: 'transcription_error' })
       console.error('[AI Proxy] Transcription error:', error.message)
       const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
       return c.json(

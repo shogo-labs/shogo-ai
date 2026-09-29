@@ -364,6 +364,10 @@ output "published_data_bucket" {
   description = "OCI bucket holding writable state (prisma/dev.db + uploads) for server-backed published apps."
   value       = module.us.published_data_bucket
 }
+output "llm_captures_bucket" {
+  description = "OCI bucket holding raw LLM proxy captures."
+  value       = module.us.llm_captures_bucket
+}
 output "kourier_origin" {
   description = "Origin the subdomain-router Worker proxies server-backed /api/* to (DNS-only host at the prod-us Kourier LB)."
   value       = "http://${cloudflare_record.kourier_us.hostname}"

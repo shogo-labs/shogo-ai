@@ -117,7 +117,7 @@ describe('chunkConversations — boundary behavior', () => {
     const chunks = chunkConversations([
       { userName: 'Ada', projectName: 'X', messages: [{ role: 'user', content: 'hi' }] },
     ] as any)
-    expect(chunks[0]).toContain('[Ada / X]')
+    expect(chunks[0]).toContain('[cloud_chat / Ada / X]')
     expect(chunks[0]).not.toContain('template:')
   })
 })

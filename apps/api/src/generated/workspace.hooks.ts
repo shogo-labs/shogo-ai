@@ -11,6 +11,7 @@ import { customAlphabet } from 'nanoid'
 import { getUserOwnedWorkspaceCount } from '../services/workspace.service'
 import { getEffectivePlanId } from '../services/billing.service'
 import { homeRegionForNewWorkspace } from '../lib/region'
+import { clearConsentCache } from '../lib/proxy-capture'
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 
@@ -237,6 +238,19 @@ export const workspaceHooks: WorkspaceHooks = {
    * Fixes: Workspace creation failures (5.9% rate) from slug collisions
    */
   beforeCreate: async (input, ctx) => {
+    if (
+      input.trainingDataMode !== undefined &&
+      !['default', 'enabled', 'disabled'].includes(input.trainingDataMode)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_training_data_mode",
+          message: "trainingDataMode must be default, enabled, or disabled",
+        },
+      }
+    }
+
     const userId = ctx.body.ownerId || ctx.userId
     const parentWorkspaceId: string | null = input.parentWorkspaceId ?? ctx.body.parentWorkspaceId ?? null
 
@@ -379,7 +393,24 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
+    if (
+      input.trainingDataMode !== undefined &&
+      !['default', 'enabled', 'disabled'].includes(input.trainingDataMode)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalid_training_data_mode",
+          message: "trainingDataMode must be default, enabled, or disabled",
+        },
+      }
+    }
+
     return { ok: true }
+  },
+
+  afterUpdate: async (workspace) => {
+    clearConsentCache(workspace.id)
   },
 
   /**

@@ -79,6 +79,7 @@ export const InvitationCollection = types
     const pendingCreates = new Map<string, any>()
     const pendingUpdates = new Map<string, any>()
     const pendingDeletes = new Set<string>()
+    let latestLoadRequestId = 0
 
     return {
       /** Set loading state */
@@ -120,6 +121,7 @@ export const InvitationCollection = types
        * Uses merge strategy to preserve existing MST node references
        */
       loadAll: flow(function* (filter?: Record<string, any>) {
+        const requestId = ++latestLoadRequestId
         self.isLoading = true
         self.error = null
 
@@ -129,6 +131,13 @@ export const InvitationCollection = types
           const url = params ? `${ENDPOINT}?${params}` : ENDPOINT
 
           const response = yield env.http.get<{ ok: boolean; items?: any[] }>(url)
+
+          // A later load owns the collection state. An older response can
+          // otherwise arrive after a workspace switch and delete the newly
+          // selected team from the shared map.
+          if (requestId !== latestLoadRequestId) {
+            return self.all
+          }
 
           if (response.data?.ok && response.data.items) {
             // Use merge strategy to preserve existing node references
@@ -149,10 +158,21 @@ export const InvitationCollection = types
               }
             }
 
-            // Remove items that are no longer in the response
-            for (const id of self.items.keys()) {
-              if (!newIds.has(id)) {
-                self.items.delete(id)
+            // A filtered request is not authoritative for the whole
+            // collection. In particular, a caller can reload the same
+            // collection with a user/workspace filter while another
+            // caller is loading the complete list. Pruning from that
+            // response can make the active team disappear and cause the
+            // workspace resolver to persist Personal as its fallback.
+            const hasFilter = Object.entries(filter ?? {}).some(
+              ([, value]) => value !== undefined && value !== null && value !== "",
+            )
+            if (!hasFilter) {
+              // Remove items that are no longer in an unfiltered response.
+              for (const id of self.items.keys()) {
+                if (!newIds.has(id)) {
+                  self.items.delete(id)
+                }
               }
             }
           }
@@ -160,6 +180,9 @@ export const InvitationCollection = types
           self.isLoading = false
           return self.all
         } catch (error: any) {
+          if (requestId !== latestLoadRequestId) {
+            return self.all
+          }
           self.error = error.message || "Failed to load"
           self.isLoading = false
           throw error
