@@ -932,27 +932,6 @@ type OneShotBuildOptions = {
   promote?: boolean
 }
 
-/**
- * Detect the npm-published `@shogo-ai/sdk@0.4.0` build, which ships
- * `bin/cli.mjs` with an unquoted `execSync(\`bun ${absScriptPath}\`)`
- * that truncates the path at the first space. macOS desktop installs
- * live under `~/Library/Application Support/` — every path contains a
- * space — so the truncation is universal, not edge-case. The fix is
- * in HEAD but was never published (npm jumps 0.4.0 → 1.0.0), so
- * runtime version-sniffing is the only way to recognise the bad
- * install. Best-effort: any read/parse failure returns false (we'd
- * rather risk a redundant install than refuse to use a healthy CLI).
- */
-function isKnownBrokenSdkInstall(sdkPkgDir: string): boolean {
-  try {
-    const pkgJsonPath = join(sdkPkgDir, 'package.json')
-    if (!existsSync(pkgJsonPath)) return false
-    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
-    return pkg?.version === '0.4.0'
-  } catch {
-    return false
-  }
-}
 export class PreviewManager {
   private workspaceDir: string
   private runtimePort: number

@@ -5449,7 +5449,12 @@ app.get('/agent/dist-files', (c) => {
   if (!projectDir) {
     return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
   }
-  const distDir = join(projectDir, publishBuild ? PUBLISH_STAGING_DIR : 'dist')
+  // Publish builds are written under the PreviewManager's bundler cwd, which
+  // is `<projectDir>/project` for legacy-layout workspaces.
+  const outputRoot = publishBuild
+    ? getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
+    : projectDir
+  const distDir = join(outputRoot, publishBuild ? PUBLISH_STAGING_DIR : 'dist')
   if (!existsSync(distDir)) {
     return c.json(
       { error: 'dist_not_found', message: 'No dist/ directory — run a build first' },
@@ -5458,7 +5463,7 @@ app.get('/agent/dist-files', (c) => {
   }
   const files = collectPublishDistFiles(distDir, distDir)
   if (publishBuild) {
-    cleanupStagingOutput(projectDir, PUBLISH_STAGING_DIR)
+    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
   }
   return c.json(files)
 })
