@@ -55,6 +55,7 @@ import { BarIconButton } from "./topbar/BarIconButton"
 import { IdeAlignmentToggle } from "./topbar/IdeAlignmentToggle"
 import { RenameChatModal } from "./topbar/RenameChatModal"
 import { TrustBadge } from "./topbar/TrustBadge"
+import { RemoteHostIndicator } from "./topbar/RemoteHostIndicator"
 import { AGENT_TABS } from "./topbar/agent-tabs"
 import { NativePhoneHeader } from "./topbar/native/NativePhoneHeader"
 import { ProjectDropdownContent } from './topbar/dropdown/ProjectDropdownContent'
@@ -105,6 +106,11 @@ export function ProjectTopBar({
   trustLevel,
   onToggleTrust,
   trustBusy = false,
+  remoteHostId,
+  remoteHostLabel = 'Remote host',
+  remoteConnectionState = 'disconnected',
+  onReconnectRemoteHost,
+  remoteReconnectBusy = false,
   narrowActiveTab,
   onNarrowTabChange,
   narrowPreviewTab,
@@ -213,6 +219,15 @@ export function ProjectTopBar({
   // only when the parent wired up a toggle handler + a known trust level.
   const showTrustBadge =
     workingMode === 'external' && !!trustLevel && typeof onToggleTrust === 'function'
+  const remoteHostIndicator = remoteHostId ? (
+    <RemoteHostIndicator
+      label={remoteHostLabel}
+      state={remoteConnectionState}
+      onReconnect={onReconnectRemoteHost}
+      reconnecting={remoteReconnectBusy}
+      compact={!isWide}
+    />
+  ) : null
 
   const visibleTabs = AGENT_TABS.filter((tab) =>
     ideEmbed ? tab.id === 'chat-fullscreen' : !hiddenTabs.includes(tab.id),
@@ -323,6 +338,7 @@ export function ProjectTopBar({
             {projectName}
           </Text>
         </View>
+        {remoteHostIndicator}
         <View className="w-px h-5 bg-border mx-1 flex-shrink-0" />
         <BarIconButton
           icon={MessageSquare}
@@ -347,6 +363,7 @@ export function ProjectTopBar({
           trustLevel={trustLevel}
           onToggleTrust={onToggleTrust}
           trustBusy={trustBusy}
+          remoteHostIndicator={remoteHostIndicator}
           narrowActiveTab={narrowActiveTab}
           narrowPrimaryTabs={narrowPrimaryTabs}
           getTabActive={getTabActive}
@@ -487,6 +504,7 @@ export function ProjectTopBar({
             compact
           />
         )}
+        {remoteHostIndicator}
 
         {showIdeAlignmentControl && renderIdeAlignmentControl()}
 
@@ -654,6 +672,7 @@ export function ProjectTopBar({
               </Popover>
 
               <CloudSyncStatusPill projectId={projectId} />
+              {remoteHostIndicator}
             </>
           )}
         </View>

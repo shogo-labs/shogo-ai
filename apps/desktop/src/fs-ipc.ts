@@ -115,6 +115,15 @@ export interface ResolveWorkspaceResult {
   reason?: 'not-managed' | 'not-found' | 'invalid-input'
 }
 
+export interface ResolveWorkspaceContext {
+  /** Folder-linked projects are owned by the selected folder, not workspaces/. */
+  isExternalProject?: boolean | null
+  /** Compatibility hint used by older renderers for folder-linked projects. */
+  folderPath?: string | null
+  /** Remote-SSH projects are owned by the SSH host, never this machine. */
+  remoteHostId?: string | null
+}
+
 export interface ListTreeResult {
   ok: boolean
   /**
@@ -168,9 +177,24 @@ export function registerFsIpcHandlers(): void {
 
   ipcMain.handle(
     'fs:resolveWorkspace',
-    (_event, projectId: string): ResolveWorkspaceResult => {
+    (
+      _event,
+      projectId: string,
+      context?: ResolveWorkspaceContext,
+    ): ResolveWorkspaceResult => {
       if (!projectId || typeof projectId !== 'string') {
         return { ok: false, reason: 'invalid-input' }
+      }
+      // The renderer already has the project metadata from the project
+      // layout. Refuse the managed-root fast path explicitly for external
+      // and Remote-SSH projects even if an old build left a stale
+      // workspaces/<projectId> directory behind.
+      if (
+        context?.isExternalProject === true
+        || context?.remoteHostId
+        || (typeof context?.folderPath === 'string' && context.folderPath.length > 0)
+      ) {
+        return { ok: false, reason: 'not-managed' }
       }
       // A projectId is a UUID-ish opaque string the API server uses as a
       // workspaces/<id> directory name. Reject anything that could

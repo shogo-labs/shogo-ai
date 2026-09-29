@@ -19,8 +19,9 @@ import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { resolveLocalApiPort } from './lib/local-api-port'
 
-const API_PORT = Number(process.env.API_PORT || process.env.PORT || 39100)
+const API_PORT = resolveLocalApiPort()
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
 
 await bootstrapLocalDatabase()

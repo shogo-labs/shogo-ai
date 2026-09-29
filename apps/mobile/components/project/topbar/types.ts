@@ -72,6 +72,12 @@ export interface ProjectTopBarProps {
   trustLevel?: "restricted" | "trusted";
   onToggleTrust?: () => void;
   trustBusy?: boolean;
+  /** Remote-SSH metadata for folder-linked projects. */
+  remoteHostId?: string | null;
+  remoteHostLabel?: string;
+  remoteConnectionState?: "connected" | "connecting" | "disconnected" | string;
+  onReconnectRemoteHost?: () => void;
+  remoteReconnectBusy?: boolean;
   narrowActiveTab?: "chat" | "canvas";
   onNarrowTabChange?: (tab: "chat" | "canvas") => void;
   narrowPreviewTab?: string;

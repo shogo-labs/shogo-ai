@@ -54,6 +54,14 @@ type ProjectInfo = {
   workingMode?: 'managed' | 'external'
   runtimeEnabled?: boolean
   folders?: { path: string; isPrimary: boolean }[]
+  remoteHostId?: string
+  remoteHost?: {
+    label: string
+    sshTarget: string
+    port?: number | null
+    identityFile?: string | null
+    platform?: string | null
+  }
 }
 
 function makeManager(opts: { agentStatus?: any; agentThrows?: Error; projectInfo?: Record<string, ProjectInfo> } = {}) {
@@ -276,6 +284,89 @@ describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () =
     await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
     const spawnConfig = rm.agentManager.ensureRunning.mock.calls[0][1]
     expect(spawnConfig.extraEnv.WEBHOOK_TOKEN).toBe(deriveWebhookToken('anchor-1'))
+  })
+
+  test('starts a remote anchor through one forwarded local port without local spawning', async () => {
+    const remotePath = '/srv/projects/anchor-1'
+    const { rm, workspacesDir } = makeManager({
+      projectInfo: {
+        'anchor-1': {
+          workingMode: 'external',
+          runtimeEnabled: true,
+          folders: [{ path: remotePath, isPrimary: true }],
+          remoteHostId: 'host-1',
+          remoteHost: {
+            label: 'Build host',
+            sshTarget: 'alice@example.com',
+            port: 2222,
+            identityFile: '/tmp/id_ed25519',
+            platform: 'linux-x64',
+          },
+        },
+      },
+    })
+    process.env.APP_VERSION = '1.2.3'
+    const localPort = 37200
+    rm.allocatePortAsync = mock(async () => localPort)
+
+    const gatewayPort = 45555
+    rm.remoteApiGatewayPort = mock(async () => gatewayPort)
+
+    const remote = {
+      start: mock(async (overrides: any) => {
+        expect(Object.keys(overrides).sort()).toEqual(['env', 'localAgentPort'])
+        expect(overrides.localAgentPort).toBe(localPort)
+        return {
+          workspaceKey: 'remote-anchor-1',
+          status: 'running',
+          agentPort: localPort,
+          remoteAgentPort: 41234,
+          remoteApiPort: 41235,
+        }
+      }),
+      stop: mock(async () => {}),
+      status: mock(() => ({ status: 'running', agentPort: localPort })),
+      getHealth: mock(async () => ({ healthy: true, lastCheck: Date.now(), url: `http://127.0.0.1:${localPort}/health` })),
+    }
+    rm.remoteManager = mock(async (_key: string, remoteHostId: string, _host: unknown, options: any) => {
+      expect(remoteHostId).toBe('host-1')
+      expect(options).toMatchObject({
+        workspaceKey: 'remote-anchor-1',
+        remoteProjectDir: remotePath,
+        localApiPort: gatewayPort,
+        runtimeVersion: '1.2.3',
+      })
+      return remote
+    })
+
+    const result = await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    expect(result).toMatchObject({
+      port: localPort,
+      agentPort: localPort,
+      url: `http://127.0.0.1:${localPort}`,
+      status: 'running',
+    })
+    expect(rm.agentManager.ensureRunning).not.toHaveBeenCalled()
+    expect(existsSync(join(workspacesDir, '.workspace-roots', 'proj-anchor-1'))).toBe(false)
+
+    const runtime = rm.runtimes.get(projectWorkspaceRuntimeKey('anchor-1'))
+    expect(JSON.parse(runtime.remoteRuntime ? remote.start.mock.calls[0][0].env.WORKSPACE_MOUNTS : '[]')).toEqual([
+      {
+        mount: 'anchor-1',
+        path: remotePath,
+        projectId: 'anchor-1',
+        kind: 'external',
+        runtimeEnabled: true,
+      },
+    ])
+    expect(remote.start.mock.calls).toHaveLength(1)
+
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    expect(remote.start.mock.calls).toHaveLength(1)
+    await expect(rm.getHealth('anchor-1')).resolves.toMatchObject({ healthy: true })
+    await rm.stop('anchor-1')
+    expect(remote.stop).toHaveBeenCalled()
+    expect(rm.agentManager.stop).not.toHaveBeenCalled()
   })
 })
 
