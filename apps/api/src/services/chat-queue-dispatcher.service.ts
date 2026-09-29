@@ -3,7 +3,6 @@
 
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
-import { getRuntimeManager } from '../lib/runtime'
 
 const ACTIVE_TURN_STALE_AFTER_MS = 5 * 60 * 1000
 
@@ -166,6 +165,9 @@ async function dispatchRow(row: QueueRow): Promise<void> {
     'X-Billing-User-Id': row.userId,
     'X-Queue-User-Id': row.userId,
   }
+  // Lazy: the chat routes import this module, and a static runtime import
+  // would drag the whole runtime graph into every chat-route consumer.
+  const { getRuntimeManager } = await import('../lib/runtime')
   const runtimeManager = getRuntimeManager()
 
   let response: Response
