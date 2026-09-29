@@ -166,6 +166,10 @@ model Workspace {
   // back-filled to "project" by the matching migration so behavior
   // for already-connected accounts is preserved.
   composioScope String       @default("workspace")
+  // Whether proxy requests and responses may be retained for product
+  // analysis and training. "default" follows the workspace plan; "enabled"
+  // and "disabled" are explicit admin overrides.
+  trainingDataMode String    @default("default")
   // Write-ownership region for this workspace. All writes to workspace-scoped
   // rows (members, projects, billing, storage_usage, usage_wallets, etc.) are
   // routed to this region so they are only ever written in one place — this is
@@ -216,11 +220,51 @@ model Workspace {
   modelVisibility        WorkspaceModelVisibility[]
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
+  proxyTurns             ProxyTurn[]
 
   @@index([createdAt])
   @@index([homeRegion])
   @@index([parentWorkspaceId])
   @@map("workspaces")
+}
+
+model ProxyTurn {
+  id                String   @id @default(uuid())
+  firstAt           DateTime @default(now())
+  lastAt            DateTime @default(now())
+  source            String
+  workspaceId       String
+  projectId         String?
+  userId            String?
+  chatSessionId     String?
+  turnKey           String
+  resolvedModel     String?
+  llmCalls          Int      @default(0)
+  inputTokens       Int      @default(0)
+  outputTokens      Int      @default(0)
+  cachedInputTokens Int      @default(0)
+  cacheWriteTokens  Int      @default(0)
+  reasoningTokens   Int      @default(0)
+  errorCount        Int      @default(0)
+  userText          String?  @db.Text
+  assistantText     String?  @db.Text
+  toolNames         String[] @default([])
+  archivePrefix     String?
+  feedback          String?
+  revertedAt        DateTime?
+  hadError          Boolean  @default(false)
+  truncated         Boolean  @default(false)
+  userFollowupKind  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, turnKey])
+  @@index([workspaceId, lastAt])
+  @@index([chatSessionId, lastAt])
+  @@index([source])
+  @@map("proxy_turns")
 }
 
 model WorkspaceAgentProfile {

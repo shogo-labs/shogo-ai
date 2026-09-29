@@ -48,6 +48,7 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
+import { updateTurnFeedback } from '../lib/proxy-capture'
 
 type AuthContext = {
   userId?: string
@@ -131,6 +132,9 @@ export function createChatMessageFeedbackRoutes(): Hono {
       create: { messageId: id, userId: auth.userId, thumbs },
       update: { thumbs },
     })
+    void updateTurnFeedback(message.sessionId, message.createdAt, thumbs).catch((error) => {
+      console.error('[ProxyCapture] Feedback signal update failed:', error)
+    })
 
     return c.json({
       ok: true,
@@ -186,6 +190,9 @@ export function createChatMessageFeedbackRoutes(): Hono {
     // persisted yet (e.g. a rapid double-tap).
     await prisma.messageFeedback.deleteMany({
       where: { messageId: id, userId: auth.userId },
+    })
+    void updateTurnFeedback(message.sessionId, message.createdAt, null).catch((error) => {
+      console.error('[ProxyCapture] Feedback signal clear failed:', error)
     })
 
     return c.json({ ok: true })
