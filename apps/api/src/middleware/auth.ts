@@ -289,7 +289,7 @@ export async function authMiddleware(c: Context, next: Next) {
  * app.use('/api/*', requireAuth)
  * ```
  */
-const PUBLIC_PREFIXES = [
+export const PUBLIC_PREFIXES = [
   '/api/auth/',
   '/api/health',
   '/api/version',
@@ -305,8 +305,7 @@ const PUBLIC_PREFIXES = [
   '/api/tools/',
   '/api/api-keys/validate',
   // Device-key heartbeat — the key in the body is the credential (verified in
-  // `./routes/api-keys.ts`). Omitting it 401'd every desktop heartbeat, which
-  // the app surfaced as "key revoked, sign in again".
+  // `./routes/api-keys.ts`).
   '/api/api-keys/heartbeat',
   // Cloud-side device-code login entry. The CLI worker and the desktop
   // app both POST `/api/cli/login/start` (anonymous — registering a new

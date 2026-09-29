@@ -127,6 +127,11 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
+import {
+  apiAuthGate,
+  isAllowedUnauthWebchatProxyPath,
+  isTokenGatedThumbnailPath,
+} from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
@@ -746,114 +751,10 @@ app.use('/api/*', rateLimiter('global', {
   skipPrefixes: ['/api/ai/', '/api/v1/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
 }))
 
-function isWebchatProxyPath(path: string): boolean {
-  return /^\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(path)
-}
-
-function isAllowedUnauthWebchatProxyPath(path: string): boolean {
-  if (!isWebchatProxyPath(path)) return false
-  const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/agent\/channels\/webchat\/.*)$/)
-  const relative = match?.[1] || ''
-  return relative === '/agent/channels/webchat/widget.js' ||
-    relative === '/agent/channels/webchat/health' ||
-    relative === '/agent/channels/webchat/config' ||
-    relative === '/agent/channels/webchat/session' ||
-    relative === '/agent/channels/webchat/message' ||
-    relative.startsWith('/agent/channels/webchat/events/')
-}
-
-// Thumbnail image bytes, served to an <img> / RN <Image> that can present no
-// ambient credentials. The per-project token in `?t=` is the credential and is
-// verified in-route, so session gating must not run. See deriveThumbnailToken.
-function isTokenGatedThumbnailPath(path: string): boolean {
-  return /^\/api\/projects\/[^/]+\/thumbnail\.png$/.test(path)
-}
-
-function isTokenGatedChatAttachmentPath(path: string): boolean {
-  return path.startsWith('/api/chat-attachments/')
-}
-
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
-
-app.use(
-  '/api/*',
-  async (c, next) => {
-    const path = new URL(c.req.url).pathname
-    const publicPrefixes = [
-      '/api/auth/',
-      '/api/health',
-      '/api/version',
-      '/api/config',
-      '/api/webhooks/',
-      '/api/billing/ios/notifications',
-      '/api/integrations/',
-      '/api/invite-links/',
-      '/api/internal/',
-      '/api/local/',
-      '/api/ai/',
-      // Public OpenAI-compatible API — authenticates in-route with a Shogo API
-      // key (`shogo_sk_*`); session-cookie / runtime-token gating must not run.
-      '/api/v1/',
-      '/api/tools/',
-      // Shared-file downloads: the signed token in the path is the credential
-      // (verified in routes/shared-files.ts).
-      '/api/f/',
-      '/api/api-keys/validate',
-      // Device-key heartbeat: the key in the body is the credential (verified
-      // in routes/api-keys.ts). Without this entry every desktop heartbeat
-      // 401s here and the app tells the user their key was revoked.
-      '/api/api-keys/heartbeat',
-      '/api/marketplace',
-      '/api/tech-stacks',
-      '/api/instances/heartbeat',
-      '/api/instances/ws',
-      // Native MLM affiliate program — public surfaces:
-      //   /lookup  → marketing site validates a code before redirect
-      //   /click   → Cloudflare Pages Function records the click using
-      //              SHOGO_INTERNAL_SECRET (auth handled in-route)
-      //   /visit   → in-app /r/<code> route records the click from the
-      //              browser (no secret; analytics-only, validated in-route)
-      '/api/affiliates/lookup',
-      '/api/affiliates/click',
-      '/api/affiliates/visit',
-      // Anonymous wake endpoints hit by the edge Workers / loading page when a
-      // visitor lands on a sleeping published subdomain or preview link. They
-      // only nudge the activator / provision a pod keyed by a real published
-      // subdomain or (UUID) project id; no tenant data is exposed.
-      '/api/published/',
-      '/api/preview/',
-    ]
-    if (publicPrefixes.some((p) => path.startsWith(p))) return next()
-    if (isAllowedUnauthWebchatProxyPath(path)) return next()
-    if (isTokenGatedThumbnailPath(path)) return next()
-    if (isTokenGatedChatAttachmentPath(path)) return next()
-    // Heartbeat sync is called by the runtime with x-runtime-token auth
-    if (path.endsWith('/heartbeat/sync')) return next()
-    // Voice provider webhooks (signature-verified in-handler). These have
-    // to bypass session-cookie / API-key auth entirely because the caller
-    // is ElevenLabs or Twilio — no Shogo credentials are present.
-    if (
-      path === '/api/voice/elevenlabs/webhook' ||
-      path.startsWith('/api/voice/twilio/status/')
-    ) {
-      return next()
-    }
-    // GitHub App webhook (routes/github.ts, verified with HMAC-SHA256 over
-    // `GH_APP_WEBHOOK_SECRET` inside the handler via `verifyWebhookSignature`)
-    // — GitHub's delivery has no Shogo session/API-key, so this blanket
-    // `requireAuth` 401'd every real installation/push/issues/issue_comment/
-    // pull_request_review webhook before the handler's own signature check
-    // ever ran. This is the ONLY inbound trigger for the issue-pipeline's
-    // "webhook wakes the pipeline" step (docs/issue-pipeline/PLAN.md Phase 2)
-    // — found live connecting a project's GitHub App for the first time
-    // (issue-pipeline multi-project eval, L1) and hand-delivering a
-    // synthetic `issues` event, since GitHub itself can't reach localhost.
-    if (path === '/api/github/webhook') return next()
-    return requireAuth(c, next)
-  }
-)
+app.use('/api/*', apiAuthGate)
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
   if (isAllowedUnauthWebchatProxyPath(path)) {
