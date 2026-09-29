@@ -2069,11 +2069,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const d = (dataPart as any).data ?? {}
         if (d.state === "reconnected") {
           setConnectivityWait(null)
-          setJustReconnected(true)
-          setTimeout(() => setJustReconnected(false), 3000)
+          // A provider backoff ends with the model already streaming output,
+          // so there's no "back online" moment to announce.
+          if (d.cause !== "provider") {
+            setJustReconnected(true)
+            setTimeout(() => setJustReconnected(false), 3000)
+          }
         } else {
           setJustReconnected(false)
           setConnectivityWait({
+            cause: d.cause === "provider" ? "provider" : "offline",
+            reason: typeof d.reason === "string" ? d.reason : undefined,
             attempt: typeof d.attempt === "number" ? d.attempt : 0,
             elapsedMs: typeof d.elapsedMs === "number" ? d.elapsedMs : 0,
             nextProbeInMs:
@@ -3364,6 +3370,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but they're tracked separately since they have different causes and
   // different user-facing copy.
   const [connectivityWait, setConnectivityWait] = useState<{
+    // "provider": the network is fine but the model provider is overloaded
+    // or failing, and the runtime is backing off before re-issuing.
+    cause: "offline" | "provider"
+    reason?: string
     attempt: number
     elapsedMs: number
     nextProbeInMs: number
@@ -6927,18 +6937,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!((connectivityWait || justReconnected) && !errorDismissed)) return null
+    const providerWait = !justReconnected && connectivityWait?.cause === "provider"
+    const elapsedSuffix = connectivityWaitElapsedLabel
+      ? ` (${connectivityWaitElapsedLabel})`
+      : ""
     return {
       id: "connectivity",
       kind: "blocking",
       order: 2,
-      title: justReconnected ? "Back online" : "Waiting for connection",
-      icon: WifiOff,
+      title: justReconnected
+        ? "Back online"
+        : providerWait
+          ? "Retrying model request"
+          : "Waiting for connection",
+      icon: providerWait || justReconnected ? RefreshCw : WifiOff,
       accent: "warning",
       headerActions: !justReconnected ? (
         <Pressable
           onPress={handleStop}
           accessibilityRole="button"
-          accessibilityLabel="Cancel and stop waiting for connection"
+          accessibilityLabel={
+            providerWait
+              ? "Cancel and stop retrying the model request"
+              : "Cancel and stop waiting for connection"
+          }
           className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
         >
           <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
@@ -6948,7 +6970,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       ) : undefined,
       render: () => (
         <View className="flex-row items-start gap-1.5">
-          {justReconnected ? (
+          {justReconnected || providerWait ? (
             <RefreshCw
               size={14}
               className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400"
@@ -6962,11 +6984,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           <Text className="flex-1 text-xs text-orange-700 dark:text-orange-300">
             {justReconnected
               ? "Back online — resuming\u2026"
-              : `No internet connection. Waiting to resume${
-                  connectivityWaitElapsedLabel
-                    ? ` (${connectivityWaitElapsedLabel})`
-                    : ""
-                }\u2026`}
+              : providerWait
+                ? `${
+                    connectivityWait?.reason === "overloaded"
+                      ? "The model is overloaded right now."
+                      : "The model provider isn't responding."
+                  } Retrying automatically${elapsedSuffix}\u2026`
+                : `No internet connection. Waiting to resume${elapsedSuffix}\u2026`}
           </Text>
         </View>
       ),

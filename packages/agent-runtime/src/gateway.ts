@@ -2675,6 +2675,44 @@ export class AgentGateway {
       emitAssistantText(linkRewriter.flush())
     }
 
+    // A dropped model call is being re-issued. Close any in-progress
+    // text/reasoning block so the client can drop the failed step's partial
+    // deltas, then emit an explicit marker the client + the API-side
+    // accumulator key on to reset (avoids concatenating the discarded partial
+    // with the regenerated output).
+    const discardFailedStep = (retry: { attempt: number; maxAttempts: number; reason: string; delayMs: number }) => {
+      // Drop any text the rewriter was holding from the failed attempt and
+      // reset its scanner state so the regenerated output starts clean.
+      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+      if (uiWriter && uiTextId) {
+        uiWriter.write({ type: 'text-end', id: uiTextId })
+        uiTextId = null
+      }
+      if (uiWriter && uiReasoningId) {
+        uiWriter.write({ type: 'reasoning-end', id: uiReasoningId })
+        uiReasoningId = null
+      }
+      if (uiWriter) {
+        uiWriter.write({ type: 'data-inference-retry', data: retry } as any)
+      }
+    }
+
+    // True between a provider-backoff heartbeat and the re-issued call's first
+    // output, so the client's "retrying" banner clears as soon as the model
+    // is producing again.
+    let providerBackoffActive = false
+    const endProviderBackoff = () => {
+      if (!providerBackoffActive) return
+      providerBackoffActive = false
+      if (uiWriter) {
+        uiWriter.write({
+          type: 'data-connectivity-wait',
+          data: { state: 'reconnected', cause: 'provider' },
+          transient: true,
+        } as any)
+      }
+    }
+
     // Gate map: onBeforeToolCall stores a promise per toolCallId that
     // resolves once the tool-input-start SSE events have had time to
     // flush to the client.  onAfterToolCall awaits this promise before
@@ -3168,6 +3206,7 @@ export class AgentGateway {
           }
         },
         onThinkingStart: () => {
+          endProviderBackoff()
           if (uiWriter) {
             uiReasoningId = `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
             uiWriter.write({ type: 'reasoning-start', id: uiReasoningId })
@@ -3185,37 +3224,17 @@ export class AgentGateway {
           }
         },
         onTextDelta: (delta) => {
+          endProviderBackoff()
           runningContextEstimate += Math.ceil(delta.length / 4)
           emitAssistantText(linkRewriter.push(delta))
         },
         onInferenceRetry: (info) => {
-          // The dropped model call is being re-issued. Close any in-progress
-          // text/reasoning block so the client can drop the failed step's
-          // partial deltas, then emit an explicit marker the client + the
-          // API-side accumulator key on to reset (avoids concatenating the
-          // discarded partial with the regenerated output).
-          // Drop any text the rewriter was holding from the failed attempt and
-          // reset its scanner state so the regenerated output starts clean.
-          linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
-          if (uiWriter && uiTextId) {
-            uiWriter.write({ type: 'text-end', id: uiTextId })
-            uiTextId = null
-          }
-          if (uiWriter && uiReasoningId) {
-            uiWriter.write({ type: 'reasoning-end', id: uiReasoningId })
-            uiReasoningId = null
-          }
-          if (uiWriter) {
-            uiWriter.write({
-              type: 'data-inference-retry',
-              data: {
-                attempt: info.attempt,
-                maxAttempts: info.maxAttempts,
-                reason: info.reason,
-                delayMs: info.delayMs,
-              },
-            } as any)
-          }
+          discardFailedStep({
+            attempt: info.attempt,
+            maxAttempts: info.maxAttempts,
+            reason: info.reason,
+            delayMs: info.delayMs,
+          })
           console.warn(
             `${this.logPrefix} Inference retry ${info.attempt}/${info.maxAttempts} ` +
               `(reason=${info.reason}, delay=${info.delayMs}ms) for session ${sessionId}`,
@@ -3263,7 +3282,38 @@ export class AgentGateway {
           }
           console.warn(`${this.logPrefix} Connectivity restored — resuming turn for session ${sessionId}`)
         },
+        // Layer 8: provider backoff. The network is up but the provider keeps
+        // failing; the loop is waiting `delayMs` before re-issuing. Each tick is
+        // at most 30s apart, which also keeps the stream alive while waiting.
+        onProviderBackoff: (info) => {
+          discardFailedStep({
+            attempt: info.attempt,
+            maxAttempts: 0,
+            reason: info.reason,
+            delayMs: info.delayMs,
+          })
+          providerBackoffActive = true
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-connectivity-wait',
+              data: {
+                state: 'waiting',
+                cause: 'provider',
+                reason: info.reason,
+                attempt: info.attempt,
+                elapsedMs: info.elapsedMs,
+                nextProbeInMs: info.delayMs,
+              },
+              transient: true,
+            } as any)
+          }
+          console.warn(
+            `${this.logPrefix} Provider backoff ${info.attempt} (reason=${info.reason}, ` +
+              `elapsed ${Math.round(info.elapsedMs / 1000)}s, retry in ${Math.round(info.delayMs / 1000)}s) for session ${sessionId}`,
+          )
+        },
         onToolCallStart: (toolName, toolCallId) => {
+          endProviderBackoff()
           this._lastTool = toolName
           flushAssistantText()
           if (uiWriter && uiTextId) {
