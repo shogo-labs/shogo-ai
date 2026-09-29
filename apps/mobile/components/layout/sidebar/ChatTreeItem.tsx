@@ -9,7 +9,6 @@ import {
   TextInput,
   View,
   type GestureResponderEvent,
-  type LayoutChangeEvent,
 } from "react-native";
 import {
   Archive,
@@ -91,7 +90,6 @@ export function ChatTreeItem({
   onRename,
   onToggleArchive,
   onRequestDelete,
-  onMeasureHeight,
   mobileProjectDetail,
   textClassName,
   inactiveTextClassName,
@@ -107,7 +105,6 @@ export function ChatTreeItem({
   onRename: (sessionId: string, name: string) => void;
   onToggleArchive: (sessionId: string, next: boolean) => void;
   onRequestDelete: (sessionId: string) => void;
-  onMeasureHeight?: (height: number) => void;
   /** Align detail-panel chat labels with the project name, after its folder icon. */
   mobileProjectDetail?: boolean;
   /** Override the label scale for a distinct sidebar presentation. */
@@ -174,14 +171,6 @@ export function ChatTreeItem({
     const ne = e?.nativeEvent ?? e;
     setMenu({ x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 });
   }, []);
-
-  const handleLayout = useCallback(
-    (event: LayoutChangeEvent) => {
-      const height = event.nativeEvent.layout.height;
-      if (height > 0) onMeasureHeight?.(height);
-    },
-    [onMeasureHeight]
-  );
 
   const menuItems: SidebarMenuEntry[] = [
     {
@@ -270,7 +259,6 @@ export function ChatTreeItem({
         onLongPress={
           Platform.OS === "web" ? undefined : openNativeActions
         }
-        onLayout={handleLayout}
         role="link"
         accessibilityLabel={`Chat: ${label}`}
         aria-current={active ? "page" : undefined}

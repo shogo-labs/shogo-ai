@@ -21,6 +21,24 @@ export function planToPublishToStream<T>(opts: {
 }
 
 /**
+ * Only the active chat panel owns the shared PlanStreamContext. Background
+ * panels keep their own plan state and must never clear or overwrite it.
+ */
+export function shouldPublishPlanToStream<T>(opts: {
+  isActivePanel: boolean
+  currentPlan: T | null
+  nextPlan: T | null
+  currentFilepath: string | null
+  nextFilepath: string | null
+}): boolean {
+  if (!opts.isActivePanel) return false
+  return (
+    opts.currentPlan !== opts.nextPlan ||
+    opts.currentFilepath !== opts.nextFilepath
+  )
+}
+
+/**
  * Same filename rule as PlansPanel: only `*.plan.md` basenames count.
  * Invalid or missing paths stay listed as the in-memory row.
  */

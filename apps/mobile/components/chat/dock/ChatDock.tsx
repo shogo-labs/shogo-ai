@@ -197,6 +197,7 @@ export function ChatDock({
       collapsible={!!panel.collapsible}
       onToggle={() => store.toggle(panel.id)}
       isFirst={index === 0}
+      flushBody={panel.flushBody}
     >
       {panel.render({ expanded: true, bodyMaxHeight: blockingBodyMaxHeight })}
     </DockPanel>
@@ -218,6 +219,7 @@ export function ChatDock({
         collapsible
         onToggle={() => store.toggle(panel.id)}
         isFirst={index === 0}
+        flushBody={panel.flushBody}
       >
         {panel.render({ expanded })}
       </DockPanel>
