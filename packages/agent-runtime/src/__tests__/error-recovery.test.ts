@@ -158,6 +158,59 @@ describe('runAgentLoop error recovery', () => {
     expect(hasAssistant).toBe(true)
   })
 
+  test('usage limit mid-turn ends with a clear notice and no finalizer or continuation', async () => {
+    const tracker = new MockToolTracker()
+    const tool = tracker.createTool('read_file', 'Read a file', { content: 'file data' })
+    let calls = 0
+    const mockStream = createFailAfterNStreamFn(
+      [buildToolUseResponse([{ name: 'read_file', arguments: { path: 'test.txt' }, id: 'toolu_1' }])],
+      '402 {"error":{"message":"Usage limit reached. Enable usage-based pricing or upgrade your plan.",' +
+        '"type":"billing_error","code":"usage_limit_reached","resetsAt":"2099-01-01T00:00:00.000Z","window":"5h"}}',
+      () => { calls++ },
+    )
+    let streamed = ''
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Read test.txt',
+      tools: [tool],
+      streamFn: mockStream,
+      onTextDelta: (d) => { streamed += d },
+    })
+
+    expect(calls).toBe(2)
+    expect(result.error).toBeUndefined()
+    expect(result.maxIterationsExhausted).toBe(false)
+    expect(result.usageLimit).toEqual({ resetsAt: '2099-01-01T00:00:00.000Z', window: '5h' })
+    expect(result.text).toContain("You've reached your usage limit")
+    expect(result.text).toContain('I completed 1 step')
+    expect(result.text).not.toContain('recoverable provider error')
+    expect(streamed).toBe(result.text)
+  })
+
+  test('non-usage-limit provider error after tool calls keeps the recoverable fallback', async () => {
+    const tracker = new MockToolTracker()
+    const tool = tracker.createTool('read_file', 'Read a file', { content: 'file data' })
+    const mockStream = createFailAfterNStreamFn(
+      [buildToolUseResponse([{ name: 'read_file', arguments: { path: 'test.txt' }, id: 'toolu_1' }])],
+      'API connection timeout',
+    )
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Read test.txt',
+      tools: [tool],
+      streamFn: mockStream,
+    })
+
+    expect(result.usageLimit).toBeUndefined()
+    expect(result.text).not.toContain('usage limit')
+  })
+
   test('returns normal result (no error) on successful completion', async () => {
     const mockStream = createMockStreamFn([
       buildTextResponse('All good!'),
