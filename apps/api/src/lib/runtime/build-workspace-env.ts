@@ -363,7 +363,7 @@ export async function buildWorkspaceEnv(
   // rewriter (keyed off PUBLIC_PREVIEW_URL) stays disabled — so the agent hands
   // cloud users a link they cannot open. Desktop leaves both unset because
   // there localhost IS the URL the user opens.
-  if (ns && opts.anchorProjectId) {
+  if (ns && opts.anchorProjectId && process.env.SHOGO_LOCAL_MODE !== 'true') {
     try {
       const getPreviewUrl =
         opts._getPreviewUrl ?? (await import('../knative-project-manager')).getPreviewUrl
