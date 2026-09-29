@@ -72,6 +72,18 @@ export interface ModelRoutingConfig {
   reasoningEffort?: string
   /** Optional provider-specific upstream identity from model capabilities. */
   upstream?: string
+  /** Pre-first-byte failover target, resolved from `capabilities.fallback`. */
+  fallback?: ModelUpstreamFallback
+  /** OpenRouter `provider` routing block from `capabilities.openrouterProvider`. */
+  openrouterProvider?: Record<string, unknown>
+}
+
+/** A decrypted custom-provider endpoint used when the primary upstream fails. */
+export interface ModelUpstreamFallback {
+  apiModel: string
+  baseUrl: string
+  apiKey: string
+  authStyle?: 'bearer' | 'api-key-header'
 }
 
 interface ProviderRow {
@@ -198,6 +210,39 @@ function aliasList(raw: unknown): string[] {
 }
 
 /**
+ * Resolve `capabilities.fallback = { providerId, apiModel }` into a decrypted
+ * upstream. A missing, disabled, or undecryptable provider is skipped so a
+ * bad fallback never replaces the primary route.
+ */
+function resolveCapabilityFallback(
+  capabilities: Record<string, unknown> | null,
+  providersById: Map<string, ProviderRow>,
+): ModelUpstreamFallback | undefined {
+  const raw = capabilities?.fallback
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const fallback = raw as Record<string, unknown>
+  const providerId = typeof fallback.providerId === 'string' ? fallback.providerId : ''
+  const apiModel = typeof fallback.apiModel === 'string' ? fallback.apiModel.trim() : ''
+  if (!providerId || !apiModel) return undefined
+  const provider = providersById.get(providerId)
+  if (!provider || !provider.enabled) {
+    console.error(`[model-registry] fallback provider ${providerId} is unavailable for apiModel ${apiModel}`)
+    return undefined
+  }
+  try {
+    return {
+      apiModel,
+      baseUrl: provider.baseUrl,
+      authStyle: provider.authStyle === 'api-key-header' ? 'api-key-header' : 'bearer',
+      apiKey: decryptSecret(provider.encryptedApiKey),
+    }
+  } catch (err) {
+    console.error(`[model-registry] failed to decrypt fallback key for provider ${provider.id}:`, (err as Error).message)
+    return undefined
+  }
+}
+
+/**
  * Map a cloud `visible-models` catalog entry (the `toVisible` shape served by
  * the upstream's `/api/platform/visible-models`) to a local `ModelEntry`.
  *
@@ -313,6 +358,12 @@ async function refresh(): Promise<void> {
       if (typeof capabilities?.upstream === 'string' && capabilities.upstream.trim()) {
         routing.upstream = capabilities.upstream.trim()
       }
+      const openrouterProvider = capabilities?.openrouterProvider
+      if (openrouterProvider && typeof openrouterProvider === 'object' && !Array.isArray(openrouterProvider)) {
+        routing.openrouterProvider = openrouterProvider as Record<string, unknown>
+      }
+      const fallback = resolveCapabilityFallback(capabilities, providersById)
+      if (fallback) routing.fallback = fallback
       if (row.provider === 'custom' && row.providerId) {
         const provider = providersById.get(row.providerId)
         if (provider && provider.enabled) {

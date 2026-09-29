@@ -27,6 +27,7 @@
  * - AI_PROXY_SECRET: Secret for signing proxy tokens (falls back to BETTER_AUTH_SECRET)
  */
 
+import { metrics } from '@opentelemetry/api'
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import {
@@ -36,7 +37,7 @@ import {
 } from '../lib/ai-proxy-token'
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
-import { getDbRoutingConfigSync, getMergedModelEntrySync } from '../services/model-registry.service'
+import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import {
@@ -165,6 +166,10 @@ export interface ModelConfig {
   reasoningEffort?: string
   /** Optional upstream identifier for provider-specific body compatibility. */
   upstream?: string
+  /** Pre-first-byte failover target (DeepSeek direct while Hoshi 2.0 is on OpenRouter). */
+  fallback?: ModelUpstreamFallback
+  /** OpenRouter `provider` routing preferences from model capabilities. */
+  openrouterProvider?: Record<string, unknown>
 }
 
 // =============================================================================
@@ -226,6 +231,8 @@ export function resolveModel(model: string): ModelConfig | null {
       authStyle: dbRouting.authStyle,
       reasoningEffort: dbRouting.reasoningEffort,
       upstream: dbRouting.upstream,
+      fallback: dbRouting.fallback,
+      openrouterProvider: dbRouting.openrouterProvider,
     }
   }
 
@@ -1582,22 +1589,30 @@ function getOpenAICompatibleBaseUrl(modelConfig: ModelConfig): string {
   return 'https://api.openai.com/v1/chat/completions'
 }
 
+function isOpenRouterHost(modelConfig: ModelConfig): boolean {
+  return modelConfig.provider === 'openrouter' || modelConfig.baseUrl?.includes('openrouter.ai') === true
+}
+
+/** Hoshi stays DeepSeek-shaped for the runtime. BYOK `openrouter:` models keep OpenRouter's native payload. */
+function shouldRewriteOpenRouterReasoning(modelConfig: ModelConfig): boolean {
+  return modelConfig.upstream === 'deepseek' && isOpenRouterHost(modelConfig)
+}
+
 function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   // Custom providers can authenticate via `api-key` header instead of a
   // Bearer token (MiMo accepts either); honor the configured auth style.
   if (modelConfig.provider === 'custom' && modelConfig.authStyle === 'api-key-header') {
     headers['api-key'] = apiKey
-    return headers
-  }
-  if (modelConfig.provider !== 'local') {
+  } else if (modelConfig.provider !== 'local') {
     headers['Authorization'] = `Bearer ${apiKey}`
   }
-  if (modelConfig.provider === 'openrouter') {
+  if (isOpenRouterHost(modelConfig)) {
     // Attribution headers — OpenRouter surfaces these in their dashboard
     // and uses them for app-level moderation. Both are optional but
     // recommended; users can override either via env if they prefer
-    // their own attribution.
+    // their own attribution. Custom providers whose base URL is OpenRouter
+    // (Hoshi 2.0) need them too; the native `openrouter:` provider is BYOK.
     headers['HTTP-Referer'] = process.env.OPENROUTER_HTTP_REFERER || 'https://shogo.ai'
     headers['X-Title'] = process.env.OPENROUTER_X_TITLE || 'Shogo'
   }
@@ -1648,6 +1663,7 @@ function buildOpenAICompatibleBody(
 
   // DeepSeek's OpenAI-compatible endpoint uses the legacy max_tokens field,
   // even when the caller/runtime emitted OpenAI's max_completion_tokens.
+  // OpenRouter's chat completions endpoint accepts the same field.
   if (body.max_completion_tokens !== undefined && body.max_tokens === undefined) {
     body.max_tokens = body.max_completion_tokens
     delete body.max_completion_tokens
@@ -1663,12 +1679,50 @@ function buildOpenAICompatibleBody(
   delete body.providerOptions
 
   const explicitThinking = request.thinking ?? shogoOptions?.thinking
-  body.thinking = explicitThinking ?? { type: 'enabled' }
-  const thinking = body.thinking as { type?: 'enabled' | 'disabled' }
+  const thinking = (explicitThinking ?? { type: 'enabled' }) as { type?: 'enabled' | 'disabled' }
   const reasoningEffort =
     shogoOptions?.reasoning_effort ??
     modelConfig.reasoningEffort ??
     request.reasoning_effort
+
+  // OpenRouter does not speak DeepSeek's `thinking` / `reasoning_content`
+  // fields. Hoshi stays a DeepSeek-shaped model to the runtime; only the
+  // upstream body changes. `reasoning_details` is what OpenRouter asks callers
+  // to replay so a tool-call turn can continue the same reasoning trace.
+  if (isOpenRouterHost(modelConfig)) {
+    delete body.thinking
+    delete body.reasoning_effort
+    body.reasoning = thinking.type === 'disabled'
+      ? { enabled: false }
+      : reasoningEffort
+        ? { effort: reasoningEffort }
+        : { enabled: true }
+    if (modelConfig.openrouterProvider) {
+      body.provider = modelConfig.openrouterProvider
+    }
+    if (Array.isArray(body.messages)) {
+      body.messages = body.messages.map((message: any) => {
+        const normalized = { ...message }
+        if (normalized.role === 'developer') normalized.role = 'system'
+        if (normalized.role === 'assistant') {
+          const text = typeof normalized.reasoning === 'string'
+            ? normalized.reasoning
+            : typeof normalized.reasoning_content === 'string'
+              ? normalized.reasoning_content
+              : ''
+          normalized.reasoning = text
+          delete normalized.reasoning_content
+          if (text && normalized.reasoning_details === undefined) {
+            normalized.reasoning_details = [{ type: 'reasoning.text', text }]
+          }
+        }
+        return normalized
+      })
+    }
+    return body
+  }
+
+  body.thinking = thinking
   if (reasoningEffort && thinking.type !== 'disabled') {
     body.reasoning_effort = reasoningEffort
   } else if (thinking.type === 'disabled') {
@@ -1692,6 +1746,129 @@ function buildOpenAICompatibleBody(
   return body
 }
 
+const aiProxyMeter = metrics.getMeter('shogo-ai-proxy')
+const upstreamFailoverCounter = aiProxyMeter.createCounter('ai_proxy.upstream_failovers', {
+  description: 'Chat completions retried on a configured fallback upstream before any response bytes were sent',
+})
+
+function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true
+  return err instanceof Error && err.name === 'AbortError'
+}
+
+function isFailoverStatus(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+/**
+ * Fallback is a different upstream. Retrying the same host and model only
+ * doubles latency during an outage, and it would change behavior for a
+ * DeepSeek-direct row whose capabilities still name that same provider.
+ */
+function fallbackModelConfig(modelConfig: ModelConfig): ModelConfig | null {
+  const fallback = modelConfig.fallback
+  if (!fallback?.apiKey || !fallback.baseUrl || !fallback.apiModel) return null
+  const norm = (url: string) => url.replace(/\/$/, '')
+  if (norm(fallback.baseUrl) === norm(modelConfig.baseUrl || '') && fallback.apiModel === modelConfig.apiModel) {
+    return null
+  }
+  return {
+    provider: 'custom',
+    apiModel: fallback.apiModel,
+    displayName: modelConfig.displayName,
+    baseUrl: fallback.baseUrl,
+    apiKey: fallback.apiKey,
+    authStyle: fallback.authStyle,
+    reasoningEffort: modelConfig.reasoningEffort,
+    upstream: modelConfig.upstream,
+  }
+}
+
+function recordUpstreamFailover(reason: string, from: ModelConfig, to: ModelConfig): void {
+  upstreamFailoverCounter.add(1, { reason })
+  console.warn(
+    `[AI Proxy] failover ${from.apiModel} @ ${from.baseUrl ?? from.provider} → ${to.apiModel} @ ${to.baseUrl} (${reason})`,
+  )
+}
+
+async function fetchOpenAICompatible(
+  request: ChatCompletionRequest,
+  apiKey: string,
+  modelConfig: ModelConfig,
+  extra: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ response: Response; served: ModelConfig }> {
+  const attempt = (config: ModelConfig, key: string) => fetch(getOpenAICompatibleBaseUrl(config), {
+    method: 'POST',
+    headers: getOpenAICompatibleHeaders(key, config),
+    body: JSON.stringify(buildOpenAICompatibleBody(request, config, extra)),
+    signal,
+  })
+
+  const fallback = fallbackModelConfig(modelConfig)
+  try {
+    const response = await attempt(modelConfig, apiKey)
+    if (response.ok || !fallback || !isFailoverStatus(response.status)) {
+      return { response, served: modelConfig }
+    }
+    await response.text().catch(() => {})
+    const reason = response.status === 429 ? 'http_429' : 'http_5xx'
+    recordUpstreamFailover(reason, modelConfig, fallback)
+    return { response: await attempt(fallback, fallback.apiKey!), served: fallback }
+  } catch (err) {
+    if (!fallback || isAbortError(err, signal)) throw err
+    recordUpstreamFailover('network', modelConfig, fallback)
+    return { response: await attempt(fallback, fallback.apiKey!), served: fallback }
+  }
+}
+
+function openAIProxyHeaders(modelConfig: ModelConfig): Record<string, string> {
+  return {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Proxy-Provider': modelConfig.provider,
+    'X-Proxy-Model': modelConfig.apiModel,
+  }
+}
+
+/** Copy OpenRouter's `reasoning` / `reasoning_details` onto DeepSeek's `reasoning_content`. */
+function rewriteOpenRouterReasoningPayload(payload: any): boolean {
+  const choices = payload?.choices
+  if (!Array.isArray(choices)) return false
+  let changed = false
+  for (const choice of choices) {
+    for (const field of ['delta', 'message'] as const) {
+      const part = choice?.[field]
+      if (!part || typeof part !== 'object' || typeof part.reasoning_content === 'string') continue
+      const fromDetails = Array.isArray(part.reasoning_details)
+        ? part.reasoning_details
+            .map((detail: any) => (typeof detail?.text === 'string' ? detail.text : ''))
+            .join('')
+        : ''
+      const text = typeof part.reasoning === 'string' ? part.reasoning : fromDetails
+      if (!text && typeof part.reasoning !== 'string') continue
+      part.reasoning_content = text
+      if (typeof part.reasoning === 'string') delete part.reasoning
+      changed = true
+    }
+  }
+  return changed
+}
+
+function rewriteOpenRouterSseLine(line: string): string {
+  if (!line.startsWith('data: ')) return line
+  const data = line.slice(6).trim()
+  if (!data || data === '[DONE]') return line
+  try {
+    const parsed = JSON.parse(data)
+    if (!rewriteOpenRouterReasoningPayload(parsed)) return line
+    return `data: ${JSON.stringify(parsed)}`
+  } catch {
+    return line
+  }
+}
+
 /**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
@@ -1707,79 +1884,109 @@ export async function proxyOpenAIStream(
   ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const url = getOpenAICompatibleBaseUrl(modelConfig)
-  const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(buildOpenAICompatibleBody(request, modelConfig, {
-      stream: true,
-      stream_options: { include_usage: true },
-    })),
-    signal,
-  })
+  const { response, served } = await fetchOpenAICompatible(request, apiKey, modelConfig, {
+    stream: true,
+    stream_options: { include_usage: true },
+  }, signal)
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
+    throw new Error(`${served.provider} API error (${response.status}): ${errorText}`)
   }
 
-  if (!onComplete) {
+  const rewriteReasoning = shouldRewriteOpenRouterReasoning(served)
+
+  if (!onComplete && !rewriteReasoning) {
     return new Response(response.body, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Proxy-Provider': modelConfig.provider,
-        'X-Proxy-Model': modelConfig.apiModel,
-      },
+      headers: openAIProxyHeaders(served),
     })
   }
 
-  // Parse SSE to extract usage from the final chunk, then call onComplete
+  // Parse SSE to extract usage from the final chunk, then call onComplete.
+  // OpenRouter streams are re-chunked by line so `reasoning` can be rewritten
+  // to `reasoning_content` before the client (and the capture pipeline) see it.
   const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
   let inputTokens = 0
   let outputTokens = 0
   let cachedInputTokens = 0
   let reasoningTokens = 0
+  let loggedOpenRouterCost = false
   let sseBuffer = ''
+
+  const noteUsage = (parsed: any) => {
+    if (!parsed?.usage) return
+    const usage = parsed.usage
+    const totalPrompt = usage.prompt_tokens || 0
+    cachedInputTokens =
+      usage.prompt_tokens_details?.cached_tokens ??
+      usage.prompt_cache_hit_tokens ??
+      0
+    inputTokens =
+      usage.prompt_cache_miss_tokens ??
+      Math.max(0, totalPrompt - cachedInputTokens)
+    outputTokens = usage.completion_tokens || 0
+    reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
+    if (rewriteReasoning && typeof usage.cost === 'number' && !loggedOpenRouterCost) {
+      loggedOpenRouterCost = true
+      console.log(`[AI Proxy] OpenRouter usage cost $${usage.cost} model=${served.apiModel}`)
+    }
+  }
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      controller.enqueue(chunk)
+      if (!rewriteReasoning) {
+        controller.enqueue(chunk)
+        sseBuffer += decoder.decode(chunk, { stream: true })
+        const lines = sseBuffer.split('\n')
+        sseBuffer = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (data === '[DONE]') continue
+          try {
+            noteUsage(JSON.parse(data))
+          } catch {
+            // Skip unparseable lines
+          }
+        }
+        return
+      }
 
       sseBuffer += decoder.decode(chunk, { stream: true })
       const lines = sseBuffer.split('\n')
-      // Keep the last (possibly incomplete) line in the buffer
-      sseBuffer = lines.pop() || ''
-
+      sseBuffer = lines.pop() ?? ''
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.slice(6).trim()
-        if (data === '[DONE]') continue
-        try {
-          const parsed = JSON.parse(data)
-          if (parsed.usage) {
-            const usage = parsed.usage
-            const totalPrompt = usage.prompt_tokens || 0
-            cachedInputTokens =
-              usage.prompt_tokens_details?.cached_tokens ??
-              usage.prompt_cache_hit_tokens ??
-              0
-            inputTokens =
-              usage.prompt_cache_miss_tokens ??
-              Math.max(0, totalPrompt - cachedInputTokens)
-            outputTokens = parsed.usage.completion_tokens || 0
-            reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
+        const rewritten = rewriteOpenRouterSseLine(line)
+        if (rewritten.startsWith('data: ')) {
+          const data = rewritten.slice(6).trim()
+          if (data && data !== '[DONE]') {
+            try {
+              noteUsage(JSON.parse(data))
+            } catch {
+              // Skip unparseable lines
+            }
           }
-        } catch {
-          // Skip unparseable lines
         }
+        controller.enqueue(encoder.encode(`${rewritten}\n`))
       }
     },
-    flush() {
-      onComplete(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+    flush(controller) {
+      if (rewriteReasoning && sseBuffer) {
+        const rewritten = rewriteOpenRouterSseLine(sseBuffer)
+        if (rewritten.startsWith('data: ')) {
+          const data = rewritten.slice(6).trim()
+          if (data && data !== '[DONE]') {
+            try {
+              noteUsage(JSON.parse(data))
+            } catch {
+              // Skip unparseable lines
+            }
+          }
+        }
+        controller.enqueue(encoder.encode(`${rewritten}\n`))
+      }
+      onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
     },
   })
 
@@ -1798,13 +2005,7 @@ export async function proxyOpenAIStream(
   const transformed = readable.pipeThrough(transformStream)
 
   return new Response(transformed, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Proxy-Provider': modelConfig.provider,
-      'X-Proxy-Model': modelConfig.apiModel,
-    },
+    headers: openAIProxyHeaders(served),
   })
 }
 
@@ -1817,22 +2018,27 @@ export async function proxyOpenAINonStream(
   modelConfig: ModelConfig,
   signal?: AbortSignal,
 ) {
-  const url = getOpenAICompatibleBaseUrl(modelConfig)
-  const headers = getOpenAICompatibleHeaders(apiKey, modelConfig)
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(buildOpenAICompatibleBody(request, modelConfig, { stream: false })),
+  const { response, served } = await fetchOpenAICompatible(
+    request,
+    apiKey,
+    modelConfig,
+    { stream: false },
     signal,
-  })
+  )
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`${modelConfig.provider} API error (${response.status}): ${errorText}`)
+    throw new Error(`${served.provider} API error (${response.status}): ${errorText}`)
   }
 
-  return response.json()
+  const result = await response.json()
+  if (shouldRewriteOpenRouterReasoning(served)) {
+    rewriteOpenRouterReasoningPayload(result)
+    if (typeof result?.usage?.cost === 'number') {
+      console.log(`[AI Proxy] OpenRouter usage cost $${result.usage.cost} model=${served.apiModel}`)
+    }
+  }
+  return result
 }
 
 // =============================================================================
