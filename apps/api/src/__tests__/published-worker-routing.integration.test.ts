@@ -19,8 +19,10 @@
  *   - `/api/*` on a server-backed subdomain → proxied to KOURIER_ORIGIN (the
  *     Knative ingress), NOT Object Storage, carrying the published host.
  *   - static paths on the same subdomain → still served from Object Storage.
- *   - `/api/*` on a NON-server-backed subdomain → served from Object Storage
- *     (unchanged legacy behavior — no accidental proxying).
+ *   - `/api/*` on a NON-server-backed subdomain → returned as an upstream
+ *     error, never rewritten to the HTML shell.
+ *   - missing asset paths → returned as an upstream error, never rewritten
+ *     to the HTML shell.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
@@ -165,8 +167,9 @@ describe('subdomain-router worker — server-backed /api proxy', () => {
     expect(calls[0].url).toBe(`${OCI_ORIGIN}/august-29th-celebration-portal/assets/app.js`)
   })
 
-  test('/api/* on a NON-server-backed subdomain is NOT proxied (legacy static behavior)', async () => {
-    // Static app: /api/* 404s at OCI, then the worker SPA-fallbacks to index.html.
+  test('/api/* on a NON-server-backed subdomain is not proxied or SPA-fallbacked', async () => {
+    // Static app: /api/* 404s at OCI and remains a 404 so callers do not get
+    // an HTML 200 when they expected JSON.
     installFetch((url) => {
       if (url.endsWith('/api/whatever')) return { status: 404 }
       return { status: 200, body: '<html>spa</html>' }
@@ -177,8 +180,54 @@ describe('subdomain-router worker — server-backed /api proxy', () => {
     const res = await workerModule.fetch(req, env)
     // Never touches the Kourier ingress.
     for (const c of calls) expect(c.url.startsWith(KOURIER_ORIGIN)).toBe(false)
-    // First hit OCI for the /api path, then OCI again for the SPA fallback.
+    // Only hit OCI for the /api path; do not fetch index.html as a fallback.
     expect(calls[0].url).toBe(`${OCI_ORIGIN}/plain-static-site/api/whatever`)
+    expect(calls.length).toBe(1)
+    expect(res.status).toBe(404)
+    expect(await res.text()).toBe('')
+  })
+
+  test('missing asset paths are not rewritten to index.html', async () => {
+    installFetch((url) => {
+      if (url.endsWith('/assets/missing.js')) return { status: 404 }
+      return { status: 200, body: '<html>spa</html>' }
+    })
+    const env = makeEnv([])
+    const req = new Request('https://plain-static-site.shogo.one/assets/missing.js')
+
+    const res = await workerModule.fetch(req, env)
+    expect(calls.length).toBe(1)
+    expect(res.status).toBe(404)
+  })
+
+  test('an extensionless fetch is not rewritten to index.html unless it is a document navigation', async () => {
+    installFetch((url) => {
+      if (url.endsWith('/client-data')) return { status: 404 }
+      return { status: 200, body: '<html>spa</html>' }
+    })
+    const env = makeEnv([])
+    const req = new Request('https://plain-static-site.shogo.one/client-data', {
+      headers: { Accept: 'application/json' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(calls.length).toBe(1)
+    expect(res.status).toBe(404)
+  })
+
+  test('a missing extensionless client route requested as HTML falls back to the SPA shell', async () => {
+    installFetch((url) => {
+      if (url.endsWith('/reports/current')) return { status: 404 }
+      return { status: 200, body: '<html>spa</html>' }
+    })
+    const env = makeEnv([])
+    const req = new Request('https://plain-static-site.shogo.one/reports/current', {
+      headers: { Accept: 'text/html' },
+    })
+
+    const res = await workerModule.fetch(req, env)
+    expect(calls.length).toBe(2)
+    expect(calls[1].url).toBe(`${OCI_ORIGIN}/plain-static-site/index.html`)
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('<html>spa</html>')
   })

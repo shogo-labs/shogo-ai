@@ -171,6 +171,7 @@ describe('ensureGitignoreIgnoresDeps — exercised via commit()', () => {
     const gitignore = readFileSync(join(workspacePath, '.gitignore'), 'utf-8')
     expect(gitignore).toContain('my-secrets.env') // user content preserved
     expect(gitignore).toContain('node_modules') // shogo appended
+    expect(gitignore).toContain('dist.publish.staging/') // transient publish output
     expect(gitignore).toContain('Added by Shogo AI')
   })
 
@@ -181,7 +182,7 @@ describe('ensureGitignoreIgnoresDeps — exercised via commit()', () => {
       join(workspacePath, '.gitignore'),
       [
         'node_modules/', '.bun/',
-        'dist/', 'dist.staging/', 'dist.canvas.staging/', 'dist.prev/',
+        'dist/', 'dist.staging/', 'dist.canvas.staging/', 'dist.publish.staging/', 'dist.prev/',
         'build/', '.output/', '.nitro/', '.shogo/',
         'nul', 'con', 'prn', 'aux',
       ].join('\n') + '\n',

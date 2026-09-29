@@ -65,8 +65,8 @@ describe('fs-tree-walker policy constants', () => {
     }
   })
 
-  test('LAZY_DIRS includes node_modules / dist / .next / __pycache__', () => {
-    for (const dir of ['node_modules', 'dist', '.next', '__pycache__', 'venv']) {
+  test('LAZY_DIRS includes node_modules / build artifacts / .next / __pycache__', () => {
+    for (const dir of ['node_modules', 'dist', 'dist.publish.staging', '.next', '__pycache__', 'venv']) {
       expect(WORKSPACE_TREE_LAZY_DIRS.has(dir)).toBe(true)
     }
   })

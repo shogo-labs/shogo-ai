@@ -23,12 +23,14 @@ function makeManager(opts: { devServer?: string; started?: boolean } = {}) {
   internals.started = opts.started ?? true
   const exports: Array<() => void> = []
   let count = 0
+  const testExportKey = 'test-export'
   internals.runExpoExportWeb = () => {
     count++
-    const p = new Promise<void>((resolve) => exports.push(resolve)).finally(() => {
-      internals.expoExportInFlight = null
+    const p = new Promise<void>((resolve) => exports.push(resolve))
+    internals.expoExportInFlight.set(testExportKey, p)
+    void p.finally(() => {
+      internals.expoExportInFlight.delete(testExportKey)
     })
-    internals.expoExportInFlight = p
     return p
   }
   return {
@@ -80,13 +82,14 @@ describe('PreviewManager.requestWebRebuild', () => {
     const { pm, exportCount, finishExport } = makeManager({ started: false })
     let releaseBoot!: () => void
     const internals = pm as any
-    internals.expoExportInFlight = new Promise<void>((r) => { releaseBoot = r })
+    const bootExport = new Promise<void>((r) => { releaseBoot = r })
+    internals.expoExportInFlight.set('boot-export', bootExport)
 
     pm.requestWebRebuild()
     await sleep(SETTLE_MS)
     expect(exportCount()).toBe(0)
 
-    internals.expoExportInFlight = null
+    internals.expoExportInFlight.delete('boot-export')
     releaseBoot()
     await sleep(10)
     expect(exportCount()).toBe(1)
