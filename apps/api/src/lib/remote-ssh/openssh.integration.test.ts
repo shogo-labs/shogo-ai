@@ -8,8 +8,8 @@
  *   REMOTE_SSH_INTEGRATION=1 bun test apps/api/src/lib/remote-ssh/openssh.integration.test.ts
  *
  * The test uses Docker only for the throwaway OpenSSH server. The host-side
- * transport is exercised exclusively through SSHConnection, including ssh,
- * scp, and both forwarding directions. Without the opt-in flag, Docker is
+ * transport is exercised exclusively through SSHConnection, including exec,
+ * stdin uploads, and both forwarding directions. Without the opt-in flag, Docker is
  * never probed and the suite is skipped.
  */
 
@@ -22,9 +22,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as tar from "tar";
 
-import { bootstrapRemoteRuntime, shellQuote } from "./bootstrap";
+import { bootstrapRemoteRuntime } from "./bootstrap";
 import { createSSHConnection, type SSHConnection } from "./connection";
 import { RemoteRuntimeManager } from "./remote-runtime";
+import { quoteRemoteShellArgument as shellQuote } from "./shell";
 
 interface ProcessResult {
   stdout: string;
@@ -280,21 +281,7 @@ exec /usr/sbin/sshd -D -e
         const sidecar = new TextEncoder().encode(
           `${digest}  shogo-agent-runtime-linux-x64.tar.gz\n`,
         );
-        const bootstrapConnection = {
-          exec: async (command: string) => {
-            const result = await connection!.exec(command);
-            return {
-              stdout: result.stdout,
-              stderr: result.stderr,
-              // bootstrap.ts treats an omitted exit code as success. Convert
-              // SSHConnection's pre-exit null into an explicit failure.
-              exitCode: result.exitCode === null ? 1 : result.exitCode,
-            };
-          },
-          upload: (localPath: string, remotePath: string) =>
-            connection!.upload(localPath, remotePath),
-        };
-        const bootstrap = await bootstrapRemoteRuntime(bootstrapConnection, {
+        const bootstrap = await bootstrapRemoteRuntime(connection, {
           version: "0.0.0",
           // Force the tested fallback path; the release bytes are supplied by
           // the local fetch seam and transferred through SSHConnection.upload.
@@ -336,14 +323,13 @@ exec /usr/sbin/sshd -D -e
 
         const localAgentPort = await freePort();
         const remoteAgentPort = 37_100;
-        const remoteApiPort = 37_101;
+        const remoteApiPort = remoteAgentPort + 1;
         manager = new RemoteRuntimeManager({
           connection,
           workspaceKey: "integration-workspace",
           remoteProjectDir,
           runtimeBinaryPath: bootstrap.binaryPath,
           remoteAgentPort,
-          remoteApiPort,
           localAgentPort,
           localApiPort,
           env: {

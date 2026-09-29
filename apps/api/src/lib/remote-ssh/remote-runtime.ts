@@ -6,31 +6,38 @@
  *
  * The SSH connection is deliberately the only transport dependency here.
  * The runtime is a detached remote process; the agent HTTP port is forwarded
- * to this process and the runtime's API port is reverse-forwarded back to the
- * API process that owns this manager.
+ * to this process and the runtime's API port is reverse-forwarded back to
+ * the local remote-API gateway (see api-gateway.ts), never to the API itself.
  */
 
-import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import {
   bootstrapRemoteRuntime,
-  shellQuote,
   type RemoteRuntimeBootstrapOptions,
-  type RemoteRuntimeBootstrapResult,
   type RemoteSshConnection,
 } from './bootstrap'
+import type { SSHForwardHandle } from './connection'
 import {
-  type SSHForwardHandle,
-  type SSHConnection,
-} from './connection'
+  RemoteCommandError,
+  commandSucceeded,
+  quoteRemoteShellArgument,
+  remotePathExpression,
+  type RemoteCommandRunner,
+} from './shell'
 
-const DEFAULT_LOCAL_API_PORT = 8002
 const DEFAULT_REMOTE_PORT_START = 37_100
 const DEFAULT_REMOTE_PORT_END = 37_900
+/**
+ * Ports owned by one runtime: agent (+0), API/skill server (+1), and preview
+ * sidecars from WORKSPACE_API_PORT_BASE (+2 onward). Slots never overlap, so
+ * several runtimes can share a host.
+ */
+export const REMOTE_PORT_SLOT_SIZE = 20
 const DEFAULT_HEALTH_TIMEOUT_MS = 30_000
 const DEFAULT_HEALTH_POLL_MS = 500
 const DEFAULT_HEALTH_REQUEST_TIMEOUT_MS = 1_500
 const DEFAULT_IDLE_MS = 45 * 60 * 1000
-const RUN_ROOT = '~/.shogo-server/run'
+const DEFAULT_RECOVERY_THRESHOLD = 3
+const MAX_LOG_BYTES = 5 * 1024 * 1024
 
 const API_URL_KEYS = [
   'API_URL',
@@ -46,21 +53,11 @@ const API_URL_KEYS = [
 
 type ApiUrlKey = (typeof API_URL_KEYS)[number]
 
-/**
- * The portion of SSHConnection used by the manager. It is exported so unit
- * tests and embedders can provide a fake connection without an SSH daemon.
- */
-export interface RemoteRuntimeConnection {
-  exec(command: string): Promise<{
-    stdout: string
-    stderr?: string
-    exitCode?: number | null
-    code?: number
-    status?: number
-  }>
-  upload(localPath: string, remotePath: string): Promise<void>
+export interface RemoteRuntimeConnection extends RemoteSshConnection {
   forward(localPort: number, remoteHostPort: string): Promise<SSHForwardHandle>
   reverseForward(remotePort: number, localPort: number): Promise<SSHForwardHandle>
+  /** Probe the transport; a dead master resets so the next command reconnects. */
+  status?(): Promise<{ connected: boolean }>
 }
 
 export interface RemoteRuntimePorts {
@@ -73,15 +70,13 @@ export interface RemoteRuntimePorts {
 export type RemoteRuntimeBootstrapper = (
   connection: RemoteSshConnection,
   options: RemoteRuntimeBootstrapOptions,
-) => Promise<RemoteRuntimeBootstrapResult | { binaryPath: string } | string>
+) => Promise<{ binaryPath: string; version?: string }>
 
+/** Returns the first port of a free slot of `slotSize` consecutive ports. */
 export type RemoteRuntimePortAllocator = (
-  connection: RemoteRuntimeConnection,
-  options: {
-    start: number
-    end: number
-  },
-) => Promise<RemoteRuntimePorts>
+  connection: RemoteCommandRunner,
+  options: { start: number; end: number; slotSize: number; exclude: readonly number[] },
+) => Promise<number>
 
 export type RemoteRuntimeLifecycle = 'starting' | 'running' | 'stopping' | 'stopped' | 'error'
 
@@ -99,8 +94,6 @@ export interface RemoteRuntimeStatus {
   pid?: number
   /** Local port exposed by the SSH -L forward. */
   agentPort?: number
-  /** Local API port used by the reverse forward. */
-  apiPort: number
   remoteAgentPort?: number
   remoteApiPort?: number
   url?: string
@@ -110,74 +103,36 @@ export interface RemoteRuntimeStatus {
   error?: string
 }
 
-export interface RemoteRuntimeConfig {
+export interface RemoteRuntimeOptions {
+  connection: RemoteRuntimeConnection
   /** Stable, path-safe key used below ~/.shogo-server/run/. */
   workspaceKey: string
   /** Directory containing the project on the SSH host. */
-  remoteProjectDir?: string
-  /** Alias accepted by callers that already use projectDir terminology. */
-  projectDir?: string
-  env?: Record<string, string>
-  /** Local API port reached by the SSH reverse forward. */
-  localApiPort?: number
+  remoteProjectDir: string
+  /** Local port reached by the SSH reverse forward (the remote API gateway). */
+  localApiPort: number
   /** Local port for the -L agent forward. Omit to allocate an ephemeral port. */
   localAgentPort?: number
-  /** Remote agent/API ports. If omitted, the manager probes a remote range. */
+  /** Fixed remote slot; the API port is agentPort + 1. Omit to probe. */
   remoteAgentPort?: number
-  remoteApiPort?: number
-  /** Short aliases for the remote ports. */
-  agentPort?: number
-  apiPort?: number
-  /** Alias for remoteProjectDir. */
-  workspaceDir?: string
-  /** Override the token already present in env. */
-  runtimeAuthSecret?: string
-  /** Installed binary path on the remote host. */
+  env?: Record<string, string>
+  /** Use an already-installed binary instead of bootstrapping a release. */
   runtimeBinaryPath?: string
-  /** Alias for runtimeBinaryPath. */
-  binaryPath?: string
   runtimeVersion?: string
-  /** Alias for runtimeVersion. */
-  version?: string
-  bootstrapOptions?: Omit<RemoteRuntimeBootstrapOptions, 'version'> & {
-    version?: string
-  }
+  bootstrapOptions?: Omit<RemoteRuntimeBootstrapOptions, 'version'>
   bootstrap?: RemoteRuntimeBootstrapper
-  /** Alias for bootstrap. */
-  bootstrapRuntime?: RemoteRuntimeBootstrapper
   portAllocator?: RemoteRuntimePortAllocator
-  /** Alias for portAllocator. */
-  allocatePorts?: RemoteRuntimePortAllocator
   healthTimeoutMs?: number
   healthPollMs?: number
   healthRequestTimeoutMs?: number
   /** Stop the detached runtime after this much time without activity. 0 disables it. */
   idleMs?: number
+  /** Consecutive failed health checks on a running runtime before reconnecting. */
+  recoveryThreshold?: number
   fetch?: typeof fetch
 }
 
-export type RemoteRuntimeManagerOptions = RemoteRuntimeConfig & {
-  connection: RemoteRuntimeConnection | SSHConnection
-}
-
-export type RemoteRuntimeStartOverrides = Partial<
-  Pick<
-    RemoteRuntimeConfig,
-    | 'remoteProjectDir'
-    | 'projectDir'
-    | 'workspaceDir'
-    | 'env'
-    | 'localApiPort'
-    | 'localAgentPort'
-    | 'remoteAgentPort'
-    | 'remoteApiPort'
-    | 'agentPort'
-    | 'apiPort'
-    | 'runtimeAuthSecret'
-    | 'runtimeBinaryPath'
-    | 'binaryPath'
-  >
->
+export type RemoteRuntimeStartOverrides = Partial<Pick<RemoteRuntimeOptions, 'env' | 'localAgentPort'>>
 
 interface PidfileRecord {
   pid: number
@@ -185,7 +140,7 @@ interface PidfileRecord {
   apiPort?: number
   workspaceKey?: string
   binaryPath?: string
-  projectDir?: string
+  version?: string
   startedAt?: number
 }
 
@@ -193,51 +148,10 @@ interface RuntimeRecord {
   pid: number
   remotePorts: RemoteRuntimePorts
   localAgentPort: number
-  localApiPort: number
   startedAt: number
   reattached: boolean
   forwards: SSHForwardHandle[]
   binaryPath: string
-}
-
-interface ResolvedConfig {
-  workspaceKey: string
-  remoteProjectDir: string
-  env: Record<string, string>
-  localApiPort: number
-  localAgentPort?: number
-  remoteAgentPort?: number
-  remoteApiPort?: number
-  runtimeAuthSecret?: string
-  runtimeBinaryPath?: string
-  runtimeVersion?: string
-  bootstrapOptions: RemoteRuntimeConfig['bootstrapOptions']
-  bootstrap: RemoteRuntimeBootstrapper
-  portAllocator?: RemoteRuntimePortAllocator
-  healthTimeoutMs: number
-  healthPollMs: number
-  healthRequestTimeoutMs: number
-  idleMs: number
-  fetch: typeof fetch
-}
-
-interface CommandResult {
-  exitCode?: number | null
-  code?: number
-  status?: number
-}
-
-function getExitCode(result: CommandResult): number | null | undefined {
-  if (result.exitCode !== undefined) return result.exitCode
-  if ('code' in result && result.code !== undefined) return result.code
-  if ('status' in result && result.status !== undefined) return result.status
-  return undefined
-}
-
-function commandSucceeded(result: CommandResult): boolean {
-  const code = getExitCode(result)
-  // A few injected connection implementations omit exitCode on success.
-  return code === undefined || code === 0
 }
 
 function assertPort(port: number, name: string): void {
@@ -246,7 +160,7 @@ function assertPort(port: number, name: string): void {
   }
 }
 
-function assertPositiveDuration(value: number, name: string): void {
+function assertNonNegativeDuration(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name} must be a finite non-negative number`)
   }
@@ -262,150 +176,104 @@ function assertWorkspaceKey(value: string): string {
   return key
 }
 
-function assertNoNul(value: string, name: string): void {
-  if (value.includes('\u0000')) throw new TypeError(`${name} cannot contain NUL bytes`)
-}
-
-function quote(value: string): string {
-  assertNoNul(value, 'Remote shell value')
-  return shellQuote(value)
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
- * Quote a path while retaining expansion for the two path spellings commonly
- * returned by bootstrap.ts (`~/.shogo-server/...` and `$HOME/...`).
+ * Slots handed out by this process but possibly not yet bound on the host,
+ * keyed by the shared per-host connection.
  */
-function quoteRemotePath(value: string): string {
-  assertNoNul(value, 'Remote path')
-  if (value.startsWith('~/')) {
-    return `"$HOME/"${quote(value.slice(2))}`
+const reservedSlots = new WeakMap<object, Set<number>>()
+
+function slotsFor(connection: object): Set<number> {
+  let slots = reservedSlots.get(connection)
+  if (!slots) {
+    slots = new Set()
+    reservedSlots.set(connection, slots)
   }
-  if (value.startsWith('$HOME/')) {
-    return `"$HOME/"${quote(value.slice('$HOME/'.length))}`
-  }
-  return quote(value)
+  return slots
 }
 
-function normalizePathValue(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) throw new TypeError('remoteProjectDir is required')
-  assertNoNul(trimmed, 'remoteProjectDir')
-  return trimmed
+/** Allocation and reservation must be atomic per host, or concurrent starts pick the same slot. */
+const allocationQueues = new WeakMap<object, Promise<unknown>>()
+
+function withAllocationLock<T>(connection: object, task: () => Promise<T>): Promise<T> {
+  const previous = allocationQueues.get(connection) ?? Promise.resolve()
+  const next = previous.then(task, task)
+  allocationQueues.set(connection, next.catch(() => {}))
+  return next
 }
 
-function normalizeBootstrapResult(
-  result: RemoteRuntimeBootstrapResult | { binaryPath: string } | string,
-): string {
-  const binaryPath = typeof result === 'string' ? result : result.binaryPath
-  if (!binaryPath?.trim()) throw new Error('Remote runtime bootstrap did not return a binary path')
-  return binaryPath.trim()
-}
-
-function parsePortPair(stdout: string): RemoteRuntimePorts | undefined {
-  const fields = stdout.trim().split(/\s+/)
-  if (fields.length < 2) return undefined
-  const agentPort = Number(fields[0])
-  const apiPort = Number(fields[1])
-  try {
-    assertPort(agentPort, 'Remote agent port')
-    assertPort(apiPort, 'Remote API port')
-  } catch {
-    return undefined
-  }
-  if (agentPort === apiPort) return undefined
-  return { agentPort, apiPort }
-}
-
-function buildRemotePortProbeCommand(start: number, end: number): string {
-  const candidates: string[] = []
-  for (let port = start; port < end; port += 2) {
-    if (port + 1 <= end) candidates.push(`(${port}, ${port + 1})`)
-  }
-  const ports = candidates.join(', ')
+function buildPortProbeCommand(options: {
+  start: number
+  end: number
+  slotSize: number
+  exclude: readonly number[]
+}): string {
+  const { start, end, slotSize, exclude } = options
   const python = [
     'import socket,sys',
-    `pairs=[${ports}]`,
-    'for a,b in pairs:',
-    ' s=[]',
+    `exclude={${exclude.join(',')}}`,
+    `for base in range(${start},${end - slotSize + 1},${slotSize}):`,
+    ' if base in exclude: continue',
+    ' held=[]',
     ' try:',
-    '  for p in (a,b):',
-    '   x=socket.socket(); x.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); x.bind(("127.0.0.1",p)); s.append(x)',
-    '  print(f"{a} {b}")',
-    '  sys.exit(0)',
+    `  for p in range(base,base+${slotSize}):`,
+    '   s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(("127.0.0.1",p)); held.append(s)',
     ' except OSError:',
-    '  [x.close() for x in s]',
+    '  continue',
+    ' finally:',
+    '  [s.close() for s in held]',
+    ' print(base)',
+    ' sys.exit(0)',
     'sys.exit(1)',
   ].join('\n')
-  const ncCandidates = candidates
-    .map((pair) => {
-      const [agent, api] = pair.replace(/[() ]/g, '').split(',')
-      return `if ! nc -z 127.0.0.1 ${agent} 2>/dev/null && ! nc -z 127.0.0.1 ${api} 2>/dev/null; then printf '%s %s\\n' ${agent} ${api}; exit 0; fi`
-    })
-    .join(' ')
   return [
     'set -eu',
-    `if command -v python3 >/dev/null 2>&1; then python3 -c ${quote(python)}`,
-    `elif command -v python >/dev/null 2>&1; then python -c ${quote(python)}`,
-    `elif command -v nc >/dev/null 2>&1; then ${ncCandidates}`,
+    'if command -v python3 >/dev/null 2>&1; then',
+    `  python3 -c ${quoteRemoteShellArgument(python)}`,
+    '  exit $?',
     'fi',
+    'command -v ss >/dev/null 2>&1 || exit 1',
+    `used=$(ss -Htln 2>/dev/null | awk '{ n = split($4, a, ":"); print a[n] }')`,
+    `base=${start}`,
+    `while [ $((base + ${slotSize})) -le ${end} ]; do`,
+    `  case " ${exclude.join(' ')} " in *" $base "*) base=$((base + ${slotSize})); continue ;; esac`,
+    '  free=1',
+    '  p=$base',
+    `  while [ "$p" -lt $((base + ${slotSize})) ]; do`,
+    '    if printf \'%s\\n\' "$used" | grep -qx "$p"; then free=0; break; fi',
+    '    p=$((p + 1))',
+    '  done',
+    '  if [ "$free" = 1 ]; then printf \'%s\\n\' "$base"; exit 0; fi',
+    `  base=$((base + ${slotSize}))`,
+    'done',
     'exit 1',
   ].join('\n')
 }
 
-/**
- * Probe a remote high-port range for two adjacent free loopback ports.
- *
- * The probe is intentionally injectable through `portAllocator`; callers
- * that have a scheduler or a reserved remote port range can avoid probing.
- */
-async function allocateRemotePorts(
-  connection: RemoteRuntimeConnection,
-  options: { start: number; end: number },
-): Promise<RemoteRuntimePorts> {
+/** Probe a remote high-port range for a free slot of consecutive loopback ports. */
+export const allocateRemotePortSlot: RemoteRuntimePortAllocator = async (connection, options) => {
   assertPort(options.start, 'Remote port range start')
   assertPort(options.end, 'Remote port range end')
-  if (options.start >= options.end) throw new RangeError('Remote port range is empty')
+  if (options.end - options.start < options.slotSize) throw new RangeError('Remote port range is too small')
 
-  const result = await connection.exec(buildRemotePortProbeCommand(options.start, options.end))
-  if (!commandSucceeded(result)) {
+  const result = await connection.exec(buildPortProbeCommand(options))
+  const base = Number(result.stdout.trim())
+  if (!commandSucceeded(result) || !Number.isInteger(base)) {
     throw new Error(
-      `Unable to allocate remote agent/API ports in ${options.start}-${options.end}`,
+      `Unable to find ${options.slotSize} free remote ports in ${options.start}-${options.end} (requires python3 or ss)`,
     )
   }
-  const ports = parsePortPair(result.stdout)
-  if (!ports) {
-    throw new Error(
-      `Remote port allocator returned invalid ports in ${options.start}-${options.end}`,
-    )
-  }
-  return ports
+  assertPort(base, 'Remote agent port')
+  return base
 }
 
 function parsePidfile(stdout: string): PidfileRecord | undefined {
-  const text = stdout.trim()
-  if (!text) return undefined
-  if (text.startsWith('{')) {
-    try {
-      const metadata = JSON.parse(text) as Partial<PidfileRecord>
-      const pid = Number(metadata.pid)
-      if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
-      return {
-        pid,
-        agentPort: typeof metadata.agentPort === 'number' ? metadata.agentPort : undefined,
-        apiPort: typeof metadata.apiPort === 'number' ? metadata.apiPort : undefined,
-        workspaceKey: typeof metadata.workspaceKey === 'string' ? metadata.workspaceKey : undefined,
-        binaryPath: typeof metadata.binaryPath === 'string' ? metadata.binaryPath : undefined,
-        projectDir: typeof metadata.projectDir === 'string' ? metadata.projectDir : undefined,
-        startedAt: typeof metadata.startedAt === 'number' ? metadata.startedAt : undefined,
-      }
-    } catch {
-      return undefined
-    }
-  }
-  const lines = text.split(/\r?\n/)
+  const lines = stdout.trim().split(/\r?\n/)
   const pid = Number(lines[0]?.trim())
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
-
   if (lines.length === 1) return { pid }
   try {
     const metadata = JSON.parse(lines.slice(1).join('\n')) as Partial<PidfileRecord>
@@ -415,11 +283,10 @@ function parsePidfile(stdout: string): PidfileRecord | undefined {
       apiPort: typeof metadata.apiPort === 'number' ? metadata.apiPort : undefined,
       workspaceKey: typeof metadata.workspaceKey === 'string' ? metadata.workspaceKey : undefined,
       binaryPath: typeof metadata.binaryPath === 'string' ? metadata.binaryPath : undefined,
-      projectDir: typeof metadata.projectDir === 'string' ? metadata.projectDir : undefined,
+      version: typeof metadata.version === 'string' ? metadata.version : undefined,
       startedAt: typeof metadata.startedAt === 'number' ? metadata.startedAt : undefined,
     }
   } catch {
-    // A PID-only pidfile is supported for compatibility with early launchers.
     return { pid }
   }
 }
@@ -434,10 +301,7 @@ function rewriteInternalUrl(value: string, localApiBase: string): string {
   }
 }
 
-function localApiEnv(
-  input: Record<string, string>,
-  localApiBase: string,
-): Record<string, string> {
+function localApiEnv(input: Record<string, string>, localApiBase: string): Record<string, string> {
   const env = { ...input }
   const defaultPaths: Record<ApiUrlKey, string> = {
     API_URL: '',
@@ -462,50 +326,47 @@ function localApiEnv(
   return env
 }
 
-function buildPidfileMetadata(
-  ports: RemoteRuntimePorts,
-  config: ResolvedConfig,
-  binaryPath: string,
-  startedAt: number,
-): string {
-  return JSON.stringify({
-    agentPort: ports.agentPort,
-    apiPort: ports.apiPort,
-    workspaceKey: config.workspaceKey,
-    binaryPath,
-    projectDir: config.remoteProjectDir,
-    startedAt,
-  })
+/**
+ * The environment is sent on stdin and `eval`ed by the remote shell so tokens
+ * never appear in any process's argv (readable by every user on the host).
+ */
+export function buildEnvScript(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([name, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        throw new TypeError(`Invalid remote environment variable name '${name}'`)
+      }
+      return `export ${name}=${quoteRemoteShellArgument(value)}`
+    })
+    .join('\n')
 }
 
-function buildLaunchCommand(
-  ports: RemoteRuntimePorts,
-  config: ResolvedConfig,
-  binaryPath: string,
-  startedAt: number,
-): string {
-  const key = config.workspaceKey
-  const metadata = buildPidfileMetadata(ports, config, binaryPath, startedAt)
-  const envArgs = Object.entries(config.env).map(([name, value]) => {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      throw new TypeError(`Invalid remote environment variable name '${name}'`)
-    }
-    return quote(`${name}=${value}`)
-  })
+function runDir(workspaceKey: string): string {
+  return `"$HOME/.shogo-server/run/${workspaceKey}"`
+}
 
+function buildLaunchCommand(options: {
+  workspaceKey: string
+  remoteProjectDir: string
+  binaryPath: string
+  metadata: Omit<PidfileRecord, 'pid'>
+}): string {
   return [
     'set -eu',
-    `run_dir="$HOME/.shogo-server/run/${key}"`,
+    `run_dir=${runDir(options.workspaceKey)}`,
     'mkdir -p "$run_dir"',
     'pidfile="$run_dir/agent-runtime.pid"',
     'logfile="$run_dir/agent-runtime.log"',
+    `if [ -f "$logfile" ] && [ "$(wc -c < "$logfile" | tr -d ' ')" -gt ${MAX_LOG_BYTES} ]; then mv -f "$logfile" "$logfile.1"; fi`,
     'rm -f "$pidfile"',
-    `cd ${quoteRemotePath(config.remoteProjectDir)}`,
-    `nohup env ${envArgs.join(' ')} ${quoteRemotePath(binaryPath)} >>"$logfile" 2>&1 </dev/null &`,
+    'env_script=$(cat)',
+    'eval "$env_script"',
+    'unset env_script',
+    `cd ${remotePathExpression(options.remoteProjectDir)}`,
+    `nohup ${remotePathExpression(options.binaryPath)} >>"$logfile" 2>&1 </dev/null &`,
     'pid=$!',
-    // The first line is intentionally the PID, so simple existing launchers
-    // can still inspect the pidfile. The second line contains reattach data.
-    `printf '%s\\n%s\\n' "$pid" ${quote(metadata)} >"$pidfile"`,
+    // Line 1 is the PID; line 2 is the reattach metadata.
+    `printf '%s\\n%s\\n' "$pid" ${quoteRemoteShellArgument(JSON.stringify(options.metadata))} >"$pidfile"`,
     'printf "%s\\n" "$pid"',
   ].join('\n')
 }
@@ -513,22 +374,50 @@ function buildLaunchCommand(
 function buildReadPidfileCommand(workspaceKey: string): string {
   return [
     'set -eu',
-    `pidfile="$HOME/.shogo-server/run/${workspaceKey}/agent-runtime.pid"`,
+    `pidfile=${runDir(workspaceKey)}/agent-runtime.pid`,
     'if test -s "$pidfile"; then cat "$pidfile"; fi',
   ].join('\n')
 }
 
-function buildKillCommand(pid: number): string {
-  return `kill -TERM ${pid} 2>/dev/null || true`
-}
-
 function buildRemovePidfileCommand(workspaceKey: string): string {
-  return `rm -f "$HOME/.shogo-server/run/${workspaceKey}/agent-runtime.pid"`
+  return `rm -f ${runDir(workspaceKey)}/agent-runtime.pid`
 }
 
-function makeHealthUrl(localPort: number, healthPath: string): string {
-  const path = healthPath.startsWith('/') ? healthPath : `/${healthPath}`
-  return `http://127.0.0.1:${localPort}${path}`
+/**
+ * Shell prelude defining `is_ours`: true only when `$pid` is still the
+ * agent-runtime we launched from `$bin`. A bare `kill -0` is not enough;
+ * after a reboot the PID may belong to an unrelated process of this user.
+ */
+function identityPrelude(pid: number, binaryPath: string): string {
+  return [
+    `pid=${pid}`,
+    `bin=${remotePathExpression(binaryPath)}`,
+    'is_ours() {',
+    '  test -d "/proc/$pid" || return 1',
+    '  real=$(readlink -f "$bin" 2>/dev/null || printf \'%s\' "$bin")',
+    '  exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)',
+    '  exe=${exe% (deleted)}',
+    '  if [ "$exe" = "$real" ] || [ "$exe" = "$bin" ]; then return 0; fi',
+    // Script runtimes (e.g. a `#!/usr/bin/env bun` wrapper) show the
+    // interpreter as exe and the launched path as an argv entry.
+    '  tr \'\\0\' \'\\n\' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fx -e "$bin" -e "$real" >/dev/null',
+    '}',
+  ].join('\n')
+}
+
+function buildIdentityCommand(pid: number, binaryPath: string): string {
+  return [identityPrelude(pid, binaryPath), 'is_ours'].join('\n')
+}
+
+function buildVerifiedKillCommand(pid: number, binaryPath: string): string {
+  return [
+    identityPrelude(pid, binaryPath),
+    'is_ours || exit 0',
+    'kill -TERM "$pid" 2>/dev/null || exit 0',
+    'i=0',
+    'while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done',
+    'if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi',
+  ].join('\n')
 }
 
 function sleep(ms: number): Promise<void> {
@@ -538,46 +427,86 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
+async function allocateLocalPort(): Promise<number> {
+  const { createServer } = await import('node:net')
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', (error: Error) => reject(error))
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      server.close((error?: Error) => {
+        if (error) reject(error)
+        else if (port > 0) resolve(port)
+        else reject(new Error('Unable to allocate a local agent port'))
+      })
+    })
+  })
+}
+
 export class RemoteRuntimeManager {
   readonly connection: RemoteRuntimeConnection
-  readonly config: Readonly<RemoteRuntimeManagerOptions>
+  readonly workspaceKey: string
+
+  private readonly options: RemoteRuntimeOptions
+  private readonly healthTimeoutMs: number
+  private readonly healthPollMs: number
+  private readonly healthRequestTimeoutMs: number
+  private readonly idleMs: number
+  private readonly recoveryThreshold: number
+  private readonly fetchImpl: typeof fetch
 
   private record: RuntimeRecord | undefined
   private lifecycle: RemoteRuntimeLifecycle = 'stopped'
   private startPromise: Promise<RemoteRuntimeStatus> | undefined
+  private stopPromise: Promise<void> | undefined
+  private recoverPromise: Promise<void> | undefined
+  private lastStartOverrides: RemoteRuntimeStartOverrides = {}
   private lastHealth: RemoteRuntimeHealth | undefined
   private lastError: string | undefined
+  private consecutiveHealthFailures = 0
   private lastActivityAt = 0
   private idleTimer: ReturnType<typeof setTimeout> | undefined
 
-  constructor(options: RemoteRuntimeManagerOptions)
-  constructor(
-    connection: RemoteRuntimeConnection | SSHConnection,
-    options: Omit<RemoteRuntimeManagerOptions, 'connection'>,
-  )
-  constructor(
-    connectionOrOptions: RemoteRuntimeManagerOptions | RemoteRuntimeConnection | SSHConnection,
-    maybeOptions?: Omit<RemoteRuntimeManagerOptions, 'connection'>,
-  ) {
-    const options =
-      maybeOptions === undefined
-        ? (connectionOrOptions as RemoteRuntimeManagerOptions)
-        : { ...maybeOptions, connection: connectionOrOptions as RemoteRuntimeConnection }
-    const connection = options.connection
-    if (!connection) throw new TypeError('Remote SSH connection is required')
-    // SSHConnection returns `exitCode: null` when a child never produced a
-    // normal exit code; the narrow manager seam intentionally allows that
-    // transport detail while bootstrap.ts normalizes it at its boundary.
-    this.connection = connection as RemoteRuntimeConnection
-    this.config = { ...options }
-    // Validate eagerly so configuration mistakes fail before an SSH command.
-    this.resolveConfig()
+  constructor(options: RemoteRuntimeOptions) {
+    if (!options.connection) throw new TypeError('Remote SSH connection is required')
+    this.connection = options.connection
+    this.workspaceKey = assertWorkspaceKey(options.workspaceKey)
+    if (!options.remoteProjectDir?.trim() || options.remoteProjectDir.includes('\u0000')) {
+      throw new TypeError('remoteProjectDir is required')
+    }
+    assertPort(options.localApiPort, 'Local API port')
+    if (options.localAgentPort !== undefined) assertPort(options.localAgentPort, 'Local agent port')
+    if (options.remoteAgentPort !== undefined) {
+      assertPort(options.remoteAgentPort, 'Remote agent port')
+      assertPort(options.remoteAgentPort + 1, 'Remote API port')
+    }
+    if (!options.runtimeBinaryPath && !options.runtimeVersion) {
+      throw new TypeError('runtimeVersion is required when runtimeBinaryPath is not provided')
+    }
+
+    this.options = { ...options, remoteProjectDir: options.remoteProjectDir.trim() }
+    this.healthTimeoutMs = options.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS
+    this.healthPollMs = options.healthPollMs ?? DEFAULT_HEALTH_POLL_MS
+    this.healthRequestTimeoutMs = options.healthRequestTimeoutMs ?? DEFAULT_HEALTH_REQUEST_TIMEOUT_MS
+    this.idleMs = options.idleMs ?? Number(process.env.RUNTIME_LOCAL_IDLE_MS ?? DEFAULT_IDLE_MS)
+    this.recoveryThreshold = options.recoveryThreshold ?? DEFAULT_RECOVERY_THRESHOLD
+    this.fetchImpl = options.fetch ?? globalThis.fetch
+    assertNonNegativeDuration(this.healthTimeoutMs, 'healthTimeoutMs')
+    assertNonNegativeDuration(this.healthPollMs, 'healthPollMs')
+    assertNonNegativeDuration(this.healthRequestTimeoutMs, 'healthRequestTimeoutMs')
+    assertNonNegativeDuration(this.idleMs, 'idleMs')
+  }
+
+  get remoteProjectDir(): string {
+    return this.options.remoteProjectDir
   }
 
   async start(overrides: RemoteRuntimeStartOverrides = {}): Promise<RemoteRuntimeStatus> {
     if (this.lifecycle === 'running' && this.record) return this.status()
     if (this.startPromise) return this.startPromise
 
+    this.lastStartOverrides = overrides
     const promise = this.startInternal(overrides)
     this.startPromise = promise
     try {
@@ -587,95 +516,53 @@ export class RemoteRuntimeManager {
     }
   }
 
-  async stop(): Promise<void> {
-    if (this.lifecycle === 'stopping') return
-    this.lifecycle = 'stopping'
-    const record = this.record
-    let pid = record?.pid
-
-    try {
-      if (!pid) {
-        const config = this.resolveConfig()
-        const pidfile = await this.readPidfile(config)
-        pid = pidfile?.pid
-      }
-      if (pid) {
-        try {
-          await this.connection.exec(buildKillCommand(pid))
-        } catch {
-          // The process may already have exited or the SSH session may be
-          // closing; forward cleanup below is still required.
-        }
-      }
-      try {
-        await this.connection.exec(buildRemovePidfileCommand(this.resolveConfig().workspaceKey))
-      } catch {
-        // Best effort. A later start verifies kill -0 before reattaching.
-      }
-    } finally {
-      this.clearIdleTimer()
-      await this.closeForwards(record?.forwards)
-      this.record = undefined
-      this.lastHealth = undefined
-      this.lifecycle = 'stopped'
-    }
-  }
-
-  async restart(overrides: RemoteRuntimeStartOverrides = {}): Promise<RemoteRuntimeStatus> {
-    await this.stop()
-    return this.start(overrides)
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
+    const promise = this.stopInternal().finally(() => {
+      if (this.stopPromise === promise) this.stopPromise = undefined
+    })
+    this.stopPromise = promise
+    return promise
   }
 
   async getHealth(): Promise<RemoteRuntimeHealth> {
     const record = this.record
-    const localPort = record?.localAgentPort
-    const url = localPort
-      ? makeHealthUrl(localPort, '/health')
-      : 'http://127.0.0.1:0/health'
     const checkedAt = Date.now()
 
     // During start(), the forwards and record are installed before the
     // readiness gate flips lifecycle from "starting" to "running".
-    if (!localPort || !record) {
+    if (!record) {
       const health: RemoteRuntimeHealth = {
         healthy: false,
         lastCheck: checkedAt,
-        url,
+        url: 'http://127.0.0.1:0/health',
         error: 'Remote runtime is not running',
       }
       this.lastHealth = health
       return health
     }
 
+    const url = `http://127.0.0.1:${record.localAgentPort}/health`
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.resolveConfig().healthRequestTimeoutMs)
+    const timer = setTimeout(() => controller.abort(), this.healthRequestTimeoutMs)
+    let health: RemoteRuntimeHealth
     try {
-      const response = await this.resolveConfig().fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-      })
-      const health: RemoteRuntimeHealth = {
+      const response = await this.fetchImpl(url, { method: 'GET', signal: controller.signal })
+      health = {
         healthy: response.ok,
         lastCheck: checkedAt,
         url,
         status: response.status,
         ...(response.ok ? {} : { error: `HTTP ${response.status}` }),
       }
-      this.lastHealth = health
-      return health
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      const health: RemoteRuntimeHealth = {
-        healthy: false,
-        lastCheck: checkedAt,
-        url,
-        error: message,
-      }
-      this.lastHealth = health
-      return health
+      health = { healthy: false, lastCheck: checkedAt, url, error: errorMessage(error) }
     } finally {
       clearTimeout(timer)
     }
+    this.lastHealth = health
+    this.trackHealth(health)
+    return health
   }
 
   /** Keep an active editor/chat request from being reaped by idle shutdown. */
@@ -686,19 +573,15 @@ export class RemoteRuntimeManager {
   }
 
   status(): RemoteRuntimeStatus {
-    const config = this.resolveConfig()
     const record = this.record
     return {
-      workspaceKey: config.workspaceKey,
+      workspaceKey: this.workspaceKey,
       status: this.lifecycle,
       pid: record?.pid,
       agentPort: record?.localAgentPort,
-      apiPort: record?.localApiPort ?? config.localApiPort,
       remoteAgentPort: record?.remotePorts.agentPort,
       remoteApiPort: record?.remotePorts.apiPort,
-      url: record?.localAgentPort
-        ? `http://127.0.0.1:${record.localAgentPort}`
-        : undefined,
+      url: record ? `http://127.0.0.1:${record.localAgentPort}` : undefined,
       startedAt: record?.startedAt,
       reattached: record?.reattached,
       lastHealthCheck: this.lastHealth,
@@ -706,277 +589,257 @@ export class RemoteRuntimeManager {
     }
   }
 
-  /** Alias useful to owners that treat the manager as a disposable resource. */
-  async close(): Promise<void> {
-    await this.stop()
-  }
-
-  private resolveConfig(overrides: RemoteRuntimeStartOverrides = {}): ResolvedConfig {
-    const source = { ...this.config, ...overrides }
-    const workspaceKey = assertWorkspaceKey(source.workspaceKey)
-    const remoteProjectDir = normalizePathValue(
-      source.remoteProjectDir ?? source.projectDir ?? source.workspaceDir ?? '',
-    )
-    const localApiPort =
-      source.localApiPort ?? Number(process.env.API_PORT ?? DEFAULT_LOCAL_API_PORT)
-    assertPort(localApiPort, 'Local API port')
-    const localAgentPort = source.localAgentPort
-    if (localAgentPort !== undefined) assertPort(localAgentPort, 'Local agent port')
-
-    const remoteAgentPort = source.remoteAgentPort ?? source.agentPort
-    const remoteApiPort = source.remoteApiPort ?? source.apiPort
-    if (remoteAgentPort !== undefined) assertPort(remoteAgentPort, 'Remote agent port')
-    if (remoteApiPort !== undefined) assertPort(remoteApiPort, 'Remote API port')
-
-    const healthTimeoutMs = source.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS
-    const healthPollMs = source.healthPollMs ?? DEFAULT_HEALTH_POLL_MS
-    const healthRequestTimeoutMs =
-      source.healthRequestTimeoutMs ?? DEFAULT_HEALTH_REQUEST_TIMEOUT_MS
-    const idleMs =
-      source.idleMs ??
-      Number(process.env.RUNTIME_LOCAL_IDLE_MS ?? String(DEFAULT_IDLE_MS))
-    assertPositiveDuration(healthTimeoutMs, 'healthTimeoutMs')
-    assertPositiveDuration(healthPollMs, 'healthPollMs')
-    assertPositiveDuration(healthRequestTimeoutMs, 'healthRequestTimeoutMs')
-    assertPositiveDuration(idleMs, 'idleMs')
-
-    const bootstrap = source.bootstrap ?? source.bootstrapRuntime ?? bootstrapRemoteRuntime
-    const portAllocator = source.portAllocator ?? source.allocatePorts
-    return {
-      workspaceKey,
-      remoteProjectDir,
-      env: { ...(source.env ?? {}) },
-      localApiPort,
-      localAgentPort,
-      remoteAgentPort,
-      remoteApiPort,
-      runtimeAuthSecret: source.runtimeAuthSecret,
-      runtimeBinaryPath: source.runtimeBinaryPath ?? source.binaryPath,
-      runtimeVersion: source.runtimeVersion ?? source.version,
-      bootstrapOptions: source.bootstrapOptions,
-      bootstrap,
-      portAllocator,
-      healthTimeoutMs,
-      healthPollMs,
-      healthRequestTimeoutMs,
-      idleMs,
-      fetch: source.fetch ?? globalThis.fetch,
-    }
+  private expectedVersion(): string | undefined {
+    return this.options.runtimeBinaryPath ? undefined : this.options.runtimeVersion
   }
 
   private async startInternal(overrides: RemoteRuntimeStartOverrides): Promise<RemoteRuntimeStatus> {
-    const config = this.resolveConfig(overrides)
+    const env = overrides.env ?? this.options.env ?? {}
     this.lifecycle = 'starting'
     this.lastError = undefined
     this.lastHealth = undefined
+    this.consecutiveHealthFailures = 0
 
     let forwards: SSHForwardHandle[] = []
-    let launchedPid: number | undefined
+    let launched: { pid: number; binaryPath: string } | undefined
+    let reservedSlot: number | undefined
     try {
-      const pidfile = await this.readPidfile(config)
-      if (pidfile?.workspaceKey && pidfile.workspaceKey !== config.workspaceKey) {
+      const pidfile = await this.readPidfile()
+      if (pidfile?.workspaceKey && pidfile.workspaceKey !== this.workspaceKey) {
         throw new Error(
-          `Remote runtime pidfile belongs to workspace '${pidfile.workspaceKey}', not '${config.workspaceKey}'`,
+          `Remote runtime pidfile belongs to workspace '${pidfile.workspaceKey}', not '${this.workspaceKey}'`,
         )
       }
-      const reattach = pidfile ? await this.isAlive(pidfile.pid) : false
 
-      let ports: RemoteRuntimePorts
-      let binaryPath = config.runtimeBinaryPath ?? pidfile?.binaryPath
-      let pid: number
-      let startedAt = pidfile?.startedAt ?? Date.now()
+      let ports: RemoteRuntimePorts | undefined
+      let binaryPath: string | undefined
+      let pid: number | undefined
+      let startedAt = Date.now()
       let reattached = false
 
-      if (reattach) {
-        if (!pidfile) throw new Error('Remote runtime pidfile disappeared while reattaching')
-        ports = this.portsFromPidfile(pidfile, config)
-        if (!binaryPath) {
-          throw new Error(
-            'Cannot reattach remote runtime: pidfile has no binary path and runtimeBinaryPath is unset',
-          )
+      if (pidfile) {
+        const ours = pidfile.binaryPath
+          ? await this.isOurRuntime(pidfile.pid, pidfile.binaryPath)
+          : false
+        const expectedVersion = this.expectedVersion()
+        const current =
+          ours &&
+          pidfile.agentPort !== undefined &&
+          pidfile.apiPort !== undefined &&
+          (expectedVersion === undefined || pidfile.version === expectedVersion) &&
+          (!this.options.runtimeBinaryPath || pidfile.binaryPath === this.options.runtimeBinaryPath)
+        if (current) {
+          ports = { agentPort: pidfile.agentPort!, apiPort: pidfile.apiPort! }
+          binaryPath = pidfile.binaryPath!
+          pid = pidfile.pid
+          startedAt = pidfile.startedAt ?? startedAt
+          reattached = true
+          reservedSlot = ports.agentPort
+          slotsFor(this.connection).add(reservedSlot)
+        } else {
+          // Outdated (app upgraded) or foreign: never leave an orphan behind,
+          // and never signal a process we cannot prove we launched.
+          if (ours) await this.killVerified(pidfile.pid, pidfile.binaryPath!)
+          await this.connection.exec(buildRemovePidfileCommand(this.workspaceKey))
         }
-        pid = pidfile.pid
-        reattached = true
-      } else {
-        ports = await this.resolveRemotePorts(config)
-        binaryPath = binaryPath ?? (await this.bootstrap(config))
-        startedAt = Date.now()
-        const launch = await this.connection.exec(
-          buildLaunchCommand(
-            ports,
-            {
-              ...config,
-              env: this.buildRuntimeEnv(config, ports),
-            },
-            binaryPath,
-            startedAt,
-          ),
-        )
-        if (!commandSucceeded(launch)) {
-          throw new Error(
-            `Failed to start remote agent-runtime${launch.stderr ? `: ${launch.stderr.trim()}` : ''}`,
-          )
-        }
-        pid = this.parseLaunchedPid(launch.stdout)
-        launchedPid = pid
       }
 
-      const localAgentPort = config.localAgentPort ?? (await this.allocateLocalPort())
-      forwards = await this.openForwards(
-        localAgentPort,
-        ports,
-        config.localApiPort,
-      )
+      if (!ports || !binaryPath || !pid) {
+        const agentPort = await this.reserveAgentPort()
+        reservedSlot = agentPort
+        ports = { agentPort, apiPort: agentPort + 1 }
+
+        const installed = this.options.runtimeBinaryPath
+          ? { binaryPath: this.options.runtimeBinaryPath, version: undefined }
+          : await this.bootstrap()
+        binaryPath = installed.binaryPath
+        startedAt = Date.now()
+        const launch = await this.connection.exec(
+          buildLaunchCommand({
+            workspaceKey: this.workspaceKey,
+            remoteProjectDir: this.options.remoteProjectDir,
+            binaryPath,
+            metadata: {
+              agentPort: ports.agentPort,
+              apiPort: ports.apiPort,
+              workspaceKey: this.workspaceKey,
+              binaryPath,
+              version: installed.version ?? this.expectedVersion(),
+              startedAt,
+            },
+          }),
+          { input: buildEnvScript(this.buildRuntimeEnv(env, ports)) },
+        )
+        if (!commandSucceeded(launch)) throw new RemoteCommandError('remote agent-runtime launch', launch)
+        pid = this.parseLaunchedPid(launch.stdout)
+        launched = { pid, binaryPath }
+      }
+
+      const localAgentPort =
+        overrides.localAgentPort ?? this.options.localAgentPort ?? (await allocateLocalPort())
+      forwards = await this.openForwards(localAgentPort, ports)
       this.record = {
         pid,
         remotePorts: ports,
         localAgentPort,
-        localApiPort: config.localApiPort,
         startedAt,
         reattached,
         forwards,
         binaryPath,
       }
 
-      await this.waitForHealth(config.healthTimeoutMs, config.healthPollMs)
+      await this.waitForHealth()
       this.lifecycle = 'running'
       this.lastActivityAt = Date.now()
       this.scheduleIdleShutdown()
       return this.status()
     } catch (error) {
       await this.closeForwards(forwards)
-      if (launchedPid) {
-        try {
-          await this.connection.exec(buildKillCommand(launchedPid))
-        } catch {
-          // The remote process may have exited while the readiness gate ran.
-        }
-        try {
-          await this.connection.exec(buildRemovePidfileCommand(config.workspaceKey))
-        } catch {
-          // Best effort cleanup; the next start still verifies kill -0.
-        }
+      if (launched) {
+        await this.killVerified(launched.pid, launched.binaryPath)
+        await this.connection.exec(buildRemovePidfileCommand(this.workspaceKey)).catch(() => {})
       }
+      if (reservedSlot !== undefined) slotsFor(this.connection).delete(reservedSlot)
       this.record = undefined
       this.lifecycle = 'error'
-      this.lastError = error instanceof Error ? error.message : String(error)
+      this.lastError = errorMessage(error)
       throw error
     }
   }
 
-  private async readPidfile(config: ResolvedConfig): Promise<PidfileRecord | undefined> {
+  private async stopInternal(): Promise<void> {
+    if (this.startPromise) await this.startPromise.catch(() => {})
+    this.clearIdleTimer()
+    const record = this.record
+    this.lifecycle = 'stopping'
     try {
-      const result = await this.connection.exec(buildReadPidfileCommand(config.workspaceKey))
-      if (!commandSucceeded(result)) return undefined
-      return parsePidfile(result.stdout)
-    } catch {
-      return undefined
+      let pid = record?.pid
+      let binaryPath = record?.binaryPath
+      if (!pid) {
+        const pidfile = await this.readPidfile().catch(() => undefined)
+        pid = pidfile?.pid
+        binaryPath = pidfile?.binaryPath
+      }
+      if (pid && binaryPath) await this.killVerified(pid, binaryPath)
+      await this.connection.exec(buildRemovePidfileCommand(this.workspaceKey)).catch(() => {})
+    } finally {
+      await this.closeForwards(record?.forwards)
+      if (record) slotsFor(this.connection).delete(record.remotePorts.agentPort)
+      this.record = undefined
+      this.lastHealth = undefined
+      this.lifecycle = 'stopped'
     }
   }
 
-  private async isAlive(pid: number): Promise<boolean> {
-    if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  private trackHealth(health: RemoteRuntimeHealth): void {
+    if (this.lifecycle !== 'running' || this.recoverPromise) return
+    if (health.healthy) {
+      this.consecutiveHealthFailures = 0
+      return
+    }
+    this.consecutiveHealthFailures++
+    if (this.recoveryThreshold > 0 && this.consecutiveHealthFailures >= this.recoveryThreshold) {
+      this.recoverPromise = this.recover().finally(() => {
+        this.recoverPromise = undefined
+      })
+    }
+  }
+
+  /**
+   * Re-establish the transport and forwards after repeated health failures
+   * (network drop, laptop sleep, SSH master exit). The detached remote
+   * process normally survives and is reattached; a dead one is relaunched.
+   */
+  private async recover(): Promise<void> {
+    const record = this.record
+    this.clearIdleTimer()
+    this.record = undefined
+    this.lifecycle = 'starting'
+    await this.closeForwards(record?.forwards)
+    if (record) slotsFor(this.connection).delete(record.remotePorts.agentPort)
     try {
-      const result = await this.connection.exec(`kill -0 ${pid} 2>/dev/null`)
-      return commandSucceeded(result)
+      await this.connection.status?.()
+    } catch {
+      // The next command reconnects regardless.
+    }
+    try {
+      await this.start({
+        ...this.lastStartOverrides,
+        localAgentPort: record?.localAgentPort ?? this.lastStartOverrides.localAgentPort,
+      })
+    } catch {
+      // startInternal recorded the error and set lifecycle to 'error'.
+    }
+  }
+
+  private async readPidfile(): Promise<PidfileRecord | undefined> {
+    const result = await this.connection.exec(buildReadPidfileCommand(this.workspaceKey))
+    if (!commandSucceeded(result)) {
+      throw new RemoteCommandError('read remote runtime pidfile', result)
+    }
+    return parsePidfile(result.stdout)
+  }
+
+  private async isOurRuntime(pid: number, binaryPath: string): Promise<boolean> {
+    try {
+      return commandSucceeded(await this.connection.exec(buildIdentityCommand(pid, binaryPath)))
     } catch {
       return false
     }
   }
 
-  private portsFromPidfile(pidfile: PidfileRecord, config: ResolvedConfig): RemoteRuntimePorts {
-    const agentPort = pidfile.agentPort ?? config.remoteAgentPort
-    const apiPort = pidfile.apiPort ?? config.remoteApiPort
-    if (agentPort === undefined || apiPort === undefined) {
-      throw new Error(
-        'Cannot reattach remote runtime: pidfile has no remote ports; configure remoteAgentPort and remoteApiPort',
-      )
+  private async killVerified(pid: number, binaryPath: string): Promise<void> {
+    try {
+      await this.connection.exec(buildVerifiedKillCommand(pid, binaryPath))
+    } catch {
+      // The SSH session may be gone; the next start re-verifies identity.
     }
-    assertPort(agentPort, 'Remote agent port')
-    assertPort(apiPort, 'Remote API port')
-    return { agentPort, apiPort }
   }
 
-  private async resolveRemotePorts(config: ResolvedConfig): Promise<RemoteRuntimePorts> {
-    const agentPort = config.remoteAgentPort
-    const apiPort = config.remoteApiPort
-    if (agentPort !== undefined && apiPort !== undefined) {
-      return { agentPort, apiPort }
-    }
-    if (agentPort !== undefined) {
-      const adjacentApi = agentPort + 1
-      assertPort(adjacentApi, 'Remote API port')
-      return { agentPort, apiPort: adjacentApi }
-    }
-    if (apiPort !== undefined) {
-      const adjacentAgent = apiPort - 1
-      assertPort(adjacentAgent, 'Remote agent port')
-      return { agentPort: adjacentAgent, apiPort }
-    }
-    const allocator = config.portAllocator ?? allocateRemotePorts
-    return allocator(this.connection, {
-      start: DEFAULT_REMOTE_PORT_START,
-      end: DEFAULT_REMOTE_PORT_END,
+  private reserveAgentPort(): Promise<number> {
+    return withAllocationLock(this.connection, async () => {
+      const slots = slotsFor(this.connection)
+      let agentPort = this.options.remoteAgentPort
+      if (agentPort === undefined) {
+        const allocator = this.options.portAllocator ?? allocateRemotePortSlot
+        agentPort = await allocator(this.connection, {
+          start: DEFAULT_REMOTE_PORT_START,
+          end: DEFAULT_REMOTE_PORT_END,
+          slotSize: REMOTE_PORT_SLOT_SIZE,
+          exclude: [...slots],
+        })
+      }
+      slots.add(agentPort)
+      return agentPort
     })
   }
 
-  private async bootstrap(config: ResolvedConfig): Promise<string> {
-    const version =
-      config.bootstrapOptions?.version ??
-      config.runtimeVersion ??
-      process.env.SHOGO_AGENT_RUNTIME_VERSION ??
-      process.env.SHOGO_RUNTIME_VERSION
-    if (!version) {
-      throw new Error(
-        'runtimeVersion is required when runtimeBinaryPath is not provided',
-      )
-    }
-    const options: RemoteRuntimeBootstrapOptions = {
-      ...(config.bootstrapOptions ?? {}),
+  private async bootstrap(): Promise<{ binaryPath: string; version?: string }> {
+    const version = this.options.runtimeVersion!
+    const bootstrap = this.options.bootstrap ?? bootstrapRemoteRuntime
+    const result = await bootstrap(this.connection, {
+      ...this.options.bootstrapOptions,
       version,
-      fetch: config.bootstrapOptions?.fetch ?? config.fetch,
-    }
-    const connection: RemoteSshConnection = {
-      exec: async (command) => {
-        const result = await this.connection.exec(command)
-        // bootstrap.ts treats an omitted exit code as success. SSHConnection
-        // uses null for a process that never produced a normal exit code.
-        return {
-          stdout: result.stdout,
-          stderr: result.stderr,
-          // bootstrap.ts uses an omitted exit code for wrappers that do not
-          // report one. SSHConnection's null specifically means its local
-          // ssh/scp process failed before producing an exit code, so preserve
-          // that as a failure rather than accidentally treating it as success.
-          exitCode: result.exitCode === null ? 1 : result.exitCode,
-        }
-      },
-      upload: async (localPath, remotePath) => this.connection.upload(localPath, remotePath),
-    }
-    return normalizeBootstrapResult(await config.bootstrap(connection, options))
+      fetch: this.options.bootstrapOptions?.fetch ?? this.options.fetch,
+    })
+    if (!result.binaryPath?.trim()) throw new Error('Remote runtime bootstrap did not return a binary path')
+    return { binaryPath: result.binaryPath.trim(), version: result.version ?? version }
   }
 
-  private buildRuntimeEnv(
-    config: ResolvedConfig,
-    ports: RemoteRuntimePorts,
-  ): Record<string, string> {
-    const localApiBase = `http://127.0.0.1:${ports.apiPort}`
-    const env = localApiEnv(config.env, localApiBase)
-    env.WORKSPACE_DIR = config.remoteProjectDir
-    env.PROJECT_DIR = config.remoteProjectDir
+  private buildRuntimeEnv(input: Record<string, string>, ports: RemoteRuntimePorts): Record<string, string> {
+    const env = localApiEnv(input, `http://127.0.0.1:${ports.apiPort}`)
+    env.WORKSPACE_DIR = this.options.remoteProjectDir
+    env.PROJECT_DIR = this.options.remoteProjectDir
     env.PORT = String(ports.agentPort)
     env.API_SERVER_PORT = String(ports.apiPort)
     env.SKILL_SERVER_PORT = String(ports.apiPort)
-    // Keep workspace preview sidecars in a per-runtime range, matching the
-    // worker manager's agent(+0), API(+1), sidecars(+2...) convention.
     env.WORKSPACE_API_PORT_BASE = String(ports.agentPort + 2)
     env.NODE_ENV ??= 'production'
     env.STARTUP_TIME = String(Date.now())
     env.HOST = '127.0.0.1'
-    env.RUNTIME_AUTH_SECRET =
-      config.runtimeAuthSecret ??
-      env.RUNTIME_AUTH_SECRET ??
-      deriveWorkspaceRuntimeToken(config.workspaceKey)
+    if (!env.RUNTIME_AUTH_SECRET) {
+      throw new Error('RUNTIME_AUTH_SECRET is required for a remote agent-runtime')
+    }
     return env
   }
 
@@ -989,37 +852,14 @@ export class RemoteRuntimeManager {
     return pid
   }
 
-  private async allocateLocalPort(): Promise<number> {
-    // Importing net at module load would make the launcher harder to embed in
-    // runtimes that provide their own process shims. This path is only used
-    // when a caller does not provide a stable local port.
-    const { createServer } = await import('node:net')
-    return new Promise((resolve, reject) => {
-      const server = createServer()
-      server.once('error', (error: Error) => reject(error))
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address()
-        const port = typeof address === 'object' && address ? address.port : 0
-        server.close((error?: Error) => {
-          if (error) reject(error)
-          else if (port > 0) resolve(port)
-          else reject(new Error('Unable to allocate a local agent port'))
-        })
-      })
-    })
-  }
-
   private async openForwards(
     localAgentPort: number,
     remotePorts: RemoteRuntimePorts,
-    localApiPort: number,
   ): Promise<SSHForwardHandle[]> {
     const forwards: SSHForwardHandle[] = []
     try {
-      forwards.push(
-        await this.connection.forward(localAgentPort, `127.0.0.1:${remotePorts.agentPort}`),
-      )
-      forwards.push(await this.connection.reverseForward(remotePorts.apiPort, localApiPort))
+      forwards.push(await this.connection.forward(localAgentPort, `127.0.0.1:${remotePorts.agentPort}`))
+      forwards.push(await this.connection.reverseForward(remotePorts.apiPort, this.options.localApiPort))
       return forwards
     } catch (error) {
       await this.closeForwards(forwards)
@@ -1038,8 +878,8 @@ export class RemoteRuntimeManager {
     }
   }
 
-  private async waitForHealth(timeoutMs: number, pollMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs
+  private async waitForHealth(): Promise<void> {
+    const deadline = Date.now() + this.healthTimeoutMs
     let lastError = 'unknown health error'
     while (Date.now() <= deadline) {
       const health = await this.getHealth()
@@ -1047,7 +887,7 @@ export class RemoteRuntimeManager {
       lastError = health.error ?? `HTTP ${health.status ?? 'request failure'}`
       const remaining = deadline - Date.now()
       if (remaining <= 0) break
-      await sleep(Math.min(pollMs, remaining))
+      await sleep(Math.min(this.healthPollMs, remaining))
     }
     throw new Error(`Timeout waiting for remote agent-runtime /health: ${lastError}`)
   }
@@ -1060,8 +900,7 @@ export class RemoteRuntimeManager {
 
   private scheduleIdleShutdown(): void {
     this.clearIdleTimer()
-    const idleMs = this.resolveConfig().idleMs
-    if (idleMs <= 0 || this.lifecycle !== 'running' || !this.record) return
+    if (this.idleMs <= 0 || this.lifecycle !== 'running' || !this.record) return
     const expectedActivity = this.lastActivityAt
     const timer = setTimeout(() => {
       this.idleTimer = undefined
@@ -1069,44 +908,16 @@ export class RemoteRuntimeManager {
         this.lifecycle === 'running' &&
         this.record &&
         this.lastActivityAt === expectedActivity &&
-        Date.now() - expectedActivity >= idleMs
+        Date.now() - expectedActivity >= this.idleMs
       ) {
         void this.stop().catch((error) => {
-          this.lastError = error instanceof Error ? error.message : String(error)
+          this.lastError = errorMessage(error)
         })
       } else {
         this.scheduleIdleShutdown()
       }
-    }, idleMs)
+    }, this.idleMs)
     ;(timer as unknown as { unref?: () => void }).unref?.()
     this.idleTimer = timer
   }
-}
-
-export function createRemoteRuntimeManager(
-  options: RemoteRuntimeManagerOptions,
-): RemoteRuntimeManager
-export function createRemoteRuntimeManager(
-  connection: RemoteRuntimeConnection | SSHConnection,
-  options: Omit<RemoteRuntimeManagerOptions, 'connection'>,
-): RemoteRuntimeManager
-export function createRemoteRuntimeManager(
-  connectionOrOptions: RemoteRuntimeManagerOptions | RemoteRuntimeConnection | SSHConnection,
-  maybeOptions?: Omit<RemoteRuntimeManagerOptions, 'connection'>,
-): RemoteRuntimeManager {
-  return maybeOptions === undefined
-    ? new RemoteRuntimeManager(connectionOrOptions as RemoteRuntimeManagerOptions)
-    : new RemoteRuntimeManager(
-        connectionOrOptions as RemoteRuntimeConnection,
-        maybeOptions,
-      )
-}
-
-export {
-  DEFAULT_LOCAL_API_PORT,
-  DEFAULT_REMOTE_PORT_END,
-  DEFAULT_REMOTE_PORT_START,
-  DEFAULT_IDLE_MS,
-  RUN_ROOT as REMOTE_RUNTIME_RUN_ROOT,
-  allocateRemotePorts,
 }

@@ -48,16 +48,11 @@ import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
 import { resolveAgentModelEnv } from './agent-model-defaults'
-import {
-  createSSHConnection,
-  type SSHConnection,
-  type SSHConnectionStatus,
-} from '../remote-ssh/connection'
-import { createSSHAskpassBroker, type SSHAskpassBroker } from '../remote-ssh/askpass'
-import {
-  createRemoteRuntimeManager,
-  type RemoteRuntimeManager,
-} from '../remote-ssh/remote-runtime'
+import { createSSHConnection, type SSHConnection } from '../remote-ssh/connection'
+import { SSHAskpassBroker } from '../remote-ssh/askpass'
+import { RemoteRuntimeManager } from '../remote-ssh/remote-runtime'
+import { startRemoteApiGateway, type RemoteApiGateway } from '../remote-ssh/api-gateway'
+import { resolveLocalApiPort } from '../local-api-port'
 
 type CloudContentSyncModule = typeof import('./cloud-content-sync')
 
@@ -368,14 +363,14 @@ export class RuntimeManager implements IRuntimeManager {
    * process under the hood.
    */
   private agentManagedProjects: Set<string> = new Set()
-  /** One remote runtime controller per internal runtime key. */
-  private remoteRuntimeManagers: Map<string, RemoteRuntimeManager> = new Map()
-  /** Host identity for each remote runtime controller. */
-  private remoteRuntimeHostIds: Map<string, string> = new Map()
+  /** One remote runtime controller (and its host) per internal runtime key. */
+  private remoteRuntimeManagers: Map<string, { manager: RemoteRuntimeManager; remoteHostId: string }> = new Map()
   /** One SSH connection/control master per saved RemoteHost. */
   private remoteConnections: Map<string, SSHConnection> = new Map()
   /** One short-lived interactive-auth broker per saved RemoteHost. */
   private remoteAskpassBrokers: Map<string, SSHAskpassBroker> = new Map()
+  /** Shared local listener that every Remote-SSH reverse forward targets. */
+  private remoteApiGateway: Promise<RemoteApiGateway> | null = null
   private warmWorkspacePromise: Promise<string | null> | null = null
   /** True while prepareWarmWorkspace is actually building (not merely caching a ready dir). */
   private warmWorkspaceBuilding = false
@@ -1536,7 +1531,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
             },
           } as any,
         })) as any
-      } catch {
+      } catch (err: any) {
+        // Only an unknown-field validation error means "this schema has no
+        // Remote-SSH columns"; anything else is a real failure.
+        if (err?.name !== 'PrismaClientValidationError') throw err
         project = (await prisma.project.findUnique({
           where: { id: projectId },
           select: baseSelect as any,
@@ -1579,7 +1577,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         }
       }
       return info
-    } catch {
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] getProjectInfo(${projectId}) failed: ${err?.message ?? err}`)
       return {}
     }
   }
@@ -2008,13 +2007,17 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     return binaryPath || undefined
   }
 
-  private currentApiPort(): number {
-    const raw = process.env.API_PORT || process.env.PORT || '8002'
-    const port = Number(raw)
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      throw new Error(`Current API port is invalid: ${raw}`)
-    }
-    return port
+  /** The local port Remote-SSH reverse forwards target (never the API itself). */
+  private remoteApiGatewayPort(): Promise<number> {
+    this.remoteApiGateway ??= startRemoteApiGateway({ targetPort: resolveLocalApiPort() })
+    const gateway = this.remoteApiGateway
+    return gateway.then(
+      (started) => started.port,
+      (error) => {
+        if (this.remoteApiGateway === gateway) this.remoteApiGateway = null
+        throw error
+      },
+    )
   }
 
   private remoteProjectPath(projectId: string, info: ProjectInfo): string {
@@ -2062,14 +2065,25 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
-   * Return only transport-safe status for a host. The control socket path is
-   * intentionally stripped by the route before it reaches a client.
+   * Drop everything cached for a saved host after it is edited or deleted:
+   * runtimes on it, its control master, and its askpass broker. The next use
+   * reconnects with the host's current settings.
    */
-  async getRemoteConnectionStatus(
-    remoteHostId: string,
-  ): Promise<SSHConnectionStatus | null> {
-    const connection = this.getExistingRemoteConnection(remoteHostId)
-    return connection ? connection.status() : null
+  async resetRemoteHost(remoteHostId: string): Promise<void> {
+    const keys = [...this.runtimes.entries()]
+      .filter(([, runtime]) => runtime.remoteHostId === remoteHostId)
+      .map(([key]) => key)
+    await Promise.all(keys.map((key) => this.stop(key, 'remote-host-changed').catch(() => {})))
+    for (const [key, entry] of this.remoteRuntimeManagers) {
+      if (entry.remoteHostId !== remoteHostId) continue
+      await entry.manager.stop().catch(() => {})
+      this.remoteRuntimeManagers.delete(key)
+    }
+    const connection = this.remoteConnections.get(remoteHostId)
+    this.remoteConnections.delete(remoteHostId)
+    await connection?.close().catch(() => {})
+    this.remoteAskpassBrokers.get(remoteHostId)?.close()
+    this.remoteAskpassBrokers.delete(remoteHostId)
   }
 
   private remoteConnection(
@@ -2095,12 +2109,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   private askpassBroker(remoteHostId: string): SSHAskpassBroker {
     const existing = this.remoteAskpassBrokers.get(remoteHostId)
     if (existing) return existing
-    const broker = createSSHAskpassBroker(remoteHostId)
+    const broker = new SSHAskpassBroker()
     this.remoteAskpassBrokers.set(remoteHostId, broker)
     return broker
   }
 
-  private remoteManager(
+  private async remoteManager(
     runtimeKey: string,
     remoteHostId: string,
     host: RemoteHostInfo,
@@ -2111,26 +2125,24 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       runtimeVersion?: string
       runtimeBinaryPath?: string
     },
-  ): RemoteRuntimeManager {
+  ): Promise<RemoteRuntimeManager> {
     const existing = this.remoteRuntimeManagers.get(runtimeKey)
-    if (existing && this.remoteRuntimeHostIds.get(runtimeKey) === remoteHostId) {
-      return existing
+    if (
+      existing &&
+      existing.remoteHostId === remoteHostId &&
+      existing.manager.remoteProjectDir === options.remoteProjectDir
+    ) {
+      return existing.manager
     }
     if (existing) {
-      void existing.stop().catch(() => {})
+      await existing.manager.stop().catch(() => {})
       this.remoteRuntimeManagers.delete(runtimeKey)
-      this.remoteRuntimeHostIds.delete(runtimeKey)
     }
-    const manager = createRemoteRuntimeManager({
+    const manager = new RemoteRuntimeManager({
       connection: this.remoteConnection(remoteHostId, host),
-      workspaceKey: options.workspaceKey,
-      remoteProjectDir: options.remoteProjectDir,
-      localApiPort: options.localApiPort,
-      runtimeVersion: options.runtimeVersion,
-      runtimeBinaryPath: options.runtimeBinaryPath,
+      ...options,
     })
-    this.remoteRuntimeManagers.set(runtimeKey, manager)
-    this.remoteRuntimeHostIds.set(runtimeKey, remoteHostId)
+    this.remoteRuntimeManagers.set(runtimeKey, { manager, remoteHostId })
     return manager
   }
 
@@ -2202,7 +2214,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
     let remoteManager: RemoteRuntimeManager | undefined
     try {
-      const apiPort = this.currentApiPort()
+      const apiPort = await this.remoteApiGatewayPort()
       const runtimeEnv = await buildWorkspaceEnv(
         spec.workspaceId,
         [anchorProjectId],
@@ -2232,7 +2244,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       if (spec.openAttemptId) runtimeEnv.SHOGO_OPEN_ID = spec.openAttemptId
       if (PERF_LOG_ENABLED) runtimeEnv.SHOGO_PERF_LOG = '1'
 
-      remoteManager = this.remoteManager(
+      remoteManager = await this.remoteManager(
         spec.key,
         info.remoteHostId,
         host,
@@ -2251,9 +2263,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         localApiPort: apiPort,
       })
       const status = await remoteManager.start({
-        remoteProjectDir,
         env: runtimeEnv,
-        localApiPort: apiPort,
         localAgentPort: port,
       })
       if (!status.agentPort) {
@@ -4074,6 +4084,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     )
     for (const broker of this.remoteAskpassBrokers.values()) broker.close()
     this.remoteAskpassBrokers.clear()
+    const gateway = this.remoteApiGateway
+    this.remoteApiGateway = null
+    if (gateway) await gateway.then((started) => started.close()).catch(() => {})
     // Stop cloud-content-sync watchers last. Keep the cloud island lazy so
     // local API startup/tests do not resolve cloud-only SDK subpaths.
     try {

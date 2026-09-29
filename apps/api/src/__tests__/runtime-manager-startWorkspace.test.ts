@@ -309,16 +309,17 @@ describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () =
     const localPort = 37200
     rm.allocatePortAsync = mock(async () => localPort)
 
+    const gatewayPort = 45555
+    rm.remoteApiGatewayPort = mock(async () => gatewayPort)
+
     const remote = {
-      start: mock(async (options: any) => {
-        expect(options.remoteProjectDir).toBe(remotePath)
-        expect(options.localApiPort).toBe(Number(process.env.API_PORT || process.env.PORT || '8002'))
-        expect(options.localAgentPort).toBe(localPort)
+      start: mock(async (overrides: any) => {
+        expect(Object.keys(overrides).sort()).toEqual(['env', 'localAgentPort'])
+        expect(overrides.localAgentPort).toBe(localPort)
         return {
           workspaceKey: 'remote-anchor-1',
           status: 'running',
           agentPort: localPort,
-          apiPort: Number(process.env.API_PORT || process.env.PORT || '8002'),
           remoteAgentPort: 41234,
           remoteApiPort: 41235,
         }
@@ -327,7 +328,16 @@ describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () =
       status: mock(() => ({ status: 'running', agentPort: localPort })),
       getHealth: mock(async () => ({ healthy: true, lastCheck: Date.now(), url: `http://127.0.0.1:${localPort}/health` })),
     }
-    rm.remoteManager = mock(() => remote)
+    rm.remoteManager = mock(async (_key: string, remoteHostId: string, _host: unknown, options: any) => {
+      expect(remoteHostId).toBe('host-1')
+      expect(options).toMatchObject({
+        workspaceKey: 'remote-anchor-1',
+        remoteProjectDir: remotePath,
+        localApiPort: gatewayPort,
+        runtimeVersion: '1.2.3',
+      })
+      return remote
+    })
 
     const result = await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
     expect(result).toMatchObject({
