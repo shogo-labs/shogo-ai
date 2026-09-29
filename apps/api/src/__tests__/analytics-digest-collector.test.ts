@@ -105,7 +105,7 @@ describe('analytics digest helpers', () => {
     expect(chunks).toHaveLength(1)
     expect(chunks[0]).toContain('[cloud_chat / Grace / CRM (template: crm-template)]')
     expect(chunks[0]).toContain('---')
-    expect(chunks[0]).toContain('[Unknown / Inventory]')
+    expect(chunks[0]).toContain('[cloud_chat / Unknown / Inventory]')
   })
 
   test('mergeAnalyses dedupes lists and combines matching intents', () => {
