@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'"
+    />
+    <title>Shogo Island</title>
+    <link rel="stylesheet" href="island.css" />
+  </head>
+  <body>
+    <main id="island-root">
+      <div id="view-hidden" class="view">
+        <div class="hot-zone" aria-hidden="true"></div>
+      </div>
+
+      <div id="view-collapsed" class="view" hidden>
+        <button class="collapsed surface" aria-label="Open Shogo island">
+          <span class="collapsed-side">
+            <span class="brand-dot" id="collapsed-dot"></span>
+            <span id="collapsed-label">Shogo</span>
+          </span>
+          <span class="notch-gap" aria-hidden="true"></span>
+          <span class="collapsed-side chevron">⌄</span>
+        </button>
+      </div>
+
+      <div id="view-expanded" class="view" hidden>
+        <section class="island-card surface" aria-live="polite">
+          <header class="island-header">
+            <span class="island-title"><span class="brand-dot"></span> Shogo</span>
+            <button class="header-button" data-compose aria-label="Quick chat">＋</button>
+            <button class="header-button" data-collapse aria-label="Collapse">⌃</button>
+          </header>
+          <p class="notice" id="notice" hidden></p>
+          <div class="sessions" id="sessions"></div>
+          <div id="pending"></div>
+        </section>
+      </div>
+
+      <div id="view-compose" class="view" hidden>
+        <section class="island-card compose-card surface">
+          <header class="island-header">
+            <span class="island-title">Quick chat</span>
+            <button class="header-button" data-collapse aria-label="Close">×</button>
+          </header>
+          <select id="compose-target" aria-label="Chat target"></select>
+          <div class="drop-area" id="drop-area"></div>
+          <p class="compose-error" id="compose-error" hidden></p>
+          <textarea id="compose-input" rows="2" placeholder="Ask Shogo anything…"></textarea>
+          <div class="compose-footer">
+            <label class="attach-button">Attach<input id="file-input" type="file" multiple /></label>
+            <button class="primary send-button" id="send-button" disabled>Send</button>
+          </div>
+        </section>
+      </div>
+    </main>
+    <script src="island-renderer.js"></script>
+  </body>
+</html>

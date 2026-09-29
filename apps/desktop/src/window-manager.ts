@@ -142,6 +142,12 @@ export class WindowManager {
     return true
   }
 
+  sendToAllWindows(channel: string, ...args: unknown[]): void {
+    for (const { browserWindow } of this.windows.values()) {
+      if (!browserWindow.isDestroyed()) browserWindow.webContents.send(channel, ...args)
+    }
+  }
+
   sendToPrimaryWindow(channel: string, ...args: unknown[]): boolean {
     const window = this.getPrimaryWindow()
     return window ? this.sendToWindow(window.id, channel, ...args) : false
