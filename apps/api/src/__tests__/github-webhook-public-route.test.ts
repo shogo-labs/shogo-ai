@@ -8,8 +8,7 @@
  * in-handler (`verifyWebhookSignature`, keyed on `GH_APP_WEBHOOK_SECRET`) —
  * exactly like `/api/voice/elevenlabs/webhook` does for ElevenLabs.
  *
- * server.ts's blanket `/api/*` gate (the `publicPrefixes` branch right
- * before `return requireAuth(c, next)`) allowlisted the voice webhook but
+ * The blanket `/api/*` gate (now `middleware/api-auth-gate.ts`) allowlisted the voice webhook but
  * never allowlisted this one. GitHub's real webhook delivery carries no
  * Shogo session cookie or API key, so EVERY real delivery — installation,
  * push, issues, issue_comment, pull_request_review — was 401'd by
@@ -19,42 +18,20 @@
  * signed synthetic `issues` webhook, since GitHub itself can't reach a local
  * dev server to have ever exercised this path before.
  *
- * This test mimics the publicPrefixes branch the same way
- * affiliate-public-routes-mount-order.test.ts does (the real gate is an
- * inline closure in server.ts, not exported) and asserts the specific
- * prefix list server.ts uses, so a future edit that drops the entry (or
- * narrows it to a prefix that no longer matches the literal path) fails
- * this test instead of silently breaking every live GitHub webhook again.
+ * This test runs the real gate (`apiAuthGate`), so a future edit that drops
+ * the entry (or narrows it to a prefix that no longer matches the literal
+ * path) fails here instead of silently breaking every live GitHub webhook.
  */
+process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-auth-secret-github-webhook'
+
 import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
+
+const { apiAuthGate } = await import('../middleware/api-auth-gate')
 
 async function fakeAuthMiddleware(c: any, next: any) {
   c.set('auth', { isAuthenticated: false })
   await next()
-}
-async function fakeRequireAuth(c: any, next: any) {
-  if (!c.get('auth')?.isAuthenticated) {
-    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
-  }
-  await next()
-}
-
-/** Mirrors the exact publicPrefixes branch in server.ts (see the block right before `return requireAuth(c, next)`). */
-function publicPrefixGate() {
-  return async (c: any, next: any) => {
-    const path = new URL(c.req.url).pathname
-    const publicPrefixes = ['/api/health', '/api/webhooks/']
-    if (publicPrefixes.some((p) => path.startsWith(p))) return next()
-    if (
-      path === '/api/voice/elevenlabs/webhook' ||
-      path.startsWith('/api/voice/twilio/status/')
-    ) {
-      return next()
-    }
-    if (path === '/api/github/webhook') return next()
-    return fakeRequireAuth(c, next)
-  }
 }
 
 function githubWebhookStub(): Hono {
@@ -73,7 +50,7 @@ describe('/api/github/webhook bypasses session/API-key auth (signature-verified 
   function buildApp(): Hono {
     const app = new Hono()
     app.use('/api/*', fakeAuthMiddleware)
-    app.use('/api/*', publicPrefixGate())
+    app.use('/api/*', apiAuthGate)
     app.route('/api', githubWebhookStub())
     return app
   }

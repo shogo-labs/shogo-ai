@@ -204,6 +204,19 @@ describe('POST /ai/v1/responses', () => {
     expect(data.error.message).toMatch(/not supported/i)
   })
 
+  test('rejects a non-OpenAI model instead of forwarding it to OpenAI (400)', async () => {
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ model: 'claude-haiku-4-5', input: 'hi' }),
+    }))
+    expect(res.status).toBe(400)
+    const data = await res.json() as any
+    expect(data.error.code).toBe('model_not_supported_on_endpoint')
+    expect(lastFetchUrl).toBeNull()
+  })
+
   test('forwards a non-streaming request and records usage on success', async () => {
     nextFetchResponses.push(() => new Response(JSON.stringify({
       id: 'resp_1',
@@ -251,6 +264,21 @@ describe('POST /ai/v1/responses', () => {
   test('propagates upstream non-2xx response verbatim', async () => {
     nextFetchResponses.push(() => new Response('{"error":"upstream bad"}', {
       status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ model: 'gpt-4o-mini', input: 'hi' }),
+    }))
+    expect(res.status).toBe(502)
+  })
+
+  test('relays a provider 401 as 502 so callers do not mistake it for a revoked Shogo key', async () => {
+    nextFetchResponses.push(() => new Response('{"error":{"message":"Incorrect API key provided"}}', {
+      status: 401,
       headers: { 'Content-Type': 'application/json' },
     }))
 
@@ -477,6 +505,27 @@ describe('POST /ai/anthropic/v1/messages streaming conversions', () => {
     const body = await res.json() as any
     expect(body.id).toBe('msg_native')
     expect(body.content[0].text).toBe('native ok')
+  })
+
+  test('relays a provider 401 as 502', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({
+      type: 'error',
+      error: { type: 'authentication_error', message: 'invalid x-api-key' },
+    }), { status: 401, headers: { 'Content-Type': 'application/json' } }))
+
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': TOKEN },
+      body: JSON.stringify({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    }))
+    expect(res.status).toBe(502)
+    const body = await res.json() as any
+    expect(body.error.type).toBe('authentication_error')
   })
 
   test('passes through streaming Anthropic-native requests and tracks usage from SSE events', async () => {
@@ -720,6 +769,19 @@ describe('POST /ai/anthropic/v1/messages/count_tokens', () => {
     expect(lastFetchUrl).toBe('https://api.anthropic.com/v1/messages/count_tokens')
     const data = await res.json() as any
     expect(data.input_tokens).toBe(42)
+  })
+
+  test('relays a provider 401 as 502', async () => {
+    nextFetchResponses.push(() => new Response('{"type":"error"}', {
+      status: 401, headers: { 'Content-Type': 'application/json' },
+    }))
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/ai/anthropic/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': TOKEN },
+      body: JSON.stringify({ model: 'claude-3-haiku-20240307', messages: [{ role: 'user', content: 'hi' }] }),
+    }))
+    expect(res.status).toBe(502)
   })
 
   test('returns 503 when ANTHROPIC_API_KEY is not set', async () => {

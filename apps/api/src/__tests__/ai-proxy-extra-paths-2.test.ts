@@ -86,6 +86,7 @@ mock.module('../lib/project-user-context', () => ({
 
 mock.module('../lib/cloud-key-wipe', () => ({
   wipeCloudKey: async () => {},
+  wipeCloudKeyIfRejected: async () => ({ wiped: false }),
 }))
 
 mock.module('../routes/api-keys', () => ({

@@ -71,6 +71,7 @@ mock.module('../lib/project-user-context', () => ({
 
 mock.module('../lib/cloud-key-wipe', () => ({
   wipeCloudKey: async () => {},
+  wipeCloudKeyIfRejected: async () => ({ wiped: false }),
 }))
 
 // Capture the `extra` arg that resolveApiKey receives so we can assert the

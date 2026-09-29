@@ -8,7 +8,7 @@ const findUniqueMock = mock(async (_args: any): Promise<any> => null)
 const fetchUpstreamMock = mock(async (_path: string, _init?: any): Promise<Response> => {
   return new Response('{}', { status: 200 })
 })
-const markCloudKeyRejectedMock = mock((_reason?: string) => {})
+const markIfConfirmedMock = mock(async (_reason: string, _key?: string | null) => true)
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -24,11 +24,12 @@ mock.module('../lib/cloud-urls', () => ({
 
 mock.module('../lib/federated-upstream', () => ({
   fetchUpstream: fetchUpstreamMock,
+  getUpstreamCredential: mock(async () => 'shogo_sk_linked'),
   getUpstreamWorkspaceId: mock(async () => 'cloud-ws-1'),
 }))
 
-mock.module('../routes/local-auth', () => ({
-  markCloudKeyRejected: markCloudKeyRejectedMock,
+mock.module('../lib/cloud-key-state', () => ({
+  markCloudKeyRejectedIfConfirmed: markIfConfirmedMock,
 }))
 
 const { localCloudBillingRoutes } = await import('../routes/local-cloud-billing')
@@ -49,8 +50,8 @@ beforeEach(() => {
   }))
   fetchUpstreamMock.mockReset()
   fetchUpstreamMock.mockImplementation(async () => new Response('{}', { status: 200 }))
-  markCloudKeyRejectedMock.mockReset()
-  markCloudKeyRejectedMock.mockImplementation(() => {})
+  markIfConfirmedMock.mockReset()
+  markIfConfirmedMock.mockImplementation(async () => true)
 })
 
 describe('GET /local/cloud-billing/summary', () => {
@@ -106,7 +107,7 @@ describe('GET /local/cloud-billing/summary', () => {
     workspaceMock.mockImplementation(async () => 'cloud-ws-1')
   })
 
-  test('marks rejected cloud keys on upstream 401', async () => {
+  test('marks the linked key rejected on upstream 401 once cloud confirms it', async () => {
     fetchUpstreamMock.mockImplementation(async () => new Response(
       JSON.stringify({ error: 'Key revoked' }),
       { status: 401 },
@@ -114,7 +115,17 @@ describe('GET /local/cloud-billing/summary', () => {
 
     const response = await mountApp().request('/api/local/cloud-billing/summary')
     expect(response.status).toBe(401)
-    expect(markCloudKeyRejectedMock).toHaveBeenCalledWith('billing summary 401')
+    expect((await response.json() as any).cloudKeyRejected).toBe(true)
+    expect(markIfConfirmedMock).toHaveBeenCalledWith('billing summary 401', 'shogo_sk_linked')
+  })
+
+  test('does not report the key rejected when cloud still says it is valid', async () => {
+    fetchUpstreamMock.mockImplementation(async () => new Response('{}', { status: 401 }))
+    markIfConfirmedMock.mockImplementation(async () => false)
+
+    const response = await mountApp().request('/api/local/cloud-billing/summary')
+    expect(response.status).toBe(401)
+    expect((await response.json() as any).cloudKeyRejected).toBe(false)
   })
 })
 

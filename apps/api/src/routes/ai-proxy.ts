@@ -44,7 +44,7 @@ import {
   resolveVisibleModelsForWorkspace,
   isModelProviderConfigured,
 } from '../services/visible-models.service'
-import { wipeCloudKey } from '../lib/cloud-key-wipe'
+import { wipeCloudKeyIfRejected } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
@@ -607,6 +607,16 @@ export async function fetchAnthropicWithRetry(
 
   // Network error path exhausted without a Response — rethrow the last error.
   throw lastError ?? new Error(`${label} request failed after ${maxAttempts} attempts`)
+}
+
+/**
+ * Status to relay for a failed provider call. A provider 401 means the
+ * platform's own provider key was rejected; passed through as-is, clients
+ * that authenticate with a Shogo key can't tell it from their key being
+ * revoked.
+ */
+export function relayStatusForProviderError(status: number): number {
+  return status === 401 ? 502 : status
 }
 
 /**
@@ -2841,7 +2851,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy chat-completions got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy chat-completions got 401 from Shogo Cloud')
     }
 
     if (request.stream) {
@@ -2890,7 +2900,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy responses got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy responses got 401 from Shogo Cloud')
     }
 
     if (request?.stream) {
@@ -2946,7 +2956,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy Anthropic messages got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy Anthropic messages got 401 from Shogo Cloud')
     }
 
     // Hard errors (billing, auth, invalid request, etc.) come back from Shogo
@@ -3387,6 +3397,21 @@ export function aiProxyRoutes() {
         )
       }
 
+      // This handler only forwards to OpenAI; another provider's model would be
+      // sent there with that provider's key.
+      if (modelConfig.provider !== 'openai') {
+        return c.json(
+          {
+            error: {
+              message: `Model '${requestedModel}' (provider '${modelConfig.provider}') is not supported on the Responses API. Use /ai/v1/chat/completions or /ai/anthropic/v1/messages.`,
+              type: 'invalid_request_error',
+              code: 'model_not_supported_on_endpoint',
+            },
+          },
+          400,
+        )
+      }
+
       if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
         return c.json(
           {
@@ -3437,7 +3462,7 @@ export function aiProxyRoutes() {
       if (!response.ok) {
         const errorText = await response.text()
         console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
-        return new Response(errorText, { status: response.status, headers: { 'Content-Type': 'application/json' } })
+        return new Response(errorText, { status: relayStatusForProviderError(response.status), headers: { 'Content-Type': 'application/json' } })
       }
 
       if (isStream) {
@@ -3913,7 +3938,7 @@ export function aiProxyRoutes() {
           capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `OpenAI error (${response.status}): ${errorText}` } },
-            response.status as any
+            relayStatusForProviderError(response.status) as any
           )
         }
 
@@ -4013,7 +4038,7 @@ export function aiProxyRoutes() {
         const errorBody = await response.text()
         capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
         return new Response(errorBody, {
-          status: response.status,
+          status: relayStatusForProviderError(response.status),
           headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
         })
       }
@@ -4141,7 +4166,7 @@ export function aiProxyRoutes() {
       )
       // Self-heal on revoked / superseded device key.
       if (response.status === 401) {
-        void wipeCloudKey('AI proxy count_tokens got 401 from Shogo Cloud')
+        void wipeCloudKeyIfRejected('AI proxy count_tokens got 401 from Shogo Cloud')
       }
       const responseBody = await response.text()
       return new Response(responseBody, {
@@ -4178,7 +4203,7 @@ export function aiProxyRoutes() {
 
     const responseBody = await response.text()
     return new Response(responseBody, {
-      status: response.status,
+      status: relayStatusForProviderError(response.status),
       headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
     })
   })
@@ -4213,7 +4238,7 @@ export function aiProxyRoutes() {
 
     const responseBody = await response.text()
     return new Response(responseBody, {
-      status: response.status,
+      status: relayStatusForProviderError(response.status),
       headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
     })
   })
