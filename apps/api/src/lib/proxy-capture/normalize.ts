@@ -52,20 +52,29 @@ function collectMedia(value: unknown, media: NormalizedCapture['media']): unknow
   )
 }
 
+function toBlobRef(value: unknown, kind: string, writeBlob: BlobWriter): { $ref: string; kind: string } {
+  const key = `v1/blobs/${sha256(stableStringify(value))}.json.gz`
+  writeBlob(key, value)
+  return { $ref: key, kind }
+}
+
+function isDedupable(value: unknown): boolean {
+  return (Array.isArray(value) && value.length > 0) || (typeof value === 'string' && value.length > 0)
+}
+
 function deduplicateRequest(value: any, writeBlob: BlobWriter, media: NormalizedCapture['media']): any {
   const clone = collectMedia(value, media) as any
   if (clone && typeof clone === 'object') {
-    if (Array.isArray(clone.system) && clone.system.length > 0) {
-      const hash = sha256(stableStringify(clone.system))
-      const key = `v1/blobs/${hash}.json.gz`
-      writeBlob(key, clone.system)
-      clone.system = { $ref: key, kind: 'system' }
-    }
-    if (Array.isArray(clone.tools) && clone.tools.length > 0) {
-      const hash = sha256(stableStringify(clone.tools))
-      const key = `v1/blobs/${hash}.json.gz`
-      writeBlob(key, clone.tools)
-      clone.tools = { $ref: key, kind: 'tools' }
+    if (isDedupable(clone.system)) clone.system = toBlobRef(clone.system, 'system', writeBlob)
+    if (isDedupable(clone.instructions)) clone.instructions = toBlobRef(clone.instructions, 'system', writeBlob)
+    if (Array.isArray(clone.tools) && clone.tools.length > 0) clone.tools = toBlobRef(clone.tools, 'tools', writeBlob)
+    for (const listKey of ['messages', 'input']) {
+      const list = clone[listKey]
+      if (!Array.isArray(list)) continue
+      for (const message of list) {
+        if (!message || (message.role !== 'system' && message.role !== 'developer')) break
+        if (isDedupable(message.content)) message.content = toBlobRef(message.content, 'system', writeBlob)
+      }
     }
   }
   return clone
@@ -89,6 +98,7 @@ function getMessages(request: any): any[] {
 }
 
 export function extractUserText(request: any): string | null {
+  if (typeof request?.input === 'string') return request.input.trim() || null
   const messages = getMessages(request)
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role === 'user') {
@@ -119,23 +129,44 @@ export function extractToolNames(request: any): string[] {
   return [...names]
 }
 
-export function responseText(response: any): string | null {
-  if (!response) return null
-  if (typeof response === 'string') return response
+function responseToolNames(response: any): string[] {
+  const names: unknown[] = [
+    ...(Array.isArray(response.tool_calls) ? response.tool_calls.map((call: any) => call?.function?.name || call?.name) : []),
+    ...(Array.isArray(response.content) ? response.content.filter((part: any) => part?.type === 'tool_use').map((part: any) => part.name) : []),
+    ...(Array.isArray(response.output) ? response.output.filter((item: any) => item?.type === 'function_call').map((item: any) => item.name) : []),
+    ...(Array.isArray(response.choices)
+      ? response.choices.flatMap((choice: any) => (choice?.message?.tool_calls || []).map((call: any) => call?.function?.name))
+      : []),
+  ]
+  return names.filter((name): name is string => typeof name === 'string' && name.length > 0)
+}
+
+function responseBodyText(response: any): string {
   if (typeof response.output_text === 'string') return response.output_text
   if (typeof response.content === 'string') return response.content
   if (Array.isArray(response.content)) {
-    const text = response.content.map((part: any) => part?.text || '').filter(Boolean).join('')
-    if (text) return text
+    return response.content.map((part: any) => (part?.type === 'text' || !part?.type ? part?.text || '' : '')).join('')
+  }
+  if (Array.isArray(response.output)) {
+    return response.output
+      .filter((item: any) => item?.type === 'message')
+      .flatMap((item: any) => item.content || [])
+      .map((part: any) => part?.text || '')
+      .join('')
   }
   if (Array.isArray(response.choices)) {
-    const text = response.choices
-      .map((choice: any) => choice?.message?.content || choice?.text || '')
-      .filter(Boolean)
-      .join('')
-    if (text) return text
+    return response.choices.map((choice: any) => choice?.message?.content || choice?.text || '').join('')
   }
-  return null
+  return ''
+}
+
+export function responseText(response: any): string | null {
+  if (!response) return null
+  if (typeof response === 'string') return response
+  const text = responseBodyText(response)
+  const tools = responseToolNames(response).map((name) => `[tool call: ${name}]`)
+  const combined = [text, ...tools].filter(Boolean).join('\n')
+  return combined || null
 }
 
 export function sourceFor(
@@ -182,7 +213,11 @@ export function normalizeCapture(
   const response = collectMedia(responseBody, media)
   const userText = extractUserText(requestBody)
   const assistantText = responseText(responseBody)
-  const turnKey = sha256(`${metadata.workspaceId}\0${metadata.chatSessionId || ''}\0${userText || ''}`)
+  // /api/ai/* is exempt from home-region routing, so one turn can be served by
+  // several regions. The region keeps (workspaceId, turnKey) region-disjoint,
+  // which logical replication requires of every non-PK unique key.
+  const region = process.env.REGION_ID || ''
+  const turnKey = sha256(`${region}\0${metadata.workspaceId}\0${metadata.chatSessionId || ''}\0${userText || ''}`)
   const reasoningEffort =
     (requestBody as any)?.reasoning_effort ||
     (requestBody as any)?.reasoning?.effort ||
