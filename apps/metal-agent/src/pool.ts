@@ -66,7 +66,7 @@ import {
   type RepoLineage,
   type RepoWriteOutcome,
 } from './repo-archive'
-import { readSerialTail } from './serial-watcher'
+import { classifySerialLine, readSerialTail, sanitizeSerialLine } from './serial-watcher'
 import type { ArchiveRef } from './archive-ref'
 
 /**
@@ -534,6 +534,24 @@ function publishedSubdomainFromEnv(env: Record<string, string>): string | undefi
   const published = env.SHOGO_PUBLISHED_MODE === 'true' || env.SHOGO_PUBLISHED_MODE === '1'
   const subdomain = env.PUBLISHED_SUBDOMAIN
   return published && subdomain ? subdomain : undefined
+}
+
+/**
+ * Resolve the durable project prefix for an assignment.
+ *
+ * `published:<projectId>` is an in-memory runtime identity used for routing;
+ * it is never the prefix used by the source/repo archives. Published
+ * assignments carry the real project id in env.PROJECT_ID, while the fallback
+ * keeps compatibility with older callers that only supplied the runtime key.
+ */
+export function durableProjectIdForAssignment(
+  projectId: string,
+  env: Record<string, string>,
+): string {
+  if (!publishedSubdomainFromEnv(env)) return projectId
+  return env.PROJECT_ID && !env.PROJECT_ID.startsWith('published:')
+    ? env.PROJECT_ID
+    : projectId.replace(/^published:/, '')
 }
 
 /**
@@ -1074,6 +1092,46 @@ export class MetalWarmPool {
     console.error(`[pool] guest serial tail (${reason}) project=${a.projectId} vm=${a.handle.id}:\n${tail}`)
   }
 
+  /**
+   * Capture bounded, authenticated published-startup diagnostics before a
+   * failed assignment tears the guest down. Only the runtime's structured
+   * phase and signature-matched serial lines are forwarded; arbitrary guest
+   * stdout is intentionally not copied into host logs.
+   */
+  private async capturePublishedAssignDiagnostics(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<void> {
+    const token = env.RUNTIME_AUTH_SECRET
+    try {
+      const res = await fetch(`${handle.agentUrl}/pool/startup-status`, {
+        headers: token ? { 'x-runtime-token': token } : {},
+        signal: AbortSignal.timeout(2_000),
+      })
+      const status = await res.json().catch(() => ({ status: `http_${res.status}` }))
+      console.error(`[pool] published startup diagnostics project=${projectId}: ${JSON.stringify(status)}`)
+    } catch (err: any) {
+      console.error(
+        `[pool] published startup status unavailable project=${projectId}: ${err?.message ?? err}`,
+      )
+    }
+
+    const tail = readSerialTail(handle.serialLog)
+    const matched = tail
+      .split('\n')
+      .map((line) => {
+        const signature = classifySerialLine(line)
+        return signature ? `${signature.category}: ${sanitizeSerialLine(line).slice(0, 500)}` : null
+      })
+      .filter((line): line is string => Boolean(line))
+    if (matched.length > 0) {
+      console.error(
+        `[pool] published serial diagnostics project=${projectId} vm=${handle.id}:\n${matched.slice(-20).join('\n')}`,
+      )
+    }
+  }
+
   /** Mount a project archive into an already-running workspace microVM. */
   async mountWorkspaceMember(
     runtimeKey: string,
@@ -1286,6 +1344,9 @@ export class MetalWarmPool {
       })
       if (!res.ok) throw new Error(`/pool/assign failed (${res.status}): ${await res.text()}`)
     } catch (err) {
+      if (publishedSubdomainFromEnv(env)) {
+        await this.capturePublishedAssignDiagnostics(projectId, vm.handle, env)
+      }
       await this.mgr.stopVM(vm.handle).catch(() => {})
       throw err
     } finally {
@@ -1294,6 +1355,7 @@ export class MetalWarmPool {
 
     const now = Date.now()
     const publishedSubdomain = publishedSubdomainFromEnv(env)
+    const durableProjectId = durableProjectIdForAssignment(projectId, env)
     const a: AssignedVm = {
       projectId,
       handle: vm.handle,
@@ -1335,7 +1397,7 @@ export class MetalWarmPool {
     try {
       const h: { hydrated: boolean; parentEtag?: string; lastModified?: number | null } = projectId.startsWith('ws:')
         ? { hydrated: false }
-        : await this.hydrateFromBackup(projectId, vm.handle, env)
+        : await this.hydrateFromBackup(durableProjectId, vm.handle, env)
       if (h.hydrated) {
         a.workspaceOrigin = 'backup'
         a.backupParentEtag = h.parentEtag
@@ -1375,9 +1437,9 @@ export class MetalWarmPool {
     // user's data — the exact incident this subsystem exists to prevent.
     if (projectId.startsWith('ws:')) {
       await this.hydrateWorkspaceMemberData(a, env)
-    } else {
+    } else if (!publishedSubdomain) {
       try {
-        const d = await this.hydrateProjectData(projectId, vm.handle, env)
+        const d = await this.hydrateProjectData(durableProjectId, vm.handle, env)
         if (d.hydrated) {
           a.dataParentEtag = d.parentEtag
           this.writeLive(a)
@@ -1406,7 +1468,7 @@ export class MetalWarmPool {
     // the hydrate leaves the replacement VM create-only against an archive
     // that already exists, so every later export is refused as a conflict.
     try {
-      const r = await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
+      const r = await this.hydrateRepo(durableProjectId, vm.handle, env, sourceTimes)
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
@@ -1434,14 +1496,56 @@ export class MetalWarmPool {
     // Server-backed published VM: overlay the live site's writable state
     // ({subdomain}/data.tar.gz) on top of the git-restored source so the app
     // boots with accumulated end-user data (not a fresh DB). Host-side — the
-    // guest holds no S3 creds. Best-effort: a fresh/first publish has no archive.
-    // Applied last so a published site's live data wins over the dev snapshot.
+    // guest holds no S3 creds. A first publish has no archive and is allowed
+    // to boot from the source seed; an existing archive read/apply failure is
+    // fatal so a replacement cannot silently start with a fresh database.
     if (publishedSubdomain) {
-      await this.hydratePublishedData(publishedSubdomain, vm.handle, env).catch((err) =>
-        console.error(`[pool] published-data hydrate failed for ${publishedSubdomain} (fresh DB):`, err?.message ?? err),
-      )
+      try {
+        await this.hydratePublishedData(publishedSubdomain, vm.handle, env)
+        await this.activatePublishedRuntime(publishedSubdomain, vm.handle, env)
+      } catch (err: any) {
+        console.error(
+          `[pool] published lifecycle failed for ${publishedSubdomain} — stopping unready VM:`,
+          err?.message ?? err,
+        )
+        await this.capturePublishedAssignDiagnostics(projectId, vm.handle, env)
+        this.assigned.delete(projectId)
+        this.live.remove(projectId)
+        await this.mgr.stopVM(vm.handle).catch(() => {})
+        throw err
+      }
     }
     return a
+  }
+
+  /**
+   * Start a host-hydrated published guest only after all source and writable
+   * data overlays have completed. The guest endpoint is idempotent, so a host
+   * retry cannot start two application pipelines.
+   */
+  private async activatePublishedRuntime(
+    subdomain: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<void> {
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/published-ready`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'x-runtime-token': token } : {}),
+      },
+      body: JSON.stringify({ projectId: env.PROJECT_ID, subdomain }),
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (!res.ok) {
+      throw new Error(`/pool/published-ready failed (${res.status}): ${await res.text()}`)
+    }
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; phase?: string }
+    if (body.ok !== true || !['starting', 'ready'].includes(body.phase ?? '')) {
+      throw new Error(`/pool/published-ready returned an invalid state (${body.phase ?? 'unknown'})`)
+    }
+    console.log(`[pool] published guest activated for ${subdomain} (phase=${body.phase})`)
   }
 
   /**
