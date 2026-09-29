@@ -353,6 +353,82 @@ jobs:
           path: '**/*.tsbuildinfo'
           key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
+  e2e-local:
+    # e2e/local drives the real local-mode API + Expo web (auto-sign-in,
+    # personal/team workspaces, folder projects) against a throwaway SQLite
+    # DB. These specs previously only ran on developer machines.
+    name: E2E (local mode)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.11'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-e2e-local-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build workspace packages
+        if: steps.workspace-e2e-local-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: Restore Playwright browsers
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: playwright-${{ runner.os }}-
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e/local
+        env:
+          E2E_LOCAL_START_STACK: '1'
+        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: e2e-local-report
+          path: |
+            test-results/e2e-local-report
+            test-results/e2e-local-artifacts
+          retention-days: 7
+
   typecheck-known-failures:
     name: Typecheck (known failures, non-blocking)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -758,7 +834,7 @@ jobs:
 
   ci:
     name: Lint, Typecheck, Test
-    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows]
+    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows, e2e-local]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -769,6 +845,7 @@ jobs:
           echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
           echo "test: ${{ needs.test.result }}"
           echo "test-windows: ${{ needs.test-windows.result }}"
-          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
+          echo "e2e-local: ${{ needs.e2e-local.result }}"
+          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.e2e-local.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
             exit 1
           fi

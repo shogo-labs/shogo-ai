@@ -9,7 +9,8 @@ import {
   type Route,
 } from "@playwright/test"
 
-const CHAT_URL_GLOB = "**/api/projects/*/chat"
+// Local project chats run on the merged workspace runtime (/api/workspaces/:id/chat).
+const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
 const QUEUE_URL_GLOB = "**/api/chat-queued-messages**"
 const API_BASE_URL = process.env.E2E_API_URL || "http://localhost:8010"
 
@@ -141,6 +142,7 @@ test.describe("server-backed chat queue — local UI", () => {
         const body = request.postDataJSON() as Record<string, unknown>
         const row = {
           id: `queue-e2e-${++nextId}`,
+          sessionId: body.sessionId,
           userId: "local-e2e-user",
           position: queueRows.length,
           status: "pending",
@@ -223,7 +225,7 @@ test.describe("server-backed chat queue — local UI", () => {
     await expect(page.getByText("second queued prompt", { exact: true })).toBeVisible()
 
     const queuedId = String(queueRows[0].id)
-    await page.getByLabel("Delete queued message").click()
+    await page.getByLabel("Delete queued message").first().click()
     await expect(page.getByText("second queued prompt", { exact: true })).toHaveCount(0)
     await expect(page.getByText("queued prompt", { exact: true })).toBeVisible()
     expect(queueRows.find((row) => row.id === queuedId)).toBeUndefined()

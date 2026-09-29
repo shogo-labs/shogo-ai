@@ -101,7 +101,8 @@ test.describe("dark mode surfaces", () => {
     const release = catalog.find((r) => r.announce)
     test.skip(!release, "no announced release in the catalog")
 
-    await page.goto(`/?whatsNew=${release!.version}`)
+    // Must land inside the (app) group; the root index redirect drops the query.
+    await page.goto(`/activity?whatsNew=${release!.version}`)
     const close = page.getByRole("button", { name: "Close What's New" })
     await close.waitFor({ state: "visible", timeout: 30_000 })
     const dismiss = page.getByRole("button", { name: "Dismiss What's New" })
@@ -115,27 +116,52 @@ test.describe("dark mode surfaces", () => {
   test("queue dock is opaque and draws the failed-row icon", async ({ page }) => {
     const now = Date.now()
     const rows = [
-      { id: "dark-q-1", userId: "e2e", position: 0, status: "pending", content: "queued prompt", createdAt: now, updatedAt: now },
+      { id: "dark-q-1", userId: "e2e", position: 0, status: "pending", content: "queued prompt", parts: "[]", body: "{}", createdAt: now, updatedAt: now },
       {
         id: "dark-q-2",
         userId: "e2e",
         position: 1,
         status: "failed",
         content: "failed prompt",
+        parts: "[]",
+        body: "{}",
         error: "Upstream timed out",
         createdAt: now,
         updatedAt: now,
       },
     ]
-    await page.route("**/api/chat-queued-messages**", (route: Route) =>
-      route.request().method() === "GET"
-        ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, items: rows, total: rows.length }) })
-        : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }),
-    )
+    // The dock only shows rows for the open chat session, so stamp them with
+    // whichever session the client asks for.
+    await page.route("**/api/chat-queued-messages**", (route: Route) => {
+      if (route.request().method() !== "GET") {
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
+      }
+      const sessionId = new URL(route.request().url()).searchParams.get("sessionId")
+      const items = rows.map((row) => ({ ...row, sessionId }))
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, items, total: items.length }),
+      })
+    })
 
     await page.goto("/")
     await page.getByRole("navigation", { name: "App sidebar" }).waitFor({ state: "visible", timeout: 30_000 })
-    await page.goto(`/projects/${await localProjectId(page)}`)
+    const projectId = await localProjectId(page)
+    // The server queue is only read for an existing chat session.
+    await page.evaluate(
+      async ({ apiBase, projectId }) => {
+        const res = await fetch(`${apiBase}/api/chat-sessions`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ inferredName: "Dark mode E2E", contextType: "project", contextId: projectId }),
+        })
+        if (!res.ok) throw new Error(`chat session create failed: ${res.status}`)
+      },
+      { apiBase: API_BASE, projectId },
+    )
+    await page.goto(`/projects/${projectId}`)
 
     const queued = page.getByText("queued prompt", { exact: true })
     await queued.waitFor({ state: "visible", timeout: 30_000 })

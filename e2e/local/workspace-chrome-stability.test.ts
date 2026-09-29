@@ -21,7 +21,7 @@ type WorkspaceRow = { id: string; kind?: string; name?: string }
 
 async function signInAndPersonalWorkspace(page: Page): Promise<WorkspaceRow> {
   await page.goto('/')
-  await page.waitForTimeout(1500)
+  await page.getByRole('navigation', { name: 'App sidebar' }).waitFor({ state: 'visible', timeout: 30_000 })
   await page.evaluate(async (apiBase) => {
     await fetch(`${apiBase}/api/onboarding/complete`, {
       method: 'POST',
@@ -33,10 +33,10 @@ async function signInAndPersonalWorkspace(page: Page): Promise<WorkspaceRow> {
     const res = await fetch(`${apiBase}/api/workspaces`, { credentials: 'include' })
     const body = await res.json()
     const items = (body?.items ?? body?.data?.items ?? []) as WorkspaceRow[]
-    return items.find((workspace) => workspace.kind === 'personal') ?? null
+    return { row: items.find((workspace) => workspace.kind === 'personal') ?? null, status: res.status, body }
   }, API_BASE)
-  expect(personal?.id, 'local auto-sign-in did not yield a personal workspace').toBeTruthy()
-  return personal!
+  expect(personal.row?.id, `local auto-sign-in did not yield a personal workspace: ${personal.status} ${JSON.stringify(personal.body).slice(0, 400)}`).toBeTruthy()
+  return personal.row!
 }
 
 function installFlashRecorder(page: Page) {

@@ -38,6 +38,11 @@ const REQUIRED_LOCAL_ROUTES = [
   'PATCH /api/workspaces/:workspaceId/schedules/:scheduleId',
   'DELETE /api/workspaces/:workspaceId/schedules/:scheduleId',
   'GET /api/types-proxy',
+  // Settings > Integrations is in LOCAL_NAV_ITEMS; these 404'd from 2.0.0.
+  'GET /api/integrations/providers',
+  'GET /api/integrations/connections',
+  'POST /api/integrations/connect',
+  'DELETE /api/integrations/connections/:id',
   // Called by the local agent-runtime; "Trust folder" is dead without it.
   'GET /api/internal/projects/:projectId/trust',
 ] as const
