@@ -25,8 +25,11 @@ let serverProc: Subprocess | null = null
 async function teardownServerProc(proc: Subprocess | null): Promise<void> {
   if (!proc) return
   try {
-    proc.stdout?.cancel().catch(() => {})
-    proc.stderr?.cancel().catch(() => {})
+    for (const stream of [proc.stdout, proc.stderr]) {
+      if (stream && typeof stream !== 'number') {
+        stream.cancel().catch(() => {})
+      }
+    }
   } catch {
     // The streams may already be closed.
   }
