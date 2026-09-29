@@ -125,6 +125,18 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   apiUrl: `http://localhost:${apiPort}`,
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  setIslandConfig: (config: { enabled?: boolean; autoHide?: boolean; shortcut?: string }) =>
+    ipcRenderer.invoke('set-island-config', config),
+  onIslandConfigChanged: (
+    callback: (config: { enabled: boolean; autoHide: boolean; shortcut: string }) => void,
+  ) => {
+    const listener = (_event: Electron.IpcRendererEvent, config: { enabled: boolean; autoHide: boolean; shortcut: string }) =>
+      callback(config)
+    ipcRenderer.on('island-config-changed', listener)
+    return () => {
+      ipcRenderer.removeListener('island-config-changed', listener)
+    }
+  },
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
 
   codeWorkbench: {
@@ -213,6 +225,15 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     sessionId: string
     projectId: string
   }) => ipcRenderer.invoke('show-chat-notification', args),
+  islandUpdate: (snapshot: unknown) => {
+    ipcRenderer.send('island:update', snapshot)
+  },
+  onIslandAction: (callback: (action: unknown) => void) => {
+    ipcRenderer.on('island-action', (_event, action) => callback(action))
+  },
+  removeIslandActionListener: () => {
+    ipcRenderer.removeAllListeners('island-action')
+  },
   onNotificationClicked: (
     callback: (data: { sessionId: string; projectId: string }) => void,
   ) => {

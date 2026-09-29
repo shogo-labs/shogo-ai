@@ -62,6 +62,7 @@ import {
   chatSessionEvents,
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
+import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
 import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
@@ -2692,6 +2693,7 @@ export default observer(function ProjectLayout() {
             prev.includes(id) ? prev : [...prev, id]
           );
           setChatSessionId(id);
+          deliverPendingDesktopIslandNewChat(projectId, id);
           chatSessionEvents.emit({
             projectId,
             activeSessionId: id,
@@ -2715,6 +2717,7 @@ export default observer(function ProjectLayout() {
           prev.includes(newSession.id) ? prev : [...prev, newSession.id]
         );
         setChatSessionId(newSession.id);
+        deliverPendingDesktopIslandNewChat(projectId, newSession.id);
         chatSessionEvents.emit({
           projectId,
           activeSessionId: newSession.id,

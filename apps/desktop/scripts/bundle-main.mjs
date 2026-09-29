@@ -27,7 +27,7 @@
  * left alone because they don't import workspace packages.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -38,6 +38,9 @@ const ENTRY = path.join(DESKTOP_DIR, 'src', 'main.ts');
 const OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'main.js');
 const FS_IPC_ENTRY = path.join(DESKTOP_DIR, 'src', 'fs-ipc.ts');
 const FS_IPC_OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'fs-ipc.js');
+const ISLAND_RENDERER_ENTRY = path.join(DESKTOP_DIR, 'src', 'island-renderer.ts');
+const ISLAND_RENDERER_OUT_FILE = path.join(DESKTOP_DIR, 'dist', 'island-renderer.js');
+const ISLAND_STATIC_FILES = ['island.html', 'island.css'];
 
 /**
  * Bun walks upward from the input file looking for
@@ -142,6 +145,14 @@ if (!existsSync(FS_IPC_OUT_FILE)) {
   console.error(`bundle-main: dist/fs-ipc.js not found — did tsc run first?`);
   process.exit(1);
 }
+for (const file of ISLAND_STATIC_FILES) {
+  const source = path.join(DESKTOP_DIR, 'src', file);
+  if (!existsSync(source)) {
+    console.error(`bundle-main: ${file} not found: ${source}`);
+    process.exit(1);
+  }
+  copyFileSync(source, path.join(DESKTOP_DIR, 'dist', file));
+}
 
 // Externals: anything that's a real native module Electron ships, plus
 // the desktop's own runtime npm dependencies (node_modules-resolved at
@@ -215,12 +226,12 @@ if (desktopSentryDsn) {
 // directly to CreateProcess on Windows / execvp on Unix. Bun receives one
 // argv entry `__SHOGO_WORKER_VERSION__="0.0.0"` with the inner quotes intact,
 // regardless of platform.
-function buildDesktopCjsBundle({ entry, outfile, minBytes, label, defines = [] }) {
+function buildDesktopBundle({ entry, outfile, minBytes, label, defines = [], target = 'node', format = 'cjs' }) {
   const args = [
     'build',
     entry,
-    '--target', 'node',
-    '--format', 'cjs',
+    '--target', target,
+    '--format', format,
     '--outfile', outfile,
     // DO NOT add `--sourcemap` here. With `--outfile`, any `--sourcemap` mode
     // that produces a separate `.map` turns the build into a *multiple-output*
@@ -254,7 +265,7 @@ function buildDesktopCjsBundle({ entry, outfile, minBytes, label, defines = [] }
   console.log(`[bundle-main] ✓ wrote ${path.relative(DESKTOP_DIR, outfile)} (${sizeKb} KB)`);
 }
 
-buildDesktopCjsBundle({
+buildDesktopBundle({
   entry: ENTRY,
   outfile: OUT_FILE,
   minBytes: 50 * 1024,
@@ -264,11 +275,21 @@ buildDesktopCjsBundle({
     ['__SHOGO_DESKTOP_SENTRY_DSN__', desktopSentryDsn],
   ],
 });
-buildDesktopCjsBundle({
+buildDesktopBundle({
   entry: FS_IPC_ENTRY,
   outfile: FS_IPC_OUT_FILE,
   minBytes: 20 * 1024,
   label: 'fs IPC module',
+});
+// island.html loads this as a classic script: no module loader exists in
+// that renderer, so tsc's CommonJS output can't run there.
+buildDesktopBundle({
+  entry: ISLAND_RENDERER_ENTRY,
+  outfile: ISLAND_RENDERER_OUT_FILE,
+  minBytes: 4 * 1024,
+  label: 'island renderer',
+  target: 'browser',
+  format: 'iife',
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +320,7 @@ buildDesktopCjsBundle({
 const bundleSources = [
   { file: OUT_FILE, source: readFileSync(OUT_FILE, 'utf8') },
   { file: FS_IPC_OUT_FILE, source: readFileSync(FS_IPC_OUT_FILE, 'utf8') },
+  { file: ISLAND_RENDERER_OUT_FILE, source: readFileSync(ISLAND_RENDERER_OUT_FILE, 'utf8') },
 ];
 const bundleSource = bundleSources.map(({ source }) => source).join('\n');
 const forbidden = [

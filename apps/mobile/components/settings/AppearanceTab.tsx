@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { View, Pressable } from 'react-native'
+import { useEffect, useState } from 'react'
+import { View, Pressable, Platform, Switch, TextInput } from 'react-native'
 import {
   Sun as SunIcon,
   Moon as MoonIcon,
@@ -51,9 +52,34 @@ function AppearanceRow({
   )
 }
 
+interface IslandConfig {
+  enabled: boolean
+  autoHide: boolean
+  shortcut: string
+}
+
+interface IslandDesktopBridge {
+  isDesktop?: boolean
+  getAppConfig: () => Promise<{ island?: IslandConfig } | null>
+  setIslandConfig: (
+    patch: Partial<IslandConfig>,
+  ) => Promise<{ ok: boolean; error?: string; config: IslandConfig }>
+  onIslandConfigChanged?: (callback: (config: IslandConfig) => void) => () => void
+}
+
+function getIslandBridge(): IslandDesktopBridge | null {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null
+  const desktop = (window as unknown as { shogoDesktop?: IslandDesktopBridge }).shogoDesktop
+  return desktop?.isDesktop ? desktop : null
+}
+
 export function AppearanceTab() {
   const { theme, setTheme } = useTheme()
   const { settings: ap, update, reset } = useAppearance()
+  const islandBridge = getIslandBridge()
+  const [islandConfig, setIslandConfig] = useState<IslandConfig | null>(null)
+  const [shortcut, setShortcut] = useState('')
+  const [islandError, setIslandError] = useState('')
   const { Sun, Moon, Monitor, RotateCcw } = useAccountSheetIcons({
     Sun: SunIcon,
     Moon: MoonIcon,
@@ -61,6 +87,33 @@ export function AppearanceTab() {
     RotateCcw: RotateCcwIcon,
   })
   const themeIconByValue = { light: Sun, dark: Moon, system: Monitor } as const
+
+  const applyIslandConfig = (config: IslandConfig) => {
+    setIslandConfig(config)
+    setShortcut(config.shortcut)
+  }
+
+  useEffect(() => {
+    if (!islandBridge) return
+    void islandBridge.getAppConfig().then((config) => {
+      if (config?.island) applyIslandConfig(config.island)
+    })
+    return islandBridge.onIslandConfigChanged?.(applyIslandConfig)
+  }, [islandBridge])
+
+  const updateIsland = async (patch: Partial<IslandConfig>) => {
+    if (!islandBridge || !islandConfig) return
+    setIslandConfig({ ...islandConfig, ...patch })
+    const result = await islandBridge.setIslandConfig(patch)
+    applyIslandConfig(result.config)
+    setIslandError(result.ok ? '' : result.error ?? 'Could not save island settings')
+  }
+
+  const commitShortcut = () => {
+    if (islandConfig && shortcut.trim() !== islandConfig.shortcut) {
+      void updateIsland({ shortcut })
+    }
+  }
 
   return (
     <View>
@@ -130,6 +183,47 @@ export function AppearanceTab() {
           </Pressable>
         </View>
       </AppearanceRow>
+
+      {islandBridge && islandConfig ? (
+        <>
+          <AppearanceSection title="Desktop Island" />
+          <AppearanceRow
+            label="Show Shogo Island"
+            description="Keep agent activity and approvals visible above other apps"
+          >
+            <Switch
+              value={islandConfig.enabled}
+              onValueChange={(enabled) => void updateIsland({ enabled })}
+            />
+          </AppearanceRow>
+          <AppearanceRow
+            label="Auto-hide when idle"
+            description="Show the island when a session is running or needs attention"
+          >
+            <Switch
+              value={islandConfig.autoHide}
+              onValueChange={(autoHide) => void updateIsland({ autoHide })}
+            />
+          </AppearanceRow>
+          <AppearanceRow
+            label="Quick chat shortcut"
+            description="Use a platform shortcut such as CommandOrControl+Shift+Space"
+          >
+            <TextInput
+              value={shortcut}
+              onChangeText={setShortcut}
+              onBlur={commitShortcut}
+              onSubmitEditing={commitShortcut}
+              className="min-w-[180px] rounded border border-border px-2 py-1 text-xs text-foreground"
+              placeholder="CommandOrControl+Shift+Space"
+              placeholderTextColor="#888"
+            />
+          </AppearanceRow>
+          {islandError ? (
+            <Text className="text-xs text-destructive mb-2 px-1">{islandError}</Text>
+          ) : null}
+        </>
+      ) : null}
 
       <Pressable
         onPress={reset}

@@ -7,11 +7,13 @@ import { readConfig, writeConfig } from './config'
 
 interface TrayOptions {
   openMeetings?: () => void
+  setIslandEnabled?: (enabled: boolean) => void
 }
 
 let tray: Tray | null = null
 let updateTimer: ReturnType<typeof setInterval> | null = null
 let openMeetings: () => void = () => {}
+let setIslandEnabled: (enabled: boolean) => void = () => {}
 
 function getTrayIcon(recording: boolean): Electron.NativeImage {
   // Use a template image for macOS menu bar (adapts to light/dark)
@@ -101,6 +103,12 @@ function buildContextMenu(): Menu {
         })
       },
     },
+    {
+      label: 'Show Island',
+      type: 'checkbox',
+      checked: config.island.enabled,
+      click: (item) => setIslandEnabled(item.checked),
+    },
     { type: 'separator' },
     {
       label: 'Open Meetings',
@@ -135,6 +143,7 @@ function refreshTray(): void {
 
 export function createTray(options: TrayOptions = {}): void {
   if (options.openMeetings) openMeetings = options.openMeetings
+  if (options.setIslandEnabled) setIslandEnabled = options.setIslandEnabled
   if (tray) return
 
   tray = new Tray(getTrayIcon(false))
