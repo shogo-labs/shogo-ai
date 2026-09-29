@@ -2,7 +2,10 @@ import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { gzipSync } from 'node:zlib'
 import { getLlmCaptureBucket, getLlmCaptureS3Client } from '../s3'
 
-const MAX_BUFFER_BYTES = 8 * 1024 * 1024
+const FLUSH_AT_BYTES = 8 * 1024 * 1024
+// Records keep arriving while a flush is uploading, so the drop threshold must
+// sit well above the flush threshold or an in-flight upload forces drops.
+const MAX_BUFFER_BYTES = Number(process.env.PROXY_CAPTURE_ARCHIVE_BUFFER_BYTES || 64 * 1024 * 1024)
 const FLUSH_INTERVAL_MS = 30_000
 
 interface QueuedRecord {
@@ -94,7 +97,7 @@ export function enqueueArchiveRecord(record: Record<string, unknown>, now = new 
     droppedRecords += 1
     console.warn('[ProxyCapture] Archive buffer full; dropping oldest capture')
   }
-  if (queuedBytes >= MAX_BUFFER_BYTES) void flushArchive()
+  if (queuedBytes >= FLUSH_AT_BYTES) void flushArchive()
 }
 
 export async function flushArchive(): Promise<void> {
