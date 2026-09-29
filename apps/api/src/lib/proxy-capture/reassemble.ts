@@ -9,6 +9,7 @@ interface StreamAccumulator {
   reasoningItems: unknown[]
   stopReason: string | null
   toolCalls: Array<{ id?: string; name?: string; arguments: string }>
+  snapshotToolArgs: Set<number>
   usage: Record<string, number>
   errorType: string | null
   truncated: boolean
@@ -31,7 +32,28 @@ function addToolCall(state: StreamAccumulator, index: number, patch: { id?: stri
   const call = state.toolCalls[index] || { arguments: '' }
   if (patch.id) call.id = patch.id
   if (patch.name) call.name = call.name ? call.name + patch.name : patch.name
-  if (patch.arguments) call.arguments = appendLimited(call.arguments, patch.arguments, state)
+  if (patch.arguments) {
+    if (state.snapshotToolArgs.delete(index)) call.arguments = ''
+    call.arguments = appendLimited(call.arguments, patch.arguments, state)
+  }
+  state.toolCalls[index] = call
+}
+
+/**
+ * Record a complete tool-call snapshot (Anthropic `content_block_start`,
+ * Responses `output_item.*` / `response.completed`). Snapshots replace rather
+ * than append, and a snapshot's arguments are discarded as soon as a streamed
+ * argument delta arrives for the same index — Anthropic always opens a
+ * tool_use block with `input: {}` before streaming the real JSON.
+ */
+function setToolCallSnapshot(state: StreamAccumulator, index: number, snapshot: { id?: string; name?: string; arguments?: string }): void {
+  const call = state.toolCalls[index] || { arguments: '' }
+  if (snapshot.id) call.id = snapshot.id
+  if (snapshot.name) call.name = snapshot.name
+  if (snapshot.arguments && (!call.arguments || state.snapshotToolArgs.has(index) || snapshot.arguments.length >= call.arguments.length)) {
+    call.arguments = snapshot.arguments
+    state.snapshotToolArgs.add(index)
+  }
   state.toolCalls[index] = call
 }
 
@@ -96,7 +118,7 @@ function consumeEvent(state: StreamAccumulator, format: Exclude<CaptureFormat, '
     if (event.type === 'content_block_start') {
       const block = event.content_block || {}
       if (block.type === 'tool_use') {
-        addToolCall(state, event.index || 0, {
+        setToolCallSnapshot(state, event.index || 0, {
           id: block.id,
           name: block.name,
           arguments: block.input ? JSON.stringify(block.input) : '',
@@ -134,22 +156,23 @@ function consumeEvent(state: StreamAccumulator, format: Exclude<CaptureFormat, '
   updateUsage(state, event.response?.usage || event.usage)
   if (event.type === 'response.completed') {
     state.stopReason = event.response?.status || state.stopReason
-    for (const item of event.response?.output || []) {
+    const output: any[] = event.response?.output || []
+    output.forEach((item, outputIndex) => {
       if (item?.type === 'reasoning') addReasoningItem(state, item)
       if (item?.type === 'function_call') {
-        addToolCall(state, item.output_index || 0, {
+        setToolCallSnapshot(state, outputIndex, {
           id: item.call_id || item.id,
           name: item.name,
           arguments: item.arguments,
         })
       }
-    }
+    })
   }
   if (event.type === 'response.output_item.added' || event.type === 'response.output_item.done') {
     const item = event.item
     if (item?.type === 'reasoning') addReasoningItem(state, item)
     if (item?.type === 'function_call') {
-      addToolCall(state, item.output_index || event.output_index || 0, {
+      setToolCallSnapshot(state, event.output_index || 0, {
         id: item.call_id || item.id,
         name: item.name,
         arguments: item.arguments,
@@ -163,11 +186,7 @@ function consumeEvent(state: StreamAccumulator, format: Exclude<CaptureFormat, '
     state.reasoning = appendLimited(state.reasoning, event.delta, state)
   }
   if (event.type === 'response.function_call_arguments.delta') {
-    const index = event.output_index || event.item_id || 0
-    const numericIndex = typeof index === 'number' ? index : 0
-    addToolCall(state, numericIndex, {
-      id: event.item_id,
-      name: event.name,
+    addToolCall(state, typeof event.output_index === 'number' ? event.output_index : 0, {
       arguments: event.delta,
     })
   }
@@ -204,6 +223,7 @@ export function wrapCaptureStream(
     reasoningItems: [],
     stopReason: null,
     toolCalls: [],
+    snapshotToolArgs: new Set(),
     usage: {},
     errorType: null,
     truncated: false,

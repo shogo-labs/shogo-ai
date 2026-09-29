@@ -152,6 +152,16 @@ function normalizeMessages(request: any): any[] {
   return normalized
 }
 
+function isJsonObjectString(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  try {
+    const parsed = JSON.parse(value)
+    return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
 function resolveReferences(value: any, blobs: Map<string, unknown>): any {
   if (Array.isArray(value)) return value.map((item) => resolveReferences(item, blobs))
   if (!value || typeof value !== 'object') return value
@@ -241,6 +251,7 @@ export function toTrainingExample(
       type: call.type || 'function',
       function: call.function || { name: call.name, arguments: call.arguments || '{}' },
     }))
+    if (!assistant.tool_calls.every((call: any) => isJsonObjectString(call.function?.arguments))) return null
   }
   const scrubbed = scrubValue({
     messages: [...requestMessages, assistant],

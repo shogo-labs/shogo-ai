@@ -16,9 +16,22 @@ let queuedBytes = 0
 let sequence = 0
 let flushPromise: Promise<void> | null = null
 let intervalStarted = false
+// Blobs and media are content-addressed and shared across records, while the
+// bucket lifecycle rule expires objects by last-modified age. Re-putting each
+// referenced object once per UTC day keeps it younger than every record that
+// points at it; the sets reset daily so they stay bounded.
 const writtenBlobs = new Set<string>()
 const writtenMedia = new Set<string>()
+let writtenDay = ''
 let droppedRecords = 0
+
+function resetDedupSetsDaily(): void {
+  const day = new Date().toISOString().slice(0, 10)
+  if (day === writtenDay) return
+  writtenDay = day
+  writtenBlobs.clear()
+  writtenMedia.clear()
+}
 
 function partition(now: Date): string {
   const region = process.env.REGION_ID || process.env.S3_REGION || process.env.AWS_REGION || 'unknown'
@@ -48,6 +61,7 @@ function startInterval(): void {
 }
 
 export function enqueueBlob(key: string, value: unknown): void {
+  resetDedupSetsDaily()
   if (writtenBlobs.has(key)) return
   writtenBlobs.add(key)
   void putObject(key, gzipSync(Buffer.from(JSON.stringify(value))), 'application/json', 'gzip').catch((error) => {
@@ -58,6 +72,7 @@ export function enqueueBlob(key: string, value: unknown): void {
 
 export function enqueueMedia(hash: string, mime: string, bytes: Buffer): void {
   const key = `v1/media/${hash}`
+  resetDedupSetsDaily()
   if (writtenMedia.has(key)) return
   writtenMedia.add(key)
   const extension = mime.split('/')[1]?.replace(/[^a-z0-9.+-]/gi, '') || 'bin'

@@ -255,9 +255,9 @@ describe('AI proxy capture integration', () => {
     expect(archive.source).toBe('cloud_runtime')
     expect(archive.endpoint).toBe('chat.completions')
     expect(archive.stream).toBe(false)
-    expect(archive.request.messages[0]).toEqual({
+    expect(archive.request.messages[0]).toMatchObject({
       role: 'system',
-      content: 'You are a helpful assistant.',
+      content: { kind: 'system', $ref: expect.stringContaining('v1/blobs/') },
     })
     expect(archive.response.choices[0].message.content).toBe('captured answer')
     expect(archive.requestHeaders.Authorization).toBeUndefined()

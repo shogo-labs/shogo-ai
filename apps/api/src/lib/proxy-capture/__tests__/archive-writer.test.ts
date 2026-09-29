@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test'
 import { gunzipSync } from 'node:zlib'
 import { resetState, state } from './test-state'
 
@@ -54,5 +54,19 @@ describe('proxy capture archive writer', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(state.sends).toHaveLength(1)
     expect(state.sends[0].input.Key).toBe('v1/blobs/test.json.gz')
+  })
+
+  test('re-puts a referenced blob on a new UTC day so lifecycle expiry never orphans it', async () => {
+    try {
+      setSystemTime(new Date('2030-01-01T23:59:00.000Z'))
+      enqueueBlob('v1/blobs/daily.json.gz', { system: 'prompt' })
+      enqueueBlob('v1/blobs/daily.json.gz', { system: 'prompt' })
+      setSystemTime(new Date('2030-01-02T00:01:00.000Z'))
+      enqueueBlob('v1/blobs/daily.json.gz', { system: 'prompt' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(state.sends.filter((send) => send.input.Key === 'v1/blobs/daily.json.gz')).toHaveLength(2)
+    } finally {
+      setSystemTime()
+    }
   })
 })
