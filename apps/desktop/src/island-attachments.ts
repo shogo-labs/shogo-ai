@@ -3,12 +3,9 @@
 
 export const ISLAND_MAX_FILES = 10
 export const ISLAND_MAX_FILE_SIZE = 10 * 1024 * 1024
-
-export interface IslandAttachment {
-  dataUrl: string
-  name: string
-  type: string
-}
+/** Project archives bypass the per-file limit (matching the composer), but
+ * are read into memory and sent over IPC, so they still need a ceiling. */
+export const ISLAND_MAX_ARCHIVE_SIZE = 250 * 1024 * 1024
 
 export function isIslandArchive(name: string, type = ''): boolean {
   const lowerName = name.toLowerCase()
@@ -22,19 +19,21 @@ export function isIslandArchive(name: string, type = ''): boolean {
   )
 }
 
+function formatMb(bytes: number): string {
+  return `${bytes / (1024 * 1024)}MB`
+}
+
 export function validateIslandFiles(
-  files: readonly Pick<File, 'name' | 'size' | 'type'>[],
+  files: readonly { name: string; size: number; type: string }[],
 ): string | null {
   if (files.length > ISLAND_MAX_FILES) {
     return `Maximum ${ISLAND_MAX_FILES} files allowed`
   }
-  const oversized = files.find(
-    (file) =>
-      !isIslandArchive(file.name, file.type) &&
-      file.size > ISLAND_MAX_FILE_SIZE,
-  )
-  if (oversized) {
-    return `File "${oversized.name}" exceeds ${ISLAND_MAX_FILE_SIZE / (1024 * 1024)}MB limit`
+  for (const file of files) {
+    const limit = isIslandArchive(file.name, file.type) ? ISLAND_MAX_ARCHIVE_SIZE : ISLAND_MAX_FILE_SIZE
+    if (file.size > limit) {
+      return `File "${file.name}" exceeds ${formatMb(limit)} limit`
+    }
   }
   return null
 }

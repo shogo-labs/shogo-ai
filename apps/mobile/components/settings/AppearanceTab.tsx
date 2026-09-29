@@ -52,16 +52,34 @@ function AppearanceRow({
   )
 }
 
+interface IslandConfig {
+  enabled: boolean
+  autoHide: boolean
+  shortcut: string
+}
+
+interface IslandDesktopBridge {
+  isDesktop?: boolean
+  getAppConfig: () => Promise<{ island?: IslandConfig } | null>
+  setIslandConfig: (
+    patch: Partial<IslandConfig>,
+  ) => Promise<{ ok: boolean; error?: string; config: IslandConfig }>
+  onIslandConfigChanged?: (callback: (config: IslandConfig) => void) => () => void
+}
+
+function getIslandBridge(): IslandDesktopBridge | null {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null
+  const desktop = (window as unknown as { shogoDesktop?: IslandDesktopBridge }).shogoDesktop
+  return desktop?.isDesktop ? desktop : null
+}
+
 export function AppearanceTab() {
   const { theme, setTheme } = useTheme()
   const { settings: ap, update, reset } = useAppearance()
-  const isDesktop = Platform.OS === 'web' && !!(window as any).shogoDesktop?.isDesktop
-  const [islandConfig, setIslandConfig] = useState<{
-    enabled: boolean
-    autoHide: boolean
-    shortcut: string
-  } | null>(null)
+  const islandBridge = getIslandBridge()
+  const [islandConfig, setIslandConfig] = useState<IslandConfig | null>(null)
   const [shortcut, setShortcut] = useState('')
+  const [islandError, setIslandError] = useState('')
   const { Sun, Moon, Monitor, RotateCcw } = useAccountSheetIcons({
     Sun: SunIcon,
     Moon: MoonIcon,
@@ -70,20 +88,31 @@ export function AppearanceTab() {
   })
   const themeIconByValue = { light: Sun, dark: Moon, system: Monitor } as const
 
-  useEffect(() => {
-    if (!isDesktop) return
-    void (window as any).shogoDesktop.getAppConfig().then((config: any) => {
-      if (!config?.island) return
-      setIslandConfig(config.island)
-      setShortcut(config.island.shortcut ?? '')
-    })
-  }, [isDesktop])
+  const applyIslandConfig = (config: IslandConfig) => {
+    setIslandConfig(config)
+    setShortcut(config.shortcut)
+  }
 
-  const updateIsland = (patch: Partial<NonNullable<typeof islandConfig>>) => {
-    if (!islandConfig) return
-    const next = { ...islandConfig, ...patch }
-    setIslandConfig(next)
-    void (window as any).shogoDesktop.setIslandConfig(patch)
+  useEffect(() => {
+    if (!islandBridge) return
+    void islandBridge.getAppConfig().then((config) => {
+      if (config?.island) applyIslandConfig(config.island)
+    })
+    return islandBridge.onIslandConfigChanged?.(applyIslandConfig)
+  }, [islandBridge])
+
+  const updateIsland = async (patch: Partial<IslandConfig>) => {
+    if (!islandBridge || !islandConfig) return
+    setIslandConfig({ ...islandConfig, ...patch })
+    const result = await islandBridge.setIslandConfig(patch)
+    applyIslandConfig(result.config)
+    setIslandError(result.ok ? '' : result.error ?? 'Could not save island settings')
+  }
+
+  const commitShortcut = () => {
+    if (islandConfig && shortcut.trim() !== islandConfig.shortcut) {
+      void updateIsland({ shortcut })
+    }
   }
 
   return (
@@ -155,7 +184,7 @@ export function AppearanceTab() {
         </View>
       </AppearanceRow>
 
-      {isDesktop && islandConfig ? (
+      {islandBridge && islandConfig ? (
         <>
           <AppearanceSection title="Desktop Island" />
           <AppearanceRow
@@ -164,7 +193,7 @@ export function AppearanceTab() {
           >
             <Switch
               value={islandConfig.enabled}
-              onValueChange={(enabled) => updateIsland({ enabled })}
+              onValueChange={(enabled) => void updateIsland({ enabled })}
             />
           </AppearanceRow>
           <AppearanceRow
@@ -173,7 +202,7 @@ export function AppearanceTab() {
           >
             <Switch
               value={islandConfig.autoHide}
-              onValueChange={(autoHide) => updateIsland({ autoHide })}
+              onValueChange={(autoHide) => void updateIsland({ autoHide })}
             />
           </AppearanceRow>
           <AppearanceRow
@@ -183,12 +212,16 @@ export function AppearanceTab() {
             <TextInput
               value={shortcut}
               onChangeText={setShortcut}
-              onEndEditing={() => updateIsland({ shortcut })}
+              onBlur={commitShortcut}
+              onSubmitEditing={commitShortcut}
               className="min-w-[180px] rounded border border-border px-2 py-1 text-xs text-foreground"
               placeholder="CommandOrControl+Shift+Space"
               placeholderTextColor="#888"
             />
           </AppearanceRow>
+          {islandError ? (
+            <Text className="text-xs text-destructive mb-2 px-1">{islandError}</Text>
+          ) : null}
         </>
       ) : null}
 

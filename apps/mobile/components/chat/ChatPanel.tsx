@@ -214,6 +214,7 @@ import {
 import {
   registerDesktopIslandSession,
   updateDesktopIslandSession,
+  type DesktopIslandSessionState,
   type IslandPendingRequest,
 } from "../../lib/desktop-island"
 import { resolveChatFilePath } from "./file-links"
@@ -6718,12 +6719,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const islandPending = useMemo<IslandPendingRequest | undefined>(() => {
     const rawQuestionArgs =
       (pendingQuestion?.tool.args as Record<string, unknown> | undefined) ?? {}
+    const questions = Array.isArray(rawQuestionArgs.questions)
+      ? rawQuestionArgs.questions
+      : []
     const firstQuestion =
-      Array.isArray(rawQuestionArgs.questions) &&
-      rawQuestionArgs.questions.length > 0 &&
-      rawQuestionArgs.questions[0] &&
-      typeof rawQuestionArgs.questions[0] === "object"
-        ? (rawQuestionArgs.questions[0] as Record<string, unknown>)
+      questions[0] && typeof questions[0] === "object"
+        ? (questions[0] as Record<string, unknown>)
         : null
     const questionOptions = Array.isArray(firstQuestion?.options)
       ? firstQuestion.options
@@ -6757,31 +6758,39 @@ const ChatPanelContent = observer(function ChatPanelContent({
             ? firstQuestion.question
             : "Shogo needs your answer",
         options: questionOptions,
+        // The island submits a bare option label, which only matches the
+        // widget's response format for one single-select question.
+        answerInApp:
+          questions.length !== 1 ||
+          firstQuestion?.multiSelect === true ||
+          questionOptions.length === 0,
       },
     }
   }, [pendingPermissionRequest, pendingQuestion])
 
   const islandReplyPreview = useMemo(() => {
-    const reply = messages
-      .slice()
-      .reverse()
-      .find((message) => (message as any).role === "assistant")
-    if (!reply) return ""
-    if (Array.isArray((reply as any).parts)) {
-      return (reply as any).parts
-        .map((part: any) =>
-          typeof part?.text === "string"
-            ? part.text
-            : typeof part?.content === "string"
-              ? part.content
-              : "",
-        )
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]
+      if (message.role !== "assistant") continue
+      return message.parts
+        .map((part) => (part.type === "text" ? part.text : ""))
         .join("")
     }
-    return typeof (reply as any).content === "string"
-      ? (reply as any).content
-      : ""
+    return ""
   }, [messages])
+
+  const islandState = useMemo<DesktopIslandSessionState>(
+    () => ({
+      projectName: featureName ?? "Project",
+      title: currentSession?.name ?? featureName ?? "Untitled chat",
+      status: isStreaming ? "running" : "idle",
+      replyPreview: islandReplyPreview,
+      pending: islandPending,
+    }),
+    [currentSession?.name, featureName, isStreaming, islandReplyPreview, islandPending],
+  )
+  const islandStateRef = useRef(islandState)
+  islandStateRef.current = islandState
 
   const islandSendRef = useRef<
     (text: string, files?: FileAttachment[]) => void | Promise<void>
@@ -6810,51 +6819,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // send, permission and ask-user paths as the in-window composer.
   useEffect(() => {
     if (!projectId || !currentSessionId) return
-    const registration = registerDesktopIslandSession({
+    return registerDesktopIslandSession({
       sessionId: currentSessionId,
       projectId,
-      projectName: featureName,
-      title: currentSession?.name ?? featureName,
-      status: isStreaming ? "running" : "idle",
-      replyPreview: islandReplyPreview,
-      pending: islandPending,
+      ...islandStateRef.current,
       sendMessage: (text, files) => islandSendRef.current(text, files),
       respondPermission: (requestId, decision, pattern) =>
         islandPermissionRef.current(requestId, decision, pattern),
       respondQuestion: (requestId, response) =>
         islandQuestionRef.current(requestId, response),
     })
-
-    return registration
   }, [currentSessionId, projectId])
 
-  // A new streaming token or activity transition updates an existing
-  // registration without forcing the session sender to be re-created.
+  // Streaming ticks and activity transitions update the existing
+  // registration instead of re-registering the session.
   useEffect(() => {
     if (!projectId || !currentSessionId) return
-    updateDesktopIslandSession({
-      sessionId: currentSessionId,
-      projectId,
-      projectName: featureName,
-      title: currentSession?.name ?? featureName,
-      status: isStreaming ? "running" : "idle",
-      replyPreview: islandReplyPreview,
-      pending: islandPending,
-      sendMessage: (text, files) => islandSendRef.current(text, files),
-      respondPermission: (requestId, decision, pattern) =>
-        islandPermissionRef.current(requestId, decision, pattern),
-      respondQuestion: (requestId, response) =>
-        islandQuestionRef.current(requestId, response),
-    })
-  }, [
-    currentSession?.name,
-    currentSessionId,
-    featureName,
-    islandPending,
-    islandReplyPreview,
-    isStreaming,
-    projectId,
-  ])
+    updateDesktopIslandSession(projectId, currentSessionId, islandState)
+  }, [currentSessionId, islandState, projectId])
 
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.

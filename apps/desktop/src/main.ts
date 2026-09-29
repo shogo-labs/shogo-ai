@@ -205,6 +205,8 @@ let islandWindow: IslandWindow | null = null
 const windowManager = new WindowManager({
   onWindowClosed: (window) => {
     closeAllForWindow(window)
+    // The island is itself a BrowserWindow, so `window-all-closed` never
+    // fires while it's alive; quit here once the last app window goes.
     if (!windowManager.hasWindows() && process.platform !== 'darwin') {
       islandWindow?.destroy()
       islandWindow = null
@@ -1161,19 +1163,10 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
-  ipcMain.handle(
-    'set-island-config',
-    (_event, patch: { enabled?: boolean; autoHide?: boolean; shortcut?: string }) => {
-      const current = readConfig()
-      const island = {
-        ...current.island,
-        ...(patch && typeof patch === 'object' ? patch : {}),
-      }
-      writeConfig({ island })
-      islandWindow?.refreshConfig()
-      return island
-    },
-  )
+  ipcMain.handle('set-island-config', (_event, patch: unknown) => {
+    if (!islandWindow) return { ok: false, error: 'Island is unavailable', config: readConfig().island }
+    return islandWindow.updateConfig(patch)
+  })
   ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
     return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
   })
@@ -1773,15 +1766,15 @@ app.whenReady().then(async () => {
     console.log('[Desktop] SHOGO_SKIP_LOCAL_SERVER=true — skipping local API (e2e mode)')
   }
 
-  islandWindow = new IslandWindow(windowManager)
   createWindow()
+  islandWindow = new IslandWindow(windowManager)
 
   if (!isCloudMode) {
     createTray({
       openMeetings: () => {
         windowManager.focusAndNavigatePrimaryWindow('/meetings')
       },
-      setIslandEnabled: (enabled) => islandWindow?.setEnabled(enabled),
+      setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
     })
     startMeetingMonitor()
     startCloudLoginHeartbeat()

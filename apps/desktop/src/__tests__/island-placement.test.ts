@@ -21,9 +21,18 @@ describe('Shogo island placement', () => {
     expect(isNotchedDisplay(notchedMac, 'win32')).toBe(false)
   })
 
-  test('hugs the top of a notched Mac', () => {
+  test('straddles the notch at menu-bar height on a notched Mac', () => {
     expect(getIslandBounds(notchedMac, 'collapsed', 'darwin')).toEqual({
-      x: 651,
+      x: 566,
+      y: 0,
+      width: 380,
+      height: 37,
+    })
+  })
+
+  test('keeps the standard pill on displays without a notch', () => {
+    expect(getIslandBounds(regularDisplay, 'collapsed', 'darwin')).toEqual({
+      x: 2775,
       y: 0,
       width: 210,
       height: 36,

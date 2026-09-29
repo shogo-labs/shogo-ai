@@ -6,6 +6,9 @@ import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
 import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
+import { DEFAULT_ISLAND_SHORTCUT, type IslandConfig } from './island-protocol'
+
+export type { IslandConfig }
 
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
@@ -32,12 +35,6 @@ export interface BugReportConfig {
   githubRepo?: string
   githubToken?: string
   maxLogLines?: number
-}
-
-export interface IslandConfig {
-  enabled: boolean
-  autoHide: boolean
-  shortcut: string
 }
 
 /** Desktop auto-update channel. `beta` tracks the newest manually published
@@ -96,7 +93,7 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
 const DEFAULT_ISLAND_CONFIG: IslandConfig = {
   enabled: true,
   autoHide: true,
-  shortcut: 'CommandOrControl+Shift+Space',
+  shortcut: DEFAULT_ISLAND_SHORTCUT,
 }
 
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {

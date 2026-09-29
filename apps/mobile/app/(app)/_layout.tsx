@@ -50,6 +50,7 @@ import { AppSidebar } from "../../components/layout/AppSidebar";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
 import { useNotificationClickRouter } from "../../lib/notifications/useNotificationClickRouter";
+import { useDesktopIslandRouter } from "../../lib/useDesktopIslandRouter";
 import { useMobilePushRegistration } from "../../lib/notifications/mobile-push-registration";
 import { useAppInstallHeartbeat } from "../../lib/app-install-heartbeat";
 import { useNotifyOnTurnComplete } from "../../lib/notifications/preferences";
@@ -156,6 +157,7 @@ function AppLayoutInner() {
   usePostHogIdentify();
   const posthog = usePostHogSafe();
   useNotificationClickRouter();
+  useDesktopIslandRouter();
   const [notifyOnTurnComplete] = useNotifyOnTurnComplete();
   useMobilePushRegistration(user?.id ?? null, notifyOnTurnComplete);
   useAppInstallHeartbeat(user?.id ?? null);

@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+//
+// Renderer half of the desktop island. Wire shapes mirror
+// apps/desktop/src/island-protocol.ts, which re-validates everything sent
+// from here.
 
 import { chatActivityEvents, chatSessionEvents } from "./chat-session-events"
 
@@ -27,12 +31,24 @@ export interface IslandQuestionRequest {
   id: string
   prompt: string
   options: Array<{ label: string; description?: string }>
+  /** Multi-question or multi-select prompts can only be answered in the app. */
+  answerInApp: boolean
 }
 
 export type IslandPendingRequest =
   | {
       kind: "permission"
       request: IslandPermissionRequest
+    }
+  | {
+      kind: "question"
+      request: IslandQuestionRequest
+    }
+
+type SnapshotPending =
+  | {
+      kind: "permission"
+      request: IslandPermissionRequest & { startedAt: number }
     }
   | {
       kind: "question"
@@ -47,7 +63,7 @@ export interface DesktopIslandSession {
   status: "idle" | "running" | "done" | "needs_approval" | "needs_answer"
   step?: string
   replyPreview?: string
-  pending?: IslandPendingRequest
+  pending?: SnapshotPending
 }
 
 export interface DesktopIslandProject {
@@ -58,6 +74,7 @@ export interface DesktopIslandProject {
 export interface DesktopIslandSnapshot {
   sessions: DesktopIslandSession[]
   recentProjects: DesktopIslandProject[]
+  notice?: string
   updatedAt: number
 }
 
@@ -89,21 +106,26 @@ export type DesktopIslandAction =
       files?: IslandFileAttachment[]
     }
 
+/** Where to route when the target project isn't mounted in this window. */
+export type DesktopIslandNavigation =
+  | { projectId: string; sessionId: string }
+  | { projectId: string; newChat: true }
+
 interface DesktopIslandBridge {
   islandUpdate?: (snapshot: DesktopIslandSnapshot) => void
   onIslandAction?: (callback: (action: DesktopIslandAction) => void) => void
-  removeIslandActionListener?: () => void
 }
 
-interface RegisteredIslandSession {
-  sessionId: string
-  projectId: string
+export interface DesktopIslandSessionState {
   projectName: string
   title: string
   status: DesktopIslandSession["status"]
   step?: string
   replyPreview?: string
   pending?: IslandPendingRequest
+}
+
+export interface DesktopIslandSessionHandlers {
   sendMessage: (text: string, files?: IslandFileAttachment[]) => void | Promise<void>
   respondPermission?: (
     requestId: string,
@@ -113,11 +135,18 @@ interface RegisteredIslandSession {
   respondQuestion?: (requestId: string, response: string) => void | Promise<void>
 }
 
+type RegisteredIslandSession = DesktopIslandSessionState &
+  DesktopIslandSessionHandlers & { sessionId: string; projectId: string }
+
 interface PendingSend {
-  target: DesktopIslandTarget
   text: string
   files?: IslandFileAttachment[]
+  label: string
+  expiry: ReturnType<typeof setTimeout>
 }
+
+export const PENDING_SEND_TTL_MS = 60_000
+const NOTICE_TTL_MS = 10_000
 
 const sessions = new Map<string, RegisteredIslandSession>()
 const activityByProject = new Map<
@@ -125,7 +154,10 @@ const activityByProject = new Map<
   { streamingSessionIds: Set<string>; completedSessionIds: Set<string> }
 >()
 const pendingSends = new Map<string, PendingSend>()
+const permissionSeenAt = new Map<string, number>()
 
+let navigator: ((navigation: DesktopIslandNavigation) => void) | null = null
+let notice: { text: string; expiresAt: number } | null = null
 let actionListenerInstalled = false
 let publishTimer: ReturnType<typeof setTimeout> | null = null
 let lastSnapshot: DesktopIslandSnapshot = {
@@ -147,6 +179,13 @@ function sessionKey(projectId: string, sessionId: string): string {
   return `session:${projectId}:${sessionId}`
 }
 
+function isProjectMounted(projectId: string): boolean {
+  for (const session of sessions.values()) {
+    if (session.projectId === projectId) return true
+  }
+  return false
+}
+
 function installActionListener(): void {
   if (actionListenerInstalled) return
   const bridge = getBridge()
@@ -166,6 +205,22 @@ function schedulePublish(): void {
   }, 50)
 }
 
+function showNotice(text: string): void {
+  notice = { text, expiresAt: Date.now() + NOTICE_TTL_MS }
+  schedulePublish()
+  setTimeout(schedulePublish, NOTICE_TTL_MS + 10)
+}
+
+function snapshotPending(pending: IslandPendingRequest | undefined): SnapshotPending | undefined {
+  if (pending?.kind !== "permission") return pending
+  let startedAt = permissionSeenAt.get(pending.request.id)
+  if (startedAt === undefined) {
+    startedAt = Date.now()
+    permissionSeenAt.set(pending.request.id, startedAt)
+  }
+  return { kind: "permission", request: { ...pending.request, startedAt } }
+}
+
 function snapshotSession(session: RegisteredIslandSession): DesktopIslandSession {
   const activity = activityByProject.get(session.projectId)
   const isStreaming = activity?.streamingSessionIds.has(session.sessionId) ?? false
@@ -177,6 +232,7 @@ function snapshotSession(session: RegisteredIslandSession): DesktopIslandSession
   else if (isStreaming) status = "running"
   else if (isCompleted) status = "done"
 
+  const pending = snapshotPending(session.pending)
   return {
     sessionId: session.sessionId,
     projectId: session.projectId,
@@ -185,40 +241,71 @@ function snapshotSession(session: RegisteredIslandSession): DesktopIslandSession
     status,
     ...(session.step ? { step: session.step } : {}),
     ...(session.replyPreview ? { replyPreview: session.replyPreview.slice(-400) } : {}),
-    ...(session.pending ? { pending: session.pending } : {}),
+    ...(pending ? { pending } : {}),
   }
 }
 
 function publishSnapshot(): void {
-  const seenProjects = new Set<string>()
+  const livePermissionIds = new Set<string>()
+  const recentProjects = new Map<string, DesktopIslandProject>()
   const nextSessions = [...sessions.values()].map((session) => {
-    seenProjects.add(session.projectId)
+    if (session.pending?.kind === "permission") livePermissionIds.add(session.pending.request.id)
+    if (!recentProjects.has(session.projectId)) {
+      recentProjects.set(session.projectId, { projectId: session.projectId, name: session.projectName })
+    }
     return snapshotSession(session)
   })
-  const recentProjects = [...sessions.values()]
-    .filter((session) => {
-      if (seenProjects.has(session.projectId)) {
-        seenProjects.delete(session.projectId)
-        return true
-      }
-      return false
-    })
-    .map((session) => ({ projectId: session.projectId, name: session.projectName }))
+  for (const id of permissionSeenAt.keys()) {
+    if (!livePermissionIds.has(id)) permissionSeenAt.delete(id)
+  }
+  if (notice && notice.expiresAt <= Date.now()) notice = null
 
   lastSnapshot = {
     sessions: nextSessions,
-    recentProjects,
+    recentProjects: [...recentProjects.values()],
+    ...(notice ? { notice: notice.text } : {}),
     updatedAt: Date.now(),
   }
   getBridge()?.islandUpdate?.(lastSnapshot)
 }
 
+function queueSend(
+  key: string,
+  message: { text: string; files?: IslandFileAttachment[] },
+  label: string,
+): void {
+  const existing = pendingSends.get(key)
+  if (existing) clearTimeout(existing.expiry)
+  const entry: PendingSend = {
+    ...message,
+    label,
+    expiry: setTimeout(() => {
+      if (pendingSends.get(key) !== entry) return
+      pendingSends.delete(key)
+      showNotice(`Couldn't deliver your message to ${label}. Open it in Shogo and try again.`)
+    }, PENDING_SEND_TTL_MS),
+  }
+  pendingSends.set(key, entry)
+}
+
+function takePendingSend(key: string): PendingSend | undefined {
+  const pending = pendingSends.get(key)
+  if (!pending) return undefined
+  clearTimeout(pending.expiry)
+  pendingSends.delete(key)
+  return pending
+}
+
 async function handleAction(action: DesktopIslandAction): Promise<void> {
   if (action.type === "open") {
-    chatSessionEvents.requestSelect({
-      projectId: action.projectId,
-      sessionId: action.sessionId,
-    })
+    if (isProjectMounted(action.projectId)) {
+      chatSessionEvents.requestSelect({
+        projectId: action.projectId,
+        sessionId: action.sessionId,
+      })
+    } else {
+      navigator?.({ projectId: action.projectId, sessionId: action.sessionId })
+    }
     return
   }
 
@@ -240,87 +327,60 @@ async function handleAction(action: DesktopIslandAction): Promise<void> {
     return
   }
 
-  if (action.type !== "send") return
-  const targetKey =
-    action.target.kind === "session"
-      ? sessionKey(action.target.projectId, action.target.sessionId)
-      : projectKey(action.target.projectId)
-  const registered =
-    action.target.kind === "session" ? sessions.get(targetKey) : undefined
+  const { target } = action
+  if (target.kind === "session") {
+    const registered = sessions.get(sessionKey(target.projectId, target.sessionId))
+    if (registered) {
+      await registered.sendMessage(action.text, action.files)
+      return
+    }
+  }
 
-  if (registered) {
-    await registered.sendMessage(action.text, action.files)
+  const mounted = isProjectMounted(target.projectId)
+  if (!mounted && !navigator) {
+    showNotice("Couldn't open that chat. Open it in Shogo and try again.")
     return
   }
 
-  pendingSends.set(targetKey, {
-    target: action.target,
-    text: action.text,
-    files: action.files,
-  })
-  if (action.target.kind === "session") {
-    chatSessionEvents.requestSelect({
-      projectId: action.target.projectId,
-      sessionId: action.target.sessionId,
-    })
+  if (target.kind === "session") {
+    queueSend(sessionKey(target.projectId, target.sessionId), action, "that chat")
+    if (mounted) chatSessionEvents.requestSelect(target)
+    else navigator?.({ projectId: target.projectId, sessionId: target.sessionId })
   } else {
-    chatSessionEvents.requestNewChat({ projectId: action.target.projectId })
+    queueSend(projectKey(target.projectId), action, "a new chat")
+    if (mounted) chatSessionEvents.requestNewChat({ projectId: target.projectId })
+    else navigator?.({ projectId: target.projectId, newChat: true })
   }
 }
 
-function consumePendingSend(
-  projectId: string,
-  sessionId: string,
-): PendingSend | undefined {
-  const directKey = sessionKey(projectId, sessionId)
-  const direct = pendingSends.get(directKey)
-  if (direct) {
-    pendingSends.delete(directKey)
-    return direct
-  }
-  return undefined
-}
-
-export interface RegisterIslandSessionOptions {
-  sessionId: string
-  projectId: string
-  projectName?: string
-  title?: string
-  status?: DesktopIslandSession["status"]
-  step?: string
-  replyPreview?: string
-  pending?: IslandPendingRequest
-  sendMessage: (text: string, files?: IslandFileAttachment[]) => void | Promise<void>
-  respondPermission?: RegisteredIslandSession["respondPermission"]
-  respondQuestion?: RegisteredIslandSession["respondQuestion"]
+/** Installed once at the app root so the island can open projects that
+ * aren't mounted in this window. */
+export function setDesktopIslandNavigator(
+  next: ((navigation: DesktopIslandNavigation) => void) | null,
+): void {
+  navigator = next
 }
 
 export function registerDesktopIslandSession(
-  options: RegisterIslandSessionOptions,
+  options: { sessionId: string; projectId: string } & Partial<DesktopIslandSessionState> &
+    DesktopIslandSessionHandlers,
 ): () => void {
   const session: RegisteredIslandSession = {
-    sessionId: options.sessionId,
-    projectId: options.projectId,
+    ...options,
     projectName: options.projectName ?? "Project",
     title: options.title ?? "Untitled chat",
     status: options.status ?? "idle",
-    step: options.step,
-    replyPreview: options.replyPreview,
-    pending: options.pending,
-    sendMessage: options.sendMessage,
-    respondPermission: options.respondPermission,
-    respondQuestion: options.respondQuestion,
   }
-  sessions.set(sessionKey(session.projectId, session.sessionId), session)
+  const key = sessionKey(session.projectId, session.sessionId)
+  sessions.set(key, session)
   schedulePublish()
 
-  const pendingSend = consumePendingSend(session.projectId, session.sessionId)
+  const pendingSend = takePendingSend(key)
   if (pendingSend) {
     void session.sendMessage(pendingSend.text, pendingSend.files)
   }
 
   return () => {
-    const key = sessionKey(session.projectId, session.sessionId)
     if (sessions.get(key) === session) {
       sessions.delete(key)
       schedulePublish()
@@ -329,21 +389,13 @@ export function registerDesktopIslandSession(
 }
 
 export function updateDesktopIslandSession(
-  options: Omit<RegisterIslandSessionOptions, "sendMessage"> & {
-    sendMessage?: RegisterIslandSessionOptions["sendMessage"]
-  },
+  projectId: string,
+  sessionId: string,
+  state: DesktopIslandSessionState,
 ): void {
-  const session = sessions.get(sessionKey(options.projectId, options.sessionId))
+  const session = sessions.get(sessionKey(projectId, sessionId))
   if (!session) return
-  session.projectName = options.projectName ?? session.projectName
-  session.title = options.title ?? session.title
-  session.status = options.status ?? session.status
-  session.step = options.step
-  session.replyPreview = options.replyPreview
-  session.pending = options.pending
-  if (options.sendMessage) session.sendMessage = options.sendMessage
-  session.respondPermission = options.respondPermission
-  session.respondQuestion = options.respondQuestion
+  Object.assign(session, state)
   schedulePublish()
 }
 
@@ -351,12 +403,14 @@ export function deliverPendingDesktopIslandNewChat(
   projectId: string,
   sessionId: string,
 ): void {
-  const pending = pendingSends.get(projectKey(projectId))
+  const pending = takePendingSend(projectKey(projectId))
   if (!pending) return
-  pendingSends.delete(projectKey(projectId))
   const session = sessions.get(sessionKey(projectId, sessionId))
-  if (session) void session.sendMessage(pending.text, pending.files)
-  else pendingSends.set(sessionKey(projectId, sessionId), pending)
+  if (session) {
+    void session.sendMessage(pending.text, pending.files)
+    return
+  }
+  queueSend(sessionKey(projectId, sessionId), pending, pending.label)
 }
 
 export function getDesktopIslandSnapshot(): DesktopIslandSnapshot {

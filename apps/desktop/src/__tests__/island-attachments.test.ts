@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
+  ISLAND_MAX_ARCHIVE_SIZE,
   ISLAND_MAX_FILE_SIZE,
   validateIslandFiles,
 } from '../island-attachments'
@@ -39,6 +40,18 @@ describe('Shogo island attachments', () => {
         },
       ]),
     ).toBeNull()
+  })
+
+  test('still caps project archives', () => {
+    expect(
+      validateIslandFiles([
+        {
+          name: 'project.zip',
+          type: 'application/zip',
+          size: ISLAND_MAX_ARCHIVE_SIZE + 1,
+        },
+      ]),
+    ).toContain('project.zip')
   })
 
   test('rejects more than ten files', () => {

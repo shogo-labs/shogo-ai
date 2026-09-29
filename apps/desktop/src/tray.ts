@@ -107,10 +107,7 @@ function buildContextMenu(): Menu {
       label: 'Show Island',
       type: 'checkbox',
       checked: config.island.enabled,
-      click: (item) => {
-        writeConfig({ island: { ...config.island, enabled: item.checked } })
-        setIslandEnabled(item.checked)
-      },
+      click: (item) => setIslandEnabled(item.checked),
     },
     { type: 'separator' },
     {
