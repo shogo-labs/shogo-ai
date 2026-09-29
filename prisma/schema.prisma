@@ -167,8 +167,8 @@ model Workspace {
   // for already-connected accounts is preserved.
   composioScope String       @default("workspace")
   // Whether proxy requests and responses may be retained for product
-  // analysis and training. "default" follows the workspace plan; "enabled"
-  // and "disabled" are explicit admin overrides.
+  // analysis and training. "default" and "enabled" both capture (on for
+  // every plan, including enterprise); only "disabled" opts the workspace out.
   trainingDataMode String    @default("default")
   // Write-ownership region for this workspace. All writes to workspace-scoped
   // rows (members, projects, billing, storage_usage, usage_wallets, etc.) are
