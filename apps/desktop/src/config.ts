@@ -6,7 +6,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
 import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
-import { DEFAULT_ISLAND_SHORTCUT, type IslandConfig } from './island-protocol'
+import { DEFAULT_ISLAND_SHORTCUT, DEFAULT_ISLAND_SOUND_VOLUME, type IslandConfig } from './island-protocol'
 
 export type { IslandConfig }
 
@@ -94,6 +94,8 @@ const DEFAULT_ISLAND_CONFIG: IslandConfig = {
   enabled: true,
   autoHide: true,
   shortcut: DEFAULT_ISLAND_SHORTCUT,
+  sounds: true,
+  soundVolume: DEFAULT_ISLAND_SOUND_VOLUME,
 }
 
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
@@ -153,6 +155,16 @@ export function readConfig(): DesktopConfig {
         typeof parsed.island?.shortcut === 'string' && parsed.island.shortcut.trim()
           ? parsed.island.shortcut
           : DEFAULT_ISLAND_CONFIG.shortcut,
+      sounds:
+        typeof parsed.island?.sounds === 'boolean'
+          ? parsed.island.sounds
+          : DEFAULT_ISLAND_CONFIG.sounds,
+      soundVolume:
+        typeof parsed.island?.soundVolume === 'number' &&
+        parsed.island.soundVolume >= 0 &&
+        parsed.island.soundVolume <= 1
+          ? parsed.island.soundVolume
+          : DEFAULT_ISLAND_CONFIG.soundVolume,
     },
     deviceId: existingDeviceId || generateDeviceId(),
     updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
