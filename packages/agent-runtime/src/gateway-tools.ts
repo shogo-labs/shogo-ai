@@ -2906,8 +2906,55 @@ function createCheckpointTool(ctx: ToolContext): AgentTool {
 // Publish Tool — deploy the app to {subdomain}.shogo.one (gated, internal-api)
 // ---------------------------------------------------------------------------
 
-/** GET the published URL a few times to confirm it serves 2xx (cold start). */
-async function verifyPublishedUrl(url: string): Promise<boolean> {
+interface PublishVerification {
+  reachable: boolean
+  /** Same-origin scripts/stylesheets the page references that don't load. */
+  brokenAssets: Array<{ url: string; problem: string }>
+}
+
+const MAX_VERIFIED_ASSETS = 10
+
+/** Same-origin `<script src>` and stylesheet/modulepreload `<link href>` URLs. */
+export function extractPageAssetUrls(html: string, pageUrl: string): string[] {
+  const origin = new URL(pageUrl).origin
+  const urls = new Set<string>()
+  const add = (raw: string | undefined) => {
+    if (!raw || raw.startsWith('data:')) return
+    try {
+      const resolved = new URL(raw, pageUrl)
+      if (resolved.origin === origin) urls.add(resolved.href)
+    } catch {
+      /* unparseable reference — the browser would skip it too */
+    }
+  }
+  for (const m of html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)) add(m[1])
+  for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = m[0]
+    if (!/\brel\s*=\s*["'](?:stylesheet|modulepreload)["']/i.test(tag)) continue
+    add(tag.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1])
+  }
+  return [...urls].slice(0, MAX_VERIFIED_ASSETS)
+}
+
+async function assetProblem(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(10_000) })
+    if (!res.ok) return `HTTP ${res.status}`
+    // A missing asset under an SPA fallback comes back 200 as index.html; the
+    // browser then refuses it as a script/stylesheet and the page renders blank.
+    if ((res.headers.get('content-type') ?? '').includes('text/html')) return 'served HTML instead of the asset'
+    return null
+  } catch (err: any) {
+    return err?.name === 'TimeoutError' ? 'timed out' : 'request failed'
+  }
+}
+
+/**
+ * GET the published URL a few times to confirm it serves (cold start), then
+ * confirm the scripts/stylesheets its HTML references actually load — a 200
+ * page whose bundle 404s (wrong asset base path) renders blank for the user.
+ */
+async function verifyPublishedSite(url: string): Promise<PublishVerification> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(url, {
@@ -2916,14 +2963,32 @@ async function verifyPublishedUrl(url: string): Promise<boolean> {
         signal: AbortSignal.timeout(15_000),
       })
       // 401/403 means the site IS live but gated (password/private) — that's a
-      // successful publish, so treat any non-5xx, non-404 as reachable.
-      if (res.status < 500 && res.status !== 404) return true
+      // successful publish, so treat any non-5xx, non-404 as reachable. Gated
+      // pages don't expose the app's HTML, so there is nothing to check further.
+      if (res.status < 500 && res.status !== 404) {
+        if (!res.ok || !(res.headers.get('content-type') ?? '').includes('text/html')) {
+          return { reachable: true, brokenAssets: [] }
+        }
+        const assets = extractPageAssetUrls(await res.text(), res.url || url)
+        let broken = await checkAssets(assets)
+        if (broken.length > 0) {
+          // One retry for assets still propagating to the edge.
+          await new Promise((r) => setTimeout(r, 2000))
+          broken = await checkAssets(broken.map((b) => b.url))
+        }
+        return { reachable: true, brokenAssets: broken }
+      }
     } catch {
       /* retry */
     }
     if (attempt < 2) await new Promise((r) => setTimeout(r, 2000))
   }
-  return false
+  return { reachable: false, brokenAssets: [] }
+}
+
+async function checkAssets(urls: string[]): Promise<Array<{ url: string; problem: string }>> {
+  const results = await Promise.all(urls.map(async (u) => ({ url: u, problem: await assetProblem(u) })))
+  return results.filter((r): r is { url: string; problem: string } => r.problem !== null)
 }
 
 function createPublishTool(ctx: ToolContext): AgentTool {
@@ -2934,7 +2999,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'First publish to a subdomain requires the Pro plan or higher. If the user may be on Free/Basic, tell them about this BEFORE starting deploy work so they are not surprised after you have already done the work — do not just attempt the tool call and hope. If the tool nonetheless returns `plan_not_allowed`, point the user to Settings > Billing to upgrade.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
-      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds — share THAT URL with the user. The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
+      'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
+      'The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -3021,9 +3087,24 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       }
 
       const url = res.data?.url ?? `https://${targetSubdomain}.shogo.one`
-      const verified = await verifyPublishedUrl(url)
+      const verification = await verifyPublishedSite(url)
       const wasRepublish = currentSubdomain != null && currentSubdomain === targetSubdomain
 
+      if (verification.brokenAssets.length > 0) {
+        const list = verification.brokenAssets.map((a) => `${a.url} (${a.problem})`).join('; ')
+        return textResult({
+          ok: true,
+          published: true,
+          url,
+          subdomain: res.data?.subdomain ?? targetSubdomain,
+          republished: wasRepublish,
+          verified: false,
+          brokenAssets: verification.brokenAssets,
+          note: `Publish deployed to ${url}, but the page will render BLANK: its HTML loads while ${verification.brokenAssets.length} script/stylesheet file(s) it references do not — ${list}. Do NOT tell the user the site is working. This almost always means the build's asset base path does not match the published site root (check \`base\` in vite.config, and any hardcoded \`/p/<id>/\` or absolute asset URLs). Fix it, rebuild, publish again, and only share the URL once publish returns verified: true.`,
+        })
+      }
+
+      const verified = verification.reachable
       return textResult({
         ok: true,
         published: true,
