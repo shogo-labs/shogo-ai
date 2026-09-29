@@ -356,8 +356,7 @@ jobs:
   e2e-local:
     # e2e/local drives the real local-mode API + Expo web (auto-sign-in,
     # personal/team workspaces, folder projects) against a throwaway SQLite
-    # DB. These specs previously only ran on developer machines, so the job is
-    # advisory (not part of the `ci` gate) until it has a flake-free history.
+    # DB. These specs previously only ran on developer machines.
     name: E2E (local mode)
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -835,7 +834,7 @@ jobs:
 
   ci:
     name: Lint, Typecheck, Test
-    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows]
+    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows, e2e-local]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -846,6 +845,7 @@ jobs:
           echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
           echo "test: ${{ needs.test.result }}"
           echo "test-windows: ${{ needs.test-windows.result }}"
-          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
+          echo "e2e-local: ${{ needs.e2e-local.result }}"
+          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.e2e-local.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
             exit 1
           fi
