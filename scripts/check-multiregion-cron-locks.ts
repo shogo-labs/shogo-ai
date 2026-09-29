@@ -614,7 +614,7 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'ProxyTurn.(turnKey,workspaceId)',
     category: 'single_tenant_upsert',
     reason:
-      'The proxy capture path upserts one summary per workspace turn key. /api/ai/* is not home-region routed, so turnKey hashes in REGION_ID: each region only ever inserts its own keys, and a turn served by two regions yields two rows instead of a replication conflict.',
+      'The proxy capture path upserts one summary per workspace turn key. proxy_turns is region-local (excluded from shogo_all_pub, see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so the unique is only ever enforced against rows this region wrote; turnKey still hashes in REGION_ID, so a turn served by two regions yields one row in each.',
   },
 ]
 

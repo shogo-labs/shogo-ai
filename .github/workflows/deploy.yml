@@ -1376,6 +1376,11 @@ jobs:
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     environment: production-us
+    # deploy-eu refreshes the US subscription after EU publishes new tables.
+    outputs:
+      oke_cluster_ocid: ${{ vars.OKE_CLUSTER_OCID }}
+      oci_region: ${{ vars.OCI_REGION }}
+      ns_system: ${{ vars.NAMESPACE_SYSTEM }}
 
     env:
       OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
@@ -2011,12 +2016,16 @@ jobs:
             < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
             || { echo "::error::region-local publication exclusion failed on US"; exit 1; }
 
+      # ENABLE first: a migration that adds columns on US before EU has them
+      # disables sub_from_us on EU with "missing replicated columns", and the
+      # same happens here in reverse. REFRESH fails on a disabled subscription.
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_eu; do
             echo "Refreshing $SUB on US..."
             kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                -c "ALTER SUBSCRIPTION ${SUB} ENABLE;" \
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on US (subscription may not exist yet)"
           done
@@ -2447,15 +2456,54 @@ jobs:
             < k8s/cnpg/logical-replication/exclude-region-local-tables.sql \
             || { echo "::error::region-local publication exclusion failed on EU"; exit 1; }
 
+      # ENABLE first: see the US job. This is the common case — US migrates
+      # first, so its new columns reach EU before EU has run the migration.
       - name: Refresh logical replication subscriptions
         run: |
           for SUB in sub_from_us; do
             echo "Refreshing $SUB on EU..."
             kubectl exec -n ${{ env.NS_SYSTEM }} "$PG_PRIMARY" -c postgres -- \
               psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+                -c "ALTER SUBSCRIPTION ${SUB} ENABLE;" \
                 -c "ALTER SUBSCRIPTION ${SUB} REFRESH PUBLICATION;" \
               || echo "::warning::REFRESH PUBLICATION failed for ${SUB} on EU (subscription may not exist yet)"
           done
+
+      # Tables this deploy created are now published on EU, but the US
+      # subscription only learns about them on a REFRESH. It must not copy
+      # data: EU's initial copy above already pulled US's rows, so a US copy
+      # would bring them straight back and fail on the primary key, disabling
+      # sub_from_eu (the 2026-09-29 incident). It must also run before the EU
+      # api rollout below, while the new tables hold no EU-written rows.
+      # Non-blocking: a failure leaves sub_from_eu trailing the publication,
+      # which the replication-monitor staleness check pages on.
+      - name: Refresh US subscription for tables published on EU
+        continue-on-error: true
+        env:
+          US_CLUSTER_OCID: ${{ needs.deploy-us.outputs.oke_cluster_ocid }}
+          US_REGION: ${{ needs.deploy-us.outputs.oci_region }}
+          US_NS_SYSTEM: ${{ needs.deploy-us.outputs.ns_system }}
+        run: |
+          set -euo pipefail
+          US_KUBECONFIG="$RUNNER_TEMP/us-kubeconfig"
+          oci ce cluster create-kubeconfig \
+            --cluster-id "$US_CLUSTER_OCID" \
+            --region "$US_REGION" \
+            --file "$US_KUBECONFIG" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          US_PRIMARY=$(kubectl --kubeconfig "$US_KUBECONFIG" get pods -n "$US_NS_SYSTEM" \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$US_PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg on US"
+            exit 1
+          fi
+          kubectl --kubeconfig "$US_KUBECONFIG" exec -n "$US_NS_SYSTEM" "$US_PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 \
+              -c "ALTER SUBSCRIPTION sub_from_eu ENABLE;" \
+              -c "ALTER SUBSCRIPTION sub_from_eu REFRESH PUBLICATION WITH (copy_data = false);" \
+            || { echo "::error::REFRESH PUBLICATION failed for sub_from_eu on US; EU writes to new tables will not reach US until it succeeds"; exit 1; }
 
       - name: Deploy Cluster Autoscaler
         run: |
