@@ -125,6 +125,13 @@ export interface ResolveVersionInput {
 export function resolveVersion(input: ResolveVersionInput): ResolvedVersion {
   const { eventName, ref, dispatchVersion, dispatchChannel, tags, commitDate } = input
 
+  // Must precede the tag-ref check: the stable-release job dispatches its beta
+  // companion with `--ref <stable tag>`. Resolving that as the stable tag made
+  // every companion another stable build that dispatched a companion of its
+  // own, looping forever and exhausting the Windows signing quota.
+  if (eventName === 'workflow_dispatch' && dispatchChannel === 'beta') {
+    return { version: dispatchVersion || resolveBetaVersion(tags, commitDate), channel: 'beta' }
+  }
   if (typeof ref === 'string' && ref.startsWith('refs/tags/v')) {
     return { version: ref.slice('refs/tags/v'.length), channel: 'stable' }
   }
