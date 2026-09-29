@@ -10,7 +10,7 @@
  *
  * Run: bun test packages/agent-runtime/src/__tests__/error-recovery.test.ts
  */
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { runAgentLoop } from '../agent-loop'
@@ -25,6 +25,18 @@ import {
 } from '../pi-adapter'
 import { createAssistantMessageEventStream } from '@mariozechner/pi-ai'
 import { MockToolTracker } from './helpers/mock-tools'
+
+// These tests assert how a failed turn surfaces, so the provider backoff tier
+// (real timers, up to minutes) is off by default here; the Layer 8 tests
+// opt back in with an explicit budget and a fake clock.
+const originalProviderRetryMaxWait = process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS
+beforeAll(() => {
+  process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS = '0'
+})
+afterAll(() => {
+  if (originalProviderRetryMaxWait === undefined) delete process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS
+  else process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS = originalProviderRetryMaxWait
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -305,7 +317,7 @@ function createScriptedStreamFn(
   return { fn, getCalls: () => calls }
 }
 
-const NO_BACKOFF = { computeDelayMs: () => 0, sleep: async () => {} }
+const NO_BACKOFF = { computeDelayMs: () => 0, sleep: async () => {}, providerBackoff: false as const }
 
 describe('runAgentLoop inference retry', () => {
   test('retryable mid-stream drop completes after retry', async () => {
@@ -436,6 +448,7 @@ describe('runAgentLoop inference retry', () => {
         sleep: async (ms) => {
           sleeps.push(ms)
         },
+        providerBackoff: false,
       },
     })
 
@@ -556,6 +569,165 @@ describe('runAgentLoop inference retry', () => {
 
     expect(result.error).toBeDefined()
     expect(getCalls()).toBe(2) // initial + 1 fast retry, then gives up — no park
+  })
+
+  function fakeBackoffClock() {
+    let clockNow = 0
+    const sleeps: number[] = []
+    return {
+      sleeps,
+      now: () => clockNow,
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+        clockNow += ms
+      },
+    }
+  }
+
+  test('provider backoff (Layer 8): rides out an overload that outlasts the fast budget, with no duplicate tool execution', async () => {
+    const tracker = new MockToolTracker()
+    const tool = tracker.createTool('read_file', 'Read a file', { content: 'file data' })
+    const { fn, getCalls } = createScriptedStreamFn([
+      buildToolUseResponse([{ name: 'read_file', arguments: { path: 'a.txt' }, id: 'toolu_1' }]),
+      { throw: '529 overloaded_error: Overloaded' },
+      { throw: '529 overloaded_error: Overloaded' },
+      { throw: '529 overloaded_error: Overloaded' },
+      { throw: '503 Service Unavailable' },
+      buildTextResponse('Here is the file summary'),
+    ])
+    const clock = fakeBackoffClock()
+    const ticks: Array<{ attempt: number; reason: string; delayMs: number }> = []
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Read a.txt',
+      tools: [tool],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        providerBackoff: {
+          maxWaitMs: 180_000,
+          computeDelayMs: (attempt) => attempt * 1_000,
+          sleep: clock.sleep,
+          now: clock.now,
+        },
+      },
+      onProviderBackoff: (info) => ticks.push({ attempt: info.attempt, reason: info.reason, delayMs: info.delayMs }),
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.text).toBe('Here is the file summary')
+    expect(tracker.getCallsFor('read_file')).toHaveLength(1)
+    // tool call + failed follow-up + 1 fast retry + 2 backoff retries that fail + 1 that succeeds
+    expect(getCalls()).toBe(6)
+    expect(ticks).toEqual([
+      { attempt: 1, reason: 'overloaded', delayMs: 1_000 },
+      { attempt: 2, reason: 'overloaded', delayMs: 2_000 },
+      { attempt: 3, reason: 'server_5xx', delayMs: 3_000 },
+    ])
+    expect(clock.sleeps).toEqual([1_000, 2_000, 3_000])
+  })
+
+  test('provider backoff: gives up at maxWaitMs and surfaces the real error, not "no output"', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'socket hang up' }])
+    const clock = fakeBackoffClock()
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        providerBackoff: {
+          maxWaitMs: 60_000,
+          computeDelayMs: () => 25_000,
+          sleep: clock.sleep,
+          now: clock.now,
+        },
+      },
+    })
+
+    // 25s + 25s + a final 10s clamped to the remaining budget, then give up.
+    expect(clock.sleeps).toEqual([25_000, 25_000, 10_000])
+    expect(getCalls()).toBe(5) // initial + 1 fast retry + 3 backoff retries
+    expect(result.error?.message).toContain('socket hang up')
+    expect(result.error?.message).not.toContain('no output')
+  })
+
+  test('provider backoff: a reachable network with a failing provider backs off instead of resetting the fast budget forever', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: '503 Service Unavailable' }])
+    const clock = fakeBackoffClock()
+    let reconnected = false
+    let probes = 0
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 2,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        connectivityWait: {
+          probeUrl: 'https://fake-health.test/health',
+          probe: async () => {
+            probes++
+            return true
+          },
+        },
+        providerBackoff: {
+          maxWaitMs: 180_000,
+          maxAttempts: 4,
+          computeDelayMs: () => 1_000,
+          sleep: clock.sleep,
+          now: clock.now,
+        },
+      },
+      onConnectivityReconnected: () => { reconnected = true },
+    })
+
+    expect(result.error).toBeDefined()
+    // initial + 2 fast retries + 4 backoff retries; the fast budget is never reset.
+    expect(getCalls()).toBe(7)
+    expect(clock.sleeps).toEqual([1_000, 1_000, 1_000, 1_000])
+    expect(probes).toBe(5) // one probe per failure after the fast budget is spent
+    expect(reconnected).toBe(false)
+  })
+
+  test('provider backoff: truncation is not retried beyond the fast budget', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: 'Anthropic stream ended before message_stop' }])
+    const clock = fakeBackoffClock()
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        providerBackoff: { maxWaitMs: 180_000, sleep: clock.sleep, now: clock.now },
+      },
+    })
+
+    expect(result.error).toBeDefined()
+    expect(getCalls()).toBe(2)
+    expect(clock.sleeps).toEqual([])
   })
 
   test('retry can be disabled via inferenceRetry: false', async () => {

@@ -38,14 +38,16 @@ import {
   resolveInferenceRetryOptions,
   detectInferenceFailure,
   stripTrailingFailedAssistants,
+  PROVIDER_BACKOFF_REASONS,
   type InferenceRetryOptions,
   type InferenceRetryInfo,
+  type ProviderBackoffInfo,
 } from './inference-retry'
 import { waitForConnectivity, type ConnectivityWaitInfo } from './connectivity'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
-export type { InferenceRetryOptions, InferenceRetryInfo }
+export type { InferenceRetryOptions, InferenceRetryInfo, ProviderBackoffInfo }
 export type { ConnectivityWaitInfo } from './connectivity'
 // Re-exported so callers surfacing a failed turn (e.g. the agent-runtime
 // gateway) classify inference errors with the SAME logic the loop used to
@@ -161,6 +163,12 @@ export interface AgentLoopOptions {
    * client can clear its "waiting for connection" banner.
    */
   onConnectivityReconnected?: () => void
+  /**
+   * Called before each provider-backoff re-issue (see `providerBackoff` on
+   * `inferenceRetry`). Backoff delays are capped at 30s, so this doubles as a
+   * heartbeat that keeps the client's stall watchdog quiet while waiting.
+   */
+  onProviderBackoff?: (info: ProviderBackoffInfo) => void
   /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
   orchestration?: OrchestrationOptions | false
   /** AbortSignal for external cancellation (e.g., user stop). */
@@ -586,13 +594,25 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // surfaced usage stays consistent with what was actually billed. Retries are
   // capped (default 2) so cost amplification is bounded.
   const discardedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  // Error text of the last failure the retry loop gave up on. Retries strip the
+  // failed assistant (and its `errorMessage`) from the transcript, so without
+  // this a give-up surfaces as "Agent produced no output" and the real cause
+  // (connection dropped, 5xx, overloaded) never reaches the user.
+  let unresolvedFailureText: string | undefined
   if (inferenceRetry && !abortTriggered) {
     let retryAttempt = 0
+    let backoffAttempt = 0
+    let backoffStartedAt: number | null = null
+    let lastFailureLength = -1
     while (true) {
       if (abortTriggered || signal?.aborted) break
 
       const failure = detectInferenceFailure(agent.state.messages, promptError)
-      if (!failure) break
+      if (!failure) {
+        unresolvedFailureText = undefined
+        break
+      }
+      unresolvedFailureText = failure.errorText
 
       const classification = classifyRetryability({
         message: failure.errorText,
@@ -619,6 +639,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         discardedUsage.cacheWrite += removedUsage.cacheWrite
         agent.state.messages = trimmed
       }
+
+      // A re-issued call succeeded and later work failed anew: the new failure
+      // gets its own backoff window rather than inheriting the old one.
+      if (lastFailureLength >= 0 && trimmed.length > lastFailureLength) {
+        backoffAttempt = 0
+        backoffStartedAt = null
+      }
+      lastFailureLength = trimmed.length
 
       if (retryAttempt < inferenceRetry.maxAttempts) {
         // Fast tier: short bounded backoff for blips (default 2 attempts,
@@ -658,44 +686,97 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       // backoff until it comes back, instead of failing the turn. Only
       // engages when a probe URL is configured (desktop's RuntimeManager
       // injects `AI_UPSTREAM_HEALTH_URL`; deployments that don't set it, or
-      // that pass `connectivityWait: false`, keep the original fail-fast
-      // behavior here).
+      // that pass `connectivityWait: false`, skip straight to Layer 8).
       const park = inferenceRetry.connectivityWait
-      if (!park) break
+      if (park) {
+        console.warn(
+          `[AgentLoop] CONNECTIVITY_PARK fast-retry budget exhausted (${inferenceRetry.maxAttempts} attempts) ` +
+            `reason=${classification.reason} — probing upstream connectivity before giving up`,
+        )
+        let parked = false
+        const parkResult = await waitForConnectivity({
+          probeUrl: park.probeUrl,
+          signal,
+          maxWaitMs: park.maxWaitMs,
+          probe: park.probe,
+          sleep: park.sleep,
+          now: park.now,
+          onWaiting: (info) => {
+            parked = true
+            try {
+              options.onConnectivityWait?.(info)
+            } catch { /* listener must not break the loop */ }
+          },
+        })
 
-      console.warn(
-        `[AgentLoop] CONNECTIVITY_PARK fast-retry budget exhausted (${inferenceRetry.maxAttempts} attempts) ` +
-          `reason=${classification.reason} — probing upstream connectivity before giving up`,
-      )
-      const parkResult = await waitForConnectivity({
-        probeUrl: park.probeUrl,
-        signal,
-        maxWaitMs: park.maxWaitMs,
-        probe: park.probe,
-        sleep: park.sleep,
-        now: park.now,
-        onWaiting: (info) => {
+        if (parkResult !== 'reconnected') {
+          console.warn(`[AgentLoop] CONNECTIVITY_PARK ended without reconnecting (result=${parkResult})`)
+          break
+        }
+
+        if (parked) {
+          console.warn('[AgentLoop] CONNECTIVITY_PARK reconnected — resuming turn')
           try {
-            options.onConnectivityWait?.(info)
+            options.onConnectivityReconnected?.()
           } catch { /* listener must not break the loop */ }
-        },
-      })
 
-      if (parkResult !== 'reconnected') {
-        console.warn(`[AgentLoop] CONNECTIVITY_PARK ended without reconnecting (result=${parkResult})`)
+          // Connectivity is back — reset the fast budget and re-issue the
+          // dropped call. Tools already executed earlier in this turn are
+          // untouched (same idempotency invariant the fast tier relies on).
+          retryAttempt = 0
+          backoffAttempt = 0
+          backoffStartedAt = null
+          promptError = undefined
+          if (abortTriggered || signal?.aborted) break
+
+          try {
+            await agent.continue()
+          } catch (err: any) {
+            promptError = err
+          }
+          continue
+        }
+        // Reachable on the first probe: the network is fine and the provider
+        // is the one failing. Resetting the fast budget here would re-issue
+        // every ~1.5s with no end, so hand off to Layer 8 instead.
+      }
+
+      // Layer 8: provider backoff. The network is up but the provider keeps
+      // failing (overloaded, 5xx, dropped connections). Keep re-issuing with
+      // longer capped backoff until the budget runs out.
+      const backoff = inferenceRetry.providerBackoff
+      if (!backoff || !PROVIDER_BACKOFF_REASONS.has(classification.reason)) break
+
+      const now = backoff.now()
+      if (backoffStartedAt === null) backoffStartedAt = now
+      const elapsedMs = now - backoffStartedAt
+      if (backoffAttempt >= backoff.maxAttempts || elapsedMs >= backoff.maxWaitMs) {
+        console.warn(
+          `[AgentLoop] PROVIDER_BACKOFF giving up after ${backoffAttempt} attempts / ${Math.round(elapsedMs / 1000)}s ` +
+            `reason=${classification.reason} error=${failure.errorText.slice(0, 160)}`,
+        )
         break
       }
 
-      console.warn('[AgentLoop] CONNECTIVITY_PARK reconnected — resuming turn')
+      backoffAttempt++
+      const delayMs = Math.max(0, Math.min(backoff.computeDelayMs(backoffAttempt), backoff.maxWaitMs - elapsedMs))
       try {
-        options.onConnectivityReconnected?.()
+        options.onProviderBackoff?.({
+          attempt: backoffAttempt,
+          reason: classification.reason,
+          delayMs,
+          elapsedMs,
+          maxWaitMs: backoff.maxWaitMs,
+          error: failure.errorText,
+        })
       } catch { /* listener must not break the loop */ }
+      console.warn(
+        `[AgentLoop] PROVIDER_BACKOFF attempt=${backoffAttempt}/${backoff.maxAttempts} reason=${classification.reason} ` +
+          `delayMs=${delayMs} elapsedMs=${elapsedMs} error=${failure.errorText.slice(0, 160)}`,
+      )
 
-      // Connectivity is back — reset the fast budget and re-issue the
-      // dropped call. Tools already executed earlier in this turn are
-      // untouched (same idempotency invariant the fast tier relies on).
-      retryAttempt = 0
       promptError = undefined
+      if (delayMs > 0) await backoff.sleep(delayMs, signal)
       if (abortTriggered || signal?.aborted) break
 
       try {
@@ -727,7 +808,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // Also extract error messages from pi-agent-core (it catches stream errors
   // internally and appends error messages instead of re-throwing).
   const coreErrorMsg = newMessages.find((m: any) => m.errorMessage)
-  const rawCoreError = (coreErrorMsg as any)?.errorMessage
+  const rawCoreError = (coreErrorMsg as any)?.errorMessage ?? (promptError ? undefined : unresolvedFailureText)
   const coreError = rawCoreError ? parseProviderError(rawCoreError) : undefined
   const implicitError =
     !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
