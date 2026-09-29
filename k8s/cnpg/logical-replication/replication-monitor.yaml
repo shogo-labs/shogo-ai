@@ -72,9 +72,12 @@ spec:
                   # under last_update_wins and poison-pill the apply worker on
                   # their workspaceId unique index. They are region-local until
                   # the single-writer work lands and they rejoin the mesh — see
-                  # docs/runbooks/usage-wallet-single-writer-plan.md. Keep this
-                  # list in sync with scripts/check-publication-drift.ts.
-                  EXCLUDED_TABLES="'storage_usage','usage_wallets'"
+                  # docs/runbooks/usage-wallet-single-writer-plan.md. proxy_turns
+                  # summarizes LLM traffic served by this region and stays next
+                  # to that region's capture bucket. Keep this list in sync with
+                  # scripts/check-publication-drift.ts and
+                  # exclude-region-local-tables.sql.
+                  EXCLUDED_TABLES="'storage_usage','usage_wallets','proxy_turns'"
 
                   echo "--- Subscription Status ---"
                   psql -X -t -A -F'|' -c "
@@ -243,9 +246,9 @@ spec:
                   if [ "$READDED" -gt 0 ]; then
                     echo "CRITICAL: $READDED region-local table(s) were re-added to the publication!"
                     echo "storage_usage / usage_wallets must stay region-local until the"
-                    echo "single-writer work lands. Re-exclude them and check whether the"
-                    echo "Publication CR re-reconciled. See"
-                    echo "docs/runbooks/usage-wallet-single-writer-plan.md."
+                    echo "single-writer work lands, and proxy_turns is region-local by"
+                    echo "design. Re-exclude them and check whether the Publication CR"
+                    echo "re-reconciled. See docs/runbooks/usage-wallet-single-writer-plan.md."
                     EXIT_RC=1
                   fi
 
