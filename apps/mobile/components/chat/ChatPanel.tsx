@@ -5070,14 +5070,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
           generateClientTurnId()
         pendingClientTurnIdRef.current = clientTurnId
 
+        // Session list reloads replace the MST node for this id, so look it up
+        // now rather than reading a render-time node that may be dead.
+        const liveSession = studioChat.chatSessionCollection.get(
+          currentSessionId,
+        ) as { name?: string; inferredName?: string } | undefined
         const bodyExtra: Record<string, unknown> = {
           featureId,
           phase,
           chatSessionId: currentSessionId,
           chatSessionName:
-            (currentSession as any)?.name ||
-            (currentSession as any)?.inferredName ||
-            undefined,
+            liveSession?.name || liveSession?.inferredName || undefined,
           workspaceId,
           userId,
           projectId,

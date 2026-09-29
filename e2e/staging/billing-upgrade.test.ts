@@ -8,7 +8,7 @@ import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
  *
  * Verifies the user-facing billing migration to USD pricing:
  *   • sign-up → free plan landing
- *   • free-plan billing page (USD pool, daily allowance copy)
+ *   • free-plan billing page (5-hour + weekly usage windows)
  *   • sidebar Upgrade-to-Pro CTA
  *   • Pro/Business/Enterprise pricing tiers
  *   • upgrade button reaches Stripe Checkout
@@ -78,18 +78,15 @@ test.describe("Billing & Upgrade Flow", () => {
 
   // ── Phase 2: Free Plan State ─────────────────────────────────────
 
-  test("free plan: billing page shows correct initial state (USD)", async () => {
+  test("free plan: billing page shows correct initial state", async () => {
     await navigateToBilling(page)
 
     await expect(page.getByText("You're on Free Plan")).toBeVisible()
-    // Free tier: no monthly pool, daily $1 resets at UTC midnight.
-    await expect(page.getByText(/\$[\d.]+ of \$[\d.]+/)).toBeVisible()
-    await expect(
-      page
-        .getByText(/Daily allowance is used before your monthly pool/i)
-        .or(page.getByText(/Daily allowance resets at midnight UTC/i))
-        .first(),
-    ).toBeVisible()
+    // Usage is time-gated by rolling 5-hour and weekly windows, shown as a
+    // percentage of each window rather than a dollar balance.
+    await expect(page.getByText("Usage limits", { exact: true })).toBeVisible()
+    await expect(page.getByText("5-hour window", { exact: true }).first()).toBeVisible()
+    await expect(page.getByText("Weekly window", { exact: true }).first()).toBeVisible()
   })
 
   test("free plan: sidebar shows Upgrade to Pro CTA", async () => {
@@ -107,28 +104,20 @@ test.describe("Billing & Upgrade Flow", () => {
 
     // v1.5.0 pricing: Basic $8/mo, Pro $20/seat, Business $40/seat, Enterprise custom.
     // Source: apps/mobile/app/(app)/billing.tsx → PLAN_PRICING.
-    // Each plan Card is wrapped in a View with a stable testID; fall back
-    // to role/name matching if the app predates the testIDs.
+    // Each plan Card is wrapped in a View with a stable testID.
     const basicCard = page.getByTestId("plan-card-basic")
     const proCard = page.getByTestId("plan-card-pro")
     const businessCard = page.getByTestId("plan-card-business")
     const enterpriseCard = page.getByTestId("plan-card-enterprise")
 
-    await expect(basicCard.or(page.getByText("Basic", { exact: true }).first())).toBeVisible()
-    await expect(proCard.or(page.getByText("Pro").first())).toBeVisible()
-    await expect(businessCard.or(page.getByText("Business", { exact: true }).first())).toBeVisible()
-    await expect(enterpriseCard.or(page.getByText("Enterprise", { exact: true }).first())).toBeVisible()
-    await expect(page.getByText("Custom", { exact: true })).toBeVisible()
-    // Dollar labels live inside each plan card (prefer testID scoping).
-    await expect(
-      basicCard.getByText("$8").first().or(page.getByText("$8").first()),
-    ).toBeVisible()
-    await expect(
-      proCard.getByText("$20").first().or(page.getByText("$20").first()),
-    ).toBeVisible()
-    await expect(
-      businessCard.getByText("$40").first().or(page.getByText("$40").first()),
-    ).toBeVisible()
+    await expect(basicCard).toBeVisible()
+    await expect(proCard).toBeVisible()
+    await expect(businessCard).toBeVisible()
+    await expect(enterpriseCard).toBeVisible()
+    await expect(enterpriseCard.getByText("Custom", { exact: true })).toBeVisible()
+    await expect(basicCard.getByText("$8", { exact: true })).toBeVisible()
+    await expect(proCard.getByText("$20", { exact: true })).toBeVisible()
+    await expect(businessCard.getByText("$40", { exact: true })).toBeVisible()
     // Pro/Business scale per-seat — the seat counter itself (not price copy)
     // is the source of truth for seat count on each card.
     await expect(proCard.getByText("Seats").first()).toBeVisible()
@@ -153,7 +142,7 @@ test.describe("Billing & Upgrade Flow", () => {
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 })
     expect(page.url()).toContain("checkout.stripe.com")
 
-    await expect(page.getByText("Subscribe to Pro")).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/Subscribe to (Shogo )?Pro/)).toBeVisible({ timeout: 15_000 })
     // v1.5.0: Pro is $20/seat/month. The exact label on Stripe Checkout
     // is "$20.00 per seat / month" so a partial "$20.00" match is enough.
     await expect(page.getByText("$20.00")).toBeVisible()
