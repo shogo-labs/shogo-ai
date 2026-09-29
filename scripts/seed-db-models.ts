@@ -55,17 +55,26 @@
  *     the model backing the public `hoshi-1.0` alias, so re-running this
  *     script also flips on audio support for Hoshi (see
  *     `resolveModelSupportsAudioInput` in apps/api/src/routes/ai-proxy.ts).
- *   - Hoshi 2.0 (`hoshi-2-0`) — a DeepSeek-V4.1-Flash custom provider with
- *     high-effort thinking enabled. Only seeded when `DEEPSEEK_API_KEY` and
- *     `SECRETS_ENCRYPTION_KEY` are configured.
+ *   - Hoshi 2.0 (`hoshi-2-0`) — DeepSeek-V4.1-Flash with high-effort thinking.
+ *     When `OPENROUTER_API_KEY` is set, a new row is created on OpenRouter
+ *     (`OPENROUTER_DEEPSEEK_MODEL`, default `deepseek/deepseek-v4.1-flash`)
+ *     and an existing row is repointed there, with DeepSeek direct kept as
+ *     `capabilities.fallback`. Provider order is not pinned unless
+ *     `OPENROUTER_DEEPSEEK_PROVIDER_ORDER` is set. Without the OpenRouter
+ *     key, the row stays on
+ *     `api.deepseek.com`. Requires `SECRETS_ENCRYPTION_KEY`. DeepSeek direct
+ *     still needs `DEEPSEEK_API_KEY` (the fallback, or the only upstream).
  *
  * Idempotent — safe to re-run (upserts by `(provider, apiModel)` / by
  * provider label). Re-running refreshes code-owned config (display names,
  * pricing, family/tier, aliases, capabilities) but never touches
- * admin-owned state on an existing row: `enabled`, `sortOrder`, `providerId`,
- * and a custom provider's `encryptedApiKey` are only set when a row is first
- * created, so re-running this script can't silently undo an admin disabling
- * a model, reordering the picker, or rotating a provider key from the UI.
+ * admin-owned state on an existing row: `enabled`, `sortOrder`, and a custom
+ * provider's `encryptedApiKey` are only set when a row is first created, so
+ * re-running this script can't silently undo an admin disabling a model,
+ * reordering the picker, or rotating a provider key from the UI. Hoshi 2.0
+ * is the exception when `OPENROUTER_API_KEY` is set: that re-run repoints
+ * `providerId` and `apiModel` at OpenRouter and records DeepSeek direct as
+ * `capabilities.fallback`. `enabled` and `sortOrder` stay untouched.
  *
  * Usage (local mode / sqlite):
  *   SHOGO_LOCAL_MODE=true SECRETS_ENCRYPTION_KEY=$(openssl rand -base64 32) \
@@ -73,7 +82,7 @@
  *
  * Hosted / Postgres:
  *   DATABASE_URL=postgres://... SECRETS_ENCRYPTION_KEY=... MIMO_API_KEY=sk-... \
- *     DEEPSEEK_API_KEY=sk-... \
+ *     DEEPSEEK_API_KEY=sk-... OPENROUTER_API_KEY=sk-or-... \
  *     bun scripts/seed-db-models.ts
  *
  * Note: the MiMo staging key shared during development MUST be rotated and set
@@ -543,24 +552,19 @@ async function seedMimo(): Promise<void> {
   console.log('[seed-db-models] Upserted MiMo v2.5 (apiModel=mimo-v2.5)')
 }
 
-async function seedDeepSeek(): Promise<void> {
-  const apiKey = process.env.DEEPSEEK_API_KEY
-  if (!apiKey) {
-    console.log(
-      '[seed-db-models] DEEPSEEK_API_KEY not set — skipping Hoshi 2.0. Add the provider + key from the super-admin "Custom Providers" form instead.',
-    )
-    return
-  }
-  if (!isSecretCryptoConfigured()) {
-    console.log('[seed-db-models] SECRETS_ENCRYPTION_KEY not configured — cannot encrypt DeepSeek key; skipping Hoshi 2.0.')
-    return
-  }
+const DEFAULT_OPENROUTER_DEEPSEEK_MODEL = 'deepseek/deepseek-v4.1-flash'
 
-  const label = 'DeepSeek'
+function stringAliases(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((alias): alias is string => typeof alias === 'string')
+}
+
+/** Upsert a bearer custom provider by label. Never rotates an existing key or re-enables a disabled row. */
+async function upsertBearerProvider(label: string, baseUrl: string, apiKey: string) {
   const existing = await (prisma as any).modelProvider.findFirst({ where: { label } })
   const providerData = {
     label,
-    baseUrl: 'https://api.deepseek.com/v1',
+    baseUrl,
     protocol: 'openai',
     authStyle: 'bearer',
     encryptedApiKey: encryptSecret(apiKey),
@@ -570,16 +574,82 @@ async function seedDeepSeek(): Promise<void> {
   const provider = existing
     ? await (prisma as any).modelProvider.update({
         where: { id: existing.id },
-        // Never clobber an admin-rotated key or an admin-toggled disable
-        // from the "Custom Providers" UI on re-run — those are admin-owned
-        // once the provider exists; only `create` sets them.
         data: omit(providerData, ['encryptedApiKey', 'enabled']),
       })
     : await (prisma as any).modelProvider.create({ data: providerData })
-  console.log(`[seed-db-models] Upserted DeepSeek provider (${provider.id})`)
+  console.log(`[seed-db-models] Upserted ${label} provider (${provider.id})`)
+  return provider
+}
 
-  const modelCommon = {
-    providerId: provider.id,
+async function seedDeepSeek(): Promise<void> {
+  const deepseekKey = process.env.DEEPSEEK_API_KEY
+  const openrouterKey = process.env.OPENROUTER_API_KEY
+  if (!deepseekKey && !openrouterKey) {
+    console.log(
+      '[seed-db-models] DEEPSEEK_API_KEY and OPENROUTER_API_KEY are unset — skipping Hoshi 2.0. Add the provider + key from the super-admin "Custom Providers" form instead.',
+    )
+    return
+  }
+  if (!isSecretCryptoConfigured()) {
+    console.log('[seed-db-models] SECRETS_ENCRYPTION_KEY not configured — cannot encrypt provider keys; skipping Hoshi 2.0.')
+    return
+  }
+
+  const deepseekProvider = deepseekKey
+    ? await upsertBearerProvider('DeepSeek', 'https://api.deepseek.com/v1', deepseekKey)
+    : null
+  const openrouterProvider = openrouterKey
+    ? await upsertBearerProvider('OpenRouter', 'https://openrouter.ai/api/v1', openrouterKey)
+    : null
+
+  const openrouterModel = process.env.OPENROUTER_DEEPSEEK_MODEL?.trim() || DEFAULT_OPENROUTER_DEEPSEEK_MODEL
+  // No pin by default. Pinning `order: [DeepSeek]` with `allow_fallbacks: false`
+  // 404s on the current OpenRouter account: guardrails remove the official
+  // DeepSeek host ("Paid model training violation"), and disabling fallbacks
+  // then removes every cheaper host. Set OPENROUTER_DEEPSEEK_PROVIDER_ORDER
+  // only after checking /models/deepseek/deepseek-v4.1-flash/endpoints.
+  const providerOrder = (process.env.OPENROUTER_DEEPSEEK_PROVIDER_ORDER || '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+  const providerRouting = providerOrder.length
+    ? {
+        order: providerOrder,
+        allow_fallbacks: process.env.OPENROUTER_DEEPSEEK_ALLOW_FALLBACKS === 'false' ? false : true,
+        ...(process.env.OPENROUTER_DEEPSEEK_DATA_COLLECTION
+          ? { data_collection: process.env.OPENROUTER_DEEPSEEK_DATA_COLLECTION }
+          : {}),
+      }
+    : undefined
+
+  const customRows = await (prisma as any).modelDefinition.findMany({ where: { provider: 'custom' } })
+  const existing = customRows.find((row: { aliases?: unknown; apiModel?: string }) =>
+    stringAliases(row.aliases).includes('hoshi-2-0') ||
+    row.apiModel === 'deepseek-flash' ||
+    row.apiModel === openrouterModel,
+  )
+
+  const useOpenRouter = Boolean(openrouterProvider)
+  const previousCapabilities =
+    existing?.capabilities && typeof existing.capabilities === 'object'
+      ? { ...(existing.capabilities as Record<string, unknown>) }
+      : {}
+  if (!providerRouting) delete previousCapabilities.openrouterProvider
+  const capabilities: Record<string, unknown> = {
+    ...previousCapabilities,
+    upstream: 'deepseek',
+    supportsAudioInput: false,
+    ...(useOpenRouter
+      ? {
+          ...(providerRouting ? { openrouterProvider: providerRouting } : {}),
+          ...(deepseekProvider
+            ? { fallback: { providerId: deepseekProvider.id, apiModel: 'deepseek-flash' } }
+            : {}),
+        }
+      : {}),
+  }
+
+  const modelFields = {
     displayName: 'Hoshi 2.0',
     shortDisplayName: 'Hoshi 2.0',
     tier: 'standard',
@@ -588,23 +658,45 @@ async function seedDeepSeek(): Promise<void> {
     maxOutputTokens: 128_000,
     contextWindow: 1_000_000,
     reasoningEffort: 'high',
-    enabled: true,
     aliases: ['hoshi-2-0'],
-    capabilities: { upstream: 'deepseek', supportsAudioInput: false },
+    capabilities,
     // Keep the user-facing Hoshi rate unchanged; provider cost is tracked
-    // separately using DeepSeek's current rates in release analytics.
+    // separately using the upstream's rates in release analytics.
     inputPerMillion: 0.15,
     cachedInputPerMillion: 0.001,
     cacheWritePerMillion: 0.15,
     outputPerMillion: 0.30,
     updatedBy: SEED_USER,
   }
-  await upsertModel(
-    { provider: 'custom', apiModel: 'deepseek-flash' },
-    { sortOrder: 1, ...modelCommon },
-    omit(modelCommon, ['enabled']),
-  )
-  console.log('[seed-db-models] Upserted Hoshi 2.0 (apiModel=deepseek-flash)')
+
+  if (existing) {
+    const routing = openrouterProvider
+      ? { providerId: openrouterProvider.id, apiModel: openrouterModel }
+      : {}
+    await (prisma as any).modelDefinition.update({
+      where: { id: existing.id },
+      data: { ...modelFields, ...routing },
+    })
+    const apiModel = useOpenRouter ? openrouterModel : existing.apiModel
+    console.log(`[seed-db-models] Updated Hoshi 2.0 (${existing.id}, apiModel=${apiModel})`)
+    return
+  }
+
+  const target = openrouterProvider ?? deepseekProvider
+  if (!target) return
+  const apiModel = useOpenRouter ? openrouterModel : 'deepseek-flash'
+  await (prisma as any).modelDefinition.create({
+    data: {
+      id: randomUUID(),
+      provider: 'custom',
+      providerId: target.id,
+      apiModel,
+      sortOrder: 1,
+      enabled: true,
+      ...modelFields,
+    },
+  })
+  console.log(`[seed-db-models] Created Hoshi 2.0 (apiModel=${apiModel})`)
 }
 
 async function seedGptLive1(): Promise<void> {
@@ -635,7 +727,7 @@ async function seedGptLive1(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-Live 1')
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   await seedOpus48()
   await seedOpus55()
   await seedOpus5()
@@ -654,9 +746,11 @@ async function main(): Promise<void> {
   console.log('[seed-db-models] Done.')
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('[seed-db-models] Failed:', err)
-    process.exit(1)
-  })
+if (import.meta.main) {
+  main()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('[seed-db-models] Failed:', err)
+      process.exit(1)
+    })
+}

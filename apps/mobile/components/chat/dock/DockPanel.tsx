@@ -71,6 +71,7 @@ export interface DockPanelProps {
   /** Suppresses the top divider — set on the first panel stacked inside a
    *  zone card so it doesn't double up with the card's own top edge. */
   isFirst?: boolean
+  flushBody?: boolean
 }
 
 export function DockPanel({
@@ -85,6 +86,7 @@ export function DockPanel({
   onToggle,
   children,
   isFirst = false,
+  flushBody = false,
 }: DockPanelProps) {
   const rotateAnimate = useMemo(
     () => (expanded ? ROTATE_OPEN : ROTATE_CLOSED),
@@ -144,7 +146,7 @@ export function DockPanel({
             animate={FADE_ANIMATE}
             exit={FADE_EXIT}
             transition={FADE_TRANSITION}
-            className="border-t border-border/50 px-3 py-2"
+            className={cn("border-t border-border/50", !flushBody && "px-3 py-2")}
           >
             {children}
           </Motion.View>

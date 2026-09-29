@@ -53,6 +53,7 @@ import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
+import { buildAccountContextPrompt, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
 import { CanvasBuildManager } from './canvas-build-manager'
 import { CanvasTypecheckGate } from './canvas-typecheck'
@@ -519,6 +520,7 @@ export class AgentGateway {
   private userTimezone: string | null = null
   /** Last Studio viewer (phone vs desktop) from the chat body. */
   private viewerContextPrompt: string | null = null
+  private accountContextPrompt: string | null = null
   /** Permission engine for local-mode security guardrails */
   private permissionEngine: PermissionEngine | null = null
   /** Callback to push permission-related SSE events to the connected client */
@@ -600,6 +602,7 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
+  private workspaceRebuild: ((projectId: string) => void) | null = null
   /**
    * Post-build `tsc --noEmit` gate. Vite/Expo transpile without
    * type-checking, so type errors (missing imports, boolean-as-component,
@@ -735,6 +738,16 @@ export class AgentGateway {
     this.workspaceDepsReady = fn
   }
 
+  /**
+   * Workspace runtimes: route buildable edits under a member folder to that
+   * member's own preview. The root CanvasBuildManager is rooted at the
+   * merged root, which has no package.json, so it can never build them.
+   */
+  setWorkspaceRebuild(memberIds: () => readonly string[], rebuild: (projectId: string) => void): void {
+    this.workspaceRebuild = rebuild
+    this.canvasFileWatcher.setWorkspaceMembers(memberIds)
+  }
+
   setUserTimezone(tz: string): void {
     this.userTimezone = tz
   }
@@ -745,6 +758,11 @@ export class AgentGateway {
   setViewerContext(raw: unknown): void {
     const viewer = parseCanvasViewer(raw)
     this.viewerContextPrompt = viewer ? buildViewerContextPrompt(viewer) : null
+  }
+
+  /** Replaced on every chat request, like setViewerContext. */
+  setAccountContext(ctx: AccountContext): void {
+    this.accountContextPrompt = buildAccountContextPrompt(ctx)
   }
 
   /** Set an eval label for log tracing (used by eval runner) */
@@ -1214,7 +1232,10 @@ export class AgentGateway {
         // host-installed node_modules is 9p-mounted into the guest.
         waitForDeps: pm ? () => pm.depsReady : undefined,
       })
-      watcher.setOnRebuild(() => this.canvasBuildManager?.triggerRebuild())
+      watcher.setOnRebuild((target) => {
+        if (target.projectId) this.workspaceRebuild?.(target.projectId)
+        else this.canvasBuildManager?.triggerRebuild()
+      })
       this.canvasBuildManager.start().then(() => {
         // If the migration rewrote main.tsx, queue a rebuild so the slim
         // version replaces the stale dist/ output.
@@ -3455,6 +3476,7 @@ export class AgentGateway {
         result.maxIterationsExhausted &&
         !result.loopBreak &&
         !result.error &&
+        !result.usageLimit &&
         !turnAbort.signal.aborted &&
         autoContinuations < maxAutoContinuations
       ) {
@@ -3481,6 +3503,16 @@ export class AgentGateway {
         contResult.iterations += result.iterations
         contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
         result = contResult
+      }
+      if (result.usageLimit && uiWriter) {
+        uiWriter.write({
+          type: 'data-usage-limit',
+          data: {
+            resetsAt: result.usageLimit.resetsAt,
+            window: result.usageLimit.window,
+            toolCallCount: result.toolCalls.length,
+          },
+        } as any)
       }
       result.newMessages = accumulatedNewMessages.filter((message) => {
         const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote
@@ -4135,6 +4167,9 @@ export class AgentGateway {
     pushDynamic('current-mode', `\n## Current Mode\nActive visual mode: **${modeLabel}**.\n`)
     if (this.viewerContextPrompt) {
       pushDynamic('viewer-context', this.viewerContextPrompt)
+    }
+    if (this.accountContextPrompt) {
+      pushDynamic('account-context', this.accountContextPrompt)
     }
 
     // 10. Dynamic workspace context (changes as files are added/removed)

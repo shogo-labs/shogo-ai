@@ -12,8 +12,9 @@ import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
  *   - Wide desktop (>=768px): the sidebar's `AccountMenu` popover
  *     (`WorkspaceMenuSection` with `isNative={false}`, "All workspaces"
  *     heading).
- *   - Narrow web (<768px): hamburger drawer -> full-page `/account` screen
- *     (`WorkspaceMenuSection` with `isNative={true}`, "Workspaces" group).
+ *   - Narrow web (<768px): `MobileWorkspaceShell`'s chat drawer ->
+ *     `MobileWorkspaceSwitcherRow` -> "Workspaces" sheet
+ *     (`WorkspaceMenuSection` with `isNative={true}`).
  *
  * Both paths funnel into `scheduleWorkspaceSwitch` /
  * `reloadAfterWorkspaceSwitch` (apps/mobile/lib/switch-workspace.ts), which
@@ -27,20 +28,11 @@ import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
  * with a generous timeout, rather than racing a fixed sleep.
  *
  * One real account is enough to get two workspaces without touching Stripe:
- * every account gets one free workspace of EACH kind — `personal` and
- * `team` (see `workspaceHooks.beforeCreate` in
- * apps/api/src/generated/workspace.hooks.ts). So a single sign-up gets:
- *   1. An implicit `kind: 'personal'` workspace from `createPersonalWorkspace`
- *      at signup time (`${user.name} Personal`).
- *   2. A second, free `kind: 'team'` workspace created via the sidebar's
- *      "Create new workspace" flow (`CreateWorkspaceModal` — free because
- *      the account doesn't own a team workspace yet; see `hasTeamWorkspace`
- *      in apps/mobile/components/layout/sidebar/AppSidebar.tsx). This is
- *      faster and far less flaky than a *second paid* workspace, which
- *      requires hosted Stripe Checkout (apps/mobile/app/(app)/new-workspace.tsx).
- *      The test account stays on the Free plan: Business/Enterprise admins
- *      get a different flow (free child workspaces pooled under their plan;
- *      see `usePooledWorkspaceCreation` in apps/mobile/hooks/).
+ * signup seeds one free workspace of EACH kind (see `createPersonalWorkspace`
+ * and `defaultTeamWorkspaceName` in apps/api/src/services/workspace.service.ts):
+ *   1. A `kind: 'personal'` workspace named `${user.name} Personal`.
+ *   2. A `kind: 'team'` workspace named `${firstName}'s Workspace`, which the
+ *      destination-first onboarding (`signUpAndOnboard`) keeps and lands in.
  *
  * Run:
  *   npx playwright test --config e2e/playwright.config.ts workspace-switch
@@ -48,11 +40,10 @@ import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
 
 const USER: TestUser = makeTestUser("WsSwitch")
 
-// `createPersonalWorkspace` (apps/api/src/services/workspace.service.ts)
-// names every signup's implicit workspace `${userName} Personal` — this is
-// deterministic, so we don't need to scrape it out of the UI at runtime.
+// Both names are deterministic (apps/api/src/services/workspace.service.ts),
+// so we don't need to scrape them out of the UI at runtime.
 const PERSONAL_WORKSPACE = `${USER.name} Personal`
-const TEAM_WORKSPACE = `${USER.name} Team`
+const TEAM_WORKSPACE = `${USER.name.split(" ")[0]}'s Workspace`
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -113,59 +104,36 @@ async function switchWorkspaceWide(page: Page, fromName: string, toName: string)
   await waitForAccountTriggerNamed(page, toName)
 }
 
-/** Narrow web (<768px): switch via the hamburger drawer -> /account screen. */
-async function switchWorkspaceNarrow(page: Page, fromName: string, toName: string) {
-  await page.goto("/")
-  await page.getByLabel("Open menu").click()
-  await waitForAccountTriggerNamed(page, fromName)
-  await accountTrigger(page, fromName).click()
-  await page.waitForURL(/\/account/, { timeout: 15_000 })
-
-  await page.getByText("Workspaces", { exact: true }).waitFor({ state: "visible", timeout: 10_000 })
-  await page.getByText(toName, { exact: true }).first().click()
-  // `/account` triggers the same full reload as the popover path; the URL
-  // itself doesn't change, so re-derive state from a clean "/" + reopen the
-  // drawer rather than trusting whatever `/account` renders mid-reload.
-  await page.waitForLoadState("load")
-
-  await page.goto("/")
-  await page.getByLabel("Open menu").click()
-  await waitForAccountTriggerNamed(page, toName)
+/** The phone drawer's workspace row (`MobileWorkspaceSwitcherRow`). */
+function mobileSwitcherRow(page: Page, currentName: string) {
+  return page.getByRole("button", {
+    name: new RegExp(`^Switch workspace\\. Current workspace ${escapeRegExp(currentName)},`),
+  })
 }
 
-/**
- * Creates the account's free `kind: 'team'` workspace via the sidebar's
- * "Create new workspace" flow. Assumes a wide (>=768px) viewport is active
- * and the account currently only owns `currentWorkspaceName` — for a
- * Free-plan account the button only opens the free `CreateWorkspaceModal`
- * (rather than routing to paid Stripe checkout) while `hasTeamWorkspace` is
- * false, i.e. before this runs. (Business/Enterprise admins always get the
- * modal, which creates a pooled child workspace instead.) See
- * `handleCreateWorkspace` in
- * apps/mobile/components/layout/sidebar/AppSidebar.tsx.
- */
-async function createFreeTeamWorkspace(
-  page: Page,
-  currentWorkspaceName: string,
-  newWorkspaceName: string,
-) {
+async function openChatDrawerAndExpectWorkspace(page: Page, name: string) {
   await page.goto("/")
-  await waitForAccountTriggerNamed(page, currentWorkspaceName)
-  await openAccountPopover(page, currentWorkspaceName)
-  await expect(page.getByText("All workspaces")).toBeVisible({ timeout: 10_000 })
+  const opener = page.getByRole("button", { name: "Open chat sessions" })
+  await opener.waitFor({ state: "visible", timeout: 20_000 })
+  // The first press can land before the shell hydrates; retry until the
+  // drawer (and the workspace row inside it) is mounted.
+  await expect(async () => {
+    if (!(await mobileSwitcherRow(page, name).isVisible())) await opener.click()
+    await expect(mobileSwitcherRow(page, name)).toBeVisible({ timeout: 3_000 })
+  }).toPass({ timeout: 25_000 })
+}
 
-  await page.getByText("Create new workspace", { exact: true }).first().click()
+/** Narrow web (<768px): switch via the chat drawer's workspace row -> Workspaces sheet. */
+async function switchWorkspaceNarrow(page: Page, fromName: string, toName: string) {
+  await openChatDrawerAndExpectWorkspace(page, fromName)
+  await mobileSwitcherRow(page, fromName).click()
 
-  const nameField = page.getByPlaceholder(/My Team, Acme Corp/)
-  await nameField.waitFor({ state: "visible", timeout: 10_000 })
-  await nameField.fill(newWorkspaceName)
-  await page.getByText("Create workspace", { exact: true }).click()
+  await page.getByText("Workspaces", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 })
+  await page.getByText(toName, { exact: true }).last().click()
+  // Switching triggers a full reload; re-derive state from a clean "/".
+  await page.waitForLoadState("load")
 
-  // The modal closes itself on a successful create; no page reload happens
-  // for workspace *creation* (only for switching), so the account trigger
-  // should flip to the new workspace once the client-side state updates.
-  await nameField.waitFor({ state: "hidden", timeout: 15_000 })
-  await waitForAccountTriggerNamed(page, newWorkspaceName)
+  await openChatDrawerAndExpectWorkspace(page, toName)
 }
 
 test.describe("Workspace switching", () => {
@@ -182,7 +150,8 @@ test.describe("Workspace switching", () => {
     await signUpAndOnboard(page, USER)
 
     await page.setViewportSize({ width: 1280, height: 800 })
-    await createFreeTeamWorkspace(page, PERSONAL_WORKSPACE, TEAM_WORKSPACE)
+    await page.goto("/")
+    await waitForAccountTriggerNamed(page, TEAM_WORKSPACE)
   })
 
   test.afterAll(async () => {
@@ -194,14 +163,14 @@ test.describe("Workspace switching", () => {
     await page.setViewportSize({ width: 1280, height: 800 })
     await page.goto("/")
 
-    await switchWorkspaceWide(page, PERSONAL_WORKSPACE, TEAM_WORKSPACE)
     await switchWorkspaceWide(page, TEAM_WORKSPACE, PERSONAL_WORKSPACE)
+    await switchWorkspaceWide(page, PERSONAL_WORKSPACE, TEAM_WORKSPACE)
   })
 
-  test("narrow web (390×844): switches both directions via the /account screen", async () => {
+  test("narrow web (390×844): switches both directions via the chat drawer's workspace sheet", async () => {
     await page.setViewportSize({ width: 390, height: 844 })
 
-    await switchWorkspaceNarrow(page, PERSONAL_WORKSPACE, TEAM_WORKSPACE)
     await switchWorkspaceNarrow(page, TEAM_WORKSPACE, PERSONAL_WORKSPACE)
+    await switchWorkspaceNarrow(page, PERSONAL_WORKSPACE, TEAM_WORKSPACE)
   })
 })

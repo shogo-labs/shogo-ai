@@ -610,6 +610,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Stamped on the redeeming key immediately after `WorkspaceGrant.create` inside the same redeem request; one-to-one with the grant we just minted.',
   },
+  {
+    key: 'ProxyTurn.(turnKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'The proxy capture path upserts one summary per workspace turn key. /api/ai/* is not home-region routed, so turnKey hashes in REGION_ID: each region only ever inserts its own keys, and a turn served by two regions yields two rows instead of a replication conflict.',
+  },
 ]
 
 // ===========================================================================

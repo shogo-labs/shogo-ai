@@ -25,6 +25,7 @@ import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 import { stampModelProvider } from '../lib/stamp-model-provider'
+import { stampWorkspacePlan } from '../lib/stamp-workspace-plan'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
@@ -58,6 +59,7 @@ import {
   markTurnStarted,
   startTurnHeartbeat,
 } from '../services/chat-turn-state.service'
+import { dispatchNext } from '../services/chat-queue-dispatcher.service'
 import { trackUsageFromStream } from './project-chat'
 
 // Same resolution as project-chat.ts / RuntimeManager: the `workspaces/`
@@ -676,6 +678,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       stampModelProvider(parsedBody)
       body = JSON.stringify(parsedBody)
     }
+    await stampWorkspacePlan(parsedBody, workspaceId)
+    body = JSON.stringify(parsedBody)
 
     // Harden "@" references before forwarding to the runtime:
     //  - workspace refs: re-derive the summary from the DB after membership;
@@ -975,11 +979,14 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             },
           ).catch((err) => console.error('[WorkspaceChat] Usage tracking error:', err)).finally(() => {
             stopTurnHeartbeat?.()
-            if (turnId) {
-              markTurnEnded(sessionId, turnId).catch((error) =>
-                console.warn(`[WorkspaceChat] Failed to clear active chat ${sessionId}:`, error),
+            const ended = turnId
+              ? markTurnEnded(sessionId, turnId)
+              : Promise.resolve()
+            void ended
+              .then(() => dispatchNext(sessionId))
+              .catch((error) =>
+                console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
               )
-            }
           })
 
           // Multi-project auto-checkpoint for the NON-anchor attached projects
@@ -1059,10 +1066,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           ),
         )
       }
-      if (activityTurnId && !streamHandedOff) {
-        markTurnEnded(sessionId, activityTurnId).catch((error) =>
-          console.warn(`[WorkspaceChat] Failed to clear abandoned active chat ${sessionId}:`, error),
-        )
+      if (!streamHandedOff) {
+        const ended = activityTurnId
+          ? markTurnEnded(sessionId, activityTurnId)
+          : Promise.resolve()
+        void ended
+          .then(() => dispatchNext(sessionId))
+          .catch((error) =>
+            console.warn(`[WorkspaceChat] Failed to finish queued chat ${sessionId}:`, error),
+          )
       }
     }
   })

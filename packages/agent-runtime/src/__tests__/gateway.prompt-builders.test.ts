@@ -272,6 +272,18 @@ describe('loadBootstrapContext profile routing', () => {
     gw.setViewerContext(undefined)
     expect((gw as any).loadBootstrapContext()).not.toContain('## Viewer')
   })
+
+  test('account context names the model and the publish gate until the next request clears it', () => {
+    const ws = makeWs('boot-account')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setAccountContext({ modelDisplayName: 'Hoshi 2.0', planId: 'free', canPublishSubdomain: false })
+    const out: string = (gw as any).loadBootstrapContext()
+    expect(out).toContain('## Account')
+    expect(out).toContain('**Hoshi 2.0** model')
+    expect(out).toMatch(/requires Pro or higher/)
+    gw.setAccountContext({})
+    expect((gw as any).loadBootstrapContext()).not.toContain('## Account')
+  })
 })
 
 // =============================================================================

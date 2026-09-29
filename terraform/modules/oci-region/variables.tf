@@ -387,6 +387,12 @@ variable "object_storage_published_apps_compartment_id" {
   default     = null
 }
 
+variable "object_storage_llm_captures_compartment_id" {
+  description = "Override compartment for the LLM capture bucket. Defaults to `var.compartment_id`."
+  type        = string
+  default     = null
+}
+
 variable "object_storage_lifecycle_service_policy_compartment_id" {
   description = "Compartment for the tenancy-scoped `Allow service objectstorage-<region> to manage object-family ...` IAM policy that lifecycle rules require. Set to `var.tenancy_id` on one env per tenancy; null on the rest. The staging env already owns this policy at tenancy scope so production envs default to null."
   type        = string

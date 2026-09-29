@@ -277,6 +277,20 @@ hundred percent of control traffic, so the order below is not optional.
    rootfs rebuild left every local snapshot stale, so no guest ever reached
    `/hydrate-stream` there to exercise the guest-subnet rule end-to-end.
 
+## Fault injection for the staging durability e2e (`METAL_E2E_FAULTS`)
+
+`e2e/staging/metal-durability.test.ts` crashes a VM and drops a suspended
+snapshot through `POST /e2e/fault` on the owning host (reached via the API's
+`/api/internal/e2e/runtime-fault` backdoor). The route is a 404 unless the host
+runs with `METAL_E2E_FAULTS=1`. Set it on **staging hosts only**:
+
+```bash
+ssh root@<staging-host> "sed -i '/^METAL_E2E_FAULTS=/d' /etc/metal-agent.env && \
+  echo 'METAL_E2E_FAULTS=1' >> /etc/metal-agent.env && systemctl restart metal-agent"
+```
+
+Without it the suite skips its fault tests rather than failing.
+
 ## After a rollout that rebuilds the rootfs
 
 A release that rebuilds the guest rootfs (`metal-agent-deploy` with
@@ -310,7 +324,9 @@ start a job. Look for `[metal-rewarm]` lines in the API logs.
 
 Candidates are managed projects with runtimes enabled, plus workspace sessions,
 active within `METAL_REWARM_SINCE_HOURS` (48), newest first, capped at
-`METAL_REWARM_MAX_RUNTIMES`. For each one:
+`METAL_REWARM_MAX_RUNTIMES`. Only workspaces whose `homeRegion` is this region
+are included: the regions share one database, and warming a workspace outside
+its home region would boot it on the wrong fleet. For each one:
 
 | State on the host | Outcome |
 | --- | --- |

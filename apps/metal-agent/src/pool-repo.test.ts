@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool, REPO_STAGING_DIR, type AssignedVm } from './pool'
+import { MetalWarmPool, REPO_STAGING_DIR, RepoHydrateRefusedError, repoKeepPaths, type AssignedVm } from './pool'
 import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
@@ -80,6 +80,21 @@ function makePool(dir: string): TestPool {
   const fakeMgr = { procCount: () => 0, isRunning: () => true } as unknown as FirecrackerVMManager
   return new TestPool(fakeMgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
 }
+
+describe('repoKeepPaths', () => {
+  test('keeps only the paths whose source backup is not older than the repo', () => {
+    expect(repoKeepPaths({ m2: 3_000, m1: 5_000, m3: 1_000, m4: 1_999 }, 2_000)).toEqual(['m1', 'm2'])
+  })
+
+  test('a same-second tie keeps the source (S3 Last-Modified is second-granular)', () => {
+    expect(repoKeepPaths({ '.': 2_000 }, 2_000)).toEqual(['.'])
+  })
+
+  test('an unknown age on either side keeps nothing (the full reset)', () => {
+    expect(repoKeepPaths({ '.': 5_000 }, null)).toEqual([])
+    expect(repoKeepPaths({ m1: null }, 1_000)).toEqual([])
+  })
+})
 
 describe('pool host-mediated repo persist', () => {
   let dir: string
@@ -192,11 +207,11 @@ describe('pool host-mediated repo persist', () => {
       const pool = makePool(dir)
       const { r, seen } = await hydrate(pool, () => new Response('{}', { status: 200 }))
 
-      expect(r).toEqual({ hydrated: true, parentEtag: '"r1"' })
+      expect(r).toEqual({ hydrated: true, parentEtag: '"r1"', keptPaths: [] })
       expect(seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated', '/pool/hydrate-url', '/pool/repo-hydrated'])
       expect(seen[0].body).toEqual({ probe: true })
       expect(seen[1].body.destDir).toBe(REPO_STAGING_DIR)
-      expect(seen[2].body).toEqual({ stagingDir: REPO_STAGING_DIR })
+      expect(seen[2].body).toEqual({ stagingDir: REPO_STAGING_DIR, timeoutMs: config.hydrateTimeoutMs })
     })
 
     test('an older guest (no /pool/repo-hydrated) gets the legacy overlay and never a staged .git', async () => {
@@ -208,6 +223,34 @@ describe('pool host-mediated repo persist', () => {
       expect(r.hydrated).toBe(true)
       expect(seen.map((s) => s.path)).toEqual(['/pool/repo-hydrated', '/pool/hydrate-url'])
       expect(seen[1].body.destDir).toBeUndefined()
+    })
+
+    test('asks the guest to keep source newer than the repo, within the host deadline', async () => {
+      const pool = makePool(dir)
+      ;(pool as any).cfg = { ...(pool as any).cfg, hydrateTimeoutMs: 1_000 }
+      const stale = { ...ref, lastModified: 1_000 }
+      const realFetch = globalThis.fetch
+      const seen: any[] = []
+      globalThis.fetch = mock((url: string, init?: RequestInit) => {
+        const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : null
+        seen.push({ path: new URL(url).pathname, body })
+        return Promise.resolve(Response.json({ ok: true, deadline: true }))
+      }) as any
+      ;(pool as any).repoRef = async () => stale
+      try {
+        const r = await (pool as any).hydrateRepo('p1', HANDLE, {}, { '.': 2_000 })
+        expect(r.keptPaths).toEqual(['.'])
+      } finally {
+        globalThis.fetch = realFetch
+      }
+      expect(seen.at(-1).body).toEqual({ stagingDir: REPO_STAGING_DIR, timeoutMs: 1_000, keepPaths: ['.'] })
+    })
+
+    test('a guest that answers with an error did not adopt, so the tree is not in doubt', async () => {
+      const pool = makePool(dir)
+      await expect(
+        hydrate(pool, (_path, body) => new Response('{}', { status: body?.stagingDir ? 504 : 200 })),
+      ).rejects.toBeInstanceOf(RepoHydrateRefusedError)
     })
 
     test('a failed swap surfaces so assign() distrusts the repo', async () => {

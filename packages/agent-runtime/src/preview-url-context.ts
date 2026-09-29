@@ -55,7 +55,7 @@ export interface PreviewUrlBlockOptions {
 const QA_GUIDANCE =
   'When the user asks you to QA / test / try the app, spawn the **browser_qa** subagent and pass this URL as the target. This block is the single source of truth for the preview URL — do not read it from `vite.config.ts`, `package.json`, or any other file; those values are overridden by the launcher.'
 const FILE_DELIVERY_GUIDANCE =
-  'For a generated file, use **share_file** and its returned download URL. In cloud/metal, use the returned `/f/` URL; in local desktop mode, the returned localhost URL is valid for the local user. Never turn a workspace file path into a preview URL.'
+  'For a generated file, use **share_file** and its returned download URL. In cloud/metal, use the exact download URL it returns; in local desktop mode, the returned localhost URL is valid for the local user. Never turn a workspace file path into a preview URL.'
 
 /**
  * Build the "Running App Preview" block, or null when there's no URL to share.

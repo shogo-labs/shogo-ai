@@ -23,6 +23,7 @@ import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import { wrapSseStreamWithKeepalive } from "@shogo/shared-runtime/sse-keepalive"
 import { stampModelProvider } from "../lib/stamp-model-provider"
+import { stampWorkspacePlan } from "../lib/stamp-workspace-plan"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -42,6 +43,9 @@ import {
   markTurnStarted,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
+import { dispatchNext } from "../services/chat-queue-dispatcher.service"
+import { countLineChanges } from "../lib/tool-line-stats"
+import { importCloudModule } from "../lib/cloud-import"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -245,6 +249,10 @@ export async function trackUsageFromStream(
   // turn's actual start time doesn't change across a resume.
   let turnStartedAt: number | undefined
   let turnCompletedAt: number | undefined
+  // The runtime keys its stream buffer by chat session, not by turn, so a
+  // newer turn on the same session replaces it. Resume must only replay the
+  // turn this tracker owns, or it overwrites this row with the next turn's parts.
+  let trackedTurnId: string | undefined
   let assistantMessageId: string | null = null
   let lastPartialPersistAt = 0
   let partialPersistInFlight: Promise<void> | null = null
@@ -572,6 +580,10 @@ export async function trackUsageFromStream(
       const startedAt = data?.data?.startedAt
       if (typeof startedAt === 'number') turnStartedAt = startedAt
     }
+    if (type === 'data-turn-start' && trackedTurnId === undefined) {
+      const turnId = data?.data?.turnId
+      if (typeof turnId === 'string' && turnId) trackedTurnId = turnId
+    }
 
     // The runtime writes `data-turn-complete` exactly once at the tail
     // of every successfully-streamed turn (including failed turns it
@@ -757,7 +769,15 @@ export async function trackUsageFromStream(
       resumeOutcome = 'failed'
     }
 
-    if (resumeRes) {
+    const resumeTurnId = resumeRes?.headers.get('X-Turn-Id') || undefined
+    if (resumeRes && resumeRes.status === 200 && trackedTurnId && resumeTurnId && resumeTurnId !== trackedTurnId) {
+      resumeOutcome = 'buffer-gone'
+      console.log(
+        `[ProjectChat] Resume for session ${chatSessionId} returned turn ${resumeTurnId}, expected ${trackedTurnId} — ` +
+          `a newer turn replaced the buffer; persisting partial`
+      )
+      try { resumeRes.body?.cancel() } catch { /* noop */ }
+    } else if (resumeRes) {
       if (resumeRes.status === 200 && resumeRes.body) {
         // Reset state — we're going to re-consume the entire turn from the
         // buffer's full replay, so any text/tool data we accumulated from
@@ -898,15 +918,25 @@ export async function trackUsageFromStream(
 
       if (session) {
         await prisma.toolCallLog.createMany({
-          data: [...toolCallMap.values()].map((tc) => ({
-            chatSessionId,
-            messageId: assistantMessageId || '',
-            toolName: tc.toolName,
-            args: tc.args != null ? JSON.stringify(tc.args) : undefined,
-            result: tc.result != null ? JSON.stringify(tc.result) : undefined,
-            duration: tc.duration,
-            status: tc.error ? ('error' as const) : ('complete' as const),
-          })),
+          data: [...toolCallMap.values()].map((tc) => {
+            const status = tc.error ? ('error' as const) : ('complete' as const)
+            const lineChanges = status === 'complete'
+              ? countLineChanges(tc.toolName, tc.args, tc.result)
+              : { linesAdded: 0, linesRemoved: 0 }
+            return {
+              chatSessionId,
+              messageId: assistantMessageId || '',
+              toolName: tc.toolName,
+              args: tc.args != null ? JSON.stringify(tc.args) : undefined,
+              result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+              duration: tc.duration,
+              status,
+              userId: options.userId && options.userId !== 'system'
+                ? options.userId
+                : undefined,
+              ...lineChanges,
+            }
+          }),
         })
         console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
       }
@@ -1110,7 +1140,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // declaration (a TDZ crash → 500 instead of a clean 402).
       let body = await c.req.text()
       let parsedBody: any = {}
-      try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
+      let bodyIsJson = false
+      try { parsedBody = JSON.parse(body); bodyIsJson = true } catch { /* not JSON, that's fine */ }
 
       // Persisted chat messages use capability URLs for attachments. The
       // runtime still expects bytes/data URLs for the current model turn, so
@@ -1227,6 +1258,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         // model route to its native provider instead of being inferred as
         // `custom` by the runtime.
         stampModelProvider(parsedBody)
+        body = JSON.stringify(parsedBody)
+      }
+      if (bodyIsJson && parsedBody && typeof parsedBody === 'object') {
+        await stampWorkspacePlan(parsedBody, project.workspaceId)
         body = JSON.stringify(parsedBody)
       }
 
@@ -1690,11 +1725,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             console.error("[ProjectChat] Usage tracking error:", err)
           ).finally(() => {
             stopTurnHeartbeat?.()
-            if (turnId) {
-              markTurnEnded(incomingChatSessionId, turnId).catch((error) =>
-                console.warn(`[ProjectChat] Failed to clear active chat ${incomingChatSessionId}:`, error),
+            const ended = turnId
+              ? markTurnEnded(incomingChatSessionId, turnId)
+              : Promise.resolve()
+            void ended
+              .then(() => dispatchNext(incomingChatSessionId))
+              .catch((error) =>
+                console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
               )
-            }
           })
 
           chatSpan.setAttribute("chat.status", response.status)
@@ -1756,9 +1794,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
               `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating cached URL`,
             )
             try {
-              const { getMetalWarmPoolController, workspaceRuntimeKey } = await import(
-                '../lib/metal-warm-pool-controller'
-              )
+              const { getMetalWarmPoolController, workspaceRuntimeKey } =
+                await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>(
+                  './metal-warm-pool-controller',
+                )
               getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
             } catch (err: any) {
               console.error(`[ProjectChat] failed to invalidate metal placement:`, err?.message ?? err)
@@ -1864,11 +1903,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
-          if (activityTurnId) {
-            markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
-              console.warn(`[ProjectChat] Failed to clear abandoned active chat ${incomingChatSessionId}:`, error),
+          const ended = activityTurnId
+            ? markTurnEnded(incomingChatSessionId, activityTurnId)
+            : Promise.resolve()
+          void ended
+            .then(() => dispatchNext(incomingChatSessionId))
+            .catch((error) =>
+              console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
             )
-          }
         }
       }
     } catch (error: any) {
@@ -2155,7 +2197,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // happens on the chat call (fast), same contract as the warm pool.
       const { isMetalAllProjects } = await import('../lib/metal-eligibility')
       if (process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalAllProjects()) {
-        const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
+        const { getMetalWarmPoolController } =
+          await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>(
+            './metal-warm-pool-controller',
+          )
         const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",

@@ -234,6 +234,10 @@ export interface MetalHostRegistration {
    * the node-agent. Absent on a host that has never rebuilt, or an agent
    * predating this field. */
   rootfsSha?: string
+  /** Commit stamped inside the host's golden rootfs (/etc/shogo-runtime-revision),
+   * i.e. what the image pull actually returned. The rootfs release gate reads
+   * this. Absent for images built before the stamp existed. */
+  rootfsRevision?: string
   capacity: { poolSize: number; memMiB: number; vcpus: number }
   /**
    * Per-VM-class capacity (Phase 1 docker project class). Absent on older
@@ -285,9 +289,9 @@ interface HostEntry extends MetalHostRegistration {
 const HOST_TTL_MS = parseInt(process.env.METAL_HOST_TTL_MS || '90000', 10)
 const ASSIGN_TIMEOUT_MS = parseInt(process.env.METAL_ASSIGN_TIMEOUT_MS || '30000', 10)
 /**
- * A suspend saves the source, repo and workspace-member backups before it
- * snapshots, which can take about a minute. Kept under the ~100s edge proxy
- * limit because the user stop route waits on it.
+ * Upper bound on a host's /stop reply, which includes the durable snapshot
+ * upload. Kept under the ~100s edge proxy limit because the user stop route
+ * waits on it.
  */
 const STOP_TIMEOUT_MS = parseInt(process.env.METAL_STOP_TIMEOUT_MS || '90000', 10)
 
@@ -474,6 +478,7 @@ export class MetalWarmPoolController {
       arch: reg.arch,
       agentVersion: reg.agentVersion,
       rootfsSha: reg.rootfsSha,
+      rootfsRevision: reg.rootfsRevision,
       capacity: reg.capacity,
       load: reg.load,
       disk: reg.disk,
@@ -968,6 +973,29 @@ export class MetalWarmPoolController {
     this.urlCache.delete(projectId)
     const host = await this.hostForProject(projectId)
     if (!host) return { suspended: false, busy: false }
+    // The host replies to /stop only after uploading the durable snapshot, but
+    // the runtime is suspended (and reports so on /status) before that upload.
+    const pollMs = parseInt(process.env.METAL_STOP_CONFIRM_POLL_MS || '3000', 10)
+    return new Promise<StopResult>((resolve) => {
+      let done = false
+      const finish = (r: StopResult) => {
+        if (done) return
+        done = true
+        resolve(r)
+      }
+      void this.requestStop(host, projectId).then(finish)
+      void (async () => {
+        while (!done) {
+          await new Promise<void>((r) => setTimeout(r, pollMs).unref?.())
+          if (done) return
+          const st = await this.getRuntimeHostStatus(projectId)
+          if (st?.state === 'suspended') finish({ suspended: true, busy: false })
+        }
+      })()
+    })
+  }
+
+  private async requestStop(host: HostEntry, projectId: string): Promise<StopResult> {
     try {
       const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/stop`, {
         method: 'POST',
@@ -986,7 +1014,19 @@ export class MetalWarmPoolController {
       const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
       return { suspended, busy, ...(memBytes !== undefined ? { memBytes } : {}) }
     } catch (err) {
-      console.warn(`[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}`)
+      // The host answers /stop only once the snapshot is uploaded, which can
+      // outlast the timeout under load; by then the VM is usually suspended.
+      const settled = await this.getRuntimeHostStatus(projectId)
+      if (settled?.state === 'suspended') {
+        console.log(
+          `[MetalPool] stop ${projectId} on ${host.hostId}: /stop outlasted ${STOP_TIMEOUT_MS}ms, host reports it suspended`,
+        )
+        return { suspended: true, busy: false }
+      }
+      console.warn(
+        `[MetalPool] stop ${projectId} on ${host.hostId} failed: ${(err as any)?.message ?? err}` +
+          (settled ? ` (host state: ${settled.state})` : ''),
+      )
       return { suspended: false, busy: false }
     }
   }
@@ -1029,6 +1069,24 @@ export class MetalWarmPoolController {
    * staging: the delete ran, but only Knative teardown fired and the metal
    * snapshot leaked until GC). Also clears routing/placement/lease. Best-effort.
    */
+  /**
+   * Staging durability e2e only: ask the host holding `runtimeKey` to crash its
+   * VM or drop its snapshot (`POST /e2e/fault`, a 404 unless the host runs
+   * with METAL_E2E_FAULTS=1).
+   */
+  async injectE2eFault(runtimeKey: string, action: string): Promise<{ status: number; body: unknown }> {
+    this.urlCache.delete(runtimeKey)
+    const host = await this.hostForProject(runtimeKey)
+    if (!host) return { status: 404, body: { ok: false, error: `no live host holds ${runtimeKey}` } }
+    const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/e2e/fault`, {
+      method: 'POST',
+      headers: this.agentHeaders(),
+      body: JSON.stringify({ projectId: runtimeKey, action }),
+      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+    })
+    return { status: res.status, body: await res.json().catch(() => ({})) }
+  }
+
   async destroyProject(projectId: string): Promise<void> {
     const targets = new Map<string, HostEntry>()
     for (const h of await this.liveHostsShared()) targets.set(h.hostId, h)
@@ -1268,6 +1326,7 @@ export class MetalWarmPoolController {
           arch: h.arch,
           agentVersion: h.agentVersion,
           rootfsSha: h.rootfsSha,
+          rootfsRevision: h.rootfsRevision,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,
@@ -1312,6 +1371,7 @@ export class MetalWarmPoolController {
           arch: h.arch,
           agentVersion: h.agentVersion,
           rootfsSha: h.rootfsSha,
+          rootfsRevision: h.rootfsRevision,
           meshIp: h.meshIp,
           agentPort: h.agentPort,
           capacity: h.capacity,

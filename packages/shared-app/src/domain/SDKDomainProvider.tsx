@@ -139,6 +139,7 @@ function createDomainFacades(store: IDomainStore) {
     studioChat: {
       chatSessionCollection: store.chatSessionCollection,
       chatMessageCollection: store.chatMessageCollection,
+      chatQueuedMessageCollection: store.chatQueuedMessageCollection,
       toolCallLogCollection: store.toolCallLogCollection,
     },
     _sdk: store,

@@ -29,6 +29,7 @@ import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -54,6 +55,7 @@ import { chatRoutes } from './routes/chat'
 import { createChatMessageEditRoutes } from './routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from './routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from './routes/chat-session-fork'
+import { chatQueuedMessageActionsRoutes } from './routes/chat-queued-message-actions'
 import { toolsProxyRoutes } from './routes/tools-proxy'
 import {
   generateTitleCompletion,
@@ -94,6 +96,7 @@ import {
   readVisibleModelsConfig,
   writeVisibleModelsConfig,
   resolvePlatformVisibleModels,
+  resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { userProfileRoutes } from './routes/local-user'
@@ -204,6 +207,7 @@ const syncRoutes: any = cloud.syncRoutes ?? emptyRouter
 const internalRoutes: any = cloud.internalRoutes ?? new Hono()
 const internalE2eRoutes: any = cloud.internalE2eRoutes ?? new Hono()
 const metalRoutes: any = cloud.metalRoutes ?? emptyRouter
+const metalE2eRoutes: any = cloud.metalE2eRoutes ?? emptyRouter
 const externalPreviewRoutes: any = cloud.externalPreviewRoutes ?? emptyRouter
 const createAdminRoutes: any = cloud.createAdminRoutes ?? emptyRouter
 const adminModelCatalogRoutes: any = cloud.adminModelCatalogRoutes ?? emptyRouter
@@ -789,6 +793,9 @@ app.use(
       // key (`shogo_sk_*`); session-cookie / runtime-token gating must not run.
       '/api/v1/',
       '/api/tools/',
+      // Shared-file downloads: the signed token in the path is the credential
+      // (verified in routes/shared-files.ts).
+      '/api/f/',
       '/api/api-keys/validate',
       '/api/marketplace',
       '/api/tech-stacks',
@@ -1641,6 +1648,7 @@ app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() })
 startAgentTaskWorker(getRuntimeManager())
 // Fire due agent-owned recurring schedules in the workspace runtime.
 startAgentScheduleWorker(getRuntimeManager())
+startChatQueueWorker()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -7793,7 +7801,7 @@ app.get('/api/workspaces/:id/visible-models', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
 
     if (allowed === null) {
@@ -7844,7 +7852,7 @@ app.put('/api/workspaces/:id/visible-models', async (c) => {
     }
 
     // Subset rule: a workspace can only narrow the platform-visible set.
-    const platform = await resolvePlatformVisibleModels()
+    const platform = await resolvePlatformVisibleModelsForRequest()
     const invalid = workspaceModelsService.modelsOutsidePlatform(rawIds, platform)
     if (invalid.length > 0) {
       return c.json(
@@ -8578,6 +8586,7 @@ app.route('/api/internal', internalRoutes)
 // /api/internal/e2e so it inherits the existing auth-skip for
 // /api/internal/* (handlers enforce their own secret-based auth).
 app.route('/api/internal/e2e', internalE2eRoutes)
+app.route('/api/internal/e2e', metalE2eRoutes())
 
 // Metal substrate routes — bare-metal Firecracker node-agents heartbeat here
 // over the WireGuard mesh (register/status). Mounted under /api/internal/metal
@@ -9037,6 +9046,7 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // more specific `/:id/truncate-from` here instead of falling through
 // to the generated `/:id` PATCH/DELETE handlers in chat-message.routes.ts.
 app.route('/api/chat-messages', createChatMessageEditRoutes())
+app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
 
 // Turn feedback (thumbs up/down) — PUT/DELETE /:id/feedback on a message,
 // GET /:id/feedback on a session (the caller's own reactions, keyed by
@@ -9135,6 +9145,7 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true
   stopAgentTaskWorker()
   stopAgentScheduleWorker()
+  stopChatQueueWorker()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain
@@ -9174,6 +9185,14 @@ async function gracefulShutdown(signal: string) {
     } else {
       console.log('[Server] All proxy connections drained')
     }
+  }
+
+  try {
+    const { flushAndStopArchive, stopProxyCaptureRetention } = await import('./lib/proxy-capture')
+    stopProxyCaptureRetention()
+    await flushAndStopArchive()
+  } catch (error) {
+    console.error('[ProxyCapture] Failed to flush capture archive during shutdown:', error)
   }
 
   stopAllPrismaStudios()
@@ -9683,6 +9702,13 @@ if (isKubernetes()) {
       startAnalyticsDigestCollector(prisma)
     } catch (err: any) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
+    }
+
+    try {
+      const { startProxyCaptureRetention } = await import('./lib/proxy-capture')
+      startProxyCaptureRetention(prisma)
+    } catch (err: any) {
+      console.error('[ProxyCapture] Failed to start retention cleanup (non-fatal):', err.message)
     }
 
     // Metal fleet reconciler — keeps the live bare-metal fleet in line with the

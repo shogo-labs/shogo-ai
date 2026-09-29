@@ -75,12 +75,23 @@ const FRONTEND_PACKAGES = [
 // Keep the longest packages at the front of the queue. Mobile is listed
 // before the remaining backend packages so it can occupy the second worker
 // as soon as apps/api finishes instead of delaying the overall tail.
-const TEST_PACKAGES = [
+// Packages whose unit tests run in CI but are not (yet) part of either
+// coverage aggregate, so adding them cannot move the badge or trip a floor.
+const UNMEASURED_PACKAGES = [
+  'apps/metal-agent',
+  'packages/agent',
+  'packages/core',
+  'packages/email',
+  'packages/voice',
+] as const
+
+export const TEST_PACKAGES = [
   'packages/agent-runtime',
   'apps/api',
   'apps/mobile',
   ...BACKEND_PACKAGES.slice(2),
   ...FRONTEND_PACKAGES.slice(1),
+  ...UNMEASURED_PACKAGES,
 ] as const
 
 // In-process e2e suites that import API/runtime modules directly (no
@@ -617,4 +628,4 @@ async function main() {
   process.exit(0)
 }
 
-main()
+if (import.meta.main) main()

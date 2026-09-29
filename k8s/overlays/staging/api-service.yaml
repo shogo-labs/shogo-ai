@@ -176,6 +176,10 @@ spec:
               value: "staging"
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-staging"
+            - name: S3_LLM_CAPTURES_BUCKET
+              value: "shogo-llm-captures-staging"
+            - name: PROXY_CAPTURE_ENABLED
+              value: "true"
             # getArtifactBucket()/getS3Bucket() in apps/api/src/lib/s3.ts require
             # S3_ARTIFACT_BUCKET or S3_SCHEMA_BUCKET, neither of which was ever set
             # here. Every artifact upload (agent avatars, thumbnails) was silently
@@ -303,6 +307,18 @@ spec:
                 secretKeyRef:
                   name: custom-domains-config
                   key: CUSTOM_DOMAIN_FALLBACK_ORIGIN
+                  optional: true
+            # Hosted e2e backdoor (apps/api/src/routes/internal-e2e.ts). Staging
+            # runs NODE_ENV=staging, so the endpoint is live whenever this
+            # secret exists; absent => every backdoor call 401s and the
+            # runtime-lifecycle e2e specs skip. Create with:
+            #   kubectl -n <ns> create secret generic e2e-bootstrap --from-literal=secret=<value>
+            # and set the same value as the GitHub secret SHOGO_E2E_BOOTSTRAP_SECRET.
+            - name: SHOGO_E2E_BOOTSTRAP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: e2e-bootstrap
+                  key: secret
                   optional: true
             - name: BETTER_AUTH_URL
               value: "https://studio.staging.shogo.ai"
@@ -613,6 +629,11 @@ spec:
             #       SHOGO_METAL_ALL_PROJECTS false
             - name: SHOGO_METAL_ALL_PROJECTS
               value: "true"
+            # How long one /assign waits on a host. A cold boot after a rootfs
+            # rebuild routinely runs past the 30s default, and a chat or render
+            # request that times out fails even though the boot is still going.
+            - name: METAL_ASSIGN_TIMEOUT_MS
+              value: "90000"
             # --- Metal fleet reconciler (auto burst scale + baseline drift) --
             # ENABLED runs the loop; ACTUATE (deliberately unset = false) keeps
             # it OBSERVE-only: it logs the plan it WOULD run and emits

@@ -18,11 +18,12 @@ import {
   Pencil,
   Trash2,
   WifiOff,
+  AlertTriangle,
   Image as ImageIcon,
   ListOrdered,
 } from "lucide-react-native"
 import { useDockPanel } from "../useDockPanel"
-import type { DockPanelDescriptor } from "../../../../lib/chat-dock-store"
+import type { DockPanelDescriptor, DockIconComponent } from "../../../../lib/chat-dock-store"
 import type { QueuedMessage } from "../../ChatInput"
 
 export interface QueueDockPanelProps {
@@ -31,6 +32,39 @@ export interface QueueDockPanelProps {
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
   onEditQueuedMessage?: (messageId: string) => void
   onSendQueuedMessageNow?: (messageId: string) => void
+}
+
+// Hover is CSS-only. RN-Web's JS `hovered` state goes stale when the dock
+// (bottom-anchored, so it grows upward) shifts rows under a stationary
+// cursor, highlighting whichever row used to be there.
+function QueueAction({
+  label,
+  icon: Icon,
+  destructive = false,
+  onPress,
+}: {
+  label: string
+  icon: DockIconComponent
+  destructive?: boolean
+  onPress: () => void
+}) {
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      onPress={(e) => {
+        if (e?.stopPropagation) e.stopPropagation()
+        onPress()
+      }}
+      className={cn(
+        "h-6 w-6 items-center justify-center rounded",
+        destructive
+          ? "hover:bg-destructive/20 active:bg-destructive/20"
+          : "hover:bg-muted-foreground/25 active:bg-muted-foreground/25",
+      )}
+    >
+      <Icon size={12} className="text-muted-foreground" />
+    </Pressable>
+  )
 }
 
 function QueueBody({
@@ -57,11 +91,13 @@ function QueueBody({
             onPress={() => onEditQueuedMessage?.(msg.id)}
             accessibilityLabel="Queued message"
             className={cn(
-              "group flex-row items-center gap-2 py-1.5 border-b border-border/40 last:border-b-0",
+              "group flex-row items-center gap-2 px-3 py-0.5 border-b border-border/40 last:border-b-0",
               Platform.OS === "web" && "hover:bg-muted/40",
             )}
           >
-            {msg.offline ? (
+            {msg.status === "failed" ? (
+              <AlertTriangle size={11} className="text-destructive flex-shrink-0" />
+            ) : msg.offline ? (
               <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
             ) : (
               <View className="h-3 w-3 rounded-full border border-muted-foreground/30 flex-shrink-0" />
@@ -69,14 +105,19 @@ function QueueBody({
             {previewImage && (
               <Image
                 source={{ uri: previewImage.dataUrl }}
-                className="h-7 w-7 rounded border border-border flex-shrink-0"
+                className="h-6 w-6 rounded border border-border flex-shrink-0"
                 resizeMode="cover"
               />
             )}
-            <View className="flex-1 min-w-0">
-              <Text className="text-xs text-foreground" numberOfLines={1}>
+            <View className="flex-1 min-w-0 py-1">
+              <Text className={cn("text-xs", msg.status === "failed" ? "text-destructive" : "text-foreground")} numberOfLines={1}>
                 {primaryText}
               </Text>
+              {msg.error && (
+                <Text className="text-[10px] text-destructive" numberOfLines={1}>
+                  {msg.error}
+                </Text>
+              )}
               {trimmedContent && files.length > 0 && (
                 <View className="flex-row items-center gap-1 mt-0.5">
                   <ImageIcon className="h-3 w-3 text-muted-foreground" size={10} />
@@ -96,99 +137,41 @@ function QueueBody({
                 Platform.OS === "web" && "opacity-0 group-hover:opacity-100",
               )}
             >
-              {onReorderQueuedMessage && queuedMessages.length > 1 && (
-                <>
-                  {index > 0 && (
-                    <Pressable
-                      accessibilityLabel="Move queued message up"
-                      onPress={(e) => {
-                        if (e?.stopPropagation) e.stopPropagation()
-                        onReorderQueuedMessage(msg.id, "up")
-                      }}
-                    >
-                      {(state: any) => {
-                        const active = state.hovered || state.pressed
-                        return (
-                          <View className={cn("h-6 w-6 items-center justify-center rounded", active && "bg-muted-foreground/25")}>
-                            <ChevronUp className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground")} size={12} />
-                          </View>
-                        )
-                      }}
-                    </Pressable>
-                  )}
-                  {index < queuedMessages.length - 1 && (
-                    <Pressable
-                      accessibilityLabel="Move queued message down"
-                      onPress={(e) => {
-                        if (e?.stopPropagation) e.stopPropagation()
-                        onReorderQueuedMessage(msg.id, "down")
-                      }}
-                    >
-                      {(state: any) => {
-                        const active = state.hovered || state.pressed
-                        return (
-                          <View className={cn("h-6 w-6 items-center justify-center rounded", active && "bg-muted-foreground/25")}>
-                            <ChevronDown className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground")} size={12} />
-                          </View>
-                        )
-                      }}
-                    </Pressable>
-                  )}
-                </>
+              {onReorderQueuedMessage && queuedMessages.length > 1 && index > 0 && (
+                <QueueAction
+                  label="Move queued message up"
+                  icon={ChevronUp}
+                  onPress={() => onReorderQueuedMessage(msg.id, "up")}
+                />
+              )}
+              {onReorderQueuedMessage && queuedMessages.length > 1 && index < queuedMessages.length - 1 && (
+                <QueueAction
+                  label="Move queued message down"
+                  icon={ChevronDown}
+                  onPress={() => onReorderQueuedMessage(msg.id, "down")}
+                />
               )}
               {onSendQueuedMessageNow && (
-                <Pressable
-                  accessibilityLabel="Send queued message now"
-                  onPress={(e) => {
-                    if (e?.stopPropagation) e.stopPropagation()
-                    onSendQueuedMessageNow(msg.id)
-                  }}
-                >
-                  {(state: any) => {
-                    const active = state.hovered || state.pressed
-                    return (
-                      <View className={cn("h-6 w-6 items-center justify-center rounded", active && "bg-muted-foreground/25")}>
-                        <SendHorizontal className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground")} size={12} />
-                      </View>
-                    )
-                  }}
-                </Pressable>
+                <QueueAction
+                  label="Send queued message now"
+                  icon={SendHorizontal}
+                  onPress={() => onSendQueuedMessageNow(msg.id)}
+                />
               )}
               {onEditQueuedMessage && (
-                <Pressable
-                  accessibilityLabel="Edit queued message"
-                  onPress={(e) => {
-                    if (e?.stopPropagation) e.stopPropagation()
-                    onEditQueuedMessage(msg.id)
-                  }}
-                >
-                  {(state: any) => {
-                    const active = state.hovered || state.pressed
-                    return (
-                      <View className={cn("h-6 w-6 items-center justify-center rounded", active && "bg-muted-foreground/25")}>
-                        <Pencil className={cn("h-3 w-3", active ? "text-foreground" : "text-muted-foreground")} size={12} />
-                      </View>
-                    )
-                  }}
-                </Pressable>
+                <QueueAction
+                  label="Edit queued message"
+                  icon={Pencil}
+                  onPress={() => onEditQueuedMessage(msg.id)}
+                />
               )}
               {onRemoveQueuedMessage && (
-                <Pressable
-                  accessibilityLabel="Delete queued message"
-                  onPress={(e) => {
-                    if (e?.stopPropagation) e.stopPropagation()
-                    onRemoveQueuedMessage(msg.id)
-                  }}
-                >
-                  {(state: any) => {
-                    const active = state.hovered || state.pressed
-                    return (
-                      <View className={cn("h-6 w-6 items-center justify-center rounded", active && "bg-destructive/20")}>
-                        <Trash2 className={cn("h-3 w-3", active ? "text-destructive" : "text-muted-foreground")} size={12} />
-                      </View>
-                    )
-                  }}
-                </Pressable>
+                <QueueAction
+                  label="Delete queued message"
+                  icon={Trash2}
+                  destructive
+                  onPress={() => onRemoveQueuedMessage(msg.id)}
+                />
               )}
             </View>
           </Pressable>
@@ -216,6 +199,7 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
           ? `${offlineCount} waiting${queuedMessages.length > offlineCount ? ` · ${queuedMessages.length - offlineCount} queued` : ""}`
           : `${queuedMessages.length} queued`,
       defaultExpanded: true,
+      flushBody: true,
       render: () => <QueueBody {...props} />,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

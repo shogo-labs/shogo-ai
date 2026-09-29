@@ -19,6 +19,7 @@ export interface WorkspaceType {
   ssoSettings?: Record<string, unknown>
   instanceSize: InstanceSize
   composioScope: string
+  trainingDataMode: string
   homeRegion?: string
   parentWorkspaceId?: string
   createdAt: Date
@@ -33,6 +34,7 @@ export interface WorkspaceCreateInput {
   ssoSettings?: Record<string, unknown>
   instanceSize?: InstanceSize
   composioScope?: string
+  trainingDataMode?: string
   homeRegion?: string
   parentWorkspaceId?: string
 }
@@ -45,6 +47,7 @@ export interface WorkspaceUpdateInput {
   ssoSettings?: Record<string, unknown>
   instanceSize?: InstanceSize
   composioScope?: string
+  trainingDataMode?: string
   homeRegion?: string
   parentWorkspaceId?: string
 }

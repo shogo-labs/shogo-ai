@@ -40,6 +40,19 @@ export interface MemberDataState {
   lastUploadAt?: number
   lastBytes?: number
   lastDailyCopyDate?: string
+  /**
+   * Source lineage for the member's `{memberId}/project-src.tar.gz`: the ETag
+   * of the backup its subfolder was hydrated from (or last wrote).
+   */
+  sourceParentEtag?: string
+  /**
+   * This VM hydrated the member's source itself, so a missing
+   * `sourceParentEtag` means no backup existed (create-only) rather than
+   * lineage from before it was tracked (adopt, the migration tail).
+   */
+  sourceLinked?: boolean
+  /** Sticky: the member's tree cannot be vouched for, so its source export is quarantined. */
+  sourceUntrustedReason?: string
 }
 
 export interface LiveVmEntry {
@@ -105,6 +118,8 @@ export interface LiveVmEntry {
   repoParentEtag?: string
   /** Sticky: repo hydrate failed. Must survive adopt so we never launder it. */
   repoUntrustedReason?: string
+  /** Sticky: source tree cannot be vouched for. See AssignedVm.sourceUntrustedReason. */
+  sourceUntrustedReason?: string
   /** See AssignedVm.stateSince. */
   stateSince?: number
   /** See AssignedVm.repoLinked. */

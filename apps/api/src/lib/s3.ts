@@ -30,6 +30,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 let s3Client: S3Client | null = null
 let s3PublicClient: S3Client | null = null
 let s3LfsClient: S3Client | null = null
+let s3LlmCaptureClient: S3Client | null = null
 
 /**
  * Get or create the S3 client for internal operations.
@@ -133,12 +134,46 @@ export function getLfsS3Client(): S3Client {
 }
 
 /**
+ * Get or create the S3 client for the raw LLM capture archive.
+ *
+ * Captures hold user prompts, so they must stay in the serving region even
+ * where `S3_ENDPOINT` points at a shared bucket in another region (EU pods use
+ * the Ashburn workspaces bucket). `S3_LLM_CAPTURES_REGION` /
+ * `S3_LLM_CAPTURES_ENDPOINT` override the shared endpoint for this bucket only.
+ */
+export function getLlmCaptureS3Client(): S3Client {
+  if (!s3LlmCaptureClient) {
+    const region = process.env.S3_LLM_CAPTURES_REGION || process.env.S3_REGION || process.env.AWS_REGION || 'us-east-1'
+    const endpoint = process.env.S3_LLM_CAPTURES_ENDPOINT || process.env.S3_ENDPOINT
+    const forcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true'
+
+    const config: ConstructorParameters<typeof S3Client>[0] = {
+      region,
+      ...(endpoint && {
+        endpoint,
+        forcePathStyle: forcePathStyle || !!endpoint,
+      }),
+      ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      }),
+    }
+
+    s3LlmCaptureClient = new S3Client(config)
+  }
+  return s3LlmCaptureClient
+}
+
+/**
  * Reset the S3 clients (useful for testing with different configs).
  */
 export function resetS3Client(): void {
   s3Client = null
   s3PublicClient = null
   s3LfsClient = null
+  s3LlmCaptureClient = null
 }
 
 /**
@@ -148,6 +183,17 @@ export function getS3Bucket(): string {
   const bucket = process.env.S3_SCHEMA_BUCKET
   if (!bucket) {
     throw new Error('S3_SCHEMA_BUCKET environment variable is required for S3 storage')
+  }
+  return bucket
+}
+
+/**
+ * Get the append-only bucket used for raw cloud AI proxy captures.
+ */
+export function getLlmCaptureBucket(): string {
+  const bucket = process.env.S3_LLM_CAPTURES_BUCKET
+  if (!bucket) {
+    throw new Error('S3_LLM_CAPTURES_BUCKET environment variable is required for proxy capture storage')
   }
   return bucket
 }

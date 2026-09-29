@@ -57,6 +57,49 @@ export interface AdminScopeDef {
   description: string
 }
 
+export interface MemberModelInsight {
+  model: string
+  provider: string
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  spendUsd: number
+}
+
+export interface MemberDailyInsight {
+  date: string
+  requests: number
+  totalTokens: number
+  spendUsd: number
+  linesAdded: number
+  linesRemoved: number
+}
+
+export interface MemberInsight {
+  userId: string
+  userName: string | null
+  userEmail: string
+  userImage: string | null
+  plansCreated: number
+  filesEdited: number
+  linesAdded: number
+  linesRemoved: number
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  spendUsd: number
+  lastActiveAt: string | null
+  models: MemberModelInsight[]
+  daily: MemberDailyInsight[]
+}
+
+export interface MemberInsightsData {
+  rows: MemberInsight[]
+  total: number
+}
+
 // Aliased (not retyped) from `@shogo/shared-app`, the single definition of
 // the universal workspace-agent primitives shared with any other client
 // (web, desktop) that grows a companion surface. See that package's
@@ -230,6 +273,14 @@ export interface WorkspaceChildrenResponse {
   parent: { id: string; name: string; slug: string; plan: string }
   pooledWindows?: unknown
   children: ChildWorkspaceSummary[]
+}
+
+export type TrainingDataMode = 'default' | 'enabled' | 'disabled'
+
+export interface WorkspaceSettingsUpdate {
+  name?: string
+  description?: string
+  trainingDataMode?: TrainingDataMode
 }
 
 export type AgentTaskStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -1321,6 +1372,18 @@ export const api = {
       free: data?.free ?? {},
       onDemand: data?.onDemand ?? {},
     }
+  },
+
+  async getMemberInsights(
+    http: HttpClient,
+    workspaceId: string,
+    params: { period?: string; userId?: string } = {},
+  ): Promise<MemberInsightsData> {
+    const res = await http.get<{ ok: boolean; data?: MemberInsightsData }>(
+      `/api/workspaces/${workspaceId}/analytics/member-insights`,
+      params,
+    )
+    return res.data?.data ?? { rows: [], total: 0 }
   },
 
   // ─── Invitations ──────────────────────────────────────

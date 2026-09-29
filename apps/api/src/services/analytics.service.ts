@@ -11,6 +11,7 @@
 
 import { prisma, Prisma } from '../lib/prisma'
 import { resolveModelLabels } from './model-registry.service'
+import { countLineChanges } from '../lib/tool-line-stats'
 
 /** Parse actionMetadata that may have been double-JSON-stringified. */
 function parseMeta(raw: unknown): Record<string, any> {
@@ -111,6 +112,86 @@ function scopeWhere(scope: AnalyticsScope) {
     ...(scope.projectId ? { projectId: scope.projectId } : {}),
     ...(scope.userId ? { memberId: scope.userId } : {}),
   }
+}
+
+interface UsageModelAggregate {
+  userId: string
+  model: string
+  provider: string
+  requestCount: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalTokens: number
+  totalBilledUsd: number
+  totalRawUsd: number
+  totalDurationMs: number
+}
+
+interface UsageAggregateEvent {
+  memberId: string
+  billedUsd: number
+  rawUsd?: number | null
+  actionMetadata: unknown
+  actionType?: string
+}
+
+function aggregateUsageByModel(
+  events: UsageAggregateEvent[],
+  options: {
+    excludeMemberIds?: Set<string> | null
+    modelForEvent?: (event: UsageAggregateEvent, meta: Record<string, any>) => string
+    providerForEvent?: (event: UsageAggregateEvent, meta: Record<string, any>) => string
+  } = {},
+): { aggregateMap: Map<string, UsageModelAggregate>; countedEvents: number } {
+  const aggregateMap = new Map<string, UsageModelAggregate>()
+  let countedEvents = 0
+
+  for (const event of events) {
+    if (options.excludeMemberIds?.has(event.memberId)) continue
+    countedEvents += 1
+    const meta = parseMeta(event.actionMetadata)
+    const model = String(
+      options.modelForEvent?.(event, meta) ??
+      meta.model ??
+      meta.modelUsed ??
+      'unknown',
+    )
+    const key = `${event.memberId}::${model}`
+    const inputTokens = Number(meta.inputTokens || 0)
+    const outputTokens = Number(meta.outputTokens || 0)
+    const totalTokens = Number(meta.totalTokens || inputTokens + outputTokens)
+    const rawForEvent = event.rawUsd ?? Number(meta.rawUsd ?? meta.dollarCost ?? 0)
+    const existing = aggregateMap.get(key)
+
+    if (existing) {
+      existing.requestCount += 1
+      existing.totalInputTokens += inputTokens
+      existing.totalOutputTokens += outputTokens
+      existing.totalTokens += totalTokens
+      existing.totalBilledUsd += Number(event.billedUsd || 0)
+      existing.totalRawUsd += Number(rawForEvent || 0)
+      existing.totalDurationMs += Number(meta.durationMs || 0)
+    } else {
+      aggregateMap.set(key, {
+        userId: event.memberId,
+        model,
+        provider: String(
+          options.providerForEvent?.(event, meta) ??
+          meta.provider ??
+          'anthropic',
+        ),
+        requestCount: 1,
+        totalInputTokens: inputTokens,
+        totalOutputTokens: outputTokens,
+        totalTokens,
+        totalBilledUsd: Number(event.billedUsd || 0),
+        totalRawUsd: Number(rawForEvent || 0),
+        totalDurationMs: Number(meta.durationMs || 0),
+      })
+    }
+  }
+
+  return { aggregateMap, countedEvents }
 }
 
 /**
@@ -494,7 +575,8 @@ export async function getActivityTimeseries(
  * three buckets for the current month; `total` is all-time spend.
  */
 export async function getMemberUsageStats(
-  workspaceId: string
+  workspaceId: string,
+  options: { userId?: string } = {},
 ): Promise<{
   monthly: Record<string, number>
   total: Record<string, number>
@@ -508,12 +590,19 @@ export async function getMemberUsageStats(
   const [bucketRows, totalRows] = await Promise.all([
     prisma.usageEvent.groupBy({
       by: ['memberId', 'source'],
-      where: { workspaceId, createdAt: { gte: monthStart } },
+      where: {
+        workspaceId,
+        createdAt: { gte: monthStart },
+        ...(options.userId ? { memberId: options.userId } : {}),
+      },
       _sum: { billedUsd: true },
     }),
     prisma.usageEvent.groupBy({
       by: ['memberId'],
-      where: { workspaceId },
+      where: {
+        workspaceId,
+        ...(options.userId ? { memberId: options.userId } : {}),
+      },
       _sum: { billedUsd: true },
     }),
   ])
@@ -548,6 +637,290 @@ export async function getMemberUsageStats(
   }
 
   return { monthly, total, included, free, onDemand }
+}
+
+export interface MemberModelInsight {
+  model: string
+  provider: string
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  spendUsd: number
+}
+
+export interface MemberDailyInsight {
+  date: string
+  requests: number
+  totalTokens: number
+  spendUsd: number
+  linesAdded: number
+  linesRemoved: number
+}
+
+export interface MemberInsight {
+  userId: string
+  userName: string | null
+  userEmail: string
+  userImage: string | null
+  plansCreated: number
+  filesEdited: number
+  linesAdded: number
+  linesRemoved: number
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  spendUsd: number
+  lastActiveAt: string | null
+  models: MemberModelInsight[]
+  daily: MemberDailyInsight[]
+}
+
+/**
+ * Aggregate the member-facing usage view. Billing events already contain
+ * token/model attribution; completed tool-call logs add plan and code-change
+ * attribution. The latter is intentionally kept separate from billing so
+ * failed or free tool calls remain visible without changing spend.
+ */
+export async function getMemberInsights(
+  workspaceId: string,
+  period: AnalyticsPeriod = '30d',
+  options: { userId?: string } = {},
+): Promise<{ rows: MemberInsight[]; total: number }> {
+  const since = periodToDate(period)
+  const usageWhere: any = {
+    workspaceId,
+    createdAt: { gte: since },
+    actionType: {
+      in: [
+        'ai_proxy_completion',
+        'chat_message',
+        'voice_minutes_inbound',
+        'voice_minutes_outbound',
+        'voice_number_setup',
+        'voice_number_monthly',
+        'ai_live_session_minutes',
+      ],
+    },
+    ...(options.userId ? { memberId: options.userId } : {}),
+  }
+
+  const [usageEvents, sessions, workspaceMembers] = await Promise.all([
+    prisma.usageEvent.findMany({
+      where: usageWhere,
+      select: {
+        memberId: true,
+        billedUsd: true,
+        actionType: true,
+        actionMetadata: true,
+        createdAt: true,
+      },
+    }),
+    prisma.chatSession.findMany({
+      where: {
+        OR: [
+          { workspaceId },
+          { project: { workspaceId } },
+        ],
+      },
+      select: { id: true },
+    }),
+    prisma.member.findMany({
+      where: {
+        workspaceId,
+        ...(options.userId ? { userId: options.userId } : {}),
+      },
+      select: { userId: true },
+    }),
+  ])
+
+  const sessionIds = sessions.map((session) => session.id)
+  const toolCalls = sessionIds.length === 0
+    ? []
+    : await prisma.toolCallLog.findMany({
+      where: {
+        chatSessionId: { in: sessionIds },
+        createdAt: { gte: since },
+        ...(options.userId ? { userId: options.userId } : {}),
+      },
+      select: {
+        userId: true,
+        toolName: true,
+        status: true,
+        args: true,
+        result: true,
+        linesAdded: true,
+        linesRemoved: true,
+        createdAt: true,
+      },
+    })
+
+  type MutableModel = MemberModelInsight & { rawModel: string }
+  type MutableMember = Omit<MemberInsight, 'models' | 'daily'> & {
+    models: Map<string, MutableModel>
+    daily: Map<string, MemberDailyInsight>
+  }
+  const memberMap = new Map<string, MutableMember>()
+
+  const getMember = (userId: string): MutableMember => {
+    let member = memberMap.get(userId)
+    if (!member) {
+      member = {
+        userId,
+        userName: null,
+        userEmail: userId,
+        userImage: null,
+        plansCreated: 0,
+        filesEdited: 0,
+        linesAdded: 0,
+        linesRemoved: 0,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        spendUsd: 0,
+        lastActiveAt: null,
+        models: new Map(),
+        daily: new Map(),
+      }
+      memberMap.set(userId, member)
+    }
+    return member
+  }
+
+  // Seed current workspace members so admins see zero-activity members too.
+  // Usage/tool-call rows can still add historical or not-yet-synced users.
+  for (const workspaceMember of workspaceMembers) {
+    getMember(workspaceMember.userId)
+  }
+
+  const touchDaily = (member: MutableMember, date: string): MemberDailyInsight => {
+    let daily = member.daily.get(date)
+    if (!daily) {
+      daily = {
+        date,
+        requests: 0,
+        totalTokens: 0,
+        spendUsd: 0,
+        linesAdded: 0,
+        linesRemoved: 0,
+      }
+      member.daily.set(date, daily)
+    }
+    return daily
+  }
+
+  const { aggregateMap: usageByModel } = aggregateUsageByModel(usageEvents, {
+    modelForEvent: (event, meta) => String(
+      meta.model ||
+      meta.modelUsed ||
+      (event.actionType?.startsWith('voice_') ? voiceLabel(event.actionType) : 'unknown'),
+    ),
+    providerForEvent: (event, meta) =>
+      String(meta.provider || (event.actionType?.startsWith('voice_') ? 'elevenlabs' : 'anthropic')),
+  })
+
+  for (const event of usageEvents) {
+    const member = getMember(event.memberId)
+    const meta = parseMeta(event.actionMetadata)
+    const inputTokens = Number(meta.inputTokens || 0)
+    const outputTokens = Number(meta.outputTokens || 0)
+    const totalTokens = Number(meta.totalTokens || inputTokens + outputTokens)
+    const spendUsd = Number(event.billedUsd || 0)
+
+    member.requests += 1
+    member.inputTokens += inputTokens
+    member.outputTokens += outputTokens
+    member.totalTokens += totalTokens
+    member.spendUsd += spendUsd
+    const date = isoDay(event.createdAt)
+    const daily = touchDaily(member, date)
+    daily.requests += 1
+    daily.totalTokens += totalTokens
+    daily.spendUsd += spendUsd
+    if (!member.lastActiveAt || event.createdAt > new Date(member.lastActiveAt)) {
+      member.lastActiveAt = event.createdAt.toISOString()
+    }
+  }
+
+  for (const aggregate of usageByModel.values()) {
+    const member = getMember(aggregate.userId)
+    member.models.set(aggregate.model, {
+      rawModel: aggregate.model,
+      model: aggregate.model,
+      provider: aggregate.provider,
+      requests: aggregate.requestCount,
+      inputTokens: aggregate.totalInputTokens,
+      outputTokens: aggregate.totalOutputTokens,
+      totalTokens: aggregate.totalTokens,
+      spendUsd: aggregate.totalBilledUsd,
+    })
+  }
+
+  for (const call of toolCalls) {
+    if (!call.userId || call.status !== 'complete') continue
+    const member = getMember(call.userId)
+    if (call.toolName === 'create_plan') member.plansCreated += 1
+    if (call.toolName === 'write_file' || call.toolName === 'edit_file' || call.toolName === 'delete_file') {
+      member.filesEdited += 1
+    }
+
+    const storedAdded = Number(call.linesAdded || 0)
+    const storedRemoved = Number(call.linesRemoved || 0)
+    const calculated = storedAdded === 0 && storedRemoved === 0
+      ? countLineChanges(call.toolName, call.args, call.result)
+      : { linesAdded: storedAdded, linesRemoved: storedRemoved }
+    member.linesAdded += calculated.linesAdded
+    member.linesRemoved += calculated.linesRemoved
+    const date = isoDay(call.createdAt)
+    const daily = touchDaily(member, date)
+    daily.linesAdded += calculated.linesAdded
+    daily.linesRemoved += calculated.linesRemoved
+    if (!member.lastActiveAt || call.createdAt > new Date(member.lastActiveAt)) {
+      member.lastActiveAt = call.createdAt.toISOString()
+    }
+  }
+
+  const userIds = [...memberMap.keys()]
+  const users = userIds.length === 0
+    ? []
+    : await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, name: true, email: true, image: true },
+    })
+  const userMap = new Map(users.map((user) => [user.id, user]))
+  const rawModels = [...memberMap.values()].flatMap((member) => [...member.models.keys()])
+  const modelLabels = await resolveModelLabels(rawModels)
+
+  const rows = [...memberMap.values()].map((member): MemberInsight => {
+    const user = userMap.get(member.userId)
+    return {
+      userId: member.userId,
+      userName: user?.name ?? null,
+      userEmail: user?.email ?? member.userId,
+      userImage: user?.image ?? null,
+      plansCreated: member.plansCreated,
+      filesEdited: member.filesEdited,
+      linesAdded: member.linesAdded,
+      linesRemoved: member.linesRemoved,
+      requests: member.requests,
+      inputTokens: member.inputTokens,
+      outputTokens: member.outputTokens,
+      totalTokens: member.totalTokens,
+      spendUsd: member.spendUsd,
+      lastActiveAt: member.lastActiveAt,
+      models: [...member.models.values()]
+        .map(({ rawModel, ...model }) => ({
+          ...model,
+          model: modelLabels.get(rawModel) ?? rawModel,
+        }))
+        .sort((a, b) => b.totalTokens - a.totalTokens),
+      daily: [...member.daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    }
+  }).sort((a, b) => b.totalTokens - a.totalTokens || b.spendUsd - a.spendUsd)
+
+  return { rows, total: rows.length }
 }
 
 // ============================================================================
@@ -1524,53 +1897,9 @@ export async function getUsageSummary(
     },
   })
 
-  // Aggregate by userId + model
-  const aggregateMap = new Map<string, {
-    userId: string
-    model: string
-    provider: string
-    requestCount: number
-    totalInputTokens: number
-    totalOutputTokens: number
-    totalTokens: number
-    totalBilledUsd: number
-    totalRawUsd: number
-    totalDurationMs: number
-  }>()
-
-  let countedEvents = 0
-  for (const event of events) {
-    if (internalIds && internalIds.has(event.memberId)) continue
-    countedEvents += 1
-    const meta = parseMeta(event.actionMetadata)
-    const model = meta.model || meta.modelUsed || 'unknown'
-    const key = `${event.memberId}::${model}`
-    const existing = aggregateMap.get(key)
-    const rawForEvent = event.rawUsd ?? (meta.rawUsd as number | undefined) ?? 0
-
-    if (existing) {
-      existing.requestCount += 1
-      existing.totalInputTokens += meta.inputTokens || 0
-      existing.totalOutputTokens += meta.outputTokens || 0
-      existing.totalTokens += meta.totalTokens || 0
-      existing.totalBilledUsd += event.billedUsd
-      existing.totalRawUsd += rawForEvent
-      existing.totalDurationMs += meta.durationMs || 0
-    } else {
-      aggregateMap.set(key, {
-        userId: event.memberId,
-        model,
-        provider: meta.provider || 'anthropic',
-        requestCount: 1,
-        totalInputTokens: meta.inputTokens || 0,
-        totalOutputTokens: meta.outputTokens || 0,
-        totalTokens: meta.totalTokens || 0,
-        totalBilledUsd: event.billedUsd,
-        totalRawUsd: rawForEvent,
-        totalDurationMs: meta.durationMs || 0,
-      })
-    }
-  }
+  const { aggregateMap, countedEvents } = aggregateUsageByModel(events, {
+    excludeMemberIds: internalIds,
+  })
 
   // Resolve user info
   const userIds = [...new Set([...aggregateMap.values()].map((a) => a.userId).filter((id) => id !== 'system'))]
@@ -2563,6 +2892,7 @@ export interface ConversationThread {
   userName: string | null
   projectName: string
   templateId: string | null
+  source?: string
   messages: { role: string; content: string; sentAt: string }[]
 }
 
@@ -2579,6 +2909,7 @@ export async function getChatConversations(
     userName: string | null
     projectName: string
     templateId: string | null
+    source: string
     role: string
     content: string
     sentAt: Date
@@ -2594,6 +2925,7 @@ export async function getChatConversations(
       u."name" AS "userName",
       p."name" AS "projectName",
       ml."slug" AS "templateId",
+      'cloud_chat' AS "source",
       cm."role",
       CASE
         WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
@@ -2608,7 +2940,7 @@ export async function getChatConversations(
     LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
     LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
     WHERE cm."createdAt" >= ? AND cm."agent" = 'technical' ${filter}
-    ORDER BY cs."id", cm."createdAt" ASC
+    ORDER BY "sessionId", "sentAt" ASC
   `
       : `
     SELECT
@@ -2616,6 +2948,7 @@ export async function getChatConversations(
       u."name" AS "userName",
       p."name" AS "projectName",
       ml."slug" AS "templateId",
+      'cloud_chat' AS "source",
       cm."role",
       CASE
         WHEN cm."role" = 'assistant' AND LENGTH(cm."content") > ${ASSISTANT_TRUNCATE_LENGTH}
@@ -2630,7 +2963,41 @@ export async function getChatConversations(
     LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
     LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
     WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
-    ORDER BY cs."id", cm."createdAt" ASC
+    UNION ALL
+    SELECT
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      u."name" AS "userName",
+      COALESCE(pr."name", 'Proxy traffic') AS "projectName",
+      NULL AS "templateId",
+      pt."source" AS "source",
+      'user' AS "role",
+      LEFT(pt."userText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
+      pt."lastAt" AS "sentAt"
+    FROM "ai_analysis_turns" pt
+    LEFT JOIN "users" u ON u."id" = pt."userId"
+    LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
+    WHERE pt."source" <> 'cloud_chat'
+      AND pt."createdAt" >= $1
+      AND pt."userText" IS NOT NULL
+      ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
+    UNION ALL
+    SELECT
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      u."name" AS "userName",
+      COALESCE(pr."name", 'Proxy traffic') AS "projectName",
+      NULL AS "templateId",
+      pt."source" AS "source",
+      'assistant' AS "role",
+      RIGHT(pt."assistantText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
+      pt."lastAt" AS "sentAt"
+    FROM "ai_analysis_turns" pt
+    LEFT JOIN "users" u ON u."id" = pt."userId"
+    LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
+    WHERE pt."source" <> 'cloud_chat'
+      AND pt."createdAt" >= $1
+      AND pt."assistantText" IS NOT NULL
+      ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
+    ORDER BY "sessionId", "sentAt" ASC
   `,
     since
   )
@@ -2642,6 +3009,7 @@ export async function getChatConversations(
         userName: row.userName,
         projectName: row.projectName,
         templateId: row.templateId,
+        source: row.source,
         messages: [],
       })
     }

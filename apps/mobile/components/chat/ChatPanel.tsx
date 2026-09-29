@@ -111,6 +111,7 @@ import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
 } from "./resume-stream-single-flight"
+import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
   dropUnfinishedAssistantTail,
   withResumeReplayReset,
@@ -250,7 +251,10 @@ import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { buildStopRequest } from "../../lib/chat-stop"
-import { planToPublishToStream } from "../../lib/plan-stream-publish"
+import {
+  planToPublishToStream,
+  shouldPublishPlanToStream,
+} from "../../lib/plan-stream-publish"
 import { configureSubagentStop } from "../../lib/subagent-stop"
 import { useChatBridgeRegistrar } from "../voice-mode/ChatBridgeContext"
 import { extractTaskToolsFromMessages } from "./turns/messageParts"
@@ -345,6 +349,8 @@ export type QueuedMessage = {
   files?: FileAttachment[]
   selectedModel?: string
   references?: ChatReference[]
+  status?: string
+  error?: string
   /**
    * True when this entry is here because a send already failed on a client
    * network error (`isClientNetworkFailure`) — as opposed to the normal case
@@ -878,10 +884,9 @@ export function clearChatPanelMessageCache(): void {
   sessionMessageCache.clear()
 }
 
-// Per-session queued-message cache. Survives ChatPanel unmount/remount during
-// navigation so users don't lose what they've typed and queued. Keyed by
-// sessionId; cleared on explicit `clearChatPanelQueueCache()` or whenever the
-// queue for a session drains naturally (delete, send, edit-out).
+// Local fallback queue cache. Server-backed queue rows live in the generated
+// SDK collection and survive reloads/devices; this cache is only used for
+// direct-runtime and offline fallback sends.
 const sessionQueueCache = new Map<string, QueuedMessage[]>()
 
 /** Clear the in-memory per-session queued-message cache (e.g. on logout). */
@@ -906,6 +911,35 @@ function normalizePlanData(plan: PlanData): PlanData {
     summary: plan.summary,
     summaryStatus: plan.summaryStatus,
   }
+}
+
+async function ensureAiConsentForMessage(): Promise<boolean> {
+  if (Platform.OS !== "ios") return true
+  const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
+  if (alreadyAccepted) return true
+
+  const providerNames = AI_PROVIDERS.map((provider) => provider.name).join(" or ")
+  const accepted = await new Promise<boolean>((resolve) => {
+    Alert.alert(
+      "Share your message with the selected AI provider?",
+      `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
+      [
+        {
+          text: "Don\u2019t allow",
+          style: "cancel",
+          onPress: () => resolve(false),
+        },
+        { text: "Allow", onPress: () => resolve(true) },
+      ],
+      { cancelable: false },
+    )
+  })
+  if (!accepted) {
+    await revokeAiConsent().catch(() => {})
+    return false
+  }
+  await acceptAiConsent().catch(() => {})
+  return true
 }
 
 // ============================================================
@@ -1562,6 +1596,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const pendingPlanRef = useRef<PlanData | null>(null)
 
   const planStream = usePlanStreamSafe()
+  const isActivePanel = onMessagesChange != null
+  const isActivePanelRef = useRef(isActivePanel)
+  isActivePanelRef.current = isActivePanel
 
   // Per-panel TodoWrite store. Each open chat tab gets its own
   // instance so descendants (AssistantContent, TodoRow) read
@@ -2008,6 +2045,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setMessages((prev) => markStuckToolsInterrupted(prev))
     },
     onData: async (dataPart) => {
+      const activePlanStream = isActivePanelRef.current ? planStream : null
+
       // Any `data-*` frame (including `data-turn-start`, `data-turn-seq`,
       // and `data-usage`) is wire-level forward progress. The AI SDK
       // doesn't flip `status` → `'streaming'` on these — only on the
@@ -2043,6 +2082,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
               typeof d.nextProbeInMs === "number" ? d.nextProbeInMs : 0,
           })
         }
+        return
+      }
+
+      if (dataPart.type === "data-usage-limit") {
+        const d = (dataPart as any).data ?? {}
+        setUsageLimitNotice({
+          sessionId: currentSessionIdRef.current ?? null,
+          resetsAt: typeof d.resetsAt === "string" ? d.resetsAt : undefined,
+        })
+        refetchUsageWallet()
         return
       }
 
@@ -2425,6 +2474,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // a previous turn (defensive; normally a `reconnected` frame already
         // cleared it before the turn completed).
         setConnectivityWait(null)
+        setUsageLimitNotice(null)
       }
       if (dataPart.type === "data-turn-seq") {
         const seq = (dataPart as any).data?.seq
@@ -2606,16 +2656,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
           // A fresh plan event always discards any stale summary belonging
           // to a previous plan; the runtime will re-emit
           // data-plan-summary-* if Dual Plan is enabled for this turn.
-          planStream?.resetSummary()
+          activePlanStream?.resetSummary()
           const normalizedPlan = normalizePlanData({
             ...planData,
             isUpdate: false,
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
-          planStream?.setStreamingPlan(normalizedPlan)
+          activePlanStream?.setStreamingPlan(normalizedPlan)
           if (normalizedPlan.filepath) {
-            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
+            activePlanStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
           planStream?.notifyPlanCreated()
         }
@@ -2638,9 +2688,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = normalizedPlan
           setPendingPlan(normalizedPlan)
-          planStream?.setStreamingPlan(normalizedPlan)
+          activePlanStream?.setStreamingPlan(normalizedPlan)
           if (normalizedPlan.filepath) {
-            planStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
+            activePlanStream?.setStreamingPlanFilepath(normalizedPlan.filepath)
           }
         }
         planStream?.notifyPlanCreated()
@@ -2651,9 +2701,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the UI can show a "Summary" tab spinner immediately and then swap in
       // the summary markdown when it's ready.
       if ((dataPart as any).type === "data-plan-summary-start") {
-        planStream?.setSummaryStatus("pending")
-        planStream?.setStreamingSummary(null)
-        planStream?.setSummaryError(null)
+        activePlanStream?.setSummaryStatus("pending")
+        activePlanStream?.setStreamingSummary(null)
+        activePlanStream?.setSummaryError(null)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
@@ -2663,7 +2713,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
-          planStream?.setStreamingPlan(next)
+          activePlanStream?.setStreamingPlan(next)
         }
       }
 
@@ -2671,9 +2721,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const data = (dataPart as any).data
         const summary = typeof data?.summary === "string" ? data.summary : null
         if (summary) {
-          planStream?.setSummaryStatus("ready")
-          planStream?.setStreamingSummary(summary)
-          planStream?.setSummaryError(null)
+          activePlanStream?.setSummaryStatus("ready")
+          activePlanStream?.setStreamingSummary(summary)
+          activePlanStream?.setSummaryError(null)
           const previousPlan = pendingPlanRef.current
           if (previousPlan) {
             const next = normalizePlanData({
@@ -2683,7 +2733,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             })
             pendingPlanRef.current = next
             setPendingPlan(next)
-            planStream?.setStreamingPlan(next)
+            activePlanStream?.setStreamingPlan(next)
           }
           planStream?.notifyPlanCreated()
         }
@@ -2695,8 +2745,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
           typeof data?.message === "string" && data.message
             ? data.message
             : "Failed to generate summary"
-        planStream?.setSummaryStatus("error")
-        planStream?.setSummaryError(message)
+        activePlanStream?.setSummaryStatus("error")
+        activePlanStream?.setSummaryError(message)
         const previousPlan = pendingPlanRef.current
         if (previousPlan) {
           const next = normalizePlanData({
@@ -2705,7 +2755,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = next
           setPendingPlan(next)
-          planStream?.setStreamingPlan(next)
+          activePlanStream?.setStreamingPlan(next)
         }
       }
 
@@ -3118,6 +3168,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
+  const resumeQueuedTurn = useCallback(() => {
+    void resumeStreamSingleFlight().catch((error) => {
+      console.warn("[ChatPanel] Failed to attach to queued turn:", error)
+    })
+  }, [resumeStreamSingleFlight])
+  const serverQueue = useServerMessageQueue({
+    sessionId: currentSessionId,
+    enabled: !!currentSessionId && !localAgentUrl,
+    isStreaming,
+    onTurnAvailable: resumeQueuedTurn,
+  })
+
   // Watch messages for tool-invocation state transitions during a live
   // turn and emit `tool-activity` events so the EZ Mode overlay can
   // (a) keep a fresh activity buffer for mid-turn summaries, and
@@ -3311,6 +3373,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Briefly true right after a park ends, to show "Back online, resuming…"
   // instead of just silently clearing the banner.
   const [justReconnected, setJustReconnected] = useState(false)
+  // Set when the runtime ended a turn early because the workspace hit its
+  // usage limit (`data-usage-limit`). Scoped to the session it came from.
+  const [usageLimitNotice, setUsageLimitNotice] = useState<{
+    sessionId: string | null
+    resetsAt?: string
+  } | null>(null)
 
   const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(
@@ -4472,10 +4540,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onStreamingChange?.(isStreaming)
   }, [isStreaming, onStreamingChange])
 
-  // Only the active panel (the one feeding onMessagesChange) drives the shared plan-stream context.
-  // Background panels must not fight over setIsPlanStreaming.
-  const isActivePanel = onMessagesChange != null
-
   // Read `planStream` from a ref inside the publishing effects below so that
   // changes to the context value's identity do NOT re-run the effects (and
   // therefore can't cascade back into setState on the same context). The
@@ -4581,18 +4645,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
     plan: PlanData | null
     filepath: string | null
   } | null>(null)
+  const wasActivePanelRef = useRef(false)
   useEffect(() => {
     return () => {
       if (planPublishTimerRef.current) {
         clearTimeout(planPublishTimerRef.current)
         planPublishTimerRef.current = null
       }
+      pendingPlanPublishRef.current = null
     }
   }, [])
   // While tokens stream, pendingPlan identity changes every chunk. Fold it
   // away so this effect only re-runs when the idle snapshot actually changes.
   const idlePlan = isStreaming ? null : (pendingPlan ?? confirmedPlan)
   useEffect(() => {
+    if (!isActivePanel) {
+      wasActivePanelRef.current = false
+      pendingPlanPublishRef.current = null
+      if (planPublishTimerRef.current) {
+        clearTimeout(planPublishTimerRef.current)
+        planPublishTimerRef.current = null
+      }
+      return
+    }
+
+    const activated = !wasActivePanelRef.current
+    wasActivePanelRef.current = true
     const ctx = planStreamRef.current
     if (!ctx) return
 
@@ -4604,9 +4682,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     })
     const nextFilepath = planToPublish?.filepath ?? null
 
-    const planChanged = ctx.streamingPlan !== planToPublish
-    const filepathChanged = ctx.streamingPlanFilepath !== nextFilepath
-    if (!planChanged && !filepathChanged) return
+    if (
+      !shouldPublishPlanToStream({
+        isActivePanel,
+        currentPlan: ctx.streamingPlan,
+        nextPlan: planToPublish,
+        currentFilepath: ctx.streamingPlanFilepath,
+        nextFilepath,
+      })
+    ) {
+      return
+    }
 
     const publish = () => {
       const c = planStreamRef.current
@@ -4628,7 +4714,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     // Edge events (plan first appears, or the shared snapshot is cleared)
     // bypass the throttle so Plans/dock react immediately.
-    const isEdge = planToPublish === null || ctx.streamingPlan === null
+    const isEdge =
+      activated || planToPublish === null || ctx.streamingPlan === null
     if (isEdge) {
       if (planPublishTimerRef.current) {
         clearTimeout(planPublishTimerRef.current)
@@ -4649,7 +4736,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
       publish()
     }, wait)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedStreamingPlan, isStreaming, idlePlan])
+  }, [derivedStreamingPlan, isStreaming, idlePlan, isActivePanel])
+
+  // The summary lifecycle is shared by all chat tabs, so restore the active
+  // tab's summary when ownership moves between panels. Background panels keep
+  // their own summary in pendingPlanRef until they become active.
+  useEffect(() => {
+    if (!isActivePanel) return
+    const ctx = planStreamRef.current
+    if (!ctx) return
+
+    const plan = pendingPlanRef.current
+    const summaryStatus =
+      plan?.summaryStatus ?? (plan?.summary ? "ready" : "idle")
+    if (summaryStatus === "idle") {
+      ctx.resetSummary()
+      return
+    }
+
+    ctx.setSummaryStatus(summaryStatus)
+    ctx.setStreamingSummary(plan?.summary ?? null)
+    ctx.setSummaryError(null)
+  }, [isActivePanel])
 
   // Auto-scroll to bottom when messages change
   // On native, streaming follow is handled entirely by onContentSizeChange
@@ -4837,36 +4945,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
-      // App Store 5.1.1(i)/5.1.2(i): on iOS, request explicit one-time consent
-      // before transmitting the user's prompt to third-party AI providers.
-      // Uses the native iOS alert primitive (same UI as camera/location
-      // permissions) — no new screen, persisted in expo-secure-store.
-      if (Platform.OS === "ios") {
-        const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
-        if (!alreadyAccepted) {
-          const providerNames = AI_PROVIDERS.map((p) => p.name).join(" or ")
-          const accepted = await new Promise<boolean>((resolve) => {
-            Alert.alert(
-              "Share your message with the selected AI provider?",
-              `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
-              [
-                {
-                  text: "Don\u2019t allow",
-                  style: "cancel",
-                  onPress: () => resolve(false),
-                },
-                { text: "Allow", onPress: () => resolve(true) },
-              ],
-              { cancelable: false },
-            )
-          })
-          if (!accepted) {
-            await revokeAiConsent().catch(() => {})
-            return
-          }
-          await acceptAiConsent().catch(() => {})
-        }
-      }
+      if (!(await ensureAiConsentForMessage())) return
 
       const trimmedContent = content.trim()
       if (Platform.OS !== "web") {
@@ -5438,11 +5517,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [currentSessionId, messageQueue])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
+    if (serverQueue.isServerQueued(messageId)) {
+      void serverQueue.remove(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to remove server queued message:", error)
+      })
+      return
+    }
     setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
-  }, [])
+  }, [serverQueue])
 
   const handleReorderQueuedMessage = useCallback(
     (messageId: string, direction: "up" | "down") => {
+      if (serverQueue.isServerQueued(messageId)) {
+        void serverQueue.reorder(messageId, direction).catch((error) => {
+          console.warn("[ChatPanel] Failed to reorder server queued message:", error)
+        })
+        return
+      }
       setMessageQueue((queue) => {
         const index = queue.findIndex((m) => m.id === messageId)
         if (index === -1) return queue
@@ -5462,7 +5553,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return newQueue
       })
     },
-    [],
+    [serverQueue],
   )
 
   // Pull a queued message back into the input as a draft so the user can
@@ -5470,6 +5561,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // immediately so re-submitting just appends a fresh queue item rather than
   // duplicating the in-flight one.
   const handleEditQueuedMessage = useCallback((messageId: string) => {
+    const serverTarget = serverQueue.queuedMessages.find((m) => m.id === messageId)
+    if (serverTarget) {
+      void serverQueue.remove(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to edit server queued message:", error)
+      })
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: serverTarget.content,
+        files: serverTarget.files,
+      })
+      return
+    }
     let target: QueuedMessage | undefined
     setMessageQueue((queue) => {
       target = queue.find((m) => m.id === messageId)
@@ -5482,7 +5585,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       content: target.content,
       files: target.files,
     })
-  }, [])
+  }, [serverQueue])
 
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
@@ -5493,6 +5596,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // streaming->ready transitions.
   const handleSendQueuedMessageNow = useCallback(
     (messageId: string) => {
+      if (serverQueue.isServerQueued(messageId)) {
+        void serverQueue.sendNow(messageId).catch((error) => {
+          console.warn("[ChatPanel] Failed to send server queued message now:", error)
+        })
+        return
+      }
       let promoted = false
       setMessageQueue((queue) => {
         const idx = queue.findIndex((m) => m.id === messageId)
@@ -5510,7 +5619,95 @@ const ChatPanelContent = observer(function ChatPanelContent({
         void processMessageQueue()
       }
     },
-    [isStreaming, handleStop, processMessageQueue],
+    [isStreaming, handleStop, processMessageQueue, serverQueue],
+  )
+
+  const displayedQueue = useMemo(
+    () => [...serverQueue.queuedMessages, ...messageQueue],
+    [messageQueue, serverQueue.queuedMessages],
+  )
+
+  const enqueueServerMessage = useCallback(
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[],
+    ) => {
+      const trimmedContent = content.trim()
+      if (!(await ensureAiConsentForMessage())) return
+      let wireText = trimmedContent
+      if (enrichMessage) {
+        try {
+          wireText = await enrichMessage(trimmedContent)
+        } catch (error) {
+          console.warn("[ChatPanel] enrichMessage failed for queued message:", error)
+        }
+      }
+
+      const body: Record<string, unknown> = {
+        featureId,
+        phase,
+        chatSessionId: currentSessionId,
+        chatSessionName:
+          (currentSession as any)?.name ||
+          (currentSession as any)?.inferredName ||
+          undefined,
+        workspaceId,
+        userId,
+        projectId,
+        focusedProjectId,
+        agentMode: perMsgModel || selectedModel,
+        interactionMode: interactionModeRef.current,
+        dualPlan: dualPlanRef.current,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        text: wireText,
+        viewer: canvasViewerPayload({
+          isPhoneViewport,
+          platform: Platform.OS,
+          width: windowWidth,
+        }),
+      }
+      const planToSend = confirmedPlanRef.current
+      if (planToSend) {
+        body.confirmedPlan = normalizePlanData(planToSend)
+        body.interactionMode = "agent"
+        confirmedPlanRef.current = null
+      }
+      if (
+        ideMode &&
+        (ideBridge.context.activeFile ||
+          ideBridge.context.workspaceFolders.length > 0)
+      ) {
+        body.ideContext = ideBridge.context
+      }
+      if (references && references.length > 0) body.references = references
+
+      await serverQueue.enqueue({
+        content: trimmedContent,
+        files,
+        selectedModel: perMsgModel || selectedModel,
+        references,
+        body,
+      })
+    },
+    [
+      currentSession,
+      currentSessionId,
+      enrichMessage,
+      featureId,
+      focusedProjectId,
+      ideBridge.context,
+      ideMode,
+      isPhoneViewport,
+      phase,
+      projectId,
+      selectedModel,
+      serverQueue,
+      userId,
+      windowWidth,
+      workspaceId,
+    ],
   )
 
   // Handle message submission
@@ -5541,6 +5738,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
         isProcessingQueueRef.current ||
         isSendingMessageRef.current
       ) {
+        if (!localAgentUrl) {
+          try {
+            await enqueueServerMessage(
+              trimmedContent,
+              files,
+              perMsgModel,
+              references,
+            )
+          } catch (error) {
+            console.warn(
+              "[ChatPanel] Server queue unavailable; retaining a local queued message:",
+              error,
+            )
+            setMessageQueue((queue) => [
+              ...queue,
+              {
+                id: `queue-${Date.now()}-${Math.random()
+                  .toString(36)
+                  .substr(2, 9)}`,
+                content: trimmedContent,
+                files,
+                selectedModel: perMsgModel,
+                references,
+              },
+            ])
+          }
+          return
+        }
         setMessageQueue((queue) => [
           ...queue,
           {
@@ -5564,7 +5789,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         references,
       )
     },
-    [isStreaming, sendMessageInternal, currentSessionId],
+    [
+      enqueueServerMessage,
+      isStreaming,
+      localAgentUrl,
+      sendMessageInternal,
+      currentSessionId,
+    ],
   )
 
   // Handle form submit from ChatInput
@@ -5942,6 +6173,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
             setMessages((prev) =>
               markStuckToolsInterrupted(prev, "Connection interrupted"),
             )
+            // The stall watchdog reports its own trips; this give-up path
+            // (stream ended without turn-complete and could not be
+            // reattached) shows the same banner, so report it separately.
+            try {
+              Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                level: "warning",
+                tags: {
+                  projectId: projectId ?? "(none)",
+                  chatSessionId: recoverySessionId,
+                  turnStatus,
+                },
+                extra: {
+                  attempt,
+                  maxAttempts: MAX_ATTEMPTS,
+                  turnId: recoveryTurnId,
+                  fromSeq: fromSeqAtStall,
+                  isLocalAgent: !!localAgentUrl,
+                },
+              })
+            } catch (err) {
+              console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+            }
             if (effects.showRetryBanner) {
               setErrorDismissed(false)
               setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
@@ -6319,7 +6572,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
         pendingPlanRef.current = pendingNext
         setPendingPlan(pendingNext)
-        planStream?.setSummaryStatus("pending")
+        if (isActivePanelRef.current) {
+          planStream?.setSummaryStatus("pending")
+        }
       }
       try {
         const client = new AgentClient({
@@ -6337,10 +6592,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           })
           pendingPlanRef.current = readyNext
           setPendingPlan(readyNext)
-          planStream?.setStreamingPlan(readyNext)
+          if (isActivePanelRef.current) {
+            planStream?.setStreamingPlan(readyNext)
+          }
         }
-        planStream?.setStreamingSummary(summary)
-        planStream?.setSummaryStatus("ready")
+        if (isActivePanelRef.current) {
+          planStream?.setStreamingSummary(summary)
+          planStream?.setSummaryStatus("ready")
+        }
         planStream?.notifyPlanCreated()
         return summary
       } catch (err) {
@@ -6353,7 +6612,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
           pendingPlanRef.current = errNext
           setPendingPlan(errNext)
         }
-        planStream?.setSummaryStatus("error")
+        if (isActivePanelRef.current) {
+          planStream?.setSummaryStatus("error")
+        }
         throw err
       }
     },
@@ -6690,6 +6951,66 @@ const ChatPanelContent = observer(function ChatPanelContent({
     handleStop,
   ])
   useDockPanel(connectivityDockDescriptor, chatDockStore)
+
+  const usageLimitDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!usageLimitNotice || usageLimitNotice.sessionId !== currentSessionId) {
+      return null
+    }
+    const resetsAt = usageLimitNotice.resetsAt
+      ? new Date(usageLimitNotice.resetsAt)
+      : null
+    const resetLabel =
+      resetsAt && !Number.isNaN(resetsAt.getTime())
+        ? ` Your usage resets ${resetsAt.toLocaleString(undefined, {
+            weekday: "short",
+            hour: "numeric",
+            minute: "2-digit",
+          })}.`
+        : ""
+    return {
+      id: "usage-limit",
+      kind: "status",
+      order: 3,
+      title: "Usage limit reached",
+      icon: AlertCircle,
+      accent: "warning",
+      defaultExpanded: true,
+      onDismiss: () => setUsageLimitNotice(null),
+      headerActions: (
+        <View className="flex-row gap-1.5">
+          <Pressable
+            onPress={handleUpgradeClick}
+            accessibilityRole="button"
+            accessibilityLabel="Upgrade plan"
+            className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
+          >
+            <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
+              Upgrade
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              setUsageLimitNotice(null)
+              void handleSendMessage("continue")
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Continue the task"
+            className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1"
+          >
+            <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
+              Continue
+            </Text>
+          </Pressable>
+        </View>
+      ),
+      render: () => (
+        <Text className="text-xs text-orange-700 dark:text-orange-300">
+          {`The agent stopped partway through; completed work is saved.${resetLabel} Tap Continue after it resets, or upgrade to keep going now.`}
+        </Text>
+      ),
+    }
+  }, [usageLimitNotice, currentSessionId, handleUpgradeClick, handleSendMessage])
+  useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!toolErrorBanner) return null
@@ -7326,7 +7647,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onModelChange={handleModelChange}
                     isPro={hasAdvancedModelAccess}
                     onUpgradeClick={handleUpgradeClick}
-                    queuedMessages={messageQueue}
+                    queuedMessages={displayedQueue}
                     onRemoveQueuedMessage={handleRemoveQueuedMessage}
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { resolve } from "path"
 import { defineConfig, devices } from "@playwright/test"
 
 /**
@@ -17,8 +18,61 @@ import { defineConfig, devices } from "@playwright/test"
  *
  * Override the frontend URL with E2E_TARGET_URL or the legacy
  * STAGING_URL (both supported for backward compatibility).
+ *
+ * `E2E_LOCAL_START_STACK=1` (PR CI) makes Playwright boot the stack itself:
+ * a throwaway SQLite DB, the local-mode API on :8002 and Expo web on :8081.
  */
+const startStack = process.env.E2E_LOCAL_START_STACK === "1"
+// Some specs default to a developer's API port; point them at the stack's.
+if (startStack) process.env.E2E_API_URL = "http://localhost:8002"
+const repoRoot = resolve(__dirname, "../..")
+const localDbPath = resolve(repoRoot, "test-results/e2e-local.db")
+const localEnv = {
+  SHOGO_LOCAL_MODE: "true",
+  DATABASE_URL: `file:${localDbPath}`,
+  BETTER_AUTH_SECRET: "e2e-local-secret",
+  BETTER_AUTH_URL: "http://localhost:8002",
+  NODE_ENV: "development",
+  EXPO_PUBLIC_LOCAL_MODE: "true",
+  API_PORT: "8002",
+  EXPO_PUBLIC_API_PORT: "8002",
+  EXPO_PUBLIC_API_URL: "http://localhost:8002",
+  // A developer's apps/mobile/.env.local otherwise wins over the values above.
+  EXPO_NO_DOTENV: "1",
+  BROWSER: "none",
+  ...(process.env.CI ? { CI: "true" } : {}),
+}
+
 export default defineConfig({
+  ...(startStack
+    ? {
+        webServer: [
+          {
+            command:
+              `rm -f "${localDbPath}" && ` +
+              `bun x prisma db push --schema=prisma/schema.local.prisma --url "file:${localDbPath}" --accept-data-loss && ` +
+              "bun --no-env-file apps/api/src/entry.ts",
+            cwd: repoRoot,
+            env: localEnv,
+            url: "http://localhost:8002/api/health",
+            timeout: 180_000,
+            reuseExistingServer: !process.env.CI,
+            stdout: "pipe",
+          },
+          {
+            // --clear: Metro caches inlined EXPO_PUBLIC_* values, which would
+            // otherwise keep pointing at a developer's .env.local API port.
+            command: "bun run --cwd apps/mobile dev:web -- --clear",
+            cwd: repoRoot,
+            env: localEnv,
+            url: "http://localhost:8081",
+            timeout: 300_000,
+            reuseExistingServer: !process.env.CI,
+          },
+        ],
+      }
+    : {}),
+  globalSetup: resolve(__dirname, "global-setup.ts"),
   testDir: __dirname,
   testMatch: /.*\.test\.ts$/,
   fullyParallel: false,

@@ -68,6 +68,8 @@ export interface DockPanelDescriptor {
   onDismiss?: () => void
   /** Allows a blocking panel to hide its body while remaining reachable. */
   collapsible?: boolean
+  /** Drops the body's inset padding so full-width rows can own their own spacing and hover fill. */
+  flushBody?: boolean
   /** `expanded` lets costly panels (e.g. a live browser screencast) suspend work while collapsed. */
   render: (ctx: { expanded: boolean; bodyMaxHeight?: number }) => ReactNode
 }

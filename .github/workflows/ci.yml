@@ -207,6 +207,9 @@ jobs:
         # that forgets the fix.
         run: bun run check:ci-bun-install-token
 
+      - name: Check hosted e2e quarantine entries are owned and unexpired
+        run: bun run check:e2e-quarantine
+
       - name: Verify SDK license isolation (no AGPL leak)
         # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
         # AGPL workspace package from a published code path. See
@@ -447,7 +450,7 @@ jobs:
             desktop_bundle: false
             include_e2e: false
           - name: remaining + e2e
-            packages: packages/shared-runtime,packages/model-catalog,packages/sdk,scripts,packages/shared-app
+            packages: packages/shared-runtime,packages/model-catalog,packages/sdk,scripts,packages/shared-app,apps/metal-agent,packages/agent,packages/core,packages/email,packages/voice
             shard: ''
             build_templates: true
             desktop_bundle: true
