@@ -2258,6 +2258,7 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
+      effectiveProvider: provider,
       autoRouting,
       autoTierOverride: this.autoTierOverride,
       dualPlan,

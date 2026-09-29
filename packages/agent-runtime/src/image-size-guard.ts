@@ -59,6 +59,37 @@ export const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
   'image/webp',
 ])
 
+/**
+ * Identify an image's real format from its leading bytes. The declared
+ * `mimeType` comes from a file extension or a tool's say-so, and is wrong
+ * often enough (an SVG or HEIC saved as `.png`) that providers 400 on images
+ * the MIME check alone lets through. Returns undefined when the bytes don't
+ * match a known signature, so callers fall back to the declared type.
+ */
+export function sniffImageMimeType(base64: string): string | undefined {
+  let head: Buffer
+  try {
+    head = Buffer.from(base64.slice(0, 32), 'base64')
+  } catch {
+    return undefined
+  }
+  const ascii = (start: number, end: number) => head.subarray(start, end).toString('latin1')
+  if (head.length >= 8 && head[0] === 0x89 && ascii(1, 4) === 'PNG') return 'image/png'
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg'
+  if (ascii(0, 4) === 'GIF8') return 'image/gif'
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp'
+  if (ascii(4, 8) === 'ftyp') {
+    const brand = ascii(8, 12)
+    if (brand === 'avif' || brand === 'avis') return 'image/avif'
+    if (['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand)) return 'image/heic'
+  }
+  if (ascii(0, 2) === 'BM') return 'image/bmp'
+  if (head.length >= 4 && head[0] === 0 && head[1] === 0 && head[2] === 1 && head[3] === 0) return 'image/x-icon'
+  if (ascii(0, 4) === 'II*\0' || ascii(0, 4) === 'MM\0*') return 'image/tiff'
+  if (/^(\uFEFF|\xEF\xBB\xBF)?\s*<(\?xml|svg)/i.test(ascii(0, head.length))) return 'image/svg+xml'
+  return undefined
+}
+
 export interface OversizedPlaceholderOptions {
   /** Short human-readable source label, e.g. `read_file` or `mcp:foo`. */
   label: string
@@ -156,10 +187,12 @@ export function enforceImageSizeLimit(
       continue
     }
     const normalizedMime = block.mimeType?.toLowerCase().trim()
-    if (normalizedMime && !SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMime)) {
+    const sniffedMime = sniffImageMimeType(block.data)
+    const effectiveMime = sniffedMime ?? normalizedMime
+    if (effectiveMime && !SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime)) {
       next.push(buildUnsupportedFormatPlaceholder({
         label: opts.label,
-        mimeType: block.mimeType,
+        mimeType: sniffedMime ?? block.mimeType,
         pathHint: opts.pathHint,
       }))
       mutated = true
@@ -170,6 +203,10 @@ export function enforceImageSizeLimit(
         mimeType: block.mimeType,
         pathHint: opts.pathHint,
       }))
+      mutated = true
+    } else if (sniffedMime && sniffedMime !== normalizedMime) {
+      // Providers also reject a media type that doesn't match the bytes.
+      next.push({ ...block, mimeType: sniffedMime })
       mutated = true
     } else {
       next.push(block)

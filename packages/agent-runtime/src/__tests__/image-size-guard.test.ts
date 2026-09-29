@@ -16,6 +16,7 @@ import {
   buildUnsupportedFormatPlaceholder,
   enforceImageSizeLimit,
   scrubOversizedImages,
+  sniffImageMimeType,
 } from '../image-size-guard'
 
 function smallImage(): ImageContent {
@@ -172,6 +173,49 @@ describe('enforceImageSizeLimit', () => {
     const out = enforceImageSizeLimit([badBoth], { label: 'read_file' })
     expect((out[0] as TextContent).text).toContain('image/bmp')
     expect((out[0] as TextContent).text).not.toContain('exceeds')
+  })
+})
+
+describe('sniffed image format', () => {
+  const b64 = (bytes: number[] | string) =>
+    Buffer.from(typeof bytes === 'string' ? Buffer.from(bytes, 'latin1') : Uint8Array.from(bytes)).toString('base64')
+  const PNG = b64([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d])
+  const JPEG = b64([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46])
+
+  test.each([
+    [PNG, 'image/png'],
+    [JPEG, 'image/jpeg'],
+    [b64('GIF89a\0\0'), 'image/gif'],
+    [b64('RIFF\0\0\0\0WEBPVP8 '), 'image/webp'],
+    [b64('\0\0\0\x18ftypheic\0\0'), 'image/heic'],
+    [b64('\0\0\0\x1cftypavif\0\0'), 'image/avif'],
+    [b64('BM6\0\0\0\0\0'), 'image/bmp'],
+    [b64([0, 0, 1, 0, 1, 0, 16, 16]), 'image/x-icon'],
+    [b64('<?xml version="1.0"?><svg'), 'image/svg+xml'],
+    [b64('  <svg xmlns="http://www.w3.org/2000/svg">'), 'image/svg+xml'],
+    ['AAAA', undefined],
+  ])('sniffs %s as %s', (data, expected) => {
+    expect(sniffImageMimeType(data)).toBe(expected)
+  })
+
+  test('replaces an SVG mislabeled as PNG (the history image providers 400 on)', () => {
+    const svgAsPng: ImageContent = { type: 'image', data: b64('<svg xmlns="http://www.w3.org/2000/svg"/>'), mimeType: 'image/png' }
+    const out = enforceImageSizeLimit([svgAsPng], { label: 'read_file' })
+    expect(out[0].type).toBe('text')
+    expect((out[0] as TextContent).text).toContain('image/svg+xml')
+  })
+
+  test('relabels a supported image whose declared type is wrong', () => {
+    const jpegAsPng: ImageContent = { type: 'image', data: JPEG, mimeType: 'image/png' }
+    expect(enforceImageSizeLimit([jpegAsPng], { label: 'read_file' })).toEqual([{ ...jpegAsPng, mimeType: 'image/jpeg' }])
+
+    const pngAsIcon: ImageContent = { type: 'image', data: PNG, mimeType: 'image/x-icon' }
+    expect(enforceImageSizeLimit([pngAsIcon], { label: 'read_file' })).toEqual([{ ...pngAsIcon, mimeType: 'image/png' }])
+  })
+
+  test('leaves a correctly-labeled image untouched by reference', () => {
+    const content: (TextContent | ImageContent)[] = [{ type: 'image', data: PNG, mimeType: 'image/png' }]
+    expect(enforceImageSizeLimit(content, { label: 'read_file' })).toBe(content)
   })
 })
 

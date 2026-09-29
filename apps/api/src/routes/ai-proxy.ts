@@ -889,6 +889,43 @@ function logCacheControlIfEnabled(body: Record<string, unknown>, where: string):
  * we keep the simpler string-system fast path for full backwards compatibility with every
  * existing chat-completions caller.
  */
+/** Translate OpenAI content parts to Anthropic blocks, carrying cache metadata. */
+function toAnthropicBlocks(content: ChatCompletionContentBlock[]): any[] {
+  const blocks: any[] = []
+  for (const b of content) {
+    if (b.type === 'text' && !b.text) continue
+    const bcc = b.cache_control ?? mapCacheControl(b.providerOptions?.anthropic?.cacheControl)
+    let out: Record<string, unknown>
+    if (b.type === 'image_url' && b.image_url?.url) {
+      const url = b.image_url.url
+      const dataUrl = /^data:([^;,]+);base64,(.*)$/s.exec(url)
+      out = {
+        type: 'image',
+        source: dataUrl
+          ? { type: 'base64', media_type: dataUrl[1], data: dataUrl[2] }
+          : { type: 'url', url },
+      }
+    } else {
+      out = { ...b }
+      delete out.providerOptions
+      delete out.cache_control
+    }
+    if (bcc) out.cache_control = bcc
+    blocks.push(out)
+  }
+  return blocks
+}
+
+function parseToolArguments(args: string | undefined): Record<string, unknown> {
+  if (!args) return {}
+  try {
+    const parsed = JSON.parse(args)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function convertToAnthropicFormat(request: ChatCompletionRequest) {
   // Detect whether ANY cache metadata is present. If not, take the fast path.
   const topCC = mapCacheControl(request.providerOptions?.anthropic?.cacheControl)
@@ -932,22 +969,51 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
 
     const msgCC = mapCacheControl(msg.providerOptions?.anthropic?.cacheControl)
 
-    if (Array.isArray(msg.content)) {
-      // Preserve / translate per-content-block cache metadata.
-      const blocks = msg.content.map(b => {
-        const bcc = b.cache_control ?? mapCacheControl(b.providerOptions?.anthropic?.cacheControl)
-        const rest = { ...b }
-        delete (rest as { providerOptions?: unknown }).providerOptions
-        if (bcc) (rest as { cache_control?: AnthropicCacheControl }).cache_control = bcc
-        else delete (rest as { cache_control?: unknown }).cache_control
-        return rest
-      })
+    // OpenAI tool results → Anthropic `tool_result` blocks on a user turn.
+    // Parallel calls produce consecutive `tool` messages; Anthropic wants all
+    // of an assistant turn's results together in the following user message.
+    if (msg.role === 'tool') {
+      const resultContent = typeof msg.content === 'string'
+        ? msg.content
+        : toAnthropicBlocks(msg.content ?? [])
+      const block: Record<string, unknown> = { type: 'tool_result', tool_use_id: msg.tool_call_id }
+      if (resultContent.length) block.content = resultContent
+      if (msgCC) block.cache_control = msgCC
+      const prev = messages[messages.length - 1]
+      if (prev?.role === 'user' && Array.isArray(prev.content) && prev.content.every((b: any) => b.type === 'tool_result')) {
+        prev.content.push(block)
+      } else {
+        messages.push({ role: 'user', content: [block] })
+      }
+      continue
+    }
+
+    const role = msg.role === 'assistant' ? 'assistant' : 'user'
+    const toolUses = role === 'assistant'
+      ? (msg.tool_calls ?? []).map(tc => ({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.function.name,
+          input: parseToolArguments(tc.function.arguments),
+        }))
+      : []
+
+    if (Array.isArray(msg.content) || toolUses.length || msg.content == null) {
+      const blocks: any[] = [
+        ...(Array.isArray(msg.content)
+          ? toAnthropicBlocks(msg.content)
+          : msg.content ? [{ type: 'text', text: msg.content }] : []),
+        ...toolUses,
+      ]
+      // Anthropic rejects empty content (e.g. an assistant turn that was
+      // `content: null` with no tool calls), so drop the message entirely.
+      if (!blocks.length) continue
       // Per-message providerOptions applies to the last block (matches SDK semantics).
-      if (msgCC && blocks.length) {
+      if (msgCC) {
         const last = blocks[blocks.length - 1] as { cache_control?: AnthropicCacheControl }
         if (!last.cache_control) last.cache_control = msgCC
       }
-      messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: blocks })
+      messages.push({ role, content: blocks })
     } else if (typeof msg.content === 'string' && msgCC) {
       // Coerce string content to a single text block so cache_control has a home.
       messages.push({
@@ -1756,6 +1822,8 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
   return err instanceof Error && err.name === 'AbortError'
 }
 
+const OPENAI_TOOLS_NEED_NO_REASONING = /function tools with reasoning_effort are not supported/i
+
 function isFailoverStatus(status: number): boolean {
   return status === 429 || status >= 500
 }
@@ -1798,16 +1866,29 @@ async function fetchOpenAICompatible(
   extra: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<{ response: Response; served: ModelConfig }> {
-  const attempt = (config: ModelConfig, key: string) => fetch(getOpenAICompatibleBaseUrl(config), {
+  const attempt = (config: ModelConfig, key: string, overrides?: Record<string, unknown>) => fetch(getOpenAICompatibleBaseUrl(config), {
     method: 'POST',
     headers: getOpenAICompatibleHeaders(key, config),
-    body: JSON.stringify(buildOpenAICompatibleBody(request, config, extra)),
+    body: JSON.stringify({ ...buildOpenAICompatibleBody(request, config, extra), ...overrides }),
     signal,
   })
 
   const fallback = fallbackModelConfig(modelConfig)
   try {
-    const response = await attempt(modelConfig, apiKey)
+    let response = await attempt(modelConfig, apiKey)
+    if (
+      response.status === 400 &&
+      modelConfig.provider === 'openai' &&
+      request.tools?.length &&
+      OPENAI_TOOLS_NEED_NO_REASONING.test(await response.clone().text().catch(() => ''))
+    ) {
+      // Some OpenAI reasoning models (gpt-6-*) reason by default, so omitting
+      // reasoning_effort isn't enough to allow function tools on Chat
+      // Completions — they must be told to skip reasoning explicitly.
+      await response.text().catch(() => {})
+      console.warn(`[AI Proxy] ${modelConfig.apiModel} rejected tools with default reasoning on chat completions; retrying with reasoning_effort=none`)
+      response = await attempt(modelConfig, apiKey, { reasoning_effort: 'none' })
+    }
     if (response.ok || !fallback || !isFailoverStatus(response.status)) {
       return { response, served: modelConfig }
     }
