@@ -188,6 +188,13 @@ spec:
               value: "shogo-workspaces-production"
             - name: S3_LLM_CAPTURES_BUCKET
               value: "shogo-llm-captures-production"
+            # Raw LLM captures contain user prompts and must stay in the EU,
+            # unlike the shared Ashburn endpoint above that the workspaces
+            # bucket uses. Read only by getLlmCaptureS3Client().
+            - name: S3_LLM_CAPTURES_REGION
+              value: "eu-frankfurt-1"
+            - name: S3_LLM_CAPTURES_ENDPOINT
+              value: "https://idin4oltblww.compat.objectstorage.eu-frankfurt-1.oraclecloud.com"
             # getArtifactBucket()/getS3Bucket() in apps/api/src/lib/s3.ts require
             # S3_ARTIFACT_BUCKET or S3_SCHEMA_BUCKET, neither of which was ever set
             # here. Every artifact upload (agent avatars, thumbnails) was silently

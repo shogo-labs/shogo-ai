@@ -1,6 +1,6 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { gzipSync } from 'node:zlib'
-import { getLlmCaptureBucket, getS3Client } from '../s3'
+import { getLlmCaptureBucket, getLlmCaptureS3Client } from '../s3'
 
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024
 const FLUSH_INTERVAL_MS = 30_000
@@ -42,7 +42,7 @@ function partition(now: Date): string {
 
 async function putObject(key: string, body: Buffer, contentType: string, contentEncoding?: string): Promise<void> {
   const bucket = getLlmCaptureBucket()
-  await getS3Client().send(new PutObjectCommand({
+  await getLlmCaptureS3Client().send(new PutObjectCommand({
     Bucket: bucket,
     Key: key,
     Body: body,

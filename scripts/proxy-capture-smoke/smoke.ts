@@ -178,7 +178,11 @@ if (phase === 'killswitch') {
 }
 
 if (phase === 'archive') {
-  const s3 = new S3Client({ region: process.env.S3_REGION, endpoint: process.env.S3_ENDPOINT, forcePathStyle: true })
+  const s3 = new S3Client({
+    region: process.env.S3_LLM_CAPTURES_REGION || process.env.S3_REGION,
+    endpoint: process.env.S3_LLM_CAPTURES_ENDPOINT || process.env.S3_ENDPOINT,
+    forcePathStyle: true,
+  })
   const Bucket = process.env.S3_LLM_CAPTURES_BUCKET!
   const day = new Date().toISOString().slice(0, 10)
   const keys: string[] = []
