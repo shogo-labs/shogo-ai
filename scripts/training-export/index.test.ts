@@ -131,4 +131,19 @@ describe('training export normalization', () => {
       }],
     })
   })
+
+  test('drops examples whose tool-call arguments are not a JSON object', () => {
+    const record = (args: string) => ({
+      id: 'capture-6',
+      ts: '2026-09-26T05:00:00.000Z',
+      workspaceId: 'workspace-1',
+      turnKey: 'turn-6',
+      request: { messages: [{ role: 'user', content: 'Weather in Paris?' }] },
+      response: { tool_calls: [{ id: 'call-6', name: 'lookup_weather', arguments: args }] },
+    })
+
+    expect(toTrainingExample(record('{}{"city":"Paris"}'))).toBeNull()
+    expect(toTrainingExample(record('{"city":'))).toBeNull()
+    expect(toTrainingExample(record('{"city":"Paris"}'))).not.toBeNull()
+  })
 })

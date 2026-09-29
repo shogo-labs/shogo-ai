@@ -614,7 +614,7 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'ProxyTurn.(turnKey,workspaceId)',
     category: 'single_tenant_upsert',
     reason:
-      'The proxy capture path upserts one summary per workspace turn key; writes are scoped to the workspace and deduplicate retries of the same captured turn.',
+      'The proxy capture path upserts one summary per workspace turn key. /api/ai/* is not home-region routed, so turnKey hashes in REGION_ID: each region only ever inserts its own keys, and a turn served by two regions yields two rows instead of a replication conflict.',
   },
 ]
 
