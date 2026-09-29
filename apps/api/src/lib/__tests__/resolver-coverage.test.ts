@@ -69,6 +69,7 @@ const EXEMPT: Record<string, string> = {
   projectAuthConfig: 'Mutated via /api/projects/:projectId/auth — resolved by path projectId.',
   projectAuthSignIn: 'Mutated via /api/projects/:projectId/auth — resolved by path projectId.',
   projectCheckpoint: 'Mutated via /api/projects/:projectId/checkpoints — resolved by path projectId.',
+  proxyTurn: 'Written as a side effect of the AI proxy request; the turn key is workspace-scoped and deduplicates retries without a standalone REST mutation route.',
   slackProjectRoutingRule: 'Mutated via /api/integrations/slack/workspaces/:workspaceId/routing-rules — resolved by path workspaceId (admin-gated).',
   slackWorkspaceInstallation: 'Mutated via /api/integrations/slack/workspaces/:workspaceId routes (path workspaceId) and the OAuth callback (workspaceId from signed OAuth state).',
   storageUsage: 'Counter table written via workspace-scoped usage routes — resolved by path workspaceId.',

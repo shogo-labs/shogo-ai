@@ -232,6 +232,14 @@ export interface WorkspaceChildrenResponse {
   children: ChildWorkspaceSummary[]
 }
 
+export type TrainingDataMode = 'default' | 'enabled' | 'disabled'
+
+export interface WorkspaceSettingsUpdate {
+  name?: string
+  description?: string
+  trainingDataMode?: TrainingDataMode
+}
+
 export type AgentTaskStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface AgentTask {

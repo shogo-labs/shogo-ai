@@ -153,6 +153,17 @@ export function getS3Bucket(): string {
 }
 
 /**
+ * Get the append-only bucket used for raw cloud AI proxy captures.
+ */
+export function getLlmCaptureBucket(): string {
+  const bucket = process.env.S3_LLM_CAPTURES_BUCKET
+  if (!bucket) {
+    throw new Error('S3_LLM_CAPTURES_BUCKET environment variable is required for proxy capture storage')
+  }
+  return bucket
+}
+
+/**
  * Get the S3 key prefix (defaults to "schemas/").
  */
 export function getS3Prefix(): string {

@@ -176,6 +176,8 @@ spec:
               value: "staging"
             - name: S3_WORKSPACES_BUCKET
               value: "shogo-workspaces-staging"
+            - name: S3_LLM_CAPTURES_BUCKET
+              value: "shogo-llm-captures-staging"
             # getArtifactBucket()/getS3Bucket() in apps/api/src/lib/s3.ts require
             # S3_ARTIFACT_BUCKET or S3_SCHEMA_BUCKET, neither of which was ever set
             # here. Every artifact upload (agent avatars, thumbnails) was silently

@@ -312,3 +312,34 @@ describe('workspaceHooks.beforeDelete — child guard', () => {
     expect(res?.ok).toBe(true)
   })
 })
+
+describe('workspaceHooks.beforeUpdate — training data mode', () => {
+  it('accepts the supported consent modes for an admin', async () => {
+    workspacesById['ws-1'] = {
+      id: 'ws-1',
+      members: [{ userId: 'u1', role: 'admin' }],
+    }
+    for (const trainingDataMode of ['default', 'enabled', 'disabled']) {
+      const res = await workspaceHooks.beforeUpdate!(
+        'ws-1',
+        { trainingDataMode },
+        makeCtx({ userId: 'u1' }),
+      )
+      expect(res?.ok).toBe(true)
+    }
+  })
+
+  it('rejects unknown consent modes', async () => {
+    workspacesById['ws-1'] = {
+      id: 'ws-1',
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    const res = await workspaceHooks.beforeUpdate!(
+      'ws-1',
+      { trainingDataMode: 'always' },
+      makeCtx({ userId: 'u1' }),
+    )
+    expect(res?.ok).toBe(false)
+    expect(res?.error?.code).toBe('invalid_training_data_mode')
+  })
+})
