@@ -610,6 +610,16 @@ export async function fetchAnthropicWithRetry(
 }
 
 /**
+ * Status to relay for a failed provider call. A provider 401 means the
+ * platform's own provider key was rejected; passed through as-is, clients
+ * that authenticate with a Shogo key can't tell it from their key being
+ * revoked.
+ */
+export function relayStatusForProviderError(status: number): number {
+  return status === 401 ? 502 : status
+}
+
+/**
  * Classify a stream error into a typed code for downstream consumers.
  * The code lets the UI decide whether to auto-retry (retryable) or surface
  * a fatal message (non-retryable).
@@ -3453,7 +3463,7 @@ export function aiProxyRoutes() {
       if (!response.ok) {
         const errorText = await response.text()
         console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
-        return new Response(errorText, { status: response.status, headers: { 'Content-Type': 'application/json' } })
+        return new Response(errorText, { status: relayStatusForProviderError(response.status), headers: { 'Content-Type': 'application/json' } })
       }
 
       if (isStream) {
@@ -3929,7 +3939,7 @@ export function aiProxyRoutes() {
           capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `OpenAI error (${response.status}): ${errorText}` } },
-            response.status as any
+            relayStatusForProviderError(response.status) as any
           )
         }
 
@@ -4029,7 +4039,7 @@ export function aiProxyRoutes() {
         const errorBody = await response.text()
         capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
         return new Response(errorBody, {
-          status: response.status,
+          status: relayStatusForProviderError(response.status),
           headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
         })
       }
@@ -4194,7 +4204,7 @@ export function aiProxyRoutes() {
 
     const responseBody = await response.text()
     return new Response(responseBody, {
-      status: response.status,
+      status: relayStatusForProviderError(response.status),
       headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
     })
   })
@@ -4229,7 +4239,7 @@ export function aiProxyRoutes() {
 
     const responseBody = await response.text()
     return new Response(responseBody, {
-      status: response.status,
+      status: relayStatusForProviderError(response.status),
       headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
     })
   })
