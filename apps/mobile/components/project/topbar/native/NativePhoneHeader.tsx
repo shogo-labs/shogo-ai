@@ -32,6 +32,7 @@ const NATIVE_HEADER_PAD_LEFT = 28;
 const NATIVE_HEADER_PAD_TOP = 4;
 const NATIVE_CLUSTER_PAD_X = 6;
 const NATIVE_CLUSTER_WIDTH = NATIVE_CLUSTER_PAD_X * 2 + NATIVE_CLUSTER_SLOT * 2;
+const NATIVE_REMOTE_INDICATOR_WIDTH = 138;
 
 export function NativePhoneHeader({
   projectName,
@@ -41,6 +42,7 @@ export function NativePhoneHeader({
   trustLevel,
   onToggleTrust,
   trustBusy,
+  remoteHostIndicator,
   narrowActiveTab,
   narrowPrimaryTabs,
   getTabActive,
@@ -56,6 +58,7 @@ export function NativePhoneHeader({
   trustLevel?: "restricted" | "trusted";
   onToggleTrust?: () => void;
   trustBusy?: boolean;
+  remoteHostIndicator?: React.ReactNode;
   narrowActiveTab?: "chat" | "canvas";
   narrowPrimaryTabs: AgentTab[];
   getTabActive: (tabId: string) => boolean;
@@ -70,7 +73,8 @@ export function NativePhoneHeader({
   const rightChrome =
     NATIVE_HEADER_PAD_X +
     (showChatMoreCluster ? NATIVE_CLUSTER_WIDTH : NATIVE_PHONE_CONTROL_SIZE) +
-    (showTrustBadge ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0);
+    (showTrustBadge ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0) +
+    (remoteHostIndicator ? NATIVE_REMOTE_INDICATOR_WIDTH : 0);
   const titleInset = nativePhoneTitleInset(leftChrome, rightChrome);
 
   return (
@@ -125,6 +129,7 @@ export function NativePhoneHeader({
             testID="project-native-sidebar"
           />
           <View className="flex-row items-center gap-2">
+            {remoteHostIndicator}
             {showTrustBadge && trustLevel && onToggleTrust && (
               <TrustBadge
                 trustLevel={trustLevel}

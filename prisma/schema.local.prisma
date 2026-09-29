@@ -367,6 +367,9 @@ model Project {
   //   Default mirrors the PG schema (`git_only`); harmless on desktop
   //   where cloud sync is disabled (SHOGO_LOCAL_MODE).
   cloudSyncMode String @default("git_only")
+  // Optional SSH host for desktop Remote-SSH projects. When set, the
+  // primary ProjectFolder path is resolved on the remote machine.
+  remoteHostId String?
 
   workspace              Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                 Folder?                      @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -392,6 +395,9 @@ model Project {
   agentEvalSets          AgentEvalSet[]
   projectFolders         ProjectFolder[]
   preferredInstance      Instance?                    @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  // Restrict: clearing remoteHostId would silently turn a remote project into
+  // a local folder project whose path is resolved on this machine.
+  remoteHost             RemoteHost?                  @relation(fields: [remoteHostId], references: [id], onDelete: Restrict)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
@@ -408,6 +414,7 @@ model Project {
   @@index([workspaceId, hidden])
   @@index([folderId])
   @@index([preferredInstanceId])
+  @@index([remoteHostId])
   @@map("projects")
 }
 
@@ -527,6 +534,26 @@ model ProjectFolder {
 
   @@index([projectId])
   @@map("project_folders")
+}
+
+/// A saved SSH host used by a desktop Remote-SSH project.
+/// This model is intentionally local-only; cloud projects use cloud
+/// substrates instead of the desktop user's SSH credentials.
+model RemoteHost {
+  id              String    @id @default(uuid())
+  label           String
+  sshTarget       String
+  port            Int?
+  identityFile    String?
+  platform        String?
+  lastConnectedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  projects Project[]
+
+  @@index([sshTarget])
+  @@map("remote_hosts")
 }
 
 /// Bring-your-own custom domain for a published project (Cloudflare for

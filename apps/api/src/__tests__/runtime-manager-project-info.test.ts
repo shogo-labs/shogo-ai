@@ -52,6 +52,14 @@ function managerWithPrivateGetInfo() {
       runtimeEnabled?: boolean
       trustLevel?: 'trusted' | 'restricted'
       folders?: { path: string; isPrimary: boolean }[]
+      remoteHostId?: string
+      remoteHost?: {
+        sshTarget: string
+        label: string
+        port?: number | null
+        identityFile?: string | null
+        platform?: string | null
+      }
     }>
   }
 }
@@ -155,6 +163,36 @@ describe('RuntimeManager.getProjectInfo', () => {
     expect(info.runtimeEnabled).toBe(false)
     expect(info.workingMode).toBe('external')
     expect(info.trustLevel).toBe('trusted')
+  })
+
+  test('returns the saved Remote-SSH host configuration', async () => {
+    projectResult = {
+      name: 'Remote Project',
+      settings: {},
+      workingMode: 'external',
+      runtimeEnabled: true,
+      trustLevel: 'trusted',
+      remoteHostId: 'host-1',
+      remoteHost: {
+        label: 'Build Host',
+        sshTarget: 'alice@example.com',
+        port: 2222,
+        identityFile: '~/.ssh/id_ed25519',
+        platform: 'linux-x64',
+      },
+      projectFolders: [{ path: '/srv/remote/project', isPrimary: true }],
+    }
+
+    const info = await managerWithPrivateGetInfo().getProjectInfo('remote-project')
+
+    expect(info.remoteHostId).toBe('host-1')
+    expect(info.remoteHost).toEqual({
+      label: 'Build Host',
+      sshTarget: 'alice@example.com',
+      port: 2222,
+      identityFile: '~/.ssh/id_ed25519',
+      platform: 'linux-x64',
+    })
   })
 
   test('returns an empty object when Prisma lookup fails', async () => {

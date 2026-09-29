@@ -61,6 +61,8 @@ interface DrawerHostProps {
   isChatFullscreen: boolean
   /** Filesystem path of the opened project folder. */
   folderPath?: string
+  /** Remote-SSH projects must provision terminals through the runtime HTTP API. */
+  remoteHostId?: string | null
   /** The right-pane content (the previewTab switch). */
   children: React.ReactNode
 }
@@ -89,6 +91,7 @@ export function DrawerHost({
   canvasAreaHidden,
   isChatFullscreen,
   folderPath,
+  remoteHostId,
   children,
 }: DrawerHostProps): JSX.Element {
   const open = useBottomPanelState((s) => s.open)
@@ -246,6 +249,7 @@ export function DrawerHost({
               messages={messages}
               onMaximizeChange={handleMaximizeChange}
               folderPath={folderPath}
+              remoteHostId={remoteHostId}
             />
           </div>
         </>

@@ -37,6 +37,7 @@ describe('isFolderLinkedProject (IDEPanel fast-path selection)', () => {
     expect(isFolderLinkedProject({ isExternalProject: true })).toBe(true)
     expect(isFolderLinkedProject({ folderPath: 'C:\\Users\\me\\repo' })).toBe(true)
     expect(isFolderLinkedProject({ isExternalProject: false, folderPath: '/home/me/repo' })).toBe(true)
+    expect(isFolderLinkedProject({ remoteHostId: 'ssh-host-1' })).toBe(true)
   })
 
   test('managed projects may use it', () => {

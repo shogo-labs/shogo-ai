@@ -274,8 +274,15 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   // NOT included here: those still flow through agent-runtime so its file
   // watcher + RAG indexer stay authoritative for mutations.
   fs: {
-    resolveWorkspace: (projectId: string): Promise<{ ok: boolean; root?: string; reason?: string }> =>
-      ipcRenderer.invoke('fs:resolveWorkspace', projectId),
+    resolveWorkspace: (
+      projectId: string,
+      context?: {
+        isExternalProject?: boolean | null
+        folderPath?: string | null
+        remoteHostId?: string | null
+      },
+    ): Promise<{ ok: boolean; root?: string; reason?: string }> =>
+      ipcRenderer.invoke('fs:resolveWorkspace', projectId, context),
     listTree: (root: string, path?: string): Promise<{ ok: boolean; tree?: unknown[]; error?: string }> =>
       ipcRenderer.invoke('fs:listTree', root, path),
     readFile: (root: string, relPath: string): Promise<{ ok: boolean; content?: string; size?: number; mtime?: number; error?: string }> =>

@@ -48,6 +48,11 @@ import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
 import { resolveAgentModelEnv } from './agent-model-defaults'
+import { createSSHConnection, type SSHConnection } from '../remote-ssh/connection'
+import { SSHAskpassBroker } from '../remote-ssh/askpass'
+import { RemoteRuntimeManager } from '../remote-ssh/remote-runtime'
+import { startRemoteApiGateway, type RemoteApiGateway } from '../remote-ssh/api-gateway'
+import { resolveLocalApiPort } from '../local-api-port'
 
 type CloudContentSyncModule = typeof import('./cloud-content-sync')
 
@@ -276,6 +281,9 @@ interface InternalRuntime extends IProjectRuntime {
    */
   agentProcess: ChildProcess | null
   agentPort: number | undefined
+  /** Remote-SSH runtime lifecycle, when this record is not host-local. */
+  remoteRuntime?: RemoteRuntimeManager
+  remoteHostId?: string
   /**
    * True when this runtime was spawned by a BACKGROUND system (the local
    * heartbeat scheduler) rather than opened in the UI. Background runtimes are
@@ -287,6 +295,25 @@ interface InternalRuntime extends IProjectRuntime {
    * foreground preview) the moment the project is opened in the UI.
    */
   background?: boolean
+}
+
+interface RemoteHostInfo {
+  label: string
+  sshTarget: string
+  port?: number | null
+  identityFile?: string | null
+  platform?: string | null
+}
+
+interface ProjectInfo {
+  name?: string
+  techStackId?: string
+  workingMode?: 'managed' | 'external'
+  runtimeEnabled?: boolean
+  trustLevel?: 'trusted' | 'restricted'
+  folders?: { path: string; isPrimary: boolean }[]
+  remoteHostId?: string
+  remoteHost?: RemoteHostInfo
 }
 
 /**
@@ -336,6 +363,14 @@ export class RuntimeManager implements IRuntimeManager {
    * process under the hood.
    */
   private agentManagedProjects: Set<string> = new Set()
+  /** One remote runtime controller (and its host) per internal runtime key. */
+  private remoteRuntimeManagers: Map<string, { manager: RemoteRuntimeManager; remoteHostId: string }> = new Map()
+  /** One SSH connection/control master per saved RemoteHost. */
+  private remoteConnections: Map<string, SSHConnection> = new Map()
+  /** One short-lived interactive-auth broker per saved RemoteHost. */
+  private remoteAskpassBrokers: Map<string, SSHAskpassBroker> = new Map()
+  /** Shared local listener that every Remote-SSH reverse forward targets. */
+  private remoteApiGateway: Promise<RemoteApiGateway> | null = null
   private warmWorkspacePromise: Promise<string | null> | null = null
   /** True while prepareWarmWorkspace is actually building (not merely caching a ready dir). */
   private warmWorkspaceBuilding = false
@@ -1461,34 +1496,50 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
   }
 
-  private async getProjectInfo(projectId: string): Promise<{
-    name?: string
-    techStackId?: string
-    workingMode?: 'managed' | 'external'
-    runtimeEnabled?: boolean
-    trustLevel?: 'trusted' | 'restricted'
-    folders?: { path: string; isPrimary: boolean }[]
-  }> {
+  private async getProjectInfo(projectId: string): Promise<ProjectInfo> {
     try {
       const { prisma } = await import('../prisma')
-      // `workingMode` / `runtimeEnabled` / `trustLevel` may not exist on
-      // every deployment yet (schema migration is in
-      // 20260513000000_external_folder_projects). Cast through `any` so
-      // the prisma generated client doesn't lock us into the new shape
-      // before the migration has been applied on cloud.
-      const project = (await prisma.project.findUnique({
-        where: { id: projectId },
-        select: {
-          name: true,
-          settings: true,
-          workingMode: true,
-          runtimeEnabled: true,
-          trustLevel: true,
-          projectFolders: {
-            select: { path: true, isPrimary: true },
-          },
-        } as any,
-      })) as any
+      // `workingMode` / `runtimeEnabled` / `trustLevel` and the local-only
+      // RemoteHost relation are not present on every deployment. Cast through
+      // `any` and retry without the Remote-SSH fields so a cloud Prisma client
+      // does not lose the existing local-runtime metadata lookup.
+      const baseSelect = {
+        name: true,
+        settings: true,
+        workingMode: true,
+        runtimeEnabled: true,
+        trustLevel: true,
+        projectFolders: {
+          select: { path: true, isPrimary: true },
+        },
+      }
+      let project: any
+      try {
+        project = (await prisma.project.findUnique({
+          where: { id: projectId },
+          select: {
+            ...baseSelect,
+            remoteHostId: true,
+            remoteHost: {
+              select: {
+                label: true,
+                sshTarget: true,
+                port: true,
+                identityFile: true,
+                platform: true,
+              },
+            },
+          } as any,
+        })) as any
+      } catch (err: any) {
+        // Only an unknown-field validation error means "this schema has no
+        // Remote-SSH columns"; anything else is a real failure.
+        if (err?.name !== 'PrismaClientValidationError') throw err
+        project = (await prisma.project.findUnique({
+          where: { id: projectId },
+          select: baseSelect as any,
+        })) as any
+      }
       const settings = parseProjectSettings(project?.settings)
       // Tech stack is sourced exclusively from settings.techStackId now.
       // The legacy templateId fallback was removed during the templates →
@@ -1502,7 +1553,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const folders: { path: string; isPrimary: boolean }[] = Array.isArray(project?.projectFolders)
         ? project.projectFolders.map((f: any) => ({ path: String(f.path), isPrimary: !!f.isPrimary }))
         : []
-      return {
+      const info: ProjectInfo = {
         name: project?.name ?? undefined,
         techStackId,
         workingMode,
@@ -1510,7 +1561,24 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         trustLevel,
         folders,
       }
-    } catch {
+      if (typeof project?.remoteHostId === 'string' && project.remoteHostId) {
+        info.remoteHostId = project.remoteHostId
+        if (project.remoteHost) {
+          info.remoteHost = {
+            label: String(project.remoteHost.label ?? ''),
+            sshTarget: String(project.remoteHost.sshTarget ?? ''),
+            port:
+              project.remoteHost.port == null
+                ? project.remoteHost.port
+                : Number(project.remoteHost.port),
+            identityFile: project.remoteHost.identityFile ?? null,
+            platform: project.remoteHost.platform ?? null,
+          }
+        }
+      }
+      return info
+    } catch (err: any) {
+      console.warn(`[RuntimeManager] getProjectInfo(${projectId}) failed: ${err?.message ?? err}`)
       return {}
     }
   }
@@ -1694,6 +1762,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     opts: { attachedProjectIds: string[]; openAttemptId?: string },
   ): Promise<IProjectRuntime> {
     if (!workspaceId) throw new Error('[RuntimeManager] startWorkspace: workspaceId is required')
+    const attachedInfos = await Promise.all(
+      (opts.attachedProjectIds ?? []).map((projectId) => this.getProjectInfo(projectId)),
+    )
+    if (attachedInfos.some((info) => !!info.remoteHostId)) {
+      throw new Error(
+        'Remote-SSH projects must be opened as project-anchored runtimes; ' +
+          'mixed local/remote workspace runtimes are not supported.',
+      )
+    }
     const key = workspaceRuntimeKey(workspaceId)
 
     const existing = this.runtimes.get(key)
@@ -1789,9 +1866,31 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       (id, i, arr) => id && arr.indexOf(id) === i,
     )
 
-    const existing = this.runtimes.get(key)
+    const anchorProjectInfo = await this.getProjectInfo(anchorProjectId)
+    const isRemote = !!anchorProjectInfo.remoteHostId
+    if (!isRemote && memberProjectIds.length > 1) {
+      const attachedInfos = await Promise.all(
+        memberProjectIds.slice(1).map((projectId) => this.getProjectInfo(projectId)),
+      )
+      if (attachedInfos.some((info) => !!info.remoteHostId)) {
+        throw new Error(
+          'Remote-SSH projects cannot be attached to a local project runtime; ' +
+            'open the remote project directly.',
+        )
+      }
+    }
+    let existing = this.runtimes.get(key)
+    // A project can be rebound between local and Remote-SSH storage while its
+    // old runtime is still cached. Never reuse a runtime with the wrong
+    // transport; in particular, do not refresh a local merged root for a
+    // project that is now remote.
+    if (existing && !!existing.remoteRuntime !== isRemote && existing.status !== 'stopped') {
+      await this.stop(key, 'transport-changed')
+      existing = this.runtimes.get(key)
+    }
     if (existing && existing.status === 'running' && existing.agentPort && !this.isAgentAlive(key, existing)) {
       await this.dropStaleRuntime(key, 'stale-agent')
+      existing = this.runtimes.get(key)
     }
     if (existing && existing.status === 'running' && existing.agentPort) {
       // The merged root is built once at process start. A project (or linked
@@ -1801,16 +1900,18 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // (idempotent) symlink builder here makes new members appear without a
       // full restart. Env-coupled changes (READONLY_ROOTS) still need a
       // restart, which the attach route triggers explicitly.
-      try {
-        const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
-        await this.buildWorkspaceMergedRoot(workspacesDir, `proj-${anchorProjectId}`, memberProjectIds, {
-          localFolders: opts.localFolders ?? [],
-          readonlyProjectIds: opts.readonlyProjectIds ?? [],
-        })
-      } catch (err: any) {
-        console.warn(
-          `[RuntimeManager] startProjectWorkspace(${key}): merged-root refresh on reuse failed: ${err?.message ?? err}`,
-        )
+      if (!isRemote) {
+        try {
+          const workspacesDir = resolve(this.config.workspacesDir || join(PROJECT_ROOT, 'workspaces'))
+          await this.buildWorkspaceMergedRoot(workspacesDir, `proj-${anchorProjectId}`, memberProjectIds, {
+            localFolders: opts.localFolders ?? [],
+            readonlyProjectIds: opts.readonlyProjectIds ?? [],
+          })
+        } catch (err: any) {
+          console.warn(
+            `[RuntimeManager] startProjectWorkspace(${key}): merged-root refresh on reuse failed: ${err?.message ?? err}`,
+          )
+        }
       }
       // Diagnostic (switch-back warmth): a reuse here means the runtime was
       // NOT torn down while the user was away — switching back is warm. A
@@ -1855,6 +1956,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       memberProjectIds,
       localFolders: opts.localFolders ?? [],
       readonlyProjectIds: opts.readonlyProjectIds ?? [],
+      anchorProjectInfo,
       logLabel: `proj:${anchorProjectId.slice(0, 8)}`,
       openAttemptId: opts.openAttemptId,
     })
@@ -1890,13 +1992,312 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     }
   }
 
+  /** Remote-SSH boot helpers. Remote paths are never inspected locally. */
+  private remoteRuntimeVersion(): string | undefined {
+    const version =
+      process.env.SHOGO_AGENT_RUNTIME_VERSION?.trim() ||
+      process.env.APP_VERSION?.trim()
+    return version || undefined
+  }
+
+  private remoteRuntimeBinaryPath(): string | undefined {
+    const binaryPath =
+      process.env.SHOGO_AGENT_RUNTIME_BINARY_PATH?.trim() ||
+      process.env.SHOGO_REMOTE_AGENT_RUNTIME_BINARY_PATH?.trim()
+    return binaryPath || undefined
+  }
+
+  /** The local port Remote-SSH reverse forwards target (never the API itself). */
+  private remoteApiGatewayPort(): Promise<number> {
+    this.remoteApiGateway ??= startRemoteApiGateway({ targetPort: resolveLocalApiPort() })
+    const gateway = this.remoteApiGateway
+    return gateway.then(
+      (started) => started.port,
+      (error) => {
+        if (this.remoteApiGateway === gateway) this.remoteApiGateway = null
+        throw error
+      },
+    )
+  }
+
+  private remoteProjectPath(projectId: string, info: ProjectInfo): string {
+    const folders = info.folders ?? []
+    const primaryFolders = folders.filter((folder) => folder.isPrimary)
+    if (primaryFolders.length !== 1 || folders.length !== 1) {
+      throw new Error(
+        `Remote SSH project ${projectId} requires exactly one primary folder and no additional local folders.`,
+      )
+    }
+    const primary = primaryFolders[0]?.path?.trim()
+    if (!primary) {
+      throw new Error(`Remote SSH project ${projectId} has an empty primary folder path.`)
+    }
+    return primary
+  }
+
+  /**
+   * Public seam for local Remote-SSH routes. The manager owns one
+   * ControlMaster-backed connection per saved host so connect, browse, and
+   * project prewarm all share the same transport.
+   */
+  getRemoteConnection(
+    remoteHostId: string,
+    host: RemoteHostInfo,
+  ): SSHConnection {
+    return this.remoteConnection(remoteHostId, host)
+  }
+
+  /** Return the pending local SSH prompt for a saved host, if any. */
+  getRemoteAskpassPrompt(remoteHostId: string): { prompt: string; createdAt: number } | null {
+    return this.remoteAskpassBrokers.get(remoteHostId)?.getPrompt() ?? null
+  }
+
+  /** Answer the current SSH_ASKPASS prompt for a saved host. */
+  respondRemoteAskpass(remoteHostId: string, answer: string): void {
+    const broker = this.remoteAskpassBrokers.get(remoteHostId)
+    if (!broker) throw new Error(`Remote SSH host ${remoteHostId} is not connecting`)
+    broker.respond(answer)
+  }
+
+  /** Return a previously-created host connection without creating one. */
+  getExistingRemoteConnection(remoteHostId: string): SSHConnection | null {
+    return this.remoteConnections.get(remoteHostId) ?? null
+  }
+
+  /**
+   * Drop everything cached for a saved host after it is edited or deleted:
+   * runtimes on it, its control master, and its askpass broker. The next use
+   * reconnects with the host's current settings.
+   */
+  async resetRemoteHost(remoteHostId: string): Promise<void> {
+    const keys = [...this.runtimes.entries()]
+      .filter(([, runtime]) => runtime.remoteHostId === remoteHostId)
+      .map(([key]) => key)
+    await Promise.all(keys.map((key) => this.stop(key, 'remote-host-changed').catch(() => {})))
+    for (const [key, entry] of this.remoteRuntimeManagers) {
+      if (entry.remoteHostId !== remoteHostId) continue
+      await entry.manager.stop().catch(() => {})
+      this.remoteRuntimeManagers.delete(key)
+    }
+    const connection = this.remoteConnections.get(remoteHostId)
+    this.remoteConnections.delete(remoteHostId)
+    await connection?.close().catch(() => {})
+    this.remoteAskpassBrokers.get(remoteHostId)?.close()
+    this.remoteAskpassBrokers.delete(remoteHostId)
+  }
+
+  private remoteConnection(
+    remoteHostId: string,
+    host: RemoteHostInfo,
+  ): SSHConnection {
+    const existing = this.remoteConnections.get(remoteHostId)
+    if (existing) return existing
+    if (!host.sshTarget.trim()) {
+      throw new Error(`Remote SSH host ${remoteHostId} has no sshTarget.`)
+    }
+    const connection = createSSHConnection({
+      host: host.sshTarget,
+      port: typeof host.port === 'number' ? host.port : undefined,
+      identityFile: host.identityFile?.trim() || undefined,
+      batchMode: false,
+      env: this.askpassBroker(remoteHostId).environment(),
+    })
+    this.remoteConnections.set(remoteHostId, connection)
+    return connection
+  }
+
+  private askpassBroker(remoteHostId: string): SSHAskpassBroker {
+    const existing = this.remoteAskpassBrokers.get(remoteHostId)
+    if (existing) return existing
+    const broker = new SSHAskpassBroker()
+    this.remoteAskpassBrokers.set(remoteHostId, broker)
+    return broker
+  }
+
+  private async remoteManager(
+    runtimeKey: string,
+    remoteHostId: string,
+    host: RemoteHostInfo,
+    options: {
+      workspaceKey: string
+      remoteProjectDir: string
+      localApiPort: number
+      runtimeVersion?: string
+      runtimeBinaryPath?: string
+    },
+  ): Promise<RemoteRuntimeManager> {
+    const existing = this.remoteRuntimeManagers.get(runtimeKey)
+    if (
+      existing &&
+      existing.remoteHostId === remoteHostId &&
+      existing.manager.remoteProjectDir === options.remoteProjectDir
+    ) {
+      return existing.manager
+    }
+    if (existing) {
+      await existing.manager.stop().catch(() => {})
+      this.remoteRuntimeManagers.delete(runtimeKey)
+    }
+    const manager = new RemoteRuntimeManager({
+      connection: this.remoteConnection(remoteHostId, host),
+      ...options,
+    })
+    this.remoteRuntimeManagers.set(runtimeKey, { manager, remoteHostId })
+    return manager
+  }
+
+  private async doStartRemoteRuntime(
+    spec: {
+      key: string
+      workspaceId: string
+      memberProjectIds: string[]
+      localFolders: string[]
+      anchorProjectId?: string
+      anchorProjectInfo?: ProjectInfo
+      readonlyProjectIds?: string[]
+      openAttemptId?: string
+      logLabel: string
+    },
+    info: ProjectInfo,
+    phase: (name: string, extra?: Record<string, unknown>) => void,
+  ): Promise<IProjectRuntime> {
+    const anchorProjectId = spec.anchorProjectId
+    if (!anchorProjectId || !info.remoteHostId) {
+      throw new Error('Remote-SSH runtime requires an anchor project and remote host.')
+    }
+    if (spec.memberProjectIds.length !== 1 || spec.memberProjectIds[0] !== anchorProjectId) {
+      throw new Error(
+        `Remote SSH project ${anchorProjectId} v1 does not support project attachments; ` +
+          'remove attached projects before starting it.',
+      )
+    }
+    if ((spec.localFolders?.length ?? 0) > 0 || (spec.readonlyProjectIds?.length ?? 0) > 0) {
+      throw new Error(
+        `Remote SSH project ${anchorProjectId} v1 does not support local folders or read-only attachments.`,
+      )
+    }
+    const remoteProjectDir = this.remoteProjectPath(anchorProjectId, info)
+    const host = info.remoteHost
+    if (!host) {
+      throw new Error(`Remote SSH host ${info.remoteHostId} could not be loaded for project ${anchorProjectId}.`)
+    }
+    const runtimeVersion = this.remoteRuntimeVersion()
+    const runtimeBinaryPath = this.remoteRuntimeBinaryPath()
+    if (!runtimeVersion && !runtimeBinaryPath) {
+      throw new Error(
+        `Remote SSH project ${anchorProjectId} requires SHOGO_AGENT_RUNTIME_VERSION or APP_VERSION ` +
+          'when no SHOGO_AGENT_RUNTIME_BINARY_PATH is configured.',
+      )
+    }
+
+    this.workspaceRuntimeGeneration.set(
+      spec.key,
+      (this.workspaceRuntimeGeneration.get(spec.key) ?? 0) + 1,
+    )
+    const port = await this.allocatePortAsync()
+    const startedAt = Date.now()
+    const runtime: InternalRuntime = {
+      id: spec.key,
+      // RemoteRuntimeManager forwards the remote agent to this local port.
+      // Keep port and agentPort identical so every existing local proxy path
+      // continues to resolve the forwarded endpoint.
+      port,
+      status: 'starting',
+      url: `http://127.0.0.1:${port}`,
+      startedAt,
+      process: null,
+      agentProcess: null,
+      agentPort: port,
+      remoteHostId: info.remoteHostId,
+    }
+    this.runtimes.set(spec.key, runtime)
+
+    let remoteManager: RemoteRuntimeManager | undefined
+    try {
+      const apiPort = await this.remoteApiGatewayPort()
+      const runtimeEnv = await buildWorkspaceEnv(
+        spec.workspaceId,
+        [anchorProjectId],
+        {
+          logPrefix: 'doStartRemoteRuntime',
+          anchorProjectId,
+        },
+      )
+      runtimeEnv.WORKSPACE_RUNTIME = 'true'
+      runtimeEnv.WORKING_MODE = 'external'
+      runtimeEnv.WORKSPACE_MOUNTS = JSON.stringify([{
+        mount: anchorProjectId,
+        path: remoteProjectDir,
+        projectId: anchorProjectId,
+        kind: 'external',
+        runtimeEnabled: info.runtimeEnabled === true,
+      } satisfies WorkspaceMount])
+      // The remote folder is already WORKSPACE_DIR, but retaining it in the
+      // linked-root list keeps external path allowance explicit and mirrors
+      // the local folder-linked runtime contract.
+      runtimeEnv.LINKED_FOLDERS = JSON.stringify([remoteProjectDir])
+      runtimeEnv.RUNTIME_ENABLED = info.runtimeEnabled === true ? 'true' : 'false'
+      runtimeEnv.PROJECT_ID = anchorProjectId
+      runtimeEnv.NODE_ENV = 'development'
+      const { deriveWebhookToken } = await import('../runtime-token')
+      runtimeEnv.WEBHOOK_TOKEN = deriveWebhookToken(anchorProjectId)
+      if (spec.openAttemptId) runtimeEnv.SHOGO_OPEN_ID = spec.openAttemptId
+      if (PERF_LOG_ENABLED) runtimeEnv.SHOGO_PERF_LOG = '1'
+
+      remoteManager = await this.remoteManager(
+        spec.key,
+        info.remoteHostId,
+        host,
+        {
+          workspaceKey: `remote-${anchorProjectId}`.replace(/[^A-Za-z0-9._-]/g, '-'),
+          remoteProjectDir,
+          localApiPort: apiPort,
+          runtimeVersion,
+          runtimeBinaryPath,
+        },
+      )
+      runtime.remoteRuntime = remoteManager
+      phase('remoteRuntime.start:begin', {
+        remoteProjectDir,
+        host: host.label || host.sshTarget,
+        localApiPort: apiPort,
+      })
+      const status = await remoteManager.start({
+        env: runtimeEnv,
+        localAgentPort: port,
+      })
+      if (!status.agentPort) {
+        throw new Error(
+          `Remote agent-runtime for ${anchorProjectId} returned no local forwarded port ` +
+            `(status=${status.status}${status.error ? `, error=${status.error}` : ''}).`,
+        )
+      }
+      runtime.agentPort = status.agentPort
+      runtime.port = status.agentPort
+      runtime.url = `http://127.0.0.1:${status.agentPort}`
+      runtime.status = 'running'
+      this.startHealthCheck(spec.key)
+      phase('remoteRuntime.start:end', {
+        status: status.status,
+        localAgentPort: status.agentPort,
+        remoteAgentPort: status.remoteAgentPort,
+      })
+      return this.toPublicRuntime(runtime)
+    } catch (err) {
+      runtime.status = 'error'
+      if (remoteManager) {
+        await remoteManager.stop().catch(() => {})
+      }
+      this.releasePort(port)
+      throw err
+    }
+  }
+
   /**
    * Shared boot path for every merged-root runtime, whether keyed by a
    * workspace session (`ws:<workspaceId>`) or anchored on a project
-   * (`ws:proj:<anchorId>`). It builds the per-runtime merged root (symlinks
-   * to each member project + linked local folder), assembles the workspace
-   * env (per-project AI proxy tokens, manifest, READONLY_ROOTS for
-   * read-only attachments), and spawns the agent-runtime in WORKSPACE mode.
+   * (`ws:proj:<anchorId>`). Local anchors build a merged root and spawn via
+   * WorkerRuntimeManager; remote anchors branch before either operation.
    */
   private async doStartMergedRuntime(spec: {
     key: string
@@ -1905,6 +2306,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     memberProjectIds: string[]
     localFolders: string[]
     anchorProjectId?: string
+    anchorProjectInfo?: ProjectInfo
     readonlyProjectIds?: string[]
     openAttemptId?: string
     logLabel: string
@@ -1924,6 +2326,17 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       })
     }
     phase('begin', { members: memberProjectIds.length, folders: localFolders.length, anchor: spec.anchorProjectId })
+
+    // Remote-SSH anchors use the saved remote folder directly. This branch
+    // must run before workspacesDir/merged-root construction and before the
+    // local WorkerRuntimeManager so a remote path is never probed or linked
+    // on the API machine.
+    if (spec.anchorProjectId) {
+      const anchorInfo = spec.anchorProjectInfo ?? await this.getProjectInfo(spec.anchorProjectId)
+      if (anchorInfo.remoteHostId) {
+        return this.doStartRemoteRuntime(spec, anchorInfo, phase)
+      }
+    }
 
     // A fresh agent process is about to spawn for this key — bump the boot
     // generation so readiness pollers can tell this boot apart from the one it
@@ -2201,6 +2614,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     // Member projects (anchor + attachments) — symlinked by project id.
     for (const projectId of memberProjectIds) {
       const info = await this.getProjectInfo(projectId)
+      if (info.remoteHostId) {
+        throw new Error(
+          `Remote SSH project ${projectId} can only run as the anchor of a v1 remote runtime; ` +
+            'it cannot be mounted into a local workspace runtime.',
+        )
+      }
       let realProjectDir: string
       let kind: WorkspaceMount['kind'] = 'managed'
       if (info.workingMode === 'external') {
@@ -2483,6 +2902,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    */
   async prepareProjectWorkspace(projectId: string): Promise<string> {
     const projectInfo = await this.getProjectInfo(projectId)
+    if (projectInfo.remoteHostId) {
+      return this.remoteProjectPath(projectId, projectInfo)
+    }
     const isExternal = projectInfo.workingMode === 'external'
     let externalPrimary: string | undefined
     if (isExternal) {
@@ -3386,6 +3808,11 @@ export class ShogoErrorBoundary extends Component<Props, State> {
    * same port back itself.
    */
   private isAgentAlive(key: string, runtime: InternalRuntime): boolean {
+    if (runtime.remoteRuntime) {
+      const status = runtime.remoteRuntime.status()
+      if (!status.agentPort || status.agentPort !== runtime.agentPort) return false
+      return status.status === 'running' || status.status === 'starting'
+    }
     if (!this.agentManagedProjects.has(key)) return true
     const st = this.agentManager.status(key)
     if (!st || st.agentPort !== runtime.agentPort) return false
@@ -3429,11 +3856,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     this.stopHealthCheck(key)
     runtime.status = 'stopping'
 
-    // Stop the agent-runtime via the embedded WorkerRuntimeManager.
-    // It owns the ChildProcess + idle/restart timers and waits for
-    // the spawned process to exit (with SIGKILL after a grace window
-    // — same semantics as the legacy agentProcess.kill loop here).
-    if (this.agentManagedProjects.has(key)) {
+    if (runtime.remoteRuntime) {
+      // RemoteRuntimeManager owns the detached remote process and both SSH
+      // forwards. Do not consult the local WorkerRuntimeManager for this
+      // record; the local API only owns the forwarded port.
+      try {
+        await runtime.remoteRuntime.stop()
+      } catch (err: any) {
+        console.warn(`[RuntimeManager] remoteRuntime.stop(${key}) failed: ${err?.message ?? err}`)
+      }
+    } else if (this.agentManagedProjects.has(key)) {
+      // Stop the agent-runtime via the embedded WorkerRuntimeManager.
+      // It owns the ChildProcess + idle/restart timers and waits for
+      // the spawned process to exit (with SIGKILL after a grace window
+      // — same semantics as the legacy agentProcess.kill loop here).
       this.agentManagedProjects.delete(key)
       try {
         await this.agentManager.stop(key)
@@ -3516,7 +3952,30 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
   status(projectId: string): IProjectRuntime | null {
     const runtime = this.runtimes.get(this.resolveRuntimeKey(projectId))
-    return runtime ? this.toPublicRuntime(runtime) : null
+    if (!runtime) return null
+    if (runtime.remoteRuntime) {
+      // The local record is only a proxy for the remote lifecycle. Refresh
+      // its observable fields synchronously so status() never consults the
+      // local WorkerRuntimeManager for a Remote-SSH runtime.
+      const remoteStatus = runtime.remoteRuntime.status()
+      runtime.status = remoteStatus.status
+      if (remoteStatus.agentPort) {
+        runtime.agentPort = remoteStatus.agentPort
+        runtime.port = remoteStatus.agentPort
+        runtime.url = remoteStatus.url ?? `http://127.0.0.1:${remoteStatus.agentPort}`
+      }
+      if (remoteStatus.startedAt) runtime.startedAt = remoteStatus.startedAt
+      if (remoteStatus.lastHealthCheck) {
+        runtime.lastHealthCheck = {
+          healthy: remoteStatus.lastHealthCheck.healthy,
+          lastCheck: remoteStatus.lastHealthCheck.lastCheck,
+          ...(remoteStatus.lastHealthCheck.error
+            ? { error: remoteStatus.lastHealthCheck.error }
+            : {}),
+        }
+      }
+    }
+    return this.toPublicRuntime(runtime)
   }
 
   /**
@@ -3552,6 +4011,27 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         healthy: false,
         lastCheck: Date.now(),
         error: `No runtime found for project ${projectId}`,
+      }
+    }
+
+    if (runtime.remoteRuntime) {
+      try {
+        const remoteHealth = await runtime.remoteRuntime.getHealth()
+        const healthStatus: IHealthStatus = {
+          healthy: remoteHealth.healthy,
+          lastCheck: remoteHealth.lastCheck,
+          ...(remoteHealth.error ? { error: remoteHealth.error } : {}),
+        }
+        runtime.lastHealthCheck = healthStatus
+        return healthStatus
+      } catch (err: any) {
+        const healthStatus: IHealthStatus = {
+          healthy: false,
+          lastCheck: Date.now(),
+          error: err?.message || 'Remote runtime health check failed',
+        }
+        runtime.lastHealthCheck = healthStatus
+        return healthStatus
       }
     }
 
@@ -3593,6 +4073,20 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       )
     )
     await Promise.all(stopPromises)
+    // Forward handles are closed by each RemoteRuntimeManager.stop(); close
+    // the shared control masters only after all remote runtimes are down.
+    await Promise.all(
+      [...this.remoteConnections.values()].map((connection) =>
+        connection.close().catch((err) =>
+          console.error('[RuntimeManager] Failed to close remote SSH connection:', err),
+        ),
+      ),
+    )
+    for (const broker of this.remoteAskpassBrokers.values()) broker.close()
+    this.remoteAskpassBrokers.clear()
+    const gateway = this.remoteApiGateway
+    this.remoteApiGateway = null
+    if (gateway) await gateway.then((started) => started.close()).catch(() => {})
     // Stop cloud-content-sync watchers last. Keep the cloud island lazy so
     // local API startup/tests do not resolve cloud-only SDK subpaths.
     try {
@@ -3633,6 +4127,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // (a bare-UUID touch would miss the anchored slot entirely). Keep the
       // anchored preview warm in the MRU so an active chat survives the cap.
       const key = this.resolveRuntimeKey(projectId)
+      const runtime = this.runtimes.get(key)
+      if (runtime?.remoteRuntime) {
+        // RemoteRuntimeManager owns the detached process and its idle timer.
+        // Keep it alive for active chat/agent traffic without routing a
+        // remote key through the local WorkerRuntimeManager.
+        runtime.remoteRuntime.touch()
+        if (key.startsWith('ws:proj:')) this.recordWorkspaceMru(key)
+        return
+      }
       this.agentManager.touch(key)
       if (key.startsWith('ws:proj:')) this.recordWorkspaceMru(key)
     } catch (err: any) {
@@ -3680,7 +4183,8 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         this.dropBackgroundMru(key)
       }
       this.recordWorkspaceMru(key)
-      this.agentManager.touch(key)
+      if (rt.remoteRuntime) rt.remoteRuntime.touch()
+      else this.agentManager.touch(key)
       // A newly-promoted preview can push the foreground set over the cap;
       // evict the genuine LRU (never this just-fronted key).
       void this.enforceWorkspacePreviewCap().catch(() => {})

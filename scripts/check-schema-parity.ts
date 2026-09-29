@@ -71,6 +71,16 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
     reason:
       'Multi-region write-ownership marker for identity-scoped rows. The cloud routes a user\'s identity writes to their homeRegion; Shogo Desktop is single-region/local, so the column is meaningless there and intentionally omitted from the SQLite schema.',
   },
+  {
+    key: 'RemoteHost',
+    reason:
+      'Desktop-only Remote-SSH connection metadata. SSH credentials and host records belong to the local desktop profile and are intentionally never persisted in the cloud schema.',
+  },
+  {
+    key: 'Project.remoteHostId',
+    reason:
+      'Desktop-only relation connecting a local project to its saved RemoteHost. Cloud projects use cloud runtime substrates and do not use desktop SSH hosts.',
+  },
 ]
 
 const allowedKeys = new Set(INTENTIONAL_DIFFERENCES.map((a) => a.key))

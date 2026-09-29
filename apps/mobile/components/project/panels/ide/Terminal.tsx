@@ -227,6 +227,7 @@ export function Terminal({
   onRequestClose,
   onControlsChange,
   folderPath,
+  remoteHostId,
 }: {
   projectId: string | null | undefined;
   visible: boolean;
@@ -244,6 +245,8 @@ export function Terminal({
   onControlsChange?: (controls: TerminalToolbarControls | null) => void;
   /** Filesystem path of the opened project folder — used as terminal cwd. */
   folderPath?: string
+  /** Remote-SSH projects must use the runtime PTY over HTTP. */
+  remoteHostId?: string | null
 }) {
   const [commands, setCommands] = useState<Record<string, PresetCommandDto[]>>({});
   const [loading, setLoading] = useState(false);
@@ -363,7 +366,7 @@ export function Terminal({
         let data: CreateSessionResponse;
         let client: PtyClientLike;
         const existing = sessionsRef.current.find((x) => x.id === sessionId);
-        if (isDesktopRuntime() && existing?.ptySessionId) {
+        if (isDesktopRuntime() && !remoteHostId && existing?.ptySessionId) {
           client = await createPtyClient({ sessionId: existing.ptySessionId });
           data = {
             id: existing.ptySessionId,
@@ -372,7 +375,7 @@ export function Terminal({
             rows: initial.rows,
             createdAt: Date.now(),
           };
-        } else if (isDesktopRuntime()) {
+        } else if (isDesktopRuntime() && !remoteHostId) {
           const provisioned = await createPtyClientSession({
             spawn: {
               projectId,
@@ -469,7 +472,7 @@ export function Terminal({
         }));
       }
     },
-    [apiBase, projectId, patchSession],
+    [apiBase, folderPath, projectId, patchSession, remoteHostId],
   );
 
   /**
@@ -483,7 +486,7 @@ export function Terminal({
       try { s.client?.dispose() } catch {}
       xtermRefs.current.delete(s.id);
       autoReplyStateRef.current.delete(s.id);
-      if (projectId && s.ptySessionId && !isDesktopRuntime()) {
+      if (projectId && s.ptySessionId && (!isDesktopRuntime() || remoteHostId)) {
         // Fire-and-forget; don't await in the React close path.
         void agentFetch(
           `${apiBase}/api/projects/${projectId}/terminal/sessions/${s.ptySessionId}`,
@@ -491,7 +494,7 @@ export function Terminal({
         ).catch(() => {});
       }
     },
-    [apiBase, projectId],
+    [apiBase, projectId, remoteHostId],
   );
 
   // Provision the *initial* session once on first mount (per project).
@@ -517,7 +520,7 @@ export function Terminal({
   // Agent long-running commands spawn a background ∞ Shogo tab via the
   // desktop terminal-exec server; attach the UI when main notifies us.
   useEffect(() => {
-    if (Platform.OS !== "web" || !isDesktopRuntime()) return;
+    if (Platform.OS !== "web" || !isDesktopRuntime() || remoteHostId) return;
     const bridge = (globalThis as { shogoDesktopTerminal?: {
       onAgentTerminalSpawned?: (cb: (p: {
         sessionId: string
@@ -545,7 +548,7 @@ export function Terminal({
         void provisionSession(s.id);
       }
     });
-  }, [projectId, provisionSession]);
+  }, [projectId, provisionSession, remoteHostId]);
 
   // ─── Preset commands (kebab menu) ───────────────────────────────────
   const loadCommands = useCallback(async () => {

@@ -3,7 +3,7 @@
 /**
  * ProjectSourceMenu — consolidated "where does this project come from?" picker.
  *
- * Surfaces the three ways a user can start a project in one popover:
+ * Surfaces the available ways a user can start a project in one popover:
  *   1. **Blank** — a managed Shogo project. The composer's Send button
  *      already produces this; the menu entry exists as an explicit
  *      affordance so users know "just typing here = new blank project."
@@ -17,6 +17,8 @@
  *   3. **Import .shogo…** — restore a previously-exported
  *      project ZIP via `ProjectImportModal`. Legacy `.shogo-project`
  *      archives are still accepted for backward compatibility.
+ *   4. **Connect to Remote Host (SSH)…** — choose a saved host or SSH-config
+ *      alias, browse its directories, and create a folder-linked project.
  *
  * Two visual variants:
  *   - 'chip'    — small toolbar pill, matches the model / mode chips
@@ -45,9 +47,11 @@ import {
   Check,
   Download,
   Cloud,
+  Server,
 } from 'lucide-react-native'
 import { ProjectImportModal } from '../projects/ProjectImportModal'
 import { CloudProjectPickerModal } from '../projects/CloudProjectPickerModal'
+import { RemoteHostPickerModal } from './RemoteHostPickerModal'
 import { useComposerPlusClose } from "../chat/ComposerPlusMenu"
 import { useOpenLocalFolder } from './useOpenLocalFolder'
 import { useOpenCloudProject } from './useOpenCloudProject'
@@ -90,6 +94,7 @@ export function ProjectSourceMenu({
   const [open, setOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [cloudOpen, setCloudOpen] = useState(false)
+  const [remoteOpen, setRemoteOpen] = useState(false)
 
   const {
     openFolder,
@@ -103,6 +108,12 @@ export function ProjectSourceMenu({
   // "Open from Cloud" is desktop-only and needs a connected cloud key
   // (mirrors how `canOpenFolder` gates the folder row on Electron).
   const { isAvailable: canOpenCloud } = useOpenCloudProject()
+  // Remote-SSH is backed by the desktop-local API and the Electron SSH
+  // transport. Keep it out of browser/native builds rather than exposing a
+  // row that can never connect there.
+  const canOpenRemote =
+    typeof window !== 'undefined' &&
+    !!(window as unknown as { shogoDesktop?: { isDesktop?: boolean } }).shogoDesktop?.isDesktop
 
   const handleSelectBlank = useCallback(() => {
     setOpen(false)
@@ -128,6 +139,12 @@ export function ProjectSourceMenu({
     setTimeout(() => setCloudOpen(true), 320)
   }, [closePlusSheet])
 
+  const handleSelectRemote = useCallback(() => {
+    setOpen(false)
+    closePlusSheet?.()
+    setTimeout(() => setRemoteOpen(true), 320)
+  }, [closePlusSheet])
+
   const handleCloudOpened = useCallback(
     (project: { id: string; name: string }) => {
       setCloudOpen(false)
@@ -143,6 +160,18 @@ export function ProjectSourceMenu({
   const handleImportCompleted = useCallback(
     (project: { id: string; name: string }) => {
       setImportOpen(false)
+      if (onProjectOpened) {
+        onProjectOpened(project)
+      } else {
+        router.push({ pathname: '/(app)/projects/[id]', params: { id: project.id } } as any)
+      }
+    },
+    [onProjectOpened, router],
+  )
+
+  const handleRemoteOpened = useCallback(
+    (project: { id: string; name: string }) => {
+      setRemoteOpen(false)
       if (onProjectOpened) {
         onProjectOpened(project)
       } else {
@@ -200,6 +229,26 @@ export function ProjectSourceMenu({
             <Text className="text-sm font-medium text-foreground">Open from Cloud…</Text>
             <Text className="text-[11px] text-muted-foreground">
               Sync a cloud project to this machine; edits sync back automatically.
+            </Text>
+          </View>
+        </Pressable>
+      ) : null}
+
+      {canOpenRemote ? (
+        <Pressable
+          onPress={handleSelectRemote}
+          className="flex-row items-center gap-3 p-3 rounded-lg active:bg-muted"
+          testID="project-source-remote-ssh"
+        >
+          <View className="w-8 items-center">
+            <Server size={16} className="text-muted-foreground" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-sm font-medium text-foreground">
+              Connect to Remote Host (SSH)...
+            </Text>
+            <Text className="text-[11px] text-muted-foreground">
+              Connect to a saved host or SSH-config alias and open a remote folder.
             </Text>
           </View>
         </Pressable>
@@ -311,6 +360,15 @@ export function ProjectSourceMenu({
           open={cloudOpen}
           onOpenChange={setCloudOpen}
           onOpenProject={handleCloudOpened}
+        />
+      ) : null}
+
+      {canOpenRemote ? (
+        <RemoteHostPickerModal
+          open={remoteOpen}
+          onOpenChange={setRemoteOpen}
+          workspaceId={workspaceId}
+          onOpenProject={handleRemoteOpened}
         />
       ) : null}
     </>

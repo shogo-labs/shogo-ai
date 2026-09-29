@@ -73,6 +73,7 @@ export function BottomPanel({
   messages,
   onMaximizeChange,
   folderPath,
+  remoteHostId,
 }: {
   projectId: string | null | undefined;
   newSessionNonce: number;
@@ -91,6 +92,8 @@ export function BottomPanel({
   onMaximizeChange?: (maximized: boolean) => void;
   /** Filesystem path of the opened project folder. */
   folderPath?: string
+  /** Remote-SSH projects use the runtime PTY rather than local Electron IPC. */
+  remoteHostId?: string | null
 }) {
   const tab = useBottomPanelState((s) => s.activeTab);
   const extensionPanelContainers = useBottomPanelState((s) => s.extensionPanelContainers);
@@ -218,6 +221,7 @@ export function BottomPanel({
             onRequestClose={onClose}
             onControlsChange={setTerminalControls}
             folderPath={folderPath}
+            remoteHostId={remoteHostId}
           />
         );
       case "Problems":

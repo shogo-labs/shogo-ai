@@ -304,6 +304,47 @@ describe('localProjectsRoutes from folders', () => {
     expect([...folders.values()]).toHaveLength(2)
   })
 
+  test('routes Remote-SSH creation to the remote endpoint without touching local paths', async () => {
+    const res = await appWithAuth().request('http://api.test/from-folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Remote App',
+        remoteHostId: 'ssh-1',
+        paths: [rootDir],
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await json(res)).toMatchObject({ error: 'use_remote_folder_endpoint' })
+    expect(existsSync(join(rootDir, '.shogo'))).toBe(false)
+  })
+
+  test('rejects local folder management for an existing Remote-SSH project before validation', async () => {
+    projects.set('remote-project', {
+      id: 'remote-project',
+      remoteHostId: 'ssh-1',
+      workingMode: 'external',
+      projectFolders: [],
+    })
+
+    const add = await appWithAuth().request('http://api.test/remote-project/folders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: 'not-an-absolute-local-path' }),
+    })
+    expect(add.status).toBe(409)
+    expect(await json(add)).toMatchObject({ error: 'remote_project_local_folder_unsupported' })
+
+    const promote = await appWithAuth().request('http://api.test/remote-project/primary', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ folderId: 'folder-1' }),
+    })
+    expect(promote.status).toBe(409)
+    expect(await json(promote)).toMatchObject({ error: 'remote_project_local_folder_unsupported' })
+  })
+
   test('reuses the folder project when project.json was removed', async () => {
     const first = await appWithAuth().request('http://api.test/from-folders', {
       method: 'POST',

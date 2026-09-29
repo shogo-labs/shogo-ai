@@ -19,6 +19,11 @@ type FileInfo = {
   lastModified?: string | null
 }
 
+type LocalProjectState =
+  | { kind: 'local'; path: string }
+  | { kind: 'unsupported'; reason: 'remote' | 'external' }
+  | { kind: 'missing' }
+
 const INCLUDED_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.json', '.css', '.html', '.md', '.svg',
 ])
@@ -92,22 +97,46 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   const router = new Hono()
   const { workspacesDir } = config
 
-  async function getProjectPath(projectId: string): Promise<string | null> {
-    const workspacePath = join(workspacesDir, projectId)
+  function unsupportedProjectResponse(c: any, reason: 'remote' | 'external'): Response {
+    const remote = reason === 'remote'
+    return c.json({
+      error: {
+        code: remote ? 'remote_project_requires_runtime' : 'external_project_requires_runtime',
+        message: remote
+          ? 'Remote project files must be accessed through the project runtime.'
+          : 'Folder-linked project files must be accessed through the project runtime.',
+      },
+    }, 409)
+  }
+
+  /**
+   * Resolve only managed projects to the local workspaces directory.
+   *
+   * Remote and folder-linked projects are deliberately classified before
+   * constructing or probing a local path. Their paths belong to the runtime
+   * host, not this API process, and treating them as
+   * `<workspacesDir>/<projectId>` can silently read a stale local workspace.
+   */
+  async function getProjectState(projectId: string): Promise<LocalProjectState> {
+    let project: { id: string; workingMode?: string | null; remoteHostId?: string | null } | null = null
     try {
-      const project = await prisma.project.findUnique({
+      project = await (prisma.project as any).findUnique({
         where: { id: projectId },
-        select: { id: true },
+        select: { id: true, workingMode: true, remoteHostId: true },
       })
-      if (project) return workspacePath
     } catch (error) {
-      console.debug('[LocalFiles] Project lookup failed, checking directory:', error)
+      console.debug('[LocalFiles] Project lookup failed, checking managed directory:', error)
     }
+    if (project?.remoteHostId) return { kind: 'unsupported', reason: 'remote' }
+    if (project?.workingMode === 'external') return { kind: 'unsupported', reason: 'external' }
+
+    const workspacePath = join(workspacesDir, projectId)
+    if (project) return { kind: 'local', path: workspacePath }
     try {
       await stat(workspacePath)
-      return workspacePath
+      return { kind: 'local', path: workspacePath }
     } catch {
-      return null
+      return { kind: 'missing' }
     }
   }
 
@@ -129,10 +158,12 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
 
   router.get('/projects/:projectId/files', async (c) => {
     try {
-      const projectPath = await getProjectPath(c.req.param('projectId'))
-      if (!projectPath) {
+      const state = await getProjectState(c.req.param('projectId'))
+      if (state.kind === 'unsupported') return unsupportedProjectResponse(c, state.reason)
+      if (state.kind === 'missing') {
         return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
       }
+      const projectPath = state.path
       const srcPath = join(projectPath, 'src')
       let files = await listFilesRecursive(srcPath, srcPath)
       files = files.map((file) => ({ ...file, path: `src/${file.path}` }))
@@ -161,14 +192,16 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   router.get('/projects/:projectId/files/*', async (c) => {
     try {
       const projectId = c.req.param('projectId')
+      const state = await getProjectState(projectId)
+      if (state.kind === 'unsupported') return unsupportedProjectResponse(c, state.reason)
+      if (state.kind === 'missing') {
+        return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
+      }
       const filePath = fileSubPath(c.req.path, projectId)
       if (!filePath || !validateFilePath(filePath)) {
         return c.json({ error: { code: 'invalid_path', message: 'Invalid file path' } }, 400)
       }
-      const projectPath = await getProjectPath(projectId)
-      if (!projectPath) {
-        return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
-      }
+      const projectPath = state.path
       const fullPath = join(projectPath, filePath)
       const mimeType = BINARY_MIME_TYPES[extname(filePath).toLowerCase()]
       if (mimeType) {
@@ -193,14 +226,16 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   router.put('/projects/:projectId/files/*', async (c) => {
     try {
       const projectId = c.req.param('projectId')
+      const state = await getProjectState(projectId)
+      if (state.kind === 'unsupported') return unsupportedProjectResponse(c, state.reason)
+      if (state.kind === 'missing') {
+        return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
+      }
       const filePath = fileSubPath(c.req.path, projectId)
       if (!filePath || !validateFilePath(filePath)) {
         return c.json({ error: { code: 'invalid_path', message: 'Invalid file path' } }, 400)
       }
-      const projectPath = await getProjectPath(projectId)
-      if (!projectPath) {
-        return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
-      }
+      const projectPath = state.path
       const body = await c.req.json<{ content?: unknown }>()
       if (typeof body.content !== 'string') {
         return c.json({ error: { code: 'invalid_body', message: 'Content is required' } }, 400)
@@ -215,10 +250,12 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   })
 
   router.get('/projects/:projectId/workspace/manifest', async (c) => {
-    const projectPath = await getProjectPath(c.req.param('projectId'))
-    if (!projectPath) {
+    const state = await getProjectState(c.req.param('projectId'))
+    if (state.kind === 'unsupported') return unsupportedProjectResponse(c, state.reason)
+    if (state.kind === 'missing') {
       return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404)
     }
+    const projectPath = state.path
     const files = (await listFilesRecursive(projectPath, projectPath))
       .filter((file) => file.type === 'file' && !isSensitivePath(file.path))
       .map(({ path, size, lastModified }) => ({ path, size: size ?? 0, lastModified, etag: null }))
@@ -234,14 +271,15 @@ export function localFilesRoutes(config: LocalFilesRoutesConfig): Hono {
   router.delete('/projects/:projectId/files/*', async (c) => {
     try {
       const projectId = c.req.param('projectId')
+      const state = await getProjectState(projectId)
+      if (state.kind === 'unsupported') return unsupportedProjectResponse(c, state.reason)
       const filePath = fileSubPath(c.req.path, projectId)
       if (!filePath || !validateFilePath(filePath) || isSensitivePath(filePath)) {
         return c.json({ error: { code: 'invalid_path', message: 'Invalid file path' } }, 400)
       }
-      const projectPath = await getProjectPath(projectId)
-      if (projectPath) {
+      if (state.kind === 'local') {
         try {
-          await unlink(join(projectPath, filePath))
+          await unlink(join(state.path, filePath))
         } catch (error: any) {
           if (error?.code !== 'ENOENT') throw error
         }

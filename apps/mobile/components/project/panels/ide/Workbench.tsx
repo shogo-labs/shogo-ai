@@ -211,6 +211,7 @@ export function Workbench({
   fetchImpl,
   isExternalProject = true,
   folderPath,
+  remoteHostId,
   primarySideBarPosition = "left",
   requestedFile = null,
 }: {
@@ -244,6 +245,8 @@ export function Workbench({
   isExternalProject?: boolean;
   /** Absolute path to the project's primary folder (for external/open-folder projects). */
   folderPath?: string | null;
+  /** Remote-SSH projects have no local git/IPC workspace root. */
+  remoteHostId?: string | null;
   primarySideBarPosition?: PrimarySideBarPosition;
   /** Open this workspace-relative file once the agent root is loaded. */
   requestedFile?: { path: string; nonce: number } | null;
@@ -1897,6 +1900,12 @@ export function Workbench({
       setGitWorkspaceRoot(null);
       return;
     }
+    if (remoteHostId) {
+      // The folder path is meaningful on the SSH host only. Do not hand it
+      // to desktop git/IPC, which expects a local absolute path.
+      setGitWorkspaceRoot(null);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       // G2: try the git registry FIRST (covers external folder-bound
@@ -1924,7 +1933,11 @@ export function Workbench({
         setGitWorkspaceRoot(null);
         return;
       }
-      const r = await fsBridge.resolveWorkspace(projectId);
+      const r = await fsBridge.resolveWorkspace(projectId, {
+        isExternalProject,
+        folderPath,
+        remoteHostId,
+      });
       if (cancelled) return;
       if (r.ok && r.root) {
         setGitWorkspaceRoot(r.root);
@@ -1935,7 +1948,7 @@ export function Workbench({
     return () => {
       cancelled = true;
     };
-  }, [projectId, folderPath]);
+  }, [projectId, folderPath, remoteHostId, isExternalProject]);
   const gitSnapshot = useGitStatus(gitWorkspaceRoot);
   const extensionsBridgeAvailable = getDesktopExtensionsBridge() !== null;
 

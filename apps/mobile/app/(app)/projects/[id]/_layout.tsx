@@ -56,7 +56,7 @@ import { getPlanDisplayName } from "../../../../lib/billing-config";
 import { useAuth } from "../../../../contexts/auth";
 import { useDomainHttp } from "../../../../contexts/domain";
 import { authClient } from "../../../../lib/auth-client";
-import { API_URL, api } from "../../../../lib/api";
+import { API_URL, api, type RemoteHostStatus } from "../../../../lib/api";
 import { openWebAppSession } from "../../../../lib/openWebAppSession";
 import {
   chatSessionEvents,
@@ -685,6 +685,16 @@ export default observer(function ProjectLayout() {
     const primary = folders.find((f) => f.isPrimary) ?? folders[0];
     return primary?.path ?? null;
   }, [project?.projectFolders]);
+  const remoteHostId =
+    typeof (project as any)?.remoteHostId === "string"
+      ? (project as any).remoteHostId
+      : null;
+  const [remoteHostStatus, setRemoteHostStatus] =
+    useState<RemoteHostStatus | null>(null);
+  const [remoteReconnectBusy, setRemoteReconnectBusy] = useState(false);
+  // A Remote-SSH folder path is meaningful only on the SSH host. Never pass
+  // it to desktop IPC surfaces that interpret `folderPath` as a local cwd.
+  const localFolderPath = remoteHostId ? null : primaryFolderPath;
   const [externalSavedUrl, setExternalSavedUrl] = useState<string | null>(null);
   const [externalDetectedUrl, setExternalDetectedUrl] = useState<string | null>(
     null
@@ -692,6 +702,64 @@ export default observer(function ProjectLayout() {
   const [trustPromptOpen, setTrustPromptOpen] = useState(false);
   const [trustSubmitting, setTrustSubmitting] = useState(false);
   const trustAutoShownRef = useRef(false);
+
+  const refreshRemoteHostStatus = useCallback(async () => {
+    if (!remoteHostId) {
+      setRemoteHostStatus(null);
+      return;
+    }
+    try {
+      const status = await api.getRemoteHostStatus(http, remoteHostId);
+      setRemoteHostStatus(status);
+    } catch {
+      // Keep the indicator visible for a remote project even if the local
+      // status endpoint is temporarily unavailable.
+      setRemoteHostStatus((current) =>
+        current
+          ? { ...current, connected: false, state: "disconnected" }
+          : null,
+      );
+    }
+  }, [http, remoteHostId]);
+
+  useEffect(() => {
+    if (!remoteHostId) {
+      setRemoteHostStatus(null);
+      return;
+    }
+    void refreshRemoteHostStatus();
+    const interval = setInterval(() => {
+      void refreshRemoteHostStatus();
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, [refreshRemoteHostStatus, remoteHostId]);
+
+  const handleReconnectRemoteHost = useCallback(async () => {
+    if (!remoteHostId || remoteReconnectBusy) return;
+    setRemoteReconnectBusy(true);
+    try {
+      const result = await api.connectRemoteHost(http, remoteHostId);
+      setRemoteHostStatus((current) => ({
+        host: result.host,
+        connected: result.connected,
+        state: result.state,
+        platform: result.platform,
+        runtime: current?.runtime ?? [],
+      }));
+    } catch {
+      Alert.alert(
+        "Could not reconnect remote host",
+        "Check the SSH host, agent, identity path, and known-hosts configuration, then try again.",
+      );
+      setRemoteHostStatus((current) =>
+        current
+          ? { ...current, connected: false, state: "disconnected" }
+          : current,
+      );
+    } finally {
+      setRemoteReconnectBusy(false);
+    }
+  }, [http, remoteHostId, remoteReconnectBusy]);
 
   // Pull the saved/detected URL pair when the project resolves as
   // external. We re-fetch on `agentUrl` change because the detected URL
@@ -875,6 +943,7 @@ export default observer(function ProjectLayout() {
           ...prev,
           workingMode: lp.workingMode ?? prev.workingMode,
           trustLevel: lp.trustLevel ?? prev.trustLevel,
+          remoteHostId: lp.remoteHostId ?? prev.remoteHostId,
           projectFolders: Array.isArray(lp.projectFolders)
             ? lp.projectFolders
             : prev.projectFolders,
@@ -3256,7 +3325,7 @@ export default observer(function ProjectLayout() {
       void bridge
         .open({
           projectId: projectId!,
-          ...(primaryFolderPath ? { workspacePath: primaryFolderPath } : {}),
+          ...(localFolderPath ? { workspacePath: localFolderPath } : {}),
         })
         .then((result: { ok?: boolean; error?: string } | undefined) => {
           if (result && result.ok === false) {
@@ -3275,7 +3344,7 @@ export default observer(function ProjectLayout() {
       return;
     }
     handlePreviewTabChange("ide");
-  }, [handlePreviewTabChange, primaryFolderPath, projectId]);
+  }, [handlePreviewTabChange, localFolderPath, projectId]);
 
   // enrichMessage: auto-inject terminal context into every chat message.
   // Dynamically imports the desktop terminal store (no-op on mobile/web).
@@ -3598,6 +3667,16 @@ export default observer(function ProjectLayout() {
     trustLevel: projectTrustLevel,
     onToggleTrust: handleToggleTrust,
     trustBusy: trustSubmitting,
+    remoteHostId,
+    remoteHostLabel:
+      remoteHostStatus?.host?.label ||
+      remoteHostStatus?.host?.sshTarget ||
+      "Remote host",
+    remoteConnectionState: remoteHostStatus?.state ?? "disconnected",
+    onReconnectRemoteHost: remoteHostId
+      ? handleReconnectRemoteHost
+      : undefined,
+    remoteReconnectBusy,
     // The app sidebar is now the single home for browsing projects + chats,
     // so the project's own in-split chat-sessions panel and its toggles are
     // disabled. The `chat-fullscreen` power-user mode is left intact.
@@ -4250,7 +4329,8 @@ export default observer(function ProjectLayout() {
                   platformIsWeb={Platform.OS === "web"}
                   canvasAreaHidden={canvasAreaHidden}
                   isChatFullscreen={isChatFullscreen}
-                  folderPath={primaryFolderPath ?? undefined}
+                  folderPath={localFolderPath ?? undefined}
+                  remoteHostId={remoteHostId}
                 >
                   {canvasEnabled && effectiveTab === "canvas" && (
                     <View
@@ -4298,7 +4378,8 @@ export default observer(function ProjectLayout() {
                         projectName={project.name}
                         agentUrl={agentUrl}
                         isExternalProject={isExternalProject}
-                        folderPath={primaryFolderPath ?? undefined}
+                        folderPath={localFolderPath ?? undefined}
+                        remoteHostId={remoteHostId}
                         primarySideBarPosition={idePrimarySideBarPosition}
                         requestedFile={requestedIdeFile}
                       />

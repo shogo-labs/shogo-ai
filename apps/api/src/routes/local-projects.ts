@@ -423,6 +423,8 @@ interface CreateFromFoldersBody {
   name?: string
   workspaceId?: string
   paths?: string[]
+  /** Rejected: Remote-SSH projects are created via /projects/from-remote-folder. */
+  remoteHostId?: unknown
   /**
    * When the picked path is inside a git repo, the first call returns
    * `409 needsGitRootChoice`. The UI then re-calls with the user's
@@ -595,6 +597,15 @@ export function localProjectsRoutes(): Hono {
       return c.json({ error: 'invalid_json' }, 400)
     }
 
+    // Remote paths belong to the SSH host and must never reach the local
+    // validatePath / git-root / .shogo bootstrap flow below.
+    if (body.remoteHostId !== undefined) {
+      return c.json({
+        error: 'use_remote_folder_endpoint',
+        message: 'Create Remote-SSH projects with POST /api/local/projects/from-remote-folder.',
+      }, 400)
+    }
+
     const rawPaths = Array.isArray(body.paths) ? body.paths : []
     if (rawPaths.length === 0) {
       return c.json({ error: 'paths_required' }, 400)
@@ -678,6 +689,13 @@ export function localProjectsRoutes(): Hono {
             `ProjectFolder path (project.json ${readProjectJson(finalPrimary) ? 'stale' : 'missing'}): ${finalPrimary}`,
         )
       }
+    }
+
+    if ((existingProject as any)?.remoteHostId) {
+      return c.json({
+        error: 'remote_project_local_folder_unsupported',
+        message: 'This project belongs to a Remote-SSH host and cannot be rebound to a local folder.',
+      }, 409)
     }
 
     if (existing && !existingProject) {
@@ -902,6 +920,18 @@ export function localProjectsRoutes(): Hono {
     if (!auth?.userId) return c.json({ error: 'unauthenticated' }, 401)
     const projectId = c.req.param('id')
 
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: { projectFolders: true },
+    })
+    if (!project) return c.json({ error: 'not_found' }, 404)
+    if ((project as any).remoteHostId) {
+      return c.json({
+        error: 'remote_project_local_folder_unsupported',
+        message: 'Remote-SSH projects cannot link folders from this machine.',
+      }, 409)
+    }
+
     let body: { path?: string }
     try {
       body = await c.req.json()
@@ -913,11 +943,6 @@ export function localProjectsRoutes(): Hono {
       return c.json({ error: validated.error, code: validated.code }, 400)
     }
 
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      include: { projectFolders: true },
-    })
-    if (!project) return c.json({ error: 'not_found' }, 404)
     // Managed projects may now link local folders too (they mount into the
     // anchor merged-root runtime). Only EXTERNAL projects use the primary
     // folder to host `.shogo/`, so a managed project's linked folders are
@@ -949,6 +974,17 @@ export function localProjectsRoutes(): Hono {
 
     const projectId = c.req.param('id')
     const folderId = c.req.param('folderId')
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { remoteHostId: true },
+    } as any)
+    if ((project as any)?.remoteHostId) {
+      return c.json({
+        error: 'remote_project_local_folder_unsupported',
+        message: 'Remote-SSH projects cannot manage folders from this machine.',
+      }, 409)
+    }
 
     const folder = await prisma.projectFolder.findUnique({ where: { id: folderId } })
     if (!folder || folder.projectId !== projectId) {
@@ -993,6 +1029,12 @@ export function localProjectsRoutes(): Hono {
       include: { projectFolders: true },
     })
     if (!project) return c.json({ error: 'not_found' }, 404)
+    if ((project as any).remoteHostId) {
+      return c.json({
+        error: 'remote_project_local_folder_unsupported',
+        message: 'Remote-SSH projects cannot promote folders from this machine.',
+      }, 409)
+    }
     if (project.workingMode !== 'external') {
       return c.json({ error: 'not_external_project' }, 409)
     }
@@ -1298,7 +1340,7 @@ function mapAttachmentError(c: any, err: unknown): Response {
  * is a personal workspace, otherwise the user's team workspace (preferring
  * one they own). Null when the user has no team workspace at all.
  */
-async function resolveFolderProjectWorkspace(
+export async function resolveFolderProjectWorkspace(
   userId: string,
   requestedWorkspaceId: string | undefined,
 ): Promise<{ workspaceId: string; redirectedFromWorkspaceId?: string } | null> {
@@ -1326,7 +1368,7 @@ async function resolveFolderProjectWorkspace(
     : { workspaceId: team.id }
 }
 
-function folderDisplayName(p: string): string {
+export function folderDisplayName(p: string): string {
   const base = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
   return base || 'New Project'
 }
