@@ -69,6 +69,7 @@ mock.module('../services/billing.service', () => ({
 const svcSpies = {
   getOverviewStats: mock(async (..._: any[]): Promise<any> => ({ k: 'overview' })),
   getMemberUsageStats: mock(async (..._: any[]): Promise<any> => ({ k: 'member-usage' })),
+  getMemberInsights: mock(async (..._: any[]): Promise<any> => ({ rows: [], total: 0 })),
   getUsageLog: mock(async (..._: any[]): Promise<any> => ({ entries: [], total: 0 })),
   getUsageSummary: mock(async (..._: any[]): Promise<any> => ({ k: 'summary' })),
   getSpendTimeseries: mock(async (..._: any[]): Promise<any> => ({ series: [] })),
@@ -111,8 +112,8 @@ afterEach(() => {
   delete process.env.SHOGO_LOCAL_MODE
 })
 
-function seedMember(workspaceId = WS) {
-  members.push({ userId: 'user_1', workspaceId })
+function seedMember(workspaceId = WS, role = 'admin') {
+  members.push({ userId: 'user_1', workspaceId, role })
 }
 
 function seedProject(projectId = PROJ, workspaceId = WS) {
@@ -142,7 +143,28 @@ describe('workspace basic endpoints', () => {
     seedMember()
     const res = await call('GET', `/workspaces/${WS}/analytics/member-usage`)
     expect(res.status).toBe(200)
-    expect(svcSpies.getMemberUsageStats).toHaveBeenCalledWith(WS)
+    expect(svcSpies.getMemberUsageStats).toHaveBeenCalledWith(WS, { userId: undefined })
+  })
+
+  test('member-insights delegates period and returns the service result', async () => {
+    seedMember()
+    const res = await call('GET', `/workspaces/${WS}/analytics/member-insights?period=7d`)
+    expect(res.status).toBe(200)
+    expect(svcSpies.getMemberInsights).toHaveBeenCalledWith(WS, '7d', { userId: undefined })
+  })
+
+  test('non-admins are limited to their own member insights', async () => {
+    seedMember(WS, 'member')
+    const own = await call('GET', `/workspaces/${WS}/analytics/member-insights?userId=user_1`)
+    expect(own.status).toBe(200)
+    expect(svcSpies.getMemberInsights).toHaveBeenCalledWith(
+      WS,
+      '30d',
+      { userId: 'user_1' },
+    )
+
+    const other = await call('GET', `/workspaces/${WS}/analytics/member-insights?userId=user_2`)
+    expect(other.status).toBe(403)
   })
 
   test('usage-log: parses page/limit/userId/model query params', async () => {
@@ -171,7 +193,7 @@ describe('workspace basic endpoints', () => {
   test('usage-summary forwards period', async () => {
     seedMember()
     await call('GET', `/workspaces/${WS}/analytics/usage-summary?period=90d`)
-    expect(svcSpies.getUsageSummary).toHaveBeenCalledWith({ workspaceId: WS }, '90d', { page: 1, limit: 500 })
+    expect(svcSpies.getUsageSummary).toHaveBeenCalledWith({ workspaceId: WS, userId: undefined }, '90d', { page: 1, limit: 500 })
   })
 
   test('spend-timeseries: defaults groupBy=model, metric=spend, topN=8', async () => {
@@ -195,6 +217,15 @@ describe('workspace basic endpoints', () => {
       '30d',
       { fromIso: '2025-01-01', toIso: '2025-02-01', groupBy: 'user', metric: 'tokens', topN: 15 },
     )
+  })
+
+  test('spend-timeseries: limits regular members to their own usage', async () => {
+    seedMember(WS, 'member')
+    await call('GET', `/workspaces/${WS}/analytics/spend-timeseries?groupBy=model`)
+    expect(svcSpies.getSpendTimeseries.mock.calls[0]?.[0]).toEqual({
+      workspaceId: WS,
+      userId: 'user_1',
+    })
   })
 
   test('catch branch → 500 analytics_failed', async () => {
@@ -305,6 +336,17 @@ describe('advanced workspace endpoints', () => {
     const res = await call('GET', `/workspaces/${WS}/analytics/usage`)
     expect(res.status).toBe(403)
     expect(res.body.error.code).toBe('forbidden')
+  })
+
+  test('usage: limits regular members to their own analytics', async () => {
+    isBusiness = true
+    seedMember(WS, 'member')
+    const res = await call('GET', `/workspaces/${WS}/analytics/usage`)
+    expect(res.status).toBe(200)
+    expect(svcSpies.getUsageAnalytics).toHaveBeenCalledWith(
+      { workspaceId: WS, userId: 'user_1' },
+      '30d',
+    )
   })
 
   test('chat: business + member = 200', async () => {

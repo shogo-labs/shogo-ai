@@ -32,6 +32,7 @@ import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
 import { createChatSessionForkRoutes } from '../routes/chat-session-fork'
+import { chatQueuedMessageActionsRoutes } from '../routes/chat-queued-message-actions'
 import { toolsProxyRoutes } from '../routes/tools-proxy'
 import { techStackRoutes } from '../routes/tech-stacks'
 import { apiKeyRoutes } from '../routes/api-keys'
@@ -138,6 +139,7 @@ export function createLocalApp(): LocalAppBundle {
   // sidebar always shows the Marketplace nav item.
   app.route('/api/marketplace', marketplaceRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
+  app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionFeedbackRoutes())
   app.route('/api/chat-sessions', createChatSessionForkRoutes())

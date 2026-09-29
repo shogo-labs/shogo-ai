@@ -144,6 +144,11 @@ mock.module('../../lib/prisma', () => ({
   },
 }))
 
+mock.module('../model-registry.service', () => ({
+  resolveModelLabels: async (ids: Iterable<string>) =>
+    new Map([...new Set(ids)].map((id) => [id, id])),
+}))
+
 const analytics = await import('../analytics.service')
 
 function rebuild() {
@@ -166,6 +171,90 @@ beforeEach(() => {
   rawQueue = []
   rawCalls.length = 0
   rebuild()
+})
+
+describe('getMemberInsights', () => {
+  test('combines billed token usage with attributed plans and code changes', async () => {
+    const now = new Date()
+    store.users.push({
+      id: 'u-member',
+      name: 'Member One',
+      email: 'member@example.com',
+      image: null,
+    })
+    store.chatSessions.push({
+      id: 'session-member',
+      workspaceId: 'ws-member',
+      createdAt: now,
+    })
+    store.members.push({
+      userId: 'u-member',
+      workspaceId: 'ws-member',
+      role: 'member',
+    })
+    store.usageEvents.push({
+      memberId: 'u-member',
+      workspaceId: 'ws-member',
+      actionType: 'chat_message',
+      billedUsd: 0.42,
+      actionMetadata: {
+        model: 'claude-sonnet-4-5',
+        inputTokens: 100,
+        outputTokens: 40,
+        totalTokens: 140,
+      },
+      createdAt: now,
+    })
+    store.toolCallLogs.push(
+      {
+        userId: 'u-member',
+        chatSessionId: 'session-member',
+        toolName: 'create_plan',
+        status: 'complete',
+        args: {},
+        linesAdded: 0,
+        linesRemoved: 0,
+        createdAt: now,
+      },
+      {
+        userId: 'u-member',
+        chatSessionId: 'session-member',
+        toolName: 'edit_file',
+        status: 'complete',
+        args: {
+          old_string: 'const oldValue = 1',
+          new_string: 'const newValue = 2\nconst secondValue = 3',
+        },
+        linesAdded: 2,
+        linesRemoved: 1,
+        createdAt: now,
+      },
+    )
+    rebuild()
+
+    const result = await analytics.getMemberInsights('ws-member', '30d')
+    expect(result.total).toBe(1)
+    expect(result.rows[0]).toMatchObject({
+      userId: 'u-member',
+      userName: 'Member One',
+      plansCreated: 1,
+      filesEdited: 1,
+      linesAdded: 2,
+      linesRemoved: 1,
+      requests: 1,
+      totalTokens: 140,
+      spendUsd: 0.42,
+    })
+    expect(result.rows[0]?.models[0]).toMatchObject({
+      totalTokens: 140,
+      spendUsd: 0.42,
+    })
+    expect(result.rows[0]?.daily[0]).toMatchObject({
+      totalTokens: 140,
+      linesAdded: 2,
+      linesRemoved: 1,
+    })
+  })
 })
 
 describe('getUserFunnel (Postgres branch)', () => {

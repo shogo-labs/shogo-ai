@@ -14,7 +14,7 @@ mock.module('../middleware/auth', () => ({
   requireAuth: async (_c: any, next: any) => next(),
 }))
 
-let members: Array<{ userId: string; workspaceId: string }> = []
+let members: Array<{ userId: string; workspaceId: string; role: string }> = []
 let projects: Map<string, { workspaceId: string }> = new Map()
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -29,6 +29,7 @@ mock.module('../services/billing.service', () => ({ isBusinessOrHigherPlan: asyn
 const svcSpies = {
   getOverviewStats: mock(async (..._: any[]): Promise<any> => ({ k: 'overview' })),
   getMemberUsageStats: mock(async (..._: any[]): Promise<any> => ({ k: 'member-usage' })),
+  getMemberInsights: mock(async (..._: any[]): Promise<any> => ({ rows: [], total: 0 })),
   getUsageLog: mock(async (..._: any[]): Promise<any> => ({
     entries: [
       { createdAt: '2026-01-01T00:00:00Z', userName: 'A,lice', userEmail: 'a@x', actionType: 'chat', model: 'claude', provider: 'anthropic', totalTokens: 100, billedUsd: 0.0123 },
@@ -61,7 +62,7 @@ async function call(method: string, path: string) {
 }
 
 beforeEach(() => {
-  members = [{ userId: 'user_1', workspaceId: WS }]
+  members = [{ userId: 'user_1', workspaceId: WS, role: 'admin' }]
   projects = new Map([[PROJ, { workspaceId: WS }]])
   isBusiness = true
   currentUserId = 'user_1'
@@ -87,7 +88,14 @@ describe('Workspace basic analytics — 200 happy paths', () => {
     const { status, body } = await call('GET', `/workspaces/${WS}/analytics/member-usage`)
     expect(status).toBe(200)
     expect(body.data).toEqual({ k: 'member-usage' })
-    expect(svcSpies.getMemberUsageStats).toHaveBeenCalledWith(WS)
+    expect(svcSpies.getMemberUsageStats).toHaveBeenCalledWith(WS, { userId: undefined })
+  })
+
+  test('GET /workspaces/:workspaceId/analytics/member-insights returns service result', async () => {
+    const { status, body } = await call('GET', `/workspaces/${WS}/analytics/member-insights?period=7d`)
+    expect(status).toBe(200)
+    expect(body.data).toEqual({ rows: [], total: 0 })
+    expect(svcSpies.getMemberInsights).toHaveBeenCalledWith(WS, '7d', { userId: undefined })
   })
 
   test('GET /workspaces/:workspaceId/analytics/usage-summary defaults period to 30d', async () => {
