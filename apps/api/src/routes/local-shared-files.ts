@@ -68,7 +68,10 @@ async function projectRoot(projectId: string, workspacesDir: string): Promise<{
 export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono {
   const app = new Hono()
 
-  app.get('/f/:token', async (c) => {
+  app.get('/api/f/:token', (c) => handleDownload(c))
+  app.get('/f/:token', (c) => handleDownload(c))
+
+  async function handleDownload(c: any): Promise<Response> {
     const payload = verifySharedFileToken(c.req.param('token'))
     if (!payload) {
       return c.json({ error: { code: 'not_found', message: 'This download link is invalid or expired' } }, 404)
@@ -116,7 +119,7 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
       console.error('[LocalSharedFiles] Download failed:', error?.message || error)
       return c.json({ error: { code: 'download_failed', message: 'File download failed' } }, 500)
     }
-  })
+  }
 
   return app
 }

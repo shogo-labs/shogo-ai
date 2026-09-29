@@ -28,6 +28,7 @@ export function createApp(options: CreateAppOptions): Hono {
     '/api/local/',
     '/api/ai/',
     '/api/tools/',
+    '/api/f/',
     '/api/marketplace',
     '/api/tech-stacks',
     '/api/platform/visible-models',

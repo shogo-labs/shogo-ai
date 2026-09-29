@@ -85,7 +85,13 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
   const deriveToken = deps.deriveProjectRuntimeToken ?? deriveProjectRuntimeToken
   const relayTunnel = deps.relayAgentProxyViaTunnel ?? relayAgentProxyViaTunnel
 
-  app.get('/f/:token', async (c) => {
+  // Minted links use `/api/f/`: on the public studio origin only `/api/*`
+  // reaches the API, while bare `/f/` falls through to the web app. `/f/` stays
+  // for links already handed out against the API host.
+  app.get('/api/f/:token', (c) => handleDownload(c))
+  app.get('/f/:token', (c) => handleDownload(c))
+
+  async function handleDownload(c: any): Promise<Response> {
     if (!allowedByRateLimit(clientKey(c))) {
       return c.json({ error: { code: 'rate_limited', message: 'Too many download attempts' } }, 429)
     }
@@ -146,7 +152,7 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
       console.error(`[SharedFiles] Download failed for ${payload.projectId}:`, error?.message || error)
       return c.json({ error: { code: 'runtime_unavailable', message: 'The file runtime is unavailable' } }, 503)
     }
-  })
+  }
 
   return app
 }

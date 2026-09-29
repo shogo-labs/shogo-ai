@@ -59,6 +59,25 @@ describe('shared file routes', () => {
     expect(requestedToken).toBe('runtime-secret')
   })
 
+  it('serves the same download under /api/f/ so studio-origin links reach the API', async () => {
+    globalThis.fetch = (async () => new Response('PDF bytes', {
+      status: 200,
+      headers: { 'content-type': 'application/pdf' },
+    })) as typeof fetch
+
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+    })
+    const response = await app.fetch(new Request(`http://studio.test/api/f/${token()}`))
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('PDF bytes')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
+    expect((await app.fetch(new Request('http://studio.test/api/f/not-a-token'))).status).toBe(404)
+  })
+
   it('uses octet-stream for risky file types', async () => {
     globalThis.fetch = (async () => new Response('binary', {
       status: 200,

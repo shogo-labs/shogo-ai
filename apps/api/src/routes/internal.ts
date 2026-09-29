@@ -448,7 +448,7 @@ app.post('/projects/:projectId/shared-files', async (c) => {
 
     return c.json({
       ok: true,
-      url: `${origin}/f/${encodeURIComponent(token)}`,
+      url: `${origin}/api/f/${encodeURIComponent(token)}`,
       expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
       path,
     })

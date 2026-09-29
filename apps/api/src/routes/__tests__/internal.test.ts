@@ -1333,7 +1333,7 @@ describe('POST /projects/:projectId/shared-files', () => {
       })
       expect(res.status).toBe(200)
       const body = await res.json() as { url: string; expiresAt: string; path: string }
-      expect(body.url).toMatch(/^https:\/\/api\.example\/f\//)
+      expect(body.url).toMatch(/^https:\/\/api\.example\/api\/f\//)
       expect(body.path).toBe('reports/final report.pdf')
       expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now())
 
