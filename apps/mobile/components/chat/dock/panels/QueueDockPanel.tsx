@@ -18,7 +18,7 @@ import {
   Pencil,
   Trash2,
   WifiOff,
-  TriangleAlert,
+  AlertTriangle,
   Image as ImageIcon,
   ListOrdered,
 } from "lucide-react-native"
@@ -63,7 +63,7 @@ function QueueBody({
             )}
           >
             {msg.status === "failed" ? (
-              <TriangleAlert size={11} className="text-destructive flex-shrink-0" />
+              <AlertTriangle size={11} className="text-destructive flex-shrink-0" />
             ) : msg.offline ? (
               <WifiOff size={11} className="text-orange-600 dark:text-orange-400 flex-shrink-0" />
             ) : (
