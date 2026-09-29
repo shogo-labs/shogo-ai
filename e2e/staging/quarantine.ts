@@ -54,6 +54,17 @@ export const QUARANTINE: QuarantineEntry[] = [
     reason: CLOUD_ATTACH_404,
     expires: "2026-10-12",
   })),
+  {
+    file: "agent-publish.test.ts",
+    title: "agent publishes to {subdomain}.shogo.one and returns a live URL",
+    owner: "@lacvapps",
+    reason:
+      "Infra bug, not a flaky test: staging uploads to shogo-published-apps-staging " +
+      "(k8s/overlays/staging PUBLISH_BUCKET) but mints {subdomain}.shogo.one URLs, and the " +
+      "*.shogo.one Worker serves from shogo-published-apps-production, so every staging " +
+      "publish 404s with ObjectNotFound. *.staging.shogo.one does not resolve yet.",
+    expires: "2026-10-12",
+  },
 ]
 
 function escapeRegExp(value: string): string {

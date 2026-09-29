@@ -94,10 +94,14 @@ test.describe("Agent preview hygiene", () => {
     const text = await transcript(page)
     expect(text, "file delivery must not expose localhost").not.toMatch(LOCALHOST_RE)
     expect(text, "file delivery must not use an app preview URL").not.toMatch(PREVIEW_URL_RE)
-    const match = text.match(/https?:\/\/[^\s<>()]+\/f\/[A-Za-z0-9._-]+/i)
-    expect(match, "agent should surface an expiring /f/ download URL").toBeTruthy()
+    // `transcript()` lowercases, which corrupts the case-sensitive signed token,
+    // so read links from the raw text. The initial build turn may already have
+    // shared other files; check the latest one (the transcript renders oldest first).
+    const rawText = await page.locator("body").innerText()
+    const links = rawText.match(/https?:\/\/[^\s<>()]+\/f\/[A-Za-z0-9._-]+/gi)
+    expect(links, "agent should surface an expiring /f/ download URL").toBeTruthy()
 
-    const response = await request.get(match![0], { timeout: 60_000 })
+    const response = await request.get(links!.at(-1)!, { timeout: 60_000 })
     expect(response.status()).toBe(200)
     expect(response.headers()["content-disposition"]).toMatch(/^attachment;/i)
   })
