@@ -1,5 +1,4 @@
 import type { PrismaClient } from '../prisma'
-import { homeRegionWorkspaceWhere } from '../region'
 
 const RETENTION_DAYS = Number(process.env.PROXY_CAPTURE_RETENTION_DAYS || 90)
 const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -13,6 +12,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 // single-region deployments such as staging), so deletes never collide.
 export async function pruneProxyTurns(prisma: PrismaClient): Promise<number> {
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000)
+  const { homeRegionWorkspaceWhere } = await import('../region')
   const homeWhere = homeRegionWorkspaceWhere()
   const result = await (prisma as any).proxyTurn.deleteMany({
     where: { lastAt: { lt: cutoff }, ...(homeWhere ? { workspace: homeWhere } : {}) },
