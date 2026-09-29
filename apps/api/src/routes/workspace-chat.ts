@@ -25,6 +25,7 @@ import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 import { stampModelProvider } from '../lib/stamp-model-provider'
+import { stampWorkspacePlan } from '../lib/stamp-workspace-plan'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
@@ -677,6 +678,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       stampModelProvider(parsedBody)
       body = JSON.stringify(parsedBody)
     }
+    await stampWorkspacePlan(parsedBody, workspaceId)
+    body = JSON.stringify(parsedBody)
 
     // Harden "@" references before forwarding to the runtime:
     //  - workspace refs: re-derive the summary from the DB after membership;

@@ -34,7 +34,7 @@ mock.module('../middleware/auth', () => ({
   requireAuth: async (_c: any, next: any) => next(),
 }))
 
-let members: Array<{ userId: string; workspaceId: string }> = []
+let members: Array<{ userId: string; workspaceId: string; role: string }> = []
 let projects: Map<string, { workspaceId: string }> = new Map()
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -49,6 +49,7 @@ mock.module('../services/billing.service', () => ({ isBusinessOrHigherPlan: asyn
 const svcSpies = {
   getOverviewStats: mock(async (..._: any[]): Promise<any> => ({ k: 'overview' })),
   getMemberUsageStats: mock(async (..._: any[]): Promise<any> => ({ k: 'member-usage' })),
+  getMemberInsights: mock(async (..._: any[]): Promise<any> => ({ rows: [], total: 0 })),
   getUsageLog: mock(async (..._: any[]): Promise<any> => ({ entries: [], total: 0 })),
   getUsageSummary: mock(async (..._: any[]): Promise<any> => ({ k: 'summary' })),
   getSpendTimeseries: mock(async (..._: any[]): Promise<any> => ({ series: [] })),
@@ -82,7 +83,9 @@ beforeEach(() => {
 
 afterEach(() => { delete process.env.SHOGO_LOCAL_MODE })
 
-const seedMember = (workspaceId = WS) => { members.push({ userId: 'user_1', workspaceId }) }
+const seedMember = (workspaceId = WS, role = 'member') => {
+  members.push({ userId: 'user_1', workspaceId, role })
+}
 const seedProject = (id = PROJ, workspaceId = WS) => { projects.set(id, { workspaceId }) }
 
 // ─── requireBusinessPlan 403 on every business-gated endpoint ──────────
@@ -254,11 +257,11 @@ describe('usage-log query parameter parsing edges', () => {
     expect(Number.isNaN(opts.limit)).toBe(true)
   })
 
-  test('userId & model are forwarded as undefined when not supplied', async () => {
+  test('userId defaults to the authenticated member when not supplied', async () => {
     seedMember()
     await call('GET', `/workspaces/${WS}/analytics/usage-log`)
     const [, , opts] = svcSpies.getUsageLog.mock.calls[0]!
-    expect(opts.userId).toBeUndefined()
+    expect(opts.userId).toBe('user_1')
     expect(opts.model).toBeUndefined()
   })
 })

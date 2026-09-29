@@ -165,8 +165,10 @@ async function dispatchRow(row: QueueRow): Promise<void> {
     'X-Billing-User-Id': row.userId,
     'X-Queue-User-Id': row.userId,
   }
-  // Lazy: the chat routes import this module, and a static runtime import
-  // would drag the whole runtime graph into every chat-route consumer.
+  // Keep the runtime manager out of the module-load graph. This dispatcher is
+  // imported by both chat routers, including isolated tests that intentionally
+  // mock the runtime boundary. It is only needed when a row is actually
+  // dispatched, keeping the runtime graph out of chat-route consumers.
   const { getRuntimeManager } = await import('../lib/runtime')
   const runtimeManager = getRuntimeManager()
 

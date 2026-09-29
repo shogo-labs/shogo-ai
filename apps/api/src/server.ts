@@ -791,6 +791,9 @@ app.use(
       // key (`shogo_sk_*`); session-cookie / runtime-token gating must not run.
       '/api/v1/',
       '/api/tools/',
+      // Shared-file downloads: the signed token in the path is the credential
+      // (verified in routes/shared-files.ts).
+      '/api/f/',
       '/api/api-keys/validate',
       '/api/marketplace',
       '/api/tech-stacks',

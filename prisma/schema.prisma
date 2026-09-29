@@ -1562,6 +1562,9 @@ model ToolCallLog {
   args          Json?
   result        Json?
   duration      Int?
+  userId        String?
+  linesAdded    Int            @default(0)
+  linesRemoved  Int            @default(0)
   createdAt     DateTime       @default(now())
 
   // Relations
@@ -1569,6 +1572,7 @@ model ToolCallLog {
 
   @@index([chatSessionId])
   @@index([messageId])
+  @@index([userId, createdAt])
   @@map("tool_call_logs")
 }
 

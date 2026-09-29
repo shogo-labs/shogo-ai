@@ -2085,6 +2085,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
+      if (dataPart.type === "data-usage-limit") {
+        const d = (dataPart as any).data ?? {}
+        setUsageLimitNotice({
+          sessionId: currentSessionIdRef.current ?? null,
+          resetsAt: typeof d.resetsAt === "string" ? d.resetsAt : undefined,
+        })
+        refetchUsageWallet()
+        return
+      }
+
       // Handle virtual tool events
       if (dataPart.type === "data-virtual-tool") {
         const event = (dataPart as any).data as VirtualToolEvent
@@ -2464,6 +2474,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // a previous turn (defensive; normally a `reconnected` frame already
         // cleared it before the turn completed).
         setConnectivityWait(null)
+        setUsageLimitNotice(null)
       }
       if (dataPart.type === "data-turn-seq") {
         const seq = (dataPart as any).data?.seq
@@ -3362,6 +3373,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Briefly true right after a park ends, to show "Back online, resuming…"
   // instead of just silently clearing the banner.
   const [justReconnected, setJustReconnected] = useState(false)
+  // Set when the runtime ended a turn early because the workspace hit its
+  // usage limit (`data-usage-limit`). Scoped to the session it came from.
+  const [usageLimitNotice, setUsageLimitNotice] = useState<{
+    sessionId: string | null
+    resetsAt?: string
+  } | null>(null)
 
   const isRemoteInstance = !!localAgentUrl
   const isTunnelError = !!(
@@ -6912,6 +6929,66 @@ const ChatPanelContent = observer(function ChatPanelContent({
     handleStop,
   ])
   useDockPanel(connectivityDockDescriptor, chatDockStore)
+
+  const usageLimitDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!usageLimitNotice || usageLimitNotice.sessionId !== currentSessionId) {
+      return null
+    }
+    const resetsAt = usageLimitNotice.resetsAt
+      ? new Date(usageLimitNotice.resetsAt)
+      : null
+    const resetLabel =
+      resetsAt && !Number.isNaN(resetsAt.getTime())
+        ? ` Your usage resets ${resetsAt.toLocaleString(undefined, {
+            weekday: "short",
+            hour: "numeric",
+            minute: "2-digit",
+          })}.`
+        : ""
+    return {
+      id: "usage-limit",
+      kind: "status",
+      order: 3,
+      title: "Usage limit reached",
+      icon: AlertCircle,
+      accent: "warning",
+      defaultExpanded: true,
+      onDismiss: () => setUsageLimitNotice(null),
+      headerActions: (
+        <View className="flex-row gap-1.5">
+          <Pressable
+            onPress={handleUpgradeClick}
+            accessibilityRole="button"
+            accessibilityLabel="Upgrade plan"
+            className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
+          >
+            <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
+              Upgrade
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              setUsageLimitNotice(null)
+              void handleSendMessage("continue")
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Continue the task"
+            className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1"
+          >
+            <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
+              Continue
+            </Text>
+          </Pressable>
+        </View>
+      ),
+      render: () => (
+        <Text className="text-xs text-orange-700 dark:text-orange-300">
+          {`The agent stopped partway through; completed work is saved.${resetLabel} Tap Continue after it resets, or upgrade to keep going now.`}
+        </Text>
+      ),
+    }
+  }, [usageLimitNotice, currentSessionId, handleUpgradeClick, handleSendMessage])
+  useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!toolErrorBanner) return null

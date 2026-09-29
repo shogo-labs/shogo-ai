@@ -23,6 +23,7 @@ import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
 import { wrapSseStreamWithKeepalive } from "@shogo/shared-runtime/sse-keepalive"
 import { stampModelProvider } from "../lib/stamp-model-provider"
+import { stampWorkspacePlan } from "../lib/stamp-workspace-plan"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
@@ -43,6 +44,7 @@ import {
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
 import { dispatchNext } from "../services/chat-queue-dispatcher.service"
+import { countLineChanges } from "../lib/tool-line-stats"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -915,15 +917,25 @@ export async function trackUsageFromStream(
 
       if (session) {
         await prisma.toolCallLog.createMany({
-          data: [...toolCallMap.values()].map((tc) => ({
-            chatSessionId,
-            messageId: assistantMessageId || '',
-            toolName: tc.toolName,
-            args: tc.args != null ? JSON.stringify(tc.args) : undefined,
-            result: tc.result != null ? JSON.stringify(tc.result) : undefined,
-            duration: tc.duration,
-            status: tc.error ? ('error' as const) : ('complete' as const),
-          })),
+          data: [...toolCallMap.values()].map((tc) => {
+            const status = tc.error ? ('error' as const) : ('complete' as const)
+            const lineChanges = status === 'complete'
+              ? countLineChanges(tc.toolName, tc.args, tc.result)
+              : { linesAdded: 0, linesRemoved: 0 }
+            return {
+              chatSessionId,
+              messageId: assistantMessageId || '',
+              toolName: tc.toolName,
+              args: tc.args != null ? JSON.stringify(tc.args) : undefined,
+              result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+              duration: tc.duration,
+              status,
+              userId: options.userId && options.userId !== 'system'
+                ? options.userId
+                : undefined,
+              ...lineChanges,
+            }
+          }),
         })
         console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
       }
@@ -1127,7 +1139,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // declaration (a TDZ crash → 500 instead of a clean 402).
       let body = await c.req.text()
       let parsedBody: any = {}
-      try { parsedBody = JSON.parse(body) } catch { /* not JSON, that's fine */ }
+      let bodyIsJson = false
+      try { parsedBody = JSON.parse(body); bodyIsJson = true } catch { /* not JSON, that's fine */ }
 
       // Persisted chat messages use capability URLs for attachments. The
       // runtime still expects bytes/data URLs for the current model turn, so
@@ -1244,6 +1257,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         // model route to its native provider instead of being inferred as
         // `custom` by the runtime.
         stampModelProvider(parsedBody)
+        body = JSON.stringify(parsedBody)
+      }
+      if (bodyIsJson && parsedBody && typeof parsedBody === 'object') {
+        await stampWorkspacePlan(parsedBody, project.workspaceId)
         body = JSON.stringify(parsedBody)
       }
 

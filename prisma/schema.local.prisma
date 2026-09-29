@@ -1211,12 +1211,16 @@ model ToolCallLog {
   args          String?
   result        String?
   duration      Int?
+  userId        String?
+  linesAdded    Int      @default(0)
+  linesRemoved  Int      @default(0)
   createdAt     DateTime @default(now())
 
   chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
 
   @@index([chatSessionId])
   @@index([messageId])
+  @@index([userId, createdAt])
   @@map("tool_call_logs")
 }
 
