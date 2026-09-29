@@ -167,8 +167,8 @@ async function dispatchRow(row: QueueRow): Promise<void> {
   }
   // Keep the runtime manager out of the module-load graph. This dispatcher is
   // imported by both chat routers, including isolated tests that intentionally
-  // mock the runtime boundary. The manager is only needed when a row is
-  // actually dispatched.
+  // mock the runtime boundary. It is only needed when a row is actually
+  // dispatched, keeping the runtime graph out of chat-route consumers.
   const { getRuntimeManager } = await import('../lib/runtime')
   const runtimeManager = getRuntimeManager()
 
