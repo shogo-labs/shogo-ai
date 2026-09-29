@@ -210,8 +210,8 @@ describe('PreviewManager.runExpoExportWeb (private)', () => {
     const log = spyOn(console, 'log').mockImplementation(() => {})
     try {
       await m._runExpoExportWebImpl({}, join(dir, 'no-expo'))
-      // No throw, no expoExportInFlight set
-      expect(m.expoExportInFlight).toBeNull()
+      // No throw, no Expo export remains in flight.
+      expect(m.expoExportInFlight.size).toBe(0)
     } finally {
       log.mockRestore()
     }
@@ -229,6 +229,36 @@ describe('PreviewManager.runExpoExportWeb (private)', () => {
     const b = m.runExpoExportWeb({}, '/whatever')
     await Promise.all([a, b])
     expect(calls).toBe(1)
+  })
+
+  it('serializes preview and publish exports instead of sharing the wrong output mode', async () => {
+    const m = mk() as any
+    const modes: string[] = []
+    let releasePreview!: () => void
+    let previewStarted!: () => void
+    const previewReady = new Promise<void>((resolve) => { previewStarted = resolve })
+    const previewRelease = new Promise<void>((resolve) => { releasePreview = resolve })
+
+    m._runExpoExportWebImpl = async (_timings: Record<string, number>, _cwd: string, options: any = {}) => {
+      modes.push(options.stagingDir)
+      if (modes.length === 1) {
+        previewStarted()
+        await previewRelease
+      }
+    }
+
+    const preview = m.runExpoExportWeb({}, '/whatever')
+    await previewReady
+    const publish = m.runExpoExportWeb({}, '/whatever', {
+      basePath: '/',
+      stagingDir: 'dist.publish.staging',
+      promote: false,
+    })
+
+    expect(modes).toEqual(['dist.staging'])
+    releasePreview()
+    await Promise.all([preview, publish])
+    expect(modes).toEqual(['dist.staging', 'dist.publish.staging'])
   })
 })
 

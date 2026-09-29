@@ -838,7 +838,11 @@ resource "cloudflare_worker_script" "subdomain_router" {
           headers: { 'User-Agent': 'Cloudflare-Worker' },
         });
 
-        if (response.status === 404 || response.status === 403) {
+        if (
+          (response.status === 404 || response.status === 403) &&
+          isDocumentRequest(request, url) &&
+          !isDynamicPath(url.pathname)
+        ) {
           // SPA client-side routing fallback.
           const fallbackUrl = buildOriginUrl(subdomain, '/');
           const fallback = await fetch(fallbackUrl);

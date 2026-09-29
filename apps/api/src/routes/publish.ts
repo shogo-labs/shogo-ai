@@ -548,11 +548,14 @@ async function triggerBuild(projectId: string): Promise<{ success: boolean; erro
   try {
     const { getProjectPodUrl } = await import("../lib/knative-project-manager")
     const podUrl = await getProjectPodUrl(projectId)
-    console.log(`[Publish] Triggering build for project ${projectId} at ${podUrl}`)
+    console.log(`[Publish] Triggering root-based publish build for project ${projectId} at ${podUrl}`)
 
-    const response = await fetch(`${podUrl}/preview/restart`, {
+    const response = await fetch(`${podUrl}/agent/publish-build?projectId=${encodeURIComponent(projectId)}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-runtime-token': await deriveProjectRuntimeToken(projectId),
+      },
       signal: AbortSignal.timeout(PUBLISH_BUILD_TIMEOUT_MS),
     })
 
@@ -561,8 +564,11 @@ async function triggerBuild(projectId: string): Promise<{ success: boolean; erro
       return { success: false, code: 'build_failed', error: `Build failed: ${response.status} - ${errorText}` }
     }
 
-    const result = await response.json()
-    console.log(`[Publish] Build complete:`, result)
+    const result = await response.json() as { ok?: boolean; error?: string }
+    if (result.ok !== true) {
+      return { success: false, code: 'build_failed', error: result.error || 'Publish build failed' }
+    }
+    console.log(`[Publish] Root-based publish build complete`)
     return { success: true }
   } catch (err: any) {
     const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
@@ -594,10 +600,13 @@ async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>
   // shadowed by the runtime's `app.all('/api/*')` user-app proxy, so every
   // publish before this fix either got a bare 404 (proxy's no-port branch)
   // or the user app's SPA fallback HTML (which then failed JSON parsing).
-  const response = await fetch(`${podUrl}/agent/dist-files`, {
+  const response = await fetch(
+    `${podUrl}/agent/dist-files?projectId=${encodeURIComponent(projectId)}&publish=true`,
+    {
     headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
-  })
+    },
+  )
 
   if (!response.ok) {
     throw new Error(`Failed to get dist files: ${response.status}`)
@@ -624,7 +633,7 @@ async function detectServerBacked(projectId: string): Promise<boolean> {
   try {
     const { getProjectPodUrl } = await import("../lib/knative-project-manager")
     const podUrl = await getProjectPodUrl(projectId)
-    const response = await fetch(`${podUrl}/agent/server-info`, {
+    const response = await fetch(`${podUrl}/agent/server-info?projectId=${encodeURIComponent(projectId)}`, {
       headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
       signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
     })
@@ -683,10 +692,13 @@ async function seedPublishedData(subdomain: string, projectId: string): Promise<
 async function fetchDevWritableArchive(projectId: string): Promise<Buffer | null> {
   const { getProjectPodUrl } = await import("../lib/knative-project-manager")
   const podUrl = await getProjectPodUrl(projectId)
-  const response = await fetch(`${podUrl}/agent/published-data-archive`, {
+  const response = await fetch(
+    `${podUrl}/agent/published-data-archive?projectId=${encodeURIComponent(projectId)}`,
+    {
     headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
-  })
+    },
+  )
   if (response.status === 404) return null
   if (!response.ok) {
     throw new Error(`published-data-archive returned ${response.status}`)
@@ -732,7 +744,7 @@ async function backupPublishedArchive(subdomain: string): Promise<string | null>
 /** Best-effort read of a pod's normalized `prisma/schema.prisma` fingerprint. */
 async function fetchSchemaFingerprint(podUrl: string, projectId: string): Promise<string | null> {
   try {
-    const res = await fetch(`${podUrl}/agent/schema-fingerprint`, {
+    const res = await fetch(`${podUrl}/agent/schema-fingerprint?projectId=${encodeURIComponent(projectId)}`, {
       headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
       signal: AbortSignal.timeout(10_000),
     })

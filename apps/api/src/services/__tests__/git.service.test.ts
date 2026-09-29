@@ -157,7 +157,7 @@ describe('initRepo — .gitignore self-heal on existing repo', () => {
     configUser()
     // Pre-populate with every required entry.
     const required = [
-      'node_modules/', '.bun/', 'dist/', 'dist.staging/', 'dist.canvas.staging/',
+      'node_modules/', '.bun/', 'dist/', 'dist.staging/', 'dist.canvas.staging/', 'dist.publish.staging/',
       'dist.prev/', 'build/', '.output/', '.nitro/', '.shogo/', 'nul', 'con', 'prn', 'aux',
     ]
     write('.gitignore', required.join('\n') + '\n')
