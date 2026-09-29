@@ -65,6 +65,16 @@ export const QUARANTINE: QuarantineEntry[] = [
       "publish 404s with ObjectNotFound. *.staging.shogo.one does not resolve yet.",
     expires: "2026-10-12",
   },
+  {
+    file: "agent-publish.test.ts",
+    title: "publishing a subdomain already taken by another project fails",
+    owner: "@lacvapps",
+    reason:
+      "Infra bug, not a flaky test: on staging the publish call times out while assigning the " +
+      "subdomain (agent retried 3x, run 36605288919), so project A never reserves it and " +
+      "project B has nothing to collide with. Needs staging API logs.",
+    expires: "2026-10-12",
+  },
 ]
 
 function escapeRegExp(value: string): string {

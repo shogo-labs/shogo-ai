@@ -5,6 +5,7 @@ import {
   homeComposerInput,
   signUpAndOnboard,
   signUpAndUpgradeToPro,
+  waitForAgentIdle,
   type TestUser,
 } from "./helpers"
 
@@ -59,6 +60,9 @@ function visibleComposer(page: Page) {
 
 /** Sends a message into the project chat composer and confirms it landed. */
 export async function sendProjectChatMessage(page: Page, text: string): Promise<void> {
+  // `waitForAgentResponse` gives up silently, and a long initial build can
+  // still be running; while busy the composer offers "Queue message", not Send.
+  await waitForAgentIdle(page, 300_000)
   const snippet = text.slice(0, 24)
   for (let attempt = 0; attempt < 2; attempt++) {
     const box = visibleComposer(page)
