@@ -357,11 +357,15 @@ jobs:
     # e2e/local drives the real local-mode API + Expo web (auto-sign-in,
     # personal/team workspaces, folder projects) against a throwaway SQLite
     # DB. These specs previously only ran on developer machines.
-    name: E2E (local mode)
+    name: E2E (local mode) (${{ matrix.shard }}/3)
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     permissions:
       contents: read
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -417,13 +421,13 @@ jobs:
       - name: Run e2e/local
         env:
           E2E_LOCAL_START_STACK: '1'
-        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium
+        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}/3
 
       - name: Upload report
         if: failure()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: e2e-local-report
+          name: e2e-local-report-${{ matrix.shard }}
           path: |
             test-results/e2e-local-report
             test-results/e2e-local-artifacts
@@ -834,7 +838,7 @@ jobs:
 
   ci:
     name: Lint, Typecheck, Test
-    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows, e2e-local]
+    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -845,7 +849,6 @@ jobs:
           echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
           echo "test: ${{ needs.test.result }}"
           echo "test-windows: ${{ needs.test-windows.result }}"
-          echo "e2e-local: ${{ needs.e2e-local.result }}"
-          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.e2e-local.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
+          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
             exit 1
           fi
