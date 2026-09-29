@@ -3469,6 +3469,7 @@ export class AgentGateway {
         result.maxIterationsExhausted &&
         !result.loopBreak &&
         !result.error &&
+        !result.usageLimit &&
         !turnAbort.signal.aborted &&
         autoContinuations < maxAutoContinuations
       ) {
@@ -3495,6 +3496,16 @@ export class AgentGateway {
         contResult.iterations += result.iterations
         contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
         result = contResult
+      }
+      if (result.usageLimit && uiWriter) {
+        uiWriter.write({
+          type: 'data-usage-limit',
+          data: {
+            resetsAt: result.usageLimit.resetsAt,
+            window: result.usageLimit.window,
+            toolCallCount: result.toolCalls.length,
+          },
+        } as any)
       }
       result.newMessages = accumulatedNewMessages.filter((message) => {
         const tagged = (message as Message & { __shogoBackgroundNote?: boolean }).__shogoBackgroundNote

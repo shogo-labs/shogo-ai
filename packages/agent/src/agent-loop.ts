@@ -236,6 +236,60 @@ export interface AgentLoopResult {
    * discarding the turn as a clean completion.
    */
   abortReason?: 'external' | 'max_iterations' | 'loop_detected'
+  /**
+   * Set when the workspace hit its Shogo usage limit partway through the turn.
+   * Retrying can't succeed until the limit resets or the plan changes, so the
+   * turn ends with an explicit notice instead of a finalizer/auto-continue.
+   */
+  usageLimit?: UsageLimitInfo
+}
+
+export interface UsageLimitInfo {
+  /** ISO time the exhausted usage window resets, when the API reported one. */
+  resetsAt?: string
+  window?: string
+}
+
+/**
+ * Recognize the AI proxy's own 402 (`code: usage_limit_reached`). Deliberately
+ * narrower than the retry classifier's `billing` bucket: an upstream provider
+ * billing failure is our problem, not something the user can fix by upgrading.
+ */
+export function detectUsageLimit(raw: string | undefined): UsageLimitInfo | null {
+  if (!raw || !/usage_limit_reached|usage limit reached/i.test(raw)) return null
+  const info: UsageLimitInfo = {}
+  const jsonStart = raw.indexOf('{')
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart))
+      const err = parsed?.error ?? parsed
+      if (typeof err?.resetsAt === 'string') info.resetsAt = err.resetsAt
+      if (typeof err?.window === 'string') info.window = err.window
+    } catch {
+      /* message-only form — no reset time available */
+    }
+  }
+  return info
+}
+
+export function buildUsageLimitNotice(toolCallCount: number, info: UsageLimitInfo, now: Date = new Date()): string {
+  const progress = toolCallCount > 0
+    ? `I completed ${toolCallCount} step${toolCallCount === 1 ? '' : 's'} before stopping, and that work is saved.`
+    : 'Nothing from this step was lost.'
+  let when = 'once your usage resets or you upgrade'
+  const resetsAt = info.resetsAt ? new Date(info.resetsAt) : null
+  if (resetsAt && !Number.isNaN(resetsAt.getTime()) && resetsAt.getTime() > now.getTime()) {
+    const minutes = Math.ceil((resetsAt.getTime() - now.getTime()) / 60_000)
+    const inText = minutes < 60
+      ? `${minutes} minute${minutes === 1 ? '' : 's'}`
+      : minutes < 48 * 60
+        ? `about ${Math.round(minutes / 60)} hour${Math.round(minutes / 60) === 1 ? '' : 's'}`
+        : `about ${Math.round(minutes / (24 * 60))} days`
+    when = `when your usage resets (in ${inText}), or sooner if you upgrade or turn on usage-based pricing in Settings > Billing`
+  } else {
+    when += ' or turn on usage-based pricing in Settings > Billing'
+  }
+  return `**You've reached your usage limit, so I had to stop partway through this task.** ${progress} Send "continue" ${when} and I'll pick up exactly where I left off.`
 }
 
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -684,9 +738,17 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         )
       : undefined
 
+  // A usage limit that cuts off a turn which already made progress ends the
+  // turn with a notice. With no progress it stays a hard error, same as the
+  // API's pre-flight limit check.
+  const usageLimit =
+    !abortTriggered && !implicitError && (toolCalls.length > 0 || finalText.trim())
+      ? detectUsageLimit(rawCoreError) ?? detectUsageLimit(promptError?.message)
+      : null
+
   // If there was a core error but the agent DID make progress (tool calls executed),
   // don't treat it as a hard error — mark as exhausted so the caller can continue.
-  if (coreError && !implicitError && !promptError && toolCalls.length > 0 && !maxIterationsExhausted) {
+  if (coreError && !usageLimit && !implicitError && !promptError && toolCalls.length > 0 && !maxIterationsExhausted) {
     maxIterationsExhausted = true
     console.warn(`[AgentLoop] Provider error mid-stream after ${toolCalls.length} tool calls — marking as incomplete for continuation: ${coreError}`)
   }
@@ -704,6 +766,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const emptyNoToolTurn =
     toolCalls.length === 0 && !finalText.trim() && !implicitError && !promptError
   const shouldForceFinalText =
+    !usageLimit &&
     lastToolName !== 'ask_user' &&
     !signal?.aborted &&
     !loopBreak &&
@@ -808,6 +871,35 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     }
   }
 
+  if (usageLimit) {
+    console.warn(`[AgentLoop] Usage limit reached after ${toolCalls.length} tool calls — ending turn with limit notice`)
+    const notice = buildUsageLimitNotice(toolCalls.length, usageLimit)
+    const noticeText = finalText.trim() ? `\n\n${notice}` : notice
+    onTextDelta?.(noticeText)
+    finalText = finalText.trim() ? `${finalText}${noticeText}` : notice
+    const noticeMessage: AssistantMessage = {
+      role: 'assistant',
+      content: [{ type: 'text', text: notice }],
+      api: 'anthropic-messages',
+      provider,
+      model: modelId,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    }
+    newMessages = [...newMessages, noticeMessage]
+    allMessages = [...allMessages, noticeMessage]
+    maxIterationsExhausted = false
+    promptError = undefined
+  }
+
   usage = sumUsage(newMessages)
 
   const result: AgentLoopResult = {
@@ -828,6 +920,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     lastStopReason,
     lastTurnHadToolCalls,
     abortReason: abortTriggered ? abortReason : undefined,
+    usageLimit: usageLimit ?? undefined,
   }
 
   await onAgentEnd?.(result)
