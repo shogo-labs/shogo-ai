@@ -3397,9 +3397,8 @@ export function aiProxyRoutes() {
         )
       }
 
-      // This handler only forwards to OpenAI. Sending another provider's model
-      // there pairs it with that provider's key, and OpenAI's resulting 401 is
-      // indistinguishable (to a desktop) from its Shogo key being revoked.
+      // This handler only forwards to OpenAI; another provider's model would be
+      // sent there with that provider's key.
       if (modelConfig.provider !== 'openai') {
         return c.json(
           {

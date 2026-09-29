@@ -1126,10 +1126,9 @@ export class AgentGateway {
     })
 
     // Wire up LLM-powered summarization for context compaction. The model is
-    // the admin-selected summarizer (Hoshi 2.0 by default), injected with its
-    // own provider. It must never borrow the session's provider: pairing an
-    // Anthropic id with an OpenAI session routes it to OpenAI's Responses API,
-    // whose 401 made desktops wipe their Shogo Cloud key.
+    // the admin-selected summarizer (Hoshi 2.0 by default) and must run on its
+    // own provider, never the session's: the proxy routes by provider, so a
+    // mismatched pair sends the model to the wrong upstream.
     const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
     console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
     this.sessionManager.setSummarizeFn(async (messages) => {
