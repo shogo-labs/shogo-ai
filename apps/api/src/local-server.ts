@@ -18,6 +18,7 @@ import {
 import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 
 const API_PORT = Number(process.env.API_PORT || process.env.PORT || 39100)
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
@@ -26,6 +27,7 @@ await bootstrapLocalDatabase()
 resetLocalCaches()
 // Fire due agent-owned recurring schedules in the local workspace runtime.
 startAgentScheduleWorker(runtimeManager)
+startChatQueueWorker()
 
 const ptyBridge = createLocalPtyBridgeHandlers()
 const server = Bun.serve({
@@ -55,6 +57,7 @@ console.log(`   Workspace runtime: ws:proj:<anchor>`)
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
   stopAgentScheduleWorker()
+  stopChatQueueWorker()
   try {
     await runtimeManager.stopAll()
     stopAllPrismaStudios()

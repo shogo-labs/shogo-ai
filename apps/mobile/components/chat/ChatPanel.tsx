@@ -111,6 +111,7 @@ import {
   runResumeStreamSingleFlight,
   type ResumeStreamFlightRef,
 } from "./resume-stream-single-flight"
+import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
   dropUnfinishedAssistantTail,
   withResumeReplayReset,
@@ -345,6 +346,8 @@ export type QueuedMessage = {
   files?: FileAttachment[]
   selectedModel?: string
   references?: ChatReference[]
+  status?: string
+  error?: string
   /**
    * True when this entry is here because a send already failed on a client
    * network error (`isClientNetworkFailure`) — as opposed to the normal case
@@ -878,10 +881,9 @@ export function clearChatPanelMessageCache(): void {
   sessionMessageCache.clear()
 }
 
-// Per-session queued-message cache. Survives ChatPanel unmount/remount during
-// navigation so users don't lose what they've typed and queued. Keyed by
-// sessionId; cleared on explicit `clearChatPanelQueueCache()` or whenever the
-// queue for a session drains naturally (delete, send, edit-out).
+// Local fallback queue cache. Server-backed queue rows live in the generated
+// SDK collection and survive reloads/devices; this cache is only used for
+// direct-runtime and offline fallback sends.
 const sessionQueueCache = new Map<string, QueuedMessage[]>()
 
 /** Clear the in-memory per-session queued-message cache (e.g. on logout). */
@@ -906,6 +908,35 @@ function normalizePlanData(plan: PlanData): PlanData {
     summary: plan.summary,
     summaryStatus: plan.summaryStatus,
   }
+}
+
+async function ensureAiConsentForMessage(): Promise<boolean> {
+  if (Platform.OS !== "ios") return true
+  const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
+  if (alreadyAccepted) return true
+
+  const providerNames = AI_PROVIDERS.map((provider) => provider.name).join(" or ")
+  const accepted = await new Promise<boolean>((resolve) => {
+    Alert.alert(
+      "Share your message with the selected AI provider?",
+      `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
+      [
+        {
+          text: "Don\u2019t allow",
+          style: "cancel",
+          onPress: () => resolve(false),
+        },
+        { text: "Allow", onPress: () => resolve(true) },
+      ],
+      { cancelable: false },
+    )
+  })
+  if (!accepted) {
+    await revokeAiConsent().catch(() => {})
+    return false
+  }
+  await acceptAiConsent().catch(() => {})
+  return true
 }
 
 // ============================================================
@@ -3129,6 +3160,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
+  const resumeQueuedTurn = useCallback(() => {
+    void resumeStreamSingleFlight().catch((error) => {
+      console.warn("[ChatPanel] Failed to attach to queued turn:", error)
+    })
+  }, [resumeStreamSingleFlight])
+  const serverQueue = useServerMessageQueue({
+    sessionId: currentSessionId,
+    enabled: !!currentSessionId && !localAgentUrl,
+    isStreaming,
+    onTurnAvailable: resumeQueuedTurn,
+  })
+
   // Watch messages for tool-invocation state transitions during a live
   // turn and emit `tool-activity` events so the EZ Mode overlay can
   // (a) keep a fresh activity buffer for mid-turn summaries, and
@@ -4854,36 +4897,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return
       }
 
-      // App Store 5.1.1(i)/5.1.2(i): on iOS, request explicit one-time consent
-      // before transmitting the user's prompt to third-party AI providers.
-      // Uses the native iOS alert primitive (same UI as camera/location
-      // permissions) — no new screen, persisted in expo-secure-store.
-      if (Platform.OS === "ios") {
-        const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
-        if (!alreadyAccepted) {
-          const providerNames = AI_PROVIDERS.map((p) => p.name).join(" or ")
-          const accepted = await new Promise<boolean>((resolve) => {
-            Alert.alert(
-              "Share your message with the selected AI provider?",
-              `To generate a response, your message and any attachments will be sent to the AI provider you\u2019ve selected (${providerNames}). We don\u2019t send your email, payment info, or device identifiers.`,
-              [
-                {
-                  text: "Don\u2019t allow",
-                  style: "cancel",
-                  onPress: () => resolve(false),
-                },
-                { text: "Allow", onPress: () => resolve(true) },
-              ],
-              { cancelable: false },
-            )
-          })
-          if (!accepted) {
-            await revokeAiConsent().catch(() => {})
-            return
-          }
-          await acceptAiConsent().catch(() => {})
-        }
-      }
+      if (!(await ensureAiConsentForMessage())) return
 
       const trimmedContent = content.trim()
       if (Platform.OS !== "web") {
@@ -5455,11 +5469,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [currentSessionId, messageQueue])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
+    if (serverQueue.isServerQueued(messageId)) {
+      void serverQueue.remove(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to remove server queued message:", error)
+      })
+      return
+    }
     setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
-  }, [])
+  }, [serverQueue])
 
   const handleReorderQueuedMessage = useCallback(
     (messageId: string, direction: "up" | "down") => {
+      if (serverQueue.isServerQueued(messageId)) {
+        void serverQueue.reorder(messageId, direction).catch((error) => {
+          console.warn("[ChatPanel] Failed to reorder server queued message:", error)
+        })
+        return
+      }
       setMessageQueue((queue) => {
         const index = queue.findIndex((m) => m.id === messageId)
         if (index === -1) return queue
@@ -5479,7 +5505,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         return newQueue
       })
     },
-    [],
+    [serverQueue],
   )
 
   // Pull a queued message back into the input as a draft so the user can
@@ -5487,6 +5513,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // immediately so re-submitting just appends a fresh queue item rather than
   // duplicating the in-flight one.
   const handleEditQueuedMessage = useCallback((messageId: string) => {
+    const serverTarget = serverQueue.queuedMessages.find((m) => m.id === messageId)
+    if (serverTarget) {
+      void serverQueue.remove(messageId).catch((error) => {
+        console.warn("[ChatPanel] Failed to edit server queued message:", error)
+      })
+      setRestoreDraftRequest({
+        nonce: Date.now(),
+        content: serverTarget.content,
+        files: serverTarget.files,
+      })
+      return
+    }
     let target: QueuedMessage | undefined
     setMessageQueue((queue) => {
       target = queue.find((m) => m.id === messageId)
@@ -5499,7 +5537,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       content: target.content,
       files: target.files,
     })
-  }, [])
+  }, [serverQueue])
 
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
@@ -5510,6 +5548,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // streaming->ready transitions.
   const handleSendQueuedMessageNow = useCallback(
     (messageId: string) => {
+      if (serverQueue.isServerQueued(messageId)) {
+        void serverQueue.sendNow(messageId).catch((error) => {
+          console.warn("[ChatPanel] Failed to send server queued message now:", error)
+        })
+        return
+      }
       let promoted = false
       setMessageQueue((queue) => {
         const idx = queue.findIndex((m) => m.id === messageId)
@@ -5527,7 +5571,95 @@ const ChatPanelContent = observer(function ChatPanelContent({
         void processMessageQueue()
       }
     },
-    [isStreaming, handleStop, processMessageQueue],
+    [isStreaming, handleStop, processMessageQueue, serverQueue],
+  )
+
+  const displayedQueue = useMemo(
+    () => [...serverQueue.queuedMessages, ...messageQueue],
+    [messageQueue, serverQueue.queuedMessages],
+  )
+
+  const enqueueServerMessage = useCallback(
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[],
+    ) => {
+      const trimmedContent = content.trim()
+      if (!(await ensureAiConsentForMessage())) return
+      let wireText = trimmedContent
+      if (enrichMessage) {
+        try {
+          wireText = await enrichMessage(trimmedContent)
+        } catch (error) {
+          console.warn("[ChatPanel] enrichMessage failed for queued message:", error)
+        }
+      }
+
+      const body: Record<string, unknown> = {
+        featureId,
+        phase,
+        chatSessionId: currentSessionId,
+        chatSessionName:
+          (currentSession as any)?.name ||
+          (currentSession as any)?.inferredName ||
+          undefined,
+        workspaceId,
+        userId,
+        projectId,
+        focusedProjectId,
+        agentMode: perMsgModel || selectedModel,
+        interactionMode: interactionModeRef.current,
+        dualPlan: dualPlanRef.current,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        text: wireText,
+        viewer: canvasViewerPayload({
+          isPhoneViewport,
+          platform: Platform.OS,
+          width: windowWidth,
+        }),
+      }
+      const planToSend = confirmedPlanRef.current
+      if (planToSend) {
+        body.confirmedPlan = normalizePlanData(planToSend)
+        body.interactionMode = "agent"
+        confirmedPlanRef.current = null
+      }
+      if (
+        ideMode &&
+        (ideBridge.context.activeFile ||
+          ideBridge.context.workspaceFolders.length > 0)
+      ) {
+        body.ideContext = ideBridge.context
+      }
+      if (references && references.length > 0) body.references = references
+
+      await serverQueue.enqueue({
+        content: trimmedContent,
+        files,
+        selectedModel: perMsgModel || selectedModel,
+        references,
+        body,
+      })
+    },
+    [
+      currentSession,
+      currentSessionId,
+      enrichMessage,
+      featureId,
+      focusedProjectId,
+      ideBridge.context,
+      ideMode,
+      isPhoneViewport,
+      phase,
+      projectId,
+      selectedModel,
+      serverQueue,
+      userId,
+      windowWidth,
+      workspaceId,
+    ],
   )
 
   // Handle message submission
@@ -5558,6 +5690,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
         isProcessingQueueRef.current ||
         isSendingMessageRef.current
       ) {
+        if (!localAgentUrl) {
+          try {
+            await enqueueServerMessage(
+              trimmedContent,
+              files,
+              perMsgModel,
+              references,
+            )
+          } catch (error) {
+            console.warn(
+              "[ChatPanel] Server queue unavailable; retaining a local queued message:",
+              error,
+            )
+            setMessageQueue((queue) => [
+              ...queue,
+              {
+                id: `queue-${Date.now()}-${Math.random()
+                  .toString(36)
+                  .substr(2, 9)}`,
+                content: trimmedContent,
+                files,
+                selectedModel: perMsgModel,
+                references,
+              },
+            ])
+          }
+          return
+        }
         setMessageQueue((queue) => [
           ...queue,
           {
@@ -5581,7 +5741,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         references,
       )
     },
-    [isStreaming, sendMessageInternal, currentSessionId],
+    [
+      enqueueServerMessage,
+      isStreaming,
+      localAgentUrl,
+      sendMessageInternal,
+      currentSessionId,
+    ],
   )
 
   // Handle form submit from ChatInput
@@ -7403,7 +7569,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     onModelChange={handleModelChange}
                     isPro={hasAdvancedModelAccess}
                     onUpgradeClick={handleUpgradeClick}
-                    queuedMessages={messageQueue}
+                    queuedMessages={displayedQueue}
                     onRemoveQueuedMessage={handleRemoveQueuedMessage}
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}

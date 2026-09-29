@@ -395,6 +395,9 @@ export type QueuedMessage = {
   content: string;
   files?: FileAttachment[];
   selectedModel?: string;
+  references?: ChatReference[];
+  status?: string;
+  error?: string;
   /** True when queued because a send failed on a network error, rather than
    * because it was typed while a turn was streaming. Rendered with a
    * distinct "waiting for connection" style so it's obvious nothing was

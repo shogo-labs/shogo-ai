@@ -17,6 +17,7 @@
     "ChatSession",
     "ChatSessionProject",
     "ChatMessage",
+    "ChatQueuedMessage",
     "ToolCallLog",
     "FeatureSession",
     "WorkspaceGrant"

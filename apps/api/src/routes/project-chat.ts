@@ -43,6 +43,8 @@ import {
   markTurnStarted,
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
+import { dispatchNext } from "../services/chat-queue-dispatcher.service"
+import { countLineChanges } from "../lib/tool-line-stats"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -915,15 +917,25 @@ export async function trackUsageFromStream(
 
       if (session) {
         await prisma.toolCallLog.createMany({
-          data: [...toolCallMap.values()].map((tc) => ({
-            chatSessionId,
-            messageId: assistantMessageId || '',
-            toolName: tc.toolName,
-            args: tc.args != null ? JSON.stringify(tc.args) : undefined,
-            result: tc.result != null ? JSON.stringify(tc.result) : undefined,
-            duration: tc.duration,
-            status: tc.error ? ('error' as const) : ('complete' as const),
-          })),
+          data: [...toolCallMap.values()].map((tc) => {
+            const status = tc.error ? ('error' as const) : ('complete' as const)
+            const lineChanges = status === 'complete'
+              ? countLineChanges(tc.toolName, tc.args, tc.result)
+              : { linesAdded: 0, linesRemoved: 0 }
+            return {
+              chatSessionId,
+              messageId: assistantMessageId || '',
+              toolName: tc.toolName,
+              args: tc.args != null ? JSON.stringify(tc.args) : undefined,
+              result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+              duration: tc.duration,
+              status,
+              userId: options.userId && options.userId !== 'system'
+                ? options.userId
+                : undefined,
+              ...lineChanges,
+            }
+          }),
         })
         console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
       }
@@ -1712,11 +1724,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             console.error("[ProjectChat] Usage tracking error:", err)
           ).finally(() => {
             stopTurnHeartbeat?.()
-            if (turnId) {
-              markTurnEnded(incomingChatSessionId, turnId).catch((error) =>
-                console.warn(`[ProjectChat] Failed to clear active chat ${incomingChatSessionId}:`, error),
+            const ended = turnId
+              ? markTurnEnded(incomingChatSessionId, turnId)
+              : Promise.resolve()
+            void ended
+              .then(() => dispatchNext(incomingChatSessionId))
+              .catch((error) =>
+                console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
               )
-            }
           })
 
           chatSpan.setAttribute("chat.status", response.status)
@@ -1886,11 +1901,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           closeSession(projectId, { chatSessionId: incomingChatSessionId }).catch((err: any) =>
             console.error(`[ProjectChat] Failed to close orphaned billing session for ${projectId}:`, err)
           )
-          if (activityTurnId) {
-            markTurnEnded(incomingChatSessionId, activityTurnId).catch((error) =>
-              console.warn(`[ProjectChat] Failed to clear abandoned active chat ${incomingChatSessionId}:`, error),
+          const ended = activityTurnId
+            ? markTurnEnded(incomingChatSessionId, activityTurnId)
+            : Promise.resolve()
+          void ended
+            .then(() => dispatchNext(incomingChatSessionId))
+            .catch((error) =>
+              console.warn(`[ProjectChat] Failed to finish queued chat ${incomingChatSessionId}:`, error),
             )
-          }
         }
       }
     } catch (error: any) {

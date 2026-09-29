@@ -24,6 +24,12 @@ import { createWorkspaceGrantRoutes, setPrisma as setPrismaWorkspaceGrant } from
 import { createChatSessionRoutes, setPrisma as setPrismaChatSession } from './chat-session.routes'
 import { createChatSessionProjectRoutes, setPrisma as setPrismaChatSessionProject } from './chat-session-project.routes'
 import { createChatMessageRoutes, setPrisma as setPrismaChatMessage } from './chat-message.routes'
+import {
+  createChatQueuedMessageRoutes,
+  setPrisma as setPrismaChatQueuedMessage,
+  setChatQueuedMessageHooks,
+} from './chat-queued-message.routes'
+import { chatQueuedMessageHooks } from './chat-queued-message.hooks'
 import { createToolCallLogRoutes, setPrisma as setPrismaToolCallLog } from './tool-call-log.routes'
 import { createFeatureSessionRoutes, setPrisma as setPrismaFeatureSession } from './feature-session.routes'
 
@@ -55,6 +61,8 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   setPrismaChatSession(prisma)
   setPrismaChatSessionProject(prisma)
   setPrismaChatMessage(prisma)
+  setPrismaChatQueuedMessage(prisma)
+  setChatQueuedMessageHooks(chatQueuedMessageHooks)
   setPrismaToolCallLog(prisma)
   setPrismaFeatureSession(prisma)
 
@@ -76,6 +84,7 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   router.route('/chat-sessions', createChatSessionRoutes())
   router.route('/chat-session-projects', createChatSessionProjectRoutes())
   router.route('/chat-messages', createChatMessageRoutes())
+  router.route('/chat-queued-messages', createChatQueuedMessageRoutes())
   router.route('/tool-call-logs', createToolCallLogRoutes())
   router.route('/feature-sessions', createFeatureSessionRoutes())
   return router

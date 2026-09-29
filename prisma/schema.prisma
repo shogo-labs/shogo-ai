@@ -1404,6 +1404,7 @@ model ChatSession {
   workspace        Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   attachedProjects ChatSessionProject[]
   messages         ChatMessage[]
+  queuedMessages   ChatQueuedMessage[]
   toolCallLogs     ToolCallLog[]
   agentTasks       AgentTask[]
   plans            Plan[]
@@ -1503,6 +1504,28 @@ model ChatMessage {
   @@map("chat_messages")
 }
 
+/// A prompt submitted while another turn is active. Queue rows are durable so
+/// the API can dispatch them after the client disconnects or restarts.
+model ChatQueuedMessage {
+  id            String      @id @default(uuid())
+  sessionId     String
+  userId        String
+  position      Int         @default(0)
+  status        String      @default("pending")
+  content       String      @db.Text
+  parts         String?     @db.Text
+  body          String      @db.Text
+  error         String?     @db.Text
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @default(now()) @updatedAt
+
+  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status, position])
+  @@index([sessionId, createdAt])
+  @@map("chat_queued_messages")
+}
+
 /// A user's thumbs up/down reaction to one assistant `ChatMessage` (one
 /// completed turn). Powers the footer feedback buttons under each
 /// assistant turn in the mobile/web chat UI. One row per (messageId,
@@ -1539,6 +1562,9 @@ model ToolCallLog {
   args          Json?
   result        Json?
   duration      Int?
+  userId        String?
+  linesAdded    Int            @default(0)
+  linesRemoved  Int            @default(0)
   createdAt     DateTime       @default(now())
 
   // Relations
@@ -1546,6 +1572,7 @@ model ToolCallLog {
 
   @@index([chatSessionId])
   @@index([messageId])
+  @@index([userId, createdAt])
   @@map("tool_call_logs")
 }
 
