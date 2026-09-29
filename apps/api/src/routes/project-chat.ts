@@ -43,6 +43,7 @@ import {
   startTurnHeartbeat,
 } from "../services/chat-turn-state.service"
 import { dispatchNext } from "../services/chat-queue-dispatcher.service"
+import { countLineChanges } from "../lib/tool-line-stats"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -915,15 +916,25 @@ export async function trackUsageFromStream(
 
       if (session) {
         await prisma.toolCallLog.createMany({
-          data: [...toolCallMap.values()].map((tc) => ({
-            chatSessionId,
-            messageId: assistantMessageId || '',
-            toolName: tc.toolName,
-            args: tc.args != null ? JSON.stringify(tc.args) : undefined,
-            result: tc.result != null ? JSON.stringify(tc.result) : undefined,
-            duration: tc.duration,
-            status: tc.error ? ('error' as const) : ('complete' as const),
-          })),
+          data: [...toolCallMap.values()].map((tc) => {
+            const status = tc.error ? ('error' as const) : ('complete' as const)
+            const lineChanges = status === 'complete'
+              ? countLineChanges(tc.toolName, tc.args, tc.result)
+              : { linesAdded: 0, linesRemoved: 0 }
+            return {
+              chatSessionId,
+              messageId: assistantMessageId || '',
+              toolName: tc.toolName,
+              args: tc.args != null ? JSON.stringify(tc.args) : undefined,
+              result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+              duration: tc.duration,
+              status,
+              userId: options.userId && options.userId !== 'system'
+                ? options.userId
+                : undefined,
+              ...lineChanges,
+            }
+          }),
         })
         console.log(`[ProjectChat] 🔧 Logged ${toolCallMap.size} tool calls for session ${chatSessionId}`)
       }

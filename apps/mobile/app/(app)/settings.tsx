@@ -84,6 +84,8 @@ import {
   API_URL,
   isInvitationExpired,
   type WorkspaceChildrenResponse,
+  type MemberInsight,
+  type MemberInsightsData,
 } from "../../lib/api";
 import { useBillingData } from "@shogo/shared-app/hooks";
 import {
@@ -124,6 +126,7 @@ import { UsageLeaderboard } from "../../components/analytics/UsageLeaderboard";
 import { BillingProgressCard } from "../../components/billing/BillingProgressCard";
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
 import { CostAnalyticsTab } from "../../components/analytics/CostAnalyticsTab";
+import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
 import { useVisibleModels } from "../../lib/visible-models";
 import {
   isNativePhoneIntegrationsLayout,
@@ -1471,13 +1474,27 @@ const ROLE_COLORS: Record<string, string> = {
   viewer: "bg-slate-400",
 };
 
-type SortField = "name" | "role" | "included" | "free" | "onDemand";
+type SortField =
+  | "name"
+  | "role"
+  | "included"
+  | "free"
+  | "onDemand"
+  | "plans"
+  | "lines"
+  | "tokens"
+  | "model";
 type SortDir = "asc" | "desc";
+type MemberUsagePeriod = "7d" | "30d" | "90d";
 
 function formatUsdLabel(value: number): string {
   if (value === 0) return "$0.00";
   if (value < 0.01) return "<$0.01";
   return `$${value.toFixed(2)}`;
+}
+
+function formatCountLabel(value: number): string {
+  return new Intl.NumberFormat().format(Math.round(value));
 }
 
 /** Renders a member's included usage as their share of the team total (no dollar pool). */
@@ -1535,6 +1552,16 @@ const PeopleTab = observer(function PeopleTab() {
     free: Record<string, number>;
     onDemand: Record<string, number>;
   }>({ monthly: {}, total: {}, included: {}, free: {}, onDemand: {} });
+  const [memberUsagePeriod, setMemberUsagePeriod] =
+    useState<MemberUsagePeriod>("30d");
+  const [memberInsights, setMemberInsights] = useState<MemberInsightsData>({
+    rows: [],
+    total: 0,
+  });
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [selectedMemberInsight, setSelectedMemberInsight] =
+    useState<MemberInsight | null>(null);
+  const [isLoadingMemberInsight, setIsLoadingMemberInsight] = useState(false);
 
   const loadPeopleData = useCallback(async () => {
     if (!currentWorkspace?.id) {
@@ -1575,6 +1602,15 @@ const PeopleTab = observer(function PeopleTab() {
           setMemberUsage(usage);
         } catch {}
 
+        try {
+          const insights = await api.getMemberInsights(http, ws.id, {
+            period: memberUsagePeriod,
+          });
+          setMemberInsights(insights);
+        } catch {
+          setMemberInsights({ rows: [], total: 0 });
+        }
+
         if (user?.email) {
           try {
             const rawPending = await api.getReceivedInvitations(
@@ -1594,6 +1630,7 @@ const PeopleTab = observer(function PeopleTab() {
     http,
     currentWorkspace?.id,
     user?.email,
+    memberUsagePeriod,
   ]);
 
   useEffect(() => {
@@ -1627,6 +1664,10 @@ const PeopleTab = observer(function PeopleTab() {
     }
     return Array.from(byUser.values());
   }, [currentWorkspace?.id, members.all]);
+  const memberInsightMap = useMemo(
+    () => new Map(memberInsights.rows.map((row) => [row.userId, row])),
+    [memberInsights.rows]
+  );
   const allInvitations = Array.isArray(invitations.all) ? invitations.all : [];
   const sentInvitations = currentWorkspace?.id
     ? allInvitations.filter(
@@ -1668,10 +1709,35 @@ const PeopleTab = observer(function PeopleTab() {
         cmp =
           (memberUsage.onDemand[a.userId] ?? 0) -
           (memberUsage.onDemand[b.userId] ?? 0);
+      else if (sortField === "plans")
+        cmp =
+          (memberInsightMap.get(a.userId)?.plansCreated ?? 0) -
+          (memberInsightMap.get(b.userId)?.plansCreated ?? 0);
+      else if (sortField === "lines")
+        cmp =
+          (memberInsightMap.get(a.userId)?.linesAdded ?? 0) -
+          (memberInsightMap.get(b.userId)?.linesAdded ?? 0);
+      else if (sortField === "tokens")
+        cmp =
+          (memberInsightMap.get(a.userId)?.totalTokens ?? 0) -
+          (memberInsightMap.get(b.userId)?.totalTokens ?? 0);
+      else if (sortField === "model") {
+        const aModel = memberInsightMap.get(a.userId)?.models[0]?.model ?? "";
+        const bModel = memberInsightMap.get(b.userId)?.models[0]?.model ?? "";
+        cmp = aModel.localeCompare(bModel);
+      }
       return sortDir === "desc" ? -cmp : cmp;
     });
     return result;
-  }, [workspaceMembers, search, roleFilter, sortField, sortDir, memberUsage]);
+  }, [
+    workspaceMembers,
+    search,
+    roleFilter,
+    sortField,
+    sortDir,
+    memberUsage,
+    memberInsightMap,
+  ]);
 
   const includedTotalAll = useMemo(
     () =>
@@ -1694,6 +1760,48 @@ const PeopleTab = observer(function PeopleTab() {
   const canManageMembers =
     currentUserMembership?.role === "owner" ||
     currentUserMembership?.role === "admin";
+
+  const handleOpenMemberUsage = useCallback(
+    async (memberUserId: string) => {
+      setSelectedMemberId(memberUserId);
+      setSelectedMemberInsight(memberInsightMap.get(memberUserId) ?? null);
+      if (!http || !currentWorkspace?.id) return;
+
+      setIsLoadingMemberInsight(true);
+      try {
+        const data = await api.getMemberInsights(http, currentWorkspace.id, {
+          period: memberUsagePeriod,
+          userId: memberUserId,
+        });
+        setSelectedMemberInsight(data.rows[0] ?? null);
+      } catch {
+        // Keep the summary row visible if the detail request fails.
+      } finally {
+        setIsLoadingMemberInsight(false);
+      }
+    },
+    [http, currentWorkspace?.id, memberUsagePeriod, memberInsightMap]
+  );
+
+  const handleMemberUsagePeriodChange = useCallback(
+    async (period: MemberUsagePeriod) => {
+      setMemberUsagePeriod(period);
+      if (!selectedMemberId || !http || !currentWorkspace?.id) return;
+      setIsLoadingMemberInsight(true);
+      try {
+        const data = await api.getMemberInsights(http, currentWorkspace.id, {
+          period,
+          userId: selectedMemberId,
+        });
+        setSelectedMemberInsight(data.rows[0] ?? null);
+      } catch {
+        // Keep the current detail view if the refresh fails.
+      } finally {
+        setIsLoadingMemberInsight(false);
+      }
+    },
+    [http, currentWorkspace?.id, selectedMemberId]
+  );
 
   const handleChangeRole = async (
     memberId: string,
@@ -1799,6 +1907,7 @@ const PeopleTab = observer(function PeopleTab() {
   const peopleMetricsRow = "flex-row items-center gap-x-5 shrink-0";
   const colRole = "w-[104px]";
   const colUsage = "w-[120px]";
+  const colInsight = "w-[96px]";
   const colActions = "w-11 items-center justify-center pr-1";
 
   const memberListTable = (
@@ -1850,12 +1959,50 @@ const PeopleTab = observer(function PeopleTab() {
             </Text>
             <SortArrow field="onDemand" />
           </Pressable>
+          <Pressable
+            onPress={() => handleSort("plans")}
+            className={cn("flex-row items-center justify-end", colInsight)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              Plans
+            </Text>
+            <SortArrow field="plans" />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSort("lines")}
+            className={cn("flex-row items-center justify-end", colInsight)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              Lines
+            </Text>
+            <SortArrow field="lines" />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSort("tokens")}
+            className={cn("flex-row items-center justify-end", colInsight)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              Tokens
+            </Text>
+            <SortArrow field="tokens" />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSort("model")}
+            className={cn("flex-row items-center justify-end", colInsight)}
+          >
+            <Text className="text-xs font-medium text-muted-foreground text-right">
+              Top model
+            </Text>
+            <SortArrow field="model" />
+          </Pressable>
           <View className={colActions} />
         </View>
       </View>
 
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
+        const canSeeInsight = canManageMembers || isCurrentUser;
+        const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
         const resolved = userMap[member.userId];
         const mName = isCurrentUser
@@ -1870,7 +2017,16 @@ const PeopleTab = observer(function PeopleTab() {
             key={member.id}
             className="flex-row items-center justify-between gap-4 px-4 py-3 pr-5 border-b border-border overflow-visible"
           >
-            <View className={cn("flex-row items-center gap-3", peopleNameCol)}>
+            <Pressable
+              onPress={
+                canSeeInsight
+                  ? () => void handleOpenMemberUsage(member.userId)
+                  : undefined
+              }
+              accessibilityRole="button"
+              accessibilityLabel={`View usage for ${mName}`}
+              className={cn("flex-row items-center gap-3", peopleNameCol)}
+            >
               <View
                 className={cn(
                   "h-8 w-8 rounded-full items-center justify-center shrink-0",
@@ -1900,7 +2056,7 @@ const PeopleTab = observer(function PeopleTab() {
                   {mEmail}
                 </Text>
               </View>
-            </View>
+            </Pressable>
 
             <View className={peopleMetricsRow}>
               <View className={colRole}>
@@ -1930,22 +2086,59 @@ const PeopleTab = observer(function PeopleTab() {
 
               <View className={cn(colUsage, "items-end")}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatSharePct(
-                    memberUsage.included[member.userId] ?? 0,
-                    includedTotalAll
-                  )}
+                  {canSeeInsight
+                    ? formatSharePct(
+                        memberUsage.included[member.userId] ?? 0,
+                        includedTotalAll
+                      )
+                    : "—"}
                 </Text>
               </View>
 
               <View className={cn(colUsage, "items-end")}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatUsdLabel(memberUsage.free[member.userId] ?? 0)}
+                  {canSeeInsight
+                    ? formatUsdLabel(memberUsage.free[member.userId] ?? 0)
+                    : "—"}
                 </Text>
               </View>
 
               <View className={cn(colUsage, "items-end")}>
                 <Text className="text-sm text-foreground text-right tabular-nums">
-                  {formatUsdLabel(memberUsage.onDemand[member.userId] ?? 0)}
+                  {canSeeInsight
+                    ? formatUsdLabel(memberUsage.onDemand[member.userId] ?? 0)
+                    : "—"}
+                </Text>
+              </View>
+
+              <View className={cn(colInsight, "items-end")}>
+                <Text className="text-sm text-foreground text-right tabular-nums">
+                  {canSeeInsight ? formatCountLabel(insight?.plansCreated ?? 0) : "—"}
+                </Text>
+              </View>
+
+              <View className={cn(colInsight, "items-end")}>
+                <Text className="text-sm text-foreground text-right tabular-nums">
+                  {canSeeInsight
+                    ? `+${formatCountLabel(insight?.linesAdded ?? 0)}`
+                    : "—"}
+                </Text>
+              </View>
+
+              <View className={cn(colInsight, "items-end")}>
+                <Text className="text-sm text-foreground text-right tabular-nums">
+                  {canSeeInsight
+                    ? formatCountLabel(insight?.totalTokens ?? 0)
+                    : "—"}
+                </Text>
+              </View>
+
+              <View className={cn(colInsight, "items-end")}>
+                <Text
+                  className="text-sm text-foreground text-right"
+                  numberOfLines={1}
+                >
+                  {canSeeInsight ? insight?.models[0]?.model || "—" : "—"}
                 </Text>
               </View>
 
@@ -2240,6 +2433,21 @@ const PeopleTab = observer(function PeopleTab() {
               </Text>
               <ChevronDown size={14} className="text-muted-foreground" />
             </Pressable>
+
+            <View className="flex-row items-center gap-1 rounded-lg border border-border p-1">
+              {(["7d", "30d", "90d"] as MemberUsagePeriod[]).map((period) => (
+                <Pressable
+                  key={period}
+                  onPress={() => setMemberUsagePeriod(period)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1.5",
+                    memberUsagePeriod === period && "bg-muted"
+                  )}
+                >
+                  <Text className="text-xs text-foreground">{period}</Text>
+                </Pressable>
+              ))}
+            </View>
           </>
         )}
 
@@ -2717,6 +2925,19 @@ const PeopleTab = observer(function PeopleTab() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <MemberUsageDetail
+        visible={selectedMemberId !== null}
+        member={selectedMemberInsight}
+        loading={isLoadingMemberInsight}
+        period={memberUsagePeriod}
+        onPeriodChange={handleMemberUsagePeriodChange}
+        onClose={() => {
+          setSelectedMemberId(null);
+          setSelectedMemberInsight(null);
+          setIsLoadingMemberInsight(false);
+        }}
+      />
     </View>
   );
 });
