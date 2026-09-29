@@ -23,6 +23,8 @@ import { defineConfig, devices } from "@playwright/test"
  * a throwaway SQLite DB, the local-mode API on :8002 and Expo web on :8081.
  */
 const startStack = process.env.E2E_LOCAL_START_STACK === "1"
+// Some specs default to a developer's API port; point them at the stack's.
+if (startStack) process.env.E2E_API_URL = "http://localhost:8002"
 const repoRoot = resolve(__dirname, "../..")
 const localDbPath = resolve(repoRoot, "test-results/e2e-local.db")
 const localEnv = {
@@ -58,7 +60,9 @@ export default defineConfig({
             stdout: "pipe",
           },
           {
-            command: "bun run web:dev",
+            // --clear: Metro caches inlined EXPO_PUBLIC_* values, which would
+            // otherwise keep pointing at a developer's .env.local API port.
+            command: "bun run --cwd apps/mobile dev:web -- --clear",
             cwd: repoRoot,
             env: localEnv,
             url: "http://localhost:8081",
@@ -68,6 +72,7 @@ export default defineConfig({
         ],
       }
     : {}),
+  globalSetup: resolve(__dirname, "global-setup.ts"),
   testDir: __dirname,
   testMatch: /.*\.test\.ts$/,
   fullyParallel: false,

@@ -45,6 +45,7 @@ import {
 } from "../services/chat-turn-state.service"
 import { dispatchNext } from "../services/chat-queue-dispatcher.service"
 import { countLineChanges } from "../lib/tool-line-stats"
+import { importCloudModule } from "../lib/cloud-import"
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1793,9 +1794,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
               `[ProjectChat] Metal upstream timeout for ${projectId} against ${podUrl} — invalidating cached URL`,
             )
             try {
-              const { getMetalWarmPoolController, workspaceRuntimeKey } = await import(
-                '../lib/metal-warm-pool-controller'
-              )
+              const { getMetalWarmPoolController, workspaceRuntimeKey } =
+                await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>(
+                  './metal-warm-pool-controller',
+                )
               getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
             } catch (err: any) {
               console.error(`[ProjectChat] failed to invalidate metal placement:`, err?.message ?? err)
@@ -2195,7 +2197,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // happens on the chat call (fast), same contract as the warm pool.
       const { isMetalAllProjects } = await import('../lib/metal-eligibility')
       if (process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalAllProjects()) {
-        const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
+        const { getMetalWarmPoolController } =
+          await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>(
+            './metal-warm-pool-controller',
+          )
         const liveHosts = await getMetalWarmPoolController().liveHostCount()
         return c.json({
           mode: "metal",

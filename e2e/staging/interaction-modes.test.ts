@@ -93,19 +93,19 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
     await waitForAgentResponse(page, 180_000)
 
     // A plan card should appear with Cursor-like Build and plan-file actions
-    await expect(page.getByText("Build")).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText("View Full Plan")).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByRole("button", { name: "Build plan" })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByRole("button", { name: "View plan in Plans" })).toBeVisible({ timeout: 30_000 })
   })
 
   test("plan card opens saved plan artifact", async () => {
-    await page.getByText("View Full Plan").click()
+    await page.getByRole("button", { name: "View plan in Plans" }).click()
     await expect(page.getByText("Plans")).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText(/^Build$/)).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText(/hello\.txt|Hello World/i).first()).toBeVisible({ timeout: 15_000 })
   })
 
   test("Build triggers agent execution in Agent mode", async () => {
-    await page.getByText(/^Build$/).click()
+    await page.getByRole("button", { name: "Build plan" }).first().click()
 
     // The interaction mode should switch back to Agent
     const trigger = page.locator('[data-testid="interaction-mode-trigger"]')

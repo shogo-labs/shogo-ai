@@ -1,0 +1,30 @@
+# Native smoke: the release build boots, lays out and takes input on a real
+# simulator/emulator. Covers what the web RTL suite cannot (it forces
+# Platform.OS === 'web'): native layout, keyboard, blur backdrop, auth sheet.
+#
+#   maestro test -e APP_ID=ai.shogo.app apps/mobile/.maestro/smoke.yaml
+#
+# EMAIL/PASSWORD are optional; when set, the flow also signs in and checks
+# the home composer accepts input.
+appId: ${APP_ID}
+name: native-smoke
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Log in or sign up with email"
+    timeout: 120000
+- takeScreenshot: ${SHOT_PREFIX || 'smoke'}-01-landing
+- tapOn: "Log in or sign up with email"
+- extendedWaitUntil:
+    visible: "Enter your password"
+    timeout: 15000
+- tapOn: "Sign up"
+- assertVisible: "Create a password \\(min 8 chars\\)"
+- takeScreenshot: ${SHOT_PREFIX || 'smoke'}-02-sign-up
+- tapOn: "Log in"
+- assertVisible: "Enter your password"
+- runFlow:
+    when:
+      true: ${!!(EMAIL && PASSWORD)}
+    file: sign-in.yaml

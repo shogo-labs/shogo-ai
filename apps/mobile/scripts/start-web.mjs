@@ -80,10 +80,11 @@ const localExpoCli = resolve(mobileRoot, 'node_modules/expo/bin/cli')
 
 try {
   await run(process.execPath, ['scripts/copy-monaco-vs.mjs'])
+  const extraArgs = process.argv.slice(2)
   if (existsSync(localExpoCli)) {
-    await run(process.execPath, [localExpoCli, 'start', '--web'])
+    await run(process.execPath, [localExpoCli, 'start', '--web', ...extraArgs])
   } else {
-    await run('npx', ['expo', 'start', '--web'], { shell: process.platform === 'win32' })
+    await run('npx', ['expo', 'start', '--web', ...extraArgs], { shell: process.platform === 'win32' })
   }
 } catch (err) {
   console.error('[start-web]', err?.message ?? err)

@@ -21,6 +21,7 @@ import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
 import {
   registerMetalHost,
   getMetalWarmPoolController,
+  workspaceRuntimeKey,
   type MetalHostRegistration,
 } from '../lib/metal-warm-pool-controller'
 
@@ -200,6 +201,52 @@ export function metalRoutes(): Hono {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
     return c.json({ ok: true, ...(await getMetalWarmPoolController().getFleetStatus()) })
+  })
+
+  return app
+}
+
+/** Cloud-only hosted E2E fault injection, mounted under /api/internal/e2e. */
+export function metalE2eRoutes(): Hono {
+  const app = new Hono()
+
+  app.post('/runtime-fault', async (c) => {
+    const prod = process.env.NODE_ENV === 'production'
+    const enabled = !prod || process.env.SHOGO_E2E_BOOTSTRAP_ENABLED === '1'
+    if (!enabled) {
+      return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+    }
+    const expected = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+    if (!expected || c.req.header('x-e2e-bootstrap-secret') !== expected) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+
+    let body: { projectId?: string; action?: string }
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ ok: false, error: 'invalid_json' }, 400)
+    }
+    const projectId = body.projectId?.trim()
+    if (!projectId) return c.json({ ok: false, error: 'projectId_required' }, 400)
+    if (body.action !== 'crash' && body.action !== 'drop-snapshot') {
+      return c.json({ ok: false, error: 'action must be crash or drop-snapshot' }, 400)
+    }
+
+    try {
+      const result = await getMetalWarmPoolController().injectE2eFault(
+        workspaceRuntimeKey('', projectId),
+        body.action,
+      )
+      console.info(
+        '[e2e-bootstrap] runtime fault',
+        JSON.stringify({ projectId, action: body.action, status: result.status }),
+      )
+      return c.json(result.body as Record<string, unknown>, result.status as 200)
+    } catch (err: any) {
+      console.error('[e2e-bootstrap] runtime-fault failed', err)
+      return c.json({ ok: false, error: 'fault_failed', message: err?.message ?? 'unknown' }, 500)
+    }
   })
 
   return app

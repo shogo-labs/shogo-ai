@@ -14,8 +14,16 @@ import { MODEL_CATALOG, MODEL_DOLLAR_COSTS } from '../../packages/agent/src/mode
 type Row = Record<string, any> & { provider: string; apiModel: string }
 const seeded: Row[] = []
 
-/** Current native models deliberately left out of the seed. */
-const NOT_SEEDED: Record<string, string> = {}
+/** Current native models left out of the seed, and why. */
+const NOT_SEEDED: Record<string, string> = {
+  'gpt-audio': "billed on a placeholder 'opus' bucket until audio tokens get their own; not shipped broadly",
+  'claude-haiku-4-5-20251001':
+    'basic-mode / channel / router-economy default, resolved from the static catalog; ' +
+    'not user-selectable on DB-defined deployments — seed it if it should be',
+}
+
+const catalogEntry = (row: Row) =>
+  catalog.find((m) => m.provider === row.provider && m.apiModel === row.apiModel)
 
 beforeAll(async () => {
   const table = (rows: Row[]) => ({
@@ -60,26 +68,36 @@ describe('seed-db-models vs MODEL_CATALOG / MODEL_DOLLAR_COSTS', () => {
     expect(missing).toEqual([])
   })
 
-  it('every seeded native model exists in the catalog with the same provider, generation and tier', () => {
+  it('excused models are still current catalog models (drop stale excuses)', () => {
+    for (const id of Object.keys(NOT_SEEDED)) {
+      expect({ id, current: (MODEL_CATALOG as Record<string, any>)[id]?.generation === 'current' }).toEqual({ id, current: true })
+    }
+  })
+
+  it('a seeded native model matches its catalog entry, or is a legacy row outside the catalog', () => {
     for (const row of seeded.filter((r) => NATIVE.has(r.provider))) {
-      const entry = catalog.find((m) => m.provider === row.provider && m.apiModel === row.apiModel)
-      expect({ apiModel: row.apiModel, inCatalog: !!entry }).toEqual({ apiModel: row.apiModel, inCatalog: true })
+      const entry = catalogEntry(row)
+      if (!entry) {
+        expect({ apiModel: row.apiModel, generation: row.generation }).toEqual({ apiModel: row.apiModel, generation: 'legacy' })
+        continue
+      }
       expect({ apiModel: row.apiModel, generation: row.generation, tier: row.tier }).toEqual({
         apiModel: row.apiModel,
-        generation: entry!.generation,
-        tier: entry!.tier,
+        generation: entry.generation,
+        tier: entry.tier,
       })
     }
   })
 
-  it('seeded token prices match MODEL_DOLLAR_COSTS for the catalog billing model', () => {
+  it('seeded token prices match MODEL_DOLLAR_COSTS for the billing bucket', () => {
     const fields = ['inputPerMillion', 'cachedInputPerMillion', 'cacheWritePerMillion', 'outputPerMillion'] as const
     for (const row of seeded.filter((r) => NATIVE.has(r.provider) && r.kind !== 'live')) {
-      const entry = catalog.find((m) => m.provider === row.provider && m.apiModel === row.apiModel)!
-      const costs = (MODEL_DOLLAR_COSTS as Record<string, Record<string, number>>)[entry.billingModel]
-      expect({ apiModel: row.apiModel, billingModel: entry.billingModel, hasCosts: !!costs }).toEqual({
+      // Rows outside the catalog bill through their family bucket.
+      const billingModel = catalogEntry(row)?.billingModel ?? row.family
+      const costs = (MODEL_DOLLAR_COSTS as Record<string, Record<string, number>>)[billingModel]
+      expect({ apiModel: row.apiModel, billingModel, hasCosts: !!costs }).toEqual({
         apiModel: row.apiModel,
-        billingModel: entry.billingModel,
+        billingModel,
         hasCosts: true,
       })
       const got = Object.fromEntries(fields.map((f) => [f, row[f]]))

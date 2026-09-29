@@ -39,6 +39,7 @@ import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
+import { importCloudModule } from '../cloud-import'
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
@@ -363,10 +364,13 @@ export async function buildWorkspaceEnv(
   // rewriter (keyed off PUBLIC_PREVIEW_URL) stays disabled — so the agent hands
   // cloud users a link they cannot open. Desktop leaves both unset because
   // there localhost IS the URL the user opens.
-  if (ns && opts.anchorProjectId) {
+  if (ns && opts.anchorProjectId && process.env.SHOGO_LOCAL_MODE !== 'true') {
     try {
       const getPreviewUrl =
-        opts._getPreviewUrl ?? (await import('../knative-project-manager')).getPreviewUrl
+        opts._getPreviewUrl ??
+        (await importCloudModule<typeof import('../knative-project-manager')>(
+          './knative-project-manager',
+        )).getPreviewUrl
       const anchorUrl = getPreviewUrl(opts.anchorProjectId).replace(/\/+$/, '')
       env.PUBLIC_PREVIEW_URL = anchorUrl
       const memberIds = [opts.anchorProjectId, ...attachedProjectIds].filter(
