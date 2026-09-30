@@ -1,0 +1,29 @@
+diff --git a/src/winter/fetch/FetchResponse.ts b/src/winter/fetch/FetchResponse.ts
+index 647d80344a5ca372fb5504f0ca5f7cddfa6d7c04..fd4b1317bbdb9c734b2b7d60f14f2042066f61c6 100644
+--- a/src/winter/fetch/FetchResponse.ts
++++ b/src/winter/fetch/FetchResponse.ts
+@@ -42,13 +42,22 @@ export class FetchResponse extends ConcreteNativeResponse implements Response {
+           });
+ 
+           response.addListener('didComplete', () => {
+-            controller.close();
++            if (isControllerClosed) {
++              return;
++            }
++            // Native transports can report a terminal failure immediately
++            // before their completion callback. A ReadableStream cannot be
++            // closed after it has errored or been cancelled.
+             isControllerClosed = true;
++            controller.close();
+           });
+ 
+           response.addListener('didFailWithError', (error: string) => {
+-            controller.error(new Error(error));
++            if (isControllerClosed) {
++              return;
++            }
+             isControllerClosed = true;
++            controller.error(new Error(error));
+           });
+         },
+         async pull(controller) {
