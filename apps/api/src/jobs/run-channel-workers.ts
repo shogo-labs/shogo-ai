@@ -8,9 +8,12 @@
 import { withGlobalJobLock } from '../lib/global-job-lock'
 import { runDigestPass } from '../services/chat-digest'
 import { fireDueReminders, sendDueScheduledMessages } from '../services/chat-items'
+import { embeddingProvider, indexPendingMessages } from '../services/conversation-semantic'
 
 const DIGEST_INTERVAL_MS = 10 * 60 * 1000
 const SCHEDULER_INTERVAL_MS = 15_000
+const INDEXER_INTERVAL_MS = 60_000
+const INDEXER_MAX_BATCHES = 5
 
 export async function runChannelEmailDigest(): Promise<void> {
   await withGlobalJobLock('channels-email-digest', async () => {
@@ -22,6 +25,15 @@ export async function runChannelScheduler(): Promise<void> {
   await withGlobalJobLock('channels-scheduler', async () => {
     await sendDueScheduledMessages()
     await fireDueReminders()
+  })
+}
+
+export async function runChannelIndexer(): Promise<void> {
+  if (!embeddingProvider()) return
+  await withGlobalJobLock('channels-indexer', async () => {
+    for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
+      if (!(await indexPendingMessages())) break
+    }
   })
 }
 
@@ -40,6 +52,7 @@ export function startChannelWorkers(): () => void {
   if (timers.length) return stopChannelWorkers
   every(DIGEST_INTERVAL_MS, 'Email digest', runChannelEmailDigest)
   every(SCHEDULER_INTERVAL_MS, 'Scheduler', runChannelScheduler)
+  every(INDEXER_INTERVAL_MS, 'Search indexer', runChannelIndexer)
   return stopChannelWorkers
 }
 

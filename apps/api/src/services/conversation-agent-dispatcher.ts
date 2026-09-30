@@ -19,6 +19,7 @@ import {
   mentionedAgents,
   renderMentionsAsText,
   type AgentTarget,
+  type MentionNames,
 } from './conversation-mentions'
 import {
   agentDisplayName,
@@ -195,21 +196,26 @@ async function createSession(conversation: any, target: AgentTarget, label: stri
  * Plain-text transcript for a prompt. Rows need `authorUser` ({name,email})
  * included; mention tokens are rendered as names.
  */
-export async function renderTranscript(workspaceId: string, history: any[], markMessageId?: string): Promise<string> {
-  const ids = collectMentionIds(history.map((m) => m.text))
+/** Display names for every mention token in `texts`. */
+export async function loadMentionNames(workspaceId: string, texts: string[]): Promise<MentionNames> {
+  const ids = collectMentionIds(texts)
   const [users, projects, conversations, workspaceAgentName] = await Promise.all([
     ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
     ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
     ids.conversationIds.length ? db.conversation.findMany({ where: { id: { in: ids.conversationIds } }, select: { id: true, name: true } }) : [],
     agentName(workspaceId, { projectId: null }),
   ])
-  const names = {
+  return {
     users: new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email])),
     projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
     conversations: new Map<string, string>(conversations.map((c: any) => [c.id, c.name ?? 'channel'])),
     groups: await groupNames(db, workspaceId, ids.groupIds),
     workspaceAgentName,
   }
+}
+
+export async function renderTranscript(workspaceId: string, history: any[], markMessageId?: string): Promise<string> {
+  const names = await loadMentionNames(workspaceId, history.map((m) => m.text))
   const author = (m: any) =>
     m.authorType === 'user' ? (m.authorUser?.name || m.authorUser?.email || 'Someone')
       : m.authorType === 'agent' ? `${m.authorAgentRef?.name ?? 'Agent'} (agent)`

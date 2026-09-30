@@ -68,6 +68,10 @@ describe('parseSearchQuery', () => {
       inChannels: ['launch'],
       inPeople: [],
       from: ['ada'],
+      has: [],
+      before: null,
+      after: null,
+      on: null,
     })
     expect(search.parseSearchQuery('in:@ada from:me').inPeople).toEqual(['ada'])
   })

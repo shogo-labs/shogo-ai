@@ -906,6 +906,7 @@ export async function editMessage(messageId: string, userId: string, text: strin
       })
     }
   }
+  await db.conversationMessageEmbedding.deleteMany({ where: { messageId } })
   return updateMessageInternal(messageId, { text: next, editedAt: new Date() })
 }
 

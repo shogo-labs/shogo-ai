@@ -100,6 +100,29 @@ export interface SearchResponse {
   }>
   terms: string[]
   hasMore: boolean
+  /** Set for semantic searches: false when the server has no embedding provider. */
+  semantic?: boolean
+}
+
+function localTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
+export interface AskCitation {
+  n: number
+  cited: boolean
+  message: ChatMessage
+  conversation: SearchResponse['results'][number]['conversation']
+}
+
+export interface AskResult {
+  answer: string
+  citations: AskCitation[]
+  semantic: boolean
 }
 
 export interface UserStatus {
@@ -302,10 +325,14 @@ export function teamChatApi() {
     async search(
       workspaceId: string,
       q: string,
-      opts: { offset?: number; sort?: 'relevance' | 'recent' } = {},
+      opts: { offset?: number; sort?: 'relevance' | 'recent'; mode?: 'keyword' | 'semantic' } = {},
     ): Promise<SearchResponse> {
-      const params = new URLSearchParams({ q, offset: String(opts.offset ?? 0), sort: opts.sort ?? 'relevance' })
+      const params = new URLSearchParams({ q, offset: String(opts.offset ?? 0), sort: opts.sort ?? 'relevance', tz: localTimeZone() })
+      if (opts.mode === 'semantic') params.set('mode', 'semantic')
       return (await http.get<SearchResponse>(`${ws(workspaceId)}/conversations/search?${params}`)).data
+    },
+    async ask(workspaceId: string, question: string): Promise<AskResult> {
+      return (await http.post<AskResult>(`${ws(workspaceId)}/conversations/ask`, { question })).data
     },
     async chatSettings(workspaceId: string): Promise<ChatSettings> {
       return (await http.get<{ settings: ChatSettings }>(`${ws(workspaceId)}/chat-settings`)).data.settings

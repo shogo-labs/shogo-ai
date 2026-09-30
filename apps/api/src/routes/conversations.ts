@@ -53,6 +53,8 @@ import { stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
+import { askWorkspace, semanticSearch } from '../services/conversation-semantic'
+import { extractAttachmentText } from '../services/conversation-file-text'
 import { registerConversationNotifications } from '../services/conversation-notifications'
 import { registerConversationUnfurls } from '../services/conversation-unfurl'
 import { listStatuses } from '../services/chat-settings'
@@ -177,11 +179,28 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/conversations/search', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
-    return c.json(await searchMessages(auth.workspaceId, auth.userId, c.req.query('q') ?? '', {
+    const q = c.req.query('q') ?? ''
+    if (c.req.query('mode') === 'semantic') {
+      const { results, available } = await semanticSearch(auth.workspaceId, auth.userId, q, { limit: numberParam(c.req.query('limit')) })
+      return c.json({ results, terms: [], hasMore: false, semantic: available })
+    }
+    return c.json(await searchMessages(auth.workspaceId, auth.userId, q, {
       limit: numberParam(c.req.query('limit')),
       offset: numberParam(c.req.query('offset')),
       sort: c.req.query('sort') === 'recent' ? 'recent' : 'relevance',
+      timezone: c.req.query('tz') ?? null,
     }))
+  })
+
+  router.post('/workspaces/:workspaceId/conversations/ask', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    try {
+      return c.json(await askWorkspace(auth.workspaceId, auth.userId, String(body.question ?? '')))
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.get('/workspaces/:workspaceId/conversations/metrics', async (c) => {
@@ -438,7 +457,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       const name = (file as File).name || 'file'
       const mimeType = file.type || 'application/octet-stream'
       const key = buildConversationFileKey(access.conversation.workspaceId, access.conversation.id, name)
-      await putConversationFile(key, new Uint8Array(await file.arrayBuffer()), mimeType)
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      await putConversationFile(key, bytes, mimeType)
       const width = numberParam(String(form?.get('width') ?? ''))
       const height = numberParam(String(form?.get('height') ?? ''))
       const row = await db.conversationAttachment.create({
@@ -451,6 +471,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           size: file.size,
           width: width ?? null,
           height: height ?? null,
+          extractedText: extractAttachmentText(bytes, mimeType, name),
         },
       })
       return c.json({

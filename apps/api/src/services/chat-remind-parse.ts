@@ -25,7 +25,7 @@ const DEFAULT_HOUR = 9
 
 interface ZonedParts { year: number; month: number; day: number; hour: number; minute: number; weekday: number }
 
-function zoned(date: Date, timezone: string): ZonedParts {
+export function zoned(date: Date, timezone: string): ZonedParts {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', weekday: 'long', hourCycle: 'h23',
@@ -39,7 +39,7 @@ function zoned(date: Date, timezone: string): ZonedParts {
 }
 
 /** The instant when the wall clock in `timezone` reads the given local time. */
-function fromZoned(year: number, month: number, day: number, hour: number, minute: number, timezone: string): Date {
+export function fromZoned(year: number, month: number, day: number, hour: number, minute: number, timezone: string): Date {
   const guess = Date.UTC(year, month - 1, day, hour, minute)
   const p = zoned(new Date(guess), timezone)
   const offset = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - guess
@@ -62,7 +62,7 @@ function parseClock(raw: string): { hour: number; minute: number } | null {
   return { hour, minute }
 }
 
-function safeZone(tz: string | null | undefined): string {
+export function safeZone(tz: string | null | undefined): string {
   if (!tz) return 'UTC'
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: tz })
