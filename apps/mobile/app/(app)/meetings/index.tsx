@@ -246,9 +246,10 @@ export default function MeetingsScreen() {
 
         {isRecording && (
           <View className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/5 p-3">
-            <Text className="mb-2 text-[11px] font-semibold uppercase tracking-[1.2px] text-red-600">
-              Your notes
-            </Text>
+            <View className="mb-2 flex-row items-center justify-between gap-2">
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-red-600">Your notes</Text>
+              <Text className="text-[11px] text-muted-foreground">Let everyone know you're recording</Text>
+            </View>
             <TextInput
               value={notes}
               onChangeText={setNotes}

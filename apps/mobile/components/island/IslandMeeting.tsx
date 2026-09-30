@@ -128,7 +128,7 @@ export function IslandMeetingBanner({
               <Text className="text-[12px] font-semibold text-zinc-50" numberOfLines={1}>
                 {prompt.app} call detected
               </Text>
-              <Text className="text-[10px] text-zinc-400">Record it with Shogo?</Text>
+              <Text className="text-[10px] text-zinc-400">Record it with Shogo? Let others know first.</Text>
             </View>
             <Pressable onPress={() => onDecision("dismiss")} accessibilityLabel="Not now" hitSlop={6}>
               <X size={13} color="#71717a" />
