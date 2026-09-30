@@ -109,6 +109,7 @@ import {
 } from "../../../lib/project-prefs-store";
 import { NavItem } from "./NavItem";
 import { ProjectTreeItem } from "./ProjectTreeItem";
+import { TeamChatSidebarSection } from "../../team-chat/TeamChatSidebarSection";
 import {
   MENU_ITEM_RADIO_ROLE,
   PROJECT_SCOPE_OPTIONS,
@@ -1046,6 +1047,14 @@ export const AppSidebar = observer(function AppSidebar({
             />
           )}
         </View>
+
+        {experience.kind === "team" && activeWorkspaceId && (
+          <TeamChatSidebarSection
+            workspaceId={activeWorkspaceId}
+            collapsed={collapsed}
+            onNavPress={onNavPress}
+          />
+        )}
 
         {/* PROJECTS tree — each project expands to show its chats */}
         {experience.showProjectsTree && (

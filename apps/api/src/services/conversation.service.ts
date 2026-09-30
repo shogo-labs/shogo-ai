@@ -53,11 +53,12 @@ export function canRead(access: Pick<ConversationAccess, 'conversation' | 'membe
   return isOpenKind(access.conversation.kind) || !!access.membership
 }
 
-export function canPost(access: ConversationAccess): boolean {
+/** #activity only takes system posts at the top level; people discuss items in threads. */
+export function canPost(access: ConversationAccess, opts: { threadReply?: boolean } = {}): boolean {
   if (!canRead(access)) return false
   if (access.role === 'viewer') return false
   if (access.conversation.archivedAt) return false
-  return access.conversation.kind !== 'activity'
+  return access.conversation.kind !== 'activity' || !!opts.threadReply
 }
 
 export function canManage(access: ConversationAccess): boolean {
@@ -78,9 +79,13 @@ export async function loadAccess(conversationId: string, userId: string): Promis
   return access
 }
 
-export async function requirePost(conversationId: string, userId: string): Promise<ConversationAccess> {
+export async function requirePost(
+  conversationId: string,
+  userId: string,
+  opts: { threadReply?: boolean } = {},
+): Promise<ConversationAccess> {
   const access = await loadAccess(conversationId, userId)
-  if (!canPost(access)) {
+  if (!canPost(access, opts)) {
     throw new ConversationError(403, 'forbidden', access.conversation.archivedAt
       ? 'This conversation is archived'
       : 'You cannot post in this conversation')
@@ -229,6 +234,18 @@ export async function ensureDefaultConversations(workspaceId: string, creatorUse
   return result
 }
 
+/** Everyone in the workspace is in #general. */
+async function ensureGeneralMembership(general: any, userId: string) {
+  if (!(await getWorkspaceRole(general.workspaceId, userId))) return null
+  try {
+    return await db.conversationMember.create({
+      data: { conversationId: general.id, memberType: 'user', userId, lastReadSeq: general.lastSeq, lastReadAt: new Date() },
+    })
+  } catch {
+    return db.conversationMember.findFirst({ where: { conversationId: general.id, userId } })
+  }
+}
+
 export async function getActivityConversation(workspaceId: string) {
   const [, activity] = await ensureDefaultConversations(workspaceId)
   return activity
@@ -283,7 +300,7 @@ async function uniqueSlug(workspaceId: string, base: string): Promise<string> {
   return `${root}-${crypto.randomUUID().slice(0, 6)}`
 }
 
-async function participantNames(conversationIds: string[], viewerId: string) {
+async function participantNames(workspaceId: string, conversationIds: string[], viewerId: string) {
   if (!conversationIds.length) return new Map<string, any[]>()
   const rows = await db.conversationMember.findMany({
     where: { conversationId: { in: conversationIds } },
@@ -294,12 +311,15 @@ async function participantNames(conversationIds: string[], viewerId: string) {
     ? await db.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, name: true } })
     : []
   const projectNames = new Map<string, string>(projects.map((p: any) => [p.id, p.name]))
+  const workspaceAgentName = rows.some((r: any) => r.memberType === 'agent' && !r.projectId)
+    ? await agentDisplayName(workspaceId, null)
+    : null
   const byConversation = new Map<string, any[]>()
   for (const r of rows) {
     if (r.memberType === 'user' && r.userId === viewerId) continue
     const list = byConversation.get(r.conversationId) ?? []
     list.push(r.memberType === 'agent'
-      ? { type: 'agent', projectId: r.projectId ?? null, name: r.projectId ? projectNames.get(r.projectId) ?? 'Agent' : null }
+      ? { type: 'agent', projectId: r.projectId ?? null, name: r.projectId ? projectNames.get(r.projectId) ?? 'Agent' : workspaceAgentName }
       : { type: 'user', id: r.user?.id ?? r.userId, name: r.user?.name || r.user?.email || 'Unknown', image: r.user?.image ?? null })
     byConversation.set(r.conversationId, list)
   }
@@ -307,10 +327,14 @@ async function participantNames(conversationIds: string[], viewerId: string) {
 }
 
 export async function listConversationsForUser(workspaceId: string, userId: string) {
-  await ensureDefaultConversations(workspaceId)
+  const [general] = await ensureDefaultConversations(workspaceId)
   const memberships = await db.conversationMember.findMany({
     where: { userId, conversation: { workspaceId } },
   })
+  if (general && !memberships.some((m: any) => m.conversationId === general.id)) {
+    const joined = await ensureGeneralMembership(general, userId)
+    if (joined) memberships.push(joined)
+  }
   const membershipByConv = new Map<string, any>(memberships.map((m: any) => [m.conversationId, m]))
   const conversations = await db.conversation.findMany({
     where: {
@@ -324,8 +348,9 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   })
 
   const directIds = conversations.filter((c: any) => c.kind === 'dm' || c.kind === 'group_dm').map((c: any) => c.id)
-  const participants = await participantNames(directIds, userId)
+  const participants = await participantNames(workspaceId, directIds, userId)
   const mentionCounts = await unreadMentionCounts(userId, memberships)
+  const unread = await unreadCounts(userId, conversations, membershipByConv)
 
   return conversations.map((c: any) => {
     const m = membershipByConv.get(c.id)
@@ -335,11 +360,35 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
       muted: !!m?.muted,
       notifyLevel: m?.notifyLevel ?? 'all',
       lastReadSeq: m?.lastReadSeq ?? 0,
-      unreadCount: m ? Math.max(0, c.lastSeq - m.lastReadSeq) : 0,
+      unreadCount: unread.get(c.id) ?? 0,
       mentionCount: mentionCounts.get(c.id) ?? 0,
       participants: participants.get(c.id) ?? undefined,
     })
   })
+}
+
+/** Unread messages in the channel view: thread replies only count when also sent to the channel. */
+async function unreadCounts(userId: string, conversations: any[], membershipByConv: Map<string, any>) {
+  const counts = new Map<string, number>()
+  const behind = conversations.filter((c: any) => {
+    const m = membershipByConv.get(c.id)
+    return m && c.lastSeq > m.lastReadSeq
+  })
+  if (!behind.length) return counts
+  const rows = await db.conversationMessage.groupBy({
+    by: ['conversationId'],
+    where: {
+      OR: behind.map((c: any) => ({ conversationId: c.id, seq: { gt: membershipByConv.get(c.id).lastReadSeq } })),
+      AND: [
+        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
+      ],
+      deletedAt: null,
+    },
+    _count: { _all: true },
+  })
+  for (const row of rows as any[]) counts.set(row.conversationId, row._count._all)
+  return counts
 }
 
 async function unreadMentionCounts(userId: string, memberships: any[]): Promise<Map<string, number>> {
@@ -369,7 +418,7 @@ async function unreadMentionCounts(userId: string, memberships: any[]): Promise<
 
 export async function getConversationForUser(conversationId: string, userId: string) {
   const access = await loadAccess(conversationId, userId)
-  const members = await listMembers(conversationId)
+  const members = await listMembers(access.conversation.workspaceId, conversationId)
   return serializeConversation(access.conversation, {
     joined: !!access.membership,
     starred: !!access.membership?.starred,
@@ -377,12 +426,13 @@ export async function getConversationForUser(conversationId: string, userId: str
     notifyLevel: access.membership?.notifyLevel ?? 'all',
     lastReadSeq: access.membership?.lastReadSeq ?? 0,
     canPost: canPost(access),
+    canReply: canPost(access, { threadReply: true }),
     canManage: canManage(access),
     members,
   })
 }
 
-export async function listMembers(conversationId: string) {
+async function listMembers(workspaceId: string, conversationId: string) {
   const rows = await db.conversationMember.findMany({
     where: { conversationId },
     include: { user: { select: USER_SELECT } },
@@ -393,10 +443,13 @@ export async function listMembers(conversationId: string) {
     ? await db.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, name: true } })
     : []
   const names = new Map<string, string>(projects.map((p: any) => [p.id, p.name]))
+  const workspaceAgentName = rows.some((r: any) => r.memberType === 'agent' && !r.projectId)
+    ? await agentDisplayName(workspaceId, null)
+    : null
   return rows.map((r: any) => r.memberType === 'agent'
     ? {
         id: r.id, type: 'agent' as const, projectId: r.projectId ?? null,
-        name: r.projectId ? names.get(r.projectId) ?? 'Agent' : null,
+        name: r.projectId ? names.get(r.projectId) ?? 'Agent' : workspaceAgentName,
         agentTrigger: r.agentTrigger, agentKeywords: r.agentKeywords ?? null,
       }
     : {
@@ -511,6 +564,9 @@ export async function joinConversation(conversationId: string, userId: string) {
 export async function leaveConversation(conversationId: string, userId: string) {
   const access = await loadAccess(conversationId, userId)
   if (access.conversation.kind === 'dm') throw new ConversationError(400, 'invalid', 'You cannot leave a direct message')
+  if (access.conversation.slug === DEFAULT_CHANNEL_SLUG && isOpenKind(access.conversation.kind)) {
+    throw new ConversationError(400, 'invalid', 'Everyone in the workspace is in #general')
+  }
   if (!access.membership) return
   const audience = await conversationAudience(access.conversation)
   await db.conversationMember.delete({ where: { id: access.membership.id } })

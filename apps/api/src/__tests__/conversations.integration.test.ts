@@ -87,6 +87,13 @@ describe('conversations and access', () => {
     expect((await call(null, 'GET', `/workspaces/${seed.workspaceId}/conversations`)).status).toBe(401)
   })
 
+  test('everyone is in #general and cannot leave it', async () => {
+    const { json } = await call(seed.viewer, 'GET', `/workspaces/${seed.workspaceId}/conversations`)
+    const g = json.conversations.find((c: any) => c.slug === 'general')
+    expect(g.joined).toBe(true)
+    expect((await call(seed.viewer, 'POST', `/conversations/${g.id}/leave`)).status).toBe(400)
+  })
+
   test('private channels are invisible until you are added', async () => {
     const created = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, {
       name: 'Leadership Team', kind: 'private',
@@ -142,6 +149,14 @@ describe('messages', () => {
       .json.conversations.find((c: any) => c.id === g.id)
     expect(after.unreadCount).toBe(0)
     expect(after.mentionCount).toBe(0)
+
+    await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'thread only', threadRootId: m1.json.message.id })
+    await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: 'also here', threadRootId: m1.json.message.id, alsoSentToChannel: true,
+    })
+    const withReplies = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === g.id)
+    expect(withReplies.unreadCount).toBe(1)
   })
 
   test('clientMsgId makes sends idempotent', async () => {
@@ -314,6 +329,10 @@ describe('@agent threads', () => {
     expect(session.contextType).toBe('workspace')
     expect(session.workspaceId).toBe(seed.workspaceId)
     expect(invocations[0].projectId).toBeNull()
+
+    const listed = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === dm.json.conversation.id)
+    expect(listed.participants).toEqual([{ type: 'agent', projectId: null, name: 'Shogo' }])
   })
 
   test('agent members with keyword triggers reply to matching top-level messages only', async () => {
@@ -412,6 +431,24 @@ describe('#activity and agent results', () => {
     expect(delivered.json.messages[0].authorType).toBe('agent')
     expect(delivered.json.messages[0].text).toContain('3 invoices overdue')
     expect(invocations).toHaveLength(0)
+  })
+
+  test('people discuss #activity items in threads but cannot post at the top level', async () => {
+    const [item] = await activityTexts()
+    const activityId = item.conversationId
+    const detail = await call(seed.member, 'GET', `/conversations/${activityId}`)
+    expect(detail.json.conversation.canPost).toBe(false)
+    expect(detail.json.conversation.canReply).toBe(true)
+
+    const reply = await call(seed.member, 'POST', `/conversations/${activityId}/messages`, {
+      text: 'Looking into it', threadRootId: item.id, alsoSentToChannel: true,
+    })
+    expect(reply.status).toBe(201)
+    expect(reply.json.message.alsoSentToChannel).toBe(false)
+    const top = await activityTexts()
+    expect(top.some((m) => m.id === reply.json.message.id)).toBe(false)
+    expect(top.find((m) => m.id === item.id).replyCount).toBe(1)
+    expect((await call(seed.viewer, 'POST', `/conversations/${activityId}/messages`, { text: 'x', threadRootId: item.id })).status).toBe(403)
   })
 
   test('schedule failures, goal events, publishes and joins show up in #activity', async () => {

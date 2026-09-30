@@ -343,8 +343,9 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (userId instanceof Response) return userId
     const body = await readJson(c)
     try {
-      const access = await requirePost(c.req.param('conversationId'), userId)
-      if (!access.membership && access.conversation.kind === 'public') {
+      const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
+      const access = await requirePost(c.req.param('conversationId'), userId, { threadReply: !!threadRootId })
+      if (!access.membership && (access.conversation.kind === 'public' || access.conversation.kind === 'activity')) {
         await joinConversation(access.conversation.id, userId)
       }
       const result = await postMessage({
@@ -352,8 +353,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         text: typeof body.text === 'string' ? body.text : '',
         authorType: 'user',
         authorUserId: userId,
-        threadRootId: typeof body.threadRootId === 'string' ? body.threadRootId : null,
-        alsoSentToChannel: body.alsoSentToChannel === true,
+        threadRootId,
+        alsoSentToChannel: body.alsoSentToChannel === true && access.conversation.kind !== 'activity',
         clientMsgId: typeof body.clientMsgId === 'string' ? body.clientMsgId.slice(0, 100) : null,
         attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
       })
@@ -389,7 +390,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
     try {
-      const access = await requirePost(c.req.param('conversationId'), userId)
+      const access = await requirePost(c.req.param('conversationId'), userId, { threadReply: true })
       const form = await c.req.formData().catch(() => null)
       const file = form?.get('file')
       if (!file || typeof file === 'string') {
