@@ -87,7 +87,7 @@ describe('startLiveCapture', () => {
   test.each([
     [7, 1],
     [15, 2],
-  ])('stop sends every buffered sample (%d s fed)', async (tailSeconds, tailChunks) => {
+  ])('stop sends every buffered sample (%d s fed)', async (tailSeconds: number, tailChunks: number) => {
     const audio = fakeAudio()
     const chunks: { start: number; seq: number }[] = []
     const capture = startLiveCapture({} as MediaStream, async (chunk) => {
