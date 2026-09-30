@@ -6,6 +6,9 @@ import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
 import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
+import { DEFAULT_ISLAND_SHORTCUT, DEFAULT_ISLAND_SOUND_VOLUME, type IslandConfig } from './island-protocol'
+
+export type { IslandConfig }
 
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
@@ -44,6 +47,7 @@ export interface DesktopConfig {
   hostRuntime: HostRuntimeConfig
   meetings: MeetingConfig
   bugReport?: BugReportConfig
+  island: IslandConfig
   /** Stable per-machine identifier. Generated on first launch and used so
    * Shogo Cloud can dedupe device-session API keys when the same desktop
    * install signs in multiple times. Treated as non-secret metadata — the
@@ -86,10 +90,19 @@ const DEFAULT_MEETING_CONFIG: MeetingConfig = {
   useCloudTranscription: false,
 }
 
+const DEFAULT_ISLAND_CONFIG: IslandConfig = {
+  enabled: true,
+  autoHide: true,
+  shortcut: DEFAULT_ISLAND_SHORTCUT,
+  sounds: true,
+  soundVolume: DEFAULT_ISLAND_SOUND_VOLUME,
+}
+
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
   hostRuntime: getDefaultHostRuntimeConfig(),
   meetings: { ...DEFAULT_MEETING_CONFIG },
+  island: { ...DEFAULT_ISLAND_CONFIG },
   updateChannel: 'stable',
 }
 
@@ -129,6 +142,30 @@ export function readConfig(): DesktopConfig {
     bugReport: typeof parsed.bugReport === 'object' && parsed.bugReport !== null
       ? parsed.bugReport
       : undefined,
+    island: {
+      enabled:
+        typeof parsed.island?.enabled === 'boolean'
+          ? parsed.island.enabled
+          : DEFAULT_ISLAND_CONFIG.enabled,
+      autoHide:
+        typeof parsed.island?.autoHide === 'boolean'
+          ? parsed.island.autoHide
+          : DEFAULT_ISLAND_CONFIG.autoHide,
+      shortcut:
+        typeof parsed.island?.shortcut === 'string' && parsed.island.shortcut.trim()
+          ? parsed.island.shortcut
+          : DEFAULT_ISLAND_CONFIG.shortcut,
+      sounds:
+        typeof parsed.island?.sounds === 'boolean'
+          ? parsed.island.sounds
+          : DEFAULT_ISLAND_CONFIG.sounds,
+      soundVolume:
+        typeof parsed.island?.soundVolume === 'number' &&
+        parsed.island.soundVolume >= 0 &&
+        parsed.island.soundVolume <= 1
+          ? parsed.island.soundVolume
+          : DEFAULT_ISLAND_CONFIG.soundVolume,
+    },
     deviceId: existingDeviceId || generateDeviceId(),
     updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
   }

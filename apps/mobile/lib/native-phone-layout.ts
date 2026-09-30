@@ -9,6 +9,7 @@
  *   Desktop studio and Electron stay on the existing wide layout.
  * Yoga pixel-width helpers stay native-only (`isNativePhoneIntegrationsLayout`).
  */
+import { createContext, useContext } from 'react'
 import { Platform, StyleSheet, useWindowDimensions, type ViewStyle } from 'react-native'
 import { useResolvedTheme } from '../contexts/theme'
 import { SURFACE_COLORS } from './surface-tokens'
@@ -449,7 +450,21 @@ export function useIsNativePhoneLayout(): boolean {
 }
 
 /** Phone chrome predicate including narrow web, for composer and dock layouts. */
+const PhoneLayoutOverrideContext = createContext<boolean | null>(null);
+
+/**
+ * Forces `usePhoneLayout` for a subtree. Small desktop surfaces (the island
+ * overlay) have a phone-width viewport but want desktop density.
+ */
+export const PhoneLayoutOverrideProvider = PhoneLayoutOverrideContext.Provider;
+
+/** The forced value from `PhoneLayoutOverrideProvider`, or null when unset. */
+export function usePhoneLayoutOverride(): boolean | null {
+  return useContext(PhoneLayoutOverrideContext);
+}
+
 export function usePhoneLayout(): boolean {
+  const override = usePhoneLayoutOverride();
   const { width, height } = useWindowDimensions();
-  return isPhoneLayout(width, height);
+  return override ?? isPhoneLayout(width, height);
 }

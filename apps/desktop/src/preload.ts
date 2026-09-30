@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { contextBridge, ipcRenderer } from 'electron'
 import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture-manager'
+import type { IslandConfig } from './island-protocol'
 
 const portArg = process.argv.find((a) => a.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : '39100'
@@ -125,6 +126,14 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   apiUrl: `http://localhost:${apiPort}`,
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+  setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),
+  onIslandConfigChanged: (callback: (config: IslandConfig) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, config: IslandConfig) => callback(config)
+    ipcRenderer.on('island-config-changed', listener)
+    return () => {
+      ipcRenderer.removeListener('island-config-changed', listener)
+    }
+  },
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
 
   codeWorkbench: {
@@ -213,6 +222,15 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     sessionId: string
     projectId: string
   }) => ipcRenderer.invoke('show-chat-notification', args),
+  islandUpdate: (snapshot: unknown) => {
+    ipcRenderer.send('island:update', snapshot)
+  },
+  onIslandAction: (callback: (action: unknown) => void) => {
+    ipcRenderer.on('island-action', (_event, action) => callback(action))
+  },
+  removeIslandActionListener: () => {
+    ipcRenderer.removeAllListeners('island-action')
+  },
   onNotificationClicked: (
     callback: (data: { sessionId: string; projectId: string }) => void,
   ) => {
@@ -663,6 +681,9 @@ exposeShogoDesktopTerminalBridge()
 // own module so the contextBridge surface stays separable per feature.
 import { exposeShogoDesktopPortsBridge } from './preload-ports'
 exposeShogoDesktopPortsBridge()
+
+import { exposeShogoIslandBridge } from './preload-island'
+exposeShogoIslandBridge()
 
 if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
   contextBridge.exposeInMainWorld('shogoTesting', {

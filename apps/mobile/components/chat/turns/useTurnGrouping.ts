@@ -18,8 +18,14 @@
 
 import { useMemo, useRef } from "react"
 import type { UIMessage } from "@ai-sdk/react"
-import type { ConversationTurn, MessagePart } from "./types"
+import type { AnsweredQuestion, ConversationTurn, MessagePart } from "./types"
 import { type ToolCallData, getToolCategory } from "../tools/types"
+import { extractTextContent } from "@shogo/shared-app/chat"
+import {
+  findAskUserPart,
+  parseAskUserAnswerMessage,
+  parseQuestions,
+} from "./askUserAnswers"
 
 function safeErrorString(error: unknown): string | undefined {
   if (error == null) return undefined
@@ -66,7 +72,10 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
   const parts = (message as any).parts as any[] | undefined
 
   if (!parts || !Array.isArray(parts)) {
-    if (typeof (message as any).content === "string" && (message as any).content) {
+    if (
+      typeof (message as any).content === "string" &&
+      (message as any).content
+    ) {
       return [{ type: "text", text: (message as any).content, id: "text-0" }]
     }
     return []
@@ -103,7 +112,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
       const toolCallId = part.toolCallId || `tool-${index}`
       const rawError =
         part.state === "output-error"
-          ? (part as { errorText?: string }).errorText ?? part.error
+          ? ((part as { errorText?: string }).errorText ?? part.error)
           : part.error
       result.push({
         type: "tool",
@@ -149,6 +158,7 @@ function extractOrderedParts(message: UIMessage): MessagePart[] {
 interface TurnSkeleton {
   id: string
   userMessage: UIMessage | null
+  answeredQuestion?: AnsweredQuestion
   assistantMessage: UIMessage | null
   isStreaming: boolean
   timestamp: number
@@ -178,6 +188,7 @@ export function groupMessagesIntoTurns(
       current = {
         id: `turn-${message.id}`,
         userMessage: message,
+        answeredQuestion: undefined,
         assistantMessage: null,
         isStreaming: false,
         timestamp: ts,
@@ -200,6 +211,32 @@ export function groupMessagesIntoTurns(
   }
   if (current) skeletons.push(current)
 
+  for (let index = 1; index < skeletons.length; index++) {
+    const skeleton = skeletons[index]
+    if (!skeleton.userMessage) continue
+
+    const marker = parseAskUserAnswerMessage(
+      extractTextContent(skeleton.userMessage),
+    )
+    if (!marker) continue
+
+    const previousAssistant = skeletons[index - 1]?.assistantMessage
+    const askUserPart = findAskUserPart(previousAssistant, marker.toolCallId)
+    if (!askUserPart) continue
+
+    const questions = parseQuestions(
+      (askUserPart.input as Record<string, unknown> | undefined) ??
+        (askUserPart.args as Record<string, unknown> | undefined),
+    )
+    if (questions.length === 0) continue
+
+    skeleton.answeredQuestion = {
+      toolCallId: marker.toolCallId,
+      questions,
+      response: marker.response,
+    }
+  }
+
   const prevById = new Map<string, ConversationTurn>()
   if (prevTurns) {
     for (const t of prevTurns) prevById.set(t.id, t)
@@ -209,6 +246,7 @@ export function groupMessagesIntoTurns(
   for (let idx = 0; idx < skeletons.length; idx++) {
     const skel = skeletons[idx]
     const prior = prevById.get(skel.id)
+    const answeredQuestion = skel.answeredQuestion
 
     // Reuse prior turn when its inputs are referentially identical.
     // This is the hot path during streaming: historical turns match and
@@ -217,7 +255,8 @@ export function groupMessagesIntoTurns(
       prior !== undefined &&
       prior.userMessage === skel.userMessage &&
       prior.assistantMessage === skel.assistantMessage &&
-      prior.isStreaming === skel.isStreaming
+      prior.isStreaming === skel.isStreaming &&
+      prior.answeredQuestion?.toolCallId === answeredQuestion?.toolCallId
 
     if (canReuse) {
       result.push(prior!)
@@ -234,6 +273,7 @@ export function groupMessagesIntoTurns(
     result.push({
       id: skel.id,
       userMessage: skel.userMessage,
+      answeredQuestion,
       assistantMessage: skel.assistantMessage,
       toolCalls,
       assistantParts,

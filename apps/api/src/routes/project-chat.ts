@@ -2069,6 +2069,32 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
   })
 
   /**
+   * POST /projects/:projectId/chat/retry-now - Skip the rest of the active
+   * turn's retry backoff ("Retry now"). Proxies to the runtime's /agent/retry-now.
+   */
+  router.post("/projects/:projectId/chat/retry-now", async (c) => {
+    const projectId = c.req.param("projectId")
+    try {
+      const project = await validateProject(projectId)
+      if (!project) {
+        return c.json(
+          { error: { code: "project_not_found", message: "Project not found" } },
+          404
+        )
+      }
+      const response = await fetchFromRuntime(projectId, "/agent/retry-now", {
+        method: "POST",
+        body: (await c.req.text()) || "{}",
+        signal: c.req.raw.signal,
+      })
+      return c.json(await response.json(), response.status as any)
+    } catch (error: any) {
+      console.warn("[ProjectChat] retry-now error:", error?.message || error)
+      return c.json({ success: false, error: error?.message }, 502)
+    }
+  })
+
+  /**
    * POST /projects/:projectId/chat/stop - Stop/interrupt active generation
    * Proxies to the project runtime's /agent/stop endpoint
    */

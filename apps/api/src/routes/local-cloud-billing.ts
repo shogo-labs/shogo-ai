@@ -14,9 +14,10 @@ import { prisma } from '../lib/prisma'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import {
   fetchUpstream,
+  getUpstreamCredential,
   getUpstreamWorkspaceId,
 } from '../lib/federated-upstream'
-import { markCloudKeyRejected } from './local-auth'
+import { markCloudKeyRejectedIfConfirmed } from '../lib/cloud-key-state'
 
 type StoredKeyInfo = {
   workspace?: { id?: string; name?: string; slug?: string }
@@ -80,10 +81,13 @@ export function localCloudBillingRoutes() {
       })
       const plan = await upstreamJson(response)
       if (response.status === 401) {
-        markCloudKeyRejected('billing summary 401')
+        const cloudKeyRejected = await markCloudKeyRejectedIfConfirmed(
+          'billing summary 401',
+          await getUpstreamCredential(),
+        )
         return c.json({
           signedIn: true,
-          cloudKeyRejected: true,
+          cloudKeyRejected,
           workspace: workspace,
           ...cloudBillingUrls(workspace.id),
           plan,
@@ -135,9 +139,6 @@ export function localCloudBillingRoutes() {
       }),
     })
     const result = await upstreamJson(response)
-    if (response.status === 401) {
-      markCloudKeyRejected('billing usage-based-pricing 401')
-    }
     return c.json(result, response.status as any)
   })
 

@@ -321,7 +321,85 @@ func handleCommand(_ cmd: String) {
     }
 }
 
+// MARK: - Mic users
+
+private func audioPropertyAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+}
+
+/// Processes currently capturing from any input device, or nil when the OS
+/// predates CoreAudio process objects (macOS 14).
+func listMicUsers() -> [[String: Any]]? {
+    guard #available(macOS 14.0, *) else { return nil }
+    var address = audioPropertyAddress(kAudioHardwarePropertyProcessObjectList)
+    var size: UInt32 = 0
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return nil }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else { return nil }
+
+    var users: [[String: Any]] = []
+    for id in ids {
+        var running: UInt32 = 0
+        var runningSize = UInt32(MemoryLayout<UInt32>.size)
+        var runningAddress = audioPropertyAddress(kAudioProcessPropertyIsRunningInput)
+        guard AudioObjectGetPropertyData(id, &runningAddress, 0, nil, &runningSize, &running) == noErr,
+              running != 0 else { continue }
+
+        var pid: pid_t = 0
+        var pidSize = UInt32(MemoryLayout<pid_t>.size)
+        var pidAddress = audioPropertyAddress(kAudioProcessPropertyPID)
+        _ = AudioObjectGetPropertyData(id, &pidAddress, 0, nil, &pidSize, &pid)
+
+        var bundleId: Unmanaged<CFString>?
+        var bundleSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var bundleAddress = audioPropertyAddress(kAudioProcessPropertyBundleID)
+        _ = AudioObjectGetPropertyData(id, &bundleAddress, 0, nil, &bundleSize, &bundleId)
+
+        users.append([
+            "pid": Int(pid),
+            "bundleId": (bundleId?.takeRetainedValue() as String?) ?? "",
+        ])
+    }
+    return users
+}
+
+/// Titles of on-screen app windows. Other apps' titles are only visible with
+/// the Screen Recording permission; without it the list is simply empty.
+func listWindowTitles() -> [[String: Any]] {
+    guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+        as? [[String: Any]] else { return [] }
+    return windows.compactMap { window in
+        guard (window[kCGWindowLayer as String] as? Int) == 0,
+              let title = window[kCGWindowName as String] as? String, !title.isEmpty else { return nil }
+        return [
+            "pid": (window[kCGWindowOwnerPID as String] as? Int) ?? 0,
+            "owner": (window[kCGWindowOwnerName as String] as? String) ?? "",
+            "title": title,
+        ]
+    }
+}
+
 // MARK: - Main
+
+if CommandLine.arguments.dropFirst().first == "window-titles" {
+    let data = (try? JSONSerialization.data(withJSONObject: listWindowTitles())) ?? Data("[]".utf8)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(0)
+}
+
+if CommandLine.arguments.dropFirst().first == "mic-users" {
+    let payload: Any = listMicUsers() ?? NSNull()
+    let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed])) ?? Data("null".utf8)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(0)
+}
 
 emit("ready")
 runStdinLoop()

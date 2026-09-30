@@ -100,7 +100,8 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
   test("plan card opens saved plan artifact", async () => {
     await page.getByRole("button", { name: "View plan in Plans" }).click()
     await expect(page.getByText("Plans")).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText(/^Build$/)).toBeVisible({ timeout: 15_000 })
+    // The Plans viewer adds its own Build button next to the chat dock's.
+    await expect(page.getByRole("button", { name: "Build plan" })).toHaveCount(2, { timeout: 15_000 })
     await expect(page.getByText(/hello\.txt|Hello World/i).first()).toBeVisible({ timeout: 15_000 })
   })
 

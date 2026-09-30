@@ -67,6 +67,10 @@ import {
   PERSONAL_COMPANION_MODEL_SETTING_KEY,
 } from './lib/personal-companion-model'
 import {
+  setSummarizerModelId,
+  SUMMARIZER_MODEL_SETTING_KEY,
+} from './lib/summarizer-model'
+import {
   fallbackGenerateProjectName,
   parseTitleResponse,
   shouldPersistGeneratedProjectName,
@@ -99,6 +103,8 @@ import {
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
 import { localAuthRoutes } from './routes/local-auth'
+import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/platform-model-setting'
+import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { meetingRoutes } from './routes/meetings'
@@ -123,6 +129,11 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
+import {
+  apiAuthGate,
+  isAllowedUnauthWebchatProxyPath,
+  isTokenGatedThumbnailPath,
+} from './middleware/api-auth-gate'
 import { homeRegionWriteProxy } from './middleware/home-region-router'
 import { tracingMiddleware } from './middleware/tracing'
 import { rateLimiter } from './middleware/rate-limit'
@@ -742,110 +753,10 @@ app.use('/api/*', rateLimiter('global', {
   skipPrefixes: ['/api/ai/', '/api/v1/', '/api/internal/', '/api/health', '/api/warm-pool/status'],
 }))
 
-function isWebchatProxyPath(path: string): boolean {
-  return /^\/api\/projects\/[^/]+\/agent-proxy\/agent\/channels\/webchat\//.test(path)
-}
-
-function isAllowedUnauthWebchatProxyPath(path: string): boolean {
-  if (!isWebchatProxyPath(path)) return false
-  const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/agent\/channels\/webchat\/.*)$/)
-  const relative = match?.[1] || ''
-  return relative === '/agent/channels/webchat/widget.js' ||
-    relative === '/agent/channels/webchat/health' ||
-    relative === '/agent/channels/webchat/config' ||
-    relative === '/agent/channels/webchat/session' ||
-    relative === '/agent/channels/webchat/message' ||
-    relative.startsWith('/agent/channels/webchat/events/')
-}
-
-// Thumbnail image bytes, served to an <img> / RN <Image> that can present no
-// ambient credentials. The per-project token in `?t=` is the credential and is
-// verified in-route, so session gating must not run. See deriveThumbnailToken.
-function isTokenGatedThumbnailPath(path: string): boolean {
-  return /^\/api\/projects\/[^/]+\/thumbnail\.png$/.test(path)
-}
-
-function isTokenGatedChatAttachmentPath(path: string): boolean {
-  return path.startsWith('/api/chat-attachments/')
-}
-
 // Auth middleware — extract session for ALL /api/* routes so c.get('auth') is
 // always populated, then require authentication except for known public paths.
 app.use('/api/*', authMiddleware)
-
-app.use(
-  '/api/*',
-  async (c, next) => {
-    const path = new URL(c.req.url).pathname
-    const publicPrefixes = [
-      '/api/auth/',
-      '/api/health',
-      '/api/version',
-      '/api/config',
-      '/api/webhooks/',
-      '/api/billing/ios/notifications',
-      '/api/integrations/',
-      '/api/invite-links/',
-      '/api/internal/',
-      '/api/local/',
-      '/api/ai/',
-      // Public OpenAI-compatible API — authenticates in-route with a Shogo API
-      // key (`shogo_sk_*`); session-cookie / runtime-token gating must not run.
-      '/api/v1/',
-      '/api/tools/',
-      // Shared-file downloads: the signed token in the path is the credential
-      // (verified in routes/shared-files.ts).
-      '/api/f/',
-      '/api/api-keys/validate',
-      '/api/marketplace',
-      '/api/tech-stacks',
-      '/api/instances/heartbeat',
-      '/api/instances/ws',
-      // Native MLM affiliate program — public surfaces:
-      //   /lookup  → marketing site validates a code before redirect
-      //   /click   → Cloudflare Pages Function records the click using
-      //              SHOGO_INTERNAL_SECRET (auth handled in-route)
-      //   /visit   → in-app /r/<code> route records the click from the
-      //              browser (no secret; analytics-only, validated in-route)
-      '/api/affiliates/lookup',
-      '/api/affiliates/click',
-      '/api/affiliates/visit',
-      // Anonymous wake endpoints hit by the edge Workers / loading page when a
-      // visitor lands on a sleeping published subdomain or preview link. They
-      // only nudge the activator / provision a pod keyed by a real published
-      // subdomain or (UUID) project id; no tenant data is exposed.
-      '/api/published/',
-      '/api/preview/',
-    ]
-    if (publicPrefixes.some((p) => path.startsWith(p))) return next()
-    if (isAllowedUnauthWebchatProxyPath(path)) return next()
-    if (isTokenGatedThumbnailPath(path)) return next()
-    if (isTokenGatedChatAttachmentPath(path)) return next()
-    // Heartbeat sync is called by the runtime with x-runtime-token auth
-    if (path.endsWith('/heartbeat/sync')) return next()
-    // Voice provider webhooks (signature-verified in-handler). These have
-    // to bypass session-cookie / API-key auth entirely because the caller
-    // is ElevenLabs or Twilio — no Shogo credentials are present.
-    if (
-      path === '/api/voice/elevenlabs/webhook' ||
-      path.startsWith('/api/voice/twilio/status/')
-    ) {
-      return next()
-    }
-    // GitHub App webhook (routes/github.ts, verified with HMAC-SHA256 over
-    // `GH_APP_WEBHOOK_SECRET` inside the handler via `verifyWebhookSignature`)
-    // — GitHub's delivery has no Shogo session/API-key, so this blanket
-    // `requireAuth` 401'd every real installation/push/issues/issue_comment/
-    // pull_request_review webhook before the handler's own signature check
-    // ever ran. This is the ONLY inbound trigger for the issue-pipeline's
-    // "webhook wakes the pipeline" step (docs/issue-pipeline/PLAN.md Phase 2)
-    // — found live connecting a project's GitHub App for the first time
-    // (issue-pipeline multi-project eval, L1) and hand-delivering a
-    // synthetic `issues` event, since GitHub itself can't reach localhost.
-    if (path === '/api/github/webhook') return next()
-    return requireAuth(c, next)
-  }
-)
+app.use('/api/*', apiAuthGate)
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
   if (isAllowedUnauthWebchatProxyPath(path)) {
@@ -1496,6 +1407,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
       ])
 
       process.env.SHOGO_API_KEY = body.key
+      resetCloudKeyState()
       _resetUpstreamCredentialCache()
       _resetAgentModelDefaultsCache()
 
@@ -6558,89 +6470,25 @@ app.put('/api/admin/settings/agent-models', async (c) => {
 })
 
 // =============================================================================
-// Title Generation Model — super-admin selectable model for chat/project
-// title generation (`POST /api/generate-project-name`). Stored as a single
-// PlatformSetting row; null/empty resets to the platform default (Haiku).
+// Single-model admin settings, each one PlatformSetting row; an empty value
+// resets to the feature default.
+//   title-generation-model     — chat/project titles (default Haiku)
+//   personal-companion-model   — personal companion chat (default Hoshi 2.0)
+//   summarizer-model           — agent context compaction (default Hoshi 2.0);
+//                                runtimes pick it up on their next spawn
 // =============================================================================
 
-// GET /api/admin/settings/title-generation-model
-app.get('/api/admin/settings/title-generation-model', async (c) => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: TITLE_MODEL_SETTING_KEY } })
-    return c.json({ model: row?.value ?? null })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// PUT /api/admin/settings/title-generation-model
-app.put('/api/admin/settings/title-generation-model', async (c) => {
-  try {
-    const body = await c.req.json()
-    const auth = c.get('auth') as any
-    const userId = auth?.user?.id || 'unknown'
-    const value = typeof body?.model === 'string' ? body.model.trim() : ''
-
-    if (value.length === 0) {
-      await prisma.platformSetting.deleteMany({ where: { key: TITLE_MODEL_SETTING_KEY } })
-      setTitleGenerationModelId(null)
-      return c.json({ ok: true, model: null })
-    }
-
-    await prisma.platformSetting.upsert({
-      where: { key: TITLE_MODEL_SETTING_KEY },
-      create: { key: TITLE_MODEL_SETTING_KEY, value, updatedBy: userId },
-      update: { value, updatedBy: userId },
-    })
-    setTitleGenerationModelId(value)
-    return c.json({ ok: true, model: value })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// =============================================================================
-// Personal Companion Model — super-admin selectable model powering the
-// personal companion's interactive chat (its picker is hidden — one
-// companion per person). Stored as a single PlatformSetting row; null/empty
-// resets to the platform default (Hoshi 2.0). See lib/personal-companion-model.ts.
-// =============================================================================
-
-// GET /api/admin/settings/personal-companion-model
-app.get('/api/admin/settings/personal-companion-model', async (c) => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
-    return c.json({ model: row?.value ?? null })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
-
-// PUT /api/admin/settings/personal-companion-model
-app.put('/api/admin/settings/personal-companion-model', async (c) => {
-  try {
-    const body = await c.req.json()
-    const auth = c.get('auth') as any
-    const userId = auth?.user?.id || 'unknown'
-    const value = typeof body?.model === 'string' ? body.model.trim() : ''
-
-    if (value.length === 0) {
-      await prisma.platformSetting.deleteMany({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
-      setPersonalCompanionModelId(null)
-      return c.json({ ok: true, model: null })
-    }
-
-    await prisma.platformSetting.upsert({
-      where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY },
-      create: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY, value, updatedBy: userId },
-      update: { value, updatedBy: userId },
-    })
-    setPersonalCompanionModelId(value)
-    return c.json({ ok: true, model: value })
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500)
-  }
-})
+const titleModelSetting = { settingKey: TITLE_MODEL_SETTING_KEY, apply: setTitleGenerationModelId }
+const personalCompanionModelSetting = {
+  settingKey: PERSONAL_COMPANION_MODEL_SETTING_KEY,
+  apply: setPersonalCompanionModelId,
+}
+app.route('/api/admin/settings/title-generation-model', platformModelSettingRoutes(titleModelSetting))
+app.route('/api/admin/settings/personal-companion-model', platformModelSettingRoutes(personalCompanionModelSetting))
+app.route(
+  '/api/admin/settings/summarizer-model',
+  platformModelSettingRoutes({ settingKey: SUMMARIZER_MODEL_SETTING_KEY, apply: setSummarizerModelId }),
+)
 
 // =============================================================================
 // Visible Models Config — admin-curated model allowlist for the user picker.
@@ -9402,34 +9250,10 @@ await (async () => {
   }
 })()
 
-// Load the admin-configured title-generation model from platform_settings into
-// memory so `/api/generate-project-name` resolves it without a DB round-trip.
-await (async () => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: TITLE_MODEL_SETTING_KEY } })
-    if (row?.value) {
-      setTitleGenerationModelId(row.value)
-      console.log('[TitleModel] Loaded admin title-generation model:', row.value)
-    }
-  } catch (err: any) {
-    console.log('[TitleModel] No title model override loaded (non-fatal):', err.message)
-  }
-})()
-
-// Load the admin-configured personal-companion model from platform_settings
-// into memory so `POST /workspaces/:id/chat` resolves it without a DB
-// round-trip. Unset falls back to Hoshi 2.0 (see lib/personal-companion-model.ts).
-await (async () => {
-  try {
-    const row = await prisma.platformSetting.findUnique({ where: { key: PERSONAL_COMPANION_MODEL_SETTING_KEY } })
-    if (row?.value) {
-      setPersonalCompanionModelId(row.value)
-      console.log('[PersonalCompanionModel] Loaded admin override:', row.value)
-    }
-  } catch (err: any) {
-    console.log('[PersonalCompanionModel] No override loaded, defaulting to Hoshi 2.0 (non-fatal):', err.message)
-  }
-})()
+// Load the admin-configured title-generation and personal-companion models
+// into memory so their request paths resolve them without a DB round-trip.
+await loadPlatformModelSetting(titleModelSetting, 'TitleModel')
+await loadPlatformModelSetting(personalCompanionModelSetting, 'PersonalCompanionModel')
 
 // Prime the DB-defined model registry (custom providers + DB models) so the
 // AI proxy and visible-models endpoint resolve them on the first request

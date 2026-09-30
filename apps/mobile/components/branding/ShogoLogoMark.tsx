@@ -47,9 +47,11 @@ const SHOGO_MARK_PATHS = [
 export interface ShogoLogoMarkProps {
   /** Tailwind size classes, e.g. `h-6 w-6`. Default matches sidebar (`h-8 w-8`). */
   className?: string
+  /** Defaults to the brand orange. */
+  fill?: string
 }
 
-export function ShogoLogoMark({ className }: ShogoLogoMarkProps) {
+export function ShogoLogoMark({ className, fill = SHOGO_MARK_FILL }: ShogoLogoMarkProps) {
   return (
     <View
       className={cn('h-8 w-8 shrink-0', className)}
@@ -58,7 +60,7 @@ export function ShogoLogoMark({ className }: ShogoLogoMarkProps) {
     >
       <Svg width="100%" height="100%" viewBox={SHOGO_MARK_VIEW_BOX} preserveAspectRatio="xMidYMid meet">
         {SHOGO_MARK_PATHS.map((path, index) => (
-          <Path key={index} d={path} fill={SHOGO_MARK_FILL} />
+          <Path key={index} d={path} fill={fill} />
         ))}
       </Svg>
     </View>
