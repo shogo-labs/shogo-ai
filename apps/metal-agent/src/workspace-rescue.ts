@@ -54,8 +54,9 @@ export async function packRescuedWorkspace(
   mountRoot: string,
   outDir: string,
   run: CommandRunner = runCommand,
+  workspaceRel: string = GUEST_WORKSPACE_REL,
 ): Promise<RescuedArchives> {
-  const ws = join(mountRoot, GUEST_WORKSPACE_REL)
+  const ws = join(mountRoot, workspaceRel)
   let st
   try {
     st = lstatSync(ws)
