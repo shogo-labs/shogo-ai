@@ -99,7 +99,7 @@ async function openProject(page: Page, api: APIRequestContext) {
 }
 
 test.describe("server-backed chat queue — local UI", () => {
-  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page, request }) => {
+  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page }) => {
     const queueRows: Array<Record<string, unknown>> = []
     let nextId = 0
     let holdNextChat = false
@@ -193,7 +193,7 @@ test.describe("server-backed chat queue — local UI", () => {
       await route.continue()
     })
 
-    await openProject(page, request)
+    await openProject(page, page.request)
 
     mockChatRequests = true
     holdNextChat = true

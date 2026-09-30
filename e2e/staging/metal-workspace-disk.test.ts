@@ -59,17 +59,21 @@ async function runtimeExec(
   timeoutMs = 180_000,
 ): Promise<{ out: string; code: number }> {
   const base = bootstrapApiBase()
-  const deadline = Date.now() + 120_000
+  const deadline = Date.now() + 240_000
   let session: { id: string } | null = null
   // The runtime may still be waking right after an open; retry the create.
   while (!session) {
-    const res = await page.request.post(`${base}/api/projects/${projectId}/terminal/sessions`, {
-      headers: { Origin: base, "content-type": "application/json" },
-      data: { cols: 200, rows: 50 },
-    })
-    if (res.ok()) session = (await res.json()) as { id: string }
-    else if (Date.now() > deadline) throw new Error(`terminal session create failed (${res.status()}): ${await res.text()}`)
-    else await page.waitForTimeout(3_000)
+    const res = await page.request
+      .post(`${base}/api/projects/${projectId}/terminal/sessions`, {
+        headers: { Origin: base, "content-type": "application/json" },
+        data: { cols: 200, rows: 50 },
+        timeout: 120_000,
+      })
+      .catch(() => null)
+    if (res?.ok()) session = (await res.json()) as { id: string }
+    else if (Date.now() > deadline) {
+      throw new Error(`terminal session create failed (${res?.status() ?? "timeout"}): ${(await res?.text()) ?? ""}`)
+    } else await page.waitForTimeout(3_000)
   }
   try {
     const wsUrl = `${base.replace(/^http/, "ws")}/api/projects/${projectId}/terminal/sessions/${session.id}/ws`
@@ -181,6 +185,9 @@ test.describe("Metal workspace drive", () => {
   test("the drive comes back from the durable store", async () => {
     test.setTimeout(600_000)
     test.skip(!process.env.SHOGO_E2E_BOOTSTRAP_SECRET, "needs SHOGO_E2E_BOOTSTRAP_SECRET for the fault backdoor")
+    // An open project page keeps the runtime warm and would wake it again
+    // before the fault lands.
+    await page.goto("about:blank")
     expect(await suspendRuntimeViaApi(page, projectId), "runtime must really suspend").toBe(true)
     const r = await runtimeFaultViaApi(page, projectId, "evict-local")
     test.skip(!r, "runtime faults unavailable (host needs METAL_E2E_FAULTS=1)")

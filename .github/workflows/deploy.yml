@@ -107,7 +107,17 @@ jobs:
                 echo "CI passed for ${SHA}."
                 exit 0
               fi
-              echo "::error::CI ${run_id} finished with conclusion=${conclusion}."
+              # Non-blocking jobs (local E2E) can fail the run while the
+              # required aggregate job passes; gate on that job like merges do.
+              required="$(
+                gh api "repos/${REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" --paginate |
+                jq -r '.jobs[] | select(.name == "Lint, Typecheck, Test") | .conclusion' | tail -1
+              )"
+              if [[ "$required" == "success" ]]; then
+                echo "CI ${run_id} concluded ${conclusion}, but required job 'Lint, Typecheck, Test' passed."
+                exit 0
+              fi
+              echo "::error::CI ${run_id} finished with conclusion=${conclusion} (required job: ${required:-missing})."
               exit 1
             fi
 
