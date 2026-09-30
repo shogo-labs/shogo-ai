@@ -1168,6 +1168,44 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     }
   })
 
+  // "Retry now": skip the rest of the active turn's retry backoff.
+  router.post('/workspaces/:workspaceId/chat/retry-now', async (c) => {
+    const auth = await authorize(c)
+    if ('res' in auth) return auth.res
+    const workspaceId = c.req.param('workspaceId')
+    const body = await c.req.text()
+    let parsed: any = {}
+    try {
+      parsed = JSON.parse(body || '{}')
+    } catch {
+      /* noop */
+    }
+    const sessionId: string | undefined =
+      c.req.header('X-Chat-Session-Id') || parsed?.sessionId || parsed?.chatSessionId
+    if (!sessionId) return c.json({ error: 'chatSessionId is required' }, 400)
+    let attachedProjectIds: string[] = []
+    let runtimeExtra: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] } = {}
+    try {
+      const args = await loadRuntimeArgs(workspaceId, sessionId)
+      attachedProjectIds = args.attachedProjectIds
+      runtimeExtra = args.extra
+    } catch {
+      /* noop */
+    }
+    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceRetryNow', runtimeExtra, auth.kind)
+    if ('res' in runtimeRes) return runtimeRes.res
+    try {
+      const response = await fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, '/agent/retry-now', {
+        method: 'POST',
+        body: JSON.stringify({ chatSessionId: sessionId }),
+      }, runtimeExtra)
+      return c.json(await response.json(), response.status as any)
+    } catch (error: any) {
+      console.warn('[WorkspaceChat] retry-now error:', error?.message || error)
+      return c.json({ success: false, error: error?.message }, 502)
+    }
+  })
+
   // Stop/interrupt active generation on the workspace runtime.
   router.post('/workspaces/:workspaceId/chat/stop', async (c) => {
     const auth = await authorize(c)

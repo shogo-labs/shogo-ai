@@ -218,6 +218,10 @@ export interface ToolContext {
   teammateHandles?: Map<string, TeammateLoopHandle>
   /** Effective model ID for this turn (accounts for session modelOverride + alias resolution) */
   effectiveModel?: string
+  /** Provider the turn resolved for `effectiveModel`. DB-defined models are
+   *  opaque UUIDs that infer as `custom`, so sub-agents inheriting the model
+   *  must reuse this instead of re-inferring it. */
+  effectiveProvider?: string
   /** When true, Auto mode is active — sub-agents should use the spawn-time model router */
   autoRouting?: boolean
   /** Admin-configured Auto-mode tier overrides (resolved model id + provider
