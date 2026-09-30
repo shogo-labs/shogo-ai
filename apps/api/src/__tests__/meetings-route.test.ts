@@ -130,8 +130,13 @@ const prismaMock = {
       return null
     },
     findUnique: async ({ where, include }: any) => {
-      if (where.recordingId) {
-        return Array.from(meetings.values()).find((row) => row.recordingId === where.recordingId) ?? null
+      const draftKey = where.workspaceId_recordingId
+      if (draftKey) {
+        return (
+          Array.from(meetings.values()).find(
+            (row) => row.workspaceId === draftKey.workspaceId && row.recordingId === draftKey.recordingId,
+          ) ?? null
+        )
       }
       const m = meetings.get(where.id)
       if (!m) return null
@@ -568,12 +573,14 @@ describe('meeting access is scoped to the personal workspace', () => {
     expect(Array.from(meetings.values()).filter((m) => m.recordingId === 'rec-island')).toHaveLength(1)
   })
 
-  test("island notepad cannot write another workspace's draft", async () => {
+  test("island notepad never writes another workspace's draft", async () => {
     meetings.set('theirs', { id: 'theirs', workspaceId: 'w-team', recordingId: 'rec-t', status: 'recording', notes: 'x' })
+    expect((await meetingRoutes.request('/api/local/meetings/recordings/rec-t')).status).toBe(404)
     const res = await meetingRoutes.request('/api/local/meetings/recordings/rec-t', {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notes: 'y' }),
     })
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
+    expect((await res.json()).meeting.id).not.toBe('theirs')
     expect(meetings.get('theirs').notes).toBe('x')
   })
 

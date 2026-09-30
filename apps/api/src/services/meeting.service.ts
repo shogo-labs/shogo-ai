@@ -651,10 +651,14 @@ export function cleanMeetingNotes(value: unknown): string | null | undefined {
   return value.slice(0, MAX_MEETING_NOTES_CHARS)
 }
 
+/** The meeting a recording session writes into. Recording ids are only unique within a workspace. */
+export function findRecordingDraft(workspaceId: string, recordingId: string) {
+  return db.meeting.findUnique({ where: { workspaceId_recordingId: { workspaceId, recordingId } } })
+}
+
 /**
  * The meeting row for a desktop recording that is still in progress, created
- * on first write so notes typed in the island attach to it. Returns null when
- * the recording id belongs to another workspace.
+ * on first write so notes typed in the island attach to it.
  */
 export async function upsertRecordingDraft(
   owner: { workspaceId: string; userId: string | null },
@@ -664,9 +668,7 @@ export async function upsertRecordingDraft(
   const notes = cleanMeetingNotes(input.notes)
   const app = typeof input.app === 'string' && input.app.trim() ? input.app.trim().slice(0, 80) : undefined
   const title = typeof input.title === 'string' && input.title.trim() ? input.title.trim().slice(0, 200) : undefined
-  const existing = await db.meeting.findUnique({ where: { recordingId } })
-  if (existing && existing.workspaceId !== owner.workspaceId) return null
-  if (existing) {
+  const update = (existing: any) => {
     const data: Record<string, unknown> = {}
     if (notes !== undefined) data.notes = notes
     if (app && !existing.app) {
@@ -678,18 +680,29 @@ export async function upsertRecordingDraft(
     if (existing.status === 'recording') data.updatedAt = new Date()
     return db.meeting.update({ where: { id: existing.id }, data })
   }
-  return db.meeting.create({
-    data: {
-      recordingId,
-      workspaceId: owner.workspaceId,
-      userId: owner.userId,
-      status: 'recording',
-      source: 'desktop',
-      app: app ?? null,
-      notes: notes ?? null,
-      title: title ?? defaultMeetingTitle(new Date(), app),
-    },
-  })
+
+  const existing = await findRecordingDraft(owner.workspaceId, recordingId)
+  if (existing) return update(existing)
+  try {
+    return await db.meeting.create({
+      data: {
+        recordingId,
+        workspaceId: owner.workspaceId,
+        userId: owner.userId,
+        status: 'recording',
+        source: 'desktop',
+        app: app ?? null,
+        notes: notes ?? null,
+        title: title ?? defaultMeetingTitle(new Date(), app),
+      },
+    })
+  } catch (err: any) {
+    // Notes, heartbeats and live chunks can all create the draft at once.
+    if (err?.code !== 'P2002') throw err
+    const created = await findRecordingDraft(owner.workspaceId, recordingId)
+    if (!created) throw err
+    return update(created)
+  }
 }
 
 /** Recorders save their draft at least this often while recording. */

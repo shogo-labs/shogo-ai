@@ -21,6 +21,7 @@ import {
   cleanMeetingNotes,
   defaultMeetingTitle,
   enhanceMeeting,
+  findRecordingDraft,
   friendlyMeetingError,
   isInterruptedDraft,
   listMeetingTemplates,
@@ -177,8 +178,8 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
   router.get(`${base}/recordings/:recordingId`, async (c) => {
     const auth = await scope(c)
     if (auth instanceof Response) return auth
-    const meeting = await db.meeting.findUnique({ where: { recordingId: c.req.param('recordingId') } })
-    if (!meeting || meeting.workspaceId !== auth.workspaceId) return error(c, 404, 'not_found', 'Meeting not found')
+    const meeting = await findRecordingDraft(auth.workspaceId, c.req.param('recordingId'))
+    if (!meeting) return error(c, 404, 'not_found', 'Meeting not found')
     return c.json({ meeting: serializeMeeting(meeting) })
   })
 
@@ -191,7 +192,6 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
       c.req.param('recordingId'),
       body,
     )
-    if (!meeting) return error(c, 404, 'not_found', 'Meeting not found')
     return c.json({ meeting: serializeMeeting(meeting) })
   }
   router.put(`${base}/recordings/:recordingId`, saveRecordingDraft)
@@ -263,9 +263,9 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const notes = cleanMeetingNotes(String(form.get('notes') || '')) || null
     const recordingId = String(form.get('recordingId') || '').trim()
     // Finish the draft the live transcript was written into, if there is one.
-    const draft = recordingId ? await db.meeting.findUnique({ where: { recordingId } }) : null
+    const draft = recordingId ? await findRecordingDraft(auth.workspaceId, recordingId) : null
     const meeting =
-      draft && draft.workspaceId === auth.workspaceId && (draft.status === 'recording' || isInterruptedDraft(draft))
+      draft && (draft.status === 'recording' || isInterruptedDraft(draft))
         ? await db.meeting.update({
             where: { id: draft.id },
             data: {
@@ -435,7 +435,6 @@ export async function handleLiveChunk(
   }
 
   const draft = await upsertRecordingDraft(owner, recordingId, {})
-  if (!draft) return error(c, 404, 'not_found', 'Meeting not found')
   try {
     const result = await appendLiveTranscript(draft.id, { audio, start, seq })
     if (!result.ok) {

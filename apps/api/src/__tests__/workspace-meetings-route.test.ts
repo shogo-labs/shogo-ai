@@ -34,7 +34,14 @@ function matches(row: any, where: any): boolean {
 }
 
 function findBy(store: Map<string, any>, where: any) {
-  return Array.from(store.values()).find((row) => matches(row, where)) ?? null
+  const { workspaceId_recordingId: compound, ...rest } = where ?? {}
+  return Array.from(store.values()).find((row) => matches(row, { ...rest, ...compound })) ?? null
+}
+
+function uniqueViolation() {
+  const err: any = new Error('Unique constraint failed')
+  err.code = 'P2002'
+  return err
 }
 
 const prismaMock = {
@@ -49,6 +56,9 @@ const prismaMock = {
         .sort((a, b) => +b.createdAt - +a.createdAt)
         .slice(0, take ?? 1000),
     create: async ({ data }: any) => {
+      if (data.recordingId && findBy(meetings, { workspaceId: data.workspaceId, recordingId: data.recordingId })) {
+        throw uniqueViolation()
+      }
       const row = { id: `m${++seq}`, createdAt: new Date(Date.now() + seq), transcript: null, ...data }
       meetings.set(row.id, row)
       return row
@@ -200,10 +210,23 @@ describe('island recording drafts', () => {
     expect(fetched.meeting.notes).toBe('ask about pricing')
   })
 
-  test("cannot write into another workspace's draft", async () => {
-    seed({ workspaceId: 'ws-other', recordingId: 'rec-2', status: 'recording', notes: 'theirs' })
-    expect((await req('PUT', '/workspaces/ws-me/meetings/recordings/rec-2', { notes: 'mine' })).status).toBe(404)
-    expect(findBy(meetings, { recordingId: 'rec-2' }).notes).toBe('theirs')
+  test("the same recording id in another workspace is a separate draft", async () => {
+    const theirs = seed({ workspaceId: 'ws-other', recordingId: 'rec-2', status: 'recording', notes: 'theirs' })
+    expect((await req('GET', '/workspaces/ws-me/meetings/recordings/rec-2')).status).toBe(404)
+    const mine = await (await req('PUT', '/workspaces/ws-me/meetings/recordings/rec-2', { notes: 'mine' })).json()
+    expect(mine.meeting.id).not.toBe(theirs.id)
+    expect(mine.meeting.notes).toBe('mine')
+    expect(meetings.get(theirs.id).notes).toBe('theirs')
+  })
+
+  test('concurrent first writes create one draft', async () => {
+    const results = await Promise.all([
+      service.upsertRecordingDraft({ workspaceId: 'ws-me', userId: 'user-1' }, 'rec-race', { notes: 'typed' }),
+      service.upsertRecordingDraft({ workspaceId: 'ws-me', userId: 'user-1' }, 'rec-race', {}),
+    ])
+    expect(results[0].id).toBe(results[1].id)
+    expect(Array.from(meetings.values()).filter((m) => m.recordingId === 'rec-race')).toHaveLength(1)
+    expect(findBy(meetings, { recordingId: 'rec-race' }).notes).toBe('typed')
   })
 
   test('enhance waits until the recording is transcribed', async () => {
