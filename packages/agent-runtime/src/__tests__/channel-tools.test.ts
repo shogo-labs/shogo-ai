@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CORE_TOOL_NAMES } from '../capability-profiles'
-import { CHANNEL_TOOL_NAMES, createChannelTools } from '../channel-tools'
+import { CHANNEL_TOOL_NAMES, createChannelTools, TEAM_CHAT_GUIDE, teamChatToolsAvailable } from '../channel-tools'
 
 function ctx(overrides: Partial<ToolContext> = {}, capabilityProfile?: 'personal' | 'team'): ToolContext {
   return {
@@ -90,9 +90,9 @@ describe('channel tools call the internal agent-channel API', () => {
   })
 
   test('team_chat_post sends the project identity; workspace runtimes post as the workspace agent', async () => {
-    reply = { message: { id: 'm2', conversationId: 'c1' } }
+    reply = { message: { id: 'm2', conversationId: 'c1', threadRootId: 'r1', runId: null } }
     const posted = payload(await tool('team_chat_post').execute('t', { channel: 'general', text: 'Done', thread_id: 'r1' }))
-    expect(posted).toEqual({ ok: true, id: 'm2', conversationId: 'c1' })
+    expect(posted).toEqual({ ok: true, id: 'm2', conversationId: 'c1', runId: null, url: null, thread_id: 'r1' })
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ text: 'Done', threadRootId: 'r1', projectId: 'proj-1' })
 
     process.env.WORKSPACE_RUNTIME = 'true'
@@ -101,11 +101,39 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(JSON.parse(String(calls[1].init?.body)).projectId).toBeNull()
   })
 
+  test('team_chat_post sends the chat session, owner flag and run id; a root post returns its own id as thread_id', async () => {
+    reply = { message: { id: 'root-9', conversationId: 'c1', threadRootId: 'root-9', runId: 'run-7' } }
+    const posted = payload(await tool('team_chat_post', ctx({ sessionId: 'sess-1' })).execute('t', {
+      channel: '#issue-pipeline', text: 'New issue #12', owner: true, run_id: 'run-7',
+    }))
+    expect(posted.thread_id).toBe('root-9')
+    expect(posted.runId).toBe('run-7')
+    expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/issue-pipeline/messages')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      text: 'New issue #12', projectId: 'proj-1', sessionId: 'sess-1', owner: true, runId: 'run-7',
+    })
+  })
+
+  test('team_directory returns people, agents and groups with their tags', async () => {
+    reply = {
+      directory: {
+        people: [{ userId: 'u1', name: 'Ana', email: 'ana@example.com', tag: '<@u:u1>' }],
+        agents: [{ projectId: 'p2', name: 'Planner', role: 'Writes plans', tag: '<@a:p:p2>' }],
+        groups: [{ groupId: 'g1', handle: 'maintainers', name: 'Maintainers', tag: '<@g:g1>' }],
+      },
+    }
+    const dir = payload(await tool('team_directory').execute('t', {}))
+    expect(dir.agents[0].tag).toBe('<@a:p:p2>')
+    expect(dir.groups[0].handle).toBe('maintainers')
+    expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/directory')
+  })
+
   test('team_chat_dm and team_chat_search', async () => {
     reply = { message: { id: 'm3', conversationId: 'dm1' } }
-    await tool('team_chat_dm').execute('t', { user: 'ana@example.com', text: 'Approve?' })
+    await tool('team_chat_dm', ctx({ sessionId: 'sess-2' })).execute('t', { user: 'ana@example.com', text: 'Approve?' })
     expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/dm')
     expect(JSON.parse(String(calls[0].init?.body)).user).toBe('ana@example.com')
+    expect(JSON.parse(String(calls[0].init?.body)).sessionId).toBe('sess-2')
 
     reply = { results: [{ id: 'm4', channel: 'support', text: 'refund issued' }] }
     const found = payload(await tool('team_chat_search').execute('t', { query: 'refund' }))
@@ -125,5 +153,23 @@ describe('channel tools call the internal agent-channel API', () => {
 
     const noWs = payload(await tool('team_chat_list', ctx({ workspaceId: undefined })).execute('t', {}))
     expect(noWs.code).toBe('no_workspace')
+  })
+})
+
+describe('team chat prompt section', () => {
+  test('is included only when the runtime registers the team chat tools', () => {
+    expect(teamChatToolsAvailable('team')).toBe(false)
+    process.env.WORKSPACE_ID = 'ws-1'
+    expect(teamChatToolsAvailable('team')).toBe(true)
+    expect(teamChatToolsAvailable(undefined)).toBe(true)
+    expect(teamChatToolsAvailable('personal')).toBe(false)
+  })
+
+  test('covers hand-offs, tagging people, and thread ownership', () => {
+    expect(TEAM_CHAT_GUIDE).toContain('## Team Chat')
+    expect(TEAM_CHAT_GUIDE).toContain('Hand work to another agent by tagging it')
+    expect(TEAM_CHAT_GUIDE).toContain('Tag people only when you need a decision')
+    expect(TEAM_CHAT_GUIDE).toContain('team_chat_dm')
+    expect(TEAM_CHAT_GUIDE).toContain('you own that thread')
   })
 })

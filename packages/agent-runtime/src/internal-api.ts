@@ -863,23 +863,89 @@ export async function readAgentChannel(
 export async function postAgentChannelMessage(
   workspaceId: string,
   channel: string,
-  input: { text: string; threadRootId?: string; identity: AgentChannelIdentity },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  input: {
+    text: string
+    threadRootId?: string
+    identity: AgentChannelIdentity
+    /** The runtime's chat session, so the post joins the @mention chain it's part of. */
+    sessionId?: string
+    /** Make this agent the thread owner (answers unaddressed replies). Root posts own their thread by default. */
+    owner?: boolean
+    runId?: string
+  },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
     method: 'POST',
-    body: JSON.stringify({ text: input.text, threadRootId: input.threadRootId, projectId: input.identity.projectId }),
-    parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+    body: JSON.stringify({
+      text: input.text,
+      threadRootId: input.threadRootId,
+      projectId: input.identity.projectId,
+      sessionId: input.sessionId,
+      owner: input.owner,
+      runId: input.runId,
+    }),
+    parse: (j) => ({
+      id: j?.message?.id,
+      conversationId: j?.message?.conversationId,
+      threadId: j?.message?.threadRootId ?? j?.message?.id,
+      runId: j?.message?.runId ?? null,
+      url: j?.message?.url ?? null,
+    }),
   })
 }
 
 export async function sendAgentDirectMessage(
   workspaceId: string,
-  input: { user: string; text: string; identity: AgentChannelIdentity },
+  input: { user: string; text: string; identity: AgentChannelIdentity; sessionId?: string },
 ): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
   return personalFetch(channelsPath(workspaceId, '/dm'), {
     method: 'POST',
-    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId }),
+    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId, sessionId: input.sessionId }),
     parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+  })
+}
+
+export interface TeamDirectory {
+  people: Array<{ userId: string; name: string | null; email: string; tag: string }>
+  agents: Array<{ projectId: string | null; name: string; role: string | null; tag: string }>
+  groups: Array<{ groupId: string; handle: string; name: string; tag: string }>
+}
+
+export interface LiveTeamChannelsResponse {
+  channels: Array<{ id: string; name: string; topic: string | null; private: boolean; agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null }>; userEmails: string[] }>
+  groups: Record<string, string[]>
+}
+
+export async function listTeamChannels(workspaceId: string): Promise<CheckpointCallResult<LiveTeamChannelsResponse>> {
+  return personalFetch(channelsPath(workspaceId, '/team-channels'), {
+    method: 'GET',
+    parse: (j) => ({ channels: j?.channels ?? [], groups: j?.groups ?? {} }),
+  })
+}
+
+export async function upsertTeamChannel(
+  workspaceId: string,
+  name: string,
+  input: {
+    topic?: string
+    private?: boolean
+    agents?: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null }>
+    removeAgentProjectIds?: string[]
+    userEmails?: string[]
+    groupHandles?: string[]
+  },
+): Promise<CheckpointCallResult<{ created: boolean; changes: string[]; channel: { id: string; name: string } }>> {
+  return personalFetch(channelsPath(workspaceId, `/team-channels/${encodeURIComponent(name)}`), {
+    method: 'PUT',
+    body: JSON.stringify(input),
+    parse: (j) => ({ created: !!j?.created, changes: j?.changes ?? [], channel: j?.channel }),
+  })
+}
+
+export async function getTeamDirectory(workspaceId: string): Promise<CheckpointCallResult<TeamDirectory>> {
+  return personalFetch(channelsPath(workspaceId, '/directory'), {
+    method: 'GET',
+    parse: (j) => (j?.directory ?? { people: [], agents: [], groups: [] }) as TeamDirectory,
   })
 }
 

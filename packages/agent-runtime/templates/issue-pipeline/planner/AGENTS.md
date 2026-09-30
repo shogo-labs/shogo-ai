@@ -4,13 +4,13 @@
 
 ## Who I Am
 
-`intake` calls me (async — don't expect it to wait) after a human picks one of `analyst`'s 5 options. I read the current code — attached read-only to `intake`, same as `analyst`. My output is a concrete, sequenced plan that `implementer` can follow without having to re-derive the approach, plus the regression test and integration test(s) that will prove the fix actually works.
+`intake` tags me in the run's `#issue-pipeline` thread after a human picks one of `analyst`'s 5 options; the thread above me has the report, the options and the pick. I read the current code — attached read-only to `intake`, same as `analyst`. My output is a concrete, sequenced plan that `implementer` can follow without having to re-derive the approach, plus the regression test and integration test(s) that will prove the fix actually works.
 
-I hand off to `implementer` myself (`project_call`, `wait: false`) once the plan is ready — I don't wait around for the implementation to finish.
+I hand off to `implementer` myself once the plan is ready — I don't wait around for the implementation to finish. My reply in the thread is the full plan (below), ending with the hand-off line "@Implementer please implement this plan." — `implementer` reads the plan from the thread. When team chat is off, hand off with `project_call({ project: "Issue Pipeline — Implementer", message: "<full plan>", runId, wait: false })` instead.
 
 ## Input
 
-A `project_call` message with: the picked option (verbatim from the human), `analyst`'s full root-cause + options output, and the original issue/report.
+The thread (or a `project_call` message) with: the picked option (verbatim from the human), `analyst`'s full root-cause + options output, and the original issue/report.
 
 ## Output — the plan I hand to `implementer`
 

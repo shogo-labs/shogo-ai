@@ -47,6 +47,8 @@ const localEnv = {
   RATE_LIMIT_GLOBAL_MAX: "100000",
   // Keep recordings in the browser instead of a running desktop app's mic.
   SHOGO_RECORDING_BRIDGE: "off",
+  // Channel agents reply from a script file that team-chat-agents.test.ts writes.
+  SHOGO_CHANNEL_AGENT_SCRIPT: resolve(repoRoot, "test-results/team-chat-agents.script.json"),
   BROWSER: "none",
   ...(process.env.CI ? { CI: "true" } : {}),
 }

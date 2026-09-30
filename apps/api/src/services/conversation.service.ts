@@ -11,6 +11,7 @@ import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { parseMentions, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
+import type { AgentChain } from './conversation-agent-chain'
 
 const db = prisma as any
 
@@ -740,6 +741,10 @@ export interface PostMessageInput {
   agentSessionId?: string | null
   externalRef?: string | null
   externalThreadRef?: string | null
+  /** Agent @mention chain this message belongs to; `rootMessageId` is filled in here. */
+  agentChain?: AgentChain | null
+  /** Record mentions (and notify) on a system message. Off by default so join/leave notices stay quiet. */
+  systemMentions?: boolean
   createdAt?: Date
 }
 
@@ -816,10 +821,14 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
-  const mentions = input.authorType === 'system' ? [] : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
+  const mentions = input.authorType === 'system' && !input.systemMentions
+    ? []
+    : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
 
+  const id = crypto.randomUUID()
   const row = await db.conversationMessage.create({
     data: {
+      id,
       conversationId: conversation.id,
       workspaceId: conversation.workspaceId,
       seq: bumped.lastSeq,
@@ -836,6 +845,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       agentSessionId: input.agentSessionId ?? null,
       externalRef: input.externalRef ?? null,
       externalThreadRef: input.externalThreadRef ?? null,
+      agentChain: input.agentChain ? { ...input.agentChain, rootMessageId: root?.id ?? id } : undefined,
       createdAt: now,
       mentions: mentions.length
         ? {
@@ -907,6 +917,23 @@ export async function updateMessageInternal(messageId: string, data: Record<stri
   return message
 }
 
+/** Re-derive a message's mention rows from `text` (edits, finished agent replies). */
+export async function replaceMentions(messageId: string, workspaceId: string, text: string): Promise<ParsedMention[]> {
+  await db.conversationMention.deleteMany({ where: { messageId } })
+  const mentions = await expandGroupMentions(workspaceId, parseMentions(text))
+  for (const m of mentions) {
+    await db.conversationMention.create({
+      data: {
+        messageId,
+        targetType: m.targetType,
+        targetUserId: m.targetType === 'user' ? m.userId : null,
+        projectId: m.targetType === 'agent' ? m.projectId : null,
+      },
+    })
+  }
+  return mentions
+}
+
 export async function editMessage(messageId: string, userId: string, text: string) {
   const row = await db.conversationMessage.findUnique({ where: { id: messageId } })
   if (!row || row.deletedAt) throw new ConversationError(404, 'not_found', 'Message not found')
@@ -917,20 +944,7 @@ export async function editMessage(messageId: string, userId: string, text: strin
   const next = (text ?? '').toString()
   if (!next.trim()) throw new ConversationError(400, 'empty', 'Message is empty')
   if (next.length > MAX_MESSAGE_CHARS) throw new ConversationError(400, 'too_long', 'Message is too long')
-  await db.conversationMention.deleteMany({ where: { messageId } })
-  const mentions = await expandGroupMentions(row.workspaceId, parseMentions(next))
-  if (mentions.length) {
-    for (const m of mentions) {
-      await db.conversationMention.create({
-        data: {
-          messageId,
-          targetType: m.targetType,
-          targetUserId: m.targetType === 'user' ? m.userId : null,
-          projectId: m.targetType === 'agent' ? m.projectId : null,
-        },
-      })
-    }
-  }
+  await replaceMentions(messageId, row.workspaceId, next)
   await db.conversationMessageEmbedding.deleteMany({ where: { messageId } })
   return updateMessageInternal(messageId, { text: next, editedAt: new Date() })
 }

@@ -163,6 +163,37 @@ const MODULES: ModuleSpec[] = [
   },
 ]
 
+/**
+ * Team chat channels the pipeline works in. `#issue-pipeline` holds one
+ * thread per run: stages hand off by tagging the next one, and people pick
+ * options by replying. Reviewers stay on `project_call`, so they are not
+ * members. `@maintainers` is the group tagged for decisions.
+ */
+const TEAM_CHANNELS = [
+  {
+    name: 'issue-pipeline',
+    topic: 'One thread per issue: reproduction, options, the pick, the plan, reviews and the PR.',
+    members: [
+      { project: 'intake' },
+      { project: 'analyst' },
+      { project: 'planner' },
+      { project: 'implementer' },
+      { project: 'done-gate' },
+      { group: 'maintainers' },
+    ],
+  },
+  {
+    name: 'pipeline-alerts',
+    topic: 'Stalled and stale runs, and the daily retrospective digest.',
+    members: [
+      { project: 'intake' },
+      { project: 'retrospective' },
+      { project: ANCHOR_KEY },
+      { group: 'maintainers' },
+    ],
+  },
+]
+
 // ---------------------------------------------------------------------------
 // File collection
 // ---------------------------------------------------------------------------
@@ -236,6 +267,7 @@ export function buildManifest(): unknown {
       'Self-assembling multi-agent pipeline: every incoming issue is reproduced, analysed into 5 options, planned, implemented, reviewed (security/scalability/DRY), gated, and shipped as a PR. See docs/issue-pipeline/PLAN.md.',
     anchor: ANCHOR_KEY,
     projects,
+    teamChannels: TEAM_CHANNELS,
   }
 }
 

@@ -5,7 +5,7 @@
  * point (app, agent tools, bridges, bots) so behavior can't drift between them.
  */
 
-import { dispatchAgentsForMessage } from './conversation-agent-dispatcher'
+import { dispatchAgentsForMessage, dispatchAgentsFromAgentMessage } from './conversation-agent-dispatcher'
 import type { PostMessageResult } from './conversation.service'
 
 export type MessageOrigin = 'app' | 'agent' | 'slack' | 'teams' | 'google_chat' | 'bot' | 'system' | 'import'
@@ -15,6 +15,8 @@ const HUMAN_ORIGINS = new Set<MessageOrigin>(['app', 'slack', 'teams', 'google_c
 export interface AfterPostContext {
   actorUserId: string | null
   origin: MessageOrigin
+  /** A streamed agent reply just finished; the row was posted earlier as a placeholder. */
+  settled?: boolean
 }
 
 type Hook = (result: PostMessageResult, ctx: AfterPostContext) => Promise<void> | void
@@ -35,6 +37,10 @@ export async function afterMessagePosted(result: PostMessageResult, ctx: AfterPo
   if (ctx.actorUserId && HUMAN_ORIGINS.has(ctx.origin)) {
     await dispatchAgentsForMessage(result, ctx.actorUserId).catch((err) => {
       console.error('[Channels] agent dispatch failed:', err)
+    })
+  } else if (ctx.origin === 'agent') {
+    await dispatchAgentsFromAgentMessage(result).catch((err) => {
+      console.error('[Channels] agent chain dispatch failed:', err)
     })
   }
   // Mirrored channels live on the external platform, which does its own

@@ -55,9 +55,26 @@ tracker comment to merged PR.
    section. `planGap=true` blames the planner, `planGap=false` blames the
    implementer, recurring `accepted=false` blames the reviewer. Prompts are
    files, so checkpoints are the version history; no `PromptVersion` table.
-5. **Human gate = a decision record, not a chat reply.** Options are posted
-   to the task source (Jira comment, GitHub issue comment, or the built-in
-   tracker) and the pick comes back through the same webhook.
+5. **Each run is a team chat thread; the task source is the mirror.** Intake
+   opens one thread per run in `#issue-pipeline` and owns it. Stages hand off
+   by @mentioning the next one in that thread (Analyst → Intake → human →
+   Planner → Implementer → Intake), so people watch and steer the run where it
+   happens. Options, the plan acknowledgement, and the PR link are mirrored to
+   the task source (Jira comment, GitHub issue comment, or the built-in
+   tracker) with a link to the thread. The human's pick can come from either
+   place; a task-source reply is copied into the thread before the run goes
+   on. Two things stay on `project_call`: the Implementer ↔ Done Gate retry
+   loop (a two-agent back-and-forth would trip the chain's ping-pong limit
+   after one fix round; Done Gate posts its verdict to the thread instead),
+   and the whole pipeline when team chat is off for the workspace.
+   Hand-off chains are bounded: `SHOGO_AGENT_CHAIN_MAX_DEPTH` (12 hand-offs),
+   `SHOGO_AGENT_CHAIN_MAX_THREAD_TURNS` (40 agent replies since the last
+   human message), and `SHOGO_AGENT_CHAIN_MAX_PING_PONG` (4 alternating
+   replies between two agents). Hitting one posts a paused note tagging the
+   person who started the run; their reply resets the counters. Every
+   hand-off is billed to that person. `SHOGO_AGENT_MENTION_CHAINS` turns
+   agent-to-agent dispatch on or off (on by default in local mode and
+   non-production environments).
 6. **Task source is an adapter.** `TaskSource` = `{ list, get, comment,
    transition }` with Jira (Composio), GitHub Issues (`gh`), and built-in
    (Prisma table in the intake project) implementations. Nothing downstream

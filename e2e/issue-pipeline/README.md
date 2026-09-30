@@ -9,6 +9,7 @@ that ladder.
 | --- | --- | --- | --- |
 | L0 | Whiteboard prose (baked into `issue-pipeline-solo`) + fixture repo with one planted bug | Single-project pipeline opens a PR fixing the bug | `l0-solo.integration.test.ts` |
 | L1 | `shogo-system.yaml` applied to a workspace | Same outcome as L0 from 10 wired projects; `system_apply` is idempotent | `l1-multi-project.integration.test.ts` |
+| L1 + team chat | Same as L1 | The run happens in one `#issue-pipeline` thread, stages hand off by @mention, GitHub gets a mirror | `l1-channels.integration.test.ts` |
 | L2 | Whiteboard prose only | Writes the manifest itself, then passes L1 | `l2-manifest-from-prose.integration.test.ts` |
 | L3 | Three seeded runs with the same accepted security finding | Planner's `## Learned` section is amended | `l3-prompt-amendment.integration.test.ts` |
 | L4 | `shogo-ai` fork + a real open issue | Mergeable PR | [`L4-RUNBOOK.md`](./L4-RUNBOOK.md) (manual — the plan's own assertion is "Human review") |
@@ -58,6 +59,9 @@ cd e2e/issue-pipeline/fixtures/target-repo && bun test
 | `PLANNER_PROJECT_ID` | L3 | Id of the `planner` project, so the test can inspect its on-disk git history. |
 | `WORKSPACES_ROOT` | L3 (optional) | Overrides the root `workspaces/` dir the harness reads project git history from. Defaults to the repo's own `workspaces/`. |
 | `PROJECT_WORKSPACE_DIR_<projectId>` | L3 (optional) | Per-project override, if a project's workspace isn't under `WORKSPACES_ROOT`. |
+| `SHOGO_API_URL` | L1 + team chat | Base URL of the Shogo API (not an agent runtime). Default `http://localhost:8002`. |
+| `SHOGO_API_KEY` | L1 + team chat | A `shogo_sk_*` key for a member of the workspace. The test reads `#issue-pipeline` and posts the pick in the thread as this person. |
+| `WORKSPACE_ID` | L1 + team chat | The workspace the manifest was applied to. |
 | `PIPELINE_POLL_MS` | all | Poll interval while waiting on GitHub/agent state. Default `5000`. |
 | `PIPELINE_TIMEOUT_MS` | all | Max wait for a full pipeline run. Default `1800000` (30 min) — these are real multi-turn capable-model runs across multiple projects, not chat replies. |
 
@@ -80,6 +84,12 @@ GITHUB_TEST_REPO=<owner>/<repo> \
 # L1 — full manifest, plus idempotency check against the anchor's agent:
 GITHUB_TEST_REPO=<owner>/<repo> AGENT_URL=http://localhost:6200 \
   bun test ./e2e/issue-pipeline/l1-multi-project.integration.test.ts
+
+# L1 with team chat — the run in an #issue-pipeline thread, picked in the
+# thread and (second test) on GitHub:
+GITHUB_TEST_REPO=<owner>/<repo> SHOGO_API_URL=http://localhost:8002 \
+  SHOGO_API_KEY=shogo_sk_... WORKSPACE_ID=<id> \
+  bun test ./e2e/issue-pipeline/l1-channels.integration.test.ts
 
 # L2, both halves — a fresh project builds the manifest from prose alone:
 AGENT_URL=http://localhost:6200 GITHUB_TEST_REPO=<owner>/<repo> \
@@ -105,6 +115,12 @@ no `test:issue-pipeline:l4` script — see `L4-RUNBOOK.md`.
   actions — the same idempotency bar `system-manifest.test.ts` and
   `issue-pipeline-template.test.ts` already enforce at the unit level, now
   proven live.
+- **L1 + team chat**: Intake opens a top-level `#issue-pipeline` message;
+  Analyst (five options), Planner, and Implementer reply in its thread in that
+  order; a Done Gate verdict lands before Implementer's "PR ready"; the options
+  on the issue link to the thread; no chain-limit pause; and the PR passes the
+  same fails-then-passes check. A plain GitHub pick must show up in the thread
+  as an Intake reply before the run continues.
 - **L2**: the manifest the agent produces parses with `parseSystemManifest`
   and has no dangling attachment targets; the resulting system then passes
   L1.

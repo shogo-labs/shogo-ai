@@ -51,9 +51,13 @@ import { afterMessagePosted } from '../services/conversation-pipeline'
 import { postAgentMessage } from '../services/chat-providers/outbound'
 import { listInstallations } from '../services/chat-providers/installations'
 import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
+import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
+import { loadTeamDirectory, resolveFriendlyMentions } from '../services/conversation-directory'
+import { listTeamChannels, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
@@ -690,7 +694,7 @@ async function renderForAgent(rows: any[]) {
   ])
   const names = {
     users: new Map<string, string>(users.map((u: any) => [u.id, `${u.name || u.email} (<@u:${u.id}>)`])),
-    projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
+    projects: new Map<string, string>(projects.map((p: any) => [p.id, `${p.name} (<@a:p:${p.id}>)`])),
   }
   return rows.map((r) => ({
     id: r.id,
@@ -737,6 +741,47 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     })
     return c.json({ channels: rows })
   })
+
+  router.get(`${base}/directory`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    return c.json({ directory: await loadTeamDirectory(auth.workspaceId) })
+  })
+
+  router.get(`${base}/team-channels`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    return c.json(await listTeamChannels(auth.workspaceId))
+  })
+
+  router.put(`${base}/team-channels/:name`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    try {
+      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name') })
+      return c.json(result, result.created ? 201 : 200)
+    } catch (err) {
+      if (err instanceof TeamChannelError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
+  /** Chain for an agent's tool post: joins the reply it's running in, and inherits the thread's run id. */
+  async function postChain(workspaceId: string, projectId: string | null, body: any, threadRootId: string | null) {
+    const runId = typeof body.runId === 'string' && body.runId.trim() ? body.runId.trim().slice(0, 200) : null
+    const chain = await chainForAgentPost({
+      workspaceId,
+      agent: { projectId },
+      sessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
+      runId,
+    })
+    if (chain && !chain.runId && threadRootId) {
+      const inherited = (await rootChain(threadRootId))?.runId
+      if (inherited) chain.runId = inherited
+    }
+    return chain
+  }
 
   router.get(`${base}/search`, async (c) => {
     const auth = await config.authorize(c)
@@ -798,14 +843,29 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       return c.json({ error: { code: 'not_found', message: 'Channel not found or not open to agent posts' } }, 404)
     }
     try {
+      const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
+      const agentChain = await postChain(auth.workspaceId, projectId, body, threadRootId)
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: String(body.text ?? ''),
+        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? '')),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
-        threadRootId: typeof body.threadRootId === 'string' ? body.threadRootId : null,
+        threadRootId,
+        agentChain,
       })
+      const rootId = result.row.threadRootId ?? result.row.id
+      if (!result.duplicate && (body.owner === true || (!result.row.threadRootId && body.owner !== false))) {
+        await setThreadOwner(rootId, { projectId }, agentChain?.runId)
+      }
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
-      return c.json({ message: { id: result.message.id, conversationId: conversation.id } }, 201)
+      return c.json({
+        message: {
+          id: result.message.id,
+          conversationId: conversation.id,
+          threadRootId: rootId,
+          runId: agentChain?.runId ?? null,
+          url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}?thread=${encodeURIComponent(rootId)}`,
+        },
+      }, 201)
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -830,8 +890,9 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       const conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: String(body.text ?? ''),
+        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? '')),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
+        agentChain: await postChain(auth.workspaceId, projectId, body, null),
       })
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({ message: { id: result.message.id, conversationId: conversation.id } }, 201)

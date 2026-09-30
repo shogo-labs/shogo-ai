@@ -2921,6 +2921,8 @@ model ConversationMessage {
   externalRef       String?
   /// Provider thread id for thread roots whose thread id differs from their message id (Google Chat).
   externalThreadRef String?
+  /// { rootMessageId, originUserId, depth, hops, turns, runId?, owner? } for agent @mention chains.
+  agentChain        String?
   editedAt          DateTime?
   deletedAt         DateTime?
   createdAt         DateTime  @default(now())

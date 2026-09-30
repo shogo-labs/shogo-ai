@@ -20,22 +20,44 @@ import {
   renderMentionsAsText,
   type AgentTarget,
   type MentionNames,
+  type ParsedMention,
 } from './conversation-mentions'
 import {
   agentDisplayName,
   listAgentMembers,
+  MESSAGE_INCLUDE,
+  postMessage,
+  replaceMentions,
+  serializeMessage,
   type PostMessageResult,
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
 import { tryAcquireSharedSlot } from '../lib/chat-limits'
+import {
+  agentMentionChainsEnabled,
+  agentTurnsSinceHuman,
+  chainLimitHit,
+  envInt,
+  humanChain,
+  MAX_AGENT_CHAIN_DEPTH,
+  MAX_AGENT_PING_PONG_TURNS,
+  MAX_AGENT_TURNS_PER_THREAD,
+  nextChain,
+  readChain,
+  rootChain,
+  threadOwner,
+  type AgentChain,
+  type ChainLimit,
+} from './conversation-agent-chain'
+import { resolveFriendlyMentions } from './conversation-directory'
 
 const db = prisma as any
 
 export const MAX_AGENTS_PER_MESSAGE = 3
-export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = 6
+export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = envInt('SHOGO_CHANNEL_AGENT_CONCURRENCY', 6)
 const CONTEXT_MESSAGES = 20
 const DELTA_THROTTLE_MS = 350
-const AGENT_REPLY_TIMEOUT_MS = 30 * 60_000
+export const AGENT_REPLY_TIMEOUT_MS = envInt('SHOGO_CHANNEL_AGENT_TIMEOUT_MS', 30 * 60_000)
 const PROVIDER_SURFACE: Record<string, string> = { slack: 'Slack', teams: 'Microsoft Teams', google_chat: 'Google Chat' }
 
 interface DispatcherConfig {
@@ -50,7 +72,7 @@ export function configureConversationAgentDispatcher(next: DispatcherConfig): vo
   config = { ...config, ...next }
 }
 
-interface InvokeArgs {
+export interface InvokeArgs {
   workspaceId: string
   projectId: string | null
   sessionId: string
@@ -134,11 +156,29 @@ async function inWorkspace(workspaceId: string, targets: AgentTarget[]): Promise
   return targets.filter((t) => !t.projectId || allowed.has(t.projectId))
 }
 
-export async function selectAgentTargets(result: Pick<PostMessageResult, 'row' | 'conversation'>): Promise<AgentTarget[]> {
+/** Private channels only admit agents that are members. */
+async function allowedInConversation(conversation: any, targets: AgentTarget[]): Promise<AgentTarget[]> {
+  if (conversation.kind !== 'private' || !targets.length) return targets
+  const members = await listAgentMembers(conversation.id)
+  const keys = new Set(members.map((m: any) => agentKey({ projectId: m.projectId ?? null })))
+  return targets.filter((t) => keys.has(agentKey(t)))
+}
+
+export async function selectAgentTargets(
+  result: Pick<PostMessageResult, 'row' | 'conversation'>,
+  options: { fromAgent?: boolean } = {},
+): Promise<AgentTarget[]> {
   const { row, conversation } = result
   const targets = new Map<string, AgentTarget>()
   for (const target of await inWorkspace(conversation.workspaceId, mentionedAgents(row.text))) {
     targets.set(agentKey(target), target)
+  }
+
+  if (options.fromAgent) {
+    // Agents wake each other only by explicit mention: channel triggers
+    // ("all", keywords) and thread follow-ups would turn every post into a loop.
+    targets.delete(agentKey({ projectId: row.authorAgentRef?.projectId ?? null }))
+    return (await allowedInConversation(conversation, Array.from(targets.values()))).slice(0, MAX_AGENTS_PER_MESSAGE)
   }
 
   if (!targets.size) {
@@ -155,7 +195,8 @@ export async function selectAgentTargets(result: Pick<PostMessageResult, 'row' |
   }
 
   if (!targets.size && row.threadRootId) {
-    const target = await threadAgent(conversation.id, row.threadRootId)
+    const owner = await threadOwner(row.threadRootId)
+    const target = (owner && (await inWorkspace(conversation.workspaceId, [owner]))[0]) || (await threadAgent(conversation.id, row.threadRootId))
     if (target) targets.set(agentKey(target), target)
   }
 
@@ -166,15 +207,73 @@ export async function selectAgentTargets(result: Pick<PostMessageResult, 'row' |
 export async function dispatchAgentsForMessage(result: PostMessageResult, actorUserId: string): Promise<AgentTarget[]> {
   if (result.duplicate || result.row.authorType !== 'user') return []
   const targets = await selectAgentTargets(result)
+  if (!targets.length) return []
+  const chain = humanChain(result.row, actorUserId, await rootChain(result.row.threadRootId))
   for (const target of targets) {
     void runAgentReply({
       conversation: result.conversation,
       trigger: result.row,
       target,
       userId: actorUserId,
+      chain: nextChain(chain, target, 0),
     }).catch((err) => console.error('[ChannelAgent] reply failed:', err))
   }
   return targets
+}
+
+function replyThreadRoot(conversation: any, trigger: any): string | null {
+  return isAgentDm(conversation) ? trigger.threadRootId ?? null : trigger.threadRootId ?? trigger.id
+}
+
+/**
+ * Entry point after an agent posts (tool post or finished reply) with agent
+ * mentions in it. Runs the mentioned agents as the next hop of the chain,
+ * billed to the person who started it, unless a chain limit trips.
+ */
+export async function dispatchAgentsFromAgentMessage(result: Pick<PostMessageResult, 'row' | 'conversation' | 'duplicate'>): Promise<AgentTarget[]> {
+  const { row, conversation } = result
+  if (result.duplicate || row.authorType !== 'agent' || !agentMentionChainsEnabled()) return []
+  const chain = readChain(row.agentChain)
+  if (!chain?.originUserId || !mentionedAgents(row.text).length) return []
+  const targets = await selectAgentTargets(result, { fromAgent: true })
+  if (!targets.length) return []
+
+  const turns = await agentTurnsSinceHuman(conversation.id, replyThreadRoot(conversation, row))
+  const started: AgentTarget[] = []
+  let tripped: ChainLimit | null = null
+  for (const target of targets) {
+    const next = nextChain(chain, target, turns + started.length)
+    const limit = chainLimitHit(next)
+    if (limit) {
+      tripped ??= limit
+      continue
+    }
+    started.push(target)
+    void runAgentReply({ conversation, trigger: row, target, userId: chain.originUserId, chain: next })
+      .catch((err) => console.error('[ChannelAgent] chained reply failed:', err))
+  }
+  if (tripped) await postChainPaused(conversation, row, chain, tripped)
+  return started
+}
+
+function pausedReason(limit: ChainLimit): string {
+  if (limit === 'depth') return `after ${MAX_AGENT_CHAIN_DEPTH} agent hand-offs`
+  if (limit === 'thread_turns') return `after ${MAX_AGENT_TURNS_PER_THREAD} agent turns in this thread`
+  return `because two agents handed work back and forth ${MAX_AGENT_PING_PONG_TURNS} times`
+}
+
+/** Stop a chain: a system note in the thread that tags (and notifies) whoever started it. */
+async function postChainPaused(conversation: any, trigger: any, chain: AgentChain, limit: ChainLimit): Promise<void> {
+  const result = await postMessage({
+    conversationId: conversation.id,
+    authorType: 'system',
+    threadRootId: replyThreadRoot(conversation, trigger),
+    text: `Paused ${pausedReason(limit)}. <@u:${chain.originUserId}>, reply here to continue.`,
+    blocks: { chainPaused: { limit, depth: chain.depth } },
+    systemMentions: true,
+  })
+  const { afterMessagePosted } = await import('./conversation-pipeline')
+  await afterMessagePosted(result, { actorUserId: null, origin: 'system' })
 }
 
 // ─── Reply execution ─────────────────────────────────────────────────────────
@@ -257,8 +356,9 @@ async function buildPrompt(args: {
   reusedSession: boolean
   name: string
   workspaceName: string
+  chain: AgentChain
 }): Promise<string> {
-  const { conversation, trigger, threadRootId, reusedSession, name, workspaceName } = args
+  const { conversation, trigger, threadRootId, reusedSession, name, workspaceName, chain } = args
   let history: any[]
   if (threadRootId) {
     history = await db.conversationMessage.findMany({
@@ -295,10 +395,32 @@ async function buildPrompt(args: {
     threadRootId ? 'You are replying inside a thread; the thread so far is below.' : 'Recent messages are below.',
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',
+    ...chainContext(conversation, trigger, threadRootId, chain),
     '',
     transcript,
   ]
   return lines.join('\n')
+}
+
+function chainContext(conversation: any, trigger: any, threadRootId: string | null, chain: AgentChain): string[] {
+  const ids = [`channel id ${conversation.id}`]
+  if (threadRootId) ids.push(`thread id ${threadRootId}`)
+  if (chain.runId) ids.push(`run id ${chain.runId}`)
+  const lines = [`Team chat context: ${ids.join(', ')}.`]
+  if (trigger.authorType === 'agent') {
+    lines.push(`${trigger.authorAgentRef?.name ?? 'Another agent'} (an agent) handed this to you.`)
+  }
+  lines.push(
+    'To hand work to another agent, tag them in your reply (e.g. @Planner); they run next in this thread. ' +
+      'Tag people only when you need a decision from them.',
+  )
+  if (chain.depth >= MAX_AGENT_CHAIN_DEPTH - 2 || chain.turns >= MAX_AGENT_TURNS_PER_THREAD - 3) {
+    lines.push(
+      `This is agent hand-off ${chain.depth} of ${MAX_AGENT_CHAIN_DEPTH}; finish the work or ask a person ` +
+        'instead of handing off again.',
+    )
+  }
+  return lines
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {
@@ -468,13 +590,15 @@ export interface RunAgentReplyArgs {
   trigger: any
   target: AgentTarget
   userId: string
+  /** Chain state for this reply; a fresh human-started chain when omitted. */
+  chain?: AgentChain
 }
 
 export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
   if (!(await inWorkspace(conversation.workspaceId, [target])).length) return null
-  const agentDm = isAgentDm(conversation)
-  const threadRootId = agentDm ? trigger.threadRootId ?? null : trigger.threadRootId ?? trigger.id
+  const threadRootId = replyThreadRoot(conversation, trigger)
+  const chain = args.chain ?? nextChain(humanChain(trigger, userId, await rootChain(trigger.threadRootId)), target, 0)
   const name = await agentName(conversation.workspaceId, target)
   const workspace = await db.workspace.findUnique({ where: { id: conversation.workspaceId }, select: { name: true } })
 
@@ -487,6 +611,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     agent: { projectId: target.projectId, name },
     threadRootId,
     agentSessionId: sessionId,
+    agentChain: chain,
   })
   const messageId = reply.messageId
   const settle = (text: string, agentStatus: string) => finishAgentReply(reply, { text, agentStatus })
@@ -510,7 +635,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   try {
     release = await acquireSlot(conversation.workspaceId, controller.signal)
     const prompt = await buildPrompt({
-      conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace',
+      conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace', chain,
     })
     await db.chatMessage.create({
       data: { sessionId, role: 'user', content: prompt, parts: JSON.stringify([{ type: 'text', text: prompt }]), agent: 'technical' },
@@ -538,8 +663,13 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
       await settle(finalText || '_Stopped._', 'stopped')
     } else if (summary.failed && !finalText) {
       await settle(`I couldn't finish that: ${summary.error ?? 'the agent run failed'}`, 'error')
-    } else {
+    } else if (summary.failed || !finalText) {
       await settle(finalText || '_No response._', summary.failed ? 'error' : 'done')
+    } else {
+      const text = await resolveFriendlyMentions(conversation.workspaceId, finalText)
+      const mentions = /<[@!]/.test(text) ? await replaceMentions(messageId, conversation.workspaceId, text) : []
+      await settle(text, 'done')
+      if (mentions.length) await afterReplySettled(reply.conversation, messageId, mentions)
     }
     return messageId
   } catch (err: any) {
@@ -555,6 +685,21 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     clearTimeout(timeout)
     running.delete(messageId)
     release?.()
+  }
+}
+
+/** A finished reply's mentions notify people and wake the agents it tags. */
+async function afterReplySettled(conversation: any, messageId: string, mentions: ParsedMention[]): Promise<void> {
+  try {
+    const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
+    if (!row) return
+    const { afterMessagePosted } = await import('./conversation-pipeline')
+    await afterMessagePosted(
+      { message: serializeMessage(row), row, conversation, mentions, duplicate: false },
+      { actorUserId: null, origin: 'agent', settled: true },
+    )
+  } catch (err) {
+    console.error('[ChannelAgent] post-reply hooks failed:', err)
   }
 }
 

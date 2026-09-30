@@ -29,6 +29,7 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
+import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
@@ -4133,6 +4134,10 @@ export class AgentGateway {
 
     if (this.config.quickActionsEnabled !== false) {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
+    }
+
+    if (teamChatToolsAvailable(this.config.capabilityProfile)) {
+      pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
     }
 
     // 4. Security permissions guide (stable once mode is set)

@@ -13,6 +13,7 @@
 import { prisma } from '../../lib/prisma'
 import { renderMentionsAsText } from '../conversation-mentions'
 import { conversationAudience, type PostMessageResult } from '../conversation.service'
+import type { AgentChain } from '../conversation-agent-chain'
 import { getChatProvider } from './registry'
 import { installationForWorkspace } from './installations'
 import { shogoProvider } from './shogo'
@@ -117,6 +118,7 @@ export async function postAgentMessage(input: {
   agentStatus?: string
   agentSessionId?: string | null
   externalRef?: string | null
+  agentChain?: AgentChain | null
 }): Promise<PostMessageResult> {
   const conversation = await db.conversation.findUnique({
     where: { id: input.conversationId },
@@ -135,6 +137,7 @@ export async function postAgentMessage(input: {
     agentSessionId: input.agentSessionId ?? null,
     externalRef: external ? null : input.externalRef ?? null,
     clientMsgId: external ? input.externalRef?.slice(0, 100) ?? null : null,
+    agentChain: input.agentChain ?? null,
   })
   if (!result.duplicate) {
     await mirror(result.conversation, result.row, input.text, { type: 'agent', ...input.agent })
@@ -148,6 +151,7 @@ export async function startAgentReply(input: {
   agent: { projectId: string | null; name: string }
   threadRootId: string | null
   agentSessionId: string
+  agentChain?: AgentChain | null
 }): Promise<AgentReplyHandle> {
   const author: OutboundAuthor = { type: 'agent', ...input.agent }
   const placeholder = await shogoProvider.postMessage({
@@ -158,6 +162,7 @@ export async function startAgentReply(input: {
     threadRootId: input.threadRootId,
     agentStatus: 'running',
     agentSessionId: input.agentSessionId,
+    agentChain: input.agentChain ?? null,
   })
   const external = await mirror(placeholder.conversation, placeholder.row, WORKING_TEXT, author)
   return {

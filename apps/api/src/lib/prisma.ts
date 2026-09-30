@@ -58,7 +58,7 @@ const JSON_OBJECT_FIELDS = new Set([
   // ModelDefinition capability ratings (Json? on PG, String? JSON on SQLite)
   'capabilities',
   // ConversationMessage structured content and agent author reference
-  'blocks', 'authorAgentRef',
+  'blocks', 'authorAgentRef', 'agentChain',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

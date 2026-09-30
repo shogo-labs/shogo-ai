@@ -22,6 +22,7 @@ import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agen
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
 import { configureConversationAgentDispatcher } from '../services/conversation-agent-dispatcher'
+import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
 import { createAgentTaskRoutes } from '../routes/agent-tasks'
 import { diagnosticsRoutes } from '../../../../packages/shared-runtime/src/diagnostics'
 import { testsRoutes } from '../routes/tests'
@@ -125,7 +126,8 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', sharedMeetingRoutes())
-  configureConversationAgentDispatcher({ runtimeManager })
+  const scriptedChannelAgents = scriptedAgentInvokeFromEnv()
+  configureConversationAgentDispatcher({ runtimeManager, ...(scriptedChannelAgents ? { invoke: scriptedChannelAgents } : {}) })
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
