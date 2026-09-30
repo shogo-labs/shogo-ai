@@ -584,6 +584,15 @@ describe('meeting access is scoped to the personal workspace', () => {
     expect(meetings.get('theirs').notes).toBe('x')
   })
 
+  test('PUT caps notes at the same length as the workspace routes', async () => {
+    meetings.set('mine', { id: 'mine', workspaceId: 'w1', title: 'Mine', audioPath: '' })
+    const res = await meetingRoutes.request('/api/local/meetings/mine', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notes: 'x'.repeat(100_050) }),
+    })
+    expect(res.status).toBe(200)
+    expect(meetings.get('mine').notes).toHaveLength(100_000)
+  })
+
   test('GET /api/local/meetings/workspace returns the personal workspace id', async () => {
     const body = await (await meetingRoutes.request('/api/local/meetings/workspace')).json()
     expect(body.workspaceId).toBe('w1')

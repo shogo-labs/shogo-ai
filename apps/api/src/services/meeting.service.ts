@@ -870,6 +870,14 @@ export async function getMeetingTemplate(
   return findBuiltinTemplate(DEFAULT_TEMPLATE_ID)!
 }
 
+/** A template the workspace can use: a built-in, or one of its own. */
+export async function isUsableTemplateId(workspaceId: string, templateId: string): Promise<boolean> {
+  if (findBuiltinTemplate(templateId)) return true
+  if (isBuiltinTemplateId(templateId)) return false
+  const row = await db.meetingTemplate.findFirst({ where: { id: templateId, workspaceId }, select: { id: true } })
+  return !!row
+}
+
 export interface MeetingTemplateInput {
   name?: string
   description?: string | null

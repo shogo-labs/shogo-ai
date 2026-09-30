@@ -24,6 +24,7 @@ import {
   findRecordingDraft,
   friendlyMeetingError,
   isInterruptedDraft,
+  isUsableTemplateId,
   listMeetingTemplates,
   meetingToMarkdown,
   newShareToken,
@@ -52,6 +53,16 @@ export interface WorkspaceMeetingRoutesConfig {
 
 function error(c: any, status: number, code: string, message: string) {
   return c.json({ error: { code, message } }, status)
+}
+
+function invalidTemplate(c: any) {
+  return error(c, 400, 'invalid_template', 'Pick a built-in template or one from this workspace')
+}
+
+/** A `limit` query value as an integer in [1, max]; `fallback` when absent or malformed. */
+export function clampLimit(value: string | undefined, fallback: number, max: number): number {
+  const n = Math.floor(Number(value))
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, max) : fallback
 }
 
 function recordingsDir(): string {
@@ -110,9 +121,9 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     if (auth instanceof Response) return auth
     const q = c.req.query('q')?.trim()
     if (q) {
-      return c.json({ results: await searchMeetings(auth.workspaceId, q, { limit: Number(c.req.query('limit')) || 20 }) })
+      return c.json({ results: await searchMeetings(auth.workspaceId, q, { limit: clampLimit(c.req.query('limit'), 20, 50) }) })
     }
-    const take = Math.min(Number(c.req.query('limit')) || 100, 200)
+    const take = clampLimit(c.req.query('limit'), 100, 200)
     const meetings = await db.meeting.findMany({
       where: { workspaceId: auth.workspaceId },
       orderBy: { createdAt: 'desc' },
@@ -128,7 +139,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const q = c.req.query('q')?.trim() ?? ''
     const sinceDays = Number(c.req.query('sinceDays'))
     const since = Number.isFinite(sinceDays) && sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000) : undefined
-    const results = await searchMeetings(auth.workspaceId, q, { limit: Number(c.req.query('limit')) || 10, since })
+    const results = await searchMeetings(auth.workspaceId, q, { limit: clampLimit(c.req.query('limit'), 10, 50), since })
     return c.json({ results })
   })
 
@@ -212,6 +223,8 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const body = await c.req.json().catch(() => ({}))
     const notes = cleanMeetingNotes(body.notes)
     if (!notes?.trim()) return error(c, 400, 'notes_required', 'Add some notes to create a meeting without audio')
+    const templateId = typeof body.templateId === 'string' ? body.templateId : null
+    if (templateId && !(await isUsableTemplateId(auth.workspaceId, templateId))) return invalidTemplate(c)
     const meeting = await db.meeting.create({
       data: {
         workspaceId: auth.workspaceId,
@@ -220,7 +233,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
         notes,
         status: 'ready',
         source: 'upload',
-        templateId: typeof body.templateId === 'string' ? body.templateId : null,
+        templateId,
       },
     })
     void enhanceMeeting(meeting.id).catch(() => {})
@@ -327,7 +340,10 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const notes = cleanMeetingNotes(body.notes)
     if (notes !== undefined) data.notes = notes
     if (typeof body.enhancedNotes === 'string') data.enhancedNotes = body.enhancedNotes.slice(0, MAX_MEETING_NOTES_CHARS)
-    if (typeof body.templateId === 'string') data.templateId = body.templateId
+    if (typeof body.templateId === 'string') {
+      if (!(await isUsableTemplateId(auth.workspaceId, body.templateId))) return invalidTemplate(c)
+      data.templateId = body.templateId
+    }
     if (Array.isArray(body.actionItems)) {
       data.actionItems = JSON.stringify(
         body.actionItems
@@ -354,6 +370,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     }
     const body = await c.req.json().catch(() => ({}))
     const templateId = typeof body.templateId === 'string' ? body.templateId : undefined
+    if (templateId && !(await isUsableTemplateId(auth.workspaceId, templateId))) return invalidTemplate(c)
     const wait = body.wait === true
     const run = enhanceMeeting(meeting.id, { templateId })
     if (wait) {

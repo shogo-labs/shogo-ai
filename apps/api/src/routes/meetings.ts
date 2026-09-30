@@ -17,6 +17,7 @@ import {
 } from '../services/recording.service'
 import {
   MEETING_LIST_SELECT,
+  cleanMeetingNotes,
   defaultMeetingTitle,
   findRecordingDraft,
   isInterruptedDraft,
@@ -613,12 +614,13 @@ meetingRoutes.put('/api/local/meetings/:id', async (c) => {
     const meeting = await loadOwnedMeeting(c, c.req.param('id'))
     if (!meeting) return c.json({ error: 'Meeting not found' }, 404)
 
+    const notes = cleanMeetingNotes(body.notes)
     const updated = await db.meeting.update({
       where: { id: meeting.id },
       data: {
         ...(body.title !== undefined ? { title: body.title } : {}),
         ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
-        ...(body.notes !== undefined ? { notes: body.notes } : {}),
+        ...(notes !== undefined ? { notes } : {}),
       },
     })
 

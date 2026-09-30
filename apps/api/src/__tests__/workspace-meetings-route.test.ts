@@ -186,6 +186,18 @@ describe('scoping', () => {
     expect(list.meetings).toHaveLength(0)
   })
 
+  test('list limits are clamped to a sane range', async () => {
+    for (let i = 0; i < 3; i++) seed({})
+    for (const [limit, count] of [['-5', 3], ['0', 3], ['abc', 3], ['2', 2], ['2.9', 2], ['9999', 3]] as const) {
+      const body = await (await req('GET', `/workspaces/ws-me/meetings?limit=${limit}`)).json()
+      expect(body.meetings).toHaveLength(count)
+    }
+    const { clampLimit } = await import('../routes/workspace-meetings')
+    expect(clampLimit('-5', 100, 200)).toBe(100)
+    expect(clampLimit(undefined, 10, 50)).toBe(10)
+    expect(clampLimit('9999', 10, 50)).toBe(50)
+  })
+
   test('audioPath never leaves the server', async () => {
     const m = seed({ audioPath: '/secret/recordings/a.wav', transcript: TRANSCRIPT })
     const body = await (await req('GET', `/workspaces/ws-me/meetings/${m.id}`)).json()
@@ -313,6 +325,24 @@ describe('templates', () => {
     expect((await req('POST', '/workspaces/ws-me/meetings/templates', { name: '', instructions: 'x' })).status).toBe(400)
     expect((await req('PATCH', '/workspaces/ws-me/meetings/templates/builtin:general', { name: 'x' })).status).toBe(400)
     expect((await req('DELETE', '/workspaces/ws-me/meetings/templates/builtin:general')).status).toBe(400)
+  })
+
+  test("meetings can only use built-ins or the workspace's own templates", async () => {
+    templates.set('t-theirs', { id: 't-theirs', workspaceId: 'ws-other', name: 'Theirs', instructions: 'x' })
+    templates.set('t-mine', { id: 't-mine', workspaceId: 'ws-me', name: 'Mine', instructions: 'x' })
+    const m = seed({ notes: 'x' })
+    for (const templateId of ['t-theirs', 'builtin:nope', 'made-up']) {
+      const patch = await req('PATCH', `/workspaces/ws-me/meetings/${m.id}`, { templateId })
+      expect(patch.status).toBe(400)
+      expect((await patch.json()).error.code).toBe('invalid_template')
+      expect((await req('POST', '/workspaces/ws-me/meetings', { notes: 'x', templateId })).status).toBe(400)
+      expect((await req('POST', `/workspaces/ws-me/meetings/${m.id}/enhance`, { templateId })).status).toBe(400)
+    }
+    expect(meetings.get(m.id).templateId).toBeUndefined()
+    for (const templateId of ['t-mine', 'builtin:standup']) {
+      const body = await (await req('PATCH', `/workspaces/ws-me/meetings/${m.id}`, { templateId })).json()
+      expect(body.meeting.templateId).toBe(templateId)
+    }
   })
 
   test("cannot edit another workspace's template", async () => {
